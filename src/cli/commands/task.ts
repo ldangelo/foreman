@@ -27,16 +27,195 @@ import { resolveProjectPathFromOptions } from "./project-task-support.js";
 import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
 import { listRegisteredProjects, type RegisteredProjectSummary } from "./project-task-support.js";
 import type { PrState } from "../../lib/pr-state.js";
+import { ForemanStore } from "../../lib/store.js";
+import type { RunProgress } from "../../lib/store.js";
+import { elapsed } from "../watch-ui.js";
+
+// ── Run Activity Helpers ──────────────────────────────────────────────────────
+
+/** Threshold in ms after which a running agent is considered potentially stuck. */
+const STUCK_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
+
+interface RunActivityInfo {
+  runId: string | null;
+  status: string;
+  currentPhase: string | null;
+  lastActivity: string | null;
+  lastActivityElapsed: string | null;
+  isStuck: boolean;
+  isStale: boolean;  // no recent tool calls despite running
+  toolCalls: number;
+  costUsd: number;
+  turns: number;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+/**
+ * Fetch live run activity information for a task.
+ * 
+ * For registered projects (daemon-backed): uses tRPC to query the Postgres store
+ * via the Foreman daemon's Unix socket. Falls back to SQLite for unregistered projects.
+ */
+async function fetchRunActivity(
+  projectPath: string,
+  runId: string | null,
+  projectId?: string,
+): Promise<RunActivityInfo | null> {
+  if (!runId) return null;
+
+  // Try daemon tRPC first (for registered projects)
+  if (projectId) {
+    try {
+      const client = createTrpcClient();
+      const [run, progressData] = await Promise.all([
+        client.runs.get({ runId }) as Promise<{ id: string; status: string; started_at?: string; finished_at?: string } | null>,
+        client.runs.getProgress({ runId }) as Promise<RunProgress | null>,
+      ]);
+
+      if (!run) return null;
+
+      const now = Date.now();
+      const lastActivityMs = progressData?.lastActivity
+        ? new Date(progressData.lastActivity).getTime()
+        : null;
+      const isStuck = run.status === "running" &&
+        lastActivityMs !== null &&
+        (now - lastActivityMs) > STUCK_THRESHOLD_MS;
+      const isStale = run.status === "running" &&
+        (progressData?.toolCalls ?? 0) > 0 &&
+        lastActivityMs !== null &&
+        (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2;
+
+      return {
+        runId: run.id,
+        status: run.status,
+        currentPhase: progressData?.currentPhase ?? null,
+        lastActivity: progressData?.lastActivity ?? null,
+        lastActivityElapsed: progressData?.lastActivity
+          ? elapsed(progressData.lastActivity)
+          : null,
+        isStuck,
+        isStale,
+        toolCalls: progressData?.toolCalls ?? 0,
+        costUsd: progressData?.costUsd ?? 0,
+        turns: progressData?.turns ?? 0,
+        startedAt: run.started_at ?? null,
+        completedAt: run.finished_at ?? null,
+      };
+    } catch {
+      // Daemon unavailable or run not found — fall through to SQLite
+    }
+  }
+
+  // Fallback: use SQLite store (for unregistered projects or daemon unavailability)
+  const store = ForemanStore.forProject(projectPath);
+  try {
+    const run = store.getRun(runId);
+    if (!run) return null;
+
+    const progress = store.getRunProgress(runId);
+    const now = Date.now();
+
+    // Detect stuck: running but no activity for > STUCK_THRESHOLD_MS
+    const lastActivityMs = progress?.lastActivity
+      ? new Date(progress.lastActivity).getTime()
+      : null;
+    const isStuck = run.status === "running" &&
+      lastActivityMs !== null &&
+      (now - lastActivityMs) > STUCK_THRESHOLD_MS;
+
+    // Detect stale: has tool calls but no recent activity
+    const isStale = run.status === "running" &&
+      (progress?.toolCalls ?? 0) > 0 &&
+      lastActivityMs !== null &&
+      (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2; // half threshold
+
+    return {
+      runId: run.id,
+      status: run.status,
+      currentPhase: progress?.currentPhase ?? null,
+      lastActivity: progress?.lastActivity ?? null,
+      lastActivityElapsed: progress?.lastActivity
+        ? elapsed(progress.lastActivity)
+        : null,
+      isStuck,
+      isStale,
+      toolCalls: progress?.toolCalls ?? 0,
+      costUsd: progress?.costUsd ?? 0,
+      turns: progress?.turns ?? 0,
+      startedAt: run.started_at,
+      completedAt: run.completed_at,
+    };
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * Render a human-readable status line for a run's activity state.
+ */
+function renderRunStatusLine(activity: RunActivityInfo): string {
+  const parts: string[] = [];
+
+  // Status with color coding
+  if (activity.isStuck) {
+    parts.push(chalk.red("⚠ STUCK"));
+  } else if (activity.status === "running") {
+    parts.push(chalk.green("● RUNNING"));
+  } else if (activity.status === "failed" || activity.status === "test-failed") {
+    parts.push(chalk.red("✗ FAILED"));
+  } else if (activity.status === "completed") {
+    parts.push(chalk.cyan("✓ COMPLETED"));
+  } else if (activity.status === "merged") {
+    parts.push(chalk.green("⊕ MERGED"));
+  } else if (activity.status === "stuck") {
+    parts.push(chalk.yellow("⚠ STUCK"));
+  } else if (activity.status === "conflict") {
+    parts.push(chalk.yellow("⊘ CONFLICT"));
+  } else {
+    parts.push(chalk.dim(activity.status.toUpperCase()));
+  }
+
+  // Current phase
+  if (activity.currentPhase) {
+    const phaseColors: Record<string, (s: string) => string> = {
+      explorer:  chalk.cyan,
+      developer: chalk.green,
+      qa:        chalk.yellow,
+      reviewer:  chalk.magenta,
+      finalize:  chalk.blue,
+    };
+    const colorFn = phaseColors[activity.currentPhase] ?? chalk.white;
+    parts.push(chalk.dim("│") + " " + colorFn(activity.currentPhase));
+  }
+
+  // Last activity time
+  if (activity.lastActivityElapsed) {
+    parts.push(chalk.dim("│") + " " + chalk.dim("last activity") + " " + chalk.white(activity.lastActivityElapsed));
+  }
+
+  // Tool call count
+  if (activity.toolCalls > 0) {
+    parts.push(chalk.dim("│") + " " + chalk.dim(`${activity.toolCalls} tools`));
+  }
+
+  // Cost
+  if (activity.costUsd > 0) {
+    parts.push(chalk.dim("│") + " $" + activity.costUsd.toFixed(4));
+  }
+
+  return parts.join(" ");
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Column widths for the task table. */
-const COL_ID = 14;
-const COL_TITLE = 36;
+const COL_ID = 16;
+const COL_TITLE = 40;
 const COL_TYPE = 10;
-const COL_PRI = 12;
+const COL_PRI = 14;
 const COL_STATUS = 14;
-const COL_PR = 10; // PR state: none/draft/open/merged/closed/mismatch
 const COL_GAP = "  ";
 const COMPACT_TASK_ID_SUFFIX_HEX_LENGTH = 5;
 
@@ -297,6 +476,110 @@ function printTaskTable(rows: TaskRow[], prStates?: Map<string, PrState>): void 
         renderColumn(priorityLabel(t.priority), COL_PRI, (text) => colorPriority(text, t.priority)) +
         COL_GAP +
         renderColumn(t.status, COL_STATUS, statusChalk) +
+        prCell,
+    );
+  }
+}
+
+/**
+ * Render a run status badge for the task table.
+ */
+function renderRunStatusBadge(activity: RunActivityInfo | null): string {
+  if (!activity) return chalk.dim("—");
+
+  if (activity.isStuck) {
+    return chalk.red("⚠ stuck");
+  }
+  if (activity.isStale) {
+    return chalk.yellow("⚡ stale");
+  }
+  if (activity.status === "running" && activity.currentPhase) {
+    const phaseColors: Record<string, (s: string) => string> = {
+      explorer:  (s: string) => chalk.cyan(s),
+      developer: (s: string) => chalk.green(s),
+      qa:        (s: string) => chalk.yellow(s),
+      reviewer:  (s: string) => chalk.magenta(s),
+      finalize:  (s: string) => chalk.blue(s),
+    };
+    const colorFn = phaseColors[activity.currentPhase] ?? ((s: string) => s);
+    return colorFn(activity.currentPhase);
+  }
+  switch (activity.status) {
+    case "running":
+      return chalk.green("● run");
+    case "completed":
+      return chalk.cyan("✓ done");
+    case "merged":
+      return chalk.green("⊕ merged");
+    case "failed":
+    case "test-failed":
+      return chalk.red("✗ fail");
+    case "stuck":
+      return chalk.red("⚠ stuck");
+    case "conflict":
+      return chalk.yellow("⊘ conflict");
+    default:
+      return chalk.dim(activity.status);
+  }
+}
+
+/**
+ * Render task table with an additional RUN STATUS column.
+ * Used for --show-run and --stuck views to display live run activity.
+ */
+function printTaskTableWithRunStatus(
+  rows: TaskRow[],
+  runActivityMap: Map<string, RunActivityInfo | null>,
+  prStates?: Map<string, PrState>,
+): void {
+  if (rows.length === 0) {
+    console.log(chalk.dim("No tasks found."));
+    return;
+  }
+
+  const idWidth = Math.max(COL_ID, ...rows.map((row) => row.id.length));
+  const showPr = prStates !== undefined;
+  const runColWidth = 10;
+
+  // Header
+  const prHeader = showPr ? COL_GAP + chalk.bold(pad("PR", 12)) : "";
+  console.log(
+    chalk.bold(pad("ID", idWidth)) +
+      COL_GAP +
+      chalk.bold(pad("TITLE", COL_TITLE)) +
+      COL_GAP +
+      chalk.bold(pad("TYPE", COL_TYPE)) +
+      COL_GAP +
+      chalk.bold(pad("PRIORITY", COL_PRI)) +
+      COL_GAP +
+      chalk.bold("STATUS") +
+      COL_GAP +
+      chalk.bold(pad("RUN", runColWidth)) +
+      prHeader,
+  );
+
+  const prColWidth = 12;
+  const separatorLen = idWidth + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + runColWidth + (COL_GAP.length * 5) + (showPr ? prColWidth + COL_GAP.length : 0);
+  console.log("─".repeat(separatorLen));
+
+  for (const t of rows) {
+    const activity = runActivityMap.get(t.id) ?? null;
+    const prState = prStates?.get(t.id);
+    const prBadge = renderPrBadge(prState);
+    const prCell = showPr ? COL_GAP + pad(prBadge, prColWidth) : "";
+    const runBadge = renderRunStatusBadge(activity);
+    console.log(
+      chalk.dim(t.id.padEnd(idWidth)) +
+        COL_GAP +
+        renderColumn(t.title, COL_TITLE) +
+        COL_GAP +
+        renderColumn(t.type, COL_TYPE, chalk.dim) +
+        COL_GAP +
+        renderColumn(priorityLabel(t.priority), COL_PRI, (text) => colorPriority(text, t.priority)) +
+        COL_GAP +
+        renderColumn(t.status, COL_STATUS, statusChalk) +
+        COL_GAP +
+        renderColumn(runBadge, runColWidth, (s) => s) +
         prCell,
     );
   }
@@ -624,15 +907,18 @@ const createCommand = new Command("create")
 
 const listCommand = new Command("list")
   .description("List tasks from the daemon-backed task store")
-  .option("--status <status>", "Filter by status (e.g. ready, backlog, in-progress)")
+  .option("--status <status>", "Filter by task status (e.g. ready, backlog, in-progress)")
+  .option("--run-status <status>", "Filter by run status (e.g. running, stuck, failed, completed)")
   .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
   .option("--all", "Include closed and merged tasks (excluded by default)")
   .option("--show-pr", "Show GitHub PR state for each task")
+  .option("--show-run", "Show run status column for each task")
+  .option("--stuck", "Show only tasks with stuck or stale runs")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (opts: { status?: string; type?: string; all?: boolean; showPr?: boolean; project?: string; projectPath?: string }) => {
+  .action(async (opts: { status?: string; runStatus?: string; type?: string; all?: boolean; showPr?: boolean; showRun?: boolean; stuck?: boolean; project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const { client, projectId, projectPath } = await resolveTaskProjectContext(opts);
       let rows = await listAllTasks(client, projectId);
 
       if (opts.status) {
@@ -649,6 +935,33 @@ const listCommand = new Command("list")
         (a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at),
       );
 
+      // Fetch run activity for tasks with run_ids (when filtering by run status or --stuck)
+      const runActivityMap = new Map<string, RunActivityInfo | null>();
+      const needsRunActivity = opts.runStatus || opts.stuck || opts.showRun;
+      if (needsRunActivity) {
+        const fetches = rows.map(async (task) => {
+          const activity = task.run_id ? await fetchRunActivity(projectPath, task.run_id) : null;
+          runActivityMap.set(task.id, activity);
+        });
+        await Promise.all(fetches);
+      }
+
+      // Filter by run status if specified
+      if (opts.runStatus) {
+        rows = rows.filter((row) => {
+          const activity = runActivityMap.get(row.id);
+          return activity?.status === opts.runStatus;
+        });
+      }
+
+      // Filter to stuck/stale runs only
+      if (opts.stuck) {
+        rows = rows.filter((row) => {
+          const activity = runActivityMap.get(row.id);
+          return activity?.isStuck || activity?.isStale || activity?.status === "stuck";
+        });
+      }
+
       if (rows.length === 0) {
         if (opts.status && opts.type) {
           console.log(chalk.dim(`No tasks with status '${opts.status}' and type '${opts.type}'.`));
@@ -656,6 +969,10 @@ const listCommand = new Command("list")
           console.log(chalk.dim(`No tasks with status '${opts.status}'.`));
         } else if (opts.type) {
           console.log(chalk.dim(`No tasks with type '${opts.type}'.`));
+        } else if (opts.runStatus) {
+          console.log(chalk.dim(`No tasks with run status '${opts.runStatus}'.`));
+        } else if (opts.stuck) {
+          console.log(chalk.dim(`No stuck or stale tasks found.`));
         } else {
           console.log(
             chalk.dim("No tasks found. Use 'foreman task create' to add tasks."),
@@ -680,17 +997,39 @@ const listCommand = new Command("list")
         );
       }
 
-      const label = opts.status
-        ? opts.type
-          ? `Tasks (status: ${opts.status}, type: ${opts.type})`
-          : `Tasks (status: ${opts.status})`
-        : opts.type
-          ? `Tasks (type: ${opts.type})`
-          : opts.all
-            ? `All Tasks`
-            : `Active Tasks`;
-      console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
-      printTaskTable(rows, prStates);
+      // Run status summary for stuck runs
+      if (opts.stuck && rows.length > 0) {
+        const stuckCount = rows.filter((row) => {
+          const activity = runActivityMap.get(row.id);
+          return activity?.isStuck || activity?.status === "stuck";
+        }).length;
+        const staleCount = rows.length - stuckCount;
+        console.log(chalk.bold(`\n  Stuck/Stale Tasks (${rows.length})\n`));
+        if (stuckCount > 0) {
+          console.log(chalk.red(`  ⚠ ${stuckCount} stuck (no activity > 15min)`));
+        }
+        if (staleCount > 0) {
+          console.log(chalk.yellow(`  ⚡ ${staleCount} stale (reduced activity)`));
+        }
+        console.log();
+        printTaskTableWithRunStatus(rows, runActivityMap, prStates);
+      } else {
+        const label = opts.status
+          ? opts.type
+            ? `Tasks (status: ${opts.status}, type: ${opts.type})`
+            : `Tasks (status: ${opts.status})`
+          : opts.type
+            ? `Tasks (type: ${opts.type})`
+            : opts.all
+              ? `All Tasks`
+              : `Active Tasks`;
+        console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
+        if (opts.showRun) {
+          printTaskTableWithRunStatus(rows, runActivityMap, prStates);
+        } else {
+          printTaskTable(rows, prStates);
+        }
+      }
       console.log();
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
@@ -703,11 +1042,12 @@ const listCommand = new Command("list")
 const showCommand = new Command("show")
   .description("Show details of a specific task")
   .argument("<id>", "Task ID (or short prefix)")
+  .option("--verbose", "Show detailed run activity information")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
+  .action(async (id: string, opts: { verbose?: boolean; project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const { client, projectId, projectPath } = await resolveTaskProjectContext(opts);
       const rows = await listAllTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
       const task = await client.tasks.get({ projectId, taskId: resolvedId }) as TaskRow | null;
@@ -740,6 +1080,73 @@ const showCommand = new Command("show")
       }
       if (task.closed_at) {
         console.log(`  Closed:      ${new Date(task.closed_at).toLocaleString()}`);
+      }
+
+      // ── Live Run Activity Section ─────────────────────────────────────────
+      // Fetch current run state from the SQLite store (mirrors dashboard data)
+      // Only shown for tasks with an active run_id to avoid unnecessary DB access
+      if (task.run_id) {
+        const activity = await fetchRunActivity(projectPath, task.run_id);
+        if (activity) {
+          console.log(chalk.bold("\n  Run Activity:"));
+
+          // Status line with color-coded indicators
+          const statusLine = renderRunStatusLine(activity);
+          console.log(`    ${statusLine}`);
+
+          // Stuck/warning alert
+          if (activity.isStuck) {
+            console.log();
+            console.log(chalk.red(`    ⚠ WARNING: This run appears STUCK.`) + chalk.dim(` No activity for > 15 minutes.`));
+            console.log(chalk.dim(`    Check logs: ~/.foreman/logs/${activity.runId}.log`));
+            console.log(chalk.dim(`    Stuck runs can be reset with: foreman task reset ${task.id}`));
+          }
+
+          // Phase timeline for completed/failed runs
+          if (opts.verbose && activity.currentPhase) {
+            console.log();
+            console.log(chalk.dim(`    Current phase: ${activity.currentPhase}`));
+          }
+
+          // Tool/progress stats for verbose or active runs
+          if (opts.verbose || activity.status === "running") {
+            if (activity.toolCalls > 0) {
+              console.log(`    Tools used: ${chalk.cyan(String(activity.toolCalls))}`);
+            }
+            if (activity.turns > 0) {
+              console.log(`    Turns:      ${chalk.cyan(String(activity.turns))}`);
+            }
+            if (activity.costUsd > 0) {
+              console.log(`    Cost:       $${activity.costUsd.toFixed(4)}`);
+            }
+            if (activity.lastActivity) {
+              console.log(`    Last activity: ${new Date(activity.lastActivity).toLocaleString()}`);
+            }
+            if (activity.startedAt) {
+              console.log(`    Started:    ${new Date(activity.startedAt).toLocaleString()}`);
+            }
+            if (activity.completedAt) {
+              console.log(`    Completed:  ${new Date(activity.completedAt).toLocaleString()}`);
+            }
+          }
+
+          // Terminal failure summary
+          if (activity.status === "failed" || activity.status === "test-failed") {
+            console.log();
+            console.log(chalk.red(`    ✗ This run FAILED.`) + chalk.dim(` Check logs for details:`));
+            console.log(chalk.dim(`    ~/.foreman/logs/${activity.runId}.log`));
+            console.log(chalk.dim(`    To retry: foreman task retry ${task.id}`));
+          }
+
+          // Success/completion summary
+          if (activity.status === "completed" || activity.status === "merged") {
+            console.log();
+            console.log(chalk.green(`    ✓ Run completed successfully.`) + chalk.dim(` Waiting for merge.`));
+          }
+        } else if (opts.verbose) {
+          // Task has run_id but no run found (may be cleaned up)
+          console.log(chalk.dim(`\n  Run Activity: run ${task.run_id} not found (may have been cleaned up)`));
+        }
       }
 
       // Show PR state
