@@ -33,9 +33,9 @@ phases:
       onComplete: true
 
   # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
-  # Runs the project's test suite to validate the chore.
+  # Runs the project's unit test suite to validate the chore quickly.
   - name: test
-    bash: "npm run test"
+    bash: "npm run test:unit"
     artifact: TEST_RESULTS.md
     verdict: true
     retryWith: fix

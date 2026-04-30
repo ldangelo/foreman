@@ -149,6 +149,167 @@ function formatMessage(msg: Message, fullPayload = false): string {
   return `${header}\n  ${preview}`;
 }
 
+// ── Table row type ────────────────────────────────────────────────────────────
+
+export interface TableRow {
+  date: string;
+  ticket: string;
+  sender: string;
+  receiver: string;
+  kind: string | undefined;
+  tool: string | undefined;
+  args: string | undefined;
+  runId: string;
+  isRead: boolean;
+}
+
+// ── Parsed message body ──────────────────────────────────────────────────────
+
+interface ParsedMessageBody {
+  phase?: string;
+  status?: string;
+  error?: string;
+  currentPhase?: string;
+  seedId?: string;
+  runId?: string;
+  message?: string;
+  kind?: string;
+  tool?: string;
+  argsPreview?: string;
+  traceFile?: string;
+  commandHonored?: boolean;
+  verdict?: string;
+}
+
+/**
+ * Parse the message body JSON, extracting structured fields when present.
+ * Gracefully degrades on non-JSON or missing fields.
+ */
+export function parseMessageBody(body: string): ParsedMessageBody {
+  if (!body) return {};
+  try {
+    return JSON.parse(body) as ParsedMessageBody;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Truncate a string to maxLen characters, appending "…" if truncated.
+ */
+export function truncate(str: string, maxLen: number): string {
+  if (!str || str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 1) + "…";
+}
+
+// ── Table formatting ───────────────────────────────────────────────────────────
+
+const DEFAULT_ARGS_WIDTH = 40;
+
+/**
+ * Format a message as a table row.
+ * @param msg The message to format
+ * @param argsMaxLen Maximum length for the args column (default: 40)
+ */
+export function formatMessageTable(msg: Message, argsMaxLen = DEFAULT_ARGS_WIDTH): TableRow {
+  const parsed = parseMessageBody(msg.body);
+  return {
+    date: formatTimestamp(msg.created_at),
+    ticket: parsed.seedId ?? msg.run_id,
+    sender: msg.sender_agent_type,
+    receiver: msg.recipient_agent_type,
+    kind: parsed.kind,
+    tool: parsed.tool,
+    args: parsed.argsPreview ? truncate(parsed.argsPreview, argsMaxLen) : undefined,
+    runId: msg.run_id,
+    isRead: msg.read === 1,
+  };
+}
+
+// ── ASCII table renderer ───────────────────────────────────────────────────────
+
+/**
+ * Column widths for the inbox table.
+ * Compact sortable datetime | ticket | sender | receiver | kind | tool | args
+ */
+const COL_WIDTHS = {
+  date: 19,    // "2026-04-30 14:23:45"
+  ticket: 20,
+  sender: 12,
+  receiver: 12,
+  kind: 14,
+  tool: 14,
+} as const;
+const ARGS_DEFAULT = 40;
+
+interface ColumnSizes {
+  date: number;
+  ticket: number;
+  sender: number;
+  receiver: number;
+  kind: number;
+  tool: number;
+  args: number;
+}
+
+/**
+ * Render an array of table rows as a formatted ASCII table.
+ * @param rows TableRow[] to render
+ * @param argsWidth override for the args column width (default 40)
+ */
+export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): string {
+  if (rows.length === 0) return "";
+
+  // Compute actual column widths (respect max values for truncation)
+  const sizes: ColumnSizes = {
+    date: COL_WIDTHS.date,
+    ticket: Math.max(...rows.map((r) => r.ticket.length), COL_WIDTHS.ticket),
+    sender: Math.max(...rows.map((r) => r.sender.length), COL_WIDTHS.sender),
+    receiver: Math.max(...rows.map((r) => r.receiver.length), COL_WIDTHS.receiver),
+    kind: Math.max(...rows.map((r) => r.kind?.length ?? 4), COL_WIDTHS.kind),
+    tool: Math.max(...rows.map((r) => r.tool?.length ?? 4), COL_WIDTHS.tool),
+    args: argsWidth,
+  };
+
+  const totalWidth =
+    sizes.date + sizes.ticket + sizes.sender + sizes.receiver +
+    sizes.kind + sizes.tool + sizes.args + 8; // 7 separators
+
+  const hr = "─".repeat(totalWidth);
+
+  const header = [
+    pad("DATE", sizes.date),
+    pad("TICKET", sizes.ticket),
+    pad("SENDER", sizes.sender),
+    pad("RECEIVER", sizes.receiver),
+    pad("KIND", sizes.kind),
+    pad("TOOL", sizes.tool),
+    pad("ARGS", sizes.args),
+  ].join(" │ ");
+
+  const padCell = (val: string | undefined, width: number): string =>
+    pad(val ?? "-", width);
+
+  const tableLines = rows.map((row) =>
+    [
+      pad(row.date, sizes.date),
+      pad(row.ticket, sizes.ticket),
+      pad(row.sender, sizes.sender),
+      pad(row.receiver, sizes.receiver),
+      padCell(row.kind, sizes.kind),
+      padCell(row.tool, sizes.tool),
+      padCell(row.args, sizes.args),
+    ].join(" │ ")
+  );
+
+  return [hr, header, hr, ...tableLines, hr].join("\n");
+}
+
+function pad(val: string, width: number): string {
+  if (val.length > width) return val.slice(0, width - 1) + "…";
+  return val.padEnd(width, " ");
+}
+
 // ── Run status formatting ─────────────────────────────────────────────────────
 
 function formatRunStatus(run: Run): string {
@@ -342,12 +503,19 @@ export const inboxCommand = new Command("inbox")
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages found across all runs${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
-          console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
-          for (const msg of messages) {
-            console.log(formatMessage(msg, fullPayload));
-            console.log("");
+          if (fullPayload) {
+            console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+            for (const msg of messages) {
+              console.log(formatMessage(msg, true));
+              console.log("");
+            }
+            console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
+          } else {
+            const rows = messages.map((msg) => formatMessageTable(msg));
+            console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}`);
+            console.log(renderMessageTable(rows));
+            console.log(`${messages.length} message(s) shown.`);
           }
-          console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
         }
 
         if (options.ack && messages.length > 0) {
@@ -374,9 +542,16 @@ export const inboxCommand = new Command("inbox")
           ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
           : store!.getAllMessagesGlobal(limit);
         if (initialGlobal.length > 0) {
-          console.log(`── past messages ${"─".repeat(53)}`);
-          for (const m of initialGlobal) { console.log(formatMessage(m, fullPayload)); console.log(""); seenIds.add(m.id); }
-          console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+          if (fullPayload) {
+            console.log(`── past messages ${"─".repeat(53)}`);
+            for (const m of initialGlobal) { console.log(formatMessage(m, true)); console.log(""); seenIds.add(m.id); }
+            console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+          } else {
+            const rows = initialGlobal.map((m) => formatMessageTable(m));
+            console.log(renderMessageTable(rows));
+            console.log("");
+            for (const m of initialGlobal) seenIds.add(m.id);
+          }
         }
         const initRuns = daemon
           ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
@@ -394,7 +569,15 @@ export const inboxCommand = new Command("inbox")
               ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
               : store!.getAllMessagesGlobal(limit);
             for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
-              seenIds.add(msg.id); console.log(formatMessage(msg, fullPayload)); console.log("");
+              seenIds.add(msg.id);
+              if (fullPayload) {
+                console.log(formatMessage(msg, true));
+                console.log("");
+              } else {
+                const rows = [formatMessageTable(msg)];
+                console.log(renderMessageTable(rows));
+                console.log("");
+              }
             }
           })().catch(() => undefined);
         };
@@ -440,12 +623,19 @@ export const inboxCommand = new Command("inbox")
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
-          console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
-          for (const msg of messages) {
-            console.log(formatMessage(msg, fullPayload));
-            console.log("");
+          if (fullPayload) {
+            console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+            for (const msg of messages) {
+              console.log(formatMessage(msg, true));
+              console.log("");
+            }
+            console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
+          } else {
+            const rows = messages.map((msg) => formatMessageTable(msg));
+            console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
+            console.log(renderMessageTable(rows));
+            console.log(`${messages.length} message(s) shown.`);
           }
-          console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
         }
 
         if (options.ack && messages.length > 0) {
@@ -473,13 +663,16 @@ export const inboxCommand = new Command("inbox")
         ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: false, limit })
         : fetchMessages(store!, runId, options.agent, false, limit);
       if (initial.length > 0) {
-        console.log(`── past messages ${"─".repeat(53)}`);
-        for (const m of initial) {
-          console.log(formatMessage(m, fullPayload));
+        if (fullPayload) {
+          console.log(`── past messages ${"─".repeat(53)}`);
+          for (const m of initial) { console.log(formatMessage(m, true)); console.log(""); seenIds.add(m.id); }
+          console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+        } else {
+          const rows = initial.map((m) => formatMessageTable(m));
+          console.log(renderMessageTable(rows));
           console.log("");
-          seenIds.add(m.id);
+          for (const m of initial) seenIds.add(m.id);
         }
-        console.log(`── live ─────────────────────────────────────────────────────────────\n`);
       }
 
       // Seed seenRunIds with any already-completed/failed runs so we only show new transitions
@@ -507,8 +700,14 @@ export const inboxCommand = new Command("inbox")
           const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
           for (const msg of newMsgs) {
             seenIds.add(msg.id);
-            console.log(formatMessage(msg, fullPayload));
-            console.log("");
+            if (fullPayload) {
+              console.log(formatMessage(msg, true));
+              console.log("");
+            } else {
+              const rows = [formatMessageTable(msg)];
+              console.log(renderMessageTable(rows));
+              console.log("");
+            }
             if (options.ack) {
               if (daemon) {
                 await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
