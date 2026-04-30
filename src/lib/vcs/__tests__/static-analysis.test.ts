@@ -99,6 +99,8 @@ const GIT_ALWAYS_ALLOWED: string[] = [
   // WorktreeManager — manages ~/.foreman/worktrees/<project-id>/ path (distinct from
   // VcsBackend's .foreman-worktrees/ path). Uses direct git for path-specific control.
   "lib/worktree-manager.ts",
+  // PR state service — uses git rev-parse and gh pr view for PR state tracking
+  "lib/pr-state.ts",
 ];
 
 /**

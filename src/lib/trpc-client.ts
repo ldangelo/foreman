@@ -257,6 +257,8 @@ export interface TRPCTasksClient {
     toTaskId: string;
     type?: "blocks" | "parent-child";
   }): Promise<unknown>;
+  /** Get the current GitHub PR state for a task. */
+  getPrState(input: { projectId: string; taskId: string }): Promise<unknown>;
 }
 
 /** Projects sub-router client. */
@@ -411,6 +413,7 @@ export function createTrpcClient(
       addDependency: (input) => untypedClient.mutation("tasks.addDependency", input),
       listDependencies: (input) => untypedClient.query("tasks.listDependencies", input),
       removeDependency: (input) => untypedClient.mutation("tasks.removeDependency", input),
+      getPrState: (input) => untypedClient.query("tasks.getPrState", input),
     },
     runs: {
       create: (input) => untypedClient.mutation("runs.create", input),

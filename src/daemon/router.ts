@@ -27,6 +27,7 @@ import {
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getPrState, type PrState } from "../lib/pr-state.js";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -347,6 +348,48 @@ const tasksRouter = t.router({
     .mutation(async ({ input, ctx }) => {
       await ctx.adapter.removeTaskDependency(input.projectId, input.fromTaskId, input.toTaskId, input.type);
       return { removed: true };
+    }),
+
+  /**
+   * Get the current GitHub PR state for a task.
+   * GET /trpc/tasks.getPrState
+   *
+   * Returns the PR state including:
+   * - status: "none" | "open" | "merged" | "closed" | "error"
+   * - url: GitHub PR URL if exists
+   * - number: PR number if exists
+   * - headSha: PR head SHA at creation/merge time
+   * - currentHeadSha: Current branch HEAD SHA
+   * - isStale: True if PR merged but branch head changed
+   * - summary: Human-readable summary for display
+   */
+  getPrState: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      // Get task to find branch name
+      const task = await ctx.adapter.getTask(input.projectId, input.taskId);
+      if (!task) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Task not found" });
+      }
+
+      // Get project to find path
+      const project = await ctx.registry.get(input.projectId);
+      if (!project) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+      }
+
+      const prState = await getPrState({
+        projectPath: project.path,
+        branchName: task.branch ?? undefined,
+        seedId: task.id,
+      });
+
+      return prState;
     }),
 });
 
