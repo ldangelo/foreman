@@ -89,6 +89,11 @@ export interface TaskRow {
   last_sync_at?: string | null;
   // Labels array (may not exist in all projects)
   labels?: string[] | null;
+  // PR state from associated run (AC-4: task list surfaces PR state)
+  pr_state?: "none" | "draft" | "open" | "merged" | "closed" | null;
+  pr_url?: string | null;
+  /** HEAD SHA of the branch when the PR was last updated. Null if no PR exists. */
+  pr_head_sha?: string | null;
 }
 
 export interface TaskDependencyRow {
@@ -620,9 +625,13 @@ export class PostgresAdapter {
     const limit = filters?.limit ?? 100;
     params.push(limit);
 
+    // LEFT JOIN runs to get PR state (AC-4: task list surfaces PR state)
     return query<TaskRow>(
-      `SELECT * FROM tasks WHERE ${conditions.join(" AND ")}
-       ORDER BY priority ASC, created_at ASC
+      `SELECT t.*, r.pr_state, r.pr_url, r.pr_head_sha
+       FROM tasks t
+       LEFT JOIN runs r ON t.run_id = r.id
+       WHERE t.project_id = $1 AND ${conditions.join(" AND ")}
+       ORDER BY t.priority ASC, t.created_at ASC
        LIMIT $${i}`,
       params,
     );

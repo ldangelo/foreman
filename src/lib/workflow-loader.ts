@@ -286,6 +286,20 @@ export interface WorkflowConfig {
    * @default 'auto'
    */
   merge?: "auto" | "pr" | "none";
+  /**
+   * Per-workflow PR timing policy. Controls when and whether GitHub PRs are created.
+   *
+   * - `'draft-after-developer'`: PR is created in draft state after the developer phase
+   *   completes, then promoted to open (or merged) at finalize (default)
+   * - `'create-at-finalize'`: PR is created (open, not draft) only at finalize phase completion
+   * - `'never'`: no PR is created; merge:auto merges the branch directly via refinery
+   *
+   * @default 'draft-after-developer'
+   */
+  pr?: {
+    /** When to create the PR. */
+    timing?: "draft-after-developer" | "create-at-finalize" | "never";
+  };
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -602,6 +616,23 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         workflowName,
         `merge must be 'auto', 'pr', or 'none' (got: ${String(merge)})`,
       );
+    }
+  }
+
+  // ── Parse optional pr.timing ───────────────────────────────────────────
+  if (isRecord(raw["pr"])) {
+    const prRaw = raw["pr"];
+    config.pr = {};
+    if (typeof prRaw["timing"] === "string") {
+      const timing = prRaw["timing"];
+      if (timing === "draft-after-developer" || timing === "create-at-finalize" || timing === "never") {
+        config.pr.timing = timing;
+      } else {
+        throw new WorkflowConfigError(
+          workflowName,
+          `pr.timing must be 'draft-after-developer', 'create-at-finalize', or 'never' (got: ${timing})`,
+        );
+      }
     }
   }
 

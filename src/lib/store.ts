@@ -74,6 +74,27 @@ export interface Run {
   base_branch?: string | null;
   /** Per-run merge strategy: 'auto' (refinery), 'pr' (gh pr create), or 'none' (skip). */
   merge_strategy?: "auto" | "pr" | "none" | null;
+  /**
+   * HEAD SHA at the time this run's PR was created.
+   * Used for PR identity (AC-1): PR reuse requires matching head SHA.
+   * Captured at finalize start in pipeline-executor.
+   */
+  commit_sha?: string | null;
+  /**
+   * Canonical PR URL for this run (null = no PR yet).
+   * Set by Refinery.ensurePullRequestForRun() after PR creation.
+   */
+  pr_url?: string | null;
+  /**
+   * GitHub PR state: 'none' | 'draft' | 'open' | 'merged' | 'closed'.
+   * Used for task list PR state surfacing (AC-4).
+   */
+  pr_state?: "none" | "draft" | "open" | "merged" | "closed" | null;
+  /**
+   * Branch HEAD SHA when the PR was last updated.
+   * Used to detect head mismatch (AC-2): PR must be recreated when SHA changes.
+   */
+  pr_head_sha?: string | null;
 }
 
 export interface Cost {
@@ -98,6 +119,7 @@ export type EventType =
   | "conflict"
   | "test-fail"
   | "pr-created"
+  | "pr-stale"
   | "merge-queue-enqueue"
   | "merge-queue-dequeue"
   | "merge-queue-resolve"
@@ -565,6 +587,10 @@ const MIGRATIONS = [
     updated_at TEXT NOT NULL
   )`,
   `ALTER TABLE runs ADD COLUMN base_branch TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN commit_sha TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN pr_url TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN pr_state TEXT DEFAULT 'none'`,
+  `ALTER TABLE runs ADD COLUMN pr_head_sha TEXT DEFAULT NULL`,
   // Rate limit events table migration (P2: per-model rate limit tracking)
   `CREATE TABLE IF NOT EXISTS rate_limit_events (
     id          TEXT PRIMARY KEY,
@@ -949,7 +975,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy" | "commit_sha" | "pr_url" | "pr_state" | "pr_head_sha">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };

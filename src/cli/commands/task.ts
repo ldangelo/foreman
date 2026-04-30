@@ -31,11 +31,12 @@ import type { PrState } from "../../lib/pr-state.js";
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Column widths for the task table. */
-const COL_ID = 16;
-const COL_TITLE = 40;
+const COL_ID = 14;
+const COL_TITLE = 36;
 const COL_TYPE = 10;
-const COL_PRI = 14;
+const COL_PRI = 12;
 const COL_STATUS = 14;
+const COL_PR = 10; // PR state: none/draft/open/merged/closed/mismatch
 const COL_GAP = "  ";
 const COMPACT_TASK_ID_SUFFIX_HEX_LENGTH = 5;
 
