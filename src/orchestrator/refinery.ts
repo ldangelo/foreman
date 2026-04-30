@@ -167,7 +167,9 @@ export class Refinery {
 
     if (this.registeredProjectId && this.postgresAdapter) {
       try {
-        const currentRun = await this.postgresAdapter.getRun(this.registeredProjectId, run.id);
+        const currentRun = "getRun" in this.postgresAdapter
+          ? await this.postgresAdapter.getRun(this.registeredProjectId, run.id)
+          : null;
         if (shouldPreserveTerminalSuccess(currentRun?.status as Run["status"] | undefined)) {
           return;
         }
