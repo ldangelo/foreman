@@ -253,7 +253,18 @@ export class Dispatcher {
     runId: string,
     updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
   ): Promise<void> {
+    const shouldPreserveTerminalSuccess = (currentStatus: Run["status"] | undefined, nextStatus: Run["status"] | undefined): boolean =>
+      currentStatus !== undefined
+      && nextStatus !== undefined
+      && (currentStatus === "merged" || currentStatus === "pr-created")
+      && (nextStatus === "failed" || nextStatus === "stuck");
+
     if (this.overrides?.externalProjectId) {
+      const currentRun = this.overrides.getRun ? await this.overrides.getRun(runId) : null;
+      if (shouldPreserveTerminalSuccess(currentRun?.status, updates.status)) {
+        return;
+      }
+
       const updateRun = this.requireRegisteredRunOp("updateRun");
       const normalized = { ...updates };
       if (updates.status) {
@@ -262,6 +273,13 @@ export class Dispatcher {
         normalized.status = mapped as Run["status"];
       }
       await updateRun(runId, normalized);
+      return;
+    }
+
+    const currentRun = "getRun" in this.store
+      ? this.store.getRun(runId)
+      : null;
+    if (shouldPreserveTerminalSuccess(currentRun?.status, updates.status)) {
       return;
     }
 

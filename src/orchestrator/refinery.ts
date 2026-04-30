@@ -159,8 +159,19 @@ export class Refinery {
   }
 
   private async persistRunUpdate(run: Run, updates: Partial<Pick<Run, "status" | "completed_at" | "base_branch" | "pr_url" | "pr_state" | "pr_head_sha">>): Promise<void> {
+    const nextStatus = updates.status;
+    const shouldPreserveTerminalSuccess = (currentStatus: Run["status"] | undefined): boolean =>
+      currentStatus !== undefined
+      && (currentStatus === "merged" || currentStatus === "pr-created")
+      && (nextStatus === "failed" || nextStatus === "stuck" || nextStatus === "conflict" || nextStatus === "test-failed");
+
     if (this.registeredProjectId && this.postgresAdapter) {
       try {
+        const currentRun = await this.postgresAdapter.getRun(this.registeredProjectId, run.id);
+        if (shouldPreserveTerminalSuccess(currentRun?.status as Run["status"] | undefined)) {
+          return;
+        }
+
         await this.postgresAdapter.updateRun(this.registeredProjectId, run.id, updates);
         return;
       } catch (err: unknown) {
@@ -170,6 +181,11 @@ export class Refinery {
     }
 
     try {
+      const currentRun = await Promise.resolve(this.store.getRun(run.id));
+      if (shouldPreserveTerminalSuccess(currentRun?.status)) {
+        return;
+      }
+
       await Promise.resolve(this.store.updateRun(run.id, updates));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
