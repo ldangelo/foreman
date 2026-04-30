@@ -142,14 +142,15 @@ describe("sentinel command store context", () => {
     await invokeSentinel(subcommand);
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
-    expect(mockVcsCreate).toHaveBeenCalledWith({ backend: "auto" }, "/canonical/project");
     expect(MockForemanStore.forProject).toHaveBeenCalledWith("/canonical/project");
     expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/canonical/project");
     expect(mockPostgresStoreForProject).toHaveBeenCalledWith("registered-proj");
     if (subcommand === "run-once") {
+      expect(mockVcsCreate).toHaveBeenCalledWith({ backend: "auto" }, "/canonical/project");
       expect(MockSentinelAgent).toHaveBeenCalled();
       expect(mockRunOnce).toHaveBeenCalled();
     } else {
+      expect(mockVcsCreate).not.toHaveBeenCalled();
       expect(MockSentinelAgent).not.toHaveBeenCalled();
       expect(mockRunOnce).not.toHaveBeenCalled();
     }
@@ -161,14 +162,15 @@ describe("sentinel command store context", () => {
     await invokeSentinel(subcommand);
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
-    expect(mockVcsCreate).toHaveBeenCalledWith({ backend: "auto" }, "/mock/project");
     expect(MockForemanStore.forProject).toHaveBeenCalledWith("/mock/project");
     expect(mockPostgresStoreForProject).not.toHaveBeenCalled();
     expect(mockEnsureCliPostgresPool).not.toHaveBeenCalled();
     if (subcommand === "run-once") {
+      expect(mockVcsCreate).toHaveBeenCalledWith({ backend: "auto" }, "/mock/project");
       expect(MockSentinelAgent).toHaveBeenCalled();
       expect(mockRunOnce).toHaveBeenCalled();
     } else {
+      expect(mockVcsCreate).not.toHaveBeenCalled();
       expect(MockSentinelAgent).not.toHaveBeenCalled();
       expect(mockRunOnce).not.toHaveBeenCalled();
     }

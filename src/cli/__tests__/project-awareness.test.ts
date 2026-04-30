@@ -19,7 +19,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { boardCommand } from "../commands/board.js";
 import { inboxCommand } from "../commands/inbox.js";
+import { resetCommand } from "../commands/reset.js";
+import { retryCommand } from "../commands/retry.js";
+import { runCommand } from "../commands/run.js";
+import { statusCommand } from "../commands/status.js";
 
 // Mock createTrpcClient to return a client whose projects.list() rejects.
 // This makes isMultiProjectMode() return false (error caught in try/catch),
@@ -94,37 +99,34 @@ describe("TRD-048: CLI --project flag and multi-project mode", () => {
       expect(output).toContain("--project-path");
     });
 
-    it("board --help shows --project and --all options", async () => {
-      const tmp = makeTempDir();
-      const result = await runWithRetry(["board", "--help"], tmp);
-      expect(result.stdout).toContain("--project");
-      expect(result.stdout).toContain("--all");
-    }, HELP_TIMEOUT_MS);
+    it("board --help shows --project and --all options", () => {
+      const output = boardCommand.helpInformation();
+      expect(output).toContain("--project");
+      expect(output).toContain("--all");
+    });
 
-    it("status --help shows --project and --all options", async () => {
-      const tmp = makeTempDir();
-      const result = await runWithRetry(["status", "--help"], tmp);
-      expect(result.stdout).toContain("--project");
-      expect(result.stdout).toContain("--all");
-    }, HELP_TIMEOUT_MS);
+    it("status --help shows --project and --all options", () => {
+      const output = statusCommand.helpInformation();
+      expect(output).toContain("--project");
+      expect(output).toContain("--all");
+    });
 
-    it("run --help shows --project option", async () => {
-      const tmp = makeTempDir();
-      const result = await runWithRetry(["run", "--help"], tmp);
-      expect(result.stdout).toContain("--project");
-    }, HELP_TIMEOUT_MS);
+    it("run --help shows --project option", () => {
+      const output = runCommand.helpInformation();
+      expect(output).toContain("--project");
+    });
 
-    it("reset --help shows --project option", async () => {
-      const tmp = makeTempDir();
-      const result = await runWithRetry(["reset", "--help"], tmp);
-      expect(result.stdout).toContain("--project");
-    }, HELP_TIMEOUT_MS);
+    it("reset --help shows --project option", () => {
+      const output = resetCommand.helpInformation();
+      expect(output).toContain("--project");
+      expect(output).toContain("--project-path");
+    });
 
-    it("retry --help shows --project option", async () => {
-      const tmp = makeTempDir();
-      const result = await runWithRetry(["retry", "--help"], tmp);
-      expect(result.stdout).toContain("--project");
-    }, HELP_TIMEOUT_MS);
+    it("retry --help shows --project option", () => {
+      const output = retryCommand.helpInformation();
+      expect(output).toContain("--project");
+      expect(output).toContain("--project-path");
+    });
   });
 
   describe("inbox command accepts --project", () => {

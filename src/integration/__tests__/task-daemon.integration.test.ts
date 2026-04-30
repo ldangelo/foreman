@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync } from "node:f
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "pg";
 import { runTsxModule } from "../../test-support/tsx-subprocess.js";
@@ -30,6 +30,19 @@ function readDatabaseUrl(): string {
   }
   return match[1].trim().replace(/^['"]|['"]$/g, "");
 }
+
+function runMigrations(databaseUrl: string): void {
+  execFileSync(
+    "npm",
+    ["run", "db:migrate"],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, DATABASE_URL: databaseUrl },
+      stdio: "ignore",
+    },
+  );
+}
+
 
 async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
   const start = Date.now();
@@ -90,6 +103,7 @@ describe("task CLI daemon/Postgres integration", () => {
 
     process.env.HOME = tempHome;
     await destroyPool();
+    runMigrations(databaseUrl);
     initPool({ databaseUrl });
     registry = new ProjectRegistry({ baseDir: join(tempHome, ".foreman"), pg: new PostgresAdapter() });
     const record = await registry.add({

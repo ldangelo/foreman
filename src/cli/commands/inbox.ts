@@ -179,6 +179,7 @@ interface ParsedMessageBody {
   traceFile?: string;
   commandHonored?: boolean;
   verdict?: string;
+  body?: string;
 }
 
 /**
@@ -188,7 +189,23 @@ interface ParsedMessageBody {
 export function parseMessageBody(body: string): ParsedMessageBody {
   if (!body) return {};
   try {
-    return JSON.parse(body) as ParsedMessageBody;
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    return {
+      phase: typeof parsed["phase"] === "string" ? parsed["phase"] : undefined,
+      status: typeof parsed["status"] === "string" ? parsed["status"] : undefined,
+      error: typeof parsed["error"] === "string" ? parsed["error"] : undefined,
+      currentPhase: typeof parsed["currentPhase"] === "string" ? parsed["currentPhase"] : undefined,
+      seedId: typeof parsed["seedId"] === "string" ? parsed["seedId"] : undefined,
+      runId: typeof parsed["runId"] === "string" ? parsed["runId"] : undefined,
+      message: typeof parsed["message"] === "string" ? parsed["message"] : undefined,
+      kind: typeof parsed["kind"] === "string" ? parsed["kind"] : undefined,
+      tool: typeof parsed["tool"] === "string" ? parsed["tool"] : undefined,
+      argsPreview: typeof parsed["argsPreview"] === "string" ? parsed["argsPreview"] : undefined,
+      traceFile: typeof parsed["traceFile"] === "string" ? parsed["traceFile"] : undefined,
+      commandHonored: typeof parsed["commandHonored"] === "boolean" ? parsed["commandHonored"] : undefined,
+      verdict: typeof parsed["verdict"] === "string" ? parsed["verdict"] : undefined,
+      body: typeof parsed["body"] === "string" ? parsed["body"] : undefined,
+    };
   } catch {
     return {};
   }
@@ -198,7 +215,17 @@ export function parseMessageBody(body: string): ParsedMessageBody {
  * Truncate a string to maxLen characters, appending "…" if truncated.
  */
 export function truncate(str: string, maxLen: number): string {
-  if (!str || str.length <= maxLen) return str;
+  if (maxLen <= 0) return "";
+  if (str.length <= maxLen) return str;
+  if (maxLen === 1) return "…";
+  if (maxLen <= 3) return "…";
+
+  const slice = str.slice(0, maxLen);
+  const lastSpace = slice.lastIndexOf(" ");
+  if (lastSpace >= maxLen - 4) {
+    return str.slice(0, lastSpace) + "…";
+  }
+
   return str.slice(0, maxLen - 1) + "…";
 }
 
@@ -260,7 +287,6 @@ interface ColumnSizes {
 export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): string {
   if (rows.length === 0) return "";
 
-  // Compute actual column widths (respect max values for truncation)
   const sizes: ColumnSizes = {
     date: COL_WIDTHS.date,
     ticket: Math.max(...rows.map((r) => r.ticket.length), COL_WIDTHS.ticket),
@@ -273,7 +299,7 @@ export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): 
 
   const totalWidth =
     sizes.date + sizes.ticket + sizes.sender + sizes.receiver +
-    sizes.kind + sizes.tool + sizes.args + 8; // 7 separators
+    sizes.kind + sizes.tool + sizes.args + 8;
 
   const hr = "─".repeat(totalWidth);
 
@@ -308,6 +334,181 @@ export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): 
 function pad(val: string, width: number): string {
   if (val.length > width) return val.slice(0, width - 1) + "…";
   return val.padEnd(width, " ");
+}
+
+// ── TableFormatter (tabular message view) ────────────────────────────────────
+
+/**
+ * Extract structured fields from a JSON message body for the newer table view.
+ * Returns nulls for missing fields and falls back through
+ * argsPreview → message → body for ARGS.
+ */
+export function extractBodyFields(body: string): {
+  kind: string | null;
+  tool: string | null;
+  args: string | null;
+} {
+  const parsed = parseMessageBody(body);
+  return {
+    kind: parsed.kind ?? null,
+    tool: parsed.tool ?? null,
+    args: parsed.argsPreview ?? parsed.message ?? parsed.body ?? null,
+  };
+}
+
+interface TableColumns {
+  datetime: string;
+  ticket: string;
+  sender: string;
+  receiver: string;
+  kind: string;
+  tool: string;
+  args: string;
+}
+
+interface FormattedRow {
+  columns: TableColumns;
+  raw: Message;
+}
+
+/**
+ * Formats inbox messages as a space-aligned table with columns:
+ * DATETIME | TICKET | SENDER | RECEIVER | KIND | TOOL | ARGS
+ */
+export class TableFormatter {
+  private readonly terminalWidth: number;
+
+  constructor({ terminalWidth }: { terminalWidth: number }) {
+    this.terminalWidth = terminalWidth;
+  }
+
+  private formatDatetime(isoStr: string): string {
+    return formatTimestamp(isoStr);
+  }
+
+  private middleCutTicket(id: string): string {
+    const MAX = 20;
+    if (id.length <= MAX) return id;
+    const prefix = id.slice(0, 7);
+    const suffix = id.slice(id.length - (MAX - 7 - 1));
+    return `${prefix}…${suffix}`;
+  }
+
+  formatRow(msg: Message): FormattedRow {
+    const { kind, tool, args } = extractBodyFields(msg.body);
+    const dash = "—";
+    const argsMax = 30;
+
+    return {
+      columns: {
+        datetime: this.formatDatetime(msg.created_at),
+        ticket: this.middleCutTicket(msg.run_id),
+        sender: msg.sender_agent_type,
+        receiver: msg.recipient_agent_type,
+        kind: kind ?? dash,
+        tool: tool ?? dash,
+        args: truncate(args ?? dash, argsMax),
+      },
+      raw: msg,
+    };
+  }
+
+  calcWidths(messages: Message[]): {
+    datetime: number;
+    ticket: number;
+    sender: number;
+    receiver: number;
+    kind: number;
+    tool: number;
+    args: number;
+  } {
+    const rows = messages.map((m) => this.formatRow(m));
+    const base = { datetime: 19, ticket: 8, sender: 8, receiver: 8, kind: 4, tool: 4, args: 4 };
+
+    const computed = {
+      datetime: Math.max(base.datetime, ...rows.map((r) => r.columns.datetime.length)),
+      ticket: Math.max(base.ticket, ...rows.map((r) => r.columns.ticket.length)),
+      sender: Math.max(base.sender, ...rows.map((r) => r.columns.sender.length)),
+      receiver: Math.max(base.receiver, ...rows.map((r) => r.columns.receiver.length)),
+      kind: Math.max(base.kind, ...rows.map((r) => r.columns.kind.length)),
+      tool: Math.max(base.tool, ...rows.map((r) => r.columns.tool.length)),
+      args: Math.max(base.args, ...rows.map((r) => r.columns.args.length)),
+    };
+
+    computed.ticket = Math.min(computed.ticket, 20);
+    computed.datetime = 19;
+    computed.sender = Math.min(Math.max(computed.sender, 8), 15);
+    computed.receiver = Math.min(Math.max(computed.receiver, 8), 15);
+    computed.kind = Math.min(computed.kind, 12);
+    computed.tool = Math.min(computed.tool, 12);
+
+    const fixed =
+      computed.datetime +
+      computed.ticket +
+      computed.sender +
+      computed.receiver +
+      computed.kind +
+      computed.tool +
+      6;
+    const available = this.terminalWidth - fixed;
+    computed.args = Math.max(computed.args, Math.min(available, 80));
+
+    return computed;
+  }
+
+  formatHeader(): string {
+    return "DATETIME          TICKET       SENDER     RECEIVER   KIND       TOOL       ARGS";
+  }
+
+  private formatSeparator(widths: ReturnType<typeof this.calcWidths>): string {
+    const { datetime, ticket, sender, receiver, kind, tool, args } = widths;
+    return (
+      `${"─".repeat(datetime)} ` +
+      `${"─".repeat(ticket)} ` +
+      `${"─".repeat(sender)} ` +
+      `${"─".repeat(receiver)} ` +
+      `${"─".repeat(kind)} ` +
+      `${"─".repeat(tool)} ` +
+      `${"─".repeat(args)}`
+    );
+  }
+
+  private formatRowLine(
+    row: FormattedRow,
+    widths: ReturnType<typeof this.calcWidths>,
+  ): string {
+    const { datetime, ticket, sender, receiver, kind, tool, args } = widths;
+    return (
+      row.columns.datetime.padEnd(datetime) +
+      " " +
+      row.columns.ticket.padEnd(ticket) +
+      " " +
+      row.columns.sender.padEnd(sender) +
+      " " +
+      row.columns.receiver.padEnd(receiver) +
+      " " +
+      row.columns.kind.padEnd(kind) +
+      " " +
+      row.columns.tool.padEnd(tool) +
+      " " +
+      row.columns.args.padEnd(args)
+    );
+  }
+
+  formatTable(messages: Message[]): string {
+    if (messages.length === 0) {
+      return this.formatHeader() + "\n";
+    }
+
+    const rows = messages.map((m) => this.formatRow(m));
+    const widths = this.calcWidths(messages);
+
+    return [
+      this.formatHeader(),
+      this.formatSeparator(widths),
+      ...rows.map((r) => this.formatRowLine(r, widths)),
+    ].join("\n") + "\n";
+  }
 }
 
 // ── Run status formatting ─────────────────────────────────────────────────────
@@ -542,16 +743,16 @@ export const inboxCommand = new Command("inbox")
           ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
           : store!.getAllMessagesGlobal(limit);
         if (initialGlobal.length > 0) {
+          console.log(`── past messages ${"─".repeat(53)}`);
           if (fullPayload) {
-            console.log(`── past messages ${"─".repeat(53)}`);
             for (const m of initialGlobal) { console.log(formatMessage(m, true)); console.log(""); seenIds.add(m.id); }
-            console.log(`── live ─────────────────────────────────────────────────────────────\n`);
           } else {
             const rows = initialGlobal.map((m) => formatMessageTable(m));
             console.log(renderMessageTable(rows));
             console.log("");
             for (const m of initialGlobal) seenIds.add(m.id);
           }
+          console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         }
         const initRuns = daemon
           ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
@@ -663,8 +864,8 @@ export const inboxCommand = new Command("inbox")
         ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: false, limit })
         : fetchMessages(store!, runId, options.agent, false, limit);
       if (initial.length > 0) {
+        console.log(`── past messages ${"─".repeat(53)}`);
         if (fullPayload) {
-          console.log(`── past messages ${"─".repeat(53)}`);
           for (const m of initial) { console.log(formatMessage(m, true)); console.log(""); seenIds.add(m.id); }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         } else {
@@ -672,6 +873,7 @@ export const inboxCommand = new Command("inbox")
           console.log(renderMessageTable(rows));
           console.log("");
           for (const m of initial) seenIds.add(m.id);
+          console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         }
       }
 

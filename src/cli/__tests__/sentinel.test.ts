@@ -14,7 +14,24 @@ const SUBPROCESS_TIMEOUT_MS = 25_000;
 const TEST_TIMEOUT_MS = 60_000;
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: SUBPROCESS_TIMEOUT_MS });
+  return runTsxModule(CLI, args, {
+    cwd,
+    timeout: SUBPROCESS_TIMEOUT_MS,
+    env: {
+      PATH: process.env.PATH,
+      HOME: cwd,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
+      TSX_DISABLE_IPC: "1",
+      NO_COLOR: "1",
+      FOREMAN_HOME: undefined,
+      FOREMAN_TASK_STORE: undefined,
+      FOREMAN_TASK_BACKEND: undefined,
+      FOREMAN_REGISTRY_BASE_DIR: undefined,
+      DATABASE_URL: undefined,
+    },
+  });
 }
 
 /**
