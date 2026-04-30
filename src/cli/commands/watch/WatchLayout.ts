@@ -27,12 +27,14 @@ const PANEL_LABELS: Record<PanelId, string> = {
   agents: "AGENTS",
   board: "BOARD",
   inbox: "INBOX",
+  events: "EVENTS",
 };
 
 const PANEL_ICONS: Record<PanelId, string> = {
   agents: "●",
   board: "■",
   inbox: "✉",
+  events: "◈",
 };
 
 // ── Layout mode ────────────────────────────────────────────────────────────
@@ -52,15 +54,16 @@ export function getPanelWidths(mode: LayoutMode, totalWidth: number): Record<Pan
 
   if (mode === "narrow") {
     // Stacked: each panel gets full width
-    return { agents: available, board: available, inbox: available };
+    return { agents: available, board: available, inbox: available, events: available };
   }
 
   // Proportional split for side-by-side:
-  // Agents: 40%, Board: 30%, Inbox: 30%
-  const agentsW = Math.floor(available * 0.4);
-  const boardW = Math.floor(available * 0.3);
-  const inboxW = available - agentsW - boardW;
-  return { agents: agentsW, board: boardW, inbox: inboxW };
+  // Agents: 35%, Board: 25%, Inbox: 20%, Events: 20%
+  const agentsW = Math.floor(available * 0.35);
+  const boardW = Math.floor(available * 0.25);
+  const inboxW = Math.floor(available * 0.20);
+  const eventsW = available - agentsW - boardW - inboxW;
+  return { agents: agentsW, board: boardW, inbox: inboxW, events: eventsW };
 }
 
 // ── Truncation helpers ────────────────────────────────────────────────────
@@ -119,6 +122,7 @@ function getOfflineIndicator(panel: PanelId, state: WatchState): string | null {
     case "agents": return state.agentsOffline ? chalk.red("offline") : null;
     case "board":  return state.boardOffline  ? chalk.red("offline") : null;
     case "inbox":  return state.inboxOffline   ? chalk.red("offline") : null;
+    case "events": return state.eventsOffline  ? chalk.red("offline") : null;
   }
 }
 
@@ -323,6 +327,185 @@ function formatInboxTime(isoStr: string): string {
   }
 }
 
+// ── Pipeline events panel rendering ─────────────────────────────────────
+
+// Event type icons and colors for visual distinction
+const EVENT_ICONS: Record<string, string> = {
+  "phase-start":           "▶",
+  "phase-complete":        "✓",
+  "dispatch":              "→",
+  "claim":                 "◈",
+  "complete":              "✓",
+  "fail":                  "✗",
+  "merge":                 "⚡",
+  "pr-created":            "⎇",
+  "merge-queue-enqueue":   "⏳",
+  "merge-queue-dequeue":   "▶",
+  "merge-queue-resolve":   "✓",
+  "merge-queue-fallback":  "⚠",
+  "merge-cleanup-fallback":"⚠",
+  "conflict":             "⚠",
+  "test-fail":             "✗",
+  "stuck":                 "⚠",
+  "restart":               "↻",
+  "recover":               "↻",
+  "sentinel-start":        "▶",
+  "sentinel-pass":         "✓",
+  "sentinel-fail":          "✗",
+  "heartbeat":             "·",
+  "guardrail-veto":        "⊘",
+  "guardrail-corrected":   "✓",
+  "worktree-rebased":      "↻",
+  "worktree-rebase-failed": "✗",
+};
+
+const EVENT_COLORS: Record<string, (t: string) => string> = {
+  "phase-start":           chalk.blue,
+  "phase-complete":        chalk.green,
+  "dispatch":              chalk.cyan,
+  "claim":                 chalk.magenta,
+  "complete":              chalk.green,
+  "fail":                  chalk.red,
+  "merge":                 chalk.green,
+  "pr-created":            chalk.cyan,
+  "merge-queue-enqueue":   chalk.yellow,
+  "merge-queue-dequeue":  chalk.blue,
+  "merge-queue-resolve":   chalk.green,
+  "merge-queue-fallback":  chalk.yellow,
+  "merge-cleanup-fallback":chalk.yellow,
+  "conflict":              chalk.red,
+  "test-fail":             chalk.red,
+  "stuck":                 chalk.red,
+  "restart":               chalk.yellow,
+  "recover":               chalk.green,
+  "sentinel-start":        chalk.blue,
+  "sentinel-pass":         chalk.green,
+  "sentinel-fail":         chalk.red,
+  "heartbeat":             chalk.dim,
+  "guardrail-veto":        chalk.red,
+  "guardrail-corrected":   chalk.green,
+  "worktree-rebased":      chalk.green,
+  "worktree-rebase-failed": chalk.red,
+};
+
+function renderEventsPanel(state: WatchState, width: number): string {
+  const lines: string[] = [];
+
+  if (state.eventsOffline) {
+    lines.push(chalk.dim("  (events unavailable)"));
+    return lines.join("\n");
+  }
+
+  if (!state.events || state.events.events.length === 0) {
+    lines.push(chalk.dim("  (no pipeline events)"));
+    return lines.join("\n");
+  }
+
+  const innerWidth = width - 2;
+
+  // Header with live indicator
+  if (state.events.newestTimestamp) {
+    const age = elapsed(state.events.newestTimestamp);
+    lines.push(chalk.dim(`  Pipeline · ${age} ago`));
+  }
+
+  // Render events (most recent first)
+  for (const entry of state.events.events) {
+    const ts = formatInboxTime(entry.createdAt);
+    const icon = EVENT_ICONS[entry.eventType] ?? "·";
+    const colorFn = EVENT_COLORS[entry.eventType] ?? chalk.white;
+    const newMarker = entry.isNew ? chalk.green("✦ ") : chalk.dim(" ");
+
+    // Build event summary from event type and details
+    let summary = formatEventSummary(entry);
+    summary = truncate(summary, innerWidth - 25); // room for ts, icon, marker
+
+    const line = `${newMarker}${colorFn(icon)} [${ts}] ${summary}`;
+    lines.push(`  ${truncate(line, innerWidth)}`);
+  }
+
+  // Footer
+  lines.push("");
+  lines.push(chalk.dim(`  ${state.events.totalCount} event(s)`));
+
+  return lines.join("\n");
+}
+
+/**
+ * Format a pipeline event into a human-readable summary line.
+ */
+function formatEventSummary(entry: {
+  eventType: string;
+  details: Record<string, unknown> | null;
+}): string {
+  const et = entry.eventType;
+  const d = entry.details;
+
+  switch (et) {
+    case "phase-start":
+    case "phase-complete":
+      return d?.phase
+        ? `${et === "phase-start" ? "Start" : "Complete"}: ${d.phase}`
+        : et;
+
+    case "dispatch":
+      return d?.bead_id ? `Dispatch: ${d.bead_id}` : "Dispatch";
+
+    case "complete":
+      return d?.seedId ? `Complete: ${d.seedId}` : "Complete";
+
+    case "fail":
+      return d?.seedId ? `Failed: ${d.seedId}` : "Failed";
+
+    case "merge":
+      return d?.bead_id ? `Merged: ${d.bead_id}` : "Merged";
+
+    case "pr-created":
+      return d?.pr_number ? `PR #${d.pr_number} created` : "PR created";
+
+    case "merge-queue-enqueue":
+      return d?.bead_id ? `Enqueued: ${d.bead_id}` : "Enqueued";
+
+    case "merge-queue-dequeue":
+      return d?.bead_id ? `Dequeued: ${d.bead_id}` : "Dequeued";
+
+    case "merge-queue-resolve":
+      return d?.bead_id ? `Resolved: ${d.bead_id}` : "Resolved";
+
+    case "merge-queue-fallback":
+      return d?.bead_id ? `Fallback: ${d.bead_id}` : "Fallback";
+
+    case "merge-cleanup-fallback":
+      return d?.bead_id ? `Cleanup: ${d.bead_id}` : "Cleanup";
+
+    case "conflict":
+      return d?.bead_id ? `Conflict: ${d.bead_id}` : "Conflict";
+
+    case "test-fail":
+      return d?.bead_id ? `Test fail: ${d.bead_id}` : "Test fail";
+
+    case "stuck":
+      return d?.seedId ? `Stuck: ${d.seedId}` : "Stuck";
+
+    case "sentinel-start":
+    case "sentinel-pass":
+    case "sentinel-fail":
+      return d?.bead_id ? `Sentinel ${et.split("-")[1]}: ${d.bead_id}` : `Sentinel ${et.split("-")[1]}`;
+
+    case "worktree-rebased":
+      return d?.worktreePath ? `Rebased: ${truncateMiddle(d.worktreePath as string, 30)}` : "Worktree rebased";
+
+    case "worktree-rebase-failed":
+      return d?.worktreePath ? `Rebase fail: ${truncateMiddle(d.worktreePath as string, 30)}` : "Rebase failed";
+
+    default:
+      // Generic fallback: show event type + any known fields
+      if (d?.bead_id) return `${et}: ${d.bead_id}`;
+      if (d?.seedId) return `${et}: ${d.seedId}`;
+      return et;
+  }
+}
+
 // ── Full layout rendering ─────────────────────────────────────────────────
 
 export interface LayoutSection {
@@ -346,28 +529,36 @@ export function computeLayoutSections(state: WatchState, totalWidth: number): La
 
   const sections: LayoutSection[] = [];
 
+  // Determine visible panels
+  const visiblePanels = [
+    { id: "agents" as PanelId, width: widths.agents },
+    { id: "board" as PanelId, width: widths.board },
+    { id: "inbox" as PanelId, width: widths.inbox },
+    { id: "events" as PanelId, width: widths.inbox }, // events shares inbox width
+  ].filter(({ id }) => {
+    if (id === "agents") return true;
+    if (id === "board") return !state.agentsOffline || state.board !== null;
+    if (id === "inbox") return !state.inboxOffline && state.inbox !== null;
+    if (id === "events") return !state.eventsOffline && state.events !== null;
+    return true;
+  });
+
   if (mode === "narrow") {
-    // Stacked: agents | board | inbox
-    for (const panel of ["agents", "board", "inbox"] as PanelId[]) {
+    // Stacked: render all visible panels
+    for (const { id } of visiblePanels) {
       sections.push({
-        panel,
-        lines: renderPanelBody(panel, state, widths[panel]),
+        panel: id,
+        lines: renderPanelBody(id, state, widths[id]),
       });
     }
   } else {
-    // Side-by-side: render all three panels horizontally
-    sections.push({
-      panel: "agents",
-      lines: renderPanelBody("agents", state, widths.agents),
-    });
-    sections.push({
-      panel: "board",
-      lines: renderPanelBody("board", state, widths.board),
-    });
-    sections.push({
-      panel: "inbox",
-      lines: renderPanelBody("inbox", state, widths.inbox),
-    });
+    // Side-by-side: render visible panels horizontally
+    for (const { id } of visiblePanels) {
+      sections.push({
+        panel: id,
+        lines: renderPanelBody(id, state, widths[id]),
+      });
+    }
   }
 
   return sections;
@@ -378,6 +569,7 @@ function renderPanelBody(panel: PanelId, state: WatchState, width: number): stri
     case "agents": return renderAgentsPanel(state, width).split("\n");
     case "board":  return renderBoardPanel(state, width).split("\n");
     case "inbox":  return renderInboxPanel(state, width).split("\n");
+    case "events": return renderEventsPanel(state, width).split("\n");
   }
 }
 

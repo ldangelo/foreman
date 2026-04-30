@@ -42,6 +42,121 @@ interface DaemonRunRow {
   created_at: string;
 }
 
+interface DaemonPipelineEventRow {
+  id: string;
+  run_id: string | null;
+  event_type: string;
+  details: string | null;
+  created_at: string;
+}
+
+interface PipelineEvent {
+  id: string;
+  runId: string | null;
+  eventType: string;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+// ── Pipeline event formatting ──────────────────────────────────────────────
+
+const PIPELINE_EVENT_ICONS: Record<string, string> = {
+  "phase-start":           "▶",
+  "phase-complete":        "✓",
+  "dispatch":              "→",
+  "claim":                 "◈",
+  "complete":              "✓",
+  "fail":                  "✗",
+  "merge":                 "⚡",
+  "pr-created":            "⎇",
+  "merge-queue-enqueue":   "⏳",
+  "merge-queue-dequeue":   "▶",
+  "merge-queue-resolve":   "✓",
+  "merge-queue-fallback":  "⚠",
+  "merge-cleanup-fallback":"⚠",
+  "conflict":              "⚠",
+  "test-fail":             "✗",
+  "stuck":                 "⚠",
+};
+
+function formatPipelineEvent(event: PipelineEvent): string {
+  const ts = formatTimestamp(event.createdAt);
+  const icon = PIPELINE_EVENT_ICONS[event.eventType] ?? "·";
+  const summary = formatEventSummary(event.eventType, event.details);
+  return `[${ts}] ${icon} ${event.eventType} — ${summary}`;
+}
+
+function formatEventSummary(eventType: string, details: Record<string, unknown> | null): string {
+  if (!details) return eventType;
+
+  switch (eventType) {
+    case "phase-start":
+    case "phase-complete":
+      return details.phase ? `${eventType === "phase-start" ? "Start" : "Complete"}: ${details.phase}` : eventType;
+    case "dispatch":
+      return details.bead_id ? `Dispatch: ${details.bead_id}` : "Dispatch";
+    case "complete":
+      return details.seedId ? `Complete: ${details.seedId}` : "Complete";
+    case "fail":
+      return details.seedId ? `Failed: ${details.seedId}` : "Failed";
+    case "merge":
+      return details.bead_id ? `Merged: ${details.bead_id}` : "Merged";
+    case "pr-created":
+      return details.pr_number ? `PR #${details.pr_number} created` : "PR created";
+    case "merge-queue-enqueue":
+    case "merge-queue-dequeue":
+    case "merge-queue-resolve":
+    case "merge-queue-fallback":
+    case "merge-cleanup-fallback":
+      return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
+    case "conflict":
+    case "test-fail":
+      return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
+    case "stuck":
+      return details.seedId ? `Stuck: ${details.seedId}` : "Stuck";
+    default:
+      return details.bead_id ? `${eventType}: ${details.bead_id}` :
+             details.seedId ? `${eventType}: ${details.seedId}` : eventType;
+  }
+}
+
+async function fetchDaemonEvents(
+  client: ReturnType<typeof createTrpcClient>,
+  projectId: string,
+  options: { all?: boolean; runId?: string; limit: number },
+): Promise<PipelineEvent[]> {
+  if (options.all) {
+    // Fetch runs then events for each
+    const runs = await client.runs.list({ projectId, limit: 100 }) as DaemonRunRow[];
+    const eventLists = await Promise.all(
+      runs.map((run) => client.runs.listEvents({ runId: run.id }) as Promise<DaemonPipelineEventRow[]>),
+    );
+    return eventLists
+      .flat()
+      .map((row) => ({
+        id: row.id,
+        runId: row.run_id,
+        eventType: row.event_type,
+        details: row.details ? JSON.parse(row.details) : null,
+        createdAt: row.created_at,
+      }))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, options.limit);
+  }
+  if (!options.runId) return [];
+  const rows = await client.runs.listEvents({ runId: options.runId }) as DaemonPipelineEventRow[];
+  return rows
+    .map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      eventType: row.event_type,
+      details: row.details ? JSON.parse(row.details) : null,
+      createdAt: row.created_at,
+    }))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, options.limit);
+}
+
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
 /**
@@ -175,6 +290,7 @@ interface ParsedMessageBody {
   message?: string;
   kind?: string;
   tool?: string;
+  args?: string;
   argsPreview?: string;
   traceFile?: string;
   commandHonored?: boolean;
@@ -633,6 +749,44 @@ function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null 
   return seedRuns[0]?.id ?? null;
 }
 
+// ── Events helper ───────────────────────────────────────────────────────────
+
+function fetchEventsFromStore(store: ForemanStore, limit: number): PipelineEvent[] {
+  // Fetch all runs and their events
+  const runs = store.getRunsByStatuses([
+    "pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset",
+  ]);
+
+  const allEvents: PipelineEvent[] = [];
+  for (const run of runs) {
+    const rows = store.getRunEvents(run.id);
+    for (const row of rows) {
+      allEvents.push({
+        id: row.id,
+        runId: row.run_id,
+        eventType: row.event_type,
+        details: row.details ? JSON.parse(row.details) : null,
+        createdAt: row.created_at,
+      });
+    }
+  }
+
+  // Sort by created_at descending
+  allEvents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return allEvents.slice(0, limit);
+}
+
+function fetchEventsFromStoreForRun(store: ForemanStore, runId: string, limit: number): PipelineEvent[] {
+  const rows = store.getRunEvents(runId);
+  return rows.map((row) => ({
+    id: row.id,
+    runId: row.run_id,
+    eventType: row.event_type,
+    details: row.details ? JSON.parse(row.details) : null,
+    createdAt: row.created_at,
+  }));
+}
+
 // ── Main command ──────────────────────────────────────────────────────────────
 
 // Exported for unit testing
@@ -651,6 +805,8 @@ export const inboxCommand = new Command("inbox")
   .option("--full", "Show full message payloads (no truncation, JSON pretty-printed)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .option("--events", "Also show pipeline events (phase transitions, PR status, merge queue)")
+  .option("--events-limit <n>", "Max pipeline events to show (default: 50)", "50")
   .action(async (options: {
     agent?: string;
     run?: string;
@@ -663,9 +819,13 @@ export const inboxCommand = new Command("inbox")
     full?: boolean;
     project?: string;
     projectPath?: string;
+    events?: boolean;
+    "events-limit"?: string;
   }) => {
     const fullPayload = options.full ?? false;
     const limit = parseInt(options.limit ?? "50", 10);
+    const eventsLimit = parseInt(options["events-limit"] ?? "50", 10);
+    const showEvents = options.events ?? false;
 
     // Require --project or --all in multi-project mode
     await requireProjectOrAllInMultiMode(options.project, options.all ?? false);
@@ -730,6 +890,26 @@ export const inboxCommand = new Command("inbox")
             }
           }
           console.log(`Marked ${messages.length} message(s) as read.`);
+        }
+
+        // ── Pipeline events section (--events) ─────────────────────────────
+        if (showEvents) {
+          console.log("");
+          const events = daemon
+            ? await fetchDaemonEvents(daemon.client, daemon.projectId, { all: true, limit: eventsLimit })
+            : fetchEventsFromStore(store!, eventsLimit);
+
+          if (events.length === 0) {
+            console.log("No pipeline events found.");
+          } else {
+            console.log(chalk.bold("\nPipeline Events — all runs"));
+            console.log("─".repeat(70));
+            for (const event of events) {
+              console.log(formatPipelineEvent(event));
+            }
+            console.log("─".repeat(70));
+            console.log(`${events.length} event(s) shown.`);
+          }
         }
         return;
       }
@@ -850,6 +1030,26 @@ export const inboxCommand = new Command("inbox")
             }
           }
           console.log(`Marked ${messages.length} message(s) as read.`);
+        }
+
+        // ── Pipeline events section (--events) ─────────────────────────────
+        if (showEvents) {
+          console.log("");
+          const events = daemon
+            ? await fetchDaemonEvents(daemon.client, daemon.projectId, { runId, limit: eventsLimit })
+            : fetchEventsFromStoreForRun(store!, runId, eventsLimit);
+
+          if (events.length === 0) {
+            console.log("No pipeline events found.");
+          } else {
+            console.log(chalk.bold("\nPipeline Events — run: ") + runId);
+            console.log("─".repeat(70));
+            for (const event of events) {
+              console.log(formatPipelineEvent(event));
+            }
+            console.log("─".repeat(70));
+            console.log(`${events.length} event(s) shown.`);
+          }
         }
         return;
       }

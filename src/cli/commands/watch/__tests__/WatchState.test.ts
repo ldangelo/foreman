@@ -19,6 +19,7 @@ describe("WatchState", () => {
       expect(state.agents).toEqual([]);
       expect(state.board).toBeNull();
       expect(state.inbox).toBeNull();
+      expect(state.events).toBeNull();
       expect(state.focusedPanel).toBe("agents");
       expect(state.expandedAgentIndices.size).toBe(0);
       expect(state.selectedTaskIndex).toBe(-1);
@@ -27,14 +28,16 @@ describe("WatchState", () => {
       expect(state.agentsOffline).toBe(false);
       expect(state.boardOffline).toBe(false);
       expect(state.inboxOffline).toBe(false);
+      expect(state.eventsOffline).toBe(false);
     });
   });
 
   describe("nextPanel", () => {
-    it("cycles agents → board → inbox → agents", () => {
+    it("cycles agents → board → inbox → events → agents", () => {
       expect(nextPanel("agents")).toBe("board");
       expect(nextPanel("board")).toBe("inbox");
-      expect(nextPanel("inbox")).toBe("agents");
+      expect(nextPanel("inbox")).toBe("events");
+      expect(nextPanel("events")).toBe("agents");
     });
   });
 
@@ -82,6 +85,10 @@ describe("WatchState", () => {
       result = handleWatchKey(state, "\t");
       expect(result.render).toBe(true);
       expect(state.focusedPanel).toBe("inbox");
+
+      result = handleWatchKey(state, "\t");
+      expect(result.render).toBe(true);
+      expect(state.focusedPanel).toBe("events");
 
       result = handleWatchKey(state, "\t");
       expect(result.render).toBe(true);
