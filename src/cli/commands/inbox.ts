@@ -149,6 +149,258 @@ function formatMessage(msg: Message, fullPayload = false): string {
   return `${header}\n  ${preview}`;
 }
 
+// ── TableFormatter (tabular message view) ────────────────────────────────────
+
+/**
+ * Extract structured fields from a JSON message body.
+ * Returns nulls for missing fields, and falls back through:
+ * argsPreview → message → body (for ARGS)
+ */
+export function extractBodyFields(body: string): {
+  kind: string | null;
+  tool: string | null;
+  args: string | null;
+} {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    return {
+      kind: typeof parsed["kind"] === "string" ? (parsed["kind"] as string) : null,
+      tool: typeof parsed["tool"] === "string" ? (parsed["tool"] as string) : null,
+      args:
+        (typeof parsed["argsPreview"] === "string" ? (parsed["argsPreview"] as string) : null)
+        ?? (typeof parsed["message"] === "string" ? (parsed["message"] as string) : null)
+        ?? (typeof parsed["body"] === "string" ? (parsed["body"] as string) : null),
+    };
+  } catch {
+    return { kind: null, tool: null, args: null };
+  }
+}
+
+/**
+ * Truncate a string to `maxWidth` characters, breaking at word boundaries when
+ * possible. Appends `…` when truncation occurs.
+ */
+export function truncate(str: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+  if (str.length <= maxWidth) return str;
+  if (maxWidth === 1) return "…";
+  if (maxWidth <= 3) return "…";
+
+  // Try to break at a space before maxWidth
+  const slice = str.slice(0, maxWidth);
+  const lastSpace = slice.lastIndexOf(" ");
+  if (lastSpace > 0) {
+    return str.slice(0, lastSpace) + "…";
+  }
+  return slice.slice(0, maxWidth - 1) + "…";
+}
+
+interface TableColumns {
+  datetime: string;
+  ticket: string;
+  sender: string;
+  receiver: string;
+  kind: string;
+  tool: string;
+  args: string;
+}
+
+interface FormattedRow {
+  columns: TableColumns;
+  raw: Message;
+}
+
+/**
+ * Formats inbox messages as a table with aligned columns:
+ * DATETIME | TICKET | SENDER | RECEIVER | KIND | TOOL | ARGS
+ */
+export class TableFormatter {
+  private readonly terminalWidth: number;
+
+  constructor({ terminalWidth }: { terminalWidth: number }) {
+    this.terminalWidth = terminalWidth;
+  }
+
+  /**
+   * Format a timestamp as `YYYY-MM-DD HH:MM:SS`.
+   */
+  private formatDatetime(isoStr: string): string {
+    try {
+      const d = new Date(isoStr);
+      const pad = (n: number): string => String(n).padStart(2, "0");
+      return (
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+        `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+      );
+    } catch {
+      return isoStr;
+    }
+  }
+
+  /**
+   * Truncate run_id with middle-cut when longer than 20 chars.
+   * e.g. `run-very-long-id-that-exceeds…` showing prefix + `…` + suffix.
+   */
+  private middleCutTicket(id: string): string {
+    const MAX = 20;
+    if (id.length <= MAX) return id;
+    // Show: prefix (7 chars) + `…` + suffix (rest)
+    const prefix = id.slice(0, 7);
+    const suffix = id.slice(id.length - (MAX - 7 - 1));
+    return `${prefix}…${suffix}`;
+  }
+
+  /**
+   * Format a single message row.
+   */
+  formatRow(msg: Message): FormattedRow {
+    const { kind, tool, args } = extractBodyFields(msg.body);
+    const DASH = "—";
+    const ARGS_MAX = 30;
+
+    return {
+      columns: {
+        datetime: this.formatDatetime(msg.created_at),
+        ticket: this.middleCutTicket(msg.run_id),
+        sender: msg.sender_agent_type,
+        receiver: msg.recipient_agent_type,
+        kind: kind ?? DASH,
+        tool: tool ?? DASH,
+        args: truncate(args ?? DASH, ARGS_MAX),
+      },
+      raw: msg,
+    };
+  }
+
+  /**
+   * Compute column widths for a set of messages, clamped to min/max constraints.
+   */
+  calcWidths(messages: Message[]): {
+    datetime: number;
+    ticket: number;
+    sender: number;
+    receiver: number;
+    kind: number;
+    tool: number;
+    args: number;
+  } {
+    const rows = messages.map((m) => this.formatRow(m));
+
+    // Base headers
+    const base = { datetime: 19, ticket: 8, sender: 8, receiver: 8, kind: 4, tool: 4, args: 4 };
+
+    // Compute max content per column
+    const computed = {
+      datetime: Math.max(base.datetime, ...rows.map((r) => r.columns.datetime.length)),
+      ticket: Math.max(base.ticket, ...rows.map((r) => r.columns.ticket.length)),
+      sender: Math.max(base.sender, ...rows.map((r) => r.columns.sender.length)),
+      receiver: Math.max(base.receiver, ...rows.map((r) => r.columns.receiver.length)),
+      kind: Math.max(base.kind, ...rows.map((r) => r.columns.kind.length)),
+      tool: Math.max(base.tool, ...rows.map((r) => r.columns.tool.length)),
+      args: Math.max(base.args, ...rows.map((r) => r.columns.args.length)),
+    };
+
+    // Clamp TICKET to max 20
+    computed.ticket = Math.min(computed.ticket, 20);
+
+    // Clamp DATETIME (fixed at 19)
+    computed.datetime = 19;
+
+    // Clamp sender/receiver to min 8, max 15
+    computed.sender = Math.min(Math.max(computed.sender, 8), 15);
+    computed.receiver = Math.min(Math.max(computed.receiver, 8), 15);
+
+    // Clamp kind/tool to max 12
+    computed.kind = Math.min(computed.kind, 12);
+    computed.tool = Math.min(computed.tool, 12);
+
+    // Distribute extra terminal width to ARGS
+    const fixed =
+      computed.datetime +
+      computed.ticket +
+      computed.sender +
+      computed.receiver +
+      computed.kind +
+      computed.tool +
+      7; // 7 spaces between columns
+    const available = this.terminalWidth - fixed;
+    computed.args = Math.max(computed.args, Math.min(available, 80));
+
+    return computed;
+  }
+
+  /**
+   * Build the column headers line.
+   */
+  formatHeader(): string {
+    // Headers are fixed-width labels
+    return (
+      "DATETIME          TICKET       SENDER     RECEIVER   KIND       TOOL       ARGS"
+    );
+  }
+
+  /**
+   * Render a separator line of dashes.
+   */
+  private formatSeparator(widths: ReturnType<typeof this.calcWidths>): string {
+    const { datetime, ticket, sender, receiver, kind, tool, args } = widths;
+    return (
+      `${"─".repeat(datetime)} ` +
+      `${"─".repeat(ticket)} ` +
+      `${"─".repeat(sender)} ` +
+      `${"─".repeat(receiver)} ` +
+      `${"─".repeat(kind)} ` +
+      `${"─".repeat(tool)} ` +
+      `${"─".repeat(args)}`
+    );
+  }
+
+  /**
+   * Format a single row as a space-separated line.
+   */
+  private formatRowLine(
+    row: FormattedRow,
+    widths: ReturnType<typeof this.calcWidths>,
+  ): string {
+    const { datetime, ticket, sender, receiver, kind, tool, args } = widths;
+    return (
+      row.columns.datetime.padEnd(datetime) +
+      " " +
+      row.columns.ticket.padEnd(ticket) +
+      " " +
+      row.columns.sender.padEnd(sender) +
+      " " +
+      row.columns.receiver.padEnd(receiver) +
+      " " +
+      row.columns.kind.padEnd(kind) +
+      " " +
+      row.columns.tool.padEnd(tool) +
+      " " +
+      row.columns.args.padEnd(args)
+    );
+  }
+
+  /**
+   * Format an array of messages as a complete table string.
+   */
+  formatTable(messages: Message[]): string {
+    if (messages.length === 0) {
+      return this.formatHeader() + "\n";
+    }
+
+    const rows = messages.map((m) => this.formatRow(m));
+    const widths = this.calcWidths(messages);
+
+    const lines: string[] = [
+      this.formatHeader(),
+      this.formatSeparator(widths),
+      ...rows.map((r) => this.formatRowLine(r, widths)),
+    ];
+
+    return lines.join("\n") + "\n";
+  }
+}
+
 // ── Run status formatting ─────────────────────────────────────────────────────
 
 function formatRunStatus(run: Run): string {
@@ -342,10 +594,15 @@ export const inboxCommand = new Command("inbox")
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages found across all runs${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
+          const tf = new TableFormatter({ terminalWidth: getTerminalWidth() });
           console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
-          for (const msg of messages) {
-            console.log(formatMessage(msg, fullPayload));
-            console.log("");
+          if (fullPayload) {
+            for (const msg of messages) {
+              console.log(formatMessage(msg, true));
+              console.log("");
+            }
+          } else {
+            console.log(tf.formatTable(messages));
           }
           console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
         }
@@ -375,7 +632,13 @@ export const inboxCommand = new Command("inbox")
           : store!.getAllMessagesGlobal(limit);
         if (initialGlobal.length > 0) {
           console.log(`── past messages ${"─".repeat(53)}`);
-          for (const m of initialGlobal) { console.log(formatMessage(m, fullPayload)); console.log(""); seenIds.add(m.id); }
+          const tf = new TableFormatter({ terminalWidth: getTerminalWidth() });
+          if (fullPayload) {
+            for (const m of initialGlobal) { console.log(formatMessage(m, true)); console.log(""); seenIds.add(m.id); }
+          } else {
+            console.log(tf.formatTable(initialGlobal));
+            for (const m of initialGlobal) seenIds.add(m.id);
+          }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         }
         const initRuns = daemon
@@ -393,8 +656,15 @@ export const inboxCommand = new Command("inbox")
             const msgs = daemon
               ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
               : store!.getAllMessagesGlobal(limit);
+            const tf = new TableFormatter({ terminalWidth: getTerminalWidth() });
             for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
-              seenIds.add(msg.id); console.log(formatMessage(msg, fullPayload)); console.log("");
+              seenIds.add(msg.id);
+              if (fullPayload) {
+                console.log(formatMessage(msg, true));
+              } else {
+                console.log(tf.formatTable([msg]));
+              }
+              console.log("");
             }
           })().catch(() => undefined);
         };
@@ -440,10 +710,15 @@ export const inboxCommand = new Command("inbox")
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
+          const tf = new TableFormatter({ terminalWidth: getTerminalWidth() });
           console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
-          for (const msg of messages) {
-            console.log(formatMessage(msg, fullPayload));
-            console.log("");
+          if (fullPayload) {
+            for (const msg of messages) {
+              console.log(formatMessage(msg, true));
+              console.log("");
+            }
+          } else {
+            console.log(tf.formatTable(messages));
           }
           console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
         }
@@ -474,10 +749,16 @@ export const inboxCommand = new Command("inbox")
         : fetchMessages(store!, runId, options.agent, false, limit);
       if (initial.length > 0) {
         console.log(`── past messages ${"─".repeat(53)}`);
-        for (const m of initial) {
-          console.log(formatMessage(m, fullPayload));
-          console.log("");
-          seenIds.add(m.id);
+        const tf = new TableFormatter({ terminalWidth: getTerminalWidth() });
+        if (fullPayload) {
+          for (const m of initial) {
+            console.log(formatMessage(m, true));
+            console.log("");
+            seenIds.add(m.id);
+          }
+        } else {
+          console.log(tf.formatTable(initial));
+          for (const m of initial) seenIds.add(m.id);
         }
         console.log(`── live ─────────────────────────────────────────────────────────────\n`);
       }
@@ -505,9 +786,14 @@ export const inboxCommand = new Command("inbox")
             ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
             : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
           const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
+          const tf = new TableFormatter({ terminalWidth: getTerminalWidth() });
           for (const msg of newMsgs) {
             seenIds.add(msg.id);
-            console.log(formatMessage(msg, fullPayload));
+            if (fullPayload) {
+              console.log(formatMessage(msg, true));
+            } else {
+              console.log(tf.formatTable([msg]));
+            }
             console.log("");
             if (options.ack) {
               if (daemon) {
