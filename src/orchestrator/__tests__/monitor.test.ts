@@ -21,8 +21,10 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 function makeMocks() {
   const store = {
     getActiveRuns: vi.fn(() => [] as Run[]),
+    getRun: vi.fn((runId: string) => makeRun({ id: runId })),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
+    getRunProgress: vi.fn(() => null),
     getRunEvents: vi.fn((): any[] => []),
   };
   const seeds = {
@@ -59,6 +61,22 @@ describe("Monitor", () => {
 
       expect(report.stuck).toHaveLength(1);
       expect(store.updateRun).toHaveBeenCalledWith(run.id, { status: "stuck" });
+    });
+
+    it("does not downgrade a run that is already merged in the store", async () => {
+      const { store, seeds, monitor } = makeMocks();
+      const run = makeRun({ id: "run-merged-race" });
+      store.getActiveRuns.mockReturnValue([run]);
+      store.getRun.mockReturnValueOnce({ ...run, status: "merged" });
+      seeds.show.mockResolvedValue({ status: "open" });
+
+      const report = await monitor.checkAll({ stuckTimeoutMinutes: 15 });
+
+      expect(report.active).toHaveLength(0);
+      expect(report.stuck).toHaveLength(0);
+      expect(report.completed).toHaveLength(0);
+      expect(report.failed).toHaveLength(0);
+      expect(store.updateRun).not.toHaveBeenCalled();
     });
 
     it("keeps active runs as active when recently started", async () => {
@@ -100,6 +118,17 @@ describe("Monitor", () => {
   });
 
   describe("recoverStuck", () => {
+    it("returns true and skips mutation when the run is already pr-created", async () => {
+      const { store, monitor } = makeMocks();
+      const run = makeRun({ id: "run-pr-created" });
+      store.getRun.mockReturnValueOnce({ ...run, status: "pr-created" });
+
+      const result = await monitor.recoverStuck(run, 3);
+
+      expect(result).toBe(true);
+      expect(store.updateRun).not.toHaveBeenCalled();
+    });
+
     it("returns false when max retries exceeded", async () => {
       const { store, monitor } = makeMocks();
       const run = makeRun();

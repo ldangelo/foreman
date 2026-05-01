@@ -1196,6 +1196,16 @@ export class Doctor {
 
     const results: CheckResult[] = [];
     for (const run of runningRuns) {
+      const currentRun = this.store.getRun(run.id);
+      if (currentRun && (currentRun.status === "merged" || currentRun.status === "pr-created")) {
+        results.push({
+          name: `run: ${run.seed_id} [${run.agent_type}]`,
+          status: "pass",
+          message: `Run already reached terminal success (${currentRun.status})`,
+        });
+        continue;
+      }
+
       // Pi-based workers do not store a PID in session_key.
       // Liveness is detected only by stale timeouts, not PID checks.
       if (isSDKBasedRun(run.session_key)) {
@@ -1567,9 +1577,12 @@ export class Doctor {
 
     const results: CheckResult[] = [];
 
-    // Check for runs with completed_at set but still in running/pending status
+    // Check for runs with completed_at set but still in running/pending status.
+    // Preserve terminal-success runs if a stale active snapshot happens to include them.
     const activeRuns = this.store.getActiveRuns(project.id);
-    const inconsistentRuns = activeRuns.filter((r) => r.completed_at !== null);
+    const inconsistentRuns = activeRuns.filter((r) =>
+      r.completed_at !== null && r.status !== "merged" && r.status !== "pr-created"
+    );
 
     if (inconsistentRuns.length === 0) {
       results.push({
