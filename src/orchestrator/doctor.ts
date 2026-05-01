@@ -1,6 +1,6 @@
 import { access, stat, rm, readFile, readdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -46,6 +46,17 @@ function extractPid(sessionKey: string | null): number | null {
  */
 function isSDKBasedRun(sessionKey: string | null): boolean {
   return sessionKey?.startsWith("foreman:sdk:") ?? false;
+}
+
+function normalizeRuntimePath(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const resolved = resolvePath(path);
+  if (!existsSync(resolved)) return resolved;
+  try {
+    return realpathSync.native?.(resolved) ?? realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 // ── Doctor class ─────────────────────────────────────────────────────────
@@ -1013,8 +1024,10 @@ export class Doctor {
     for (const wt of foremanWorktrees) {
       const seedId = wt.branch.slice("foreman/".length);
       const runs = this.store.getRunsForSeed(seedId);
+      const normalizedWorktreePath = normalizeRuntimePath(wt.path);
       const activeRun = runs.find((r: Run) =>
-        ["pending", "running"].includes(r.status) && r.worktree_path === wt.path,
+        ["pending", "running"].includes(r.status)
+        && normalizeRuntimePath(r.worktree_path) === normalizedWorktreePath,
       );
       const completedRun = runs.find((r: Run) => r.status === "completed");
       const mergedRun = runs.find((r: Run) => r.status === "merged");
