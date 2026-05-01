@@ -117,6 +117,13 @@ async function resolveDaemonRecoverContext(projectPath: string): Promise<DaemonR
 type RecoveryReason = "test-failed" | "stuck" | "stale-blocked" | "finalize-conflict";
 type RecommendedRecovery = "clean-replay-from-main";
 
+function resolveRecoveryReason(requestedReason: RecoveryReason, recommendedRecovery: RecommendedRecovery | null, reasonWasExplicit: boolean): RecoveryReason {
+  if (!reasonWasExplicit && requestedReason === "test-failed" && recommendedRecovery === "clean-replay-from-main") {
+    return "finalize-conflict";
+  }
+  return requestedReason;
+}
+
 // ── Artifact collection ─────────────────────────────────────────────────────
 
 const REPORT_FILES = [
@@ -254,7 +261,6 @@ export const recoverCommand = new Command("recover")
   .option(
     "--reason <reason>",
     "Failure reason: test-failed | stuck | stale-blocked | finalize-conflict",
-    "test-failed",
   )
   .option("--run-id <id>", "Specific run ID (default: latest run for this seed)")
   .option("--output <text>", "Pre-captured test output to include in context")
@@ -267,10 +273,10 @@ export const recoverCommand = new Command("recover")
     model?: string;
     raw?: boolean;
   }) => {
-    const reason = (opts.reason ?? "test-failed") as RecoveryReason;
+    const requestedReason = (opts.reason ?? "test-failed") as RecoveryReason;
     const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked", "finalize-conflict"];
-    if (!validReasons.includes(reason)) {
-      console.error(chalk.red(`Invalid reason "${reason}". Must be one of: ${validReasons.join(", ")}`));
+    if (!validReasons.includes(requestedReason)) {
+      console.error(chalk.red(`Invalid reason "${requestedReason}". Must be one of: ${validReasons.join(", ")}`));
       process.exit(1);
     }
 
@@ -298,8 +304,6 @@ export const recoverCommand = new Command("recover")
       process.exit(1);
     }
 
-    console.log(chalk.bold(`\nRecovery: ${beadId} — reason: ${reason} — run ${run.id.slice(0, 8)} (${run.status})\n`));
-
     // 1. Run summary + progress
     const progress = daemon && run.progress
       ? JSON.parse(run.progress) as Record<string, unknown>
@@ -324,6 +328,13 @@ export const recoverCommand = new Command("recover")
 
     const recommendedRecovery = extractRecommendedRecovery(reports);
     const recoveryRecommendation = formatRecoveryRecommendation(recommendedRecovery);
+    const reasonWasExplicit = opts.reason !== undefined;
+    const reason = resolveRecoveryReason(requestedReason, recommendedRecovery, reasonWasExplicit);
+
+    if (reason !== requestedReason) {
+      console.log(chalk.dim(`  Auto-selected recovery reason: ${reason} (from finalize recommendation)`));
+    }
+    console.log(chalk.bold(`\nRecovery: ${beadId} — reason: ${reason} — run ${run.id.slice(0, 8)} (${run.status})\n`));
 
     // 4. Bead info from br
     try {

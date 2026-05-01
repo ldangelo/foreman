@@ -195,6 +195,58 @@ describe("foreman debug/recover command context", () => {
     expect(output).toContain("Recommended recovery: clean-replay-from-main");
   });
 
+  it("auto-selects finalize-conflict when clean replay is recommended", async () => {
+    const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+    const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+    const worktreePath = join(tmpDir, "worktree-auto-reason");
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), [
+      "## Rebase",
+      "- Status: FAILED",
+      "- Recommended recovery: clean replay from current main",
+      "",
+    ].join("\n"));
+
+    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunProgress.mockReturnValue(null);
+    localStore.getAllMessages.mockReturnValue([]);
+    resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+    listRegisteredProjectsMock.mockResolvedValue([]);
+
+    await runCommand(recoverCommand, ["seed-1"]);
+
+    const prompt = mockRunWithPiSdk.mock.calls[0]?.[0]?.prompt as string;
+    const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(output).toContain("Auto-selected recovery reason: finalize-conflict");
+    expect(prompt).toContain("**Failure reason reported:** `finalize-conflict`");
+  });
+
+  it("keeps an explicit recover reason even when clean replay is recommended", async () => {
+    const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+    const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+    const worktreePath = join(tmpDir, "worktree-explicit-reason");
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), [
+      "## Rebase",
+      "- Status: FAILED",
+      "- Recommended recovery: clean replay from current main",
+      "",
+    ].join("\n"));
+
+    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunProgress.mockReturnValue(null);
+    localStore.getAllMessages.mockReturnValue([]);
+    resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+    listRegisteredProjectsMock.mockResolvedValue([]);
+
+    await runCommand(recoverCommand, ["seed-1", "--reason", "stale-blocked"]);
+
+    const prompt = mockRunWithPiSdk.mock.calls[0]?.[0]?.prompt as string;
+    const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(output).not.toContain("Auto-selected recovery reason: finalize-conflict");
+    expect(prompt).toContain("**Failure reason reported:** `stale-blocked`");
+  });
+
   it("passes recommended clean replay guidance into the recovery prompt", async () => {
     const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
     const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
