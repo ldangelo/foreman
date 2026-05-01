@@ -425,6 +425,7 @@ export const recoverCommand = new Command("recover")
   .option("--validate-clean-replay", "Run typecheck and build in the clean replay workspace")
   .option("--commit-clean-replay", "Stage and commit the clean replay workspace after successful validation")
   .option("--push-clean-replay", "Push the validated clean replay branch after commit")
+  .option("--execute-clean-replay", "Run the full clean replay flow: apply, validate, commit, and push")
   .action(async (beadId: string, opts: {
     reason?: string;
     runId?: string;
@@ -436,9 +437,16 @@ export const recoverCommand = new Command("recover")
     validateCleanReplay?: boolean;
     commitCleanReplay?: boolean;
     pushCleanReplay?: boolean;
+    executeCleanReplay?: boolean;
   }) => {
     const requestedReason = (opts.reason ?? "test-failed") as RecoveryReason;
     const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked", "finalize-conflict"];
+    const executeCleanReplay = opts.executeCleanReplay ?? false;
+    const prepareCleanReplay = executeCleanReplay || (opts.prepareCleanReplay ?? false);
+    const applyCleanReplay = executeCleanReplay || (opts.applyCleanReplay ?? false);
+    const validateCleanReplay = executeCleanReplay || (opts.validateCleanReplay ?? false);
+    const commitCleanReplay = executeCleanReplay || (opts.commitCleanReplay ?? false);
+    const pushCleanReplay = executeCleanReplay || (opts.pushCleanReplay ?? false);
     if (!validReasons.includes(requestedReason)) {
       console.error(chalk.red(`Invalid reason "${requestedReason}". Must be one of: ${validReasons.join(", ")}`));
       process.exit(1);
@@ -542,14 +550,14 @@ export const recoverCommand = new Command("recover")
     let cleanReplayValidationResult: CleanReplayValidationResult | null = null;
     let cleanReplayCommitResult: CleanReplayCommitResult | null = null;
     let cleanReplayPushResult: CleanReplayPushResult | null = null;
-    if (opts.prepareCleanReplay || opts.applyCleanReplay || opts.validateCleanReplay || opts.commitCleanReplay || opts.pushCleanReplay) {
+    if (prepareCleanReplay || applyCleanReplay || validateCleanReplay || commitCleanReplay || pushCleanReplay) {
       if (reason !== "finalize-conflict") {
         store.close();
         console.error(chalk.red("--prepare-clean-replay/--apply-clean-replay requires finalize-conflict recovery context"));
         process.exit(1);
       }
       cleanReplayWorkspace = await prepareCleanReplayWorkspace(projectPath, beadId);
-      if (opts.applyCleanReplay) {
+      if (applyCleanReplay) {
         if (!worktreePath) {
           store.close();
           console.error(chalk.red("Cannot apply clean replay without a source worktree path"));
@@ -558,10 +566,10 @@ export const recoverCommand = new Command("recover")
         const statusOutput = runCommandSafe(["git", "status", "--short"], worktreePath);
         cleanReplayApplyResult = applyCleanReplayChanges(worktreePath, cleanReplayWorkspace.workspacePath, statusOutput);
       }
-      if (opts.validateCleanReplay || opts.commitCleanReplay || opts.pushCleanReplay) {
+      if (validateCleanReplay || commitCleanReplay || pushCleanReplay) {
         cleanReplayValidationResult = validateCleanReplayWorkspace(cleanReplayWorkspace.workspacePath);
       }
-      if (opts.commitCleanReplay || opts.pushCleanReplay) {
+      if (commitCleanReplay || pushCleanReplay) {
         if (!cleanReplayValidationResult?.success) {
           store.close();
           console.error(chalk.red("--commit-clean-replay/--push-clean-replay requires successful clean replay validation"));
@@ -569,7 +577,7 @@ export const recoverCommand = new Command("recover")
         }
         cleanReplayCommitResult = await commitCleanReplayWorkspace(projectPath, cleanReplayWorkspace, beadId);
       }
-      if (opts.pushCleanReplay) {
+      if (pushCleanReplay) {
         cleanReplayPushResult = await pushCleanReplayWorkspace(projectPath, cleanReplayWorkspace);
       }
     }
