@@ -141,6 +141,11 @@ interface CleanReplayValidationResult {
   steps: CleanReplayValidationStep[];
 }
 
+interface CleanReplayCommitResult {
+  success: boolean;
+  message: string;
+}
+
 function resolveRecoveryReason(requestedReason: RecoveryReason, recommendedRecovery: RecommendedRecovery | null, reasonWasExplicit: boolean): RecoveryReason {
   if (!reasonWasExplicit && requestedReason === "test-failed" && recommendedRecovery === "clean-replay-from-main") {
     return "finalize-conflict";
@@ -328,6 +333,14 @@ export function validateCleanReplayWorkspace(workspacePath: string): CleanReplay
   };
 }
 
+async function commitCleanReplayWorkspace(projectPath: string, workspace: CleanReplayWorkspace, beadId: string): Promise<CleanReplayCommitResult> {
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const message = `fix: replay ${beadId} cleanly from current ${workspace.baseBranch}`;
+  await vcs.stageAll(workspace.workspacePath);
+  await vcs.commit(workspace.workspacePath, message);
+  return { success: true, message };
+}
+
 async function prepareCleanReplayWorkspace(projectPath: string, beadId: string): Promise<CleanReplayWorkspace> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const baseBranch = await vcs.detectDefaultBranch(projectPath);
@@ -399,6 +412,7 @@ export const recoverCommand = new Command("recover")
   .option("--prepare-clean-replay", "Create a fresh clean-replay workspace from the detected default branch")
   .option("--apply-clean-replay", "Copy intended changed files from the failed worktree into the clean replay workspace")
   .option("--validate-clean-replay", "Run typecheck and build in the clean replay workspace")
+  .option("--commit-clean-replay", "Stage and commit the clean replay workspace after successful validation")
   .action(async (beadId: string, opts: {
     reason?: string;
     runId?: string;
@@ -408,6 +422,7 @@ export const recoverCommand = new Command("recover")
     prepareCleanReplay?: boolean;
     applyCleanReplay?: boolean;
     validateCleanReplay?: boolean;
+    commitCleanReplay?: boolean;
   }) => {
     const requestedReason = (opts.reason ?? "test-failed") as RecoveryReason;
     const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked", "finalize-conflict"];
@@ -512,7 +527,8 @@ export const recoverCommand = new Command("recover")
     let cleanReplayWorkspace: CleanReplayWorkspace | null = null;
     let cleanReplayApplyResult: CleanReplayApplyResult | null = null;
     let cleanReplayValidationResult: CleanReplayValidationResult | null = null;
-    if (opts.prepareCleanReplay || opts.applyCleanReplay || opts.validateCleanReplay) {
+    let cleanReplayCommitResult: CleanReplayCommitResult | null = null;
+    if (opts.prepareCleanReplay || opts.applyCleanReplay || opts.validateCleanReplay || opts.commitCleanReplay) {
       if (reason !== "finalize-conflict") {
         store.close();
         console.error(chalk.red("--prepare-clean-replay/--apply-clean-replay requires finalize-conflict recovery context"));
@@ -528,8 +544,16 @@ export const recoverCommand = new Command("recover")
         const statusOutput = runCommandSafe(["git", "status", "--short"], worktreePath);
         cleanReplayApplyResult = applyCleanReplayChanges(worktreePath, cleanReplayWorkspace.workspacePath, statusOutput);
       }
-      if (opts.validateCleanReplay) {
+      if (opts.validateCleanReplay || opts.commitCleanReplay) {
         cleanReplayValidationResult = validateCleanReplayWorkspace(cleanReplayWorkspace.workspacePath);
+      }
+      if (opts.commitCleanReplay) {
+        if (!cleanReplayValidationResult?.success) {
+          store.close();
+          console.error(chalk.red("--commit-clean-replay requires successful clean replay validation"));
+          process.exit(1);
+        }
+        cleanReplayCommitResult = await commitCleanReplayWorkspace(projectPath, cleanReplayWorkspace, beadId);
       }
     }
 
@@ -549,6 +573,9 @@ export const recoverCommand = new Command("recover")
     }
     if (cleanReplayValidationResult) {
       console.log(chalk.dim(`  Clean replay validation: ${cleanReplayValidationResult.success ? "passed" : "failed"}`));
+    }
+    if (cleanReplayCommitResult) {
+      console.log(chalk.dim(`  Clean replay commit: ${cleanReplayCommitResult.message}`));
     }
     console.log();
 
@@ -576,6 +603,11 @@ export const recoverCommand = new Command("recover")
         for (const step of cleanReplayValidationResult.steps) {
           console.log(`- ${step.name}: ${step.success ? "PASS" : "FAIL"}`);
         }
+      }
+      if (cleanReplayCommitResult) {
+        console.log(chalk.bold("\n─── Clean Replay Commit ───"));
+        console.log(`Status: PASS`);
+        console.log(`Message: ${cleanReplayCommitResult.message}`);
       }
       console.log(chalk.bold("\n─── Messages ───"));
       console.log(messagesText);
