@@ -54,6 +54,7 @@ function makeMocks(projectPath = "/tmp/project") {
     getRunsByStatus: vi.fn(() => [] as Run[]),
     getRunsForSeed: vi.fn(() => [] as Run[]),
     getActiveRuns: vi.fn(() => [] as Run[]),
+    getRun: vi.fn(() => null as Run | null),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
   };
@@ -174,6 +175,20 @@ describe("Doctor", () => {
 
       expect(results[0].status).toBe("fixed");
       expect(store.updateRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ status: "failed" }));
+    });
+
+    it("does not downgrade a running snapshot when the current run is already merged", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      const run = makeRun({ session_key: null });
+      store.getRunsByStatus.mockReturnValue([run]);
+      store.getRun.mockReturnValue({ ...run, status: "merged" });
+
+      const results = await doctor.checkZombieRuns({ fix: true });
+
+      expect(results[0].status).toBe("pass");
+      expect(results[0].message).toContain("terminal success");
+      expect(store.updateRun).not.toHaveBeenCalled();
     });
 
     it("shows dry-run message without making changes", async () => {
@@ -358,6 +373,20 @@ describe("Doctor", () => {
 
       expect(results[0].status).toBe("fixed");
       expect(store.updateRun).toHaveBeenCalledWith(inconsistentRun.id, { status: "failed" });
+    });
+
+    it("does not downgrade merged or pr-created runs that appear in an active snapshot", async () => {
+      const { store, doctor } = makeMocks();
+      store.getProjectByPath.mockReturnValue({ id: "proj-1", name: "test", status: "active", path: "/tmp/project", created_at: "", updated_at: "" });
+      const mergedRun = makeRun({ status: "merged", completed_at: new Date().toISOString() });
+      const prCreatedRun = makeRun({ id: "run-pr", status: "pr-created", completed_at: new Date().toISOString() });
+      store.getActiveRuns.mockReturnValue([mergedRun, prCreatedRun]);
+
+      const results = await doctor.checkRunStateConsistency({ fix: true });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("pass");
+      expect(store.updateRun).not.toHaveBeenCalled();
     });
 
     it("returns empty when no project registered", async () => {
