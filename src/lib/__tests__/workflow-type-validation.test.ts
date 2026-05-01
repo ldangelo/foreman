@@ -159,4 +159,45 @@ describe('validateWorkflowConfig — bash/command/merge fields', () => {
       }
     });
   });
+
+  describe('pr timing field', () => {
+    it('accepts pr.timing: draft-after-developer', () => {
+      const config = validateWorkflowConfig(
+        { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], pr: { timing: 'draft-after-developer' } },
+        'test',
+      );
+      expect(config.pr?.timing).toBe('draft-after-developer');
+    });
+
+    it('accepts pr.timing: create-at-finalize', () => {
+      const config = validateWorkflowConfig(
+        { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], pr: { timing: 'create-at-finalize' } },
+        'test',
+      );
+      expect(config.pr?.timing).toBe('create-at-finalize');
+    });
+
+    it('accepts pr.timing: never', () => {
+      const config = validateWorkflowConfig(
+        { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], pr: { timing: 'never' } },
+        'test',
+      );
+      expect(config.pr?.timing).toBe('never');
+    });
+
+    it('defaults pr.timing to create-at-finalize when pr block is present but timing is absent', () => {
+      const config = validateWorkflowConfig(
+        { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], pr: {} },
+        'test',
+      );
+      expect(config.pr?.timing).toBe('create-at-finalize');
+    });
+
+    it('throws when pr.timing has an invalid value', () => {
+      expect(() =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        validateWorkflowConfig({ name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], pr: { timing: 'later-maybe' } } as any, 'test'),
+      ).toThrow(WorkflowConfigError);
+    });
+  });
 });

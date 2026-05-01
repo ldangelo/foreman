@@ -283,6 +283,18 @@ export interface WorkflowConfig {
    * @default 'auto'
    */
   merge?: "auto" | "pr" | "none";
+  /**
+   * Pull request publication policy for this workflow.
+   *
+   * - `draft-after-developer`: publish a draft PR after developer phase
+   * - `create-at-finalize`: publish/open the PR only after finalize
+   * - `never`: never create a PR automatically
+   *
+   * @default { timing: 'create-at-finalize' }
+   */
+  pr?: {
+    timing?: "draft-after-developer" | "create-at-finalize" | "never";
+  };
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -597,6 +609,24 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       throw new WorkflowConfigError(
         workflowName,
         `merge must be 'auto', 'pr', or 'none' (got: ${String(merge)})`,
+      );
+    }
+  }
+
+  // ── Parse optional PR timing policy ──────────────────────────────────────
+  if (raw["pr"] !== undefined) {
+    if (!isRecord(raw["pr"])) {
+      throw new WorkflowConfigError(workflowName, "pr must be an object");
+    }
+    const timing = raw["pr"]["timing"];
+    if (timing === undefined) {
+      config.pr = { timing: "create-at-finalize" };
+    } else if (timing === "draft-after-developer" || timing === "create-at-finalize" || timing === "never") {
+      config.pr = { timing };
+    } else {
+      throw new WorkflowConfigError(
+        workflowName,
+        `pr.timing must be 'draft-after-developer', 'create-at-finalize', or 'never' (got: ${String(timing)})`,
       );
     }
   }

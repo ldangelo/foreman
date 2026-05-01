@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ForemanStore } from "../lib/store.js";
+import type { ForemanStore, Run } from "../lib/store.js";
 import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
 // Note: removeWorktree shim removed in TRD-012; workspace removal now goes through this.vcsBackend.removeWorkspace()
@@ -263,19 +263,38 @@ export class Refinery {
     }
   }
 
-  private async getExistingPrState(branchName: string): Promise<{ state: string; headRefName?: string; url?: string } | null> {
+  private async getExistingPrState(branchName: string): Promise<{ state: string; headRefName?: string; headRefOid?: string; url?: string; isDraft?: boolean } | null> {
     try {
-      const prRaw = await gh(["pr", "view", branchName, "--json", "state,headRefName,url", "--jq", "."], this.projectPath);
-      const parsed = JSON.parse(prRaw) as { state?: string; headRefName?: string; url?: string };
+      const prRaw = await gh(["pr", "view", branchName, "--json", "state,headRefName,headRefOid,url,isDraft", "--jq", "."], this.projectPath);
+      const parsed = JSON.parse(prRaw) as { state?: string; headRefName?: string; headRefOid?: string; url?: string; isDraft?: boolean };
       if (!parsed.state) return null;
       return {
         state: parsed.state,
         headRefName: parsed.headRefName,
+        headRefOid: parsed.headRefOid,
         url: parsed.url,
+        isDraft: parsed.isDraft,
       };
     } catch {
       return null;
     }
+  }
+
+  private async getBranchHeadSha(branchName: string): Promise<string | null> {
+    try {
+      const sha = await gitSpecial(["rev-parse", branchName], this.projectPath);
+      return sha.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private mapCanonicalPrState(pr: { state: string; isDraft?: boolean } | null, fallbackDraft = false): Run["pr_state"] {
+    if (!pr) return null;
+    if (pr.state === "MERGED") return "merged";
+    if (pr.state === "CLOSED") return "closed";
+    if (pr.state === "OPEN") return pr.isDraft || fallbackDraft ? "draft" : "open";
+    return null;
   }
 
   private async finalizeSuccessfulMerge(run: import("../lib/store.js").Run, branchName: string, targetBranch: string): Promise<void> {
@@ -295,6 +314,7 @@ export class Refinery {
     this.store.updateRun(run.id, {
       status: "merged",
       completed_at: new Date().toISOString(),
+      pr_state: "merged",
     });
     this.store.logEvent(
       run.project_id,
@@ -341,37 +361,63 @@ export class Refinery {
 
     if (opts.existingOk !== false && !this.isTestRuntime()) {
       const existingPr = await this.getExistingPrState(branchName);
+      const currentHead = await this.getBranchHeadSha(branchName);
       if (existingPr?.headRefName === branchName && existingPr.url) {
-        let reopenedExistingPr = false;
-        if (existingPr.state === "CLOSED") {
-          try {
-            await gh(["pr", "reopen", existingPr.url], this.projectPath);
-            reopenedExistingPr = true;
-          } catch (err: unknown) {
-            if (!shouldCreateFreshPrAfterReopenFailure(err)) {
-              throw err;
-            }
-          }
-        }
-        if (existingPr.state !== "CLOSED" || reopenedExistingPr) {
+        const hasHeadMismatch = !!currentHead && !!existingPr.headRefOid && existingPr.headRefOid !== currentHead;
+        if (hasHeadMismatch) {
           this.store.logEvent(
             run.project_id,
-            "pr-created",
+            "pr-stale",
             {
               seedId: run.seed_id,
               branchName,
-              baseBranch,
-              prUrl: existingPr.url,
-              existing: true,
-              reopened: reopenedExistingPr,
-              draft: opts.draft ?? false,
+              stalePrUrl: existingPr.url,
+              staleHead: existingPr.headRefOid,
+              currentHead,
             },
             run.id,
           );
-          if (opts.updateRunStatus) {
-            this.store.updateRun(run.id, { status: "pr-created" });
+        } else {
+          let reopenedExistingPr = false;
+          if (existingPr.state === "CLOSED") {
+            try {
+              await gh(["pr", "reopen", existingPr.url], this.projectPath);
+              reopenedExistingPr = true;
+            } catch (err: unknown) {
+              if (!shouldCreateFreshPrAfterReopenFailure(err)) {
+                throw err;
+              }
+            }
           }
-          return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
+          let promotedDraftPr = false;
+          if (existingPr.state === "OPEN" && existingPr.isDraft && opts.draft === false) {
+            await gh(["pr", "ready", existingPr.url], this.projectPath);
+            promotedDraftPr = true;
+          }
+          if (existingPr.state !== "CLOSED" && existingPr.state !== "MERGED" || reopenedExistingPr) {
+            this.store.logEvent(
+              run.project_id,
+              "pr-created",
+              {
+                seedId: run.seed_id,
+                branchName,
+                baseBranch,
+                prUrl: existingPr.url,
+                existing: true,
+                reopened: reopenedExistingPr,
+                readyForReview: promotedDraftPr,
+                draft: promotedDraftPr ? false : (existingPr.isDraft ?? opts.draft ?? false),
+              },
+              run.id,
+            );
+            this.store.updateRun(run.id, {
+              ...(opts.updateRunStatus ? { status: "pr-created" } : {}),
+              pr_url: existingPr.url,
+              pr_state: promotedDraftPr ? "open" : this.mapCanonicalPrState(existingPr, opts.draft ?? false),
+              pr_head_sha: currentHead,
+            });
+            return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
+          }
         }
       }
     }
@@ -413,15 +459,22 @@ export class Refinery {
         return ghArgs;
       })(), this.projectPath);
 
+    const prHeadSha = this.isTestRuntime()
+      ? null
+      : await this.getBranchHeadSha(branchName);
+
     this.store.logEvent(
       run.project_id,
       "pr-created",
       { seedId: run.seed_id, branchName, baseBranch, prUrl, draft: opts.draft ?? false, existing: false },
       run.id,
     );
-    if (opts.updateRunStatus) {
-      this.store.updateRun(run.id, { status: "pr-created" });
-    }
+    this.store.updateRun(run.id, {
+      ...(opts.updateRunStatus ? { status: "pr-created" } : {}),
+      pr_url: prUrl,
+      pr_state: opts.draft ? "draft" : "open",
+      pr_head_sha: prHeadSha,
+    });
 
     return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
   }

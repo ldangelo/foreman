@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ForemanStore } from '../store.js';
 
-describe('merge_strategy in runs table', () => {
+describe('run PR identity fields in runs table', () => {
   let store: ForemanStore;
   let tmpDir: string;
   let projectId: string;
@@ -65,5 +65,20 @@ describe('merge_strategy in runs table', () => {
     const run = makeRun(undefined);
     expect(run.merge_strategy).toBe('auto');
     expect(get(run.id)).toBe('auto');
+  });
+
+  it('stores and retrieves PR identity metadata', () => {
+    const run = makeRun('auto');
+    store.updateRun(run.id, {
+      pr_url: 'https://github.com/org/repo/pull/42',
+      pr_state: 'draft',
+      pr_head_sha: 'abc123def',
+    });
+
+    expect(store.getRun(run.id)).toEqual(expect.objectContaining({
+      pr_url: 'https://github.com/org/repo/pull/42',
+      pr_state: 'draft',
+      pr_head_sha: 'abc123def',
+    }));
   });
 });

@@ -38,10 +38,21 @@ import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncre
 import type { NativeTaskStore } from "../lib/task-store.js";
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
+import { Refinery } from "./refinery.js";
+import { NativeTaskClient } from "../lib/native-task-client.js";
+import { createTaskClient } from "../lib/task-client-factory.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 type AnyMailClient = SqliteMailClient;
+
+async function createRuntimeTaskClient(projectPath: string) {
+  const runtimeMode = process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase();
+  if (runtimeMode === "test") {
+    return new NativeTaskClient(projectPath);
+  }
+  return (await createTaskClient(projectPath)).taskClient;
+}
 
 /** Function signature matching the runPhase() in agent-worker.ts. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -876,6 +887,41 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
  * Run a sequence of phases in order with retry/verdict logic.
  * This is the core phase iteration loop used by both single-task and epic modes.
  */
+async function publishDraftPrAfterDeveloperPhase(
+  ctx: PipelineContext,
+  phaseName: string,
+): Promise<void> {
+  const { config, workflowConfig, store, agentMailClient } = ctx;
+  if (phaseName !== "developer") return;
+  if ((workflowConfig.pr?.timing ?? "create-at-finalize") !== "draft-after-developer") return;
+
+  try {
+    const projectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
+    const taskClient = await createRuntimeTaskClient(projectPath);
+    const refinery = new Refinery(store, taskClient, projectPath, config.vcsBackend);
+    const pr = await refinery.ensurePullRequestForRun({
+      runId: config.runId,
+      baseBranch: config.targetBranch,
+      draft: true,
+      updateRunStatus: false,
+      bodyNote: "Draft PR published automatically after developer phase.",
+      existingOk: true,
+    });
+    ctx.log(`[DEVELOPER] Draft PR ready: ${pr.prUrl}`);
+    ctx.sendMail(agentMailClient, "foreman", "pr-created", {
+      seedId: config.seedId,
+      runId: config.runId,
+      branchName: pr.branchName,
+      prUrl: pr.prUrl,
+      strategy: "draft-after-developer",
+      draft: true,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    ctx.log(`[DEVELOPER] Draft PR creation failed (non-fatal): ${message}`);
+  }
+}
+
 async function runPhaseSequence(
   ctx: PipelineContext,
   phases: import("../lib/workflow-loader.js").WorkflowPhaseConfig[],
@@ -1392,6 +1438,7 @@ async function runPhaseSequence(
                   ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
                 }
               }
+              await publishDraftPrAfterDeveloperPhase(ctx, phaseName);
               i++;
               continue;
             }
@@ -1587,6 +1634,8 @@ async function runPhaseSequence(
         ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
       }
     }
+
+    await publishDraftPrAfterDeveloperPhase(ctx, phaseName);
 
     i++;
   }

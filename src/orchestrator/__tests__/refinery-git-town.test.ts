@@ -374,6 +374,10 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
           (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
             if (cmd === "git") {
+              if (args[0] === "rev-parse") {
+                callback(null, { stdout: "samehead123\n", stderr: "" });
+                return;
+              }
               callback(null, { stdout: "", stderr: "" });
               return;
             }
@@ -382,6 +386,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
                 stdout: JSON.stringify({
                   state: "CLOSED",
                   headRefName: "foreman/seed-reopen",
+                  headRefOid: "samehead123",
                   url: "https://github.com/org/repo/pull/77",
                 }),
                 stderr: "",
@@ -411,6 +416,58 @@ describe("MQ-T058d: PR creation strategy decision", () => {
           expect.objectContaining({ existing: true, reopened: true, prUrl: "https://github.com/org/repo/pull/77" }),
           "run-77",
         );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("promotes an existing draft PR when finalize needs a mergeable canonical PR", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-78", seed_id: "seed-promote-draft" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              if (args[0] === "rev-parse") {
+                callback(null, { stdout: "samehead123\n", stderr: "" });
+                return;
+              }
+              callback(null, { stdout: "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "OPEN",
+                  headRefName: "foreman/seed-promote-draft",
+                  headRefOid: "samehead123",
+                  isDraft: true,
+                  url: "https://github.com/org/repo/pull/78",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "ready") {
+              callback(null, { stdout: "", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-78", baseBranch: "main", draft: false });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/78");
+        const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const readyCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "ready",
+        );
+        expect(readyCall).toBeDefined();
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;
       }
@@ -470,6 +527,114 @@ describe("MQ-T058d: PR creation strategy decision", () => {
           "pr-created",
           expect.objectContaining({ existing: false, prUrl: "https://github.com/org/repo/pull/99" }),
           "run-88",
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("creates a fresh PR when the existing PR head SHA no longer matches the branch head", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-89", seed_id: "seed-head-mismatch" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              if (args[0] === "rev-parse") {
+                callback(null, { stdout: "newhead123\n", stderr: "" });
+                return;
+              }
+              callback(null, { stdout: args.includes("log") ? "abc123 refresh branch" : "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "OPEN",
+                  headRefName: "foreman/seed-head-mismatch",
+                  headRefOid: "oldhead456",
+                  url: "https://github.com/org/repo/pull/89",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+              callback(null, { stdout: "https://github.com/org/repo/pull/90", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-89", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/90");
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-stale",
+          expect.objectContaining({
+            stalePrUrl: "https://github.com/org/repo/pull/89",
+            staleHead: "oldhead456",
+            currentHead: "newhead123",
+          }),
+          "run-89",
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("creates a fresh PR instead of reusing an already merged PR for the same branch", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-90", seed_id: "seed-merged-pr-refresh" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              if (args[0] === "rev-parse") {
+                callback(null, { stdout: "freshhead123\n", stderr: "" });
+                return;
+              }
+              callback(null, { stdout: args.includes("log") ? "abc123 refresh merged branch" : "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "MERGED",
+                  headRefName: "foreman/seed-merged-pr-refresh",
+                  headRefOid: "oldmergedsha",
+                  url: "https://github.com/org/repo/pull/101",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+              callback(null, { stdout: "https://github.com/org/repo/pull/102", stderr: "" });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-90", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/102");
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-created",
+          expect.objectContaining({ existing: false, prUrl: "https://github.com/org/repo/pull/102" }),
+          "run-90",
         );
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;
