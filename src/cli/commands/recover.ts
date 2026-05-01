@@ -130,6 +130,17 @@ interface CleanReplayApplyResult {
   skippedFiles: string[];
 }
 
+interface CleanReplayValidationStep {
+  name: string;
+  success: boolean;
+  output: string;
+}
+
+interface CleanReplayValidationResult {
+  success: boolean;
+  steps: CleanReplayValidationStep[];
+}
+
 function resolveRecoveryReason(requestedReason: RecoveryReason, recommendedRecovery: RecommendedRecovery | null, reasonWasExplicit: boolean): RecoveryReason {
   if (!reasonWasExplicit && requestedReason === "test-failed" && recommendedRecovery === "clean-replay-from-main") {
     return "finalize-conflict";
@@ -201,6 +212,22 @@ function runCommandSafe(args: string[], cwd: string): string {
       return (err as NodeJS.ErrnoException & { stdout: string }).stdout ?? "(no output)";
     }
     return `(command failed: ${err instanceof Error ? err.message : String(err)})`;
+  }
+}
+
+function runValidationStep(name: string, args: string[], cwd: string): CleanReplayValidationStep {
+  try {
+    const output = execFileSync(args[0], args.slice(1), {
+      encoding: "utf-8",
+      cwd,
+      timeout: 120_000,
+    });
+    return { name, success: true, output: output || "(no output)" };
+  } catch (err) {
+    const output = err instanceof Error && "stdout" in err
+      ? ((err as NodeJS.ErrnoException & { stdout: string }).stdout ?? "(no output)")
+      : `(command failed: ${err instanceof Error ? err.message : String(err)})`;
+    return { name, success: false, output };
   }
 }
 
@@ -290,6 +317,17 @@ export function applyCleanReplayChanges(sourceWorktreePath: string, destinationW
   return { copiedFiles, skippedFiles };
 }
 
+export function validateCleanReplayWorkspace(workspacePath: string): CleanReplayValidationResult {
+  const steps = [
+    runValidationStep("tsc", ["npx", "tsc", "--noEmit"], workspacePath),
+    runValidationStep("build", ["npm", "run", "build"], workspacePath),
+  ];
+  return {
+    success: steps.every((step) => step.success),
+    steps,
+  };
+}
+
 async function prepareCleanReplayWorkspace(projectPath: string, beadId: string): Promise<CleanReplayWorkspace> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const baseBranch = await vcs.detectDefaultBranch(projectPath);
@@ -360,6 +398,7 @@ export const recoverCommand = new Command("recover")
   .option("--raw", "Print collected context without invoking AI")
   .option("--prepare-clean-replay", "Create a fresh clean-replay workspace from the detected default branch")
   .option("--apply-clean-replay", "Copy intended changed files from the failed worktree into the clean replay workspace")
+  .option("--validate-clean-replay", "Run typecheck and build in the clean replay workspace")
   .action(async (beadId: string, opts: {
     reason?: string;
     runId?: string;
@@ -368,6 +407,7 @@ export const recoverCommand = new Command("recover")
     raw?: boolean;
     prepareCleanReplay?: boolean;
     applyCleanReplay?: boolean;
+    validateCleanReplay?: boolean;
   }) => {
     const requestedReason = (opts.reason ?? "test-failed") as RecoveryReason;
     const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked", "finalize-conflict"];
@@ -471,7 +511,8 @@ export const recoverCommand = new Command("recover")
 
     let cleanReplayWorkspace: CleanReplayWorkspace | null = null;
     let cleanReplayApplyResult: CleanReplayApplyResult | null = null;
-    if (opts.prepareCleanReplay || opts.applyCleanReplay) {
+    let cleanReplayValidationResult: CleanReplayValidationResult | null = null;
+    if (opts.prepareCleanReplay || opts.applyCleanReplay || opts.validateCleanReplay) {
       if (reason !== "finalize-conflict") {
         store.close();
         console.error(chalk.red("--prepare-clean-replay/--apply-clean-replay requires finalize-conflict recovery context"));
@@ -486,6 +527,9 @@ export const recoverCommand = new Command("recover")
         }
         const statusOutput = runCommandSafe(["git", "status", "--short"], worktreePath);
         cleanReplayApplyResult = applyCleanReplayChanges(worktreePath, cleanReplayWorkspace.workspacePath, statusOutput);
+      }
+      if (opts.validateCleanReplay) {
+        cleanReplayValidationResult = validateCleanReplayWorkspace(cleanReplayWorkspace.workspacePath);
       }
     }
 
@@ -502,6 +546,9 @@ export const recoverCommand = new Command("recover")
     }
     if (cleanReplayApplyResult) {
       console.log(chalk.dim(`  Clean replay copied: ${cleanReplayApplyResult.copiedFiles.length} file(s)`));
+    }
+    if (cleanReplayValidationResult) {
+      console.log(chalk.dim(`  Clean replay validation: ${cleanReplayValidationResult.success ? "passed" : "failed"}`));
     }
     console.log();
 
@@ -522,6 +569,13 @@ export const recoverCommand = new Command("recover")
         console.log(cleanReplayApplyResult.copiedFiles.join("\n") || "(none)");
         console.log(chalk.bold("\n─── Clean Replay Skipped Files ───"));
         console.log(cleanReplayApplyResult.skippedFiles.join("\n") || "(none)");
+      }
+      if (cleanReplayValidationResult) {
+        console.log(chalk.bold("\n─── Clean Replay Validation ───"));
+        console.log(`Overall: ${cleanReplayValidationResult.success ? "PASS" : "FAIL"}`);
+        for (const step of cleanReplayValidationResult.steps) {
+          console.log(`- ${step.name}: ${step.success ? "PASS" : "FAIL"}`);
+        }
       }
       console.log(chalk.bold("\n─── Messages ───"));
       console.log(messagesText);

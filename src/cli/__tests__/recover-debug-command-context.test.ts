@@ -6,7 +6,7 @@ import { ForemanStore } from "../../lib/store.js";
 import * as trpcClientModule from "../../lib/trpc-client.js";
 import * as projectTaskSupport from "../commands/project-task-support.js";
 import { debugCommand } from "../commands/debug.js";
-import { applyCleanReplayChanges, parseChangedFiles, recoverCommand } from "../commands/recover.js";
+import { applyCleanReplayChanges, parseChangedFiles, recoverCommand, validateCleanReplayWorkspace } from "../commands/recover.js";
 
 const mockExecFileSync = vi.hoisted(() => vi.fn(() => "mock-output\n"));
 const mockExecFile = vi.hoisted(() => vi.fn());
@@ -72,6 +72,21 @@ describe("clean replay helpers", () => {
     expect(readFileSync(join(destinationDir, "src", "feature.ts"), "utf-8")).toContain("value = 1");
     rmSync(sourceDir, { recursive: true, force: true });
     rmSync(destinationDir, { recursive: true, force: true });
+  });
+
+  it("validates clean replay workspace with tsc and build steps", () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), "foreman-replay-validate-"));
+    mockExecFileSync.mockImplementation(((command: string, args?: string[]) => {
+      if (command === "npx" && args?.join(" ") === "tsc --noEmit") return "tsc ok\n";
+      if (command === "npm" && args?.join(" ") === "run build") return "build ok\n";
+      return "mock-output\n";
+    }) as (...args: unknown[]) => string);
+
+    const result = validateCleanReplayWorkspace(workspacePath);
+
+    expect(result.success).toBe(true);
+    expect(result.steps.map((step) => step.name)).toEqual(["tsc", "build"]);
+    rmSync(workspacePath, { recursive: true, force: true });
   });
 });
 
@@ -370,6 +385,40 @@ describe("foreman debug/recover command context", () => {
     expect(output).toContain("src/feature.ts");
     expect(output).toContain("─── Clean Replay Skipped Files ───");
     expect(output).toContain("TEST_RESULTS.md");
+  });
+
+  it("validates the clean replay workspace when requested", async () => {
+    const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+    const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+    const worktreePath = join(tmpDir, "worktree-validate-replay");
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), [
+      "## Rebase",
+      "- Status: FAILED",
+      "- Recommended recovery: clean replay from current main",
+      "",
+    ].join("\n"));
+
+    mockExecFileSync.mockImplementation(((command: string, args?: string[]) => {
+      if (command === "git" && args?.join(" ") === "status --short") return "";
+      if (command === "npx" && args?.join(" ") === "tsc --noEmit") return "tsc ok\n";
+      if (command === "npm" && args?.join(" ") === "run build") return "build ok\n";
+      return "mock-output\n";
+    }) as (...args: unknown[]) => string);
+
+    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunProgress.mockReturnValue(null);
+    localStore.getAllMessages.mockReturnValue([]);
+    resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+    listRegisteredProjectsMock.mockResolvedValue([]);
+
+    await runCommand(recoverCommand, ["seed-1", "--raw", "--validate-clean-replay"]);
+
+    const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(output).toContain("─── Clean Replay Validation ───");
+    expect(output).toContain("Overall: PASS");
+    expect(output).toContain("- tsc: PASS");
+    expect(output).toContain("- build: PASS");
   });
 
   it("passes recommended clean replay guidance into the recovery prompt", async () => {
