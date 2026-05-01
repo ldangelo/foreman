@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { Run } from "../../lib/store.js";
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
@@ -85,8 +88,16 @@ function makeMocks(projectPath = "/tmp/project") {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("Doctor.checkOrphanedWorktrees", () => {
+  const tempDirs: string[] = [];
+
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("returns pass when no foreman worktrees exist", async () => {
@@ -107,6 +118,33 @@ describe("Doctor.checkOrphanedWorktrees", () => {
     store.getRunsForSeed.mockReturnValue([
       // Use the test process PID so isProcessAlive() returns true
       makeRun({ seed_id: seedId, status: "running", worktree_path: `/tmp/worktrees/${seedId}`, session_key: `pid-${process.pid}` }),
+    ]);
+
+    const results = await doctor.checkOrphanedWorktrees();
+
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe("pass");
+    expect(results[0].message).toContain("Active run");
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("matches active runs when stored and listed worktree paths differ only by canonical realpath", async () => {
+    const { store, doctor } = makeMocks();
+    const tempRoot = mkdtempSync(join(tmpdir(), "foreman-doctor-worktree-realpath-"));
+    tempDirs.push(tempRoot);
+    const seedId = "seed-realpath";
+    const worktreeDir = join(tempRoot, seedId);
+    mkdirSync(worktreeDir, { recursive: true });
+    const canonicalWorktreeDir = realpathSync(worktreeDir);
+
+    mockListWorkspaces.mockResolvedValue([makeWorktree(seedId, worktreeDir)]);
+    store.getRunsForSeed.mockReturnValue([
+      makeRun({
+        seed_id: seedId,
+        status: "running",
+        worktree_path: canonicalWorktreeDir,
+        session_key: `pid-${process.pid}`,
+      }),
     ]);
 
     const results = await doctor.checkOrphanedWorktrees();

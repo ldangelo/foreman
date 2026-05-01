@@ -4,6 +4,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   createDirectoryGuardrail,
   wrapToolWithGuardrail,
@@ -255,6 +258,42 @@ describe("createDirectoryGuardrail", () => {
       // Resolved path should match
       const result = guardrail("Bash", { command: "ls" }, process.cwd() + "/worktrees/project/seed-abc");
       expect(result.allowed).toBe(true);
+    });
+
+    it("should treat canonical realpath-equivalent cwd paths as the same worktree", () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "foreman-guardrail-realpath-"));
+      const expectedDir = join(tempRoot, "expected");
+      mkdirSync(expectedDir, { recursive: true });
+      const canonicalExpected = realpathSync(expectedDir);
+
+      const config: GuardrailConfig = {
+        directory: { mode: "veto" },
+        expectedCwd: expectedDir,
+      };
+      const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
+
+      const result = guardrail("Bash", { command: "ls" }, canonicalExpected);
+      expect(result.allowed).toBe(true);
+
+      rmSync(tempRoot, { recursive: true, force: true });
+    });
+
+    it("should allow allowedPaths that resolve to the same canonical realpath", () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "foreman-guardrail-allowed-realpath-"));
+      const expectedDir = join(tempRoot, "expected");
+      mkdirSync(expectedDir, { recursive: true });
+      const canonicalExpected = realpathSync(expectedDir);
+
+      const config: GuardrailConfig = {
+        directory: { mode: "veto", allowedPaths: [expectedDir] },
+        expectedCwd: expectedDir,
+      };
+      const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
+
+      const result = guardrail("Bash", { command: "ls" }, canonicalExpected);
+      expect(result.allowed).toBe(true);
+
+      rmSync(tempRoot, { recursive: true, force: true });
     });
   });
 

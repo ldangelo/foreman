@@ -8,6 +8,7 @@
  * @module src/orchestrator/guardrails
  */
 
+import { existsSync, realpathSync } from "node:fs";
 import { join, isAbsolute, resolve, relative } from "node:path";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -73,7 +74,11 @@ export interface GuardrailResult {
  * Resolves `..`, `.`, and trailing slashes to ensure consistent comparison.
  */
 function normalizePath(p: string): string {
-  return resolve(p).replace(/\\/g, "/").replace(/\/$/, "");
+  const resolved = resolve(p);
+  const canonical = existsSync(resolved)
+    ? (realpathSync.native?.(resolved) ?? realpathSync(resolved))
+    : resolved;
+  return canonical.replace(/\\/g, "/").replace(/\/$/, "");
 }
 
 /**
