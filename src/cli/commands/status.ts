@@ -83,6 +83,24 @@ export async function fetchStatusCounts(projectPath: string): Promise<StatusCoun
   return fetchTaskCounts(projectPath);
 }
 
+function getRecentOutcomeCountsCompat(store: ForemanStore, projectId: string): { failed: number; stuck: number } {
+  const compatStore = store as ForemanStore & {
+    getRecentOutcomeCounts?: (projectId: string) => { failed: number; stuck: number };
+    getRunsByStatusSince?: (status: Run["status"], since: string, projectId?: string) => Run[];
+  };
+
+  if (typeof compatStore.getRecentOutcomeCounts === "function") {
+    const counts = compatStore.getRecentOutcomeCounts(projectId);
+    return { failed: counts.failed, stuck: counts.stuck };
+  }
+
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  return {
+    failed: compatStore.getRunsByStatusSince?.("failed", since, projectId).length ?? 0,
+    stuck: compatStore.getRunsByStatusSince?.("stuck", since, projectId).length ?? 0,
+  };
+}
+
 // ── Internal render helper ────────────────────────────────────────────────
 
 async function renderStatus(projectPath: string): Promise<void> {
@@ -103,17 +121,13 @@ async function renderStatus(projectPath: string): Promise<void> {
   console.log(`  Completed:   ${chalk.cyan(completed)}`);
   console.log(`  Blocked:     ${chalk.red(blocked)}`);
 
-  // Show active agents from sqlite
   const store = ForemanStore.forProject(projectPath);
   const project = store.getProjectByPath(projectPath);
 
-  // Show failed/stuck run counts and success rate from SQLite (only recent — last 24h)
   if (project) {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const failedCount = store.getRunsByStatusSince("failed", since, project.id).length;
-    const stuckCount = store.getRunsByStatusSince("stuck", since, project.id).length;
-    if (failedCount > 0) console.log(`  Failed:      ${chalk.red(failedCount)} ${chalk.dim("(last 24h)")}`);
-    if (stuckCount > 0) console.log(`  Stuck:       ${chalk.red(stuckCount)} ${chalk.dim("(last 24h)")}`);
+    const outcomeCounts = getRecentOutcomeCountsCompat(store, project.id);
+    if (outcomeCounts.failed > 0) console.log(`  Failed:      ${chalk.red(outcomeCounts.failed)} ${chalk.dim("(last 24h)")}`);
+    if (outcomeCounts.stuck > 0) console.log(`  Stuck:       ${chalk.red(outcomeCounts.stuck)} ${chalk.dim("(last 24h)")}`);
 
     const sr = store.getSuccessRate(project.id);
     console.log(`  Success Rate (24h): ${formatSuccessRate(sr.rate)}${sr.rate === null ? chalk.dim(" (need 3+ runs)") : ""}`);
@@ -253,9 +267,9 @@ export const statusCommand = new Command("status")
           const store = ForemanStore.forProject(proj.path);
           const project = store.getProjectByPath(proj.path);
           if (project) {
-            const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-            totalFailed += store.getRunsByStatusSince("failed", since, project.id).length;
-            totalStuck += store.getRunsByStatusSince("stuck", since, project.id).length;
+            const outcomeCounts = getRecentOutcomeCountsCompat(store, project.id);
+            totalFailed += outcomeCounts.failed;
+            totalStuck += outcomeCounts.stuck;
             totalActiveAgents += store.getActiveRuns(project.id).length;
             totalCost += store.getMetrics(project.id).totalCost;
           }
@@ -301,9 +315,9 @@ export const statusCommand = new Command("status")
         let successRateData: { rate: number | null; merged: number; failed: number } = { rate: null, merged: 0, failed: 0 };
 
         if (project) {
-          const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-          failed = store.getRunsByStatusSince("failed", since, project.id).length;
-          stuck = store.getRunsByStatusSince("stuck", since, project.id).length;
+          const outcomeCounts = getRecentOutcomeCountsCompat(store, project.id);
+          failed = outcomeCounts.failed;
+          stuck = outcomeCounts.stuck;
           const runs = store.getActiveRuns(project.id);
           activeRuns = runs.map((run) => ({ run, progress: store.getRunProgress(run.id) }));
           metrics = store.getMetrics(project.id);

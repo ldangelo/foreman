@@ -301,11 +301,24 @@ export function poll(store: ForemanStore, runIds: string[]): WatchState {
     entries.push({ run, progress });
   }
 
-  const completedCount = entries.filter((e) => e.run.status === "completed").length;
-  const failedCount = entries.filter(
-    (e) => e.run.status === "failed" || e.run.status === "test-failed",
+  const latestBySeed = new Map<string, Run>();
+  for (const entry of entries) {
+    const current = latestBySeed.get(entry.run.seed_id);
+    if (!current) {
+      latestBySeed.set(entry.run.seed_id, entry.run);
+      continue;
+    }
+    if (entry.run.created_at > current.created_at || (entry.run.created_at === current.created_at && entry.run.id > current.id)) {
+      latestBySeed.set(entry.run.seed_id, entry.run);
+    }
+  }
+
+  const latestRuns = Array.from(latestBySeed.values());
+  const completedCount = latestRuns.filter((run) => run.status === "completed").length;
+  const failedCount = latestRuns.filter(
+    (run) => run.status === "failed" || run.status === "test-failed",
   ).length;
-  const stuckCount = entries.filter((e) => e.run.status === "stuck").length;
+  const stuckCount = latestRuns.filter((run) => run.status === "stuck").length;
 
   return { runs: entries, allDone, totalCost, totalTools, totalFiles, completedCount, failedCount, stuckCount };
 }

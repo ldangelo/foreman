@@ -138,7 +138,7 @@ function makeMockStore(opts: {
       },
     ),
     getEvents: vi.fn((projectId: string) => opts.events?.[projectId] ?? []),
-    getSuccessRate: vi.fn(() => ({ rate: null, merged: 0, failed: 0 })),
+    getSuccessRate: vi.fn(() => ({ rate: null, merged: 0, failed: 0 } as { rate: number | null; merged: number; failed: number })),
   };
 }
 
@@ -329,6 +329,29 @@ describe("renderDashboard", () => {
     const output = renderDashboard(state);
     expect(output).toContain("12.50"); // 5 + 7.5
   });
+
+  it("aggregates global success rate from per-project deduped outcome stats", () => {
+    const proj1 = makeProject({ id: "proj-1", name: "p1" });
+    const proj2 = makeProject({ id: "proj-2", name: "p2" });
+    const state: DashboardState = {
+      projects: [proj1, proj2],
+      activeRuns: new Map([["proj-1", []], ["proj-2", []]]),
+      completedRuns: new Map([["proj-1", []], ["proj-2", []]]),
+      progresses: new Map(),
+      metrics: new Map([
+        ["proj-1", makeMetrics({ totalCost: 0, totalTokens: 0 })],
+        ["proj-2", makeMetrics({ totalCost: 0, totalTokens: 0 })],
+      ]),
+      events: new Map([["proj-1", []], ["proj-2", []]]),
+      successRates: new Map([
+        ["proj-1", { rate: 2 / 3, merged: 2, failed: 1 }],
+        ["proj-2", { rate: 1, merged: 1, failed: 0 }],
+      ]),
+      lastUpdated: new Date(),
+    };
+    const output = renderDashboard(state);
+    expect(output).toContain("75%");
+  });
 });
 
 // ── pollDashboard() ────────────────────────────────────────────────────────
@@ -423,6 +446,16 @@ describe("pollDashboard", () => {
     const after = Date.now();
     expect(state.lastUpdated.getTime()).toBeGreaterThanOrEqual(before);
     expect(state.lastUpdated.getTime()).toBeLessThanOrEqual(after);
+  });
+
+  it("carries deduped success-rate stats through to dashboard state", () => {
+    const project = makeProject();
+    const store = makeMockStore({ projects: [project] });
+    store.getSuccessRate.mockReturnValue({ rate: 2 / 3, merged: 2, failed: 1 } as { rate: number | null; merged: number; failed: number });
+
+    const state = pollDashboard(store as any);
+
+    expect(state.successRates?.get(project.id)).toEqual({ rate: 2 / 3, merged: 2, failed: 1 });
   });
 });
 
