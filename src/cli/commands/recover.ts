@@ -14,13 +14,14 @@
  */
 
 import { Command } from "commander";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run, Message } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
 import { getHighspeedModel } from "../../lib/config.js";
@@ -114,7 +115,48 @@ async function resolveDaemonRecoverContext(projectPath: string): Promise<DaemonR
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type RecoveryReason = "test-failed" | "stuck" | "stale-blocked";
+type RecoveryReason = "test-failed" | "stuck" | "stale-blocked" | "finalize-conflict";
+type RecommendedRecovery = "clean-replay-from-main";
+
+interface CleanReplayWorkspace {
+  seedId: string;
+  branchName: string;
+  workspacePath: string;
+  baseBranch: string;
+}
+
+interface CleanReplayApplyResult {
+  copiedFiles: string[];
+  skippedFiles: string[];
+}
+
+interface CleanReplayValidationStep {
+  name: string;
+  success: boolean;
+  output: string;
+}
+
+interface CleanReplayValidationResult {
+  success: boolean;
+  steps: CleanReplayValidationStep[];
+}
+
+interface CleanReplayCommitResult {
+  success: boolean;
+  message: string;
+}
+
+interface CleanReplayPushResult {
+  success: boolean;
+  branchName: string;
+}
+
+function resolveRecoveryReason(requestedReason: RecoveryReason, recommendedRecovery: RecommendedRecovery | null, reasonWasExplicit: boolean): RecoveryReason {
+  if (!reasonWasExplicit && requestedReason === "test-failed" && recommendedRecovery === "clean-replay-from-main") {
+    return "finalize-conflict";
+  }
+  return requestedReason;
+}
 
 // ── Artifact collection ─────────────────────────────────────────────────────
 
@@ -183,6 +225,146 @@ function runCommandSafe(args: string[], cwd: string): string {
   }
 }
 
+function runValidationStep(name: string, args: string[], cwd: string): CleanReplayValidationStep {
+  try {
+    const output = execFileSync(args[0], args.slice(1), {
+      encoding: "utf-8",
+      cwd,
+      timeout: 120_000,
+    });
+    return { name, success: true, output: output || "(no output)" };
+  } catch (err) {
+    const output = err instanceof Error && "stdout" in err
+      ? ((err as NodeJS.ErrnoException & { stdout: string }).stdout ?? "(no output)")
+      : `(command failed: ${err instanceof Error ? err.message : String(err)})`;
+    return { name, success: false, output };
+  }
+}
+
+export function extractRecommendedRecovery(reports: Record<string, string>): RecommendedRecovery | null {
+  const finalizeReport = reports["FINALIZE_REPORT.md"];
+  if (!finalizeReport) return null;
+  if (/Recommended recovery:\s*clean replay from current main/i.test(finalizeReport)) {
+    return "clean-replay-from-main";
+  }
+  return null;
+}
+
+function formatRecoveryRecommendation(recommendedRecovery: RecommendedRecovery | null): string {
+  if (recommendedRecovery === "clean-replay-from-main") {
+    return [
+      "Recommended recovery: clean-replay-from-main",
+      "- Meaning: rebuild the branch from current main and replay only the intended source changes",
+      "- Use when finalize failed due to deterministic rebase/diverged-history conflicts",
+    ].join("\n");
+  }
+  return "(none)";
+}
+
+const CLEAN_REPLAY_EXCLUDED_PATHS = [
+  /^TEST_RESULTS\.md$/,
+  /^ACTIVITY_LOG\.json$/,
+  /^SESSION_LOG\.md$/,
+  /^RUN_LOG\.md$/,
+  /^FINALIZE_REPORT\.md$/,
+  /^EXPLORER_REPORT\.md$/,
+  /^DEVELOPER_REPORT\.md$/,
+  /^QA_REPORT\.md$/,
+  /^REVIEW\.md$/,
+  /^BLOCKED\.md$/,
+  /^TASK\.md$/,
+  /^\.beads\//,
+  /^docs\/reports\//,
+];
+
+function normalizeReplayPath(filePath: string): string {
+  return filePath.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+function isExcludedFromCleanReplay(filePath: string): boolean {
+  const normalized = normalizeReplayPath(filePath);
+  return CLEAN_REPLAY_EXCLUDED_PATHS.some((pattern) => pattern.test(normalized));
+}
+
+export function parseChangedFiles(statusOutput: string): string[] {
+  return statusOutput
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      const payload = line.slice(3).trim();
+      if (payload.includes(" -> ")) {
+        return payload.split(" -> ").at(-1) ?? payload;
+      }
+      return payload;
+    })
+    .map(normalizeReplayPath)
+    .filter(Boolean);
+}
+
+export function applyCleanReplayChanges(sourceWorktreePath: string, destinationWorkspacePath: string, statusOutput: string): CleanReplayApplyResult {
+  const copiedFiles: string[] = [];
+  const skippedFiles: string[] = [];
+
+  for (const relativePath of parseChangedFiles(statusOutput)) {
+    if (isExcludedFromCleanReplay(relativePath)) {
+      skippedFiles.push(relativePath);
+      continue;
+    }
+
+    const sourcePath = join(sourceWorktreePath, relativePath);
+    const destinationPath = join(destinationWorkspacePath, relativePath);
+    if (!existsSync(sourcePath)) {
+      skippedFiles.push(relativePath);
+      continue;
+    }
+
+    mkdirSync(dirname(destinationPath), { recursive: true });
+    copyFileSync(sourcePath, destinationPath);
+    copiedFiles.push(relativePath);
+  }
+
+  return { copiedFiles, skippedFiles };
+}
+
+export function validateCleanReplayWorkspace(workspacePath: string): CleanReplayValidationResult {
+  const steps = [
+    runValidationStep("tsc", ["npx", "tsc", "--noEmit"], workspacePath),
+    runValidationStep("build", ["npm", "run", "build"], workspacePath),
+  ];
+  return {
+    success: steps.every((step) => step.success),
+    steps,
+  };
+}
+
+async function commitCleanReplayWorkspace(projectPath: string, workspace: CleanReplayWorkspace, beadId: string): Promise<CleanReplayCommitResult> {
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const message = `fix: replay ${beadId} cleanly from current ${workspace.baseBranch}`;
+  await vcs.stageAll(workspace.workspacePath);
+  await vcs.commit(workspace.workspacePath, message);
+  return { success: true, message };
+}
+
+async function pushCleanReplayWorkspace(projectPath: string, workspace: CleanReplayWorkspace): Promise<CleanReplayPushResult> {
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  await vcs.push(workspace.workspacePath, workspace.branchName);
+  return { success: true, branchName: workspace.branchName };
+}
+
+async function prepareCleanReplayWorkspace(projectPath: string, beadId: string): Promise<CleanReplayWorkspace> {
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const baseBranch = await vcs.detectDefaultBranch(projectPath);
+  const replaySeedId = `${beadId}-clean-replay`;
+  const { workspacePath, branchName } = await vcs.createWorkspace(projectPath, replaySeedId, baseBranch);
+  return {
+    seedId: replaySeedId,
+    branchName,
+    workspacePath,
+    baseBranch,
+  };
+}
+
 // ── Prompt builder ──────────────────────────────────────────────────────────
 
 function buildRecoveryPrompt(opts: {
@@ -197,6 +379,7 @@ function buildRecoveryPrompt(opts: {
   recentGitLog: string;
   reports: Record<string, string>;
   logContent: string | null;
+  recoveryRecommendation: string;
 }): string {
   const reportSections = Object.entries(opts.reports)
     .map(([name, content]) => `### ${name}\n\`\`\`\n${content.slice(0, 5000)}\n\`\`\``)
@@ -213,6 +396,7 @@ function buildRecoveryPrompt(opts: {
     runId: opts.runId,
     projectRoot: opts.projectRoot,
     runSummary: opts.runSummary,
+    recoveryRecommendation: opts.recoveryRecommendation,
     testOutput: opts.testOutput || "(not captured)",
     blockedBeads: opts.blockedBeads || "(none)",
     recentGitLog: opts.recentGitLog || "(not available)",
@@ -230,24 +414,41 @@ export const recoverCommand = new Command("recover")
   .argument("<bead-id>", "The bead/seed ID that needs recovery")
   .option(
     "--reason <reason>",
-    "Failure reason: test-failed | stuck | stale-blocked",
-    "test-failed",
+    "Failure reason: test-failed | stuck | stale-blocked | finalize-conflict",
   )
   .option("--run-id <id>", "Specific run ID (default: latest run for this seed)")
   .option("--output <text>", "Pre-captured test output to include in context")
   .option("--model <model>", "Model to use for recovery")
   .option("--raw", "Print collected context without invoking AI")
+  .option("--prepare-clean-replay", "Create a fresh clean-replay workspace from the detected default branch")
+  .option("--apply-clean-replay", "Copy intended changed files from the failed worktree into the clean replay workspace")
+  .option("--validate-clean-replay", "Run typecheck and build in the clean replay workspace")
+  .option("--commit-clean-replay", "Stage and commit the clean replay workspace after successful validation")
+  .option("--push-clean-replay", "Push the validated clean replay branch after commit")
+  .option("--execute-clean-replay", "Run the full clean replay flow: apply, validate, commit, and push")
   .action(async (beadId: string, opts: {
     reason?: string;
     runId?: string;
     output?: string;
     model?: string;
     raw?: boolean;
+    prepareCleanReplay?: boolean;
+    applyCleanReplay?: boolean;
+    validateCleanReplay?: boolean;
+    commitCleanReplay?: boolean;
+    pushCleanReplay?: boolean;
+    executeCleanReplay?: boolean;
   }) => {
-    const reason = (opts.reason ?? "test-failed") as RecoveryReason;
-    const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked"];
-    if (!validReasons.includes(reason)) {
-      console.error(chalk.red(`Invalid reason "${reason}". Must be one of: ${validReasons.join(", ")}`));
+    const requestedReason = (opts.reason ?? "test-failed") as RecoveryReason;
+    const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked", "finalize-conflict"];
+    const executeCleanReplay = opts.executeCleanReplay ?? false;
+    const prepareCleanReplay = executeCleanReplay || (opts.prepareCleanReplay ?? false);
+    const applyCleanReplay = executeCleanReplay || (opts.applyCleanReplay ?? false);
+    const validateCleanReplay = executeCleanReplay || (opts.validateCleanReplay ?? false);
+    const commitCleanReplay = executeCleanReplay || (opts.commitCleanReplay ?? false);
+    const pushCleanReplay = executeCleanReplay || (opts.pushCleanReplay ?? false);
+    if (!validReasons.includes(requestedReason)) {
+      console.error(chalk.red(`Invalid reason "${requestedReason}". Must be one of: ${validReasons.join(", ")}`));
       process.exit(1);
     }
 
@@ -275,8 +476,6 @@ export const recoverCommand = new Command("recover")
       process.exit(1);
     }
 
-    console.log(chalk.bold(`\nRecovery: ${beadId} — reason: ${reason} — run ${run.id.slice(0, 8)} (${run.status})\n`));
-
     // 1. Run summary + progress
     const progress = daemon && run.progress
       ? JSON.parse(run.progress) as Record<string, unknown>
@@ -298,6 +497,16 @@ export const recoverCommand = new Command("recover")
         if (content) reports[file] = content;
       }
     }
+
+    const recommendedRecovery = extractRecommendedRecovery(reports);
+    const recoveryRecommendation = formatRecoveryRecommendation(recommendedRecovery);
+    const reasonWasExplicit = opts.reason !== undefined;
+    const reason = resolveRecoveryReason(requestedReason, recommendedRecovery, reasonWasExplicit);
+
+    if (reason !== requestedReason) {
+      console.log(chalk.dim(`  Auto-selected recovery reason: ${reason} (from finalize recommendation)`));
+    }
+    console.log(chalk.bold(`\nRecovery: ${beadId} — reason: ${reason} — run ${run.id.slice(0, 8)} (${run.status})\n`));
 
     // 4. Bead info from br
     try {
@@ -336,6 +545,43 @@ export const recoverCommand = new Command("recover")
       projectPath,
     );
 
+    let cleanReplayWorkspace: CleanReplayWorkspace | null = null;
+    let cleanReplayApplyResult: CleanReplayApplyResult | null = null;
+    let cleanReplayValidationResult: CleanReplayValidationResult | null = null;
+    let cleanReplayCommitResult: CleanReplayCommitResult | null = null;
+    let cleanReplayPushResult: CleanReplayPushResult | null = null;
+    if (prepareCleanReplay || applyCleanReplay || validateCleanReplay || commitCleanReplay || pushCleanReplay) {
+      if (reason !== "finalize-conflict") {
+        store.close();
+        console.error(chalk.red("--prepare-clean-replay/--apply-clean-replay requires finalize-conflict recovery context"));
+        process.exit(1);
+      }
+      cleanReplayWorkspace = await prepareCleanReplayWorkspace(projectPath, beadId);
+      if (applyCleanReplay) {
+        if (!worktreePath) {
+          store.close();
+          console.error(chalk.red("Cannot apply clean replay without a source worktree path"));
+          process.exit(1);
+        }
+        const statusOutput = runCommandSafe(["git", "status", "--short"], worktreePath);
+        cleanReplayApplyResult = applyCleanReplayChanges(worktreePath, cleanReplayWorkspace.workspacePath, statusOutput);
+      }
+      if (validateCleanReplay || commitCleanReplay || pushCleanReplay) {
+        cleanReplayValidationResult = validateCleanReplayWorkspace(cleanReplayWorkspace.workspacePath);
+      }
+      if (commitCleanReplay || pushCleanReplay) {
+        if (!cleanReplayValidationResult?.success) {
+          store.close();
+          console.error(chalk.red("--commit-clean-replay/--push-clean-replay requires successful clean replay validation"));
+          process.exit(1);
+        }
+        cleanReplayCommitResult = await commitCleanReplayWorkspace(projectPath, cleanReplayWorkspace, beadId);
+      }
+      if (pushCleanReplay) {
+        cleanReplayPushResult = await pushCleanReplayWorkspace(projectPath, cleanReplayWorkspace);
+      }
+    }
+
     store.close();
 
     // Print artifact summary
@@ -344,11 +590,58 @@ export const recoverCommand = new Command("recover")
     console.log(chalk.dim(`  Log:         ${logContent ? "found" : "not found"}`));
     console.log(chalk.dim(`  Test output: ${testOutput ? `${testOutput.split("\n").length} lines` : "(none)"}`));
     console.log(chalk.dim(`  Blocked:     ${blockedBeads.split("\n").filter(Boolean).length} beads`));
+    if (cleanReplayWorkspace) {
+      console.log(chalk.dim(`  Clean replay: ${cleanReplayWorkspace.branchName} @ ${cleanReplayWorkspace.workspacePath}`));
+    }
+    if (cleanReplayApplyResult) {
+      console.log(chalk.dim(`  Clean replay copied: ${cleanReplayApplyResult.copiedFiles.length} file(s)`));
+    }
+    if (cleanReplayValidationResult) {
+      console.log(chalk.dim(`  Clean replay validation: ${cleanReplayValidationResult.success ? "passed" : "failed"}`));
+    }
+    if (cleanReplayCommitResult) {
+      console.log(chalk.dim(`  Clean replay commit: ${cleanReplayCommitResult.message}`));
+    }
+    if (cleanReplayPushResult) {
+      console.log(chalk.dim(`  Clean replay push: ${cleanReplayPushResult.branchName}`));
+    }
     console.log();
 
     if (opts.raw) {
       console.log(chalk.bold("─── Run Summary ───"));
       console.log(runSummary);
+      console.log(chalk.bold("\n─── Recommended Recovery ───"));
+      console.log(recoveryRecommendation);
+      if (cleanReplayWorkspace) {
+        console.log(chalk.bold("\n─── Clean Replay Workspace ───"));
+        console.log(`Seed: ${cleanReplayWorkspace.seedId}`);
+        console.log(`Base: ${cleanReplayWorkspace.baseBranch}`);
+        console.log(`Branch: ${cleanReplayWorkspace.branchName}`);
+        console.log(`Path: ${cleanReplayWorkspace.workspacePath}`);
+      }
+      if (cleanReplayApplyResult) {
+        console.log(chalk.bold("\n─── Clean Replay Applied Files ───"));
+        console.log(cleanReplayApplyResult.copiedFiles.join("\n") || "(none)");
+        console.log(chalk.bold("\n─── Clean Replay Skipped Files ───"));
+        console.log(cleanReplayApplyResult.skippedFiles.join("\n") || "(none)");
+      }
+      if (cleanReplayValidationResult) {
+        console.log(chalk.bold("\n─── Clean Replay Validation ───"));
+        console.log(`Overall: ${cleanReplayValidationResult.success ? "PASS" : "FAIL"}`);
+        for (const step of cleanReplayValidationResult.steps) {
+          console.log(`- ${step.name}: ${step.success ? "PASS" : "FAIL"}`);
+        }
+      }
+      if (cleanReplayCommitResult) {
+        console.log(chalk.bold("\n─── Clean Replay Commit ───"));
+        console.log(`Status: PASS`);
+        console.log(`Message: ${cleanReplayCommitResult.message}`);
+      }
+      if (cleanReplayPushResult) {
+        console.log(chalk.bold("\n─── Clean Replay Push ───"));
+        console.log(`Status: PASS`);
+        console.log(`Branch: ${cleanReplayPushResult.branchName}`);
+      }
       console.log(chalk.bold("\n─── Messages ───"));
       console.log(messagesText);
       for (const [name, content] of Object.entries(reports)) {
@@ -383,6 +676,7 @@ export const recoverCommand = new Command("recover")
       recentGitLog,
       reports,
       logContent,
+      recoveryRecommendation,
     });
 
     const model = opts.model ?? getHighspeedModel();

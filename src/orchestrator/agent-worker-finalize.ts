@@ -57,6 +57,7 @@ export interface FinalizeConfig {
 export interface FinalizeResult {
   success: boolean;
   retryable: boolean;
+  recommendedRecovery?: "clean-replay-from-main";
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -262,6 +263,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // seed to open — preventing the infinite re-dispatch loop described in bd-zwtr.
   let pushSucceeded = false;
   let pushRetryable = true; // default: transient failures may be retried
+  let recommendedRecovery: FinalizeResult["recommendedRecovery"];
   if (!branchVerified) {
     log(`[FINALIZE] Skipping push (branch verification failed)`);
     report.push(`## Push`, `- Status: SKIPPED (branch verification failed)`, "");
@@ -299,23 +301,25 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
             const detail = conflictList ? `conflicts in: ${conflictList}` : "rebase conflict";
             log(`[FINALIZE] Rebase failed: ${detail}`);
             await appendFile(logFile, `[FINALIZE] Rebase conflict: ${detail}\n`);
-            report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${detail.slice(0, 300)}`, "");
+            report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${detail.slice(0, 300)}`, `- Recommended recovery: clean replay from current main`, "");
             report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
             // Abort any partial rebase to leave the worktree clean
             try { await vcs.abortRebase(worktreePath); } catch { /* already clean */ }
             // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
             pushRetryable = false;
+            recommendedRecovery = "clean-replay-from-main";
           }
         } catch (rebaseErr: unknown) {
           const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
           log(`[FINALIZE] Rebase failed: ${rebaseMsg.slice(0, 200)}`);
           await appendFile(logFile, `[FINALIZE] Rebase error: ${rebaseMsg}\n`);
-          report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, "");
+          report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, `- Recommended recovery: clean replay from current main`, "");
           report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
           // Abort any partial rebase to leave the worktree clean
           try { await vcs.abortRebase(worktreePath); } catch { /* already clean */ }
           // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
           pushRetryable = false;
+          recommendedRecovery = "clean-replay-from-main";
         }
 
         // Retry push only if rebase succeeded. A post-rebase push failure is treated
@@ -380,5 +384,5 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
     // Non-fatal — finalize report is for debugging
   }
 
-  return { success: pushSucceeded, retryable: pushRetryable };
+  return { success: pushSucceeded, retryable: pushRetryable, recommendedRecovery };
 }

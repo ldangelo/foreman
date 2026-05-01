@@ -187,8 +187,8 @@ describe("AC-T-014-3: agent-worker-finalize.ts — retryable vs non-retryable fa
     expect(block).toContain("pushRetryable = true");
   });
 
-  it("returns FinalizeResult with success and retryable fields", () => {
-    expect(source).toContain("return { success: pushSucceeded, retryable: pushRetryable }");
+  it("returns FinalizeResult with success, retryable, and recommendedRecovery fields", () => {
+    expect(source).toContain("return { success: pushSucceeded, retryable: pushRetryable, recommendedRecovery }");
   });
 
   it("enqueues to merge queue BEFORE push attempt (pre-push enqueue pattern)", () => {

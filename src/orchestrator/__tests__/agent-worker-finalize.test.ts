@@ -635,6 +635,15 @@ describe("finalize() — non-fast-forward push: rebase FAILS → deterministic f
     expect(result.retryable).toBe(false);
   });
 
+  it("recommends clean replay from main when rebase fails deterministically", async () => {
+    const vcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
+      rebase: vi.fn().mockResolvedValue({ success: false, hasConflicts: true, conflictingFiles: ["src/foo.ts"] }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(result.recommendedRecovery).toBe("clean-replay-from-main");
+  });
+
   it("calls vcs.abortRebase to clean up partial rebase when rebase returns success=false", async () => {
     const vcs = makeMockVcs({
       push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
@@ -664,6 +673,7 @@ describe("finalize() — non-fast-forward push: rebase FAILS → deterministic f
     expect(content).toContain("## Rebase");
     expect(content).toContain("Status: FAILED");
     expect(content).toContain("rebase could not resolve diverged history");
+    expect(content).toContain("Recommended recovery: clean replay from current main");
   });
 
   it("does not throw even when rebase fails", async () => {
