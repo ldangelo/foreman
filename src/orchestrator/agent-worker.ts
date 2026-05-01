@@ -1109,6 +1109,7 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
       }
 
       const now = new Date().toISOString();
+      const prTiming = workflowConfig.pr?.timing ?? "create-at-finalize";
       if (finalizeSucceeded) {
         // Mark run as completed BEFORE enqueue/autoMerge — autoMerge looks
         // for completed runs, so this must happen first.
@@ -1116,34 +1117,39 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
         notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
 
         let prCreated = false;
-        try {
-          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
-          const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend);
-          const pr = await refinery.ensurePullRequestForRun({
-            runId,
-            baseBranch: config.targetBranch,
-            updateRunStatus: false,
-            bodyNote: workflowConfig.merge === "auto"
-              ? "Automatically published before refinery PR merge."
-              : "Published by finalize for operator review.",
-          });
-          prCreated = true;
-          log(`[FINALIZE] PR ready: ${pr.prUrl}`);
-          sendMail(agentMailClient, "foreman", "pr-created", {
-            seedId,
-            runId,
-            branchName: pr.branchName,
-            prUrl: pr.prUrl,
-            strategy: workflowConfig.merge ?? "auto",
-          });
+        if (prTiming !== "never") {
+          try {
+            const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+            const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend);
+            const pr = await refinery.ensurePullRequestForRun({
+              runId,
+              baseBranch: config.targetBranch,
+              draft: false,
+              updateRunStatus: false,
+              bodyNote: workflowConfig.merge === "auto"
+                ? "Automatically published before refinery PR merge."
+                : "Published by finalize for operator review.",
+            });
+            prCreated = true;
+            log(`[FINALIZE] PR ready: ${pr.prUrl}`);
+            sendMail(agentMailClient, "foreman", "pr-created", {
+              seedId,
+              runId,
+              branchName: pr.branchName,
+              prUrl: pr.prUrl,
+              strategy: workflowConfig.merge ?? "auto",
+            });
 
-          if ((workflowConfig.merge ?? "auto") !== "auto") {
-            store.updateRun(runId, { status: "pr-created", completed_at: now });
-            notifyClient.send({ type: "status", runId, status: "pr-created", timestamp: now });
+            if ((workflowConfig.merge ?? "auto") !== "auto") {
+              store.updateRun(runId, { status: "pr-created", completed_at: now });
+              notifyClient.send({ type: "status", runId, status: "pr-created", timestamp: now });
+            }
+          } catch (prErr: unknown) {
+            const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
+            log(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
           }
-        } catch (prErr: unknown) {
-          const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
-          log(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
+        } else {
+          log("[FINALIZE] Workflow PR timing is never — skipping PR publication");
         }
 
         let skipMergeQueue = false;
@@ -1227,27 +1233,32 @@ async function runPipeline(config: WorkerConfig, store: ForemanStore, logFile: s
           }
         }
       } else {
-        try {
-          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
-          const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend);
-          const pr = await refinery.ensurePullRequestForRun({
-            runId,
-            baseBranch: config.targetBranch,
-            updateRunStatus: false,
-            bodyNote: `Pipeline finished with failure: ${finalizeFailureReason || "unknown error"}`,
-            existingOk: true,
-          });
-          log(`[FINALIZE] Failure PR ready: ${pr.prUrl}`);
-          sendMail(agentMailClient, "foreman", "pr-created", {
-            seedId,
-            runId,
-            branchName: pr.branchName,
-            prUrl: pr.prUrl,
-            strategy: "failure-review",
-          });
-        } catch (prErr: unknown) {
-          const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
-          log(`[FINALIZE] Failed to publish PR after finalize failure: ${prMsg}`);
+        if (prTiming !== "never") {
+          try {
+            const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath);
+            const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend);
+            const pr = await refinery.ensurePullRequestForRun({
+              runId,
+              baseBranch: config.targetBranch,
+              draft: prTiming === "draft-after-developer",
+              updateRunStatus: false,
+              bodyNote: `Pipeline finished with failure: ${finalizeFailureReason || "unknown error"}`,
+              existingOk: true,
+            });
+            log(`[FINALIZE] Failure PR ready: ${pr.prUrl}`);
+            sendMail(agentMailClient, "foreman", "pr-created", {
+              seedId,
+              runId,
+              branchName: pr.branchName,
+              prUrl: pr.prUrl,
+              strategy: "failure-review",
+            });
+          } catch (prErr: unknown) {
+            const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
+            log(`[FINALIZE] Failed to publish PR after finalize failure: ${prMsg}`);
+          }
+        } else {
+          log("[FINALIZE] Workflow PR timing is never — skipping failure PR publication");
         }
 
         let alreadyLandedOnTarget = false;

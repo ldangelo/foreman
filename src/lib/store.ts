@@ -74,6 +74,12 @@ export interface Run {
   base_branch?: string | null;
   /** Per-run merge strategy: 'auto' (refinery), 'pr' (gh pr create), or 'none' (skip). */
   merge_strategy?: "auto" | "pr" | "none" | null;
+  /** Canonical PR URL for this run, if one has been published. */
+  pr_url?: string | null;
+  /** Canonical PR state tracked for this run. */
+  pr_state?: "none" | "draft" | "open" | "merged" | "closed" | null;
+  /** Branch head SHA captured when the canonical PR was created or reused. */
+  pr_head_sha?: string | null;
 }
 
 export interface Cost {
@@ -98,6 +104,7 @@ export type EventType =
   | "conflict"
   | "test-fail"
   | "pr-created"
+  | "pr-stale"
   | "merge-queue-enqueue"
   | "merge-queue-dequeue"
   | "merge-queue-resolve"
@@ -526,6 +533,9 @@ const MIGRATIONS = [
   `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
   `ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL`,
   `ALTER TABLE runs ADD COLUMN merge_strategy TEXT DEFAULT 'auto'`,
+  `ALTER TABLE runs ADD COLUMN pr_url TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN pr_state TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN pr_head_sha TEXT DEFAULT NULL`,
   `CREATE TABLE IF NOT EXISTS sentinel_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL UNIQUE,
@@ -937,11 +947,14 @@ export class ForemanStore {
       tmux_session: null,
       base_branch: opts?.baseBranch ?? null,
       merge_strategy: opts?.mergeStrategy ?? 'auto',
+      pr_url: null,
+      pr_state: null,
+      pr_head_sha: null,
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch, merge_strategy)
-         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch, @merge_strategy)`
+        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch, merge_strategy, pr_url, pr_state, pr_head_sha)
+         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch, @merge_strategy, @pr_url, @pr_state, @pr_head_sha)`
       )
       .run(run);
     return run;
@@ -949,7 +962,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy" | "pr_url" | "pr_state" | "pr_head_sha">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };

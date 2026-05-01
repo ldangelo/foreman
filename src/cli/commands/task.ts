@@ -19,9 +19,10 @@
 
 import { Command } from "commander";
 import { existsSync, readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { basename, join } from "node:path";
 import chalk from "chalk";
-import { ForemanStore } from "../../lib/store.js";
+import { ForemanStore, type Run } from "../../lib/store.js";
 import {
   NativeTaskStore,
   parsePriority,
@@ -45,6 +46,7 @@ const COL_TITLE = 40;
 const COL_TYPE = 10;
 const COL_PRI = 14;
 const COL_STATUS = 14;
+const COL_PR = 15;
 const COL_GAP = "  ";
 
 // ── tRPC task helpers ─────────────────────────────────────────────────────
@@ -142,7 +144,54 @@ function statusChalk(status: string): string {
   }
 }
 
-function printTaskTable(rows: TaskRow[]): void {
+type TaskRowWithRunPr = TaskRow & {
+  run_pr_state?: Run["pr_state"];
+  run_pr_url?: string | null;
+  run_pr_head_sha?: string | null;
+};
+
+export type TaskPrDisplayState = "none" | "draft" | "open" | "merged" | "closed" | "head-mismatch";
+
+export function resolveTaskPrDisplayState(
+  run: Pick<Run, "pr_state" | "pr_head_sha"> | null,
+  branchHeadSha?: string | null,
+): TaskPrDisplayState {
+  if (!run?.pr_state) return "none";
+  if (branchHeadSha && run.pr_head_sha && branchHeadSha !== run.pr_head_sha) {
+    return "head-mismatch";
+  }
+  return run.pr_state;
+}
+
+function readBranchHeadSha(projectPath: string, branch: string | null): string | null {
+  if (!branch) return null;
+  try {
+    return execSync(`git rev-parse ${branch}`, { cwd: projectPath, stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function formatPrDisplay(state: TaskPrDisplayState): string {
+  switch (state) {
+    case "draft":
+      return "draft";
+    case "open":
+      return "open";
+    case "merged":
+      return "merged";
+    case "closed":
+      return "closed";
+    case "head-mismatch":
+      return "head-mismatch";
+    default:
+      return "none";
+  }
+}
+
+function printTaskTable(rows: TaskRowWithRunPr[], projectPath: string): void {
   if (rows.length === 0) {
     console.log(chalk.dim("No tasks found."));
     return;
@@ -158,12 +207,18 @@ function printTaskTable(rows: TaskRow[]): void {
       COL_GAP +
       chalk.bold(pad("PRIORITY", COL_PRI)) +
       COL_GAP +
-      chalk.bold("STATUS"),
+      chalk.bold(pad("STATUS", COL_STATUS)) +
+      COL_GAP +
+      chalk.bold("PR"),
   );
-  console.log("─".repeat(COL_ID + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + (COL_GAP.length * 4)));
+  console.log("─".repeat(COL_ID + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + COL_PR + (COL_GAP.length * 5)));
 
   for (const t of rows) {
     const shortId = formatTaskIdDisplay(t.id);
+    const prState = resolveTaskPrDisplayState(
+      { pr_state: t.run_pr_state ?? null, pr_head_sha: t.run_pr_head_sha ?? null },
+      readBranchHeadSha(projectPath, t.branch),
+    );
     console.log(
       renderColumn(shortId, COL_ID, chalk.dim) +
         COL_GAP +
@@ -173,7 +228,9 @@ function printTaskTable(rows: TaskRow[]): void {
         COL_GAP +
         renderColumn(priorityLabel(t.priority), COL_PRI, (text) => colorPriority(text, t.priority)) +
         COL_GAP +
-        renderColumn(t.status, COL_STATUS, statusChalk),
+        renderColumn(t.status, COL_STATUS, statusChalk) +
+        COL_GAP +
+        renderColumn(formatPrDisplay(prState), COL_PR, chalk.dim),
     );
   }
 }
@@ -566,7 +623,9 @@ const listCommand = new Command("list")
       }
 
       const db = store.getDb();
-      let sql = "SELECT * FROM tasks";
+      let sql = `SELECT t.*, r.pr_state AS run_pr_state, r.pr_url AS run_pr_url, r.pr_head_sha AS run_pr_head_sha
+        FROM tasks t
+        LEFT JOIN runs r ON r.id = t.run_id`;
       const params: string[] = [];
       const conditions: string[] = [];
 
@@ -590,7 +649,7 @@ const listCommand = new Command("list")
 
       const rows = (
         params.length > 0 ? db.prepare(sql).all(...params) : db.prepare(sql).all()
-      ) as TaskRow[];
+      ) as TaskRowWithRunPr[];
 
       if (rows.length === 0) {
         if (opts.status && opts.type) {
@@ -617,7 +676,7 @@ const listCommand = new Command("list")
             ? `All Tasks`
             : `Active Tasks`;
       console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
-      printTaskTable(rows);
+      printTaskTable(rows, projectPath);
       console.log();
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
@@ -636,7 +695,7 @@ const showCommand = new Command("show")
     const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
-      const { taskStore } = getTaskStore(projectPath);
+      const { store, taskStore } = getTaskStore(projectPath);
       const resolvedId = taskStore.resolveTaskId(id);
       const task = taskStore.get(resolvedId);
       if (!task) {
@@ -654,6 +713,12 @@ const showCommand = new Command("show")
       }
       if (task.run_id) {
         console.log(`  Run ID:      ${task.run_id}`);
+        const run = store.getRun(task.run_id);
+        const prState = resolveTaskPrDisplayState(run, readBranchHeadSha(projectPath, task.branch));
+        console.log(`  PR State:    ${prState}`);
+        if (run?.pr_url) {
+          console.log(`  PR URL:      ${run.pr_url}`);
+        }
       }
       if (task.branch) {
         console.log(`  Branch:      ${task.branch}`);
