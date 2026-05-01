@@ -222,7 +222,11 @@ export function generateSessionLogContent(data: SessionLogData, date: Date): str
     lines.push("");
 
     for (const phase of failedPhases) {
-      lines.push(`### ${phase.name} phase failed`);
+      const isCommandContractFailure = phase.phaseType === "command"
+        && phase.error?.includes("Command phase contract violated:");
+      lines.push(isCommandContractFailure
+        ? `### ${phase.name} command phase contract failed`
+        : `### ${phase.name} phase failed`);
       lines.push("");
       lines.push(`**Error:** ${phase.error ?? "unknown error"}`);
       lines.push("");

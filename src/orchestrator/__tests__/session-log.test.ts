@@ -151,6 +151,23 @@ describe("generateSessionLogContent", () => {
     expect(content).toContain("✗ failed");
   });
 
+  it("labels command contract failures explicitly in Problems & Resolutions", () => {
+    const phases: PhaseRecord[] = [
+      {
+        name: "fix",
+        phaseType: "command",
+        skipped: false,
+        success: false,
+        costUsd: 0.5,
+        turns: 10,
+        error: "Command phase contract violated: Blocked git commit during non-finalize phase",
+      },
+    ];
+    const content = generateSessionLogContent(makeData({ phases, totalCostUsd: 0.5, totalTurns: 10 }), date);
+    expect(content).toContain("### fix command phase contract failed");
+    expect(content).toContain("Blocked git commit during non-finalize phase");
+  });
+
   it("marks skipped phases with ⏭", () => {
     const phases: PhaseRecord[] = [
       { name: "explorer", skipped: true },
