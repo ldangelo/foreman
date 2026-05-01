@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import * as trpcClientModule from "../../lib/trpc-client.js";
 import * as projectTaskSupport from "../commands/project-task-support.js";
 import { debugCommand } from "../commands/debug.js";
-import { recoverCommand } from "../commands/recover.js";
+import { applyCleanReplayChanges, parseChangedFiles, recoverCommand } from "../commands/recover.js";
 
 const mockExecFileSync = vi.hoisted(() => vi.fn(() => "mock-output\n"));
 const mockExecFile = vi.hoisted(() => vi.fn());
@@ -43,6 +43,38 @@ vi.mock("../commands/project-task-support.js", () => ({
   resolveRepoRootProjectPath: vi.fn(),
 }));
 
+describe("clean replay helpers", () => {
+  it("parses git status output into normalized changed file paths", () => {
+    expect(parseChangedFiles([" M src/foo.ts", "A  test/bar.test.ts", "R  old.ts -> src/new.ts"].join("\n"))).toEqual([
+      "src/foo.ts",
+      "test/bar.test.ts",
+      "src/new.ts",
+    ]);
+  });
+
+  it("copies intended files and skips generated artifacts", () => {
+    const sourceDir = mkdtempSync(join(tmpdir(), "foreman-replay-source-"));
+    const destinationDir = mkdtempSync(join(tmpdir(), "foreman-replay-dest-"));
+    mkdirSync(join(sourceDir, "src"), { recursive: true });
+    mkdirSync(join(sourceDir, "docs", "reports", "seed-1"), { recursive: true });
+    writeFileSync(join(sourceDir, "src", "feature.ts"), "export const value = 1;\n");
+    writeFileSync(join(sourceDir, "TEST_RESULTS.md"), "generated\n");
+    writeFileSync(join(sourceDir, "docs", "reports", "seed-1", "QA_REPORT.md"), "report\n");
+
+    const result = applyCleanReplayChanges(
+      sourceDir,
+      destinationDir,
+      [" M src/feature.ts", "?? TEST_RESULTS.md", "?? docs/reports/seed-1/QA_REPORT.md"].join("\n"),
+    );
+
+    expect(result.copiedFiles).toEqual(["src/feature.ts"]);
+    expect(result.skippedFiles).toEqual(["TEST_RESULTS.md", "docs/reports/seed-1/QA_REPORT.md"]);
+    expect(readFileSync(join(destinationDir, "src", "feature.ts"), "utf-8")).toContain("value = 1");
+    rmSync(sourceDir, { recursive: true, force: true });
+    rmSync(destinationDir, { recursive: true, force: true });
+  });
+});
+
 describe("foreman debug/recover command context", () => {
   let tmpDir: string;
   let localStore: {
@@ -57,11 +89,21 @@ describe("foreman debug/recover command context", () => {
     mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
     vi.clearAllMocks();
     mockRunWithPiSdk.mockResolvedValue({ success: true, outputText: "done", costUsd: 0 });
+    mockExecFileSync.mockImplementation(((command: string, args?: string[]) => {
+      if (command === "git" && args?.join(" ") === "status --short") {
+        return "";
+      }
+      return "mock-output\n";
+    }) as (...args: unknown[]) => string);
     mockVcsFactoryCreate.mockResolvedValue({
       detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-      createWorkspace: vi.fn().mockResolvedValue({
-        workspacePath: "/tmp/clean-replay",
-        branchName: "foreman/seed-1-clean-replay",
+      createWorkspace: vi.fn().mockImplementation(() => {
+        const workspacePath = join(tmpDir, "clean-replay-workspace");
+        mkdirSync(workspacePath, { recursive: true });
+        return Promise.resolve({
+          workspacePath,
+          branchName: "foreman/seed-1-clean-replay",
+        });
       }),
     });
     localStore = {
@@ -288,7 +330,46 @@ describe("foreman debug/recover command context", () => {
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).toContain("─── Clean Replay Workspace ───");
     expect(output).toContain("Branch: foreman/seed-1-clean-replay");
-    expect(output).toContain("Path: /tmp/clean-replay");
+    expect(output).toContain(`Path: ${join(tmpDir, "clean-replay-workspace")}`);
+  });
+
+  it("applies intended files into the clean replay workspace when requested", async () => {
+    const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+    const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+    const worktreePath = join(tmpDir, "worktree-apply-replay");
+    mkdirSync(join(worktreePath, "src"), { recursive: true });
+    mkdirSync(join(worktreePath, "docs", "reports", "seed-1"), { recursive: true });
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), [
+      "## Rebase",
+      "- Status: FAILED",
+      "- Recommended recovery: clean replay from current main",
+      "",
+    ].join("\n"));
+    writeFileSync(join(worktreePath, "src", "feature.ts"), "export const replayed = true;\n");
+    writeFileSync(join(worktreePath, "TEST_RESULTS.md"), "generated\n");
+
+    mockExecFileSync.mockImplementation(((command: string, args?: string[]) => {
+      if (command === "git" && args?.join(" ") === "status --short") {
+        return [" M src/feature.ts", "?? TEST_RESULTS.md"].join("\n");
+      }
+      return "mock-output\n";
+    }) as (...args: unknown[]) => string);
+
+    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunProgress.mockReturnValue(null);
+    localStore.getAllMessages.mockReturnValue([]);
+    resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+    listRegisteredProjectsMock.mockResolvedValue([]);
+
+    await runCommand(recoverCommand, ["seed-1", "--raw", "--apply-clean-replay"]);
+
+    const destinationPath = join(tmpDir, "clean-replay-workspace", "src", "feature.ts");
+    expect(readFileSync(destinationPath, "utf-8")).toContain("replayed = true");
+    const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(output).toContain("─── Clean Replay Applied Files ───");
+    expect(output).toContain("src/feature.ts");
+    expect(output).toContain("─── Clean Replay Skipped Files ───");
+    expect(output).toContain("TEST_RESULTS.md");
   });
 
   it("passes recommended clean replay guidance into the recovery prompt", async () => {

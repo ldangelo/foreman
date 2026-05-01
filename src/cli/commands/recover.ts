@@ -14,8 +14,8 @@
  */
 
 import { Command } from "commander";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
@@ -125,6 +125,11 @@ interface CleanReplayWorkspace {
   baseBranch: string;
 }
 
+interface CleanReplayApplyResult {
+  copiedFiles: string[];
+  skippedFiles: string[];
+}
+
 function resolveRecoveryReason(requestedReason: RecoveryReason, recommendedRecovery: RecommendedRecovery | null, reasonWasExplicit: boolean): RecoveryReason {
   if (!reasonWasExplicit && requestedReason === "test-failed" && recommendedRecovery === "clean-replay-from-main") {
     return "finalize-conflict";
@@ -219,6 +224,72 @@ function formatRecoveryRecommendation(recommendedRecovery: RecommendedRecovery |
   return "(none)";
 }
 
+const CLEAN_REPLAY_EXCLUDED_PATHS = [
+  /^TEST_RESULTS\.md$/,
+  /^ACTIVITY_LOG\.json$/,
+  /^SESSION_LOG\.md$/,
+  /^RUN_LOG\.md$/,
+  /^FINALIZE_REPORT\.md$/,
+  /^EXPLORER_REPORT\.md$/,
+  /^DEVELOPER_REPORT\.md$/,
+  /^QA_REPORT\.md$/,
+  /^REVIEW\.md$/,
+  /^BLOCKED\.md$/,
+  /^TASK\.md$/,
+  /^\.beads\//,
+  /^docs\/reports\//,
+];
+
+function normalizeReplayPath(filePath: string): string {
+  return filePath.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+function isExcludedFromCleanReplay(filePath: string): boolean {
+  const normalized = normalizeReplayPath(filePath);
+  return CLEAN_REPLAY_EXCLUDED_PATHS.some((pattern) => pattern.test(normalized));
+}
+
+export function parseChangedFiles(statusOutput: string): string[] {
+  return statusOutput
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      const payload = line.slice(3).trim();
+      if (payload.includes(" -> ")) {
+        return payload.split(" -> ").at(-1) ?? payload;
+      }
+      return payload;
+    })
+    .map(normalizeReplayPath)
+    .filter(Boolean);
+}
+
+export function applyCleanReplayChanges(sourceWorktreePath: string, destinationWorkspacePath: string, statusOutput: string): CleanReplayApplyResult {
+  const copiedFiles: string[] = [];
+  const skippedFiles: string[] = [];
+
+  for (const relativePath of parseChangedFiles(statusOutput)) {
+    if (isExcludedFromCleanReplay(relativePath)) {
+      skippedFiles.push(relativePath);
+      continue;
+    }
+
+    const sourcePath = join(sourceWorktreePath, relativePath);
+    const destinationPath = join(destinationWorkspacePath, relativePath);
+    if (!existsSync(sourcePath)) {
+      skippedFiles.push(relativePath);
+      continue;
+    }
+
+    mkdirSync(dirname(destinationPath), { recursive: true });
+    copyFileSync(sourcePath, destinationPath);
+    copiedFiles.push(relativePath);
+  }
+
+  return { copiedFiles, skippedFiles };
+}
+
 async function prepareCleanReplayWorkspace(projectPath: string, beadId: string): Promise<CleanReplayWorkspace> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const baseBranch = await vcs.detectDefaultBranch(projectPath);
@@ -288,6 +359,7 @@ export const recoverCommand = new Command("recover")
   .option("--model <model>", "Model to use for recovery")
   .option("--raw", "Print collected context without invoking AI")
   .option("--prepare-clean-replay", "Create a fresh clean-replay workspace from the detected default branch")
+  .option("--apply-clean-replay", "Copy intended changed files from the failed worktree into the clean replay workspace")
   .action(async (beadId: string, opts: {
     reason?: string;
     runId?: string;
@@ -295,6 +367,7 @@ export const recoverCommand = new Command("recover")
     model?: string;
     raw?: boolean;
     prepareCleanReplay?: boolean;
+    applyCleanReplay?: boolean;
   }) => {
     const requestedReason = (opts.reason ?? "test-failed") as RecoveryReason;
     const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked", "finalize-conflict"];
@@ -397,13 +470,23 @@ export const recoverCommand = new Command("recover")
     );
 
     let cleanReplayWorkspace: CleanReplayWorkspace | null = null;
-    if (opts.prepareCleanReplay) {
+    let cleanReplayApplyResult: CleanReplayApplyResult | null = null;
+    if (opts.prepareCleanReplay || opts.applyCleanReplay) {
       if (reason !== "finalize-conflict") {
         store.close();
-        console.error(chalk.red("--prepare-clean-replay requires finalize-conflict recovery context"));
+        console.error(chalk.red("--prepare-clean-replay/--apply-clean-replay requires finalize-conflict recovery context"));
         process.exit(1);
       }
       cleanReplayWorkspace = await prepareCleanReplayWorkspace(projectPath, beadId);
+      if (opts.applyCleanReplay) {
+        if (!worktreePath) {
+          store.close();
+          console.error(chalk.red("Cannot apply clean replay without a source worktree path"));
+          process.exit(1);
+        }
+        const statusOutput = runCommandSafe(["git", "status", "--short"], worktreePath);
+        cleanReplayApplyResult = applyCleanReplayChanges(worktreePath, cleanReplayWorkspace.workspacePath, statusOutput);
+      }
     }
 
     store.close();
@@ -416,6 +499,9 @@ export const recoverCommand = new Command("recover")
     console.log(chalk.dim(`  Blocked:     ${blockedBeads.split("\n").filter(Boolean).length} beads`));
     if (cleanReplayWorkspace) {
       console.log(chalk.dim(`  Clean replay: ${cleanReplayWorkspace.branchName} @ ${cleanReplayWorkspace.workspacePath}`));
+    }
+    if (cleanReplayApplyResult) {
+      console.log(chalk.dim(`  Clean replay copied: ${cleanReplayApplyResult.copiedFiles.length} file(s)`));
     }
     console.log();
 
@@ -430,6 +516,12 @@ export const recoverCommand = new Command("recover")
         console.log(`Base: ${cleanReplayWorkspace.baseBranch}`);
         console.log(`Branch: ${cleanReplayWorkspace.branchName}`);
         console.log(`Path: ${cleanReplayWorkspace.workspacePath}`);
+      }
+      if (cleanReplayApplyResult) {
+        console.log(chalk.bold("\n─── Clean Replay Applied Files ───"));
+        console.log(cleanReplayApplyResult.copiedFiles.join("\n") || "(none)");
+        console.log(chalk.bold("\n─── Clean Replay Skipped Files ───"));
+        console.log(cleanReplayApplyResult.skippedFiles.join("\n") || "(none)");
       }
       console.log(chalk.bold("\n─── Messages ───"));
       console.log(messagesText);
