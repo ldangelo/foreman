@@ -21,6 +21,7 @@ import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run, Message } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
 import { getHighspeedModel } from "../../lib/config.js";
@@ -117,6 +118,13 @@ async function resolveDaemonRecoverContext(projectPath: string): Promise<DaemonR
 type RecoveryReason = "test-failed" | "stuck" | "stale-blocked" | "finalize-conflict";
 type RecommendedRecovery = "clean-replay-from-main";
 
+interface CleanReplayWorkspace {
+  seedId: string;
+  branchName: string;
+  workspacePath: string;
+  baseBranch: string;
+}
+
 function resolveRecoveryReason(requestedReason: RecoveryReason, recommendedRecovery: RecommendedRecovery | null, reasonWasExplicit: boolean): RecoveryReason {
   if (!reasonWasExplicit && requestedReason === "test-failed" && recommendedRecovery === "clean-replay-from-main") {
     return "finalize-conflict";
@@ -211,6 +219,19 @@ function formatRecoveryRecommendation(recommendedRecovery: RecommendedRecovery |
   return "(none)";
 }
 
+async function prepareCleanReplayWorkspace(projectPath: string, beadId: string): Promise<CleanReplayWorkspace> {
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const baseBranch = await vcs.detectDefaultBranch(projectPath);
+  const replaySeedId = `${beadId}-clean-replay`;
+  const { workspacePath, branchName } = await vcs.createWorkspace(projectPath, replaySeedId, baseBranch);
+  return {
+    seedId: replaySeedId,
+    branchName,
+    workspacePath,
+    baseBranch,
+  };
+}
+
 // ── Prompt builder ──────────────────────────────────────────────────────────
 
 function buildRecoveryPrompt(opts: {
@@ -266,12 +287,14 @@ export const recoverCommand = new Command("recover")
   .option("--output <text>", "Pre-captured test output to include in context")
   .option("--model <model>", "Model to use for recovery")
   .option("--raw", "Print collected context without invoking AI")
+  .option("--prepare-clean-replay", "Create a fresh clean-replay workspace from the detected default branch")
   .action(async (beadId: string, opts: {
     reason?: string;
     runId?: string;
     output?: string;
     model?: string;
     raw?: boolean;
+    prepareCleanReplay?: boolean;
   }) => {
     const requestedReason = (opts.reason ?? "test-failed") as RecoveryReason;
     const validReasons: RecoveryReason[] = ["test-failed", "stuck", "stale-blocked", "finalize-conflict"];
@@ -373,6 +396,16 @@ export const recoverCommand = new Command("recover")
       projectPath,
     );
 
+    let cleanReplayWorkspace: CleanReplayWorkspace | null = null;
+    if (opts.prepareCleanReplay) {
+      if (reason !== "finalize-conflict") {
+        store.close();
+        console.error(chalk.red("--prepare-clean-replay requires finalize-conflict recovery context"));
+        process.exit(1);
+      }
+      cleanReplayWorkspace = await prepareCleanReplayWorkspace(projectPath, beadId);
+    }
+
     store.close();
 
     // Print artifact summary
@@ -381,6 +414,9 @@ export const recoverCommand = new Command("recover")
     console.log(chalk.dim(`  Log:         ${logContent ? "found" : "not found"}`));
     console.log(chalk.dim(`  Test output: ${testOutput ? `${testOutput.split("\n").length} lines` : "(none)"}`));
     console.log(chalk.dim(`  Blocked:     ${blockedBeads.split("\n").filter(Boolean).length} beads`));
+    if (cleanReplayWorkspace) {
+      console.log(chalk.dim(`  Clean replay: ${cleanReplayWorkspace.branchName} @ ${cleanReplayWorkspace.workspacePath}`));
+    }
     console.log();
 
     if (opts.raw) {
@@ -388,6 +424,13 @@ export const recoverCommand = new Command("recover")
       console.log(runSummary);
       console.log(chalk.bold("\n─── Recommended Recovery ───"));
       console.log(recoveryRecommendation);
+      if (cleanReplayWorkspace) {
+        console.log(chalk.bold("\n─── Clean Replay Workspace ───"));
+        console.log(`Seed: ${cleanReplayWorkspace.seedId}`);
+        console.log(`Base: ${cleanReplayWorkspace.baseBranch}`);
+        console.log(`Branch: ${cleanReplayWorkspace.branchName}`);
+        console.log(`Path: ${cleanReplayWorkspace.workspacePath}`);
+      }
       console.log(chalk.bold("\n─── Messages ───"));
       console.log(messagesText);
       for (const [name, content] of Object.entries(reports)) {

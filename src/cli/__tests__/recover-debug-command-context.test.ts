@@ -16,6 +16,7 @@ const mockRunWithPiSdk = vi.hoisted(() => vi.fn().mockResolvedValue({
   outputText: "done",
   costUsd: 0,
 }));
+const mockVcsFactoryCreate = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", () => ({
   execFile: mockExecFile,
@@ -28,6 +29,12 @@ vi.mock("../../lib/trpc-client.js", () => ({
 
 vi.mock("../../orchestrator/pi-sdk-runner.js", () => ({
   runWithPiSdk: mockRunWithPiSdk,
+}));
+
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: mockVcsFactoryCreate,
+  },
 }));
 
 vi.mock("../commands/project-task-support.js", () => ({
@@ -50,6 +57,13 @@ describe("foreman debug/recover command context", () => {
     mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
     vi.clearAllMocks();
     mockRunWithPiSdk.mockResolvedValue({ success: true, outputText: "done", costUsd: 0 });
+    mockVcsFactoryCreate.mockResolvedValue({
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+      createWorkspace: vi.fn().mockResolvedValue({
+        workspacePath: "/tmp/clean-replay",
+        branchName: "foreman/seed-1-clean-replay",
+      }),
+    });
     localStore = {
       getRunsForSeed: vi.fn(),
       getRunProgress: vi.fn(),
@@ -245,6 +259,36 @@ describe("foreman debug/recover command context", () => {
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).not.toContain("Auto-selected recovery reason: finalize-conflict");
     expect(prompt).toContain("**Failure reason reported:** `stale-blocked`");
+  });
+
+  it("prepares a clean replay workspace when requested", async () => {
+    const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+    const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+    const worktreePath = join(tmpDir, "worktree-prepare-replay");
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), [
+      "## Rebase",
+      "- Status: FAILED",
+      "- Recommended recovery: clean replay from current main",
+      "",
+    ].join("\n"));
+
+    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunProgress.mockReturnValue(null);
+    localStore.getAllMessages.mockReturnValue([]);
+    resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
+    listRegisteredProjectsMock.mockResolvedValue([]);
+
+    await runCommand(recoverCommand, ["seed-1", "--raw", "--prepare-clean-replay"]);
+
+    expect(mockVcsFactoryCreate).toHaveBeenCalledWith({ backend: "auto" }, tmpDir);
+    const vcs = await mockVcsFactoryCreate.mock.results[0]?.value;
+    expect(vcs.detectDefaultBranch).toHaveBeenCalledWith(tmpDir);
+    expect(vcs.createWorkspace).toHaveBeenCalledWith(tmpDir, "seed-1-clean-replay", "main");
+    const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(output).toContain("─── Clean Replay Workspace ───");
+    expect(output).toContain("Branch: foreman/seed-1-clean-replay");
+    expect(output).toContain("Path: /tmp/clean-replay");
   });
 
   it("passes recommended clean replay guidance into the recovery prompt", async () => {
