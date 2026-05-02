@@ -4,9 +4,9 @@
  * CLI wrapper for the Refinery Agent daemon and single-pass modes.
  */
 
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { join } from "node:path";
-import Database from "better-sqlite3";
+import { join, resolve } from "node:path";
 import { ForemanStore } from "../lib/store.js";
 import { MergeQueue } from "./merge-queue.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -47,7 +47,7 @@ function parseCliArgs(args: string[]): CliOptions {
   };
 }
 
-function printHelp(): void {
+export function printRefineHelp(): void {
   console.log(`
 foreman refine — Refinery Agent for merge queue processing
 
@@ -73,31 +73,26 @@ EXAMPLES
   foreman refine --once --max-fix-iterations 3
 
 ENVIRONMENT
-  FOREMAN_USE_REFINERY_AGENT   Enable agent (default: false, use legacy)
+  FOREMAN_USE_REFINERY_AGENT   Enable the experimental Refinery Agent (set to true)
 `);
 }
 
 /**
- * Main CLI entry point.
+ * Main command implementation shared by the standalone runner and commander.
  */
-export async function runRefineCli(args: string[]): Promise<number> {
-  const opts = parseCliArgs(args);
-
+export async function runRefineryAgentCommand(opts: CliOptions): Promise<number> {
   if (opts.help) {
-    printHelp();
+    printRefineHelp();
     return 0;
   }
 
-  // Check feature flag
   const useAgent = process.env.FOREMAN_USE_REFINERY_AGENT === "true";
   if (!useAgent) {
-    console.log("[refine] FOREMAN_USE_REFINERY_AGENT is not set to 'true'");
-    console.log("[refine] Set FOREMAN_USE_REFINERY_AGENT=true to enable the agent");
-    console.log("[refine] Falling back to legacy refinery (not implemented in this version)");
+    console.error("[refine] The Refinery Agent command is experimental and currently disabled.");
+    console.error("[refine] Re-run with FOREMAN_USE_REFINERY_AGENT=true to enable it.");
     return 1;
   }
 
-  // Get project path
   const projectPath = process.cwd();
 
   // Create store and VCS backend
@@ -153,15 +148,35 @@ export async function runRefineCli(args: string[]): Promise<number> {
   }
 
   // No mode specified
-  printHelp();
+  printRefineHelp();
   return 1;
 }
 
-// CLI runner
-const args = process.argv.slice(2);
-runRefineCli(args)
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    console.error("[refine] Fatal error:", err);
-    process.exit(2);
-  });
+/**
+ * Standalone CLI entry point.
+ */
+export async function runRefineCli(args: string[]): Promise<number> {
+  return runRefineryAgentCommand(parseCliArgs(args));
+}
+
+function isCliEntrypoint(): boolean {
+  try {
+    const invokedPath = process.argv[1];
+    if (!invokedPath) {
+      return false;
+    }
+    return resolve(invokedPath) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint()) {
+  const args = process.argv.slice(2);
+  runRefineCli(args)
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error("[refine] Fatal error:", err);
+      process.exit(2);
+    });
+}

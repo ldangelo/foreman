@@ -28,13 +28,13 @@ describe("CLI smoke tests", () => {
     tempDirs.length = 0;
   });
 
-  it("--help exits 0 and shows all commands including dashboard and bead", async () => {
+  it("--help exits 0 and shows all commands including dashboard, bead, and refine", async () => {
     const tmp = makeTempDir();
     const result = await run(["--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "monitor", "dashboard", "bead"]) {
+    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "monitor", "dashboard", "bead", "refine"]) {
       expect(output).toContain(cmd);
     }
   }, 90_000);
@@ -118,5 +118,30 @@ describe("CLI smoke tests", () => {
 
     // Should exit 1 (not a git repo)
     expect(result.exitCode).toBe(1);
+  }, 90_000);
+
+  it("refine --help shows usage", async () => {
+    const tmp = makeTempDir();
+    const result = await run(["refine", "--help"], tmp);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("foreman refine");
+    expect(result.stdout).toContain("--once");
+    expect(result.stdout).toContain("--daemon");
+  }, 90_000);
+
+  it("refine --once fails with truthful experimental gating message when disabled", async () => {
+    const tmp = makeTempDir();
+    const result = await runTsxModule(CLI, ["refine", "--once"], {
+      cwd: tmp,
+      timeout: 90_000,
+      env: { FOREMAN_USE_REFINERY_AGENT: "false" },
+    });
+
+    const output = result.stdout + result.stderr;
+    expect(result.exitCode).toBe(1);
+    expect(output).toContain("experimental");
+    expect(output).toContain("FOREMAN_USE_REFINERY_AGENT=true");
+    expect(output).not.toContain("not implemented in this version");
   }, 90_000);
 });

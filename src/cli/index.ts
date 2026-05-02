@@ -63,6 +63,7 @@ import { projectCommand } from "./commands/project.js";
 import { taskCommand } from "./commands/task.js";
 import { recoverCommand } from "./commands/recover.js";
 import { daemonCommand } from "./commands/daemon.js";
+import { refineCommand } from "./commands/refine.js";
 
 function isCliEntrypoint(): boolean {
   try {
@@ -112,6 +113,7 @@ program.addCommand(projectCommand);
 program.addCommand(taskCommand);
 program.addCommand(recoverCommand);
 program.addCommand(daemonCommand);
+program.addCommand(refineCommand);
 
 if (isCliEntrypoint()) {
   program.parse();
