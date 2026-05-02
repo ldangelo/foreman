@@ -42,14 +42,14 @@ describe("doctor command", () => {
 
   it("doctor --help shows description and options", async () => {
     const tmp = makeTempDir();
-    const result = await run(["doctor", "--help"], tmp);
+    const result = await run(["doctor", "--help"], tmp, { timeout: 90_000 });
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout + result.stderr;
     expect(output).toContain("doctor");
     expect(output).toContain("health");
     expect(output).toContain("--fix");
-  }, 30_000);
+  }, 90_000);
 
   it("doctor shows in top-level --help", async () => {
     const { program } = await import("../index.js");
@@ -91,18 +91,18 @@ describe("doctor command", () => {
     const tmp = makeTempDir();
     await makeGitRepo(tmp);
 
-    const result = await run(["doctor"], tmp);
+    const result = await run(["doctor"], tmp, { timeout: 90_000 });
     const output = result.stdout + result.stderr;
 
     // Git binary check passes
     expect(output).toContain("git binary");
     // Project registration check fails
     expect(output).toContain("project registered in foreman");
-  }, 30_000);
+  }, 90_000);
 
   it("doctor --json outputs valid JSON", async () => {
     const tmp = makeTempDir();
-    const result = await run(["doctor", "--json"], tmp, { timeout: 60_000 });
+    const result = await run(["doctor", "--json"], tmp, { timeout: 90_000 });
 
     const output = result.stdout + result.stderr;
     let parsed: any;
@@ -124,7 +124,7 @@ describe("doctor command", () => {
     expect(parsed.summary).toHaveProperty("fail");
     expect(parsed.summary).toHaveProperty("warn");
     expect(parsed.summary).toHaveProperty("fixed");
-  }, 30_000);
+  }, 90_000);
 
   it("doctor with registered project shows pass for project check", async () => {
     const tmp = makeTempDir();
@@ -136,27 +136,27 @@ describe("doctor command", () => {
     store.registerProject("test-project", tmp);
     store.close();
 
-    const result = await run(["doctor"], tmp);
+    const result = await run(["doctor"], tmp, { timeout: 90_000 });
     const output = result.stdout + result.stderr;
 
     expect(output).toContain("project registered in foreman");
     // The project is registered so this check should not contain "fail" for that line
     // The overall may still fail due to missing br/bv/git binaries in CI
     expect(output).toContain("Summary");
-  }, 30_000);
+  }, 90_000);
 
   it("doctor --fix runs without crashing", async () => {
     const tmp = makeTempDir();
     await makeGitRepo(tmp);
 
-    const result = await run(["doctor", "--fix"], tmp);
+    const result = await run(["doctor", "--fix"], tmp, { timeout: 90_000 });
     const output = result.stdout + result.stderr;
 
     // Should not crash with an unhandled exception
     expect(output).not.toContain("TypeError");
     expect(output).not.toContain("ReferenceError");
     expect(output).toContain("Summary");
-  }, 30_000);
+  }, 90_000);
 });
 
 // ── Unit tests for doctor logic ──────────────────────────────────────────

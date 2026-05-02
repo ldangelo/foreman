@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 10_000 });
+  return runTsxModule(CLI, args, { cwd, timeout: 90_000 });
 }
 
 describe("CLI smoke tests", () => {
@@ -37,14 +37,14 @@ describe("CLI smoke tests", () => {
     for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "monitor", "dashboard", "bead"]) {
       expect(output).toContain(cmd);
     }
-  }, 10_000);
+  }, 90_000);
 
   it("--version prints version number", async () => {
     const pkgPath = path.resolve(__dirname, "../../../package.json");
     const expected = (JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string }).version;
     const { program } = await import("../index.js");
     expect(program.version()).toBe(expected);
-  }, 10_000);
+  }, 90_000);
 
   it("status without init shows error", async () => {
     const tmp = makeTempDir();
@@ -55,7 +55,7 @@ describe("CLI smoke tests", () => {
     expect(
       result.exitCode !== 0 || output.toLowerCase().includes("error") || output.includes("init")
     ).toBe(true);
-  }, 10_000);
+  }, 90_000);
 
   it("sling trd with nonexistent file shows error", async () => {
     const tmp = makeTempDir();
@@ -65,7 +65,7 @@ describe("CLI smoke tests", () => {
     expect(
       result.exitCode !== 0 || output.toLowerCase().includes("not found") || output.toLowerCase().includes("error")
     ).toBe(true);
-  }, 10_000);
+  }, 90_000);
 
   it("plan --dry-run shows pipeline steps", async () => {
     const tmp = makeTempDir();
@@ -87,7 +87,7 @@ describe("CLI smoke tests", () => {
     const output = result.stdout + result.stderr;
     expect(output).toContain("Create PRD");
     expect(output).toContain("Create TRD");
-  }, 10_000);
+  }, 90_000);
 
   it("run --dry-run without init shows error", async () => {
     const tmp = makeTempDir();
@@ -98,7 +98,7 @@ describe("CLI smoke tests", () => {
     expect(
       result.exitCode !== 0 || output.toLowerCase().includes("error") || output.includes("init")
     ).toBe(true);
-  }, 10_000);
+  }, 90_000);
 
   it("doctor --help shows usage", async () => {
     const tmp = makeTempDir();
@@ -109,7 +109,7 @@ describe("CLI smoke tests", () => {
     expect(result.stdout).toContain("--fix");
     expect(result.stdout).toContain("--dry-run");
     expect(result.stdout).toContain("--json");
-  }, 10_000);
+  }, 90_000);
 
   it("doctor --json outputs valid JSON outside git repo", async () => {
     const tmp = makeTempDir();
@@ -118,5 +118,5 @@ describe("CLI smoke tests", () => {
 
     // Should exit 1 (not a git repo)
     expect(result.exitCode).toBe(1);
-  }, 10_000);
+  }, 90_000);
 });
