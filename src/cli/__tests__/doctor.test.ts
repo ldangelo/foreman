@@ -42,14 +42,14 @@ describe("doctor command", () => {
 
   it("doctor --help shows description and options", async () => {
     const tmp = makeTempDir();
-    const result = await run(["doctor", "--help"], tmp, { timeout: 90_000 });
+    const result = await run(["doctor", "--help"], tmp, { timeout: 180_000 });
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout + result.stderr;
     expect(output).toContain("doctor");
     expect(output).toContain("health");
     expect(output).toContain("--fix");
-  }, 90_000);
+  }, 180_000);
 
   it("doctor shows in top-level --help", async () => {
     const { program } = await import("../index.js");

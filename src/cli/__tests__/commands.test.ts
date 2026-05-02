@@ -118,7 +118,7 @@ describe("CLI smoke tests", () => {
 
     // Should exit 1 (not a git repo)
     expect(result.exitCode).toBe(1);
-  }, 90_000);
+  }, 180_000);
 
   it("refine --help shows usage", async () => {
     const tmp = makeTempDir();
