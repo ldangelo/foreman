@@ -1,4 +1,4 @@
-import { access, stat, rm, readFile, readdir } from "node:fs/promises";
+import { access, stat, rm, readFile, readdir, writeFile, chmod } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
@@ -906,6 +906,87 @@ export class Doctor {
    * With --fix, reinstalls ALL workflow configs (including stale ones) from bundled
    * defaults using force=true so that outdated local copies are overwritten.
    */
+  private async detectDestructiveBdHookShims(): Promise<string[]> {
+    const hooksDir = join(this.projectPath, ".git", "hooks");
+    const canonicalBeadsDb = join(this.projectPath, ".beads", "beads.db");
+    const embeddedDoltDir = join(this.projectPath, ".beads", "embeddeddolt", "beads", ".dolt");
+
+    if (!existsSync(canonicalBeadsDb) || !existsSync(embeddedDoltDir)) {
+      return [];
+    }
+
+    const candidates = [
+      "pre-commit.orig",
+      "pre-push.orig",
+      "post-merge",
+      "post-checkout",
+      "prepare-commit-msg",
+    ];
+
+    const destructive: string[] = [];
+    for (const name of candidates) {
+      const hookPath = join(hooksDir, name);
+      if (!existsSync(hookPath)) continue;
+      try {
+        const content = await readFile(hookPath, "utf8");
+        if (content.includes("BEGIN BEADS INTEGRATION") && content.includes("bd hooks run")) {
+          destructive.push(hookPath);
+        }
+      } catch {
+        // Non-fatal: unreadable hooks are ignored here and may be caught by other checks.
+      }
+    }
+
+    return destructive;
+  }
+
+  async checkBeadsGitHooks(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const destructiveHooks = await this.detectDestructiveBdHookShims();
+
+    if (destructiveHooks.length === 0) {
+      return {
+        name: "beads git hooks",
+        status: "pass",
+        message: "No destructive bd hook shims detected",
+      };
+    }
+
+    const hookNames = destructiveHooks.map((path) => path.split("/").at(-1) ?? path).join(", ");
+
+    if (dryRun) {
+      return {
+        name: "beads git hooks",
+        status: "warn",
+        message: `Detected ${destructiveHooks.length} destructive bd hook shim(s): ${hookNames}. Would disable them (dry-run).`,
+        details: "These hooks export .beads/issues.jsonl from embedded Dolt instead of the canonical .beads/beads.db store.",
+      };
+    }
+
+    if (!fix) {
+      return {
+        name: "beads git hooks",
+        status: "warn",
+        message: `Detected ${destructiveHooks.length} destructive bd hook shim(s): ${hookNames}. Run 'foreman doctor --fix' to disable them.`,
+        details: "These hooks export .beads/issues.jsonl from embedded Dolt instead of the canonical .beads/beads.db store.",
+      };
+    }
+
+    const disabledHook = "#!/usr/bin/env sh\n# Disabled by foreman doctor: this repo uses br, and the installed bd hook layer\n# exports from embedded Dolt, which can clobber .beads/issues.jsonl.\nexit 0\n";
+
+    for (const hookPath of destructiveHooks) {
+      await writeFile(hookPath, disabledHook, "utf8");
+      await chmod(hookPath, 0o755);
+    }
+
+    return {
+      name: "beads git hooks",
+      status: "fixed",
+      message: `Disabled ${destructiveHooks.length} destructive bd hook shim(s): ${hookNames}`,
+      fixApplied: `Replaced ${destructiveHooks.length} destructive bd hook shim(s) with inert local shims`,
+    };
+  }
+
   async checkWorkflows(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
@@ -984,6 +1065,7 @@ export class Doctor {
     results.push(await this.checkTaskStoreMode());
     results.push(await this.checkProjectRegistered());
     results.push(await this.checkBeadsInitialized());
+    results.push(await this.checkBeadsGitHooks(opts));
     results.push(await this.checkPrompts(opts));
     results.push(await this.checkPiSkills(opts));
     results.push(await this.checkWorkflows(opts));

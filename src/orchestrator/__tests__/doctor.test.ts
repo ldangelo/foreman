@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Doctor } from "../doctor.js";
@@ -98,6 +98,54 @@ describe("Doctor", () => {
         expect(result.message).toContain("not found");
       } finally {
         process.env.PATH = originalPath;
+      }
+    });
+  });
+
+  describe("checkBeadsGitHooks", () => {
+    it("warns when destructive bd hook shims are present in a mixed br/bd repo", async () => {
+      const projectPath = await mkdtemp(join(tmpdir(), "doctor-hooks-"));
+      try {
+        await mkdir(join(projectPath, ".git", "hooks"), { recursive: true });
+        await mkdir(join(projectPath, ".beads", "embeddeddolt", "beads", ".dolt"), { recursive: true });
+        await writeFile(join(projectPath, ".beads", "beads.db"), "db");
+        await writeFile(
+          join(projectPath, ".git", "hooks", "post-merge"),
+          "#!/usr/bin/env sh\n# --- BEGIN BEADS INTEGRATION v0.59.0 ---\nbd hooks run post-merge \"$@\"\n",
+        );
+
+        const { doctor } = makeMocks(projectPath);
+        const result = await doctor.checkBeadsGitHooks();
+
+        expect(result.status).toBe("warn");
+        expect(result.message).toContain("destructive bd hook shim");
+        expect(result.message).toContain("post-merge");
+      } finally {
+        await rm(projectPath, { recursive: true, force: true });
+      }
+    });
+
+    it("disables destructive bd hook shims with --fix", async () => {
+      const projectPath = await mkdtemp(join(tmpdir(), "doctor-hooks-fix-"));
+      try {
+        await mkdir(join(projectPath, ".git", "hooks"), { recursive: true });
+        await mkdir(join(projectPath, ".beads", "embeddeddolt", "beads", ".dolt"), { recursive: true });
+        await writeFile(join(projectPath, ".beads", "beads.db"), "db");
+        const hookPath = join(projectPath, ".git", "hooks", "pre-commit.orig");
+        await writeFile(
+          hookPath,
+          "#!/usr/bin/env sh\n# --- BEGIN BEADS INTEGRATION v0.59.0 ---\nbd hooks run pre-commit \"$@\"\n",
+        );
+
+        const { doctor } = makeMocks(projectPath);
+        const result = await doctor.checkBeadsGitHooks({ fix: true });
+
+        expect(result.status).toBe("fixed");
+        const rewritten = await readFile(hookPath, "utf8");
+        expect(rewritten).toContain("Disabled by foreman doctor");
+        expect(rewritten).toContain("exit 0");
+      } finally {
+        await rm(projectPath, { recursive: true, force: true });
       }
     });
   });
