@@ -25,6 +25,7 @@ import {
   acquireClient,
   releaseClient,
 } from "./pool-manager.js";
+import { randomUUID } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -56,8 +57,8 @@ export interface ProjectRow {
 export interface RunRow {
   id: string;
   project_id: string;
-  seed_id: string;
-  agent_type: string;
+  seed_id: string | null;
+  agent_type: string | null;
   session_key: string | null;
   worktree_path: string | null;
   status: string;
@@ -65,6 +66,14 @@ export interface RunRow {
   completed_at: string | null;
   created_at: string;
   progress: string | null;
+  bead_id?: string | null;
+  run_number?: number | null;
+  branch?: string | null;
+  trigger?: string | null;
+  queued_at?: string;
+  updated_at?: string;
+  base_branch?: string | null;
+  merge_strategy?: "auto" | "pr" | "none" | null;
 }
 
 export interface TaskRow {
@@ -139,6 +148,32 @@ export interface MessageRow {
   chunk: string;
   line_number: number;
   created_at: string;
+}
+
+export interface SentinelConfigRow {
+  id: number;
+  project_id: string;
+  branch: string;
+  test_command: string;
+  interval_minutes: number;
+  failure_threshold: number;
+  enabled: number;
+  pid: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SentinelRunRow {
+  id: string;
+  project_id: string;
+  branch: string;
+  commit_hash: string | null;
+  status: "running" | "passed" | "failed" | "error";
+  test_command: string;
+  output: string | null;
+  failure_count: number;
+  started_at: string;
+  completed_at: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +669,50 @@ export class PostgresAdapter {
       mergeStrategy?: "auto" | "pr" | "none";
     }
   ): Promise<RunRow> {
-    throw new Error("not implemented");
+    const rows = await query<RunRow>(
+      `INSERT INTO runs (
+         project_id,
+         bead_id,
+         run_number,
+         status,
+         branch,
+         trigger,
+         seed_id,
+         agent_type,
+         session_key,
+         worktree_path,
+         progress,
+         base_branch,
+         merge_strategy
+       )
+       VALUES (
+         $1,
+         $2,
+         COALESCE((SELECT MAX(run_number) + 1 FROM runs WHERE project_id = $1 AND bead_id = $2), 1),
+         'pending',
+         $3,
+         'bead',
+         $2,
+         $4,
+         $5,
+         $6,
+         NULL,
+         $7,
+         $8
+       )
+       RETURNING *`,
+      [
+        projectId,
+        seedId,
+        options?.baseBranch ?? seedId,
+        agentType,
+        options?.sessionKey ?? null,
+        options?.worktreePath ?? null,
+        options?.baseBranch ?? null,
+        options?.mergeStrategy ?? "auto",
+      ]
+    );
+    return rows[0];
   }
 
   /**
@@ -645,7 +723,23 @@ export class PostgresAdapter {
     projectId: string,
     filters?: { status?: string[]; limit?: number }
   ): Promise<RunRow[]> {
-    throw new Error("not implemented");
+    const conditions = ["project_id = $1", "seed_id IS NOT NULL"];
+    const params: unknown[] = [projectId];
+    let i = 2;
+
+    if (filters?.status && filters.status.length > 0) {
+      conditions.push(`status IN (${filters.status.map((_, index) => `$${i + index}`).join(",")})`);
+      params.push(...filters.status);
+      i += filters.status.length;
+    }
+
+    let sql = `SELECT * FROM runs WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC`;
+    if (filters?.limit) {
+      sql += ` LIMIT $${i}`;
+      params.push(filters.limit);
+    }
+
+    return query<RunRow>(sql, params);
   }
 
   /**
@@ -653,7 +747,11 @@ export class PostgresAdapter {
    * @throws Error("not implemented")
    */
   async getRun(projectId: string, runId: string): Promise<RunRow | null> {
-    throw new Error("not implemented");
+    const rows = await query<RunRow>(
+      `SELECT * FROM runs WHERE id = $1 AND project_id = $2 AND seed_id IS NOT NULL`,
+      [runId, projectId]
+    );
+    return rows[0] ?? null;
   }
 
   /**
@@ -665,7 +763,24 @@ export class PostgresAdapter {
     runId: string,
     updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at">>
   ): Promise<void> {
-    throw new Error("not implemented");
+    const setClauses: string[] = ["updated_at = now()"];
+    const params: unknown[] = [];
+    let i = 1;
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        setClauses.push(`${key} = $${i++}`);
+        params.push(value);
+      }
+    }
+
+    if (setClauses.length === 1) return;
+
+    params.push(runId, projectId);
+    await execute(
+      `UPDATE runs SET ${setClauses.join(", ")} WHERE id = $${i++} AND project_id = $${i} AND seed_id IS NOT NULL`,
+      params
+    );
   }
 
   /**
@@ -673,7 +788,12 @@ export class PostgresAdapter {
    * @throws Error("not implemented")
    */
   async listActiveRuns(projectId: string): Promise<RunRow[]> {
-    throw new Error("not implemented");
+    return query<RunRow>(
+      `SELECT * FROM runs
+       WHERE project_id = $1 AND seed_id IS NOT NULL AND status IN ('pending', 'running')
+       ORDER BY created_at DESC`,
+      [projectId]
+    );
   }
 
   /**
@@ -684,7 +804,13 @@ export class PostgresAdapter {
     projectId: string,
     seedId: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const rows = await query<{ present: number }>(
+      `SELECT 1 AS present FROM runs
+       WHERE project_id = $1 AND seed_id = $2 AND status IN ('pending', 'running', 'completed', 'stuck', 'pr-created')
+       LIMIT 1`,
+      [projectId, seedId]
+    );
+    return rows.length > 0;
   }
 
   /**
@@ -705,7 +831,26 @@ export class PostgresAdapter {
       agentByPhase?: Record<string, string>;
     }
   ): Promise<void> {
-    throw new Error("not implemented");
+    const existing = await this.getRun(projectId, runId);
+    const current = existing?.progress ? JSON.parse(existing.progress) as Record<string, unknown> : {};
+    const merged = {
+      ...current,
+      ...(progress.phase !== undefined ? { currentPhase: progress.phase } : {}),
+      ...(progress.currentTargetRef !== undefined ? { currentTargetRef: progress.currentTargetRef } : {}),
+      ...(progress.lastToolCall !== undefined ? { lastToolCall: progress.lastToolCall } : {}),
+      ...(progress.lastActivity !== undefined ? { lastActivity: progress.lastActivity } : {}),
+      ...(progress.tokensIn !== undefined ? { tokensIn: progress.tokensIn } : {}),
+      ...(progress.tokensOut !== undefined ? { tokensOut: progress.tokensOut } : {}),
+      ...(progress.costByPhase !== undefined ? { costByPhase: progress.costByPhase } : {}),
+      ...(progress.agentByPhase !== undefined ? { agentByPhase: progress.agentByPhase } : {}),
+    };
+
+    await execute(
+      `UPDATE runs
+       SET progress = $1, updated_at = now()
+       WHERE id = $2 AND project_id = $3 AND seed_id IS NOT NULL`,
+      [JSON.stringify(merged), runId, projectId]
+    );
   }
 
   /**
@@ -716,7 +861,14 @@ export class PostgresAdapter {
     projectId: string,
     olderThan: string
   ): Promise<number> {
-    throw new Error("not implemented");
+    return execute(
+      `DELETE FROM runs
+       WHERE project_id = $1
+         AND seed_id IS NOT NULL
+         AND status IN ('failed', 'merged', 'test-failed', 'conflict')
+         AND created_at < $2`,
+      [projectId, olderThan]
+    );
   }
 
   /**
@@ -724,7 +876,12 @@ export class PostgresAdapter {
    * @throws Error("not implemented")
    */
   async deleteRun(projectId: string, runId: string): Promise<boolean> {
-    throw new Error("not implemented");
+    const changed = await execute(
+      `DELETE FROM runs
+       WHERE id = $1 AND project_id = $2 AND seed_id IS NOT NULL`,
+      [runId, projectId]
+    );
+    return changed > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -745,7 +902,18 @@ export class PostgresAdapter {
       estimatedCost: number;
     }
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO costs (id, run_id, tokens_in, tokens_out, cache_read, estimated_cost, recorded_at)
+       VALUES ($1, $2, $3, $4, $5, $6, now())`,
+      [
+        randomUUID(),
+        runId,
+        cost.tokensIn,
+        cost.tokensOut,
+        cost.cacheRead,
+        cost.estimatedCost,
+      ]
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -762,7 +930,11 @@ export class PostgresAdapter {
     eventType: string,
     details?: string
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO events (id, project_id, run_id, event_type, details, payload, created_at)
+       VALUES ($1, $2, $3, $4, $5, NULL, now())`,
+      [randomUUID(), projectId, runId, eventType, details ?? null]
+    );
   }
 
   /**
@@ -775,7 +947,20 @@ export class PostgresAdapter {
     agentType: string,
     details: string
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO rate_limit_events (
+         id,
+         project_id,
+         run_id,
+         model,
+         phase,
+         error,
+         retry_after_seconds,
+         recorded_at
+       )
+       VALUES ($1, $2, $3, $4, NULL, $5, NULL, now())`,
+      [randomUUID(), projectId, runId, agentType, details]
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -792,7 +977,25 @@ export class PostgresAdapter {
     toAgent: string,
     body: string
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO messages (
+         id,
+         run_id,
+         step_key,
+         stream,
+         chunk,
+         line_number,
+         sender_agent_type,
+         recipient_agent_type,
+         subject,
+         body,
+         read,
+         deleted_at,
+         created_at
+       )
+       VALUES ($1, $2, NULL, 'system', $3, 0, 'foreman', $4, $5, $3, 0, NULL, now())`,
+      [randomUUID(), runId, body, toAgent, toAgent]
+    );
   }
 
   /**
@@ -803,7 +1006,17 @@ export class PostgresAdapter {
     projectId: string,
     messageId: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const changed = await execute(
+      `UPDATE messages AS m
+       SET read = 1
+       WHERE m.id = $1
+         AND EXISTS (
+           SELECT 1 FROM runs r
+           WHERE r.id = m.run_id AND r.project_id = $2
+         )`,
+      [messageId, projectId]
+    );
+    return changed > 0;
   }
 
   /**
@@ -815,7 +1028,18 @@ export class PostgresAdapter {
     runId: string,
     agentType: string
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `UPDATE messages AS m
+       SET read = 1
+       WHERE m.run_id = $1
+         AND m.recipient_agent_type = $2
+         AND m.deleted_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM runs r
+           WHERE r.id = m.run_id AND r.project_id = $3
+         )`,
+      [runId, agentType, projectId]
+    );
   }
 
   /**
@@ -826,7 +1050,17 @@ export class PostgresAdapter {
     projectId: string,
     messageId: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const changed = await execute(
+      `UPDATE messages AS m
+       SET deleted_at = now()
+       WHERE m.id = $1
+         AND EXISTS (
+           SELECT 1 FROM runs r
+           WHERE r.id = m.run_id AND r.project_id = $2
+         )`,
+      [messageId, projectId]
+    );
+    return changed > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -843,7 +1077,11 @@ export class PostgresAdapter {
     operation: string,
     payload: unknown
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO bead_write_queue (id, project_id, sender, operation, payload, created_at, processed_at)
+       VALUES ($1, $2, $3, $4, $5, now(), NULL)`,
+      [randomUUID(), projectId, sender, operation, JSON.stringify(payload)]
+    );
   }
 
   /**
@@ -854,7 +1092,13 @@ export class PostgresAdapter {
     projectId: string,
     id: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const changed = await execute(
+      `UPDATE bead_write_queue
+       SET processed_at = now()
+       WHERE id = $1 AND project_id = $2`,
+      [id, projectId]
+    );
+    return changed > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -867,9 +1111,65 @@ export class PostgresAdapter {
    */
   async upsertSentinelConfig(
     projectId: string,
-    config: Record<string, unknown>
-  ): Promise<void> {
-    throw new Error("not implemented");
+    config: Partial<Omit<SentinelConfigRow, "id" | "project_id" | "created_at" | "updated_at">>
+  ): Promise<SentinelConfigRow> {
+    const existing = await this.getSentinelConfig(projectId);
+
+    if (existing) {
+      const setClauses: string[] = ["updated_at = now()"];
+      const params: unknown[] = [];
+      let i = 1;
+
+      for (const [key, value] of Object.entries(config)) {
+        if (value !== undefined) {
+          setClauses.push(`${key} = $${i++}`);
+          params.push(value);
+        }
+      }
+
+      if (setClauses.length > 1) {
+        params.push(projectId);
+        await execute(
+          `UPDATE sentinel_configs SET ${setClauses.join(", ")} WHERE project_id = $${i}`,
+          params
+        );
+      }
+
+      return (await this.getSentinelConfig(projectId))!;
+    }
+
+    await query<SentinelConfigRow>(
+      `INSERT INTO sentinel_configs (
+         project_id,
+         branch,
+         test_command,
+         interval_minutes,
+         failure_threshold,
+         enabled,
+         pid,
+         created_at,
+         updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
+      [
+        projectId,
+        config.branch ?? "main",
+        config.test_command ?? "npm test",
+        config.interval_minutes ?? 30,
+        config.failure_threshold ?? 2,
+        config.enabled ?? 1,
+        config.pid ?? null,
+      ]
+    );
+
+    return (await this.getSentinelConfig(projectId))!;
+  }
+
+  async getSentinelConfig(projectId: string): Promise<SentinelConfigRow | null> {
+    const rows = await query<SentinelConfigRow>(
+      `SELECT * FROM sentinel_configs WHERE project_id = $1`,
+      [projectId]
+    );
+    return rows[0] ?? null;
   }
 
   /**
@@ -878,9 +1178,34 @@ export class PostgresAdapter {
    */
   async recordSentinelRun(
     projectId: string,
-    run: Record<string, unknown>
+    run: Omit<SentinelRunRow, "project_id" | "failure_count"> & { failure_count?: number }
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO sentinel_runs (
+         id,
+         project_id,
+         branch,
+         commit_hash,
+         status,
+         test_command,
+         output,
+         failure_count,
+         started_at,
+         completed_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        run.id,
+        projectId,
+        run.branch,
+        run.commit_hash ?? null,
+        run.status,
+        run.test_command,
+        run.output ?? null,
+        run.failure_count ?? 0,
+        run.started_at,
+        run.completed_at ?? null,
+      ]
+    );
   }
 
   /**
@@ -890,9 +1215,49 @@ export class PostgresAdapter {
   async updateSentinelRun(
     projectId: string,
     runId: string,
-    updates: Record<string, unknown>
+    updates: Partial<Pick<SentinelRunRow, "status" | "output" | "completed_at" | "failure_count">>
   ): Promise<void> {
-    throw new Error("not implemented");
+    const setClauses: string[] = [];
+    const params: unknown[] = [];
+    let i = 1;
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        setClauses.push(`${key} = $${i++}`);
+        params.push(value);
+      }
+    }
+
+    if (setClauses.length === 0) return;
+
+    params.push(runId, projectId);
+    await execute(
+      `UPDATE sentinel_runs AS sr
+       SET ${setClauses.join(", ")}
+       WHERE sr.id = $${i++}
+         AND sr.project_id = $${i}`,
+      params
+    );
+  }
+
+  async getSentinelRuns(projectId?: string, limit?: number): Promise<SentinelRunRow[]> {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let i = 1;
+
+    if (projectId) {
+      conditions.push(`project_id = $${i++}`);
+      params.push(projectId);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    let sql = `SELECT * FROM sentinel_runs ${where} ORDER BY started_at DESC`;
+    if (limit) {
+      sql += ` LIMIT $${i}`;
+      params.push(limit);
+    }
+
+    return query<SentinelRunRow>(sql, params);
   }
 
   // -------------------------------------------------------------------------
