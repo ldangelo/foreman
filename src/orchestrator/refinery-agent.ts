@@ -264,7 +264,7 @@ export class RefineryAgent {
       const { stdout } = await execFileAsync("gh", [
         "pr", "view", entry.branch_name,
         "--json", "statusCheckRollup",
-        "--jq", ".[0].conclusion // \"pending\"",
+        "--jq", ".statusCheckRollup[0].conclusion // \"pending\"",
       ], { cwd: this.projectPath });
 
       return stdout.trim() === "SUCCESS";

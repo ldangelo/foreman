@@ -1,8 +1,13 @@
 /**
  * PostgresAdapter — database operations via PoolManager.
  *
- * All methods throw Error("not implemented") in this skeleton phase (TRD-003).
- * Full implementations follow in TRD-011, TRD-026, TRD-027, etc.
+ * This adapter is partially implemented.
+ * - Project operations, task operations, and TRD-032 pipeline run/event/message
+ *   operations are implemented.
+ * - Legacy run/cost/event/mail/bead-write/sentinel method families below still
+ *   throw Error("not implemented") in the skeleton phase.
+ *
+ * Full remaining implementations follow in TRD-011, TRD-026, TRD-027, etc.
  *
  * Design decisions:
  * - All methods accept `projectId: string` as the first argument for data isolation.

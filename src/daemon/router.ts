@@ -1,8 +1,9 @@
 /**
  * tRPC router for ForemanDaemon.
  *
- * Provides type-safe RPC procedures for all daemon operations.
- * Each procedure is wired to a PostgresAdapter method (skeleton phase: stubs).
+ * Provides type-safe RPC procedures for daemon operations.
+ * Project/task and TRD-032 pipeline procedures are wired to concrete
+ * PostgresAdapter methods; other adapter families remain partially unimplemented.
  *
  * Architecture:
  * - Fastify receives HTTP requests

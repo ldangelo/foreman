@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const { mockExecFile } = vi.hoisted(() => ({
+  mockExecFile: vi.fn(),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFile: mockExecFile,
+}));
+
 import { RefineryAgent, type RefineryAgentConfig } from "../refinery-agent.js";
 import type { MergeQueueEntry } from "../merge-queue.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
@@ -54,6 +63,13 @@ function makeEntry(overrides: Partial<MergeQueueEntry> = {}): MergeQueueEntry {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
+
+beforeEach(() => {
+  mockExecFile.mockReset();
+  mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, callback: (err: Error | null, result?: { stdout: string; stderr?: string }) => void) => {
+    callback(new Error("exec failed"));
+  });
+});
 
 describe("RefineryAgent", () => {
   describe("constructor", () => {
@@ -152,6 +168,46 @@ describe("RefineryAgent", () => {
       expect(results).toHaveLength(1);
       expect(results[0].action).toBe("error");
       expect(results[0].message).toContain("PR state");
+    });
+  });
+
+  describe("checkCiStatus()", () => {
+    it("returns true when the first status check conclusion is SUCCESS", async () => {
+      mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, callback: (err: Error | null, result?: { stdout: string; stderr?: string }) => void) => {
+        callback(null, { stdout: "SUCCESS\n" });
+      });
+
+      const mergeQueue = makeMockMergeQueue();
+      const vcsBackend = makeMockVcsBackend();
+      const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test");
+
+      const result = await (agent as any).checkCiStatus(makeEntry());
+
+      expect(result).toBe(true);
+      expect(mockExecFile).toHaveBeenCalledWith(
+        "gh",
+        expect.arrayContaining([
+          "pr", "view", "foreman/test-seed",
+          "--json", "statusCheckRollup",
+          "--jq", ".statusCheckRollup[0].conclusion // \"pending\"",
+        ]),
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
+    it("returns false when CI is not passing", async () => {
+      mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, callback: (err: Error | null, result?: { stdout: string; stderr?: string }) => void) => {
+        callback(null, { stdout: "PENDING\n" });
+      });
+
+      const mergeQueue = makeMockMergeQueue();
+      const vcsBackend = makeMockVcsBackend();
+      const agent = new RefineryAgent(mergeQueue as never, vcsBackend, "/tmp/test");
+
+      const result = await (agent as any).checkCiStatus(makeEntry());
+
+      expect(result).toBe(false);
     });
   });
 
