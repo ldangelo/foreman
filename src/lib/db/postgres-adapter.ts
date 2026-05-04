@@ -1,8 +1,8 @@
 /**
  * PostgresAdapter — database operations via PoolManager.
  *
- * All methods throw Error("not implemented") in this skeleton phase (TRD-003).
- * Full implementations follow in TRD-011, TRD-026, TRD-027, etc.
+ * This adapter implements project/task operations, legacy Foreman compatibility
+ * operations, and pipeline/GitHub support on Postgres.
  *
  * Design decisions:
  * - All methods accept `projectId: string` as the first argument for data isolation.
@@ -1044,8 +1044,7 @@ export class PostgresAdapter {
 
   /**
    * Create a new run.
-   * @throws Error("not implemented")
-   */
+     */
   async createRun(
     projectId: string,
     seedId: string,
@@ -1063,17 +1062,17 @@ export class PostgresAdapter {
          agent_type, session_key, worktree_path, base_branch, merge_strategy, progress
        )
        VALUES (
-         $1,
-         $2,
-         COALESCE((SELECT MAX(run_number) + 1 FROM runs WHERE project_id = $1 AND bead_id = $2), 1),
+         $1::uuid,
+         $2::varchar(255),
+         COALESCE((SELECT MAX(run_number) + 1 FROM runs WHERE bead_id = $3::varchar(255)), 1),
          'pending',
-         $3,
+         $4::varchar(255),
          'manual',
-         $4,
-         $5,
-         $6,
-         $7,
-         $8,
+         $5::varchar(64),
+         $6::text,
+         $7::text,
+         $8::varchar(255),
+         $9::varchar(16),
          NULL
        )
        RETURNING
@@ -1091,6 +1090,7 @@ export class PostgresAdapter {
       [
         projectId,
         seedId,
+        seedId,
         options?.worktreePath ?? `foreman/${seedId}`,
         agentType,
         options?.sessionKey ?? null,
@@ -1104,8 +1104,7 @@ export class PostgresAdapter {
 
   /**
    * List runs for a project.
-   * @throws Error("not implemented")
-   */
+     */
   async listRuns(
     projectId: string,
     filters?: { status?: string[]; limit?: number }
@@ -1130,8 +1129,7 @@ export class PostgresAdapter {
 
   /**
    * Get a single run by ID.
-   * @throws Error("not implemented")
-   */
+     */
   async getRun(projectId: string, runId: string): Promise<RunRow | null> {
     const rows = await query<RunRow>(
       `${runRowSelectSql()} WHERE project_id = $1 AND id = $2 LIMIT 1`,
@@ -1143,8 +1141,7 @@ export class PostgresAdapter {
 
   /**
    * Update a run's fields.
-   * @throws Error("not implemented")
-   */
+     */
   async updateRun(
     projectId: string,
     runId: string,
@@ -1190,8 +1187,7 @@ export class PostgresAdapter {
 
   /**
    * List active (pending/running) runs for a project.
-   * @throws Error("not implemented")
-   */
+     */
   async listActiveRuns(projectId: string): Promise<RunRow[]> {
     const rows = await query<RunRow>(
       `${runRowSelectSql()} r
@@ -1212,8 +1208,7 @@ export class PostgresAdapter {
 
   /**
    * Check if a seed has an active or pending run.
-   * @throws Error("not implemented")
-   */
+     */
   async hasActiveOrPendingRun(
     projectId: string,
     seedId: string
@@ -1227,8 +1222,7 @@ export class PostgresAdapter {
 
   /**
    * Update run progress (phase, cost, tokens, etc.).
-   * @throws Error("not implemented")
-   */
+     */
   async updateRunProgress(
     projectId: string,
     runId: string,
@@ -1249,21 +1243,29 @@ export class PostgresAdapter {
 
   /**
    * Purge runs older than a given timestamp.
-   * @throws Error("not implemented")
-   */
+     */
   async purgeOldRuns(
     projectId: string,
     olderThan: string
   ): Promise<number> {
-    throw new Error("not implemented");
+    return execute(
+      `DELETE FROM runs
+       WHERE project_id = $1
+         AND status IN ('failure', 'success')
+         AND created_at < $2`,
+      [projectId, olderThan],
+    );
   }
 
   /**
    * Delete a run.
-   * @throws Error("not implemented")
-   */
+     */
   async deleteRun(projectId: string, runId: string): Promise<boolean> {
-    throw new Error("not implemented");
+    const changed = await execute(
+      `DELETE FROM runs WHERE project_id = $1 AND id = $2`,
+      [projectId, runId],
+    );
+    return changed > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -1272,8 +1274,7 @@ export class PostgresAdapter {
 
   /**
    * Record cost data for a run.
-   * @throws Error("not implemented")
-   */
+     */
   async recordCost(
     projectId: string,
     runId: string,
@@ -1284,7 +1285,11 @@ export class PostgresAdapter {
       estimatedCost: number;
     }
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO costs (run_id, tokens_in, tokens_out, cache_read, estimated_cost, recorded_at)
+       VALUES ($1, $2, $3, $4, $5, clock_timestamp())`,
+      [runId, cost.tokensIn, cost.tokensOut, cost.cacheRead, cost.estimatedCost],
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1293,8 +1298,7 @@ export class PostgresAdapter {
 
   /**
    * Log a project event.
-   * @throws Error("not implemented")
-   */
+     */
   async logEvent(
     projectId: string,
     runId: string | null,
@@ -1325,8 +1329,7 @@ export class PostgresAdapter {
 
   /**
    * Log a rate limit event.
-   * @throws Error("not implemented")
-   */
+     */
   async logRateLimitEvent(
     projectId: string,
     runId: string | null,
@@ -1349,8 +1352,7 @@ export class PostgresAdapter {
 
   /**
    * Send a message to an agent.
-   * @throws Error("not implemented")
-   */
+     */
   async sendMessage(
     projectId: string,
     runId: string,
@@ -1372,8 +1374,7 @@ export class PostgresAdapter {
 
   /**
    * Mark a message as read.
-   * @throws Error("not implemented")
-   */
+     */
   async markMessageRead(
     projectId: string,
     messageId: string
@@ -1389,8 +1390,7 @@ export class PostgresAdapter {
 
   /**
    * Mark all messages for a run/agent as read.
-   * @throws Error("not implemented")
-   */
+     */
   async markAllMessagesRead(
     projectId: string,
     runId: string,
@@ -1406,8 +1406,7 @@ export class PostgresAdapter {
 
   /**
    * Delete a message.
-   * @throws Error("not implemented")
-   */
+     */
   async deleteMessage(
     projectId: string,
     messageId: string
@@ -1584,26 +1583,34 @@ export class PostgresAdapter {
 
   /**
    * Enqueue a bead write operation.
-   * @throws Error("not implemented")
-   */
+     */
   async enqueueBeadWrite(
     projectId: string,
     sender: string,
     operation: string,
     payload: unknown
   ): Promise<void> {
-    throw new Error("not implemented");
+    await execute(
+      `INSERT INTO bead_write_queue (project_id, sender, operation, payload, created_at, processed_at)
+       VALUES ($1, $2, $3, $4, clock_timestamp(), NULL)`,
+      [projectId, sender, operation, JSON.stringify(payload)],
+    );
   }
 
   /**
    * Mark a bead write as processed.
-   * @throws Error("not implemented")
-   */
+     */
   async markBeadWriteProcessed(
     projectId: string,
     id: string
   ): Promise<boolean> {
-    throw new Error("not implemented");
+    const changed = await execute(
+      `UPDATE bead_write_queue
+       SET processed_at = clock_timestamp()
+       WHERE project_id = $1 AND id = $2 AND processed_at IS NULL`,
+      [projectId, id],
+    );
+    return changed > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -1612,8 +1619,7 @@ export class PostgresAdapter {
 
   /**
    * Upsert sentinel configuration.
-   * @throws Error("not implemented")
-   */
+     */
   async upsertSentinelConfig(
     projectId: string,
     config: Record<string, unknown>
@@ -1657,8 +1663,7 @@ export class PostgresAdapter {
 
   /**
    * Record a sentinel run.
-   * @throws Error("not implemented")
-   */
+     */
   async recordSentinelRun(
     projectId: string,
     run: Record<string, unknown>
@@ -1684,8 +1689,7 @@ export class PostgresAdapter {
 
   /**
    * Update a sentinel run.
-   * @throws Error("not implemented")
-   */
+     */
   async updateSentinelRun(
     projectId: string,
     runId: string,

@@ -1,10 +1,10 @@
 /**
- * TRD-003-TEST | Verifies: TRD-003 | Tests: PostgresAdapter throws "not implemented" on all methods
+ * TRD-003-TEST | Verifies: TRD-003 | Tests: PostgresAdapter legacy compatibility APIs
  * PRD: docs/PRD/PRD-2026-010-multi-project-orchestrator.md
  * TRD: docs/TRD/TRD-2026-011-multi-project-orchestrator.md#trd-003
  *
- * Note: Project methods are fully implemented (TRD-011). The project operation
- * tests below use a mock pool. Non-project methods still throw "not implemented".
+ * Note: Project, task, legacy compatibility, and pipeline-specific adapter
+ * methods covered here are implemented.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -14,7 +14,6 @@ import { initPool, destroyPool, type PoolLike } from "../db/pool-manager.js";
 const PROJECT_ID = "proj-test123";
 
 const adapter = new PostgresAdapter();
-const NOT_IMPLEMENTED = "not implemented";
 
 // ---------------------------------------------------------------------------
 // Mock pool factory
@@ -45,20 +44,6 @@ function makeCapturePool(
     end: vi.fn(),
     on: vi.fn(),
   };
-}
-
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-/**
- * Asserts that calling the given method with the given args throws Error("not implemented").
- */
-async function assertNotImplemented(
-  fn: () => Promise<unknown>,
-  label: string
-): Promise<void> {
-  await expect(fn()).rejects.toThrow(NOT_IMPLEMENTED);
 }
 
 // ---------------------------------------------------------------------------
@@ -680,18 +665,36 @@ describe("PostgresAdapter run operations", () => {
     }
   });
 
-  it("purgeOldRuns throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.purgeOldRuns(PROJECT_ID, "2024-01-01"),
-      "purgeOldRuns"
-    );
+  it("purgeOldRuns deletes old terminal runs", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([{ sqlPattern: /DELETE FROM runs/, rows: [], rowCount: 3 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 3 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await expect(adapter.purgeOldRuns(PROJECT_ID, "2024-01-01")).resolves.toBe(3);
+      expect(capturedSql).toContain("status IN ('failure', 'success')");
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("deleteRun throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.deleteRun(PROJECT_ID, "run-1"),
-      "deleteRun"
-    );
+  it("deleteRun deletes a project-scoped run", async () => {
+    let capturedSql = "";
+    const mockPool = makeMockPool([{ sqlPattern: /DELETE FROM runs/, rows: [], rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      capturedSql = text;
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await expect(adapter.deleteRun(PROJECT_ID, "run-1")).resolves.toBe(true);
+      expect(capturedSql).toContain("project_id = $1");
+    } finally {
+      await destroyPool();
+    }
   });
 });
 
@@ -700,17 +703,25 @@ describe("PostgresAdapter run operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter cost operations", () => {
-  it("recordCost throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () =>
-        adapter.recordCost(PROJECT_ID, "run-1", {
-          tokensIn: 1000,
-          tokensOut: 500,
-          cacheRead: 200,
-          estimatedCost: 0.05,
-        }),
-      "recordCost"
-    );
+  it("recordCost inserts a cost row", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO costs/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.recordCost(PROJECT_ID, "run-1", {
+        tokensIn: 1000,
+        tokensOut: 500,
+        cacheRead: 200,
+        estimatedCost: 0.05,
+      });
+      expect(capturedParams).toEqual(["run-1", 1000, 500, 200, 0.05]);
+    } finally {
+      await destroyPool();
+    }
   });
 });
 
@@ -839,19 +850,30 @@ describe("PostgresAdapter message operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter bead write queue operations", () => {
-  it("enqueueBeadWrite throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () =>
-        adapter.enqueueBeadWrite(PROJECT_ID, "sentinel", "upsert", { id: "1" }),
-      "enqueueBeadWrite"
-    );
+  it("enqueueBeadWrite inserts a queued write", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO bead_write_queue/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
+      return { rows: [], rowCount: 1 };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      await adapter.enqueueBeadWrite(PROJECT_ID, "sentinel", "upsert", { id: "1" });
+      expect(capturedParams).toEqual([PROJECT_ID, "sentinel", "upsert", JSON.stringify({ id: "1" })]);
+    } finally {
+      await destroyPool();
+    }
   });
 
-  it("markBeadWriteProcessed throws 'not implemented'", async () => {
-    await assertNotImplemented(
-      () => adapter.markBeadWriteProcessed(PROJECT_ID, "bw-1"),
-      "markBeadWriteProcessed"
-    );
+  it("markBeadWriteProcessed timestamps a queued write", async () => {
+    const mockPool = makeMockPool([{ sqlPattern: /UPDATE bead_write_queue/, rowCount: 1 }]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      await expect(adapter.markBeadWriteProcessed(PROJECT_ID, "bw-1")).resolves.toBe(true);
+    } finally {
+      await destroyPool();
+    }
   });
 });
 
