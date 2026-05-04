@@ -1,11 +1,10 @@
 /**
- * TRD-003-TEST | Verifies: TRD-003 | Tests: PostgresAdapter project/task/core run APIs
+ * TRD-003-TEST | Verifies: TRD-003 | Tests: PostgresAdapter legacy compatibility APIs
  * PRD: docs/PRD/PRD-2026-010-multi-project-orchestrator.md
  * TRD: docs/TRD/TRD-2026-011-multi-project-orchestrator.md#trd-003
  *
- * Note: Project methods, task methods, and the core run/cost/event methods below
- * are implemented. Remaining mail/bead-write/sentinel methods still throw
- * "not implemented" until follow-up beads land.
+ * Note: Project, task, legacy compatibility, and pipeline-specific adapter
+ * methods covered here are implemented.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -15,7 +14,6 @@ import { initPool, destroyPool, type PoolLike } from "../db/pool-manager.js";
 const PROJECT_ID = "proj-test123";
 
 const adapter = new PostgresAdapter();
-const NOT_IMPLEMENTED = "not implemented";
 
 // ---------------------------------------------------------------------------
 // Mock pool factory
@@ -35,20 +33,6 @@ function makeMockPool(responses: Array<{ sqlPattern: RegExp; rows?: unknown[]; r
     end: vi.fn(),
     on: vi.fn(),
   };
-}
-
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-/**
- * Asserts that calling the given method with the given args throws Error("not implemented").
- */
-async function assertNotImplemented(
-  fn: () => Promise<unknown>,
-  label: string
-): Promise<void> {
-  await expect(fn()).rejects.toThrow(NOT_IMPLEMENTED);
 }
 
 // ---------------------------------------------------------------------------
