@@ -686,25 +686,27 @@ export class PostgresAdapter {
          merge_strategy
        )
        VALUES (
-         $1,
-         $2,
-         COALESCE((SELECT MAX(run_number) + 1 FROM runs WHERE project_id = $1 AND bead_id = $2), 1),
+         $1::uuid,
+         $2::varchar(255),
+         COALESCE((SELECT MAX(run_number) + 1 FROM runs WHERE bead_id = $3::varchar(255)), 1),
          'pending',
-         $3,
+         $4::varchar(255),
          'bead',
-         $2,
-         $4,
-         $5,
-         $6,
+         $5::varchar(255),
+         $6::varchar(255),
+         $7::varchar(255),
+         $8::text,
          NULL,
-         $7,
-         $8
+         $9::varchar(255),
+         $10::varchar(16)
        )
        RETURNING *`,
       [
         projectId,
         seedId,
+        seedId,
         options?.baseBranch ?? seedId,
+        seedId,
         agentType,
         options?.sessionKey ?? null,
         options?.worktreePath ?? null,
