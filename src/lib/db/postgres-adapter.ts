@@ -1597,6 +1597,23 @@ export class PostgresAdapter {
     );
   }
 
+  async getPendingBeadWrites(projectId: string): Promise<Array<{
+    id: string;
+    sender: string;
+    operation: string;
+    payload: string;
+    created_at: string;
+    processed_at: string | null;
+  }>> {
+    return query(
+      `SELECT id, sender, operation, payload, created_at, processed_at
+       FROM bead_write_queue
+       WHERE project_id = $1 AND processed_at IS NULL
+       ORDER BY created_at ASC`,
+      [projectId],
+    );
+  }
+
   /**
    * Mark a bead write as processed.
      */

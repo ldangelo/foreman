@@ -441,14 +441,16 @@ export class PostgresStore implements IStore {
 
   // ── Bead Write Queue ────────────────────────────────────────────────
 
-  async getPendingBeadWrites(): Promise<BeadWriteEntry[]> {
-    // Not implemented in Postgres yet
-    return [];
+  async enqueueBeadWrite(sender: string, operation: string, payload: unknown): Promise<void> {
+    await this.adapter.enqueueBeadWrite(this.projectId, sender, operation, payload);
   }
 
-  async markBeadWriteProcessed(_id: string): Promise<boolean> {
-    // Not implemented in Postgres yet
-    return false;
+  async getPendingBeadWrites(): Promise<BeadWriteEntry[]> {
+    return await this.adapter.getPendingBeadWrites(this.projectId) as BeadWriteEntry[];
+  }
+
+  async markBeadWriteProcessed(id: string): Promise<boolean> {
+    return await this.adapter.markBeadWriteProcessed(this.projectId, id);
   }
 
   // ── Merge Queue ─────────────────────────────────────────────────────
