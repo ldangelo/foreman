@@ -291,7 +291,7 @@ export function renderLiveStatusHeader(counts: StatusCounts): string {
 }
 
 export const statusCommand = new Command("status")
-  .description("Show project status from beads_rust (br) + sqlite")
+  .description("Show project status from native tasks or beads_rust (br) for legacy compatibility")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
   .option("--live", "Enable full dashboard TUI with event stream (implies --watch; use instead of 'foreman dashboard')")
   .option("--json", "Output status as JSON")

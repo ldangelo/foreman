@@ -81,7 +81,7 @@ export const program = new Command();
 
 program
   .name("foreman")
-  .description("Multi-agent coding orchestrator built on beads_rust (br)")
+  .description("Multi-agent coding orchestrator with PostgreSQL-backed daemon")
   .version(readPackageVersion());
 
 program.addCommand(initCommand);
