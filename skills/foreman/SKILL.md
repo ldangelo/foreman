@@ -5,12 +5,12 @@ metadata:
   openclaw:
     emoji: "👷"
     requires:
-      anyBins: ["bd", "claude"]
+      anyBins: ["claude"]
 ---
 
 # Foreman — Multi-Agent Coding Orchestrator
 
-Foreman decomposes development work into parallelizable tasks (via Beads), dispatches them to AI coding agents (Claude Code, Pi, Codex), manages git isolation per agent, and merges results back — all monitored through a real-time web dashboard.
+Foreman decomposes development work into parallelizable tasks, dispatches them to AI coding agents (Claude Code, Pi, Codex), manages git isolation per agent, and merges results back — all monitored through a real-time web dashboard.
 
 ## When to Use
 
@@ -21,8 +21,6 @@ Foreman decomposes development work into parallelizable tasks (via Beads), dispa
 
 ## Prerequisites
 
-- **Beads CLI** (`bd`): `brew install beads`
-- **Dolt**: `brew install dolt` (required by Beads)
 - **Claude Code**: For Ensemble pipeline and agent spawning
 - **Node.js 20+**
 - **Foreman project**: `~/Development/Fortium/foreman`
@@ -30,6 +28,7 @@ Foreman decomposes development work into parallelizable tasks (via Beads), dispa
 ## CLI Location
 
 All commands run via:
+
 ```bash
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts <command>
 ```
@@ -56,7 +55,7 @@ cd <project-dir>
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts init --name "my-project"
 ```
 
-Runs `bd init` and registers the project in `~/.foreman/foreman.db`.
+Registers the project in `~/.foreman/foreman.db`.
 
 ### 2. Plan (Ensemble PRD → TRD Pipeline)
 
@@ -79,6 +78,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan --dry-run "Build som
 
 Creates an **epic bead** with 4 child beads (sequential dependencies). Each step dispatches
 through the dispatcher with full tracking in SQLite:
+
 1. `/ensemble:create-prd` — Analyze description, define requirements
 2. `/ensemble:refine-prd` — Strengthen acceptance criteria, edge cases
 3. `/ensemble:create-trd` — Technical architecture, task breakdown, sprint planning
@@ -119,22 +119,11 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts run --runtime pi
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts run --dry-run
 ```
 
-For each ready bead:
+For each ready task:
+
 1. Creates a git worktree at `.foreman-worktrees/<bead-id>`
 2. Generates an AGENTS.md with task instructions
-3. Records the run in SQLite
-4. **TODO**: Spawns via OpenClaw `sessions_spawn`
-
-**Manual dispatch via OpenClaw** (until spawn is wired up):
-```
-For each ready task from bd ready --json:
-  sessions_spawn(
-    runtime: "acp",
-    task: "Read AGENTS.md and implement the task. Use br to track progress. When done: br close <bead-id> && git add . && git commit && git push",
-    cwd: "<worktree-path>",
-    mode: "run"
-  )
-```
+3. Records the run in Postgres
 
 ### 5. Monitor
 
@@ -186,7 +175,6 @@ Subjects: `phase-started`, `phase-complete`, `agent-error`, `blocker-detected`, 
 
 **Tip**: Set `FOREMAN_RUN_ID` env var to avoid passing `--run-id` on every call.
 
-
 ### 8. Merge
 
 ```bash
@@ -198,7 +186,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge --test-command "npm
 
 ### 9. Task Management
 
-Foreman ships a native task store backed by SQLite. Tasks can also be managed via `br`/`bd` (beads_rust) — both stores coexist; native tasks are used for dispatch and UI.
+Foreman ships a native task store backed by Postgres.
 
 #### Create a task
 
@@ -282,6 +270,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task import --from-beads
 ```
 
 Import reads `.beads/beads.jsonl` and maps bead status to native status:
+
 - `open` → `backlog`
 - `in_progress` → `ready`
 - `closed` → `merged`
@@ -316,6 +305,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts dashboard
 | **codex** | When OpenAI models preferred | Alternative |
 
 The dispatcher auto-selects based on task keywords:
+
 - `test`, `doc`, `fix`, `config` → pi
 - `refactor`, `architect`, `design`, `complex` → claude-code
 - Override with `--runtime` flag

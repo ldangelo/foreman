@@ -45,7 +45,7 @@ function resolveDaemonEnv(baseEnv: NodeJS.ProcessEnv, cwd: string): NodeJS.Proce
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".foreman", "daemon.sock");
 const DEFAULT_PID_PATH = join(homedir(), ".foreman", "daemon.pid");
-const DAEMON_ENTRY = join(dirname(import.meta.filename), "..", "daemon", "index.js");
+const DAEMON_ENTRY = join(dirname(import.meta.filename), "..", "..", "dist", "daemon", "index.js");
 
 // ---------------------------------------------------------------------------
 // Error types
