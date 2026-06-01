@@ -64,15 +64,17 @@ export function verifyJiraSignature(
   secret: string,
 ): boolean {
   if (!signature || !secret) return false;
-
+  // Strip "sha256=" prefix from Jira's signature
+  const sigValue = signature.startsWith("sha256=")
+    ? signature.slice(7)
+    : signature;
   const expected = createHmac("sha256", secret)
     .update(rawBody)
     .digest("hex");
-
   try {
     return timingSafeEqual(
       Buffer.from(expected, "utf8"),
-      Buffer.from(signature, "utf8"),
+      Buffer.from(sigValue, "utf8"),
     );
   } catch {
     return false;

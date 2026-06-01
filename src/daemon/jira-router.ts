@@ -12,7 +12,7 @@
 import { z } from "zod";
 import type { Context } from "./context.js";
 
-// Jira project row type
+// Jira project row type (also exported from postgres-adapter)
 export interface JiraProjectRow {
   id: string;
   project_id: string;
@@ -46,6 +46,10 @@ export interface JiraStatusOutput {
   projects: number;
   lastPoll?: string;
   webhookEnabled: boolean;
+  // Observability metrics (TRD-028)
+  monitoredIssues: number;
+  triggeredToday: number;
+  lastError?: string;
 }
 
 export interface JiraTestConnectionInput {

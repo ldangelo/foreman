@@ -343,9 +343,19 @@ export interface JiraIssueStateInput {
   lastKnownStatus: string;
   lastUpdatedAt: string;
 }
-// PostgresAdapter
-// ---------------------------------------------------------------------------
-
+// Jira project config row type (TRD-028)
+export interface JiraProjectRow {
+  id: string;
+  project_id: string;
+  api_url: string;
+  email: string;
+  poll_interval_seconds: number | null;
+  webhook_enabled: boolean;
+  last_poll_at: string | null;
+}
+  // ---------------------------------------------------------------------------
+  // PostgresAdapter
+  // ---------------------------------------------------------------------------
 export class PostgresAdapter {
   private async allocateTaskId(projectId: string): Promise<string> {
     const rows = await query<{ name: string | null }>(
@@ -2156,10 +2166,12 @@ export class PostgresAdapter {
     const monitoredId = monitoredRows[0]?.id;
     if (!monitoredId) {
       console.warn(`[PostgresAdapter] No monitored project found for key: ${input.jiraProjectKey}`);
-    );
+    }
   }
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
   // Jira project operations (TRD-013)
+  // -------------------------------------------------------------------------
   // -------------------------------------------------------------------------
   /**
    * List Jira project configurations for a Foreman project.
@@ -2172,11 +2184,44 @@ export class PostgresAdapter {
       [projectId],
     );
   }
+  /**
+   * Get observability metrics for Jira monitoring (TRD-028).
+   */
+  async getJiraMetrics(projectId: string, jiraProjectKey: string): Promise<{
+    monitoredIssues: number;
+    triggeredToday: number;
+    lastError?: string;
+  }> {
+    const countResult = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM jira_issue_states
+       WHERE jira_project_key = $1 AND project_id = $2`,
+      [jiraProjectKey, projectId],
+    );
+    const monitoredIssues = parseInt(countResult[0]?.count ?? "0", 10);
+    const todayResult = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM jira_issue_states
+       WHERE jira_project_key = $1
+         AND project_id = $2
+         AND last_triggered_at IS NOT NULL
+         AND last_triggered_at > NOW() - INTERVAL '24 hours'`,
+      [jiraProjectKey, projectId],
+    );
+    const triggeredToday = parseInt(todayResult[0]?.count ?? "0", 10);
+    const errorResult = await query<{ last_error: string | null }>(
+      `SELECT last_error FROM jira_monitored_projects
+       WHERE jira_project_key = $1 AND project_id = $2`,
+      [jiraProjectKey, projectId],
+    );
+    return {
+      monitoredIssues,
+      triggeredToday,
+      lastError: errorResult[0]?.last_error ?? undefined,
+    };
+  }
 }
-
-
 // ---------------------------------------------------------------------------
 // Named export
 // ---------------------------------------------------------------------------
-
 export const Database = { Adapter: PostgresAdapter };

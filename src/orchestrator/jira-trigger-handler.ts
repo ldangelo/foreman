@@ -7,6 +7,7 @@
  * - Maps the Jira issue type to the appropriate Foreman workflow
  * - Creates a Foreman task with Jira metadata
  * - Dispatches the task for execution
+ * - Emits JiraTriggerEvent for observability
  */
 
 import type { PostgresAdapter } from "../lib/db/postgres-adapter.js";
@@ -14,6 +15,10 @@ import type { JiraProjectConfig } from "../lib/project-config.js";
 import { getPool } from "../lib/db/pool-manager.js";
 import type { JiraIssue } from "../daemon/jira-poller.js";
 import { isDebounced, setDebounced } from "../daemon/jira-debounce-store.js";
+import {
+  emitJiraTriggerEvent,
+  type JiraTriggerEvent,
+} from "./jira-trigger-event.js";
 
 // ── Context types ───────────────────────────────────────────────────────────────
 
@@ -69,14 +74,32 @@ export class JiraTriggerHandler {
    * 3. Check if debounced
    * 4. Map issue type to workflow
    * 5. Create task with Jira metadata
+   * 6. Emit observability event
    */
   async handleTransition(context: TriggerContext): Promise<TriggerResult> {
     const { issue, projectConfig, jiraProjectId, source } = context;
     const externalId = `jira:${issue.key}`;
     const workflowName = this.mapWorkflow(issue, projectConfig);
+    const projectId = this.resolveProjectId();
 
     // Check uniqueness — skip if already triggered (REQ-012)
-    if (await this.isAlreadyTriggered(externalId)) {
+    if (await this.isAlreadyTriggered(externalId, projectId)) {
+      this.#emitEvent({
+        eventType: "jira:trigger",
+        timestamp: new Date().toISOString(),
+        source,
+        projectKey: projectConfig.key,
+        issueKey: issue.key,
+        issueSummary: issue.fields.summary,
+        issueType: issue.fields.issuetype.name,
+        currentStatus: issue.fields.status.name,
+        transition: { from: "", to: issue.fields.status.name },
+        workflowName,
+        taskId: undefined,
+        externalId,
+        triggered: false,
+        skipReason: "already_triggered",
+      });
       return {
         triggered: false,
         reason: "already_triggered",
@@ -91,6 +114,22 @@ export class JiraTriggerHandler {
       const db = getPool();
       const debounced = await isDebounced(db, jiraProjectId, issue.key, debounceSeconds);
       if (debounced) {
+        this.#emitEvent({
+          eventType: "jira:trigger",
+          timestamp: new Date().toISOString(),
+          source,
+          projectKey: projectConfig.key,
+          issueKey: issue.key,
+          issueSummary: issue.fields.summary,
+          issueType: issue.fields.issuetype.name,
+          currentStatus: issue.fields.status.name,
+          transition: { from: "", to: issue.fields.status.name },
+          workflowName,
+          taskId: undefined,
+          externalId,
+          triggered: false,
+          skipReason: "debounced",
+        });
         return {
           triggered: false,
           reason: "debounced",
@@ -113,6 +152,23 @@ export class JiraTriggerHandler {
       `[JiraTriggerHandler] Triggered: ${issue.key} → ${workflowName} (task: ${taskId}, source: ${source})`,
     );
 
+    // Emit success event
+    this.#emitEvent({
+      eventType: "jira:trigger",
+      timestamp: new Date().toISOString(),
+      source,
+      projectKey: projectConfig.key,
+      issueKey: issue.key,
+      issueSummary: issue.fields.summary,
+      issueType: issue.fields.issuetype.name,
+      currentStatus: issue.fields.status.name,
+      transition: { from: "", to: issue.fields.status.name },
+      workflowName,
+      taskId,
+      externalId,
+      triggered: true,
+    });
+
     return {
       triggered: true,
       taskId,
@@ -122,12 +178,18 @@ export class JiraTriggerHandler {
   }
 
   /**
+   * Emit an observability event.
+   */
+  #emitEvent(event: JiraTriggerEvent): void {
+    emitJiraTriggerEvent(event);
+  }
+
+  /**
    * Check if an external ID has already been triggered.
    *
    * Looks up existing tasks by external_id.
    */
-  private async isAlreadyTriggered(externalId: string): Promise<boolean> {
-    const projectId = this.resolveProjectId();
+  async isAlreadyTriggered(externalId: string, projectId: string): Promise<boolean> {
     const existing = await this.adapter.getTaskByExternalId(projectId, externalId);
     return existing !== null;
   }
@@ -138,7 +200,7 @@ export class JiraTriggerHandler {
    * Uses the issueTypeWorkflowMap from the project config.
    * Falls back to the configured default or "default" workflow.
    */
-  private mapWorkflow(issue: JiraIssue, projectConfig: JiraProjectConfig): string {
+  mapWorkflow(issue: JiraIssue, projectConfig: JiraProjectConfig): string {
     const issueType = issue.fields.issuetype.name;
     const workflow = projectConfig.issueTypeWorkflowMap[issueType];
 
@@ -163,7 +225,7 @@ export class JiraTriggerHandler {
    * The description includes Jira metadata and a link to the issue.
    * The external_id is set to "jira:<issueKey>" for uniqueness tracking.
    */
-  private async createTask(
+  async createTask(
     issue: JiraIssue,
     projectConfig: JiraProjectConfig,
     externalId: string,
@@ -208,7 +270,7 @@ export class JiraTriggerHandler {
    * Build the Jira issue URL from the issue key.
    * Uses a convention-based URL since the project-level apiUrl isn't available here.
    */
-  private buildIssueUrl(issue: JiraIssue): string {
+  buildIssueUrl(issue: JiraIssue): string {
     // Convention: Jira Cloud URLs follow /browse/<KEY> pattern
     // The actual base URL would come from JiraConfig, but we can't access it here
     // For now, use the standard Atlassian pattern with the issue key
@@ -218,7 +280,7 @@ export class JiraTriggerHandler {
   /**
    * Normalize Jira issue type to Foreman task type.
    */
-  private normalizeIssueType(issueType: string): string {
+  normalizeIssueType(issueType: string): string {
     const mapping: Record<string, string> = {
       Epic: "epic",
       Story: "story",
@@ -233,7 +295,7 @@ export class JiraTriggerHandler {
   /**
    * Resolve the current project ID from the environment.
    */
-  private resolveProjectId(): string {
+  resolveProjectId(): string {
     const projectId = process.env.FOREMAN_PROJECT_ID;
     if (!projectId) {
       throw new Error("FOREMAN_PROJECT_ID environment variable is required for Jira trigger handling");

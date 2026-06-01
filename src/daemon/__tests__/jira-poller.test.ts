@@ -1,13 +1,5 @@
 /**
  * Integration tests for JiraIssuesPoller + JiraTriggerHandler.
- *
- * Tests:
- * - Poll project with no transitions → no triggers
- * - Poll project with new transition → triggers workflow
- * - Already-in-progress on first poll → no trigger (AC-003-4)
- * - Subsequent poll with same status → no trigger (AC-003-2)
- * - Status moves from non-start → start → triggers (AC-003-1)
- * - E2E webhook → trigger flow
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -16,18 +8,14 @@ import type { JiraProjectConfig, JiraConfig } from "../../lib/project-config.js"
 import { JiraIssuesPoller } from "../jira-poller.js";
 import { JiraTriggerHandler } from "../../orchestrator/jira-trigger-handler.js";
 
-// Mock pool manager to avoid real DB connections in trigger handler
 vi.mock("../../lib/db/pool-manager.js", () => ({
   getPool: vi.fn().mockReturnValue({}),
 }));
 
-// Mock debounce store functions
 vi.mock("../../daemon/jira-debounce-store.js", () => ({
   isDebounced: vi.fn().mockResolvedValue(false),
   setDebounced: vi.fn().mockResolvedValue(undefined),
 }));
-
-// ── Mock helpers ───────────────────────────────────────────────────────────────
 
 function createMockAdapter(): PostgresAdapter {
   return {
@@ -43,9 +31,7 @@ function createMockJiraClient() {
   return {
     authenticate: vi.fn().mockResolvedValue(undefined),
     search: vi.fn().mockResolvedValue({ issues: [], total: 0 }),
-    listProjects: vi.fn().mockResolvedValue([
-      { key: "PROJ", name: "Test Project" },
-    ]),
+    listProjects: vi.fn().mockResolvedValue([{ key: "PROJ", name: "Test Project" }]),
     handleRateLimit: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -53,19 +39,13 @@ function createMockJiraClient() {
 function createJiraProjectConfig(overrides: Partial<JiraProjectConfig> = {}): JiraProjectConfig {
   return {
     key: "PROJ",
-    startStatus: ["In Progress", "To Do"],
-    endStatus: ["Done", "Closed"],
-    issueTypeWorkflowMap: {
-      Epic: "epic",
-      Task: "default",
-      default: "default",
-    },
+    startStatus: ["In Progress"],
+    endStatus: ["Done"],
+    issueTypeWorkflowMap: { Epic: "epic", Task: "default", default: "default" },
     debounceWindowSeconds: 60,
     ...overrides,
   };
 }
-
-// ── JiraIssuesPoller tests ─────────────────────────────────────────────────────
 
 describe("JiraIssuesPoller", () => {
   let adapter: PostgresAdapter;
@@ -120,25 +100,18 @@ describe("JiraIssuesPoller", () => {
     });
 
     it("triggers when status moves from non-start to start (AC-003-1)", async () => {
-      const config = createJiraProjectConfig();
-      mockClient.search.mockResolvedValueOnce({
-        issues: [
-          {
-            key: "PROJ-1",
-            fields: {
-              summary: "Test Issue",
-              status: { name: "To Do" },
-              issuetype: { name: "Task" },
-              project: { key: "PROJ" },
-              updated: "2026-06-01T11:00:00Z",
-            },
-          },
-        ],
-        total: 1,
-      });
+      const config = createJiraProjectConfig({ startStatus: ["In Progress"] });
+      adapter.getJiraIssueStates = vi.fn().mockResolvedValue([
+        {
+          project_key: "PROJ",
+          issue_key: "PROJ-1",
+          last_known_status: "Done",
+          last_updated_at: "2026-06-01T11:00:00Z",
+        },
+      ]);
       const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);
-      await poller.pollProject(config);
-      mockClient.search.mockResolvedValueOnce({
+      await poller.loadState();
+      mockClient.search.mockResolvedValue({
         issues: [
           {
             key: "PROJ-1",
@@ -254,7 +227,7 @@ describe("JiraIssuesPoller", () => {
         {
           project_key: "PROJ",
           issue_key: "PROJ-1",
-          last_known_status: "To Do",
+          last_known_status: "Done",
           last_updated_at: "2026-06-01T11:00:00Z",
         },
       ]);
@@ -264,8 +237,6 @@ describe("JiraIssuesPoller", () => {
     });
   });
 });
-
-// ── JiraTriggerHandler tests ───────────────────────────────────────────────────
 
 describe("JiraTriggerHandler", () => {
   let adapter: PostgresAdapter;
@@ -311,27 +282,15 @@ describe("JiraTriggerHandler", () => {
     });
 
     it("maps Epic issue type to epic workflow", async () => {
-      const epicIssue = {
-        ...baseIssue,
-        fields: { ...baseIssue.fields, issuetype: { name: "Epic" } },
-      };
-      const result = await handler.handleTransition({
-        ...baseContext,
-        issue: epicIssue,
-      });
+      const epicIssue = { ...baseIssue, fields: { ...baseIssue.fields, issuetype: { name: "Epic" } } };
+      const result = await handler.handleTransition({ ...baseContext, issue: epicIssue });
       expect(result.triggered).toBe(true);
       expect(result.workflowName).toBe("epic");
     });
 
     it("maps unknown type to default workflow", async () => {
-      const unknownIssue = {
-        ...baseIssue,
-        fields: { ...baseIssue.fields, issuetype: { name: "Unknown Type" } },
-      };
-      const result = await handler.handleTransition({
-        ...baseContext,
-        issue: unknownIssue,
-      });
+      const unknownIssue = { ...baseIssue, fields: { ...baseIssue.fields, issuetype: { name: "Unknown" } } };
+      const result = await handler.handleTransition({ ...baseContext, issue: unknownIssue });
       expect(result.triggered).toBe(true);
       expect(result.workflowName).toBe("default");
     });
@@ -344,10 +303,7 @@ describe("JiraTriggerHandler", () => {
           title: "Test Issue",
           externalId: "jira:PROJ-1",
           status: "ready",
-          labels: expect.arrayContaining([
-            "jira-workflow:default",
-            "jira-type:task",
-          ]),
+          labels: expect.arrayContaining(["jira-workflow:default", "jira-type:task"]),
         }),
       );
     });
@@ -360,8 +316,6 @@ describe("JiraTriggerHandler", () => {
     });
   });
 });
-
-// ── Webhook E2E flow tests ────────────────────────────────────────────────────
 
 describe("Webhook E2E flow", () => {
   let adapter: PostgresAdapter;
@@ -424,21 +378,7 @@ describe("Webhook E2E flow", () => {
   });
 
   it("skips webhook for transitions outside startStatus", async () => {
-    const handler = new JiraTriggerHandler(adapter, "webhook-test-jira-id");
-    const issue = {
-      key: "PROJ-WEBHOOK-3",
-      fields: {
-        summary: "Done Issue",
-        status: { name: "Done" },
-        issuetype: { name: "Task" },
-        project: { key: "PROJ" },
-        updated: "2026-06-01T12:00:00Z",
-      },
-    };
-    const config = createJiraProjectConfig();
-    // Verify Done is not a startStatus in our config
+    const config = createJiraProjectConfig({ startStatus: ["In Progress"] });
     expect(config.startStatus).not.toContain("Done");
-    // The issue doesn't transition into a startStatus, so the webhook handler would skip it
-    // This is a logic test: our webhook handler checks if statusChange.to is in startStatus
   });
 });

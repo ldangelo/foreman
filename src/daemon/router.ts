@@ -1502,17 +1502,26 @@ const jiraRouter = t.router({
     .query(async ({ input, ctx }) => {
       const projectId = input.projectId ?? ctx.projectId ?? process.env.FOREMAN_PROJECT_ID;
       if (!projectId) {
-        return { configured: false, projects: 0, lastPoll: undefined, webhookEnabled: false };
+        return {
+          configured: false, projects: 0, lastPoll: undefined, webhookEnabled: false,
+          monitoredIssues: 0, triggeredToday: 0, lastError: undefined,
+        };
       }
       const jiraProjects = await ctx.adapter.listJiraProjects(projectId);
       if (jiraProjects.length === 0) {
-        return { configured: false, projects: 0, lastPoll: undefined, webhookEnabled: false };
+        return {
+          configured: false, projects: 0, lastPoll: undefined, webhookEnabled: false,
+          monitoredIssues: 0, triggeredToday: 0, lastError: undefined,
+        };
       }
+      // Get observability metrics for first project
+      const metrics = await ctx.adapter.getJiraMetrics(projectId, jiraProjects[0].api_url.split("/").pop() ?? "");
       return {
         configured: true,
         projects: jiraProjects.length,
         lastPoll: jiraProjects[0]?.last_poll_at ?? undefined,
         webhookEnabled: jiraProjects[0]?.webhook_enabled ?? false,
+        ...metrics,
       };
     }),
   /**
