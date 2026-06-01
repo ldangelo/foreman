@@ -189,13 +189,12 @@ export class JiraIssuesPoller {
       .join(" OR ");
     const jql = `project = "${projectConfig.key}" AND (${statusConditions}) ORDER BY updated DESC`;
     const maxResults = 100;
-
-    let searchResult: JiraSearchResult;
+    let searchResult: { issues: JiraIssue[]; total: number } | undefined;
     let retryCount = 0;
     const maxRetries = 3;
     while (retryCount < maxRetries) {
       try {
-        searchResult = await this.client.search<jiraResponse>(jql, { maxResults });
+        searchResult = await this.client.search(jql, { maxResults });
         break; // Success
       } catch (err) {
         const isRateLimit = err instanceof Error && err.message.includes("429");
@@ -217,7 +216,6 @@ export class JiraIssuesPoller {
     if (!searchResult) {
       throw new Error(`Failed to fetch issues after ${maxRetries} attempts`);
     }
-
     let transitions = 0;
 
     for (const issue of searchResult.issues) {
