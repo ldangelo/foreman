@@ -64,24 +64,20 @@ A Jira Issue Monitor daemon that:
 | **Project Managers** | Track sprint progress across issue trackers | Disconnected Jira status from Foreman execution |
 
 ### 2.2 Current Workflow
-
-```
+### 2.2 Current Workflow
+```text
 1. Jira issue enters "In Progress" status
 2. Developer manually: foreman task create "JIRA-123: ..."
 3. foreman run --bead <id>
 4. Track status separately in Jira vs Foreman
-```
-
+```typescript
 ### 2.3 Desired Workflow
-
-```
+```text
 1. Jira issue enters "In Progress" status
 2. Jira Monitor detects transition (via webhook or poll, <5s for webhook, <5min for polling)
 3. Foreman creates task linked to JIRA-123
 4. Mapped workflow auto-dispatched based on issue type
-5. Status synced back to Jira on completion
-```
-
+**Note:** v1 does not include Jira writes (no bi-directional sync).
 ---
 
 ## 3. Goals and Non-Goals
@@ -180,7 +176,7 @@ issueTracker:
           task: default
           bug: smoke
         debounceWindowSeconds: 60
-```
+```typescript
 
 **Project Key Normalization:**
 - Project keys in config are normalized to uppercase before JQL queries
@@ -309,7 +305,6 @@ interface JiraTriggerEvent {
   workflowName: string;       // e.g., "default"
   externalId: string;         // e.g., "jira:PROJ-123"
 }
-```
 
 **Acceptance Criteria:**
 - AC-009-1: Given a transition is detected and triggered, when the event emits, then it includes `type: "jira-trigger"`, `timestamp`, `source`, `projectKey`, `issueId`, `workflowName`, `externalId`.
@@ -513,7 +508,7 @@ NFRs are covered in REQ-016 (Detection Latency), REQ-017 (Resource Usage), and R
 
 ### 8.1 Module Structure
 
-```
+```text
 src/daemon/
   jira-poller.ts          # JiraIssuesPoller class (mirrors GitHubIssuesPoller)
   jira-api-client.ts      # JiraApiClient for authentication + queries
@@ -532,7 +527,7 @@ src/lib/
 src/orchestrator/
   jira-trigger-handler.ts # Maps detected issues to workflow dispatch
   jira-trigger-event.ts   # Event schema definition
-```
+```typescript
 
 ### 8.2 Configuration Schema (Extension to ProjectConfig)
 
@@ -562,7 +557,6 @@ interface ProjectConfig {
     jira?: JiraConfig;
   };
 }
-```
 
 ### 8.3 Polling Strategy with Transition Detection
 
@@ -608,7 +602,7 @@ function buildJql(project: JiraProjectConfig, since: Date): string {
   const statusClause = project.startStatus.map(s => `status = "${s}"`).join(" OR ");
   return `project = ${project.key.toUpperCase()} AND (${statusClause}) AND updated >= "${since.toISOString()}"`;
 }
-```
+```typescript
 
 ### 8.4 Event Schema
 
@@ -622,7 +616,6 @@ interface JiraTriggerEvent {
   workflowName: string;       // e.g., "default"
   externalId: string;         // e.g., "jira:PROJ-123"
 }
-```
 
 ### 8.5 Debounce State Persistence
 
@@ -642,7 +635,7 @@ interface DebounceStore {
   setDebounced(issueKey: string, windowSeconds: number): void;
   cleanup(): void; // Remove expired entries
 }
-```
+```typescript
 
 ### 8.6 Webhook Handler
 
@@ -678,7 +671,6 @@ function validateSignature(body: string, signature: string, secret: string): boo
     .digest("base64");
   return signature === expected;
 }
-```
 
 ---
 

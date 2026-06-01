@@ -13,7 +13,7 @@
 
 ### 1.1 Component Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         CLI Layer (src/cli/commands/)                         │
 │   foreman sentinel --start | stop | status                                   │
@@ -61,7 +61,6 @@
 │  PoolManager ─────► Postgres connection pool (size=20)                      │
 │  DaemonManager ───► ~/.foreman/daemon.pid                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
-```
 
 ### 1.2 Component Responsibilities
 
@@ -82,7 +81,7 @@
 
 ### 1.3 Data Flow: Poll-Based Detection
 
-```
+```text
 Every pollIntervalSeconds (default: 60s)
   │
   ├─► JiraIssuesPoller.pollAll()
@@ -105,11 +104,11 @@ Every pollIntervalSeconds (default: 60s)
   │    └─► Persist lastPollAt to PostgresAdapter
   │
   └─► Log: "Jira poll complete: N projects, M transitions detected"
-```
+```typescript
 
 ### 1.4 Data Flow: Webhook-Based Detection
 
-```
+```text
 Jira sends POST to /webhooks/jira
   │
   ├─► JiraWebhookHandler.handleWebhook(req)
@@ -135,11 +134,10 @@ Jira sends POST to /webhooks/jira
   │    └─► → JiraTriggerHandler
   │
   └─► Return 200 OK
-```
 
 ### 1.5 Data Flow: Trigger Execution
 
-```
+```text
 JiraTriggerHandler.process(issue, projectConfig)
   │
   ├─► Check uniqueness (REQ-012):
@@ -172,7 +170,7 @@ JiraTriggerHandler.process(issue, projectConfig)
   │    └─► Log: JiraTriggerEvent { type: "jira-trigger", source: "poll"|"webhook", ... }
   │
   └─► Return: { triggered: true, taskId, workflowName }
-```
+```typescript
 
 ### 1.6 Technology Choices
 
@@ -242,7 +240,6 @@ CREATE INDEX idx_jira_issue_states_key ON jira_issue_states(issue_key);
 CREATE INDEX idx_jira_issue_states_updated ON jira_issue_states(last_updated_at);
 CREATE INDEX idx_jira_issue_states_triggered ON jira_issue_states(last_triggered_at) 
   WHERE last_triggered_at IS NOT NULL;
-```
 
 ### 2.2 Extend Existing Tables
 
@@ -253,7 +250,7 @@ ALTER TABLE tasks ADD COLUMN jira_project_key TEXT;  -- e.g., "PROJ"
 
 -- Unique constraint on external_id for Jira (part of existing schema)
 -- External IDs follow format: jira:PROJECT-123
-```
+```typescript
 
 ### 2.3 Debounce State (PostgreSQL)
 
@@ -269,14 +266,13 @@ SELECT EXISTS (
     AND jis.last_triggered_at IS NOT NULL
     AND (NOW() - jis.last_triggered_at) < (jmp.debounce_window_seconds || ' seconds')::INTERVAL
 ) AS is_debounced;
-```
 
 **Setting debounce after trigger:**
 ```sql
 UPDATE jira_issue_states 
 SET last_triggered_at = NOW() 
 WHERE jira_project_id = $1 AND issue_key = $2;
-```
+```sql
 
 **Why PostgreSQL:**
 - Single source of truth for all Jira state
@@ -327,7 +323,6 @@ class JiraApiClient {
   // Handle rate limit
   async handleRateLimit(retryAfterSeconds: number): Promise<void>;
 }
-```
 
 ### 3.2 JiraIssuesPoller (src/daemon/jira-poller.ts)
 
@@ -369,7 +364,7 @@ interface IssueState {
   lastKnownStatus: string;
   lastTriggeredAt?: number;
 }
-```
+```typescript
 
 ### 3.3 JiraWebhookHandler (src/daemon/jira-webhook-handler.ts)
 
@@ -410,7 +405,6 @@ class JiraWebhookHandler {
     config: JiraProjectConfig
   ): { isTransition: boolean; previousStatus?: string };
 }
-```
 
 ### 3.4 JiraDebounceStore (src/daemon/jira-debounce-store.ts)
 
@@ -436,7 +430,7 @@ interface JiraDebounceStore {
   // Clean up expired debounce entries (removes last_triggered_at for entries older than window)
   async cleanup(debounceWindowSeconds: number): Promise<number>;  // Returns count of cleaned entries
 }
-```
+```typescript
 
 ### 3.5 JiraTriggerHandler (src/orchestrator/jira-trigger-handler.ts)
 
@@ -485,7 +479,6 @@ interface TriggerResult {
   workflowName?: string;
   externalId: string;
 }
-```
 
 ### 3.6 JiraTriggerEvent (src/orchestrator/jira-trigger-event.ts)
 
@@ -505,7 +498,7 @@ interface JiraTriggerEvent {
 // - foreman status --verbose
 // - foreman inbox --watch
 // - Sentinel logs (INFO level)
-```
+```typescript
 
 ---
 
@@ -513,7 +506,7 @@ interface JiraTriggerEvent {
 
 ### 4.1 Webhook Endpoint
 
-```
+```http
 POST /webhooks/jira
 
 Headers:
@@ -544,7 +537,6 @@ Response:
   200 OK - Event processed (or ignored if not a startStatus transition)
   401 Unauthorized - Invalid signature
   500 Internal Server Error - Processing failed
-```
 
 ### 4.2 tRPC Procedures (jira router)
 
@@ -593,7 +585,7 @@ jira.enableWebhook({
 jira.disableWebhook({
   projectId: string
 }): Promise<{ success: boolean }>
-```
+```typescript
 
 ---
 
@@ -624,7 +616,6 @@ foreman jira configure \
 #   --webhook-enabled    Enable webhook support
 #   --webhook-secret-env Webhook secret env var
 #   --poll-interval      Poll interval in seconds (default: 60)
-```
 
 ### 5.2 foreman jira status
 
@@ -637,7 +628,7 @@ foreman jira status
 # Projects monitored: 2 (PROJ, OTHER)
 # Last poll: 2026-06-01 12:00:00
 # Webhook: Enabled (endpoint: /webhooks/jira)
-```
+```typescript
 
 ### 5.3 foreman doctor (Jira validation)
 
@@ -650,7 +641,6 @@ foreman doctor
 # [JIRA] Testing API connectivity... Connected
 # [JIRA] Validating project keys... OK (PROJ, OTHER found)
 # [JIRA] Webhook endpoint... Configured (reachable)
-```
 
 ---
 
@@ -780,7 +770,7 @@ foreman doctor
 
 ## 8. File Structure
 
-```
+```text
 src/daemon/
   jira-api-client.ts          # JiraApiClient class
   jira-poller.ts             # JiraIssuesPoller class
@@ -811,7 +801,7 @@ src/cli/commands/
 src/daemon/
   router.ts                  # Extend with jira router
   webhook-handler.ts         # Add /webhooks/jira route
-```
+```typescript
 
 ---
 
