@@ -1,7 +1,7 @@
 # TRD-2026-013: Jira Issue Monitor
 
 **Document ID:** TRD-2026-013
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Status:** Draft
 **Date:** 2026-06-01
 **PRD Reference:** PRD-2026-013 (Jira Issue Monitor)
@@ -35,7 +35,7 @@
 ┌──────────────────────────────▼──────────────────────────────────────────────┐
 │                    PostgresAdapter (src/lib/db/)                            │
 │   - Existing: projects, tasks, runs, events tables                          │
-│   - NEW: jira_projects, jira_issue_states, jira_debounce_state tables      │
+│   - NEW: jira_projects, jira_monitored_projects, jira_issue_states tables   │
 └──────────────────────────────▼──────────────────────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────────────────────┐
@@ -56,7 +56,7 @@
 │                     Supporting Infrastructure                                 │
 │  ProjectRegistry ──► ~/.foreman/projects.json                               │
 │  JiraApiClient ────► Jira Cloud API (REST v3)                                │
-│  JiraDebounceStore ──► ~/.foreman/jira-debounce.json                        │
+│  JiraDebounceStore ──► PostgreSQL (jira_issue_states table)                │
 │  WorktreeManager ──► ~/.foreman/worktrees/<project-id>/                     │
 │  PoolManager ─────► Postgres connection pool (size=20)                      │
 │  DaemonManager ───► ~/.foreman/daemon.pid                                    │
@@ -70,7 +70,7 @@
 | `JiraApiClient` | Jira API calls: auth, search, rate limit handling | `src/daemon/jira-api-client.ts` | **New** |
 | `JiraIssuesPoller` | Background polling loop, transition detection | `src/daemon/jira-poller.ts` | **New** |
 | `JiraWebhookHandler` | Real-time webhook processing, signature validation | `src/daemon/jira-webhook-handler.ts` | **New** |
-| `JiraDebounceStore` | Persisted debounce state (JSON file) | `src/daemon/jira-debounce-store.ts` | **New** |
+| `JiraDebounceStore` | Debounce state management via PostgreSQL | `src/daemon/jira-debounce-store.ts` | **New** |
 | `JiraTriggerHandler` | Maps detected issues to workflows, uniqueness check | `src/orchestrator/jira-trigger-handler.ts` | **New** |
 | `JiraTriggerEvent` | Event schema for observability | `src/orchestrator/jira-trigger-event.ts` | **New** |
 | `ProjectConfig` | Extend for `issueTracker` block | `src/lib/project-config.ts` | **Extend** |
@@ -147,7 +147,8 @@ JiraTriggerHandler.process(issue, projectConfig)
   │    └─► If exists: skip (already triggered)
   │
   ├─► Check debounce (REQ-006, REQ-019):
-  │    ├─► JiraDebounceStore.isDebounced(issueKey)
+  │    ├─► JiraDebounceStore.isDebounced(jiraProjectId, issueKey, debounceWindowSeconds)
+  │    │    └─► Query: SELECT EXISTS (SELECT 1 FROM jira_issue_states WHERE issue_key = ? AND last_triggered_at > NOW() - INTERVAL '60 seconds')
   │    └─► If debounced: skip
   │
   ├─► Map workflow (REQ-004):
@@ -165,7 +166,7 @@ JiraTriggerHandler.process(issue, projectConfig)
   │    └─► Dispatcher.dispatch(taskId, workflowName)
   │
   ├─► Set debounce:
-  │    └─► JiraDebounceStore.setDebounced(issueKey, debounceWindowSeconds)
+  │    └─► UPDATE jira_issue_states SET last_triggered_at = NOW() WHERE issue_key = ?
   │
   ├─► Emit observability event (REQ-009):
   │    └─► Log: JiraTriggerEvent { type: "jira-trigger", source: "poll"|"webhook", ... }
@@ -182,8 +183,8 @@ JiraTriggerHandler.process(issue, projectConfig)
 | Polling | setInterval in sentinel process | Consistent with GitHubIssuesPoller pattern |
 | Webhooks | Fastify route in ForemanDaemon | Existing daemon handles inbound HTTP |
 | Webhook security | HMAC SHA-256 signature validation | Standard Jira webhook security |
-| State persistence | PostgreSQL for issue states, JSON file for debounce | PostgreSQL for durability, JSON for simplicity |
-| Debounce persistence | JSON file `~/.foreman/jira-debounce.json` | Survives restarts, simple backup |
+| State persistence | PostgreSQL (all state including debounce) | Single source of truth, crash recovery |
+| Debounce persistence | PostgreSQL (jira_issue_states table) | Uses last_triggered_at column, survives restarts |
 | Rate limiting | Exponential backoff with Retry-After header | Per REQ-011, max 5 minutes |
 | Workflow dispatch | Uses existing Dispatcher | Reuses existing Foreman pipeline |
 
@@ -224,13 +225,13 @@ CREATE TABLE jira_monitored_projects (
   UNIQUE(jira_project_id, jira_project_key)
 );
 
--- jira_issue_states: Tracks last known status per Jira issue
+-- jira_issue_states: Tracks last known status per Jira issue, including debounce
 CREATE TABLE jira_issue_states (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   jira_project_id UUID NOT NULL REFERENCES jira_projects(id) ON DELETE CASCADE,
   issue_key TEXT NOT NULL,  -- e.g., "PROJ-123"
   last_known_status TEXT NOT NULL,
-  last_triggered_at TIMESTAMPTZ,
+  last_triggered_at TIMESTAMPTZ,  -- Used for debounce: if NOW() - last_triggered_at < debounce_window, skip
   last_updated_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE(jira_project_id, issue_key)
 );
@@ -239,6 +240,8 @@ CREATE TABLE jira_issue_states (
 CREATE INDEX idx_jira_projects_project ON jira_projects(project_id);
 CREATE INDEX idx_jira_issue_states_key ON jira_issue_states(issue_key);
 CREATE INDEX idx_jira_issue_states_updated ON jira_issue_states(last_updated_at);
+CREATE INDEX idx_jira_issue_states_triggered ON jira_issue_states(last_triggered_at) 
+  WHERE last_triggered_at IS NOT NULL;
 ```
 
 ### 2.2 Extend Existing Tables
@@ -252,22 +255,34 @@ ALTER TABLE tasks ADD COLUMN jira_project_key TEXT;  -- e.g., "PROJ"
 -- External IDs follow format: jira:PROJECT-123
 ```
 
-### 2.3 Debounce State File
+### 2.3 Debounce State (PostgreSQL)
 
-```json
-// ~/.foreman/jira-debounce.json
-{
-  "version": 1,
-  "entries": [
-    {
-      "issueKey": "PROJ-123",
-      "triggeredAt": 1717200000000,
-      "expiresAt": 1717200060000
-    }
-  ],
-  "updatedAt": "2026-06-01T12:00:00.000Z"
-}
+Debounce state is stored in the `jira_issue_states` table using the `last_triggered_at` column. When a transition triggers a workflow, `last_triggered_at` is set to the current timestamp.
+
+**Checking if debounced:**
+```sql
+-- Check if issue is within debounce window
+SELECT EXISTS (
+  SELECT 1 FROM jira_issue_states jis
+  JOIN jira_monitored_projects jmp ON jis.jira_project_id = jmp.jira_project_id
+  WHERE jis.issue_key = $1
+    AND jis.last_triggered_at IS NOT NULL
+    AND (NOW() - jis.last_triggered_at) < (jmp.debounce_window_seconds || ' seconds')::INTERVAL
+) AS is_debounced;
 ```
+
+**Setting debounce after trigger:**
+```sql
+UPDATE jira_issue_states 
+SET last_triggered_at = NOW() 
+WHERE jira_project_id = $1 AND issue_key = $2;
+```
+
+**Why PostgreSQL:**
+- Single source of truth for all Jira state
+- Survives sentinel crashes and restarts automatically
+- No separate file sync or corruption handling needed
+- Consistent with existing Foreman architecture
 
 ---
 
@@ -399,34 +414,27 @@ class JiraWebhookHandler {
 
 ### 3.4 JiraDebounceStore (src/daemon/jira-debounce-store.ts)
 
-```typescript
-interface DebounceEntry {
-  issueKey: string;
-  triggeredAt: number;
-  expiresAt: number;
-}
+**Note:** All debounce state is stored in PostgreSQL (`jira_issue_states` table). No JSON file is used.
 
-interface DebounceStore {
-  entries: Map<string, DebounceEntry>;
-  filePath: string;  // ~/.foreman/jira-debounce.json
+```typescript
+interface JiraDebounceStore {
+  // Check if an issue is currently debounced
+  // Uses jira_issue_states.last_triggered_at to determine if within debounce window
+  async isDebounced(
+    jiraProjectId: string,
+    issueKey: string,
+    debounceWindowSeconds: number
+  ): Promise<boolean>;
   
-  // Load from disk
-  async load(): Promise<void>;
+  // Set debounce: updates last_triggered_at in jira_issue_states
+  async setDebounced(
+    jiraProjectId: string,
+    issueKey: string,
+    debounceWindowSeconds: number
+  ): Promise<void>;
   
-  // Save to disk
-  async save(): Promise<void>;
-  
-  // Check if issue is debounced
-  isDebounced(issueKey: string): boolean;
-  
-  // Mark issue as debounced
-  setDebounced(issueKey: string, windowSeconds: number): void;
-  
-  // Remove expired entries
-  cleanup(): void;
-  
-  // Clear all entries
-  clear(): void;
+  // Clean up expired debounce entries (removes last_triggered_at for entries older than window)
+  async cleanup(debounceWindowSeconds: number): Promise<number>;  // Returns count of cleaned entries
 }
 ```
 
@@ -441,7 +449,7 @@ interface TriggerContext {
 }
 
 class JiraTriggerHandler {
-  constructor(dispatcher: Dispatcher, debounceStore: DebounceStore);
+  constructor(dispatcher: Dispatcher, debounceStore: JiraDebounceStore);
   
   // Process a detected transition
   async handleTransition(context: TriggerContext): Promise<TriggerResult>;
@@ -449,8 +457,12 @@ class JiraTriggerHandler {
   // Check uniqueness - returns true if already exists
   private async isAlreadyTriggered(externalId: string): Promise<boolean>;
   
-  // Check debounce
-  private isDebounced(issueKey: string): boolean;
+  // Check debounce using JiraDebounceStore
+  private async isDebounced(
+    jiraProjectId: string,
+    issueKey: string,
+    debounceWindowSeconds: number
+  ): Promise<boolean>;
   
   // Map issue type to workflow
   private mapWorkflow(issueType: string, config: JiraProjectConfig): string;
@@ -652,7 +664,7 @@ foreman doctor
 | TRD-002 | Create `JiraApiClient` class with Basic Auth | 6h | REQ-001 | AC-001-1, AC-001-2, AC-001-4 |
 | TRD-003 | Add rate limit handling with Retry-After | 3h | REQ-001, REQ-011 | AC-001-3, AC-011-2, AC-011-3 |
 | TRD-004 | Create database migrations: `jira_projects`, `jira_monitored_projects`, `jira_issue_states` | 4h | REQ-002 | AC-002-1 |
-| TRD-005 | Implement `JiraDebounceStore` with JSON persistence | 4h | REQ-019 | AC-019-1, AC-019-2, AC-019-3 |
+| TRD-005 | Implement `JiraDebounceStore` with PostgreSQL (no JSON file) | 4h | REQ-019 | AC-019-1, AC-019-2, AC-019-3 |
 | TRD-006 | Write unit tests for JiraApiClient (mock fetch) | 4h | REQ-001 | AC-001-1, AC-001-4 |
 | TRD-007 | Write unit tests for JiraDebounceStore | 3h | REQ-019 | AC-019-1, AC-019-3 |
 | TRD-008 | Implement `foreman jira configure` CLI command | 5h | REQ-002, REQ-013 | AC-002-1, AC-002-3, AC-013-1 |
@@ -668,7 +680,7 @@ foreman doctor
 | TRD-011 | Implement `detectTransitions()` with lastKnownStatus tracking | 5h | REQ-003 | AC-003-1, AC-003-2, AC-003-4, AC-003-5 |
 | TRD-012 | Implement `JiraTriggerHandler` with uniqueness check | 5h | REQ-005, REQ-012 | AC-005-2, AC-005-3, AC-012-1, AC-012-3 |
 | TRD-013 | Implement workflow mapping via issueTypeWorkflowMap | 3h | REQ-004 | AC-004-1, AC-004-2, AC-004-3 |
-| TRD-014 | Implement debounce checking in trigger handler | 3h | REQ-006, REQ-019 | AC-006-1, AC-006-2, AC-006-3 |
+| TRD-014 | Implement debounce checking in trigger handler (PostgreSQL) | 3h | REQ-006, REQ-019 | AC-006-1, AC-006-2, AC-006-3 |
 | TRD-015 | Integrate poller with sentinel lifecycle (start/stop) | 4h | REQ-008 | AC-008-1, AC-008-2, AC-008-3 |
 | TRD-016 | Persist lastPollAt and issue state to database | 4h | REQ-003, REQ-008 | AC-003-4 |
 | TRD-017 | Write integration tests for polling + trigger flow | 5h | REQ-003, REQ-005 | AC-003-1, AC-005-1, AC-005-4 |
@@ -756,9 +768,9 @@ foreman doctor
 | REQ-014 | AC-014-2 | TRD-029 | Restart → State restored |
 | REQ-016 | AC-016-1 | TRD-022, TRD-026 | Webhook received → Triggered within 5s |
 | REQ-016 | AC-016-2 | TRD-017 | Poll SLA → Triggered within 5min |
-| REQ-019 | AC-019-1 | TRD-005 | Shutdown → Debounce persisted |
-| REQ-019 | AC-019-2 | TRD-005 | Crash → Restart → Debounce restored |
-| REQ-019 | AC-019-3 | TRD-005 | Corrupt file → Warning → Reset |
+| REQ-019 | AC-019-1 | TRD-005 | Shutdown → Debounce persisted to PostgreSQL |
+| REQ-019 | AC-019-2 | TRD-005 | Crash → Restart → Debounce restored from PostgreSQL |
+| REQ-019 | AC-019-3 | TRD-005 | Cleanup → Expired entries cleared |
 | REQ-020 | AC-020-1 | TRD-019, TRD-022 | Valid webhook → Triggered within 5s |
 | REQ-020 | AC-020-2 | TRD-020 | Invalid signature → 401 |
 | REQ-020 | AC-020-3 | TRD-024 | Webhook + poll → No duplicate |
@@ -773,7 +785,7 @@ src/daemon/
   jira-api-client.ts          # JiraApiClient class
   jira-poller.ts             # JiraIssuesPoller class
   jira-webhook-handler.ts     # JiraWebhookHandler class
-  jira-debounce-store.ts     # JiraDebounceStore class
+  jira-debounce-store.ts     # JiraDebounceStore class (PostgreSQL-based)
   jira-config-validator.ts    # Config validation helpers
   jira-router.ts             # tRPC jira procedures
   __tests__/
@@ -786,7 +798,7 @@ src/lib/
   project-config.ts          # Extend ProjectConfig for issueTracker
   db/
     migrations/
-      00000000000018-create-jira-tables.ts
+      00000000000018-create-jira-tables.sql  # All Jira tables including debounce
 
 src/orchestrator/
   jira-trigger-handler.ts    # JiraTriggerHandler class
@@ -822,8 +834,9 @@ src/daemon/
 | Jira API downtime | Monitor fails to detect transitions | Low | REQ-011: Exponential backoff, CRITICAL alerts |
 | Clock skew | Missed transitions | Medium | Poll `updated >= lastPoll` catches late updates |
 | Webhook unreachable | Only polling fallback | Medium | Polling is always active; webhooks are enhancement |
-| Duplicate triggers | Resource waste | Low | REQ-006: Debounce, REQ-012: Uniqueness check |
+| Duplicate triggers | Resource waste | Low | REQ-006: Debounce (PostgreSQL), REQ-012: Uniqueness check |
 | Token expiration | Auth failures | Low | Jira API tokens don't expire by default |
+| Database unavailable | State tracking fails | Low | Poll continues, state tracked on next successful poll |
 
 ---
 
@@ -832,3 +845,4 @@ src/daemon/
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-06-01 | Initial TRD — 34 tasks covering Jira API client, polling, webhooks, trigger execution, observability, and testing |
+| 1.1.0 | 2026-06-01 | Fix inconsistency: debounce persistence now always uses PostgreSQL (jira_issue_states table), removed JSON file reference |
