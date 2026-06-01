@@ -13,11 +13,7 @@ import type { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import type { JiraProjectConfig } from "../lib/project-config.js";
 import { getPool } from "../lib/db/pool-manager.js";
 import type { JiraIssue } from "../daemon/jira-poller.js";
-import {
-  isDebounced,
-  setDebounced,
-  type IssueState,
-} from "../daemon/jira-debounce-store.js";
+import { isDebounced, setDebounced } from "../daemon/jira-debounce-store.js";
 
 // ── Context types ───────────────────────────────────────────────────────────────
 
