@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { JiraApiClient, JiraIssue, JiraProject, SearchResult } from "./jira-api-client";
+import { JiraApiClient } from "../jira-api-client";
+import type { JiraIssue, JiraProject } from "../jira-api-client";
 import {
   JiraNotAuthenticatedError,
   JiraNotFoundError,
   JiraRateLimitError,
   JiraApiError,
-} from "./jira-api-client";
+} from "../jira-api-client";
 
 interface MockFetchResponse {
   ok: boolean;
@@ -17,7 +18,6 @@ interface MockFetchResponse {
 }
 
 function createTestClient() {
-  const { JiraApiClient } = require("./jira-api-client");
   return new JiraApiClient({
     apiUrl: "https://test.atlassian.net",
     email: "test@example.com",
@@ -54,7 +54,6 @@ describe("JiraApiClient", () => {
 
   describe("constructor", () => {
     it("strips trailing slash from apiUrl", () => {
-      const { JiraApiClient } = require("./jira-api-client");
       const client = new JiraApiClient({
         apiUrl: "https://test.atlassian.net/",
         email: "test@example.com",
@@ -209,7 +208,6 @@ describe("JiraApiClient", () => {
         } satisfies MockFetchResponse);
       });
 
-      const { JiraApiClient } = require("./jira-api-client");
       const client = new JiraApiClient({
         apiUrl: "https://test.atlassian.net",
         email: "user@example.com",
