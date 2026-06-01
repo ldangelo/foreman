@@ -111,8 +111,7 @@ export class JiraTriggerHandler {
     // Check debounce (REQ-006)
     const debounceSeconds = projectConfig.debounceWindowSeconds ?? 60;
     if (debounceSeconds > 0) {
-      const db = getPool();
-      const debounced = await isDebounced(db, jiraProjectId, issue.key, debounceSeconds);
+      const debounced = await isDebounced(jiraProjectId, issue.key, debounceSeconds);
       if (debounced) {
         this.#emitEvent({
           eventType: "jira:trigger",
@@ -138,16 +137,12 @@ export class JiraTriggerHandler {
         };
       }
     }
-
     // Create the task
     const taskId = await this.createTask(issue, projectConfig, externalId, workflowName);
-
     // Record trigger in debounce store
     if (debounceSeconds > 0) {
-      const db = getPool();
-      await setDebounced(db, jiraProjectId, issue.key, issue.fields.status.name);
+      await setDebounced(jiraProjectId, issue.key, issue.fields.status.name);
     }
-
     console.log(
       `[JiraTriggerHandler] Triggered: ${issue.key} → ${workflowName} (task: ${taskId}, source: ${source})`,
     );

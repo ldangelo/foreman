@@ -4,7 +4,7 @@
  * No JSON file is used — all state is persisted in the database.
  */
 
-import { PoolManager, type PoolLike } from "../lib/db/pool-manager.js";
+import { PoolManager } from "../lib/db/pool-manager.js";
 
 export interface IssueState {
   issueKey: string;
@@ -81,7 +81,7 @@ export async function setDebounced(
   status: string,
 ): Promise<void> {
   const db = PoolManager.getPool();
-  await db.execute(
+  await db.query(
     `INSERT INTO jira_issue_states (jira_project_id, issue_key, last_known_status, last_triggered_at, last_updated_at)
      VALUES ($1, $2, $3, NOW(), NOW())
      ON CONFLICT (jira_project_id, issue_key)
@@ -103,7 +103,7 @@ export async function updateStatus(
   status: string,
 ): Promise<void> {
   const db = PoolManager.getPool();
-  await db.execute(
+  await db.query(
     `INSERT INTO jira_issue_states (jira_project_id, issue_key, last_known_status, last_updated_at)
      VALUES ($1, $2, $3, NOW())
      ON CONFLICT (jira_project_id, issue_key)
