@@ -221,4 +221,73 @@ describe("JiraApiClient", () => {
       expect(decoded).toBe("user@example.com:api-token-123");
     });
   });
+  describe("apiVersion", () => {
+    it("uses REST API v3 for cloud (default)", async () => {
+      mockResponse({});
+      const client = createTestClient();
+      await client.authenticate();
+      const url = mockFetch.mock.calls[0]?.[0] as string;
+      expect(url).toContain("/rest/api/3/");
+    });
+    it("uses REST API v3 for cloud when explicitly set", async () => {
+      mockResponse({});
+      const client = new JiraApiClient({
+        apiUrl: "https://test.atlassian.net",
+        email: "test@example.com",
+        apiToken: "test-token",
+        apiVersion: "cloud",
+      });
+      await client.authenticate();
+      const url = mockFetch.mock.calls[0]?.[0] as string;
+      expect(url).toContain("/rest/api/3/");
+    });
+    it("uses REST API v2 for server", async () => {
+      mockResponse({});
+      const client = new JiraApiClient({
+        apiUrl: "https://jira.example.com",
+        email: "admin",
+        apiToken: "server-token",
+        apiVersion: "server",
+      });
+      await client.listProjects();
+      const url = mockFetch.mock.calls[0]?.[0] as string;
+      expect(url).toContain("/rest/api/2/");
+    });
+    it("uses REST API v3 for server when explicit", async () => {
+      mockResponse({});
+      const client = new JiraApiClient({
+        apiUrl: "https://test.atlassian.net",
+        email: "test@example.com",
+        apiToken: "test-token",
+        apiVersion: "cloud",
+      });
+      await client.search("project = PROJ");
+      const url = mockFetch.mock.calls[0]?.[0] as string;
+      expect(url).toContain("/rest/api/3/search");
+    });
+  });
+  describe("addComment", () => {
+    it("POSTs to the correct issue comment endpoint", async () => {
+      mockResponse({});
+      const client = createTestClient();
+      await client.addComment("PROJ-123", "Workflow triggered");
+      const [url, options] = mockFetch.mock.calls[0] ?? [];
+      expect(url).toContain("/rest/api/3/issue/PROJ-123/comment");
+      expect(options?.method).toBe("POST");
+      const body = JSON.parse((options?.body as string) ?? "{}");
+      expect(body.body).toBe("Workflow triggered");
+    });
+  });
+  describe("transitionIssue", () => {
+    it("POSTs to the transitions endpoint with transitionId", async () => {
+      mockResponse({});
+      const client = createTestClient();
+      await client.transitionIssue("PROJ-456", "31");
+      const [url, options] = mockFetch.mock.calls[0] ?? [];
+      expect(url).toContain("/rest/api/3/issue/PROJ-456/transitions");
+      expect(options?.method).toBe("POST");
+      const body = JSON.parse((options?.body as string) ?? "{}");
+      expect(body.transition.id).toBe("31");
+    });
+  });
 });
