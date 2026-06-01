@@ -119,6 +119,7 @@ describe("doctor command", () => {
 
   it("doctor --json outputs valid JSON", async () => {
     const tmp = makeTempDir();
+    await makeGitRepo(tmp);
     const result = await run(["doctor", "--json"], tmp, { timeout: 60_000 });
 
     const output = result.stdout + result.stderr;
@@ -126,10 +127,12 @@ describe("doctor command", () => {
     try {
       parsed = JSON.parse(output.trim());
     } catch {
-      // If there's mixed output, try to find the JSON part
+      // If there's mixed output, try to find and extract only the JSON part
       const jsonStart = output.indexOf("{");
-      if (jsonStart !== -1) {
-        parsed = JSON.parse(output.slice(jsonStart).trim());
+      const jsonEnd = output.lastIndexOf("}");
+      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+        const jsonStr = output.slice(jsonStart, jsonEnd + 1).trim();
+        parsed = JSON.parse(jsonStr);
       }
     }
 
