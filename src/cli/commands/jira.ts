@@ -90,7 +90,7 @@ const configureCommand = new Command("configure")
     }));
 
     try {
-      await client.jira.configure.mutate({
+      await client.jira.configure({
         apiUrl: opts.apiUrl,
         email: opts.email,
         apiTokenEnvVar: opts.apiTokenEnv,
@@ -99,7 +99,6 @@ const configureCommand = new Command("configure")
         webhookSecretEnvVar: opts.webhookSecretEnv,
         pollIntervalSeconds: opts.pollInterval,
       });
-
       console.log(chalk.green("✓ Jira monitoring configured successfully"));
       console.log(chalk.dim(`  API URL: ${opts.apiUrl}`));
       console.log(chalk.dim(`  Projects: ${opts.project.join(", ")}`));
@@ -117,6 +116,13 @@ const configureCommand = new Command("configure")
 
 // ── foreman jira status ───────────────────────────────────────────────────────
 
+interface JiraStatusResult {
+  configured: boolean;
+  projects: number;
+  lastPoll?: string;
+  webhookEnabled: boolean;
+}
+
 const statusCommand = new Command("status")
   .description("Show Jira monitor status")
   .option("--json", "Output as JSON")
@@ -124,7 +130,7 @@ const statusCommand = new Command("status")
     const client = createTrpcClient();
 
     try {
-      const status = await client.jira.getStatus.query({});
+      const status = await client.jira.getStatus({}) as JiraStatusResult;
 
       if (opts.json) {
         console.log(JSON.stringify(status, null, 2));
@@ -155,6 +161,12 @@ const statusCommand = new Command("status")
 
 // ── foreman jira test ───────────────────────────────────────────────────────
 
+interface JiraTestResult {
+  connected: boolean;
+  projects?: Array<{ key: string; name: string }>;
+  error?: string;
+}
+
 const testCommand = new Command("test")
   .description("Test Jira API connection")
   .requiredOption("--api-url <url>", "Jira Cloud API URL")
@@ -167,11 +179,11 @@ const testCommand = new Command("test")
     console.log(chalk.dim("Testing Jira connection..."));
 
     try {
-      const result = await client.jira.testConnection.query({
+      const result = await client.jira.testConnection({
         apiUrl: opts.apiUrl,
         email: opts.email,
         apiTokenEnvVar: opts.apiTokenEnv,
-      });
+      }) as JiraTestResult;
 
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
@@ -181,7 +193,7 @@ const testCommand = new Command("test")
       if (result.connected) {
         console.log(chalk.green("✓ Connected to Jira"));
         if (result.projects && result.projects.length > 0) {
-          console.log(chalk.dim(`  Available projects: ${result.projects.map((p) => p.key).join(", ")}`));
+          console.log(chalk.dim(`  Available projects: ${result.projects.map((p: { key: string }) => p.key).join(", ")}`));
         }
       } else {
         console.log(chalk.red("✗ Connection failed"));
@@ -196,7 +208,14 @@ const testCommand = new Command("test")
       }
       process.exit(1);
     }
+  });
+
 // ── foreman jira enable-webhook ─────────────────────────────────────────────
+
+interface EnableWebhookResult {
+  webhookUrl: string;
+}
+
 const enableWebhookCommand = new Command("enable-webhook")
   .description("Enable Jira webhook for real-time triggers")
   .option("--secret-env <name>", "Env var name for webhook secret (default: FOREMAN_JIRA_WEBHOOK_SECRET)", "FOREMAN_JIRA_WEBHOOK_SECRET")
@@ -207,9 +226,9 @@ const enableWebhookCommand = new Command("enable-webhook")
     const secret = generateWebhookSecret();
     console.log(chalk.dim(`  Generated webhook secret: ${secret}`));
     try {
-      const result = await client.jira.enableWebhook.mutate({
+      const result = await client.jira.enableWebhook({
         webhookSecret: secret,
-      });
+      }) as EnableWebhookResult;
       console.log(chalk.green("✓ Webhook enabled"));
       console.log(chalk.dim(`  Webhook URL: ${result.webhookUrl}`));
       console.log(chalk.bold("\n  Setup instructions:"));
@@ -224,14 +243,16 @@ const enableWebhookCommand = new Command("enable-webhook")
       process.exit(1);
     }
   });
+
 // ── foreman jira disable-webhook ───────────────────────────────────────────
+
 const disableWebhookCommand = new Command("disable-webhook")
   .description("Disable Jira webhook")
   .action(async () => {
     const client = createTrpcClient();
     console.log(chalk.dim("Disabling Jira webhook..."));
     try {
-      await client.jira.disableWebhook.mutate({});
+      await client.jira.disableWebhook({});
       console.log(chalk.green("✓ Webhook disabled"));
     } catch (err) {
       const error = err as Error;
@@ -239,7 +260,9 @@ const disableWebhookCommand = new Command("disable-webhook")
       process.exit(1);
     }
   });
+
 // ── Helper ────────────────────────────────────────────────────────────────────────
+
 /** Generate a cryptographically random secret string. */
 function generateWebhookSecret(): string {
   const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -249,9 +272,11 @@ function generateWebhookSecret(): string {
   }
   return secret;
 }
+
 export const jiraCommand = new Command("jira")
   .description("Configure and monitor Jira issue tracker integration")
   .addCommand(configureCommand)
   .addCommand(statusCommand)
   .addCommand(testCommand)
+  .addCommand(enableWebhookCommand)
   .addCommand(disableWebhookCommand);

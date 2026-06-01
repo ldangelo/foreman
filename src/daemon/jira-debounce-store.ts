@@ -4,7 +4,7 @@
  * No JSON file is used — all state is persisted in the database.
  */
 
-import type { Database } from "postgres";
+import { sql, type Sql } from "postgres";
 
 export interface IssueState {
   issueKey: string;
@@ -17,12 +17,23 @@ export interface DebounceCheckResult {
   lastTriggeredAt: Date | null;
 }
 
+/** Row type returned from jira_issue_states queries */
+interface JiraIssueStateRow {
+  is_debounced?: boolean;
+  last_triggered_at?: Date | null;
+  last_known_status?: string | null;
+  id?: number;
+  issue_key: string;
+  last_known_status: string;
+  last_triggered_at: Date | null;
+}
+
 /**
  * Check if an issue is currently debounced.
  * Uses jira_issue_states.last_triggered_at to determine if within debounce window.
  */
 export async function isDebounced(
-  db: Database,
+  db: Sql,
   jiraProjectId: string,
   issueKey: string,
   debounceWindowSeconds: number,
@@ -31,7 +42,7 @@ export async function isDebounced(
     return false;
   }
 
-  const result = await db`
+  const result = await db<[JiraIssueStateRow]>`
     SELECT EXISTS (
       SELECT 1 FROM jira_issue_states
       WHERE jira_project_id = ${jiraProjectId}
@@ -48,11 +59,11 @@ export async function isDebounced(
  * Get debounce status for an issue, including the last triggered timestamp.
  */
 export async function getDebounceStatus(
-  db: Database,
+  db: Sql,
   jiraProjectId: string,
   issueKey: string,
 ): Promise<DebounceCheckResult> {
-  const result = await db`
+  const result = await db<[JiraIssueStateRow]>`
     SELECT last_triggered_at FROM jira_issue_states
     WHERE jira_project_id = ${jiraProjectId}
       AND issue_key = ${issueKey}
@@ -69,7 +80,7 @@ export async function getDebounceStatus(
  * If the issue doesn't have a row yet, creates one.
  */
 export async function setDebounced(
-  db: Database,
+  db: Sql,
   jiraProjectId: string,
   issueKey: string,
   status: string,
@@ -90,7 +101,7 @@ export async function setDebounced(
  * Used when polling detects a status change but we're not triggering a workflow.
  */
 export async function updateStatus(
-  db: Database,
+  db: Sql,
   jiraProjectId: string,
   issueKey: string,
   status: string,
@@ -110,11 +121,11 @@ export async function updateStatus(
  * Returns null if the issue hasn't been tracked yet.
  */
 export async function getLastKnownStatus(
-  db: Database,
+  db: Sql,
   jiraProjectId: string,
   issueKey: string,
 ): Promise<string | null> {
-  const result = await db`
+  const result = await db<[JiraIssueStateRow]>`
     SELECT last_known_status FROM jira_issue_states
     WHERE jira_project_id = ${jiraProjectId}
       AND issue_key = ${issueKey}
@@ -128,7 +139,7 @@ export async function getLastKnownStatus(
  * Returns true if the issue was not previously in a startStatus.
  */
 export async function isNewTransition(
-  db: Database,
+  db: Sql,
   jiraProjectId: string,
   issueKey: string,
   startStatus: readonly string[],
@@ -154,14 +165,14 @@ export async function isNewTransition(
  * Returns the count of cleaned entries.
  */
 export async function cleanup(
-  db: Database,
+  db: Sql,
   debounceWindowSeconds: number,
 ): Promise<number> {
   if (debounceWindowSeconds === 0) {
     return 0;
   }
 
-  const result = await db`
+  const result = await db<[{ id: number }]>`
     UPDATE jira_issue_states
     SET last_triggered_at = NULL
     WHERE last_triggered_at IS NOT NULL
@@ -177,16 +188,16 @@ export async function cleanup(
  * Useful for loading state at startup.
  */
 export async function getIssueStates(
-  db: Database,
+  db: Sql,
   jiraProjectId: string,
 ): Promise<IssueState[]> {
-  const result = await db`
+  const result = await db<[JiraIssueStateRow]>`
     SELECT issue_key, last_known_status, last_triggered_at
     FROM jira_issue_states
     WHERE jira_project_id = ${jiraProjectId}
   `;
 
-  return result.map((row) => ({
+  return result.map((row: JiraIssueStateRow) => ({
     issueKey: row.issue_key,
     lastKnownStatus: row.last_known_status,
     lastTriggeredAt: row.last_triggered_at,

@@ -4,41 +4,62 @@
  * Uses Basic Auth for authentication.
  */
 
-import type { JiraApiClientConfig } from "../lib/project-config.js";
+// ---------------------------------------------------------------------------
+// Configuration types (daemon-level, not project-level)
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for JiraApiClient (daemon-level, not persisted in project config).
+ */
+export interface JiraApiClientConfig {
+  /** Jira API base URL (e.g., https://your-domain.atlassian.net) */
+  apiUrl: string;
+  /** Jira account email (for Basic Auth) */
+  email: string;
+  /** Jira API token */
+  apiToken: string;
+  /** API version: "cloud" (REST v3) or "server" (REST v2). Default: "cloud" */
+  apiVersion?: "cloud" | "server";
+  /** Request timeout in milliseconds. Default: 30000 */
+  timeoutMs?: number;
+}
 
 // ---------------------------------------------------------------------------
 // Error types
-// ---------------------------------------------------------------------------
-
 export class JiraError extends Error {
-  override readonly name = "JiraError" as string;
+  constructor() {
+    super();
+    this.name = "JiraError";
+  }
 }
-
 export class JiraNotAuthenticatedError extends JiraError {
-  override readonly name = "JiraNotAuthenticatedError" as string;
+  constructor() {
+    super();
+    this.name = "JiraNotAuthenticatedError";
+  }
 }
-
 export class JiraNotFoundError extends JiraError {
-  override readonly name = "JiraNotFoundError" as string;
+  constructor() {
+    super();
+    this.name = "JiraNotFoundError";
+  }
 }
-
 export class JiraRateLimitError extends JiraError {
-  override readonly name = "JiraRateLimitError" as string;
   constructor(
     public readonly retryAfterSeconds: number,
     message: string,
   ) {
     super(message);
+    this.name = "JiraRateLimitError";
   }
 }
-
 export class JiraApiError extends JiraError {
-  override readonly name = "JiraApiError" as string;
   constructor(
     public readonly statusCode: number,
     message: string,
   ) {
     super(message);
+    this.name = "JiraApiError";
   }
 }
 
@@ -120,8 +141,11 @@ export class JiraApiClient {
    * Handle rate limit by waiting for the specified duration.
    */
   handleRateLimit(retryAfterSeconds: number): Promise<void> {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, retryAfterSeconds * 1000);
+    let resolve: () => void;
+    const promise = new Promise<void>((res) => {
+      resolve = res;
+    });
+    setTimeout(() => resolve(), retryAfterSeconds * 1000);
     return promise;
   }
 
