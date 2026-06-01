@@ -18,9 +18,9 @@ import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } fro
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
-import type { VcsBackend } from "../lib/vcs/interface.js";
 import { GhCli } from "../lib/gh-cli.js";
 import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
+import { JiraApiClient } from "../daemon/jira-api-client.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -564,9 +564,63 @@ export class Doctor {
       if (!hadPool && isPoolInitialised()) {
         await destroyPool();
       }
+  /**
+   * Check Jira API connectivity and authentication.
+   */
+  async checkJiraAuth(): Promise<CheckResult> {
+    const config = loadProjectConfig(this.projectPath);
+    const issueTracker = config?.issueTracker;
+    if (!issueTracker || issueTracker.backend !== "jira") {
+      return {
+        name: "Jira",
+        status: "skip",
+        message: "No Jira configuration found",
+      };
+    }
+    const { jira } = issueTracker;
+    const apiToken = process.env[jira.apiTokenEnvVar];
+    if (!apiToken) {
+      return {
+        name: "Jira",
+        status: "fail",
+        message: `API token env var '${jira.apiTokenEnvVar}' not set`,
+      };
+    }
+    try {
+      const client = new JiraApiClient({
+        apiUrl: jira.apiUrl,
+        email: jira.email,
+        apiToken,
+      });
+      await client.authenticate();
+      return {
+        name: "Jira",
+        status: "pass",
+        message: "Connected to Jira",
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("authentication failed") || msg.includes("401")) {
+        return {
+          name: "Jira",
+          status: "fail",
+          message: "Authentication failed. Check email and API token.",
+        };
+      }
+      if (msg.includes("403")) {
+        return {
+          name: "Jira",
+          status: "fail",
+          message: "Access forbidden. Check Jira permissions.",
+        };
+      }
+      return {
+        name: "Jira",
+        status: "fail",
+        message: `Connection failed: ${msg.slice(0, 200)}`,
+      };
     }
   }
-
   /**
    * Check gh CLI authentication status.
    */
@@ -635,13 +689,12 @@ export class Doctor {
       };
     }
   }
-
-
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
     // TRD-028: Add Jujutsu binary and colocated mode checks.
     // TRD-067: Add daemon health, Postgres connectivity, and gh auth checks.
-    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult, poolCapacityResult] = await Promise.all([
+    // TRD-013: Add Jira connectivity check.
+    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult, poolCapacityResult, jiraResult] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
@@ -654,11 +707,13 @@ export class Doctor {
       this.checkPostgresConnectivity(),
       this.checkGhAuth(),
       this.checkPoolCapacity(),
+      this.checkJiraAuth(),
     ]);
     return [
       daemonResult,
       postgresResult,
       ghAuthResult,
+      jiraResult,
       brResult,
       bvResult,
       gitResult,
