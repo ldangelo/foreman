@@ -10,8 +10,7 @@
  * @module lib/trpc-client
  */
 
-import { httpBatchLink } from "@trpc/client";
-import { createTRPCUntypedClient } from "@trpc/client";
+import { httpBatchLink, createTRPCUntypedClient } from "@trpc/client";
 import * as http from "node:http";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -195,6 +194,8 @@ export interface TrpcClient {
   readonly runs: TRPCRunsClient;
   /** Typed proxy to the daemon's agent mail procedures. */
   readonly mail: TRPCMailClient;
+  /** Typed proxy to the daemon's Jira issue tracker procedures (PRD-2026-013). */
+  readonly jira: TRPCJiraClient;
 }
 
 /** Tasks sub-router client. */
@@ -341,6 +342,7 @@ export interface TRPCRunsClient {
   listMessages(input: { runId: string; stepKey?: string }): Promise<unknown>;
 }
 
+/** Agent mail sub-router client (TRD-036). */
 export interface TRPCMailClient {
   send(input: {
     projectId: string;
@@ -360,6 +362,36 @@ export interface TRPCMailClient {
   markRead(input: { projectId: string; messageId: string }): Promise<unknown>;
   markAllRead(input: { projectId: string; runId: string; agentType: string }): Promise<unknown>;
   delete(input: { projectId: string; messageId: string }): Promise<unknown>;
+}
+
+/** Jira issue tracker sub-router client (PRD-2026-013). */
+export interface TRPCJiraClient {
+  configure(input: {
+    apiUrl: string;
+    email: string;
+    apiTokenEnvVar: string;
+    projects: Array<{
+      key: string;
+      startStatus: string[];
+      endStatus?: string[];
+      issueTypeWorkflowMap: Record<string, string>;
+      debounceWindowSeconds?: number;
+    }>;
+    webhookEnabled: boolean;
+    webhookSecretEnvVar?: string;
+    pollIntervalSeconds?: number;
+  }): Promise<unknown>;
+  getStatus(input?: { projectId?: string }): Promise<unknown>;
+  testConnection(input: {
+    apiUrl: string;
+    email: string;
+    apiTokenEnvVar: string;
+  }): Promise<unknown>;
+  enableWebhook(input: {
+    projectId?: string;
+    webhookSecret: string;
+  }): Promise<unknown>;
+  disableWebhook(input?: { projectId?: string }): Promise<unknown>;
 }
 
 /**
@@ -436,6 +468,13 @@ export function createTrpcClient(
       markRead: (input) => untypedClient.mutation("mail.markRead", input),
       markAllRead: (input) => untypedClient.mutation("mail.markAllRead", input),
       delete: (input) => untypedClient.mutation("mail.delete", input),
+    },
+    jira: {
+      configure: (input) => untypedClient.mutation("jira.configure", input),
+      getStatus: (input) => untypedClient.query("jira.getStatus", input),
+      testConnection: (input) => untypedClient.query("jira.testConnection", input),
+      enableWebhook: (input) => untypedClient.mutation("jira.enableWebhook", input),
+      disableWebhook: (input) => untypedClient.mutation("jira.disableWebhook", input),
     },
   };
 }
