@@ -196,12 +196,62 @@ const testCommand = new Command("test")
       }
       process.exit(1);
     }
+// ── foreman jira enable-webhook ─────────────────────────────────────────────
+const enableWebhookCommand = new Command("enable-webhook")
+  .description("Enable Jira webhook for real-time triggers")
+  .option("--secret-env <name>", "Env var name for webhook secret (default: FOREMAN_JIRA_WEBHOOK_SECRET)", "FOREMAN_JIRA_WEBHOOK_SECRET")
+  .action(async (opts: { secretEnv: string }) => {
+    const client = createTrpcClient();
+    console.log(chalk.dim("Registering Jira webhook..."));
+    // Generate a random webhook secret
+    const secret = generateWebhookSecret();
+    console.log(chalk.dim(`  Generated webhook secret: ${secret}`));
+    try {
+      const result = await client.jira.enableWebhook.mutate({
+        webhookSecret: secret,
+      });
+      console.log(chalk.green("✓ Webhook enabled"));
+      console.log(chalk.dim(`  Webhook URL: ${result.webhookUrl}`));
+      console.log(chalk.bold("\n  Setup instructions:"));
+      console.log(chalk.dim("  1. Set the webhook URL in your Jira site settings"));
+      console.log(chalk.dim(`  2. Set the secret by storing it in \`${opts.secretEnv}\` env var`));
+      console.log(
+        chalk.dim("  3. Enable the webhook in Jira admin → System → Webhooks")
+      );
+    } catch (err) {
+      const error = err as Error;
+      console.error(chalk.red(`Error enabling webhook: ${error.message}`));
+      process.exit(1);
+    }
   });
-
-// ── Parent command ─────────────────────────────────────────────────────────────
-
+// ── foreman jira disable-webhook ───────────────────────────────────────────
+const disableWebhookCommand = new Command("disable-webhook")
+  .description("Disable Jira webhook")
+  .action(async () => {
+    const client = createTrpcClient();
+    console.log(chalk.dim("Disabling Jira webhook..."));
+    try {
+      await client.jira.disableWebhook.mutate({});
+      console.log(chalk.green("✓ Webhook disabled"));
+    } catch (err) {
+      const error = err as Error;
+      console.error(chalk.red(`Error disabling webhook: ${error.message}`));
+      process.exit(1);
+    }
+  });
+// ── Helper ────────────────────────────────────────────────────────────────────────
+/** Generate a cryptographically random secret string. */
+function generateWebhookSecret(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let secret = "";
+  for (let i = 0; i < 32; i++) {
+    secret += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return secret;
+}
 export const jiraCommand = new Command("jira")
   .description("Configure and monitor Jira issue tracker integration")
   .addCommand(configureCommand)
   .addCommand(statusCommand)
-  .addCommand(testCommand);
+  .addCommand(testCommand)
+  .addCommand(disableWebhookCommand);
