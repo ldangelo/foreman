@@ -840,9 +840,11 @@ src/daemon/
 
 ---
 
-## Changelog
+
+
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-06-01 | Initial TRD — 34 tasks covering Jira API client, polling, webhooks, trigger execution, observability, and testing |
 | 1.1.0 | 2026-06-01 | Fix inconsistency: debounce persistence now always uses PostgreSQL (jira_issue_states table), removed JSON file reference |
+| 1.2.0 | 2026-06-01 | **CodeRabbit feedback addressed:** (1) Webhook secrets support both env var and DB storage; (2) Jira Server/Data Center support via `apiVersion: "server"` config; (3) Added write-back methods to JiraApiClient (`addComment`, `transitionIssue`)
