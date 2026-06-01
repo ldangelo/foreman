@@ -1478,7 +1478,7 @@ const jiraRouter = t.router({
             key: z.string().min(1),
             startStatus: z.array(z.string()).min(1),
             endStatus: z.array(z.string()).optional(),
-            issueTypeWorkflowMap: z.record(z.string()),
+            issueTypeWorkflowMap: z.record(z.string(), z.string()),
             debounceWindowSeconds: z.number().int().min(0).optional(),
           })
         ).min(1),

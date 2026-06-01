@@ -17,7 +17,7 @@ import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissin
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
-import { VcsBackendFactory } from "../lib/vcs/index.js";
+import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
 import { GhCli } from "../lib/gh-cli.js";
 import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 import { JiraApiClient } from "../daemon/jira-api-client.js";

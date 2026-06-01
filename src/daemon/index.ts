@@ -371,11 +371,12 @@ export class ForemanDaemon {
       );
     };
     const adapter = new PostgresAdapter();
+    const configPromise = loadConfig();
     const jiraWebhookHandler = createJiraWebhookHandler(
       {
         adapter,
         getProjectConfig: async (projectKey: string) => {
-          const config = await loadConfig();
+          const config = await configPromise;
           if (!config?.issueTracker || config.issueTracker.backend !== "jira") return undefined;
           return config.issueTracker.jira.projects?.find((p) => p.key === projectKey);
         },

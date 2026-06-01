@@ -18,11 +18,10 @@ import type { JiraIssue } from "./jira-poller.js";
 import { JiraTriggerHandler } from "../orchestrator/jira-trigger-handler.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
 export interface JiraWebhookContext {
   adapter: PostgresAdapter;
-  /** Maps Jira project key → project config */
-  getProjectConfig: (projectKey: string) => JiraProjectConfig | undefined;
+  /** Maps Jira project key → project config (can be async) */
+  getProjectConfig: (projectKey: string) => Promise<JiraProjectConfig | undefined> | JiraProjectConfig | undefined;
 }
 
 export interface JiraWebhookPayload {
@@ -168,14 +167,13 @@ export function createJiraWebhookHandler(
       // No status change in changelog — acknowledge but skip
       return reply.code(200).send({ received: true, ignored: true });
     }
-
     // Look up project config
-    const projectConfig = ctx.getProjectConfig(projectKey);
+    const projectConfigResult = ctx.getProjectConfig(projectKey);
+    const projectConfig = await Promise.resolve(projectConfigResult);
     if (!projectConfig) {
       request.log.info({ projectKey }, "[jira-webhook] Project not configured — skipping");
       return reply.code(200).send({ received: true, ignored: true });
     }
-
     // Check if transition is to a startStatus
     if (!projectConfig.startStatus.includes(statusChange.to)) {
       request.log.info(
@@ -184,7 +182,6 @@ export function createJiraWebhookHandler(
       );
       return reply.code(200).send({ received: true, ignored: true });
     }
-
     // Check if transitioning FROM a startStatus (should not trigger)
     if (projectConfig.startStatus.includes(statusChange.from)) {
       request.log.info(
@@ -193,11 +190,9 @@ export function createJiraWebhookHandler(
       );
       return reply.code(200).send({ received: true, ignored: true });
     }
-
     // Process the transition
     const jiraProjectId = projectKey;
     const handler = new JiraTriggerHandler(ctx.adapter, jiraProjectId);
-
     try {
       const result = await handler.handleTransition({
         issue: payload.issue,
@@ -205,7 +200,6 @@ export function createJiraWebhookHandler(
         jiraProjectId,
         source: "webhook",
       });
-
       if (result.triggered) {
         request.log.info(
           { issue: payload.issue.key, taskId: result.taskId },
