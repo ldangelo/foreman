@@ -330,8 +330,19 @@ export interface RecordGithubSyncEventInput {
   conflictDetected?: boolean;
   resolvedWith?: string | null;
 }
-
-// ---------------------------------------------------------------------------
+// Jira issue state types (TRD-013)
+export interface JiraIssueStateRow {
+  project_key: string;
+  issue_key: string;
+  last_known_status: string;
+  last_updated_at: string;
+}
+export interface JiraIssueStateInput {
+  jiraProjectKey: string;
+  issueKey: string;
+  lastKnownStatus: string;
+  lastUpdatedAt: string;
+}
 // PostgresAdapter
 // ---------------------------------------------------------------------------
 
@@ -2108,6 +2119,52 @@ export class PostgresAdapter {
     const sql = "UPDATE tasks SET " + setParts.join(", ") + " WHERE id = $" + i + " AND project_id = $" + (i + 1) + " RETURNING *";
     const rows = await query<TaskRow>(sql, params);
     return rows[0] ?? null;
+  }
+  // -------------------------------------------------------------------------
+  // Jira issue state operations (TRD-013: polling infrastructure)
+  // -------------------------------------------------------------------------
+  /**
+   * Fetch all Jira issue states from the database.
+   */
+  async getJiraIssueStates(): Promise<JiraIssueStateRow[]> {
+    return query<JiraIssueStateRow>(
+      `SELECT
+        jmp.jira_project_key AS project_key,
+        jis.issue_key,
+        jis.last_known_status,
+        jis.last_updated_at
+       FROM jira_issue_states jis
+       JOIN jira_monitored_projects jmp ON jis.jira_monitored_project_id = jmp.id
+       JOIN jira_projects jp ON jmp.jira_project_id = jp.id
+       ORDER BY jis.last_updated_at DESC`,
+    );
+  }
+  /**
+   * Upsert a Jira issue state record.
+   * Creates the record if it doesn't exist, updates if it does.
+   */
+  async upsertJiraIssueState(input: JiraIssueStateInput): Promise<void> {
+    // Look up the monitored project ID from the project key
+    const monitoredRows = await query<{ id: string }>(
+      `SELECT jmp.id
+       FROM jira_monitored_projects jmp
+       JOIN jira_projects jp ON jmp.jira_project_id = jp.id
+       WHERE jmp.jira_project_key = $1
+       LIMIT 1`,
+      [input.jiraProjectKey],
+    );
+    const monitoredId = monitoredRows[0]?.id;
+    if (!monitoredId) {
+      console.warn(`[PostgresAdapter] No monitored project found for key: ${input.jiraProjectKey}`);
+      return;
+    }
+    await execute(
+      `INSERT INTO jira_issue_states (jira_monitored_project_id, issue_key, last_known_status, last_updated_at, last_triggered_at)
+       VALUES ($1, $2, $3, $4, NULL)
+       ON CONFLICT (jira_monitored_project_id, issue_key)
+       DO UPDATE SET last_known_status = $3, last_updated_at = $4`,
+      [monitoredId, input.issueKey, input.lastKnownStatus, input.lastUpdatedAt],
+    );
   }
 }
 
