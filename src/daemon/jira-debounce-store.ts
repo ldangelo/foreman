@@ -4,7 +4,7 @@
  * No JSON file is used — all state is persisted in the database.
  */
 
-import { sql, type Sql } from "postgres";
+import { PoolManager, type PoolLike } from "../lib/db/pool-manager.js";
 
 export interface IssueState {
   issueKey: string;
@@ -17,14 +17,9 @@ export interface DebounceCheckResult {
   lastTriggeredAt: Date | null;
 }
 
-/** Row type returned from jira_issue_states queries */
 interface JiraIssueStateRow {
-  is_debounced?: boolean;
-  last_triggered_at?: Date | null;
-  last_known_status?: string | null;
-  id?: number;
   issue_key: string;
-  last_known_status: string;
+  last_known_status: string | null;
   last_triggered_at: Date | null;
 }
 
@@ -33,7 +28,6 @@ interface JiraIssueStateRow {
  * Uses jira_issue_states.last_triggered_at to determine if within debounce window.
  */
 export async function isDebounced(
-  db: Sql,
   jiraProjectId: string,
   issueKey: string,
   debounceWindowSeconds: number,
@@ -42,36 +36,38 @@ export async function isDebounced(
     return false;
   }
 
-  const result = await db<[JiraIssueStateRow]>`
-    SELECT EXISTS (
+  const db = PoolManager.getPool();
+  const result = await db.query<{ is_debounced: boolean }>(
+    `SELECT EXISTS (
       SELECT 1 FROM jira_issue_states
-      WHERE jira_project_id = ${jiraProjectId}
-        AND issue_key = ${issueKey}
+      WHERE jira_project_id = $1
+        AND issue_key = $2
         AND last_triggered_at IS NOT NULL
-        AND (NOW() - last_triggered_at) < (${debounceWindowSeconds} || ' seconds')::INTERVAL
-    ) AS is_debounced
-  `;
+        AND (NOW() - last_triggered_at) < ($3 || ' seconds')::INTERVAL
+    ) AS is_debounced`,
+    [jiraProjectId, issueKey, debounceWindowSeconds],
+  );
 
-  return result[0]?.is_debounced ?? false;
+  return result.rows[0]?.is_debounced ?? false;
 }
 
 /**
  * Get debounce status for an issue, including the last triggered timestamp.
  */
 export async function getDebounceStatus(
-  db: Sql,
   jiraProjectId: string,
   issueKey: string,
 ): Promise<DebounceCheckResult> {
-  const result = await db<[JiraIssueStateRow]>`
-    SELECT last_triggered_at FROM jira_issue_states
-    WHERE jira_project_id = ${jiraProjectId}
-      AND issue_key = ${issueKey}
-  `;
+  const db = PoolManager.getPool();
+  const result = await db.query<JiraIssueStateRow>(
+    `SELECT last_triggered_at FROM jira_issue_states
+     WHERE jira_project_id = $1 AND issue_key = $2`,
+    [jiraProjectId, issueKey],
+  );
 
   return {
-    isDebounced: result[0]?.last_triggered_at != null,
-    lastTriggeredAt: result[0]?.last_triggered_at ?? null,
+    isDebounced: result.rows[0]?.last_triggered_at != null,
+    lastTriggeredAt: result.rows[0]?.last_triggered_at ?? null,
   };
 }
 
@@ -80,20 +76,21 @@ export async function getDebounceStatus(
  * If the issue doesn't have a row yet, creates one.
  */
 export async function setDebounced(
-  db: Sql,
   jiraProjectId: string,
   issueKey: string,
   status: string,
 ): Promise<void> {
-  await db`
-    INSERT INTO jira_issue_states (jira_project_id, issue_key, last_known_status, last_triggered_at, last_updated_at)
-    VALUES (${jiraProjectId}, ${issueKey}, ${status}, NOW(), NOW())
-    ON CONFLICT (jira_project_id, issue_key)
-    DO UPDATE SET
-      last_triggered_at = NOW(),
-      last_known_status = EXCLUDED.last_known_status,
-      last_updated_at = NOW()
-  `;
+  const db = PoolManager.getPool();
+  await db.execute(
+    `INSERT INTO jira_issue_states (jira_project_id, issue_key, last_known_status, last_triggered_at, last_updated_at)
+     VALUES ($1, $2, $3, NOW(), NOW())
+     ON CONFLICT (jira_project_id, issue_key)
+     DO UPDATE SET
+       last_triggered_at = NOW(),
+       last_known_status = EXCLUDED.last_known_status,
+       last_updated_at = NOW()`,
+    [jiraProjectId, issueKey, status],
+  );
 }
 
 /**
@@ -101,19 +98,20 @@ export async function setDebounced(
  * Used when polling detects a status change but we're not triggering a workflow.
  */
 export async function updateStatus(
-  db: Sql,
   jiraProjectId: string,
   issueKey: string,
   status: string,
 ): Promise<void> {
-  await db`
-    INSERT INTO jira_issue_states (jira_project_id, issue_key, last_known_status, last_updated_at)
-    VALUES (${jiraProjectId}, ${issueKey}, ${status}, NOW())
-    ON CONFLICT (jira_project_id, issue_key)
-    DO UPDATE SET
-      last_known_status = EXCLUDED.last_known_status,
-      last_updated_at = NOW()
-  `;
+  const db = PoolManager.getPool();
+  await db.execute(
+    `INSERT INTO jira_issue_states (jira_project_id, issue_key, last_known_status, last_updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (jira_project_id, issue_key)
+     DO UPDATE SET
+       last_known_status = EXCLUDED.last_known_status,
+       last_updated_at = NOW()`,
+    [jiraProjectId, issueKey, status],
+  );
 }
 
 /**
@@ -121,17 +119,17 @@ export async function updateStatus(
  * Returns null if the issue hasn't been tracked yet.
  */
 export async function getLastKnownStatus(
-  db: Sql,
   jiraProjectId: string,
   issueKey: string,
 ): Promise<string | null> {
-  const result = await db<[JiraIssueStateRow]>`
-    SELECT last_known_status FROM jira_issue_states
-    WHERE jira_project_id = ${jiraProjectId}
-      AND issue_key = ${issueKey}
-  `;
+  const db = PoolManager.getPool();
+  const result = await db.query<{ last_known_status: string | null }>(
+    `SELECT last_known_status FROM jira_issue_states
+     WHERE jira_project_id = $1 AND issue_key = $2`,
+    [jiraProjectId, issueKey],
+  );
 
-  return result[0]?.last_known_status ?? null;
+  return result.rows[0]?.last_known_status ?? null;
 }
 
 /**
@@ -139,12 +137,11 @@ export async function getLastKnownStatus(
  * Returns true if the issue was not previously in a startStatus.
  */
 export async function isNewTransition(
-  db: Sql,
   jiraProjectId: string,
   issueKey: string,
   startStatus: readonly string[],
 ): Promise<boolean> {
-  const lastStatus = await getLastKnownStatus(db, jiraProjectId, issueKey);
+  const lastStatus = await getLastKnownStatus(jiraProjectId, issueKey);
 
   // If no prior status, it's a new issue — not a transition
   if (lastStatus === null) {
@@ -164,23 +161,22 @@ export async function isNewTransition(
  * Removes last_triggered_at for entries older than the debounce window.
  * Returns the count of cleaned entries.
  */
-export async function cleanup(
-  db: Sql,
-  debounceWindowSeconds: number,
-): Promise<number> {
+export async function cleanup(debounceWindowSeconds: number): Promise<number> {
   if (debounceWindowSeconds === 0) {
     return 0;
   }
 
-  const result = await db<[{ id: number }]>`
-    UPDATE jira_issue_states
-    SET last_triggered_at = NULL
-    WHERE last_triggered_at IS NOT NULL
-      AND (NOW() - last_triggered_at) >= (${debounceWindowSeconds} || ' seconds')::INTERVAL
-    RETURNING id
-  `;
+  const db = PoolManager.getPool();
+  const result = await db.query<{ id: number }>(
+    `UPDATE jira_issue_states
+     SET last_triggered_at = NULL
+     WHERE last_triggered_at IS NOT NULL
+       AND (NOW() - last_triggered_at) >= ($1 || ' seconds')::INTERVAL
+     RETURNING id`,
+    [debounceWindowSeconds],
+  );
 
-  return result.length;
+  return result.rowCount ?? 0;
 }
 
 /**
@@ -188,18 +184,19 @@ export async function cleanup(
  * Useful for loading state at startup.
  */
 export async function getIssueStates(
-  db: Sql,
   jiraProjectId: string,
 ): Promise<IssueState[]> {
-  const result = await db<[JiraIssueStateRow]>`
-    SELECT issue_key, last_known_status, last_triggered_at
-    FROM jira_issue_states
-    WHERE jira_project_id = ${jiraProjectId}
-  `;
+  const db = PoolManager.getPool();
+  const result = await db.query<JiraIssueStateRow>(
+    `SELECT issue_key, last_known_status, last_triggered_at
+     FROM jira_issue_states
+     WHERE jira_project_id = $1`,
+    [jiraProjectId],
+  );
 
-  return result.map((row: JiraIssueStateRow) => ({
+  return result.rows.map((row) => ({
     issueKey: row.issue_key,
-    lastKnownStatus: row.last_known_status,
-    lastTriggeredAt: row.last_triggered_at,
+    lastKnownStatus: row.last_known_status ?? "",
+    lastTriggeredAt: row.last_triggered_at ?? null,
   }));
 }

@@ -26,24 +26,29 @@ export interface JiraApiClientConfig {
 
 // ---------------------------------------------------------------------------
 // Error types
+// ---------------------------------------------------------------------------
+
 export class JiraError extends Error {
-  constructor() {
-    super();
+  constructor(message = "") {
+    super(message);
     this.name = "JiraError";
   }
 }
+
 export class JiraNotAuthenticatedError extends JiraError {
-  constructor() {
-    super();
+  constructor(message = "") {
+    super(message);
     this.name = "JiraNotAuthenticatedError";
   }
 }
+
 export class JiraNotFoundError extends JiraError {
-  constructor() {
-    super();
+  constructor(message = "") {
+    super(message);
     this.name = "JiraNotFoundError";
   }
 }
+
 export class JiraRateLimitError extends JiraError {
   constructor(
     public readonly retryAfterSeconds: number,
@@ -53,6 +58,7 @@ export class JiraRateLimitError extends JiraError {
     this.name = "JiraRateLimitError";
   }
 }
+
 export class JiraApiError extends JiraError {
   constructor(
     public readonly statusCode: number,
@@ -141,12 +147,9 @@ export class JiraApiClient {
    * Handle rate limit by waiting for the specified duration.
    */
   handleRateLimit(retryAfterSeconds: number): Promise<void> {
-    let resolve: () => void;
-    const promise = new Promise<void>((res) => {
-      resolve = res;
+    return new Promise((resolve) => {
+      setTimeout(resolve, retryAfterSeconds * 1000);
     });
-    setTimeout(() => resolve(), retryAfterSeconds * 1000);
-    return promise;
   }
 
   // -------------------------------------------------------------------------
