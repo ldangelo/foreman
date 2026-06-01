@@ -74,7 +74,7 @@ describe("JiraIssuesPoller", () => {
 
   describe("pollProject", () => {
     it("returns zero transitions when no issues found", async () => {
-      const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);
+      const poller = new JiraIssuesPoller(adapter, mockClient as unknown as JiraApiClient, jiraConfig, onTransition);
       const result = await poller.pollProject(createJiraProjectConfig());
       expect(result.issues).toBe(0);
       expect(result.transitions).toBe(0);
@@ -97,7 +97,7 @@ describe("JiraIssuesPoller", () => {
         ],
         total: 1,
       });
-      const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);
+      const poller = new JiraIssuesPoller(adapter, mockClient as unknown as JiraApiClient, jiraConfig, onTransition);
       const result = await poller.pollProject(createJiraProjectConfig());
       expect(result.transitions).toBe(0);
       expect(onTransition).not.toHaveBeenCalled();
@@ -113,7 +113,7 @@ describe("JiraIssuesPoller", () => {
           last_updated_at: "2026-06-01T11:00:00Z",
         },
       ]);
-      const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);
+      const poller = new JiraIssuesPoller(adapter, mockClient as unknown as JiraApiClient, jiraConfig, onTransition);
       await poller.loadState();
       mockClient.search.mockResolvedValue({
         issues: [
@@ -144,7 +144,7 @@ describe("JiraIssuesPoller", () => {
           last_updated_at: "2026-06-01T11:00:00Z",
         },
       ]);
-      const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);
+      const poller = new JiraIssuesPoller(adapter, mockClient as unknown as JiraApiClient, jiraConfig, onTransition);
       await poller.loadState();
       mockClient.search.mockResolvedValue({
         issues: [
@@ -175,7 +175,7 @@ describe("JiraIssuesPoller", () => {
           last_updated_at: "2026-06-01T11:00:00Z",
         },
       ]);
-      const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);
+      const poller = new JiraIssuesPoller(adapter, mockClient as unknown as JiraApiClient, jiraConfig, onTransition);
       await poller.loadState();
       mockClient.search.mockResolvedValue({
         issues: [
@@ -215,7 +215,7 @@ describe("JiraIssuesPoller", () => {
         ],
         total: 1,
       });
-      const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);
+      const poller = new JiraIssuesPoller(adapter, mockClient as unknown as JiraApiClient, jiraConfig, onTransition);
       await poller.pollProject(createJiraProjectConfig());
       expect(adapter.upsertJiraIssueState).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -235,7 +235,7 @@ describe("JiraIssuesPoller", () => {
           last_updated_at: "2026-06-01T11:00:00Z",
         },
       ]);
-      const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);
+      const poller = new JiraIssuesPoller(adapter, mockClient as unknown as JiraApiClient, jiraConfig, onTransition);
       await poller.loadState();
       expect(adapter.getJiraIssueStates).toHaveBeenCalled();
     });

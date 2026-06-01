@@ -264,8 +264,9 @@ export class JiraIssuesPoller {
 
   /**
    * Load issue state from the database into memory.
+   * Exposed for testing purposes.
    */
-  private async loadState(): Promise<void> {
+  async loadState(): Promise<void> {
     try {
       const rows = await this.adapter.getJiraIssueStates();
       for (const row of rows) {

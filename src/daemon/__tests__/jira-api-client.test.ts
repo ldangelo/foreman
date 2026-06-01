@@ -204,6 +204,7 @@ describe("JiraApiClient", () => {
           status: 200,
           headers: { get: () => null },
           json: () => Promise.resolve({}),
+          text: () => Promise.resolve("{}"),
           url: "https://test.atlassian.net/rest/api/3/myself",
         } satisfies MockFetchResponse);
       });
