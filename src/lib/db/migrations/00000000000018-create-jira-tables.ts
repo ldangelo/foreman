@@ -50,7 +50,6 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
     },
     last_poll_at: {
       type: "timestamptz",
-    },
     created_at: {
       type: "timestamptz",
       notNull: true,
@@ -62,18 +61,25 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
       default: pgm.func("now()"),
     },
   });
-
   pgm.addConstraint("jira_projects", "jira_projects_project_id_unique", {
     unique: ["project_id"],
   });
-
+  // Create the trigger function if it doesn't exist (TRD-004 pattern)
+  pgm.sql(`
+    CREATE OR REPLACE FUNCTION trigger_set_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = NOW();
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+  `);
   pgm.sql(`
     CREATE TRIGGER set_jira_projects_updated_at
     BEFORE UPDATE ON jira_projects
     FOR EACH ROW
     EXECUTE FUNCTION trigger_set_updated_at();
   `);
-
   pgm.addConstraint(
     "jira_projects",
     "jira_projects_project_id_fkey",
