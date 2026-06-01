@@ -29,6 +29,10 @@ import { Dispatcher } from "../orchestrator/dispatcher.js";
 import { BvClient } from "../lib/bv.js";
 import { createTrpcClient } from "../lib/trpc-client.js";
 import { GitHubIssuesPoller } from "./github-poller.js";
+import { JiraApiClient } from "./jira-api-client.js";
+import { JiraIssuesPoller } from "./jira-poller.js";
+import type { JiraConfig, JiraProjectConfig } from "../lib/project-config.js";
+import { JiraTriggerHandler } from "../orchestrator/jira-trigger-handler.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -81,6 +85,7 @@ export class ForemanDaemon {
   private _useSocket: boolean = true;
   private _dispatchInterval: ReturnType<typeof setInterval> | null = null;
   private _githubPoller: GitHubIssuesPoller | null = null;
+  private _jiraPoller: JiraIssuesPoller | null = null;
 
   constructor(options?: {
     socketPath?: string;
@@ -169,21 +174,17 @@ export class ForemanDaemon {
     };
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));
-
     this._running = true;
-
-    // Start background dispatch loop
-    await this.#startDispatchLoop();
-
     // Start GitHub Issues polling loop (TRD-030, TRD-032)
     await this.#startGithubPoller();
+    // Start Jira Issues polling loop
+    await this.#startJiraPoller();
+    await this.#startDispatchLoop();
   }
-
   /** Try to bind on the Unix socket. Fall back to HTTP on failure. */
   async #listenOnSocket(): Promise<void> {
     const socketDir = join(this._socketPath, "..");
     mkdirSync(socketDir, { recursive: true });
-
     // Clean up stale socket.
     if (existsSync(this._socketPath)) {
       try {
@@ -244,6 +245,7 @@ export class ForemanDaemon {
 
     this.#stopDispatchLoop();
     this.#stopGithubPoller();
+    this.#stopJiraPoller();
     this._running = false;
     this.fastify.log.info("[ForemanDaemon] Stopped");
   }
@@ -319,7 +321,73 @@ export class ForemanDaemon {
       this._githubPoller = null;
     }
   }
-
+  /** Start the Jira Issues polling loop. Skips if no Jira config found. */
+  async #startJiraPoller(): Promise<void> {
+    // Load project config to check for Jira configuration
+    const projectPath = process.cwd();
+    const config = await import("../lib/project-config.js").then(
+      (m) => m.loadProjectConfig(projectPath),
+      () => null,
+    );
+    if (!config?.issueTracker || config.issueTracker.backend !== "jira") {
+      this.fastify.log.info(
+        "[ForemanDaemon] No Jira configuration found — Jira Issues polling disabled"
+      );
+      return;
+    }
+    const jiraConfig: JiraConfig = config.issueTracker.jira;
+    // Read API token from environment
+    const apiToken = process.env[jiraConfig.apiTokenEnvVar];
+    if (!apiToken) {
+      this.fastify.log.warn(
+        `[ForemanDaemon] Jira API token env var '${jiraConfig.apiTokenEnvVar}' not set — Jira Issues polling disabled`
+      );
+      return;
+    }
+    const adapter = new PostgresAdapter();
+    const client = new JiraApiClient({
+      apiUrl: jiraConfig.apiUrl,
+      email: jiraConfig.email,
+      apiToken,
+    });
+    // Create transition handlers for each project
+    const handlers = new Map<string, JiraTriggerHandler>();
+    for (const projectConfig of jiraConfig.projects) {
+      handlers.set(
+        projectConfig.key,
+        new JiraTriggerHandler(adapter, projectConfig.key),
+      );
+    }
+    const onTransition = async (
+      issue: { key: string; fields?: { status?: { name?: string }; issuetype?: { name?: string } } },
+      projectConfig: JiraProjectConfig,
+    ): Promise<void> => {
+      const handler = handlers.get(projectConfig.key);
+      if (!handler) return;
+      const mappedIssue = {
+        key: issue.key,
+        fields: {
+          status: { name: issue.fields?.status?.name ?? "" },
+          issuetype: { name: issue.fields?.issuetype?.name ?? "" },
+        },
+      };
+      await handler.handleTransition({
+        issue: mappedIssue as Parameters<typeof handler.handleTransition>[0]["issue"],
+        projectConfig,
+        jiraProjectId: projectConfig.key,
+        source: "poll",
+      });
+    };
+    this._jiraPoller = new JiraIssuesPoller(adapter, client, jiraConfig, onTransition);
+    this._jiraPoller.start();
+  }
+  /** Stop the Jira Issues polling loop. */
+  #stopJiraPoller(): void {
+    if (this._jiraPoller) {
+      this._jiraPoller.stop();
+      this._jiraPoller = null;
+    }
+  }
   /** Dispatch ready tasks for all registered projects. */
   async #dispatchAllProjects(maxAgents: number): Promise<void> {
     // Use tRPC client to get projects (same as listRegisteredProjects in CLI)

@@ -116,8 +116,7 @@ export class JiraIssuesPoller {
     });
 
     const intervalMs = parseInt(process.env.FOREMAN_JIRA_POLL_INTERVAL_MS ?? "", 10) ||
-      this.jiraConfig.pollIntervalSeconds ??
-      60_000;
+      (this.jiraConfig.pollIntervalSeconds ?? 60_000);
     const effectiveInterval = Math.max(intervalMs, 30_000); // minimum 30 seconds
 
     this._interval = setInterval(() => {
