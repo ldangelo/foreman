@@ -2156,14 +2156,20 @@ export class PostgresAdapter {
     const monitoredId = monitoredRows[0]?.id;
     if (!monitoredId) {
       console.warn(`[PostgresAdapter] No monitored project found for key: ${input.jiraProjectKey}`);
-      return;
-    }
-    await execute(
-      `INSERT INTO jira_issue_states (jira_monitored_project_id, issue_key, last_known_status, last_updated_at, last_triggered_at)
-       VALUES ($1, $2, $3, $4, NULL)
-       ON CONFLICT (jira_monitored_project_id, issue_key)
-       DO UPDATE SET last_known_status = $3, last_updated_at = $4`,
-      [monitoredId, input.issueKey, input.lastKnownStatus, input.lastUpdatedAt],
+    );
+  }
+  // -------------------------------------------------------------------------
+  // Jira project operations (TRD-013)
+  // -------------------------------------------------------------------------
+  /**
+   * List Jira project configurations for a Foreman project.
+   */
+  async listJiraProjects(projectId: string): Promise<JiraProjectRow[]> {
+    return query<JiraProjectRow>(
+      `SELECT id, project_id, api_url, email, poll_interval_seconds, webhook_enabled, last_poll_at
+       FROM jira_projects
+       WHERE project_id = $1`,
+      [projectId],
     );
   }
 }
