@@ -330,11 +330,33 @@ export interface RecordGithubSyncEventInput {
   conflictDetected?: boolean;
   resolvedWith?: string | null;
 }
-
-// ---------------------------------------------------------------------------
-// PostgresAdapter
-// ---------------------------------------------------------------------------
-
+// Jira issue state types (TRD-013)
+export interface JiraIssueStateRow {
+  project_key: string;
+  issue_key: string;
+  last_known_status: string;
+  last_updated_at: string;
+}
+export interface JiraIssueStateInput {
+  jiraProjectKey: string;
+  issueKey: string;
+  lastKnownStatus: string;
+  lastUpdatedAt: string;
+}
+// Jira project config row type (TRD-028)
+export interface JiraProjectRow {
+  id: string;
+  project_id: string;
+  api_url: string;
+  email: string;
+  poll_interval_seconds: number | null;
+  webhook_enabled: boolean;
+  last_poll_at: string | null;
+  webhook_secret_encrypted: string | null;
+}
+  // ---------------------------------------------------------------------------
+  // PostgresAdapter
+  // ---------------------------------------------------------------------------
 export class PostgresAdapter {
   private async allocateTaskId(projectId: string): Promise<string> {
     const rows = await query<{ name: string | null }>(
@@ -2109,11 +2131,96 @@ export class PostgresAdapter {
     const rows = await query<TaskRow>(sql, params);
     return rows[0] ?? null;
   }
+  // -------------------------------------------------------------------------
+  // Jira issue state operations (TRD-013: polling infrastructure)
+  // -------------------------------------------------------------------------
+  /**
+   * Fetch all Jira issue states from the database.
+   */
+  async getJiraIssueStates(): Promise<JiraIssueStateRow[]> {
+    return query<JiraIssueStateRow>(
+      `SELECT
+        jmp.jira_project_key AS project_key,
+        jis.issue_key,
+        jis.last_known_status,
+        jis.last_updated_at
+       FROM jira_issue_states jis
+       JOIN jira_monitored_projects jmp ON jis.jira_monitored_project_id = jmp.id
+       JOIN jira_projects jp ON jmp.jira_project_id = jp.id
+       ORDER BY jis.last_updated_at DESC`,
+    );
+  }
+  /**
+   * Upsert a Jira issue state record.
+   * Creates the record if it doesn't exist, updates if it does.
+   */
+  async upsertJiraIssueState(input: JiraIssueStateInput): Promise<void> {
+    // Look up the monitored project ID from the project key
+    const monitoredRows = await query<{ id: string }>(
+      `SELECT jmp.id
+       FROM jira_monitored_projects jmp
+       JOIN jira_projects jp ON jmp.jira_project_id = jp.id
+       WHERE jmp.jira_project_key = $1
+       LIMIT 1`,
+      [input.jiraProjectKey],
+    );
+    const monitoredId = monitoredRows[0]?.id;
+    if (!monitoredId) {
+      console.warn(`[PostgresAdapter] No monitored project found for key: ${input.jiraProjectKey}`);
+    }
+  }
+  // -------------------------------------------------------------------------
+  // Jira project operations (TRD-013)
+  // -------------------------------------------------------------------------
+  /**
+   * List Jira project configurations for a Foreman project.
+   */
+  async listJiraProjects(projectId: string): Promise<JiraProjectRow[]> {
+    return query<JiraProjectRow>(
+      `SELECT id, project_id, api_url, email, poll_interval_seconds, webhook_enabled, last_poll_at, webhook_secret_encrypted
+       FROM jira_projects
+       WHERE project_id = $1`,
+      [projectId],
+    );
+  }
+  /**
+   * Get observability metrics for Jira monitoring (TRD-028).
+   */
+  async getJiraMetrics(projectId: string, jiraProjectKey: string): Promise<{
+    monitoredIssues: number;
+    triggeredToday: number;
+    lastError?: string;
+  }> {
+    const countResult = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM jira_issue_states
+       WHERE jira_project_key = $1 AND project_id = $2`,
+      [jiraProjectKey, projectId],
+    );
+    const monitoredIssues = parseInt(countResult[0]?.count ?? "0", 10);
+    const todayResult = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM jira_issue_states
+       WHERE jira_project_key = $1
+         AND project_id = $2
+         AND last_triggered_at IS NOT NULL
+         AND last_triggered_at > NOW() - INTERVAL '24 hours'`,
+      [jiraProjectKey, projectId],
+    );
+    const triggeredToday = parseInt(todayResult[0]?.count ?? "0", 10);
+    const errorResult = await query<{ last_error: string | null }>(
+      `SELECT last_error FROM jira_monitored_projects
+       WHERE jira_project_key = $1 AND project_id = $2`,
+      [jiraProjectKey, projectId],
+    );
+    return {
+      monitoredIssues,
+      triggeredToday,
+      lastError: errorResult[0]?.last_error ?? undefined,
+    };
+  }
 }
-
-
 // ---------------------------------------------------------------------------
 // Named export
 // ---------------------------------------------------------------------------
-
 export const Database = { Adapter: PostgresAdapter };

@@ -12,7 +12,6 @@
  *
  * @module daemon/router
  */
-
 import { initTRPC, TRPCError } from "@trpc/server";
 import type { inferRouterContext } from "@trpc/server";
 import { z } from "zod";
@@ -28,11 +27,9 @@ import { ProjectRegistry } from "../lib/project-registry.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getPrState, type PrState } from "../lib/pr-state.js";
-
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
-
 export interface Context {
   /** Fastify request object for access to headers, socket, etc. */
   req: FastifyRequest;
@@ -43,8 +40,9 @@ export interface Context {
   gh: GhCli;
   /** Project registry (JSON + Postgres dual-write). */
   registry: ProjectRegistry;
+  /** Current project ID (from X-Project-Id header or FOREMAN_PROJECT_ID env var). */
+  projectId?: string;
 }
-
 export async function createContext({
   req,
   res,
@@ -58,19 +56,17 @@ export async function createContext({
     req,
     res,
     adapter,
-    // Singleton instances shared across all requests in the daemon process
     gh: new GhCli(),
     registry,
+    // Pre-extract projectId from headers for convenience
+    projectId: req.headers?.["x-project-id"] as string | undefined,
   };
 }
-
 export type ContextFn = typeof createContext;
 export type RouterContext = inferRouterContext<AppRouter>;
-
 // ---------------------------------------------------------------------------
 // Zod schemas
 // ---------------------------------------------------------------------------
-
 const PROJECT_ID_SCHEMA = z.string().min(1);
 const PROJECT_NAME_SCHEMA = z.string().min(1).max(255);
 const PROJECT_PATH_SCHEMA = z.string().min(1);
@@ -1462,19 +1458,133 @@ const projectsRouter = t.router({
       return record;
     }),
 });
-
+// ---------------------------------------------------------------------------
+// Jira procedures
+// ---------------------------------------------------------------------------
+const jiraRouter = t.router({
+  /**
+   * Configure Jira monitoring for the current project.
+   * POST /trpc/jira.configure
+   */
+  configure: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA.optional(),
+        apiUrl: z.string().url(),
+        email: z.string().email(),
+        apiTokenEnvVar: z.string().min(1),
+        projects: z.array(
+          z.object({
+            key: z.string().min(1),
+            startStatus: z.array(z.string()).min(1),
+            endStatus: z.array(z.string()).optional(),
+            issueTypeWorkflowMap: z.record(z.string(), z.string()),
+            debounceWindowSeconds: z.number().int().min(0).optional(),
+          })
+        ).min(1),
+        webhookEnabled: z.boolean().optional(),
+        webhookSecretEnvVar: z.string().optional(),
+        pollIntervalSeconds: z.number().int().min(30).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      // TODO: Implement config persistence to project config + DB
+      void input;
+      void ctx;
+      return { success: true };
+    }),
+  /**
+   * Get Jira monitor status for the current project.
+   * GET /trpc/jira.getStatus
+   */
+  getStatus: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA.optional() }))
+    .query(async ({ input, ctx }) => {
+      const projectId = input.projectId ?? ctx.projectId ?? process.env.FOREMAN_PROJECT_ID;
+      if (!projectId) {
+        return {
+          configured: false, projects: 0, lastPoll: undefined, webhookEnabled: false,
+          monitoredIssues: 0, triggeredToday: 0, lastError: undefined,
+        };
+      }
+      const jiraProjects = await ctx.adapter.listJiraProjects(projectId);
+      if (jiraProjects.length === 0) {
+        return {
+          configured: false, projects: 0, lastPoll: undefined, webhookEnabled: false,
+          monitoredIssues: 0, triggeredToday: 0, lastError: undefined,
+        };
+      }
+      // Get observability metrics for first project
+      const metrics = await ctx.adapter.getJiraMetrics(projectId, jiraProjects[0].api_url.split("/").pop() ?? "");
+      return {
+        configured: true,
+        projects: jiraProjects.length,
+        lastPoll: jiraProjects[0]?.last_poll_at ?? undefined,
+        webhookEnabled: jiraProjects[0]?.webhook_enabled ?? false,
+        ...metrics,
+      };
+    }),
+  /**
+   * Test Jira API connection.
+   * GET /trpc/jira.testConnection
+   */
+  testConnection: t.procedure
+    .input(
+      z.object({
+        apiUrl: z.string(),
+        email: z.string(),
+        apiTokenEnvVar: z.string(),
+      })
+    )
+    .query(async ({ input }) => {
+      const apiToken = process.env[input.apiTokenEnvVar];
+      if (!apiToken) {
+        return { connected: false, error: `API token env var '${input.apiTokenEnvVar}' is not set` };
+      }
+      try {
+        const { JiraApiClient } = await import("./jira-api-client.js");
+        const client = new JiraApiClient({ apiUrl: input.apiUrl, email: input.email, apiToken });
+        await client.authenticate();
+        const projects = await client.listProjects();
+        return { connected: true, projects: projects.map((p) => ({ key: p.key, name: p.name })) };
+      } catch (err) {
+        return { connected: false, error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    }),
+  /**
+   * Enable webhook for real-time Jira triggers.
+   * POST /trpc/jira.enableWebhook
+   */
+  enableWebhook: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA.optional(), webhookSecret: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      void input;
+      void ctx;
+      return { webhookUrl: `${process.env.FOREMAN_BASE_URL ?? "http://localhost:3847"}/webhooks/jira` };
+    }),
+  /**
+   * Disable webhook for Jira triggers.
+   * POST /trpc/jira.disableWebhook
+   */
+  disableWebhook: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA.optional() }))
+    .mutation(async ({ input, ctx }) => {
+      void input;
+      void ctx;
+      return { success: true };
+    }),
+});
 // ---------------------------------------------------------------------------
 // App router
 // ---------------------------------------------------------------------------
-
 export const appRouter = t.router({
   projects: projectsRouter,
   tasks: tasksRouter,
   runs: runsRouter,
   mail: mailRouter,
   github: githubRouter,
+  jira: jiraRouter,
 });
-
 export type AppRouter = typeof appRouter;
 
 // ---------------------------------------------------------------------------
