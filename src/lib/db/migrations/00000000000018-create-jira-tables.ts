@@ -50,6 +50,7 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
     },
     last_poll_at: {
       type: "timestamptz",
+    },
     created_at: {
       type: "timestamptz",
       notNull: true,
