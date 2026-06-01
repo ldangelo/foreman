@@ -127,9 +127,16 @@ export interface JiraProjectConfig {
  * Jira Cloud instance configuration.
  */
 export interface JiraConfig {
+  /**
+   * Jira API version: "cloud" (REST API v3) or "server" (REST API v2).
+   * Default: "cloud" (Atlassian Jira Cloud).
+   *
+   * Server/Data Center uses REST API v2 with different endpoint paths.
+   */
+  apiVersion?: "cloud" | "server";
   /** Jira Cloud API URL (e.g., https://your-domain.atlassian.net). */
   apiUrl: string;
-  /** Jira account email for authentication. */
+  /** Jira account email for authentication (Cloud only). */
   email: string;
   /** Environment variable name containing the Jira API token. */
   apiTokenEnvVar: string;

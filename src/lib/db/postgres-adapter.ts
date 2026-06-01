@@ -352,6 +352,7 @@ export interface JiraProjectRow {
   poll_interval_seconds: number | null;
   webhook_enabled: boolean;
   last_poll_at: string | null;
+  webhook_secret_encrypted: string | null;
 }
   // ---------------------------------------------------------------------------
   // PostgresAdapter
@@ -2169,16 +2170,14 @@ export class PostgresAdapter {
     }
   }
   // -------------------------------------------------------------------------
-  // -------------------------------------------------------------------------
   // Jira project operations (TRD-013)
-  // -------------------------------------------------------------------------
   // -------------------------------------------------------------------------
   /**
    * List Jira project configurations for a Foreman project.
    */
   async listJiraProjects(projectId: string): Promise<JiraProjectRow[]> {
     return query<JiraProjectRow>(
-      `SELECT id, project_id, api_url, email, poll_interval_seconds, webhook_enabled, last_poll_at
+      `SELECT id, project_id, api_url, email, poll_interval_seconds, webhook_enabled, last_poll_at, webhook_secret_encrypted
        FROM jira_projects
        WHERE project_id = $1`,
       [projectId],

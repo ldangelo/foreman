@@ -325,13 +325,41 @@ export class ForemanDaemon {
       this._githubPoller = null;
     }
   }
-  /** Start the Jira webhook endpoint if configured. */
+  /** Start the Jira webhook endpoint if configured.
+   *
+   * Support for webhook secrets:
+   * 1. Environment variable: FOREMAN_JIRA_WEBHOOK_SECRET (recommended for dev)
+   * 2. Database: webhook_secret_encrypted column in jira_projects (production)
+   *
+   * Env var takes precedence over DB.
+   */
   async #startJiraWebhook(): Promise<void> {
-    // Load Jira webhook secret from env
-    const jiraWebhookSecret = process.env.FOREMAN_JIRA_WEBHOOK_SECRET;
+    // Load Jira webhook secret from env (priority) or DB (fallback)
+    let jiraWebhookSecret = process.env.FOREMAN_JIRA_WEBHOOK_SECRET;
+    if (!jiraWebhookSecret) {
+      // Try to load from database if env var not set
+      const projectId = process.env.FOREMAN_PROJECT_ID;
+      if (projectId) {
+        try {
+          const adapter = new PostgresAdapter();
+          const jiraProjects = await adapter.listJiraProjects(projectId);
+          const jiraProject = jiraProjects[0];
+          if (jiraProject?.webhook_secret_encrypted) {
+            jiraWebhookSecret = jiraProject.webhook_secret_encrypted;
+            this.fastify.log.info(
+              "[ForemanDaemon] Jira webhook secret loaded from database",
+            );
+          }
+        } catch (err) {
+          this.fastify.log.warn(
+            `[ForemanDaemon] Failed to load webhook secret from DB: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
     if (!jiraWebhookSecret) {
       this.fastify.log.info(
-        "[ForemanDaemon] FOREMAN_JIRA_WEBHOOK_SECRET not set — Jira webhook endpoint disabled",
+        "[ForemanDaemon] No Jira webhook secret found (env: FOREMAN_JIRA_WEBHOOK_SECRET, or DB: jira_projects.webhook_secret_encrypted) — Jira webhook endpoint disabled",
       );
       return;
     }
