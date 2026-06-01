@@ -68,6 +68,10 @@ describe("JiraIssuesPoller", () => {
     };
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe("pollProject", () => {
     it("returns zero transitions when no issues found", async () => {
       const poller = new JiraIssuesPoller(adapter, mockClient, jiraConfig, onTransition);

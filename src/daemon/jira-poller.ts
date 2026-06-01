@@ -267,10 +267,10 @@ export class JiraIssuesPoller {
   /**
    * Persist current issue state to the database.
    * Uses upsert semantics — inserts or updates each tracked issue.
+   * Called after every poll cycle and on graceful shutdown.
    */
-  private async saveState(projectKey: string): Promise<void> {
+  async saveState(projectKey: string): Promise<void> {
     const entries = Array.from(this._state.entries()).filter(([k]) => k.startsWith(`${projectKey}:`));
-
     for (const [key, state] of entries) {
       const [, issueKey] = key.split(":");
       try {
@@ -288,7 +288,6 @@ export class JiraIssuesPoller {
       }
     }
   }
-
   // -------------------------------------------------------------------------
   // Manual trigger (for on-demand re-poll)
   // -------------------------------------------------------------------------

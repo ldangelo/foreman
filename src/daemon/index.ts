@@ -237,12 +237,18 @@ export class ForemanDaemon {
       // ignore
     }
 
+    // Persist Jira issue states before shutdown (AC-014-1)
+    if (this._jiraPoller) {
+      console.log("[ForemanDaemon] Persisting Jira issue states before shutdown");
+      for (const project of this._jiraPoller["jiraConfig"].projects) {
+        await this._jiraPoller.saveState(project.key);
+      }
+    }
     try {
       await destroyPool();
     } catch {
       // ignore
     }
-
     this.#stopDispatchLoop();
     this.#stopGithubPoller();
     this.#stopJiraPoller();
