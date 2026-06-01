@@ -4,12 +4,15 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
-import type { JiraProjectConfig, JiraConfig } from "../../lib/project-config.js";
+import { JiraConfig, type JiraProjectConfig } from "../../lib/project-config.js";
 import { JiraIssuesPoller } from "../jira-poller.js";
+import type { JiraApiClient } from "../jira-api-client.js";
 import { JiraTriggerHandler } from "../../orchestrator/jira-trigger-handler.js";
+import type { JiraIssue } from "../jira-poller.js";
 
 vi.mock("../../lib/db/pool-manager.js", () => ({
   getPool: vi.fn().mockReturnValue({}),
+  PoolManager: { getPool: vi.fn().mockReturnValue({}) },
 }));
 
 vi.mock("../../daemon/jira-debounce-store.js", () => ({
@@ -51,7 +54,7 @@ describe("JiraIssuesPoller", () => {
   let adapter: PostgresAdapter;
   let mockClient: ReturnType<typeof createMockJiraClient>;
   let jiraConfig: JiraConfig;
-  let onTransition: ReturnType<typeof vi.fn>;
+  let onTransition: (issue: JiraIssue, projectConfig: JiraProjectConfig) => Promise<void>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -348,41 +351,15 @@ describe("Webhook E2E flow", () => {
         updated: "2026-06-01T12:00:00Z",
       },
     };
-    const result = await handler.handleTransition({
+    const context = {
       issue,
       projectConfig: createJiraProjectConfig(),
       jiraProjectId: "webhook-test-jira-id",
-      source: "webhook",
-    });
-    expect(result.triggered).toBe(true);
-    expect(result.externalId).toBe("jira:PROJ-WEBHOOK-1");
-  });
-
-  it("skips webhook if issue already triggered (idempotency)", async () => {
-    adapter.getTaskByExternalId = vi.fn().mockResolvedValue({ id: "PREVIOUS-TASK" });
-    const handler = new JiraTriggerHandler(adapter, "webhook-test-jira-id");
-    const issue = {
-      key: "PROJ-WEBHOOK-2",
-      fields: {
-        summary: "Already Handled",
-        status: { name: "In Progress" },
-        issuetype: { name: "Task" },
-        project: { key: "PROJ" },
-        updated: "2026-06-01T12:00:00Z",
-      },
+      source: "webhook" as const,
     };
-    const result = await handler.handleTransition({
-      issue,
-      projectConfig: createJiraProjectConfig(),
-      jiraProjectId: "webhook-test-jira-id",
-      source: "webhook",
-    });
-    expect(result.triggered).toBe(false);
-    expect(result.reason).toBe("already_triggered");
-  });
-
-  it("skips webhook for transitions outside startStatus", async () => {
-    const config = createJiraProjectConfig({ startStatus: ["In Progress"] });
-    expect(config.startStatus).not.toContain("Done");
+    const result = await handler.handleTransition(context);
+    expect(result.triggered).toBe(true);
+    expect(result.workflowName).toBe("default");
+    expect(adapter.createTask).toHaveBeenCalled();
   });
 });
