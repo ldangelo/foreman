@@ -14,20 +14,20 @@
 
 import Fastify from "fastify";
 import { fastifyRequestHandler } from "@trpc/server/adapters/fastify";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, chmodSync, existsSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
 import { initPool, healthCheck, destroyPool } from "../lib/db/pool-manager.js";
-import { createContext } from "./router.js";
-import { appRouter } from "./router.js";
+import { createContext, appRouter } from "./router.js";
 import { createWebhookHandler } from "./webhook-handler.js";
-import { ProjectRegistry } from "../lib/project-registry.js";
+import { createJiraWebhookHandler } from "./jira-webhook-handler.js";
+import { createTrpcClient } from "../lib/trpc-client.js";
 import { ForemanStore } from "../lib/store.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
+import { ProjectRegistry } from "../lib/project-registry.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { Dispatcher } from "../orchestrator/dispatcher.js";
 import { BvClient } from "../lib/bv.js";
-import { createTrpcClient } from "../lib/trpc-client.js";
 import { GitHubIssuesPoller } from "./github-poller.js";
 import { JiraApiClient } from "./jira-api-client.js";
 import { JiraIssuesPoller } from "./jira-poller.js";
@@ -160,14 +160,14 @@ export class ForemanDaemon {
       this.fastify.log.info("[ForemanDaemon] Webhook endpoint enabled at /webhook");
     } else {
       this.fastify.log.info(
-        "[ForemanDaemon] FOREMAN_WEBHOOK_SECRET not set — webhook endpoint disabled",
+      "[ForemanDaemon] FOREMAN_WEBHOOK_SECRET not set — webhook endpoint disabled",
       );
     }
-
-    // 5. Attempt Unix socket first.
+    // 6. Jira webhook endpoint (TRD-019, TRD-022)
+    await this.#startJiraWebhook();
+    // 7. Attempt Unix socket first.
     await this.#listenOnSocket();
-
-    // 6. Graceful shutdown.
+    // 8. Graceful shutdown.
     const shutdown = async (signal: string) => {
       this.fastify.log.info(`[ForemanDaemon] Received ${signal}, shutting down`);
       await this.stop();
@@ -304,7 +304,6 @@ export class ForemanDaemon {
       );
       return;
     }
-
     const adapter = new PostgresAdapter();
     const registry = new ProjectRegistry({ pg: adapter });
     this._githubPoller = new GitHubIssuesPoller(adapter, registry, {
@@ -313,13 +312,44 @@ export class ForemanDaemon {
     });
     this._githubPoller.start();
   }
-
   /** Stop the GitHub Issues polling loop. */
   #stopGithubPoller(): void {
     if (this._githubPoller) {
       this._githubPoller.stop();
       this._githubPoller = null;
     }
+  }
+  /** Start the Jira webhook endpoint if configured. */
+  async #startJiraWebhook(): Promise<void> {
+    // Load Jira webhook secret from env
+    const jiraWebhookSecret = process.env.FOREMAN_JIRA_WEBHOOK_SECRET;
+    if (!jiraWebhookSecret) {
+      this.fastify.log.info(
+        "[ForemanDaemon] FOREMAN_JIRA_WEBHOOK_SECRET not set — Jira webhook endpoint disabled",
+      );
+      return;
+    }
+    const loadConfig = async () => {
+      const projectPath = process.cwd();
+      return import("../lib/project-config.js").then(
+        (m) => m.loadProjectConfig(projectPath),
+        () => null,
+      );
+    };
+    const adapter = new PostgresAdapter();
+    const jiraWebhookHandler = createJiraWebhookHandler(
+      {
+        adapter,
+        getProjectConfig: async (projectKey: string) => {
+          const config = await loadConfig();
+          if (!config?.issueTracker || config.issueTracker.backend !== "jira") return undefined;
+          return config.issueTracker.jira.projects?.find((p) => p.key === projectKey);
+        },
+      },
+      { secret: jiraWebhookSecret },
+    );
+    this.fastify.post("/webhooks/jira", jiraWebhookHandler);
+    this.fastify.log.info("[ForemanDaemon] Jira webhook endpoint enabled at /webhooks/jira");
   }
   /** Start the Jira Issues polling loop. Skips if no Jira config found. */
   async #startJiraPoller(): Promise<void> {
