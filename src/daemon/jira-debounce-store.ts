@@ -6,6 +6,17 @@
 
 import type { Database } from "postgres";
 
+export interface IssueState {
+  issueKey: string;
+  lastKnownStatus: string;
+  lastTriggeredAt: Date | null;
+}
+
+export interface DebounceCheckResult {
+  isDebounced: boolean;
+  lastTriggeredAt: Date | null;
+}
+
 /**
  * Check if an issue is currently debounced.
  * Uses jira_issue_states.last_triggered_at to determine if within debounce window.
@@ -31,6 +42,26 @@ export async function isDebounced(
   `;
 
   return result[0]?.is_debounced ?? false;
+}
+
+/**
+ * Get debounce status for an issue, including the last triggered timestamp.
+ */
+export async function getDebounceStatus(
+  db: Database,
+  jiraProjectId: string,
+  issueKey: string,
+): Promise<DebounceCheckResult> {
+  const result = await db`
+    SELECT last_triggered_at FROM jira_issue_states
+    WHERE jira_project_id = ${jiraProjectId}
+      AND issue_key = ${issueKey}
+  `;
+
+  return {
+    isDebounced: result[0]?.last_triggered_at != null,
+    lastTriggeredAt: result[0]?.last_triggered_at ?? null,
+  };
 }
 
 /**
@@ -100,7 +131,7 @@ export async function isNewTransition(
   db: Database,
   jiraProjectId: string,
   issueKey: string,
-  startStatus: string[],
+  startStatus: readonly string[],
 ): Promise<boolean> {
   const lastStatus = await getLastKnownStatus(db, jiraProjectId, issueKey);
 
@@ -120,6 +151,7 @@ export async function isNewTransition(
 /**
  * Cleanup expired debounce entries.
  * Removes last_triggered_at for entries older than the debounce window.
+ * Returns the count of cleaned entries.
  */
 export async function cleanup(
   db: Database,
@@ -147,7 +179,7 @@ export async function cleanup(
 export async function getIssueStates(
   db: Database,
   jiraProjectId: string,
-): Promise<Array<{ issueKey: string; lastKnownStatus: string; lastTriggeredAt: Date | null }>> {
+): Promise<IssueState[]> {
   const result = await db`
     SELECT issue_key, last_known_status, last_triggered_at
     FROM jira_issue_states

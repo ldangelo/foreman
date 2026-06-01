@@ -100,7 +100,6 @@ export class JiraApiClient {
       if (err instanceof JiraNotAuthenticatedError) {
         throw err;
       }
-      // Network or other errors should propagate
       throw err;
     }
   }
@@ -137,10 +136,10 @@ export class JiraApiClient {
   /**
    * Handle rate limit by waiting for the specified duration.
    */
-  async handleRateLimit(retryAfterSeconds: number): Promise<void> {
+  handleRateLimit(retryAfterSeconds: number): Promise<void> {
     const { promise, resolve } = Promise.withResolvers<void>();
     setTimeout(resolve, retryAfterSeconds * 1000);
-    await promise;
+    return promise;
   }
 
   // -------------------------------------------------------------------------
@@ -174,7 +173,7 @@ export class JiraApiClient {
     }
   }
 
-  private async parseResponse<T>(response: Response): Promise<T> {
+  private async parseResponse(response: Response): Promise<unknown> {
     if (response.status === 401 || response.status === 403) {
       const message = response.status === 401
         ? "Jira authentication failed. Check email and API token."
@@ -203,6 +202,6 @@ export class JiraApiClient {
       );
     }
 
-    return response.json() as Promise<T>;
+    return response.json();
   }
 }
