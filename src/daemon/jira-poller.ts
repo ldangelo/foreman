@@ -191,14 +191,31 @@ export class JiraIssuesPoller {
     const maxResults = 100;
 
     let searchResult: JiraSearchResult;
-    try {
-      searchResult = await this.client.search<jiraResponse>(jql, { maxResults });
-    } catch (err) {
-      console.error(
-        `[JiraIssuesPoller] JQL search failed for project ${projectConfig.key}:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      throw err;
+    let retryCount = 0;
+    const maxRetries = 3;
+    while (retryCount < maxRetries) {
+      try {
+        searchResult = await this.client.search<jiraResponse>(jql, { maxResults });
+        break; // Success
+      } catch (err) {
+        const isRateLimit = err instanceof Error && err.message.includes("429");
+        if (isRateLimit && retryCount < maxRetries - 1) {
+          retryCount++;
+          const delayMs = Math.pow(2, retryCount) * 1000; // Exponential backoff: 2s, 4s, 8s
+          console.warn(`[JiraIssuesPoller] Rate limited, retrying in ${delayMs}ms (attempt ${retryCount}/${maxRetries})`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+        // Log as CRITICAL for non-retryable errors
+        console.error(
+          `[JiraIssuesPoller][CRITICAL] JQL search failed for project ${projectConfig.key}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        throw err;
+      }
+    }
+    if (!searchResult) {
+      throw new Error(`Failed to fetch issues after ${maxRetries} attempts`);
     }
 
     let transitions = 0;
