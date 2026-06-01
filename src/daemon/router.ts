@@ -59,7 +59,7 @@ export async function createContext({
     gh: new GhCli(),
     registry,
     // Pre-extract projectId from headers for convenience
-    projectId: req.headers["x-project-id"] as string | undefined,
+    projectId: req.headers?.["x-project-id"] as string | undefined,
   };
 }
 export type ContextFn = typeof createContext;
