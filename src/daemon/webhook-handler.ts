@@ -101,7 +101,15 @@ export type WebhookHandler = (
 export interface WebhookConfig {
   /** HMAC secret for verifying GitHub webhook payloads. */
   secret: string;
-  /** Label that should import issues directly to ready. */
+  /**
+   * Label that triggers automatic task dispatch from GitHub issues.
+   * Issues with this label (or "foreman:dispatch") are imported as "ready" status.
+   * 
+   * Default: "foreman" (for backward compatibility)
+   * If null or empty, issues are imported as "backlog" (no auto-dispatch).
+   */
+  foremanTag?: string;
+  /** @deprecated Use foremanTag instead. Kept for backward compatibility. */
   foremanLabel?: string;
 }
 
@@ -148,14 +156,21 @@ export function createWebhookHandler(
   };
 }
 
-function shouldSkipIssueImport(issue: GitHubIssueWebhookPayload["issue"], config: WebhookConfig): boolean {
+function shouldSkipIssueImport(issue: GitHubIssueWebhookPayload["issue"]): boolean {
   return issue.labels.some((label) => label.name === "foreman:skip");
 }
-
 function shouldReadyIssueImport(issue: GitHubIssueWebhookPayload["issue"], config: WebhookConfig): boolean {
-  const foremanLabel = config.foremanLabel ?? "foreman";
+  // Use foremanTag if set, otherwise foremanLabel (deprecated), otherwise default to "foreman"
+  const effectiveTag = config.foremanTag || config.foremanLabel || "foreman";
+  // If effectiveTag is explicitly set and not empty, check for it
+  if (effectiveTag.trim() !== "") {
+    return issue.labels.some(
+      (label) => label.name === effectiveTag || label.name === "foreman:dispatch",
+    );
+  }
+  // Shouldn't happen with default, but fallback to "foreman" label
   return issue.labels.some(
-    (label) => label.name === foremanLabel || label.name === "foreman:dispatch",
+    (label) => label.name === "foreman" || label.name === "foreman:dispatch",
   );
 }
 
@@ -452,8 +467,7 @@ async function handleIssue(
             );
             break;
           }
-
-          if (shouldSkipIssueImport(issue, config)) {
+          if (issue.labels.some((l) => l.name === "foreman:skip")) {
             request.log.info(
               { issueNumber: issue.number, repo: repoFullName },
               "[webhook:issue] foreman:skip present; skipping task creation",

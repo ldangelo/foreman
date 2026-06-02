@@ -138,8 +138,8 @@ export interface JiraConfig {
   apiUrl: string;
   /** Jira account email for authentication (Cloud only). */
   email: string;
-  /** Environment variable name containing the Jira API token. */
-  apiTokenEnvVar: string;
+  /** Encrypted Jira API token (AES-256-GCM). Decrypt with FOREMAN_MASTER_KEY at runtime. */
+  apiToken: string;
   /** Poll interval in seconds. Default: 60. Minimum: 30. */
   pollIntervalSeconds?: number;
   /** Enable webhook-based real-time triggers. Default: false. */
@@ -167,7 +167,17 @@ export interface IssueTrackerConfig {
  */
 export interface ProjectConfig {
   /**
-   * Foreman's authoritative integration branch for this project.
+   * Label that triggers automatic task dispatch from GitHub issues or Jira issues.
+   * 
+   * When an imported issue has this label:
+   * - GitHub: Task is created with status "ready" (auto-dispatched)
+   * - Jira: Workflow is triggered immediately
+   * 
+   * If not set or empty, issues are only imported but not auto-dispatched.
+   * The default label is "FOREMAN_AUTO_FIX".
+   */
+  foremanTag?: string;
+  /** Foreman's authoritative integration branch for this project.
    * When set, commands should prefer this value over VCS auto-detection.
    */
   defaultBranch?: string;
@@ -450,7 +460,7 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
     const jiraConfig: JiraConfig = {
       apiUrl: "",
       email: "",
-      apiTokenEnvVar: "",
+      apiToken: "",
       projects: [],
     };
     if ("apiUrl" in jiraRaw) {
@@ -465,11 +475,11 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       }
       jiraConfig.email = jiraRaw["email"] as string;
     }
-    if ("apiTokenEnvVar" in jiraRaw) {
-      if (typeof jiraRaw["apiTokenEnvVar"] !== "string") {
-        throw new ProjectConfigError(filePath, "'issueTracker.jira.apiTokenEnvVar' must be a string");
+    if ("apiToken" in jiraRaw) {
+      if (typeof jiraRaw["apiToken"] !== "string") {
+        throw new ProjectConfigError(filePath, "'issueTracker.jira.apiToken' must be a string");
       }
-      jiraConfig.apiTokenEnvVar = jiraRaw["apiTokenEnvVar"] as string;
+      jiraConfig.apiToken = jiraRaw["apiToken"] as string;
     }
     if ("pollIntervalSeconds" in jiraRaw) {
       const interval = jiraRaw["pollIntervalSeconds"];

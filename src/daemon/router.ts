@@ -1393,7 +1393,6 @@ const projectsRouter = t.router({
         last_sync_at: record.lastSyncAt,
       };
     }),
-
   /**
    * Update a project.
    * POST /trpc/projects.update
@@ -1406,15 +1405,43 @@ const projectsRouter = t.router({
           name: PROJECT_NAME_SCHEMA.optional(),
           path: PROJECT_PATH_SCHEMA.optional(),
           status: STATUS_FILTER_SCHEMA,
+          jira: z.object({
+            apiUrl: z.string().optional(),
+            email: z.string().optional(),
+            apiToken: z.string().optional(),
+            pollIntervalSeconds: z.number().optional(),
+            webhookEnabled: z.boolean().optional(),
+            webhookSecretEnvVar: z.string().optional(),
+            projects: z.array(z.object({
+              key: z.string(),
+              startStatus: z.array(z.string()),
+              endStatus: z.array(z.string()).optional(),
+              issueTypeWorkflowMap: z.record(z.string(), z.string()),
+              debounceWindowSeconds: z.number().optional(),
+            })).optional(),
+          }).optional(),
         }),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      return ctx.registry.update(input.id, {
-        ...(input.updates.name !== undefined ? { name: input.updates.name } : {}),
-        ...(input.updates.path !== undefined ? { path: input.updates.path } : {}),
-        ...(input.updates.status !== undefined ? { status: input.updates.status } : {}),
+      const { registry } = ctx;
+
+      // Extract jira updates for project-level config persistence
+      const { jira, ...basicUpdates } = input.updates;
+
+      // First, update basic project metadata in registry
+      const record = await registry.update(input.id, basicUpdates as {
+        name?: string;
+        path?: string;
+        status?: "active" | "paused" | "archived";
       });
+
+      // If Jira config provided, persist to project YAML
+      if (jira) {
+        await registry.updateJiraConfig(input.id, jira);
+      }
+
+      return record;
     }),
 
   /**
@@ -1472,7 +1499,7 @@ const jiraRouter = t.router({
         projectId: PROJECT_ID_SCHEMA.optional(),
         apiUrl: z.string().url(),
         email: z.string().email(),
-        apiTokenEnvVar: z.string().min(1),
+        apiToken: z.string().min(1),
         projects: z.array(
           z.object({
             key: z.string().min(1),
@@ -1533,20 +1560,24 @@ const jiraRouter = t.router({
       z.object({
         apiUrl: z.string(),
         email: z.string(),
-        apiTokenEnvVar: z.string(),
+        apiToken: z.string(),
       })
     )
-    .query(async ({ input }) => {
-      const apiToken = process.env[input.apiTokenEnvVar];
-      if (!apiToken) {
-        return { connected: false, error: `API token env var '${input.apiTokenEnvVar}' is not set` };
+    .mutation(async ({ input }) => {
+      // Decrypt the API token
+      const { decrypt } = await import("../lib/encryption.js");
+      let apiToken: string;
+      try {
+        apiToken = await decrypt(input.apiToken);
+      } catch {
+        return { connected: false, error: "Failed to decrypt API token. Check FOREMAN_MASTER_KEY." };
       }
       try {
         const { JiraApiClient } = await import("./jira-api-client.js");
         const client = new JiraApiClient({ apiUrl: input.apiUrl, email: input.email, apiToken });
         await client.authenticate();
         const projects = await client.listProjects();
-        return { connected: true, projects: projects.map((p) => ({ key: p.key, name: p.name })) };
+        return { connected: true, projects: projects.map((p: { key: string; name: string }) => ({ key: p.key, name: p.name })) };
       } catch (err) {
         return { connected: false, error: err instanceof Error ? err.message : "Unknown error" };
       }

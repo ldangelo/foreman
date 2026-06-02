@@ -311,22 +311,29 @@ export class SentinelAgent {
       `on branch \`${branch}\`.\n\n` +
       `**Commit:** ${commitHash ?? "unknown"}\n\n` +
       `**Test output (truncated):**\n\`\`\`\n${output.slice(0, 2_000)}\n\`\`\``;
-
     try {
-      // Check for an existing open bead with the same title to avoid duplicates.
-      // Filter by label to narrow the search to sentinel-created beads only.
-      const existingBeads = await this.seeds.list({
+      // Check for an existing open issue with the same title to avoid duplicates.
+      // Filter by label to narrow the search to sentinel-created issues only.
+      const existingIssues = await this.seeds.list({
         status: "open",
         label: "kind:sentinel",
       });
-      const duplicate = existingBeads.find((b) => b.title === title);
+      const duplicate = existingIssues.find((b) => b.title === title);
       if (duplicate) {
         console.log(
-          `[sentinel] Skipping duplicate bead creation — open bead ${duplicate.id} already exists for "${title}"`,
+          `[sentinel] Found existing issue ${duplicate.id} for "${title}"`,
         );
+        // If the task client supports claim(), transition it to in-progress
+        if ("claim" in this.seeds && typeof this.seeds.claim === "function") {
+          try {
+            const claimed = await this.seeds.claim(duplicate.id);
+            console.log(`[sentinel] Claimed issue — now status: ${claimed.status}`);
+          } catch (err) {
+            console.log(`[sentinel] Could not claim issue (may already be in-progress): ${err}`);
+          }
+        }
         return;
       }
-
       await this.seeds.create(title, {
         type: "bug",
         priority: "P0",

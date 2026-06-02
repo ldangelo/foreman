@@ -1,17 +1,3 @@
-/**
- * ForemanDaemon — long-lived tRPC HTTP server.
- *
- * Starts as a standalone Node.js process. Validates Postgres connection on boot,
- * then listens for tRPC requests over Unix socket (primary) or HTTP (fallback).
- *
- * Configuration:
- * - Socket: ~/.foreman/daemon.sock (mode 0600)
- * - HTTP fallback: localhost:3847
- * - DATABASE_URL: from env or postgresql://localhost/foreman
- *
- * @module daemon
- */
-
 import Fastify from "fastify";
 import { fastifyRequestHandler } from "@trpc/server/adapters/fastify";
 import { homedir } from "node:os";
@@ -31,6 +17,7 @@ import { BvClient } from "../lib/bv.js";
 import { GitHubIssuesPoller } from "./github-poller.js";
 import { JiraApiClient } from "./jira-api-client.js";
 import { JiraIssuesPoller } from "./jira-poller.js";
+import { decrypt } from "../lib/encryption.js";
 import type { JiraConfig, JiraProjectConfig } from "../lib/project-config.js";
 import { JiraTriggerHandler } from "../orchestrator/jira-trigger-handler.js";
 
@@ -86,7 +73,7 @@ export class ForemanDaemon {
   private _dispatchInterval: ReturnType<typeof setInterval> | null = null;
   private _githubPoller: GitHubIssuesPoller | null = null;
   private _jiraPoller: JiraIssuesPoller | null = null;
-
+  private jiraClient: JiraApiClient | null = null;
   constructor(options?: {
     socketPath?: string;
     httpPort?: number;
@@ -146,15 +133,16 @@ export class ForemanDaemon {
     this.fastify.get("/health", async () => ({ status: "ok" }));
 
     // 5. Webhook endpoint (TRD-061/062/063/064).
+    // 5. Webhook endpoint (TRD-061/062/063/064).
     // Reads FOREMAN_WEBHOOK_SECRET from env; skips if not set (daemon still starts).
     const webhookSecret = process.env.FOREMAN_WEBHOOK_SECRET;
-    const foremanLabel = process.env.FOREMAN_GITHUB_LABEL ?? "foreman";
+    const foremanTag = process.env.FOREMAN_GITHUB_TAG ?? process.env.FOREMAN_GITHUB_LABEL ?? "FOREMAN_AUTO_FIX";
     if (webhookSecret) {
       const { createContext: makeContext } = await import("./router.js");
       const ctx = await makeContext({ req: {} as never, res: {} as never });
       const webhookHandler = createWebhookHandler(
         { adapter: ctx.adapter, registry: ctx.registry },
-        { secret: webhookSecret, foremanLabel },
+        { secret: webhookSecret, foremanTag },
       );
       this.fastify.post("/webhook", webhookHandler);
       this.fastify.log.info("[ForemanDaemon] Webhook endpoint enabled at /webhook");
@@ -401,16 +389,18 @@ export class ForemanDaemon {
       return;
     }
     const jiraConfig: JiraConfig = config.issueTracker.jira;
-    // Read API token from environment
-    const apiToken = process.env[jiraConfig.apiTokenEnvVar];
-    if (!apiToken) {
+    // Decrypt the API token
+    let apiToken: string;
+    try {
+      apiToken = await decrypt(jiraConfig.apiToken);
+    } catch (err) {
       this.fastify.log.warn(
-        `[ForemanDaemon] Jira API token env var '${jiraConfig.apiTokenEnvVar}' not set — Jira Issues polling disabled`
+        `[ForemanDaemon] Failed to decrypt Jira API token: ${err instanceof Error ? err.message : String(err)} — Jira Issues polling disabled`
       );
       return;
     }
     const adapter = new PostgresAdapter();
-    const client = new JiraApiClient({
+    this.jiraClient = new JiraApiClient({
       apiUrl: jiraConfig.apiUrl,
       email: jiraConfig.email,
       apiToken,
@@ -443,7 +433,7 @@ export class ForemanDaemon {
         source: "poll",
       });
     };
-    this._jiraPoller = new JiraIssuesPoller(adapter, client, jiraConfig, onTransition);
+    this._jiraPoller = new JiraIssuesPoller(adapter, this.jiraClient, jiraConfig, onTransition);
     this._jiraPoller.start();
   }
   /** Stop the Jira Issues polling loop. */

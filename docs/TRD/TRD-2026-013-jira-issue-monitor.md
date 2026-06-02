@@ -832,3 +832,4 @@ src/daemon/
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-06-01 | Initial TRD — 34 tasks covering Jira API client, polling, webhooks, trigger execution, observability, and testing |
+| 1.1.0 | 2026-06-02 | Added Jira-Sentinel lifecycle integration. See `TRD-2026-013-jira-issue-monitor-lifecycle.md` for details. |

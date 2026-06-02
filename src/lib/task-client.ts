@@ -66,6 +66,7 @@ export interface CreateOptions {
   priority?: string;
   parent?: string;
   description?: string;
+  labels?: string[];
 }
 
 // ── ITaskClient interface ────────────────────────────────────────────────
@@ -126,5 +127,18 @@ export interface ITaskClient {
    * Returns null if there are no comments.
    * Optional — implementations that do not support comments may omit this method.
    */
+  /**
+   * Fetch comments for an issue as a formatted markdown string.
+   * Returns null if there are no comments.
+   * Optional — implementations that do not support comments may omit this method.
+   */
   comments?(id: string): Promise<string | null>;
+  /**
+   * Claim an issue — transition it from a ready/start status to in-progress.
+   * Used by Sentinel to take ownership of an issue before working on it.
+   * 
+   * Returns the updated issue with its new status.
+   * Throws if the issue cannot be claimed (e.g., no valid transitions).
+   */
+  claim?(id: string): Promise<Issue>;
 }

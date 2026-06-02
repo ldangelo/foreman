@@ -22,8 +22,9 @@ export interface JiraApiClientConfig {
   apiVersion?: "cloud" | "server";
   /** Request timeout in milliseconds. Default: 30000 */
   timeoutMs?: number;
+  /** Optional fetch function for testing (defaults to globalThis.fetch) */
+  fetchFn?: typeof globalThis.fetch;
 }
-
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -79,7 +80,8 @@ export class JiraApiClient {
   private readonly timeoutMs: number;
   /** API version: "cloud" (REST v3) or "server" (REST v2) */
   private readonly apiVersion: "cloud" | "server";
-
+  /** Fetch function (can be injected for testing) */
+  private readonly fetchFn: typeof globalThis.fetch;
   constructor(config: JiraApiClientConfig) {
     this.baseUrl = config.apiUrl.replace(/\/$/, "");
     // Server uses username, Cloud uses email for Basic Auth
@@ -87,8 +89,9 @@ export class JiraApiClient {
     this.authHeader = `Basic ${credentials}`;
     this.timeoutMs = config.timeoutMs ?? 30_000;
     this.apiVersion = config.apiVersion ?? "cloud";
+    this.fetchFn = config.fetchFn ?? globalThis.fetch;
   }
-
+  /**
   /**
    * Get the API path prefix based on version.
    * - Cloud: /rest/api/3/...
@@ -142,7 +145,23 @@ export class JiraApiClient {
     const result = await this.get<{ values: JiraProject[] }>(this.apiPath("/project"));
     return result.values ?? [];
   }
-
+  /**
+   * Get all valid statuses for a project, grouped by issue type.
+   * Useful for auto-detecting workflow stages.
+   */
+  async getProjectStatuses(projectKey: string): Promise<JiraProjectStatus[]> {
+    return this.get<JiraProjectStatus[]>(this.apiPath(`/project/${encodeURIComponent(projectKey)}/statuses`));
+  }
+  /**
+   * Get available transitions for an issue.
+   * Returns transitions that can be executed from the issue's current status.
+   */
+  async getIssueTransitions(issueKey: string): Promise<JiraTransition[]> {
+    const result = await this.get<{ transitions: JiraTransition[] }>(
+      this.apiPath(`/issue/${encodeURIComponent(issueKey)}/transitions`),
+    );
+    return result.transitions ?? [];
+  }
   /**
    * Handle rate limit by waiting for the specified duration.
    */
@@ -179,7 +198,52 @@ export class JiraApiClient {
       { transition: { id: transitionId } },
     );
   }
-
+  /**
+   * Create a new issue.
+   * @param projectKey The Jira project key (e.g., "PROJ")
+   * @param issueType The issue type name (e.g., "Bug", "Task")
+   * @param summary The issue summary/title
+   * @param description Optional description (supports Atlassian Document Format)
+   * @param labels Optional labels
+   */
+  async createIssue(options: {
+    projectKey: string;
+    issueType: string;
+    summary: string;
+    description?: string;
+    labels?: string[];
+    priority?: string;
+  }): Promise<{ key: string; id: string }> {
+    const fields: Record<string, unknown> = {
+      project: { key: options.projectKey },
+      issuetype: { name: options.issueType },
+      summary: options.summary,
+    };
+    if (options.description) {
+      // Use Atlassian Document Format for description
+      fields.description = {
+        type: "doc",
+        version: 1,
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: options.description }],
+          },
+        ],
+      };
+    }
+    if (options.labels) {
+      fields.labels = options.labels;
+    }
+    if (options.priority) {
+      fields.priority = { name: options.priority };
+    }
+    const result = await this.post<{ key: string; id: string }>(
+      this.apiPath("/issue"),
+      { fields },
+    );
+    return { key: result.key, id: result.id };
+  }
   // -------------------------------------------------------------------------
   // Private methods
   // -------------------------------------------------------------------------
@@ -201,9 +265,8 @@ export class JiraApiClient {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
-
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchFn(url, {
         ...options,
         headers: {
           Authorization: this.authHeader,
@@ -213,6 +276,7 @@ export class JiraApiClient {
         },
         signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       return response;
     } finally {
       clearTimeout(timeoutId);
@@ -255,24 +319,72 @@ export class JiraApiClient {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
 export interface JiraIssue {
   key: string;
+  id: string;
   fields: {
     summary: string;
     status: { name: string };
     issuetype: { name: string };
     project: { key: string };
     updated: string;
+    created: string;
+    priority?: { name: string };
+    labels?: string[];
   };
 }
-
 export interface JiraProject {
   key: string;
   name: string;
 }
-
 export interface SearchResult {
   issues: JiraIssue[];
   total: number;
+}
+/**
+ * Status details returned by the project statuses endpoint.
+ */
+export interface JiraStatus {
+  id: string;
+  name: string;
+  description?: string;
+  iconUrl?: string;
+  statusCategory?: {
+    id: number;
+    key: string;
+    name: string;
+    colorName?: string;
+  };
+}
+/**
+ * Issue type with its valid statuses, returned by project statuses endpoint.
+ */
+export interface JiraProjectStatus {
+  id: string;
+  name: string;
+  self: string;
+  statuses: JiraStatus[];
+  subtask: boolean;
+}
+/**
+ * A transition that can be performed on an issue.
+ */
+export interface JiraTransition {
+  id: string;
+  name: string;
+  to: {
+    id: string;
+    name: string;
+    self: string;
+    statusCategory?: {
+      id: number;
+      key: string;
+      name: string;
+    };
+  };
+  hasScreen: boolean;
+  isAvailable: boolean;
+  isGlobal?: boolean;
+  isInitial?: boolean;
+  isConditional?: boolean;
 }

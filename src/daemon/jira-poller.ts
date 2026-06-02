@@ -76,11 +76,11 @@ export class JiraIssuesPoller {
   private readonly adapter: PostgresAdapter;
   private readonly client: JiraApiClient;
   private readonly jiraConfig: JiraConfig;
-  private readonly onTransition: (issue: JiraIssue, projectConfig: JiraProjectConfig) => Promise<void>;
+  private readonly onTransition: (issue: JiraIssue, projectConfig: JiraProjectConfig, foremanTag?: string) => Promise<void>;
+  private readonly _foremanTag?: string;
   private _interval: ReturnType<typeof setInterval> | null = null;
   private _running = false;
   private _stopped = false;
-
   /**
    * In-memory state for all tracked issues.
    * Loaded from DB on start, updated on each poll cycle.
@@ -92,12 +92,14 @@ export class JiraIssuesPoller {
     adapter: PostgresAdapter,
     client: JiraApiClient,
     jiraConfig: JiraConfig,
-    onTransition: (issue: JiraIssue, projectConfig: JiraProjectConfig) => Promise<void>,
+    onTransition: (issue: JiraIssue, projectConfig: JiraProjectConfig, foremanTag?: string) => Promise<void>,
+    foremanTag?: string,
   ) {
     this.adapter = adapter;
     this.client = client;
     this.jiraConfig = jiraConfig;
     this.onTransition = onTransition;
+    this._foremanTag = foremanTag;
   }
 
   /** Start the background polling loop. Idempotent — safe to call on already-running poller. */
@@ -231,7 +233,7 @@ export class JiraIssuesPoller {
         if (isInStartStatus && !wasInStartStatus) {
           // Transition: non-start → start, this is new trigger
           transitions++;
-          await this.onTransition(issue, projectConfig);
+          await this.onTransition(issue, projectConfig, this._foremanTag);
         }
         // If it was already in startStatus, no trigger (AC-003-4)
         // If moving within startStatus, no trigger (AC-003-2)

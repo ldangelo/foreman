@@ -2,10 +2,10 @@
  * `foreman jira` CLI commands — configure and monitor Jira integration.
  */
 
-import { Command } from "commander";
 import chalk from "chalk";
+import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
-import type { JiraProjectConfig } from "../../lib/project-config.js";
+import { encrypt } from "../../lib/encryption.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -20,15 +20,15 @@ interface JiraProjectInput {
 interface JiraConfigureOptions {
   apiUrl: string;
   email: string;
-  apiTokenEnv: string;
+  apiToken: string;
   project: string[];
   startStatus: string[];
-  endStatus?: string[];
+  endStatus: string[];
   issueTypeWorkflow: string[];
-  debounceSeconds?: number;
-  webhookEnabled?: boolean;
-  webhookSecretEnv?: string;
-  pollInterval?: number;
+  debounceSeconds: number | undefined;
+  webhookEnabled: boolean | undefined;
+  webhookSecretEnv: string | undefined;
+  pollInterval: number | undefined;
 }
 
 function parseIssueTypeWorkflow(options: string[]): Record<string, string> {
@@ -49,7 +49,7 @@ const configureCommand = new Command("configure")
   .description("Configure Jira monitoring for the current project")
   .requiredOption("--api-url <url>", "Jira Cloud API URL (e.g., https://your-domain.atlassian.net)")
   .requiredOption("--email <email>", "Jira account email")
-  .requiredOption("--api-token-env <name>", "Environment variable name containing Jira API token")
+  .requiredOption("--api-token <token>", "Jira API token (will be encrypted)")
   .requiredOption("--project <key>", "Jira project key (can repeat for multiple projects)", (val, prev) => {
     (prev as string[]).push(val.toUpperCase());
     return prev;
@@ -79,8 +79,8 @@ const configureCommand = new Command("configure")
       console.error(chalk.red("Error: At least one --issue-type-workflow is required"));
       process.exit(1);
     }
-
-    // Build projects config
+    // Encrypt the API token before sending to daemon
+    const encryptedApiToken = await encrypt(opts.apiToken);
     const projects: JiraProjectInput[] = opts.project.map((key) => ({
       key: key.toUpperCase(),
       startStatus: opts.startStatus,
@@ -88,13 +88,12 @@ const configureCommand = new Command("configure")
       issueTypeWorkflowMap,
       debounceWindowSeconds: opts.debounceSeconds,
     }));
-
     try {
       await client.jira.configure({
         apiUrl: opts.apiUrl,
         email: opts.email,
-        apiTokenEnvVar: opts.apiTokenEnv,
-        projects: projects as JiraProjectConfig[],
+        apiToken: encryptedApiToken,
+        projects: projects,
         webhookEnabled: opts.webhookEnabled ?? false,
         webhookSecretEnvVar: opts.webhookSecretEnv,
         pollIntervalSeconds: opts.pollInterval,
@@ -171,25 +170,23 @@ const testCommand = new Command("test")
   .description("Test Jira API connection")
   .requiredOption("--api-url <url>", "Jira Cloud API URL")
   .requiredOption("--email <email>", "Jira account email")
-  .requiredOption("--api-token-env <name>", "Environment variable name containing Jira API token")
+  .requiredOption("--api-token <token>", "Jira API token (will be encrypted)")
   .option("--json", "Output as JSON")
-  .action(async (opts: { apiUrl: string; email: string; apiTokenEnv: string; json?: boolean }) => {
+  .action(async (opts: { apiUrl: string; email: string; apiToken: string; json?: boolean }) => {
     const client = createTrpcClient();
-
     console.log(chalk.dim("Testing Jira connection..."));
-
     try {
+      // Encrypt the token for transmission
+      const encryptedApiToken = await encrypt(opts.apiToken);
       const result = await client.jira.testConnection({
         apiUrl: opts.apiUrl,
         email: opts.email,
-        apiTokenEnvVar: opts.apiTokenEnv,
+        apiToken: encryptedApiToken,
       }) as JiraTestResult;
-
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-
       if (result.connected) {
         console.log(chalk.green("✓ Connected to Jira"));
         if (result.projects && result.projects.length > 0) {
@@ -209,7 +206,6 @@ const testCommand = new Command("test")
       process.exit(1);
     }
   });
-
 // ── foreman jira enable-webhook ─────────────────────────────────────────────
 
 interface EnableWebhookResult {

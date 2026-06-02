@@ -282,6 +282,21 @@ export interface TRPCProjectsClient {
         name?: string;
         path?: string;
         status?: "active" | "paused" | "archived";
+        jira?: {
+          apiUrl?: string;
+          email?: string;
+          apiToken?: string;
+          pollIntervalSeconds?: number;
+          webhookEnabled?: boolean;
+          webhookSecretEnvVar?: string;
+          projects?: Array<{
+            key: string;
+            startStatus?: string[];
+            endStatus?: string[];
+            issueTypeWorkflowMap?: Record<string, string>;
+            debounceWindowSeconds?: number;
+          }>;
+        };
       };
     },
   ): Promise<unknown>;
@@ -369,7 +384,7 @@ export interface TRPCJiraClient {
   configure(input: {
     apiUrl: string;
     email: string;
-    apiTokenEnvVar: string;
+    apiToken: string;
     projects: Array<{
       key: string;
       startStatus: string[];
@@ -385,7 +400,7 @@ export interface TRPCJiraClient {
   testConnection(input: {
     apiUrl: string;
     email: string;
-    apiTokenEnvVar: string;
+    apiToken: string;
   }): Promise<unknown>;
   enableWebhook(input: {
     projectId?: string;

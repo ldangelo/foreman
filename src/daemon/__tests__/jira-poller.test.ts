@@ -64,17 +64,15 @@ describe("JiraIssuesPoller", () => {
     jiraConfig = {
       apiUrl: "https://test.atlassian.net",
       email: "test@example.com",
-      apiTokenEnvVar: "JIRA_API_TOKEN",
+      apiToken: "test-token-encrypted",
       pollIntervalSeconds: 60,
       webhookEnabled: false,
       projects: [createJiraProjectConfig()],
     };
   });
-
   afterEach(() => {
     vi.restoreAllMocks();
   });
-
   describe("pollProject", () => {
     it("returns zero transitions when no issues found", async () => {
       const poller = new JiraIssuesPoller(adapter, mockClient as unknown as JiraApiClient, jiraConfig, onTransition);

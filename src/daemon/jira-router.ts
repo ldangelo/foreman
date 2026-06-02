@@ -28,7 +28,7 @@ export interface JiraConfigureInput {
   projectId?: string;
   apiUrl: string;
   email: string;
-  apiTokenEnvVar: string;
+  apiToken: string;
   projects: Array<{
     key: string;
     startStatus: string[];
@@ -40,7 +40,6 @@ export interface JiraConfigureInput {
   webhookSecretEnvVar?: string;
   pollIntervalSeconds?: number;
 }
-
 export interface JiraStatusOutput {
   configured: boolean;
   projects: number;
@@ -51,19 +50,16 @@ export interface JiraStatusOutput {
   triggeredToday: number;
   lastError?: string;
 }
-
 export interface JiraTestConnectionInput {
   apiUrl: string;
   email: string;
-  apiTokenEnvVar: string;
+  apiToken: string;
 }
-
 export interface JiraTestConnectionOutput {
   connected: boolean;
   projects?: Array<{ key: string; name: string }>;
   error?: string;
 }
-
 export interface JiraEnableWebhookInput {
   projectId?: string;
   webhookSecret: string;

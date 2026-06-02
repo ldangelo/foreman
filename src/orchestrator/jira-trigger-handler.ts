@@ -30,6 +30,8 @@ export interface TriggerContext {
   projectConfig: JiraProjectConfig;
   jiraProjectId: string;
   source: "poll" | "webhook";
+  /** Label that triggers automatic dispatch. Issues without this label are imported but not auto-dispatched. */
+  foremanTag?: string;
 }
 
 /**
@@ -77,12 +79,42 @@ export class JiraTriggerHandler {
    * 6. Emit observability event
    */
   async handleTransition(context: TriggerContext): Promise<TriggerResult> {
-    const { issue, projectConfig, jiraProjectId, source } = context;
+    const { issue, projectConfig, jiraProjectId, source, foremanTag } = context;
     const externalId = `jira:${issue.key}`;
     const workflowName = this.mapWorkflow(issue, projectConfig);
     const projectId = this.resolveProjectId();
-
-    // Check uniqueness — skip if already triggered (REQ-012)
+    // If foremanTag is configured, only dispatch if issue has the tag
+    // If foremanTag is not set/empty, dispatch all issues (backward compatible)
+    const issueLabels = (issue.fields as Record<string, unknown>).labels as string[] | undefined ?? [];
+    const shouldDispatch = !foremanTag || foremanTag.trim() === "" ||
+      issueLabels.some((label) => label === foremanTag || label === "foreman:dispatch");
+    if (!shouldDispatch) {
+      this.#emitEvent({
+        eventType: "jira:trigger",
+        timestamp: new Date().toISOString(),
+        source,
+        projectKey: projectConfig.key,
+        issueKey: issue.key,
+        issueSummary: issue.fields.summary,
+        issueType: issue.fields.issuetype.name,
+        currentStatus: issue.fields.status.name,
+        transition: { from: "", to: issue.fields.status.name },
+        workflowName,
+        taskId: undefined,
+        externalId,
+        triggered: false,
+        skipReason: undefined,
+      });
+      console.log(
+        `[JiraTriggerHandler] Skipped ${issue.key}: missing foremanTag "${foremanTag}"`,
+      );
+      return {
+        triggered: false,
+        reason: "no_foreman_tag",
+        workflowName,
+        externalId,
+      };
+    }
     if (await this.isAlreadyTriggered(externalId, projectId)) {
       this.#emitEvent({
         eventType: "jira:trigger",

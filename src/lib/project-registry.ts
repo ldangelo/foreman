@@ -74,6 +74,24 @@ export interface ProjectMetadata {
   /** Updated by sync(). Not required in input. */
   lastSyncAt?: string | null;
 }
+/**
+ * Jira Cloud instance configuration (partial updates).
+ */
+export interface JiraConfigUpdate {
+  apiUrl?: string;
+  email?: string;
+  apiToken?: string;
+  pollIntervalSeconds?: number;
+  webhookEnabled?: boolean;
+  webhookSecretEnvVar?: string;
+  projects?: Array<{
+    key: string;
+    startStatus: string[];
+    endStatus?: string[];
+    issueTypeWorkflowMap: Record<string, string>;
+    debounceWindowSeconds?: number;
+  }>;
+}
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -561,6 +579,79 @@ export class ProjectRegistry {
     this.invalidateCache();
 
     return updated;
+  }
+
+  /**
+   * Update Jira configuration for a project by persisting to project YAML.
+   *
+   * Reads the existing `~/.foreman/config.yaml` from the project directory,
+   * merges the Jira updates, and writes it back.
+   *
+   * @param projectIdOrName - The project ID or name
+   * @param jiraUpdate - Partial Jira config to merge
+   * @throws ProjectNotFoundError if project doesn't exist
+   */
+  async updateJiraConfig(
+    projectIdOrName: string,
+    jiraUpdate: JiraConfigUpdate
+  ): Promise<void> {
+    const record = await this.get(projectIdOrName);
+    if (!record) {
+      throw new ProjectNotFoundError(projectIdOrName);
+    }
+
+    const projectPath = record.path;
+
+    // Load existing config or create new
+    const { load } = await import("js-yaml");
+    const { existsSync, readFileSync, writeFileSync, mkdirSync } = await import("fs");
+    const configPath = join(projectPath, ".foreman", "config.yaml");
+    let config: Record<string, unknown> = {};
+
+    if (existsSync(configPath)) {
+      try {
+        const raw = readFileSync(configPath, "utf-8");
+        const parsed = load(raw);
+        if (parsed && typeof parsed === "object") {
+          config = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Start fresh if config is corrupt
+        config = {};
+      }
+    }
+
+    // Initialize issueTracker if not present
+    if (!config.issueTracker) {
+      config.issueTracker = { backend: "jira" as const, jira: {} };
+    }
+
+    // Get current jira config
+    const issueTracker = config.issueTracker as Record<string, unknown>;
+    const jiraConfig = (issueTracker.jira as Record<string, unknown>) ?? {};
+
+    // Merge jira updates
+    if (jiraUpdate.apiUrl !== undefined) jiraConfig.apiUrl = jiraUpdate.apiUrl;
+    if (jiraUpdate.email !== undefined) jiraConfig.email = jiraUpdate.email;
+    if (jiraUpdate.apiToken !== undefined) jiraConfig.apiToken = jiraUpdate.apiToken;
+    if (jiraUpdate.pollIntervalSeconds !== undefined) jiraConfig.pollIntervalSeconds = jiraUpdate.pollIntervalSeconds;
+    if (jiraUpdate.webhookEnabled !== undefined) jiraConfig.webhookEnabled = jiraUpdate.webhookEnabled;
+    if (jiraUpdate.webhookSecretEnvVar !== undefined) jiraConfig.webhookSecretEnvVar = jiraUpdate.webhookSecretEnvVar;
+
+    // Merge projects array
+    if (jiraUpdate.projects !== undefined) {
+      jiraConfig.projects = jiraUpdate.projects;
+    }
+
+    issueTracker.jira = jiraConfig;
+
+    // Ensure .foreman directory exists
+    const foremanDir = join(projectPath, ".foreman");
+    mkdirSync(foremanDir, { recursive: true });
+
+    // Write config back
+    const { dump } = await import("js-yaml");
+    writeFileSync(configPath, dump(config, { indent: 2 }), "utf-8");
   }
 
   /**

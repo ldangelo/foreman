@@ -580,12 +580,16 @@ export class Doctor {
       };
     }
     const { jira } = issueTracker;
-    const apiToken = process.env[jira.apiTokenEnvVar];
-    if (!apiToken) {
+    // Decrypt the API token
+    let apiToken: string;
+    try {
+      const { decrypt } = await import("../lib/encryption.js");
+      apiToken = await decrypt(jira.apiToken);
+    } catch (err) {
       return {
         name: "Jira",
         status: "fail",
-        message: `API token env var '${jira.apiTokenEnvVar}' not set`,
+        message: `Failed to decrypt API token: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
     try {

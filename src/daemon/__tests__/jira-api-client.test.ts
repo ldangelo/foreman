@@ -17,18 +17,17 @@ interface MockFetchResponse {
   url: string;
 }
 
-function createTestClient() {
-  return new JiraApiClient({
-    apiUrl: "https://test.atlassian.net",
-    email: "test@example.com",
-    apiToken: "test-token",
-    timeoutMs: 5000,
-  });
-}
-
 describe("JiraApiClient", () => {
   const mockFetch = vi.fn();
-
+  function createTestClient() {
+    return new JiraApiClient({
+      apiUrl: "https://test.atlassian.net",
+      email: "test@example.com",
+      apiToken: "test-token",
+      timeoutMs: 5000,
+      fetchFn: mockFetch,
+    });
+  }
   beforeEach(() => {
     vi.stubGlobal("fetch", mockFetch);
     mockFetch.mockReset();
@@ -112,12 +111,14 @@ describe("JiraApiClient", () => {
     it("returns issue by key", async () => {
       const mockIssue: JiraIssue = {
         key: "PROJ-123",
+        id: "12345",
         fields: {
           summary: "Test Issue",
           status: { name: "To Do" },
           issuetype: { name: "Bug" },
           project: { key: "PROJ" },
           updated: "2026-01-01",
+          created: "2026-01-01",
         },
       };
       mockResponse(mockIssue);
