@@ -1160,6 +1160,13 @@ export const dashboardCommand = new Command("dashboard")
       const key = chunk.toString();
       const tasks = needsHumanTasks;
 
+      // In raw mode Ctrl+C is delivered as a byte (ETX) instead of SIGINT.
+      // Treat it the same as SIGINT so the live dashboard detaches cleanly.
+      if (key === "\u0003" || key === "q" || key === "Q") {
+        onSigint();
+        return;
+      }
+
       if (key === "\u001B[A" || key === "k") {
         if (tasks.length > 0) {
           selectedTaskIndex = selectedTaskIndex <= 0 ? tasks.length - 1 : selectedTaskIndex - 1;
