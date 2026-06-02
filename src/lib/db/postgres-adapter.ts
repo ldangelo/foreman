@@ -568,9 +568,9 @@ export class PostgresAdapter {
       `INSERT INTO tasks (
          id, project_id, title, description, type, priority, status,
          external_id, branch, created_at, updated_at, approved_at, closed_at,
-         external_repo, github_issue_number, github_milestone, sync_enabled
+         external_repo, github_issue_number, github_milestone, sync_enabled, labels
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING *`,
       [
         id,
@@ -598,6 +598,7 @@ export class PostgresAdapter {
         (taskData.sync_enabled as boolean | undefined) ??
           (taskData.syncEnabled as boolean | undefined) ??
           false,
+        (taskData.labels as string[] | null | undefined) ?? null,
       ],
     );
     return rows[0];
@@ -2088,6 +2089,7 @@ export class PostgresAdapter {
       description?: string | null;
       state?: "open" | "closed";
       labels?: string[];
+      type?: string;
       milestone?: string | null;
       syncEnabled?: boolean;
       lastSyncAt?: string;
@@ -2112,6 +2114,10 @@ export class PostgresAdapter {
       setParts.push("labels = $" + i++ + "::text[]");
       params.push(updates.labels);
     }
+    if (updates.type !== undefined) {
+      setParts.push("type = $" + i++);
+      params.push(updates.type);
+    }
     if (updates.milestone !== undefined) {
       setParts.push("github_milestone = $" + i++);
       params.push(updates.milestone);
@@ -2128,7 +2134,7 @@ export class PostgresAdapter {
       return null;
     }
     setParts.push("updated_at = now()");
-    params.push(projectId, taskId);
+    params.push(taskId, projectId);
     const sql = "UPDATE tasks SET " + setParts.join(", ") + " WHERE id = $" + i + " AND project_id = $" + (i + 1) + " RETURNING *";
     const rows = await query<TaskRow>(sql, params);
     return rows[0] ?? null;

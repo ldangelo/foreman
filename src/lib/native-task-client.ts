@@ -57,7 +57,7 @@ export class NativeTaskClient implements ITaskClient {
       created_at: row.created_at,
       updated_at: row.updated_at,
       description: row.description,
-      labels: [`project:${this.projectPath}`],
+      labels: [`project:${this.projectPath}`, ...(row.labels ?? [])],
     });
   }
 
@@ -202,7 +202,7 @@ export class NativeTaskClient implements ITaskClient {
         status: row.status,
         description: row.description ?? null,
         notes: null,
-        labels: [`project:${this.projectPath}`],
+        labels: [`project:${this.projectPath}`, ...(row.labels ?? [])],
       }));
     }
 
