@@ -93,13 +93,14 @@ interface ProjectStats {
   };
 }
 
-interface DaemonRunSummary {
+export interface DaemonRunSummary {
   id: string;
-  bead_id: string;
+  seed_id?: string;
+  bead_id?: string;
   status: string;
-  branch: string;
-  started_at: string | null;
-  queued_at: string;
+  branch?: string | null;
+  started_at?: string | null;
+  queued_at?: string;
   created_at: string;
 }
 
@@ -147,10 +148,12 @@ export async function fetchDaemonStatusSnapshot(projectPath: string): Promise<Da
   }
 }
 
-function renderDaemonRunCard(run: DaemonRunSummary): string {
+export function renderDaemonRunCard(run: DaemonRunSummary): string {
   const since = run.started_at ?? run.queued_at ?? run.created_at;
   const time = since ? elapsed(since) : "—";
-  return `${chalk.dim("▶")} ${chalk.cyan.bold(run.bead_id)} ${chalk.yellow(run.status.toUpperCase())} ${chalk.dim(time)}  ${chalk.dim(run.branch)}`;
+  const taskId = run.seed_id ?? run.bead_id ?? run.id;
+  const branch = run.branch ?? (taskId !== run.id ? `foreman/${taskId}` : "—");
+  return `${chalk.dim("▶")} ${chalk.cyan.bold(taskId)} ${chalk.yellow(run.status.toUpperCase())} ${chalk.dim(time)}  ${chalk.dim(branch)}`;
 }
 
 /**

@@ -10,6 +10,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
 import { ForemanStore } from "../../lib/store.js";
+import { renderDaemonRunCard } from "../commands/status.js";
 
 const CLI = path.resolve(__dirname, "../../cli/index.ts");
 
@@ -38,6 +39,24 @@ async function run(
     },
   });
 }
+
+describe("daemon status rendering", () => {
+  it("renders active runs returned by the Postgres adapter", () => {
+    const line = renderDaemonRunCard({
+      id: "run-1",
+      seed_id: "foreman-b91dc",
+      status: "running",
+      branch: "foreman/foreman-b91dc",
+      started_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    });
+
+    expect(line).toContain("foreman-b91dc");
+    expect(line).toContain("RUNNING");
+    expect(line).toContain("foreman/foreman-b91dc");
+    expect(line).not.toContain("undefined");
+  });
+});
 
 describe("foreman status --project flag", () => {
   const tempDirs: string[] = [];

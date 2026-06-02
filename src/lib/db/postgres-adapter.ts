@@ -58,6 +58,7 @@ export interface RunRow {
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
+  branch: string | null;
   status: string;
   started_at: string | null;
   completed_at: string | null;
@@ -215,6 +216,7 @@ function runRowSelectSql(): string {
       COALESCE(agent_type, 'claude-code') AS agent_type,
       session_key,
       worktree_path,
+      branch,
       status,
       started_at,
       finished_at AS completed_at,
