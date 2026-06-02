@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { initProjectStore } from "../commands/init.js";
+import { buildInitWizardConfig, initProjectStore } from "../commands/init.js";
 
 type InitProjectStore = Parameters<typeof initProjectStore>[2];
 
@@ -12,6 +12,27 @@ function makeStore(overrides: Record<string, unknown> = {}) {
     ...overrides,
   } as InitProjectStore;
 }
+
+describe("init wizard config", () => {
+  it("renders selected VCS backend and workflow template", () => {
+    expect(
+      buildInitWizardConfig({
+        vcsBackend: "jujutsu",
+        issueTracker: "github",
+        workflowTemplate: "parallel-review",
+        authenticate: false,
+      }),
+    ).toContain("backend: jujutsu");
+    expect(
+      buildInitWizardConfig({
+        vcsBackend: "jujutsu",
+        issueTracker: "github",
+        workflowTemplate: "parallel-review",
+        authenticate: false,
+      }),
+    ).toContain("workflow: parallel-review");
+  });
+});
 
 describe("initProjectStore — sentinel seeding", () => {
   beforeEach(() => {
