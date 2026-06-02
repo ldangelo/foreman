@@ -237,6 +237,7 @@ export interface NativeTask {
   run_id: string | null;
   branch: string | null;
   external_id: string | null;
+  labels?: string[] | null;
   created_at: string;
   updated_at: string;
   approved_at: string | null;

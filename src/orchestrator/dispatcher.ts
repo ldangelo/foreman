@@ -136,6 +136,7 @@ export function nativeTaskToIssue(task: NativeTask): Issue {
     created_at: task.created_at,
     updated_at: task.updated_at,
     description: task.description ?? undefined,
+    labels: task.labels ?? undefined,
     githubIssueNumber,
   };
 }
@@ -666,7 +667,7 @@ export class Dispatcher {
       // Feature beads are organizational containers — never dispatch agents for
       // them. Instead, check if all children are closed and auto-close the
       // container bead when they are.
-      if (seed.type === "feature") {
+      if (seed.type === "feature" && !usingNativeStore) {
         try {
           const detail = await this.seeds.show(seed.id);
           // br show --json returns `dependents` (the tasks this container blocks), not `children`.

@@ -342,6 +342,43 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
+  it("native feature task dispatches instead of being treated as a container", async () => {
+    const featureIssue = {
+      id: "feat-native",
+      title: "feature feat-native",
+      description: null,
+      type: "feature",
+      priority: 2,
+      status: "ready",
+      run_id: null,
+      branch: null,
+      external_id: "github:test/repo#1",
+      labels: ["feature", "github:feature"],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    const seedsClient = makeSeedsClient();
+    const store = {
+      ...makeStore(),
+      hasNativeTasks: vi.fn().mockReturnValue(true),
+      getReadyTasks: vi.fn().mockReturnValue([featureIssue]),
+      claimTask: vi.fn().mockReturnValue(true),
+    } as unknown as ForemanStore;
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].seedId).toBe("feat-native");
+    expect(result.skipped).toHaveLength(0);
+    expect(spawnSpy).toHaveBeenCalledOnce();
+  });
+
   it("epic with no actionable child tasks auto-closes", async () => {
     // Override getTaskOrder to return empty for this test
     const { getTaskOrder } = await import("../task-ordering.js");
