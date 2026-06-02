@@ -395,6 +395,26 @@ async onRunCompleted(runId: string, success: boolean): Promise<void> {
 
 ---
 
+## GitHub Issues
+
+| ID | Issue | GitHub |
+|----|-------|--------|
+| 001 | Lifecycle Hooks | [#179](https://github.com/ldangelo/foreman/issues/179) |
+| 002 | Reconciliation | [#180](https://github.com/ldangelo/foreman/issues/180) |
+| 003 | Stall Detection | [#181](https://github.com/ldangelo/foreman/issues/181) |
+| 004 | Structured Output | [#182](https://github.com/ldangelo/foreman/issues/182) |
+| 005 | Dynamic Command Expansion | [#183](https://github.com/ldangelo/foreman/issues/183) |
+| 006 | Per-State Concurrency | [#184](https://github.com/ldangelo/foreman/issues/184) |
+| 007 | Dynamic Config Reload | [#185](https://github.com/ldangelo/foreman/issues/185) |
+| 008 | Init Wizard | [#186](https://github.com/ldangelo/foreman/issues/186) |
+| 009 | Startup Cleanup | [#187](https://github.com/ldangelo/foreman/issues/187) |
+| 010 | Structured Logging | [#188](https://github.com/ldangelo/foreman/issues/188) |
+| 011 | Container Sandboxing | [#189](https://github.com/ldangelo/foreman/issues/189) |
+| 012 | Stream Event Callbacks | [#190](https://github.com/ldangelo/foreman/issues/190) |
+| 013 | Continuation Retry | [#191](https://github.com/ldangelo/foreman/issues/191) |
+
+---
+
 ## Priority Summary
 
 | ID | Item | Impact | Effort | Priority |
@@ -420,3 +440,4 @@ async onRunCompleted(runId: string, success: boolean): Promise<void> {
 | Date | Change |
 |------|--------|
 | 2026-06-02 | Initial backlog created from Symphony and Sandcastle gap analyses |
+| 2026-06-02 | Added GitHub issues #179-#191 for all backlog items |
