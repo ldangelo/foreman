@@ -995,19 +995,20 @@ async function runPrWaitBuiltinPhase(args: {
 
   while (true) {
     const status = summarizePrWaitStatus(lastSnapshot);
+    if (status.mergeConflict) break;
     if (status.checksTerminal && status.codeRabbitSeen) break;
     if (Date.now() - startedAt >= timeoutMs) {
       timedOut = true;
       break;
     }
-    args.log(`[PR-WAIT] Waiting for PR #${prNumber}: checksTerminal=${String(status.checksTerminal)} codeRabbitSeen=${String(status.codeRabbitSeen)}`);
+    args.log(`[PR-WAIT] Waiting for PR #${prNumber}: checksTerminal=${String(status.checksTerminal)} codeRabbitSeen=${String(status.codeRabbitSeen)} mergeConflict=${String(status.mergeConflict)}`);
     await sleep(Math.min(pollIntervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt))));
     lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   }
 
   await writePrWaitReport(args.config.worktreePath, lastSnapshot, timedOut);
   const finalStatus = summarizePrWaitStatus(lastSnapshot);
-  const success = finalStatus.checksTerminal && finalStatus.codeRabbitSeen;
+  const success = finalStatus.checksTerminal && finalStatus.codeRabbitSeen && !finalStatus.mergeConflict;
   return {
     success,
     costUsd: 0,
@@ -1016,10 +1017,12 @@ async function runPrWaitBuiltinPhase(args: {
     tokensOut: 0,
     error: success
       ? undefined
-      : finalStatus.checksTerminal
-        ? "CodeRabbit review was not observed before timeout"
-        : "PR checks did not reach a terminal state before timeout",
-    outputText: `checksTerminal=${String(finalStatus.checksTerminal)} codeRabbitSeen=${String(finalStatus.codeRabbitSeen)} timedOut=${String(timedOut)}`,
+      : finalStatus.mergeConflict
+        ? `PR has merge conflicts: ${finalStatus.mergeConflictReason ?? "unknown"}`
+        : finalStatus.checksTerminal
+          ? "CodeRabbit review was not observed before timeout"
+          : "PR checks did not reach a terminal state before timeout",
+    outputText: `checksTerminal=${String(finalStatus.checksTerminal)} codeRabbitSeen=${String(finalStatus.codeRabbitSeen)} mergeConflict=${String(finalStatus.mergeConflict)} timedOut=${String(timedOut)}`,
   };
 }
 
