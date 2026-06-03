@@ -153,6 +153,17 @@ export const PIPELINE_LIMITS = {
   /** Minutes of inactivity before a running agent is considered stuck */
   stuckDetectionMinutes: envInt("FOREMAN_STUCK_DETECTION_MINUTES", 15),
   /**
+   * Milliseconds of inactivity (no tool-call progress) before a running agent
+   * is considered stalled and its run is marked as stuck.
+   *
+   * Uses RunProgress.lastActivity as the activity signal — updated on every
+   * tool call during a session. Distinct from stuckDetectionMinutes which
+   * measures total elapsed time from run start.
+   *
+   * Default: 5 minutes. Override via FOREMAN_STALL_TIMEOUT_MS.
+   */
+  stallTimeoutMs: envInt("FOREMAN_STALL_TIMEOUT_MS", 5 * 60 * 1000),
+  /**
    * Number of consecutive empty poll cycles (no tasks dispatched, no active agents)
    * before the dispatch loop exits gracefully in watch mode.
    *

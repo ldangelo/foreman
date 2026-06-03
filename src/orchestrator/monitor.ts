@@ -254,6 +254,61 @@ export class Monitor {
   }
 
   /**
+   * Detect and terminate agent sessions that have been idle for too long.
+   *
+   * A run is considered stalled when `RunProgress.lastActivity` (the most recent
+   * tool-call timestamp) is older than `stallTimeoutMs` (default 5 minutes).
+   * Unlike `detectHungSessions` which targets API-level hangs, this catches any
+   * prolonged inactivity — including agent loops, empty turns, or silent crashes.
+   *
+   * Stalled runs are marked as `stuck` in the store and logged with reason `stall`.
+   * The dispatcher loop's existing backoff logic handles retry scheduling when it
+   * re-dispatches the pending run.
+   */
+  async checkForStalls(opts?: {
+    stallTimeoutMs?: number;
+    projectId?: string;
+  }): Promise<{ stalled: string[]; checked: number }> {
+    const threshold = opts?.stallTimeoutMs ?? PIPELINE_LIMITS.stallTimeoutMs;
+    const activeRuns = await this.store.getActiveRuns(opts?.projectId);
+    const now = Date.now();
+    const stalled: string[] = [];
+
+    for (const run of activeRuns) {
+      const currentRun = this.store.getRun ? await this.store.getRun(run.id) : run;
+      if (isTerminalSuccessStatus(currentRun?.status)) continue;
+
+      // Only check runs that are actually running
+      if (run.status !== "running") continue;
+
+      const progress = await this.store.getRunProgress(run.id);
+      if (!progress?.lastActivity) continue;
+
+      const lastActivityMs = new Date(progress.lastActivity).getTime();
+      const staleMs = now - lastActivityMs;
+
+      if (staleMs > threshold) {
+        stalled.push(run.id);
+
+        await this.store.updateRun(run.id, { status: "stuck" });
+        await this.store.logEvent(
+          run.project_id,
+          "stuck",
+          {
+            seedId: run.seed_id,
+            reason: "stall",
+            lastActivity: progress.lastActivity,
+            staleMs,
+          },
+          run.id,
+        );
+      }
+    }
+
+    return { stalled, checked: activeRuns.length };
+  }
+
+  /**
    * Attempt to recover a stuck run by killing the worktree and re-creating it.
    * Returns true if recovered (re-queued as pending), false if max retries exceeded.
    */

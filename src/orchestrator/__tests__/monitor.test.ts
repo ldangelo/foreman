@@ -14,7 +14,8 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     started_at: new Date().toISOString(),
     completed_at: null,
     created_at: new Date().toISOString(),
-    progress: null,    ...overrides,
+    progress: null,
+    ...overrides,
   };
 }
 
@@ -139,6 +140,93 @@ describe("Monitor", () => {
 
       expect(result).toBe(false);
       expect(store.updateRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ status: "failed" }));
+    });
+  });
+
+  describe("checkForStalls", () => {
+    it("does not mark a run as stalled when lastActivity is recent", async () => {
+      const { store, monitor } = makeMocks();
+      const recentActivity = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
+      const run = makeRun();
+      store.getActiveRuns.mockReturnValue([run]);
+      store.getRunProgress.mockResolvedValue({ lastActivity: recentActivity } as any);
+
+      const result = await monitor.checkForStalls({ stallTimeoutMs: 5 * 60 * 1000 });
+
+      expect(result.stalled).toHaveLength(0);
+      expect(store.updateRun).not.toHaveBeenCalled();
+    });
+
+    it("marks a run as stalled when lastActivity exceeds threshold", async () => {
+      const { store, monitor } = makeMocks();
+      const staleActivity = new Date(Date.now() - 6 * 60 * 1000).toISOString(); // 6 min ago
+      const run = makeRun();
+      store.getActiveRuns.mockReturnValue([run]);
+      store.getRunProgress.mockResolvedValue({ lastActivity: staleActivity } as any);
+
+      const result = await monitor.checkForStalls({ stallTimeoutMs: 5 * 60 * 1000 });
+
+      expect(result.stalled).toHaveLength(1);
+      expect(store.updateRun).toHaveBeenCalledWith(run.id, { status: "stuck" });
+      expect(store.logEvent).toHaveBeenCalledWith(
+        run.project_id,
+        "stuck",
+        expect.objectContaining({ reason: "stall", seedId: run.seed_id }),
+        run.id,
+      );
+    });
+
+    it("handles multiple stalled runs", async () => {
+      const { store, monitor } = makeMocks();
+      const staleActivity = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const run1 = makeRun({ id: "run-1", seed_id: "seed-1" });
+      const run2 = makeRun({ id: "run-2", seed_id: "seed-2" });
+      store.getActiveRuns.mockReturnValue([run1, run2]);
+      store.getRunProgress.mockResolvedValue({ lastActivity: staleActivity } as any);
+
+      const result = await monitor.checkForStalls({ stallTimeoutMs: 5 * 60 * 1000 });
+
+      expect(result.stalled).toHaveLength(2);
+      expect(store.updateRun).toHaveBeenCalledTimes(2);
+    });
+
+    it("skips runs with no progress data", async () => {
+      const { store, monitor } = makeMocks();
+      const run = makeRun();
+      store.getActiveRuns.mockReturnValue([run]);
+      store.getRunProgress.mockResolvedValue(null);
+
+      const result = await monitor.checkForStalls({ stallTimeoutMs: 5 * 60 * 1000 });
+
+      expect(result.stalled).toHaveLength(0);
+      expect(store.updateRun).not.toHaveBeenCalled();
+    });
+
+    it("skips non-running runs", async () => {
+      const { store, monitor } = makeMocks();
+      const staleActivity = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const run = makeRun({ id: "run-pending", status: "pending" });
+      store.getActiveRuns.mockReturnValue([run]);
+      store.getRunProgress.mockResolvedValue({ lastActivity: staleActivity } as any);
+
+      const result = await monitor.checkForStalls({ stallTimeoutMs: 5 * 60 * 1000 });
+
+      expect(result.stalled).toHaveLength(0);
+      expect(store.updateRun).not.toHaveBeenCalled();
+    });
+
+    it("skips runs that are already in a terminal success state", async () => {
+      const { store, monitor } = makeMocks();
+      const staleActivity = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const run = makeRun({ id: "run-merged", status: "merged" });
+      store.getActiveRuns.mockReturnValue([run]);
+      store.getRun.mockResolvedValueOnce({ ...run, status: "merged" });
+      store.getRunProgress.mockResolvedValue({ lastActivity: staleActivity } as any);
+
+      const result = await monitor.checkForStalls({ stallTimeoutMs: 5 * 60 * 1000 });
+
+      expect(result.stalled).toHaveLength(0);
+      expect(store.updateRun).not.toHaveBeenCalled();
     });
   });
 
