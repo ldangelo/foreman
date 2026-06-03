@@ -995,7 +995,7 @@ export class Dispatcher {
           projectId,
           beadId: seed.id,
           repoPath: this.projectPath,
-          baseBranch,
+          baseBranch: baseBranch ?? defaultBranch,
         });
         const worktreePath = worktreeInfo.path;
         const branchName = worktreeInfo.branchName;
