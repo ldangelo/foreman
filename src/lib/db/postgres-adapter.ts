@@ -63,6 +63,7 @@ export interface RunRow {
   started_at: string | null;
   completed_at: string | null;
   base_branch: string | null;
+  merge_strategy: "auto" | "pr" | "none" | null;
   created_at: string;
   progress: string | null;
 }
@@ -1111,7 +1112,9 @@ export class PostgresAdapter {
          started_at,
          finished_at AS completed_at,
          created_at,
-         CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress`,
+         CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress,
+         base_branch,
+         merge_strategy`,
       [
         projectId,
         seedId,
@@ -1121,7 +1124,7 @@ export class PostgresAdapter {
         options?.sessionKey ?? null,
         options?.worktreePath ?? null,
         options?.baseBranch ?? null,
-        options?.mergeStrategy ?? null,
+        options?.mergeStrategy ?? "auto",
       ],
     );
     return rows[0];
@@ -1170,7 +1173,7 @@ export class PostgresAdapter {
   async updateRun(
     projectId: string,
     runId: string,
-    updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at" | "base_branch">>
+    updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at" | "base_branch" | "merge_strategy">>
   ): Promise<void> {
     const setClauses: string[] = ["updated_at = now()"];
     const params: unknown[] = [];
@@ -1202,6 +1205,10 @@ export class PostgresAdapter {
     if (updates.base_branch !== undefined) {
       setClauses.push(`base_branch = $${i++}`);
       params.push(updates.base_branch);
+    }
+    if (updates.merge_strategy !== undefined) {
+      setClauses.push(`merge_strategy = $${i++}`);
+      params.push(updates.merge_strategy);
     }
     params.push(runId, projectId);
     await execute(
