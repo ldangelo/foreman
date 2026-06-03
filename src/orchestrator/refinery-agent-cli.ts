@@ -5,7 +5,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { ForemanStore } from "../lib/store.js";
 import { PostgresStore } from "../lib/postgres-store.js";
 import { MergeQueue } from "./merge-queue.js";
@@ -13,8 +13,9 @@ import { PostgresMergeQueue } from "./postgres-merge-queue.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RefineryAgentConfig } from "./refinery-agent.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath } from "../cli/commands/project-task-support.js";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 
-const DEFAULT_LOG_DIR = "docs/reports";
+const DEFAULT_LOG_DIR = getForemanHomePath("logs", "refinery");
 
 interface CliOptions {
   daemon: boolean;
@@ -61,7 +62,7 @@ OPTIONS
   --once, -o            Process queue once and exit
   --poll-interval MS    Poll interval in milliseconds (default: 60000)
   --max-fix-iterations N  Max fix attempts per entry (default: 2)
-  --log-dir PATH        Directory for agent logs (default: docs/reports)
+  --log-dir PATH        Directory for agent logs (default: ~/.foreman/logs/refinery)
   --help, -h            Show this help message
 
 EXAMPLES
@@ -115,7 +116,7 @@ export async function runRefineCli(args: string[]): Promise<number> {
   const agentConfig: Partial<RefineryAgentConfig> = {
     pollIntervalMs: opts.pollInterval,
     maxFixIterations: opts.maxFixIterations,
-    logDir: join(projectPath, opts.logDir),
+    logDir: isAbsolute(opts.logDir) ? opts.logDir : join(projectPath, opts.logDir),
     projectPath,
   };
 
