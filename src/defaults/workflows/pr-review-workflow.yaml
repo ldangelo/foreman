@@ -1,0 +1,125 @@
+# PR Review Workflow: develop → finalize → create-pr → pr-wait → prepare-pr-review → pr-review
+#
+# Full pipeline for PRs that require explicit review before merge.
+# The develop phase makes the change.
+# The finalize phase commits and pushes the branch.
+# Then create-pr creates the GitHub PR.
+# Then pr-wait waits for CI checks / CodeRabbit.
+# Then prepare-pr-review and pr-review perform the actual PR review.
+# Refinery merges after pr-review PASS.
+#
+# Auto-selected when bead type is "pr-review" or when workflow:pr-review label is set.
+
+name: pr-review-workflow
+merge: pr
+onError: stop
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+rebaseAfterPhase: develop
+
+phases:
+  # ── Phase 1: develop ────────────────────────────────────────────────────
+  - name: develop
+    prompt: developer.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: DEVELOPER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 300
+
+  # ── Phase 2: finalize ───────────────────────────────────────────────────
+  # Quick validation: verify build/typecheck, then commit and push.
+  # Does NOT auto-merge — merge strategy is controlled by `merge: pr`.
+  - name: finalize
+    prompt: finalize.md
+    models:
+      default: haiku
+    maxTurns: 15
+    artifact: FINALIZE_VALIDATION.md
+    verdict: true
+    retryWith: develop
+    retryOnFail: 1
+    mail:
+      onStart: false
+      onComplete: true
+
+  # ── Phase 3: create-pr ───────────────────────────────────────────────────
+  # Read the pushed branch info from finalize artifact and create GitHub PR.
+  # Writes PR_METADATA.json with PR URL, branch name, base branch, etc.
+  - name: create-pr
+    prompt: create-pr.md
+    models:
+      default: haiku
+      P0: sonnet
+    maxTurns: 10
+    artifact: PR_METADATA.json
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 4: pr-wait ────────────────────────────────────────────────────
+  # Wait for PR checks / CodeRabbit activity or timeout.
+  # Polls GitHub API for check run statuses.
+  # Writes PR_WAIT_REPORT.md summarizing wait status.
+  - name: pr-wait
+    prompt: pr-wait.md
+    models:
+      default: haiku
+    maxTurns: 20
+    artifact: PR_WAIT_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 5: prepare-pr-review ──────────────────────────────────────────
+  # Inspect the PR diff, CodeRabbit output, and check run results.
+  # Prepare review findings and write PR_REVIEW_FINDINGS.md.
+  - name: prepare-pr-review
+    prompt: prepare-pr-review.md
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 30
+    artifact: PR_REVIEW_FINDINGS.md
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Phase 6: pr-review ──────────────────────────────────────────────────
+  # Perform the actual PR review. Write PR_REVIEW_REPORT.md with Verdict PASS or FAIL.
+  # merge: pr means refinery merges via `gh pr merge` after this phase completes.
+  - name: pr-review
+    prompt: pr-review.md
+    models:
+      default: sonnet
+      P0: opus
+    maxTurns: 30
+    artifact: PR_REVIEW_REPORT.md
+    verdict: true
+    retryWith: develop
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: develop
+      forwardArtifactTo: foreman
+
+onFailure:
+  name: troubleshooter
+  prompt: troubleshooter.md
+  models:
+    default: MiniMax
+    P0: MiniMax-highspeed
+  maxTurns: 20
+  artifact: TROUBLESHOOT_REPORT.md
