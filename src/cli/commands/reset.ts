@@ -711,14 +711,14 @@ export const resetCommand = new Command("reset")
       const registered = opts.project
         ? (await listRegisteredProjects()).find((record) => record.id === opts.project || record.name === opts.project)
         : (await listRegisteredProjects()).find((record) => record.path === projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
       const { taskClient, backendType } = await createTaskClient(projectPath, {
         registeredProjectId: registered?.id,
       });
       const seeds: IShowUpdateClient = taskClient;
       const store = ForemanStore.forProject(projectPath);
-      if (registered) {
-        ensureCliPostgresPool(projectPath);
-      }
       const helperStore: ResetRunStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalResetRunStore(store);
       const project = store.getProjectByPath(projectPath);
       const runtimeProjectId = registered?.id ?? project?.id;
