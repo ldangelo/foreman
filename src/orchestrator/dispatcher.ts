@@ -2057,7 +2057,7 @@ export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnRes
  * Build a clean env record (string values only) for worker config.
  * Removes CLAUDECODE to allow nested Claude sessions.
  */
-function buildWorkerEnv(
+export function buildWorkerEnv(
   telemetry: boolean | undefined,
   seedId: string,
   runId: string,
@@ -2075,6 +2075,7 @@ function buildWorkerEnv(
   const home = process.env.HOME ?? "/home/nobody";
   env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
   env.TSX_DISABLE_IPC = "1";
+  env.PI_PERMISSION_LEVEL = process.env.FOREMAN_PI_PERMISSION_LEVEL?.trim() || "bypassed";
   if (!env.DATABASE_URL) {
     const poolConfig = getPoolConfig();
     if (typeof poolConfig?.connectionString === "string") {

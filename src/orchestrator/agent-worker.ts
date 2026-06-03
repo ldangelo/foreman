@@ -160,14 +160,14 @@ function sendMailText(
   });
 }
 
-function compactTraceValue(value: string): string {
+function compactTraceValue(value: string, maxLength = 160): string {
   let compact = value
     .replace(/\/Users\/ldangelo\/Development\/Fortium\/\.foreman-worktrees\/foreman\/foreman-[^/\s]+/g, "<worktree>")
     .replace(/\/Users\/ldangelo\/Development\/Fortium\/foreman/g, "<repo>")
     .replace(/\s+/g, " ")
     .trim();
-  if (compact.length > 160) {
-    compact = `${compact.slice(0, 157)}…`;
+  if (compact.length > maxLength) {
+    compact = `${compact.slice(0, Math.max(1, maxLength - 1))}…`;
   }
   return compact;
 }
@@ -189,7 +189,7 @@ function buildTraceMailPayload(event: {
     kind: event.kind,
     message: compactTraceValue(event.message),
     tool: event.toolName,
-    argsPreview: event.argsPreview ? compactTraceValue(event.argsPreview) : undefined,
+    argsPreview: event.argsPreview ? compactTraceValue(event.argsPreview, 2000) : undefined,
     traceFile: event.traceFile,
     traceMarkdownFile: event.traceMarkdownFile,
     commandHonored: event.commandHonored,

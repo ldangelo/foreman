@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
+import { emitKeypressEvents } from "node:readline";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import chalk from "chalk";
@@ -293,6 +294,69 @@ export function renderLiveStatusHeader(counts: StatusCounts): string {
   return parts.join("  ");
 }
 
+function createStatusDetachController(message: string): {
+  isDetached: () => boolean;
+  wait: () => Promise<void>;
+  cleanup: () => void;
+} {
+  let detached = false;
+  const listeners: Array<() => void> = [];
+  const waiters = new Set<() => void>();
+  const wasRaw = process.stdin.isTTY && "isRaw" in process.stdin ? Boolean(process.stdin.isRaw) : false;
+
+  const detach = () => {
+    if (detached) return;
+    detached = true;
+    process.stdout.write("\x1b[?25h\n");
+    console.log(chalk.dim(message));
+    for (const resolveWaiter of waiters) resolveWaiter();
+    waiters.clear();
+  };
+
+  const onSigint = () => detach();
+  process.on("SIGINT", onSigint);
+  listeners.push(() => process.removeListener("SIGINT", onSigint));
+
+  if (process.stdin.isTTY) {
+    emitKeypressEvents(process.stdin);
+    if (typeof process.stdin.setRawMode === "function") {
+      try { process.stdin.setRawMode(true); } catch { /* ignore */ }
+    }
+    process.stdin.resume();
+
+    const onKeypress = (_str: string, key: { name?: string; ctrl?: boolean; sequence?: string }) => {
+      if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q" || key.sequence === "\u0003") {
+        detach();
+      }
+    };
+    process.stdin.on("keypress", onKeypress);
+    listeners.push(() => process.stdin.off("keypress", onKeypress));
+  }
+
+  return {
+    isDetached: () => detached,
+    wait: () => detached
+      ? Promise.resolve()
+      : new Promise<void>((resolveWaiter) => { waiters.add(resolveWaiter); }),
+    cleanup: () => {
+      for (const remove of listeners.splice(0)) remove();
+      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+        try { process.stdin.setRawMode(wasRaw); } catch { /* ignore */ }
+      }
+      if (!wasRaw && process.stdin.isTTY) {
+        try { process.stdin.pause(); } catch { /* ignore */ }
+      }
+    },
+  };
+}
+
+function sleepOrDetach(ms: number, detach: { wait: () => Promise<void> }): Promise<void> {
+  return Promise.race([
+    new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms)),
+    detach.wait(),
+  ]);
+}
+
 export const statusCommand = new Command("status")
   .description("Show project status from native tasks or beads_rust (br) for legacy compatibility")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
@@ -431,20 +495,11 @@ export const statusCommand = new Command("status")
       const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 3;
       const seconds = Number.isFinite(interval) && interval > 0 ? interval : 3;
 
-      let detached = false;
-      const onSigint = () => {
-        if (detached) return;
-        detached = true;
-        process.stdout.write("\x1b[?25h\n");
-        console.log(chalk.dim("  Detached — agents continue in background."));
-        console.log(chalk.dim("  Check status: foreman status"));
-        process.exit(0);
-      };
-      process.on("SIGINT", onSigint);
+      const detach = createStatusDetachController("  Detached — agents continue in background. Check status: foreman status");
       process.stdout.write("\x1b[?25l"); // hide cursor
 
       try {
-        while (!detached) {
+        while (!detach.isDetached()) {
           let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
           try {
             counts = await fetchStatusCounts(projectPath);
@@ -471,11 +526,11 @@ export const statusCommand = new Command("status")
           const combined = dashLines.join("\n");
 
           process.stdout.write("\x1B[2J\x1B[H" + combined + "\n");
-          await new Promise<void>((r) => setTimeout(r, seconds * 1000));
+          await sleepOrDetach(seconds * 1000, detach);
         }
       } finally {
         process.stdout.write("\x1b[?25h");
-        process.removeListener("SIGINT", onSigint);
+        detach.cleanup();
       }
       return;
     }
@@ -484,20 +539,21 @@ export const statusCommand = new Command("status")
       const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 10;
       const seconds = Number.isFinite(interval) && interval > 0 ? interval : 10;
 
-      // Keep process alive and handle Ctrl+C gracefully
-      process.on("SIGINT", () => {
-        process.stdout.write("\x1b[?25h"); // restore cursor
-        process.exit(0);
-      });
+      const detach = createStatusDetachController("  Stopped watching. Agents continue in background.");
 
       process.stdout.write("\x1b[?25l"); // hide cursor
-      while (true) {
+      try {
+        while (!detach.isDetached()) {
         // Clear screen and move cursor to top
         process.stdout.write("\x1b[2J\x1b[H");
         console.log(chalk.bold("Project Status") + chalk.dim(`  (watching every ${seconds}s — Ctrl+C to stop)\n`));
         await renderStatus(projectPath);
         console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
-        await new Promise((r) => setTimeout(r, seconds * 1000));
+          await sleepOrDetach(seconds * 1000, detach);
+        }
+      } finally {
+        process.stdout.write("\x1b[?25h");
+        detach.cleanup();
       }
     } else {
       console.log(chalk.bold("Project Status\n"));
