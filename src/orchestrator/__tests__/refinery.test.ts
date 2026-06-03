@@ -6,6 +6,7 @@ const {
   mockPostgresGetRun,
   mockPostgresListTasks,
   mockPostgresUpdateTask,
+  mockPostgresUpdateTaskStatusForRun,
   mockPostgresUpdateRun,
   mockPostgresLogEvent,
   MockPostgresAdapter,
@@ -13,12 +14,14 @@ const {
   const mockPostgresGetRun = vi.fn().mockResolvedValue(null);
   const mockPostgresListTasks = vi.fn().mockResolvedValue([]);
   const mockPostgresUpdateTask = vi.fn().mockResolvedValue(undefined);
+  const mockPostgresUpdateTaskStatusForRun = vi.fn().mockResolvedValue(undefined);
   const mockPostgresUpdateRun = vi.fn().mockResolvedValue(undefined);
   const mockPostgresLogEvent = vi.fn().mockResolvedValue(undefined);
   const MockPostgresAdapter = vi.fn(function (this: Record<string, unknown>) {
     this.getRun = mockPostgresGetRun;
     this.listTasks = mockPostgresListTasks;
     this.updateTask = mockPostgresUpdateTask;
+    this.updateTaskStatusForRun = mockPostgresUpdateTaskStatusForRun;
     this.updateRun = mockPostgresUpdateRun;
     this.logEvent = mockPostgresLogEvent;
   });
@@ -26,6 +29,7 @@ const {
     mockPostgresGetRun,
     mockPostgresListTasks,
     mockPostgresUpdateTask,
+    mockPostgresUpdateTaskStatusForRun,
     mockPostgresUpdateRun,
     mockPostgresLogEvent,
     MockPostgresAdapter,
@@ -505,6 +509,7 @@ describe("Refinery.mergeCompleted()", () => {
     vi.clearAllMocks();
     mockPostgresListTasks.mockResolvedValue([]);
     mockPostgresUpdateTask.mockResolvedValue(undefined);
+    mockPostgresUpdateTaskStatusForRun.mockResolvedValue(undefined);
     // Default execFile mock for mergeCompleted tests:
     // - git log returns a non-empty commit list so the "no unique commits" guard passes.
     // - All other git/gh calls succeed with empty stdout.
@@ -956,6 +961,27 @@ describe("Refinery.mergeCompleted()", () => {
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
       expect.anything(), run.seed_id, expect.stringContaining("Merge failed"), "refinery",
     );
+  });
+
+  it("syncs registered native task status when merge marks run failed", async () => {
+    const { store, seeds, vcs } = makeMocks();
+    const run = makeRun({ id: "run-pg-fail", seed_id: "seed-pg-fail" });
+    const { refinery } = makeRegisteredRefinery(store, seeds, vcs, run);
+
+    (refinery as any).vcsBackend.mergeWithoutCommit = vi
+      .fn()
+      .mockRejectedValue(new Error("Unexpected git failure"));
+
+    const report = await refinery.mergeCompleted({
+      runId: run.id,
+      runTests: false,
+      projectId: "proj-1",
+      seedId: run.seed_id,
+    });
+
+    expect(report.unexpectedErrors).toHaveLength(1);
+    expect(mockPostgresUpdateRun).toHaveBeenCalledWith("proj-1", run.id, { status: "failed" });
+    expect(mockPostgresUpdateTaskStatusForRun).toHaveBeenCalledWith("proj-1", run.id, "failed");
   });
 
   it("retries a previously-failed seed: finds run in test-failed state when seedId is specified", async () => {

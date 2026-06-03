@@ -24,6 +24,14 @@ import { closeLinkedGithubIssue, linkPrToGithubIssue } from "../daemon/github-po
 
 const execFileAsync = promisify(execFile);
 
+const TERMINAL_TASK_STATUS_BY_REFINERY_RUN_STATUS: Partial<Record<Run["status"], "failed" | "stuck" | "conflict" | "merged">> = {
+  failed: "failed",
+  "test-failed": "failed",
+  stuck: "stuck",
+  conflict: "conflict",
+  merged: "merged",
+};
+
 type Awaitable<T> = T | Promise<T>;
 
 export interface RefineryRunLookup {
@@ -175,6 +183,12 @@ export class Refinery {
         }
 
         await this.postgresAdapter.updateRun(this.registeredProjectId, run.id, updates);
+        const linkedTaskStatus = nextStatus
+          ? TERMINAL_TASK_STATUS_BY_REFINERY_RUN_STATUS[nextStatus]
+          : undefined;
+        if (linkedTaskStatus && typeof this.postgresAdapter.updateTaskStatusForRun === "function") {
+          await this.postgresAdapter.updateTaskStatusForRun(this.registeredProjectId, run.id, linkedTaskStatus);
+        }
         return;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
