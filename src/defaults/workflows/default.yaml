@@ -97,6 +97,59 @@ phases:
       onComplete: true
       onFail: developer
 
+  # ── PR Review Gate ────────────────────────────────────────────────────────
+  # Explicit PR review workflow: create PR, wait for checks/CoderRabbit,
+  # prepare review findings, then AI review with verdict. Merge is gated on
+  # the pr-review verdict (PASS = merge, FAIL = stop).
+  #
+  # Artifact chain:
+  #   PR_METADATA.json → PR_WAIT_REPORT.md → PR_REVIEW_FINDINGS.md → PR_REVIEW_REPORT.md
+
+  - name: create-pr
+    prompt: create-pr.md
+    models:
+      default: MiniMax
+    maxTurns: 15
+    artifact: docs/reports/{task.id}/PR_METADATA.json
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-wait
+    prompt: pr-wait.md
+    models:
+      default: MiniMax
+    maxTurns: 40
+    artifact: docs/reports/{task.id}/PR_WAIT_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: prepare-pr-review
+    prompt: prepare-pr-review.md
+    models:
+      default: MiniMax
+    maxTurns: 20
+    artifact: docs/reports/{task.id}/PR_REVIEW_FINDINGS.md
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-review
+    prompt: pr-review.md
+    models:
+      default: MiniMax
+      P0: MiniMax
+    maxTurns: 30
+    artifact: docs/reports/{task.id}/PR_REVIEW_REPORT.md
+    verdict: true
+    retryWith: prepare-pr-review
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
 onFailure:
   name: troubleshooter
   prompt: troubleshooter.md

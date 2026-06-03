@@ -72,6 +72,12 @@ Foreman CLI / Dispatcher
 
 Dev ↔ QA retries up to 2x before proceeding to Review.
 
+After finalize, explicit PR review gates run before merge:
+- **create-pr** — creates GitHub PR via `gh pr create`
+- **pr-wait** — waits for CI checks / CodeRabbit review (or timeout)
+- **prepare-pr-review** — gathers diff and review context
+- **pr-review** — AI code review with PASS/FAIL verdict; merge is gated on PASS
+
 ## Dispatch Flow
 
 The following diagram shows the full lifecycle of a task from `foreman run` to merged branch (daemon is optional — shown if running):
