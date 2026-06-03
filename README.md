@@ -14,7 +14,7 @@ You already have AI coding agents. What you don't have is a way to run several o
 
 - **Work decomposition** — PRD → TRD → native tasks (PostgreSQL-backed via daemon, SQLite for standalone)
 - **Git isolation** — each agent gets its own worktree (zero conflicts during development)
-- **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
+- **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize (with optional explicit PR review gate: finalize → create-pr → pr-wait → prepare-pr-review → pr-review → refinery merge)
 - **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
 - **Persistent daemon** — ForemanDaemon optionally runs in background to serve tRPC over Unix socket + HTTP, sharing a Postgres pool across all CLI invocations
 - **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations; SQLite or Postgres-backed depending on daemon mode

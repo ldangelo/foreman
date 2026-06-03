@@ -26,6 +26,7 @@ Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to 
 - Beads for structured work tracking (dependency graph, atomic claiming)
 - Real-time dashboard with multi-project monitoring and drill-down
 - Client-ready via Ensemble
+- Explicit PR review gate: every PR goes through CodeRabbit analysis before merge
 
 ---
 
