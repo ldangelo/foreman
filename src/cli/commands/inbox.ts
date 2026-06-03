@@ -834,6 +834,11 @@ function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null 
   return seedRuns[0]?.id ?? null;
 }
 
+function getInboxStatusRuns(store: ForemanStore): ReturnType<ForemanStore["getRunsByStatuses"]> {
+  if (typeof store.getRunsByStatuses !== "function") return [];
+  return store.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+}
+
 // ── Events helper ───────────────────────────────────────────────────────────
 
 function fetchEventsFromStore(store: ForemanStore, limit: number): PipelineEvent[] {
@@ -948,7 +953,7 @@ export const inboxCommand = new Command("inbox")
 
         const summaryRuns = daemon
           ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-          : store!.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+          : getInboxStatusRuns(store!);
         const chronologicalMessages = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
         if (messages.length === 0) {
