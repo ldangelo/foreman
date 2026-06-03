@@ -289,6 +289,17 @@ phases:
     expect(testPhase?.bash).toBe("npm run test:unit");
   });
 
+  it("does not use Anthropic Haiku for bundled finalize phases", () => {
+    for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const finalizePhase = config.phases.find((p) => p.name === "finalize");
+      if (!finalizePhase) continue;
+
+      const model = resolvePhaseModel(finalizePhase, undefined, "minimax/MiniMax-M2.7");
+      expect(model, `${workflowName} finalize model`).not.toBe("anthropic/claude-haiku-4-5");
+    }
+  });
+
   it("throws WorkflowConfigError for unknown workflow with no bundled default", () => {
     expect(() => loadWorkflowConfig("nonexistent-workflow", tmpDir)).toThrow(WorkflowConfigError);
   });

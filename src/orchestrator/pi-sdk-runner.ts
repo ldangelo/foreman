@@ -225,6 +225,19 @@ export function getSandboxedPiResourcePaths(env: NodeJS.ProcessEnv = process.env
  * Creates an in-memory AgentSession, sends the prompt, listens for events
  * to track tool calls / turns / cost, and resolves with structured results.
  */
+export function getPiSdkEventError(event: AgentSessionEvent): string | undefined {
+  const eventRecord = event as Record<string, unknown>;
+  if (eventRecord.stopReason === "error") {
+    return typeof eventRecord.errorMessage === "string" && eventRecord.errorMessage
+      ? eventRecord.errorMessage
+      : "Pi SDK event stopped with error";
+  }
+  if (typeof eventRecord.errorMessage === "string" && eventRecord.errorMessage) {
+    return eventRecord.errorMessage;
+  }
+  return undefined;
+}
+
 export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   // Resolve model — getModel is strictly typed for known providers/IDs;
   // use type assertions for dynamic values from workflow YAML.
@@ -285,6 +298,12 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
 
     // Subscribe to events for tracking
     session.subscribe((event: AgentSessionEvent) => {
+      const eventError = getPiSdkEventError(event);
+      if (eventError) {
+        success = false;
+        errorMessage = eventError;
+      }
+
       switch (event.type) {
         case "turn_start":
           totalTurns++;

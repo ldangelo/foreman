@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getSandboxedPiResourcePaths, shouldSandboxPiExtensions } from "../pi-sdk-runner.js";
+import { getPiSdkEventError, getSandboxedPiResourcePaths, shouldSandboxPiExtensions } from "../pi-sdk-runner.js";
 
 const tmpDirs: string[] = [];
 
@@ -19,6 +19,23 @@ describe("shouldSandboxPiExtensions", () => {
 
   it("allows opting back into user Pi extensions", () => {
     expect(shouldSandboxPiExtensions({ FOREMAN_PI_EXTENSIONS: "user" })).toBe(false);
+  });
+});
+
+describe("getPiSdkEventError", () => {
+  it("treats SDK stopReason=error events as failures", () => {
+    expect(getPiSdkEventError({
+      type: "turn_end",
+      stopReason: "error",
+      errorMessage: "provider usage exhausted",
+    } as never)).toBe("provider usage exhausted");
+  });
+
+  it("treats SDK errorMessage-only events as failures", () => {
+    expect(getPiSdkEventError({
+      type: "message_end",
+      errorMessage: "provider failed",
+    } as never)).toBe("provider failed");
   });
 });
 
