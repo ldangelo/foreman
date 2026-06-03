@@ -47,6 +47,8 @@ export interface PrWaitStatus {
   pendingChecks: string[];
   failedChecks: FailedCheckFinding[];
   codeRabbitSeen: boolean;
+  mergeConflict: boolean;
+  mergeConflictReason?: string;
 }
 
 export interface GhComment {
@@ -102,11 +104,19 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
     // let prepare-pr-review/pr-review consume the findings instead of timing out.
     .filter((check) => !(codeRabbitSeen && isCodeRabbitCheck(check)))
     .map((check) => getCheckName(check));
+  const mergeable = snapshot.mergeable?.toUpperCase();
+  const mergeStateStatus = snapshot.mergeStateStatus?.toUpperCase();
+  const mergeConflict = mergeable === "CONFLICTING" || mergeStateStatus === "DIRTY";
+  const mergeConflictReason = mergeConflict
+    ? `mergeable=${snapshot.mergeable ?? "unknown"} mergeStateStatus=${snapshot.mergeStateStatus ?? "unknown"}`
+    : undefined;
   return {
     checksTerminal: pendingChecks.length === 0,
     pendingChecks,
     failedChecks: parseFailedChecks(snapshot.checks),
     codeRabbitSeen,
+    mergeConflict,
+    mergeConflictReason,
   };
 }
 
@@ -239,7 +249,11 @@ export function renderPrWaitReport(snapshot: PrWaitSnapshot, timedOut: boolean):
     `- Status: ${status.codeRabbitSeen ? "SEEN" : timedOut ? "TIMEOUT" : "PENDING"}`,
     `- Comments: ${snapshot.codeRabbitComments}`,
     ``,
-    `## Verdict: ${status.checksTerminal ? "PASS" : "FAIL"}`,
+    `## Mergeability`,
+    `- Status: ${status.mergeConflict ? "CONFLICT" : "OK"}`,
+    `- Reason: ${status.mergeConflictReason ?? "none"}`,
+    ``,
+    `## Verdict: ${status.checksTerminal && status.codeRabbitSeen && !status.mergeConflict ? "PASS" : "FAIL"}`,
   ];
   return lines.join("\n") + "\n";
 }

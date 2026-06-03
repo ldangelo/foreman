@@ -18,6 +18,7 @@ Your job is to review PR feedback after the branch has been pushed and a PR has 
 3. Fix only:
    - CodeRabbit recommendations with severity `critical`, `high`, or `medium`.
    - Failed checks/tests that are clearly caused by this PR.
+   - PR merge conflicts reported by GitHub (`mergeable=CONFLICTING` or `mergeStateStatus=DIRTY`) by rebasing/merging the PR branch with the base branch, resolving conflicts, validating, and pushing.
 4. Do not fix low/nit comments.
 5. Do not refactor unrelated code.
 6. If a failed check is unrelated, pre-existing, flaky, or unclear, report that and stop.
@@ -55,5 +56,5 @@ This phase may commit and push only fixes for blocking PR review findings or PR-
 ```
 
 Verdict rules:
-- PASS only when no critical/high/medium CodeRabbit finding remains and no PR-caused failed check remains.
-- FAIL when blocking findings remain, checks still fail due to this PR, or scope is UNKNOWN.
+- PASS only when no critical/high/medium CodeRabbit finding remains, no PR-caused failed check remains, and the PR is mergeable.
+- FAIL when blocking findings remain, checks still fail due to this PR, the PR still has merge conflicts, or scope is UNKNOWN.
