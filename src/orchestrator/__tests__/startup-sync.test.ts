@@ -4,7 +4,7 @@
  * Unit tests for syncBeadStatusOnStartup() in task-backend-ops.ts.
  *
  * Tests the startup reconciliation logic that syncs br seed status from
- * SQLite run status on foreman startup.
+ * Postgres run status on foreman startup.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

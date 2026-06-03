@@ -42,11 +42,11 @@
 
 ## 1. Executive Summary
 
-Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to Claude agents in isolated git worktrees, and merges results back. Today, agent execution relies on the Anthropic Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`), process spawning via tmux/detached processes, and a custom HTTP notification server for status updates. Inter-agent communication is limited to disk files (EXPLORER_REPORT.md, QA_REPORT.md, etc.) and an unused SQLite messages table.
+Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to Claude agents in isolated git worktrees, and merges results back. Today, agent execution relies on the Anthropic Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`), process spawning via tmux/detached processes, and a custom HTTP notification server for status updates. Inter-agent communication is limited to disk files (EXPLORER_REPORT.md, QA_REPORT.md, etc.) and an unused Postgres messages table.
 
 This PRD proposes migrating the agent runtime to **Pi** (`@mariozechner/pi-coding-agent`), a minimal extensible terminal coding agent with RPC control, 15+ model providers, and a composable extension system. The migration adds **Agent Mail** (`mcp_agent_mail`) for structured inter-agent messaging with file reservation leases, and introduces three custom Pi extensions (`foreman-tool-gate`, `foreman-budget`, `foreman-audit`) that enforce tool restrictions, budget limits, and audit logging at the Pi event level rather than through SDK parameters.
 
-The result is an architecture where Foreman remains the TypeScript orchestrator controlling Pi sessions via JSONL RPC, agents communicate through Agent Mail instead of polling SQLite, and a continuously-running Pi Merge Agent automates branch merging -- eliminating the manual `foreman merge` bottleneck.
+The result is an architecture where Foreman remains the TypeScript orchestrator controlling Pi sessions via JSONL RPC, agents communicate through Agent Mail instead of polling Postgres, and a continuously-running Pi Merge Agent automates branch merging -- eliminating the manual `foreman merge` bottleneck.
 
 A critical fallback requirement ensures that when Pi is not installed, Foreman degrades gracefully to the existing DetachedSpawnStrategy with zero behavior change.
 
@@ -62,7 +62,7 @@ The tmux dependency is particularly fragile. On macOS, tmux is not installed by 
 
 ### 2.2 Polling Latency
 
-The `NotificationServer` (port-bound HTTP server on loopback) and `NotificationBus` (EventEmitter) provide push notifications, but workers use fire-and-forget HTTP POSTs with a 500ms timeout. When the notification server is unreachable (e.g., `foreman run` has exited), workers fall back to SQLite-based polling via `store.updateRunProgress()` at the `PIPELINE_TIMEOUTS.progressFlushMs` interval (default 2 seconds, configurable). The `foreman status` and `foreman monitor` commands then poll SQLite at `PIPELINE_TIMEOUTS.monitorPollMs` (default 3 seconds).
+The `NotificationServer` (port-bound HTTP server on loopback) and `NotificationBus` (EventEmitter) provide push notifications, but workers use fire-and-forget HTTP POSTs with a 500ms timeout. When the notification server is unreachable (e.g., `foreman run` has exited), workers fall back to Postgres-based polling via `store.updateRunProgress()` at the `PIPELINE_TIMEOUTS.progressFlushMs` interval (default 2 seconds, configurable). The `foreman status` and `foreman monitor` commands then poll Postgres at `PIPELINE_TIMEOUTS.monitorPollMs` (default 3 seconds).
 
 This creates a minimum 2-5 second delay between an agent completing a phase and the orchestrator becoming aware of it. For the merge workflow, this compounds: branches sit idle until a human runs `foreman merge`.
 
@@ -103,7 +103,7 @@ The current architecture is locked to Anthropic models through `@anthropic-ai/cl
    - `foreman-budget`: hooks `turn_end` event, enforces hard turn and token limits per phase (replacing the SDK `maxBudgetUsd` parameter)
    - `foreman-audit`: hooks all events, streams structured audit trail to Agent Mail
 
-3. **Integrate Agent Mail** (`mcp_agent_mail`) for inter-agent messaging and file conflict prevention, replacing the unused SQLite messages table and supplementing disk-file communication.
+3. **Integrate Agent Mail** (`mcp_agent_mail`) for inter-agent messaging and file conflict prevention, replacing the unused Postgres messages table and supplementing disk-file communication.
 
 4. **Automate merge via Pi Merge Agent daemon** -- a continuously-running process that listens for "branch-ready" messages on Agent Mail and drives AI-powered conflict resolution, replacing manual `foreman merge` invocation.
 
@@ -115,7 +115,7 @@ The current architecture is locked to Anthropic models through `@anthropic-ai/cl
 
 - **Replacing Foreman's TypeScript codebase with Pi**: Foreman stays as the orchestrator. Pi is the agent runtime controlled by Foreman.
 - **Building a generic multi-agent framework**: This migration is Foreman-specific, not a reusable library.
-- **Removing SQLite as state store**: SQLite remains for durability (`ForemanStore`). Agent Mail supplements it for messaging and audit.
+- **Removing Postgres as state store**: Postgres remains for durability (`ForemanStore`). Agent Mail supplements it for messaging and audit.
 - **Supporting non-Pi agent runtimes beyond existing fallback**: The only alternative is the existing DetachedSpawnStrategy.
 - **Removing disk-file reports**: EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md continue to be written for backward compatibility. Agent Mail carries the same content as structured messages.
 - **Changing the pipeline phase sequence**: Explorer -> Developer <-> QA -> Reviewer -> Finalize remains unchanged.
@@ -171,8 +171,8 @@ Dispatcher.dispatch()
 | Phase prompts | `explorerPrompt()`, `developerPrompt()`, `qaPrompt()`, `reviewerPrompt()` | roles.ts | 273-318 |
 | Model selection | `ROLE_CONFIGS[role].model` with env var overrides | roles.ts | 125-201 |
 | Notifications | NotificationServer (HTTP) + NotificationBus (EventEmitter) | notification-server.ts, notification-bus.ts | all |
-| Progress tracking | RunProgress JSON in SQLite `runs.progress` column | store.ts | 72-85 |
-| Messages (unused) | SQLite `messages` table with send/receive/read methods | store.ts | 798-911 |
+| Progress tracking | RunProgress JSON in Postgres `runs.progress` column | store.ts | 72-85 |
+| Messages (unused) | Postgres `messages` table with send/receive/read methods | store.ts | 798-911 |
 | Merge | Refinery.mergeCompleted() -- manual invocation | refinery.ts | 366-583 |
 | Sentinel daemon | SentinelAgent with timer-based start/stop loop | sentinel.ts | 42-282 |
 
@@ -377,7 +377,7 @@ The dispatcher must detect whether the `pi` binary is available and fall back to
 - AC-002-1: Given Pi binary is NOT on PATH, when `spawnWorkerProcess()` is called, then `DetachedSpawnStrategy.spawn()` is used with identical behavior to the current implementation.
 - AC-002-2: Given Pi binary IS on PATH, when `spawnWorkerProcess()` is called, then `PiRpcSpawnStrategy.spawn()` is preferred over `TmuxSpawnStrategy` and `DetachedSpawnStrategy`.
 - AC-002-3: Given Pi binary is on PATH but PiRpcSpawnStrategy.spawn() fails, when the failure is detected, then Foreman falls back to `DetachedSpawnStrategy.spawn()` and logs a warning.
-- AC-002-4: Given the fallback to DetachedSpawnStrategy, when the agent completes, then all existing behavior (SQLite updates, notification POSTs, br operations) is preserved identically.
+- AC-002-4: Given the fallback to DetachedSpawnStrategy, when the agent completes, then all existing behavior (Postgres updates, notification POSTs, br operations) is preserved identically.
 
 ### REQ-003: foreman-tool-gate Pi Extension (P0)
 
@@ -476,7 +476,7 @@ Replace the custom NotificationServer/NotificationBus with Agent Mail for real-t
 
 - AC-012-1: Given a pipeline run in progress, when a phase completes, then a status update message is sent to Agent Mail (replacing the HTTP POST to NotificationServer).
 - AC-012-2: Given `foreman status` or `foreman monitor` running, when status updates arrive via Agent Mail, then the UI displays them in real time (replacing NotificationBus EventEmitter subscriptions).
-- AC-012-3: Given Agent Mail is unavailable, when status updates need to be communicated, then the existing SQLite polling fallback (`getRunProgress()`, `getActiveRuns()`) continues to work identically.
+- AC-012-3: Given Agent Mail is unavailable, when status updates need to be communicated, then the existing Postgres polling fallback (`getRunProgress()`, `getActiveRuns()`) continues to work identically.
 - AC-012-4: Given the migration, when `NotificationServer` and `NotificationBus` are deprecated, then they remain in the codebase (not deleted) for the fallback path, marked with `@deprecated` JSDoc tags.
 
 ---
@@ -497,7 +497,7 @@ Agent Mail server lifecycle must be managed by Foreman or run as an independent 
 
 - AC-014-1: Given `foreman init`, when the project is initialized, then the Agent Mail server configuration is stored in `.foreman/agent-mail.json` (port, persistence mode, git sync settings).
 - AC-014-2: Given `foreman run`, when agents are about to be dispatched, then Foreman verifies Agent Mail is reachable (health check on configured port) and logs a warning if not.
-- AC-014-3: Given Agent Mail server crashing, when Foreman detects the health check failure, then the pipeline continues using disk-file communication and SQLite updates (graceful degradation).
+- AC-014-3: Given Agent Mail server crashing, when Foreman detects the health check failure, then the pipeline continues using disk-file communication and Postgres updates (graceful degradation).
 
 ### REQ-015: Performance Requirements (P1)
 
@@ -588,7 +588,7 @@ Each pipeline phase must have a Pi-specific configuration that maps to the curre
 - `src/orchestrator/notification-bus.ts` -- mark `@deprecated`
 - `src/cli/commands/status.ts` -- add Agent Mail inbox polling option
 
-**Backward compatibility**: All Agent Mail sends are fire-and-forget. If Agent Mail is down, the pipeline continues using disk files and SQLite updates exactly as today.
+**Backward compatibility**: All Agent Mail sends are fire-and-forget. If Agent Mail is down, the pipeline continues using disk files and Postgres updates exactly as today.
 
 ### Phase 4: Pi Merge Agent Daemon (Week 7-8)
 
@@ -603,7 +603,7 @@ Each pipeline phase must have a Pi-specific configuration that maps to the curre
 - `src/orchestrator/refinery.ts` -- extract merge logic into reusable functions callable by daemon
 - `src/lib/store.ts` -- add `merge_agent_config` table (following sentinel_configs pattern)
 
-**Pattern**: Follows `SentinelAgent` (sentinel.ts) with timer-based loop, `start()`/`stop()`, and PID tracking in SQLite.
+**Pattern**: Follows `SentinelAgent` (sentinel.ts) with timer-based loop, `start()`/`stop()`, and PID tracking in Postgres.
 
 ---
 
@@ -659,7 +659,7 @@ Provide a CLI command to query and display the audit trail with full-text search
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | Pi RPC protocol changes | Medium | High | Pin Pi version in package.json; adapter layer wraps RPC calls |
-| Agent Mail server instability | Medium | Medium | Fire-and-forget messaging; full fallback to disk files + SQLite |
+| Agent Mail server instability | Medium | Medium | Fire-and-forget messaging; full fallback to disk files + Postgres |
 | Pi extension API breaking changes | Medium | High | Integration tests against pinned Pi version; vendor lock minimal |
 | Merge Agent creates race conditions with manual `foreman merge` | Low | High | File-based lock (`~/.foreman/merge.lock`); daemon yields to manual |
 | Pi not available in CI environments | High | Low | Fallback to DetachedSpawnStrategy is transparent |
@@ -733,7 +733,7 @@ Provide a CLI command to query and display the audit trail with full-text search
 | AC-011-5 | REQ-011 | Session reuse configurable | 2 |
 | AC-012-1 | REQ-012 | Phase completion via Agent Mail | 3 |
 | AC-012-2 | REQ-012 | Real-time status in foreman status/monitor | 3 |
-| AC-012-3 | REQ-012 | SQLite polling fallback preserved | 3 |
+| AC-012-3 | REQ-012 | Postgres polling fallback preserved | 3 |
 | AC-012-4 | REQ-012 | NotificationServer/Bus deprecated not deleted | 3 |
 | AC-013-1 | REQ-013 | Extension package builds from workspace | 1 |
 | AC-013-2 | REQ-013 | ESM output with strict TypeScript | 1 |
@@ -777,7 +777,7 @@ Provide a CLI command to query and display the audit trail with full-text search
 | Metric | Current Baseline | Target | Measurement |
 |--------|-----------------|--------|-------------|
 | Agent spawn reliability | ~85% (tmux failures on CI) | 99% (Pi RPC + fallback) | Ratio of successful spawns to dispatch attempts over 30 days |
-| Status update latency | 2-5s (SQLite polling) | <500ms (Agent Mail push) | P95 time from phase completion to UI visibility |
+| Status update latency | 2-5s (Postgres polling) | <500ms (Agent Mail push) | P95 time from phase completion to UI visibility |
 | Merge automation rate | 0% (manual only) | 80% of clean merges automated | Ratio of daemon-merged branches to total completed branches |
 | Audit coverage | 0% (no structured audit) | 100% of tool calls logged | Ratio of audited tool calls to total tool calls per run |
 | Mean time to merge | ~30 min (human dependency) | <5 min for T1/T2, <15 min for T3/T4 | Time from branch-ready to merged status |
@@ -813,7 +813,7 @@ Provide a CLI command to query and display the audit trail with full-text search
 | 4 | What is the Agent Mail message size limit? Explorer reports can be 10-50KB. | Engineering | Open |
 | 5 | Should the Pi Merge Agent use a dedicated model (e.g., Opus for complex conflict resolution) or inherit from phase config? | Product | Open |
 | 6 | How should the `ModelSelection` type be relaxed -- to `string` or to a union of known providers plus `string`? | Engineering | Open |
-| 7 | Should we remove the existing `messages` table from SQLite (store.ts) now that Agent Mail replaces it, or keep it for backward compatibility? | Engineering | Open |
+| 7 | Should we remove the existing `messages` table from Postgres (store.ts) now that Agent Mail replaces it, or keep it for backward compatibility? | Engineering | Open |
 | 8 | What is the Pi extension loading mechanism -- filesystem path, npm package, or inline configuration? | Engineering | **Closed (v1.1):** pi-mono ships example extensions that serve as the loading reference. The `foreman-pi-extensions` package extends these directly. |
 | 9 | Should Dev↔QA retry cycles use the Pi `fork` RPC command (branch from shared Explorer session) or spawn fresh Pi processes per phase? | Engineering | Open — `fork` is now confirmed available; tradeoff is context sharing vs. isolation. |
 | 10 | Which pi-mono sandbox variant should be used for CI (macOS uses `sandbox-exec`, Linux uses `bubblewrap`)? Does the `sandbox/index.ts` extension auto-detect, or does Foreman need to configure it? | Engineering | Open |

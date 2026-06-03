@@ -83,7 +83,7 @@ DATE/TIME          TICKET       FROM      TO        KIND    TOOL     ARGS
 - Existing `--full` output mode remains available for detailed inspection
 
 ### Non-Goals
-- Do NOT change message storage format (SQLite schema unchanged)
+- Do NOT change message storage format (Postgres schema unchanged)
 - Do NOT remove `--full` or existing flags
 - Do NOT add new filtering flags (scope: output format only)
 - Do NOT change `--watch` behavior (remains unchanged)
@@ -162,7 +162,7 @@ Add `--raw` flag for minimal processing (shows raw body, no JSON parsing):
 
 ### 6.2 Compatibility
 - Must work with existing `--agent`, `--run`, `--bead`, `--watch`, `--unread`, `--limit`, `--ack` flags
-- Must work in both SQLite-store mode and daemon/trpc-client mode
+- Must work in both Postgres-store mode and daemon/trpc-client mode
 
 ### 6.3 Output Width
 - Detect terminal width via `process.stdout.columns`

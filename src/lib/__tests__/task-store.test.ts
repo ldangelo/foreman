@@ -1,5 +1,5 @@
 /**
- * Tests for NativeTaskStore — the native SQLite task management back-end.
+ * Tests for NativeTaskStore — the native Postgres task management back-end.
  *
  * Covers:
  *   - create() — task creation with compact IDs, defaults, validation

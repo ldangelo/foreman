@@ -304,15 +304,6 @@ $(ls -la "$extract_dir" 2>/dev/null || echo '  (empty)')"
     fi
   fi
 
-  # ── Locate side-car native addon ───────────────────────────────────────────
-  local addon_src="${extract_dir}/better_sqlite3.node"
-  local has_addon=0
-  if [ -f "$addon_src" ]; then
-    has_addon=1
-  else
-    warn "better_sqlite3.node not found in archive — database features may not work."
-  fi
-
   # ── Determine install directory ────────────────────────────────────────────
   USE_SUDO=0
   local install_dir
@@ -332,7 +323,6 @@ $(ls -la "$extract_dir" 2>/dev/null || echo '  (empty)')"
 
   # ── Install binary ─────────────────────────────────────────────────────────
   local install_path="${install_dir}/${BINARY_NAME}"
-  local addon_dest="${install_dir}/better_sqlite3.node"
 
   info "Installing foreman to ${install_path}..."
 
@@ -341,15 +331,9 @@ $(ls -la "$extract_dir" 2>/dev/null || echo '  (empty)')"
   if [ "$USE_SUDO" -eq 1 ]; then
     sudo cp -f "$binary_src" "$install_path"
     sudo chmod +x "$install_path"
-    if [ "$has_addon" -eq 1 ]; then
-      sudo cp -f "$addon_src" "$addon_dest"
-    fi
   else
     cp -f "$binary_src" "$install_path"
     chmod +x "$install_path"
-    if [ "$has_addon" -eq 1 ]; then
-      cp -f "$addon_src" "$addon_dest"
-    fi
   fi
 
   # ── PATH check ────────────────────────────────────────────────────────────

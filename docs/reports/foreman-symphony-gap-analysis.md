@@ -20,7 +20,7 @@ Foreman and Symphony share the same high-level goal: orchestrating coding agents
 | VCS backend | Not specified | Git, Jujutsu |
 | Agent protocol | Codex app-server (JSON-RPC) | Foreman's own agent protocol |
 | Config format | WORKFLOW.md (Markdown + YAML) | YAML (.yaml files) |
-| State persistence | In-memory only | PostgreSQL/SQLite |
+| State persistence | In-memory only | PostgreSQL/Postgres |
 
 ## Detailed Gap Analysis
 

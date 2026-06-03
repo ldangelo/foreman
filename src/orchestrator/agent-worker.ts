@@ -4,7 +4,7 @@
  *
  * Spawned as a detached child process by the dispatcher. Survives parent exit.
  * Reads config from a JSON file passed as argv[2], runs the SDK query(),
- * and updates the SQLite store with progress/completion.
+ * and updates the Postgres store with progress/completion.
  *
  * Usage: tsx agent-worker.ts <config-file>
  */
@@ -36,7 +36,7 @@ import { writeMarkStuckEvent, writeMarkStuckProgress } from "./agent-worker-mark
 import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
-import type { AgentMailClient } from "../lib/sqlite-mail-client.js";
+import type { AgentMailClient } from "../lib/agent-mail-client.js";
 import { createProjectMailClient, resolveProjectDatabaseUrl } from "../lib/project-mail-client.js";
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
@@ -427,7 +427,7 @@ async function main(): Promise<void> {
   // Create notification client using FOREMAN_NOTIFY_URL (set in env above if provided by dispatcher)
   const notifyClient = new NotificationClient(process.env.FOREMAN_NOTIFY_URL);
 
-  // Create daemon-backed mail client when Postgres is available; fall back to SQLite mail otherwise.
+  // Create daemon-backed mail client when Postgres is available; fall back to Postgres mail otherwise.
   let agentMailClient: AnyMailClient | null = null;
   try {
     const mailClient = await createProjectMailClient(storeProjectPath);
@@ -1517,7 +1517,7 @@ async function markStuck(
   // For permanent failures, mark as 'failed' so the task is NOT auto-retried —
   // the operator must investigate and re-open it manually.
   // Enqueue via the bead write queue instead of calling br directly — the
-  // dispatcher drains the queue sequentially, preventing SQLite contention.
+  // dispatcher drains the queue sequentially, preventing Postgres contention.
   if (isRateLimit) {
     enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");
     log(`Enqueued reset-seed for ${seedId} (rate limited — will retry on next dispatch)`);
@@ -1528,7 +1528,7 @@ async function markStuck(
 
   // Add failure reason as a note on the bead for visibility.
   // This allows anyone looking at the bead to see why it failed without
-  // having to dig into log files or SQLite.
+  // having to dig into log files or Postgres.
   const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
   const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;
   enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");
@@ -1551,7 +1551,7 @@ function log(msg: string): void {
  *
  * When main() rejects (e.g. config parse failure, ForemanStore.forProject()
  * throws, or runPipeline() propagates an uncaught error), we attempt to:
- *   1. Update the run status to "failed" in SQLite so the run is not left stuck.
+ *   1. Update the run status to "failed" in Postgres so the run is not left stuck.
  *   2. Send an Agent Mail "worker-error" message to the "foreman" mailbox so
  *      the operator can see the error without having to grep log files.
  *
@@ -1567,7 +1567,7 @@ async function fatalHandler(err: unknown): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`[foreman-worker] Fatal: ${msg}`);
 
-  // Try to recover enough context to update SQLite + send Agent Mail.
+  // Try to recover enough context to update Postgres + send Agent Mail.
   const configPath = process.argv[2];
   if (!configPath) {
     process.exit(1);
@@ -1593,7 +1593,7 @@ async function fatalHandler(err: unknown): Promise<void> {
 
   if (runId && projectPath) {
     // Repair the fatal run status with the registered backend when available,
-    // falling back to local SQLite for unregistered projects.
+    // falling back to local Postgres for unregistered projects.
     try {
       await updateFatalRunStatus({
         runId,
@@ -1606,7 +1606,7 @@ async function fatalHandler(err: unknown): Promise<void> {
       console.error(`[foreman-worker] Could not update run status: ${storeMsg}`);
     }
 
-    // Send SQLite mail notification so the run record reflects the fatal error.
+    // Send Postgres mail notification so the run record reflects the fatal error.
     // agentMailClient is not in scope here — create a fresh one.
     if (seedId && runId) {
       try {
@@ -1623,7 +1623,7 @@ async function fatalHandler(err: unknown): Promise<void> {
           }),
         );
       } catch {
-        // Mail unavailable — SQLite update above is sufficient.
+        // Mail unavailable — Postgres update above is sufficient.
       }
     }
   }

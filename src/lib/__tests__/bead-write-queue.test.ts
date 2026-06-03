@@ -168,7 +168,7 @@ describe("ForemanStore.markBeadWriteProcessed()", () => {
 
     expect(store.markBeadWriteProcessed(entry.id)).toBe(true);
     // After already marking as processed, the rowid still exists but
-    // update affects 0 rows... actually wait, SQLite UPDATE returns 1 change
+    // update affects 0 rows... actually wait, Postgres UPDATE returns 1 change
     // even if value is the same. Let me check — actually the processed_at
     // already has a value, but the UPDATE still succeeds and changes = 1.
     // The function returns result.changes > 0 which will be true.

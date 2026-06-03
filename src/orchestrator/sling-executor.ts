@@ -1,7 +1,7 @@
 // ── Sling Executor ────────────────────────────────────────────────────────
 //
 // Native-write execution engine: creates task hierarchies in the Foreman
-// SQLite task store from a parsed SlingPlan.
+// Postgres task store from a parsed SlingPlan.
 
 import type {
   CreateTaskOptions,

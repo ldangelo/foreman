@@ -112,7 +112,7 @@ function makeBeadsIssue(id: string, priority = "P2"): Issue {
   };
 }
 
-/** Create a NativeTask row as returned from the SQLite tasks table */
+/** Create a NativeTask row as returned from the Postgres tasks table */
 function makeNativeTask(id: string, priority = 2): NativeTask {
   return {
     id,

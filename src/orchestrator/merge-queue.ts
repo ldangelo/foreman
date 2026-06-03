@@ -35,7 +35,7 @@ export interface MergeQueueEntry {
   last_attempted_at: string | null;
 }
 
-/** Raw row shape from SQLite (files_modified is a JSON string). */
+/** Raw row shape from Postgres (files_modified is a JSON string). */
 interface MergeQueueRow {
   id: number;
   branch_name: string;

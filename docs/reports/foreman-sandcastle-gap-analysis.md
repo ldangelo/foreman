@@ -30,7 +30,7 @@
 | Isolation | Docker/Podman containers | Git worktrees (same host) |
 | Issue tracking | GitHub Issues (template-driven) | Multi-tracker (Jira, GitHub, Beads) |
 | Agent workflow | One prompt per run | Multi-phase pipelines |
-| State | Ephemeral (per-run) | Persistent (PostgreSQL/SQLite) |
+| State | Ephemeral (per-run) | Persistent (PostgreSQL/Postgres) |
 | Retry | Manual via `resumeSession` | Automatic exponential backoff |
 
 ---
@@ -224,7 +224,7 @@ output: Output.object({
 - Log files under `.sandcastle/logs/`
 
 #### Foreman Approach
-- **Persistent daemon** with PostgreSQL/SQLite
+- **Persistent daemon** with PostgreSQL/Postgres
 - Track run history, retries, token usage
 - Bead state machine (queued → running → done)
 - Rate limit tracking

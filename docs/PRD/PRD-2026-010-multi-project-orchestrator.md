@@ -10,7 +10,7 @@
 **Readiness Score:** 4.5 (PASS — all ambiguities resolved)
 **Resolved Clarifications:** 7/7 (all items resolved via deep-interview)
 
-**Changelog v2.0:** Architectural pivot from adapter-pattern (CLI → DbAdapter → SqliteAdapter/PostgresAdapter) to API-first daemon (CLI → tRPC Client → ForemanDaemon → PostgresAdapter). SQLite removed from v1 scope. Migration-free onboarding replaces SQLite migration. tRPC daemon components added to architecture.
+**Changelog v2.0:** Architectural pivot from adapter-pattern (CLI → DbAdapter → PostgresAdapter/PostgresAdapter) to API-first daemon (CLI → tRPC Client → ForemanDaemon → PostgresAdapter). Postgres removed from v1 scope. Migration-free onboarding replaces Postgres migration. tRPC daemon components added to architecture.
 
 ---
 
@@ -37,12 +37,12 @@ Foreman today is a per-project, per-directory tool: each invocation operates on 
 PRD-2026-010 transforms Foreman into a **global multi-project orchestration platform** by introducing:
 
 1. **API-first daemon architecture** — Foreman runs as a persistent tRPC daemon (`foreman daemon start`) exposing all operations via type-safe tRPC procedures. CLI commands are thin wrappers over a tRPC client. No direct database access from CLI.
-2. **Postgres-backed task store** — the daemon connects directly to Postgres via a `PoolManager` + `PostgresAdapter`. SQLite is not used in v1. No `DbAdapter` interface, no SQLite adapter.
+2. **Postgres-backed task store** — the daemon connects directly to Postgres via a `PoolManager` + `PostgresAdapter`. Postgres is not used in v1. No `DbAdapter` interface, no Postgres adapter.
 3. **GitHub-native project registry** — projects added via GitHub URL, cloned to `~/.foreman/projects/<project-id>/`, tracked in `~/.foreman/projects.json`
 4. **Project-aware CLI** — `foreman inbox`, `status`, `board`, and all commands work across all projects from any directory via the tRPC client
 5. **Cross-project dispatch and dashboard** — unified view of all projects, tasks, and agents with a "needs human" triage surface
 
-**Architecture decision: API-first over adapter pattern.** The original PRD described a phased migration via a `DbAdapter` interface with `SqliteAdapter` + `PostgresAdapter` behind it. After adversarial review, that approach was replaced by a tRPC daemon architecture: the CLI never touches the database directly. Instead, all operations flow through the daemon's type-safe RPC layer. This eliminates the adapter interface maintenance burden, removes SQLite support entirely (simpler codebase), and provides a clean extension point for future capabilities (webhooks, dashboard polling, agent processes).
+**Architecture decision: API-first over adapter pattern.** The original PRD described a phased migration via a `DbAdapter` interface with `PostgresAdapter` + `PostgresAdapter` behind it. After adversarial review, that approach was replaced by a tRPC daemon architecture: the CLI never touches the database directly. Instead, all operations flow through the daemon's type-safe RPC layer. This eliminates the adapter interface maintenance burden, removes Postgres support entirely (simpler codebase), and provides a clean extension point for future capabilities (webhooks, dashboard polling, agent processes).
 
 **API Protocol: tRPC.** Chosen over REST or GraphQL for: (1) end-to-end TypeScript type safety — the tRPC router's types are inferred by the client without code generation; (2) existing codebase is TypeScript-first; (3) no OpenAPI spec or codegen step required.
 
@@ -68,13 +68,13 @@ There is no cross-project view of:
 - Tasks requiring human attention (conflicts, failures, pending approval)
 - Aggregate dispatch and merge queue state
 
-### 2.3 SQLite Doesn't Scale
+### 2.3 Postgres Doesn't Scale
 
-Current architecture uses `better-sqlite3` with a per-project database at `<project>/.foreman/foreman.db`. With 20 projects and 5 concurrent agents each, SQLite's single-writer model creates contention. Concurrent dashboard reads block active agents and vice versa.
+Current architecture uses `pg` with a per-project database at `<project>/.foreman/foreman.db`. With 20 projects and 5 concurrent agents each, Postgres's single-writer model creates contention. Concurrent dashboard reads block active agents and vice versa.
 
 ### 2.4 Existing PRD-2026-006 Scope
 
-PRD-2026-006 described native task tracking, a project registry, and cross-project dispatch against the existing SQLite architecture. This PRD v2 retains those requirements and adds the GitHub-native project model, Postgres backing store, and migration path.
+PRD-2026-006 described native task tracking, a project registry, and cross-project dispatch against the existing Postgres architecture. This PRD v2 retains those requirements and adds the GitHub-native project model, Postgres backing store, and migration path.
 
 ---
 
@@ -83,17 +83,17 @@ PRD-2026-006 described native task tracking, a project registry, and cross-proje
 ### 3.1 Goals
 
 1. **API-first daemon architecture** — `foreman daemon start` runs a persistent tRPC server on a Unix socket; all CLI commands route through tRPC client to the daemon; no direct database access from CLI
-2. **Postgres multi-tenant store** — daemon connects to Postgres via `PoolManager` + `PostgresAdapter`; SQLite is not used in v1
+2. **Postgres multi-tenant store** — daemon connects to Postgres via `PoolManager` + `PostgresAdapter`; Postgres is not used in v1
 3. **GitHub URL project addition** — `foreman project add <github-url>` clones the repo to `~/.foreman/projects/<project-id>/` using authenticated GitHub access
 4. **Global project registry** — `~/.foreman/projects.json` maps project names to cloned paths and GitHub metadata
 5. **Project-aware CLI** — all commands (`inbox`, `status`, `board`, `run`, `reset`, `retry`, etc.) operate on all registered projects or a specified project without requiring `cd`
 6. **Unified dashboard** — cross-project TUI aggregating task and agent state via tRPC queries with a "needs human" priority panel
 7. **Cross-project dispatch** — `foreman run` dispatches tasks from any registered project; `projectId` is required in multi-project mode
-8. **Migration-free onboarding** — fresh Foreman installs start with Postgres directly; no SQLite data migration path in v1
+8. **Migration-free onboarding** — fresh Foreman installs start with Postgres directly; no Postgres data migration path in v1
 
 ### 3.2 Non-Goals
 
-1. **SQLite support** — no `DbAdapter` interface, no `SqliteAdapter`, no `ForemanStore` refactoring. The daemon talks directly to Postgres via `PostgresAdapter`.
+1. **Postgres support** — no `DbAdapter` interface, no `PostgresAdapter`, no `ForemanStore` refactoring. The daemon talks directly to Postgres via `PostgresAdapter`.
 2. **Offline operation** — Foreman requires Postgres and GitHub connectivity; no local repo cache for offline work
 3. **Custom workflow YAML changes** — pipeline phases unchanged; only project-aware dispatch is new
 4. **Multi-user / team collaboration** — single-operator; no access control or concurrency features
@@ -227,7 +227,7 @@ CREATE INDEX idx_events_project_run   ON events  (project_id, run_id);
 - **PoolManager**: Singleton inside daemon. Created once on daemon startup. Default 20 connections; configurable.
 - **Pool size**: Default 20; configured via `DATABASE_URL` or `~/.foreman/config.yaml`.
 - **Project isolation**: All queries include `WHERE project_id = $1`; Postgres row-level security deferred to v2.
-- **No SQLite in v1.** `ForemanStore`, `DbAdapter`, `SqliteAdapter` are not part of the v1 architecture. Existing code using `ForemanStore` will be migrated to tRPC procedure calls.
+- **No Postgres in v1.** `ForemanStore`, `DbAdapter`, `PostgresAdapter` are not part of the v1 architecture. Existing code using `ForemanStore` will be migrated to tRPC procedure calls.
 
 ---
 
@@ -432,7 +432,7 @@ All Foreman commands that operate on tasks, runs, or agents shall accept a `--pr
 **Acceptance Criteria:**
 - AC-011.1: `foreman inbox --project <name>` shows mail filtered to that project. `foreman inbox --all` shows mail from all registered projects with a `PROJECT` column.
 - AC-011.2: `foreman inbox --watch --all` streams mail in real-time across all projects with project name prefixed to each line: `[<project-id>] <message>`.
-- AC-011.3: Mail is stored in the Postgres `messages` table keyed by `project_id`. The existing mail schema is preserved; only the storage backend changes from per-project SQLite to shared Postgres.
+- AC-011.3: Mail is stored in the Postgres `messages` table keyed by `project_id`. The existing mail schema is preserved; only the storage backend changes from per-project Postgres to shared Postgres.
 
 ---
 
@@ -597,14 +597,14 @@ Foreman shall degrade gracefully when Postgres is temporarily unavailable.
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 **Complexity:** Low
-**Risk:** [RISK: Existing users with SQLite data must be supported — data is not migrated automatically]
+**Risk:** [RISK: Existing users with Postgres data must be supported — data is not migrated automatically]
 
-Foreman v1 starts fresh with Postgres. Existing users with per-project `.foreman/foreman.db` SQLite files are not automatically migrated. The daemon does not read SQLite files.
+Foreman v1 starts fresh with Postgres. Existing users with per-project `.foreman/foreman.db` Postgres files are not automatically migrated. The daemon does not read Postgres files.
 
 **Acceptance Criteria:**
 - AC-024.1: Fresh Foreman installs initialize directly with Postgres. `foreman daemon start` runs migrations to create all required tables.
-- AC-024.2: `foreman project add <github-url>` registers a project and stores its data in Postgres. No SQLite file is created for registered projects.
-- AC-024.3: Existing users with SQLite data in per-project `.foreman/foreman.db` files are not affected by v1 installation — the old SQLite data remains accessible if they do not upgrade. If they choose to upgrade, `foreman task import --from-beads --project <name>` imports beads data from the project's clone directory.
+- AC-024.2: `foreman project add <github-url>` registers a project and stores its data in Postgres. No Postgres file is created for registered projects.
+- AC-024.3: Existing users with Postgres data in per-project `.foreman/foreman.db` files are not affected by v1 installation — the old Postgres data remains accessible if they do not upgrade. If they choose to upgrade, `foreman task import --from-beads --project <name>` imports beads data from the project's clone directory.
 - AC-024.4: `foreman run --bead <id>` without `--project` works in single-project mode (one project registered) and fails in multi-project mode (2+ projects registered) with: `"Multiple projects registered. Use --project <name> to specify the target project."`
 
 ---
@@ -705,7 +705,7 @@ Before presenting to the operator, I identified the following issues:
 3. **Webhook deployment** — REQ-003 describes the webhook but doesn't specify how to expose it (reverse proxy, ngrok, cloud LB). [→ Recommend: defer webhook deployment model]
 
 **Contradictions:**
-4. **Backward compat vs. multi-project mode** — REQ-024 says SQLite is not removed in v1, but REQ-014 says multi-project mode requires Postgres. Can a project be registered in the registry but still use its local SQLite? [→ Recommend: Projects in the registry use Postgres; local-only projects (not in registry) use SQLite]
+4. **Backward compat vs. multi-project mode** — REQ-024 says Postgres is not removed in v1, but REQ-014 says multi-project mode requires Postgres. Can a project be registered in the registry but still use its local Postgres? [→ Recommend: Projects in the registry use Postgres; local-only projects (not in registry) use Postgres]
 
 **Ambiguity:**
 5. **Dashboard as separate binary or flag?** — unclear from requirements.
@@ -715,7 +715,7 @@ Before presenting to the operator, I identified the following issues:
 **Missing edge cases:**
 8. **Project rename** — if a GitHub repo is renamed, should Foreman auto-update the project ID? [→ Recommend: `foreman project rename <old> <new>` explicit command]
 9. **Concurrent project add** — two `foreman project add` for the same URL simultaneously. [→ Recommend: DB unique constraint on `github_url` handles this]
-10. **Partial migration failure** — if SQLite → Postgres migration fails mid-way. [→ Recommend: transaction per table, idempotent re-run]
+10. **Partial migration failure** — if Postgres → Postgres migration fails mid-way. [→ Recommend: transaction per table, idempotent re-run]
 
 ---
 
@@ -807,9 +807,9 @@ All ambiguities resolved. PRD is ready for TRD creation.
 
 ---
 
-## Appendix A: PostgreSQL vs. SQLite Feature Comparison
+## Appendix A: PostgreSQL vs. Postgres Feature Comparison
 
-| Dimension | SQLite | Postgres |
+| Dimension | Postgres | Postgres |
 |-----------|--------|----------|
 | Connection model | Single writer, multiple readers | Connection pool (configurable size) |
 | Concurrent writers | Serialized (busy_timeout) | Parallel (MVCC) |
@@ -829,11 +829,11 @@ All ambiguities resolved. PRD is ready for TRD creation.
 
 | Dimension | v1 Architecture (tRPC Daemon) | v1 Architecture (Adapter Pattern, superseded) |
 |-----------|-------------------------------|---------------------------------------------|
-| Database | Postgres only via `PostgresAdapter` | SqliteAdapter + PostgresAdapter via `DbAdapter` |
-| CLI ↔ DB | tRPC client → daemon → PostgresAdapter | Direct `ForemanStore` calls (SQLite) |
+| Database | Postgres only via `PostgresAdapter` | PostgresAdapter + PostgresAdapter via `DbAdapter` |
+| CLI ↔ DB | tRPC client → daemon → PostgresAdapter | Direct `ForemanStore` calls (Postgres) |
 | New pool | `PoolManager` singleton in daemon | `PoolManager` singleton, shared across processes |
-| SQLite support | None (removed) | Kept for backward compat |
-| Migration path | None (fresh install) | SQLite → Postgres migration tool |
+| Postgres support | None (removed) | Kept for backward compat |
+| Migration path | None (fresh install) | Postgres → Postgres migration tool |
 | Complexity | Lower (one adapter, one path) | Higher (two adapters, interface maintenance) |
 | Extension point | tRPC procedures (easy to add) | Adapter method on interface |
 
@@ -842,4 +842,4 @@ All ambiguities resolved. PRD is ready for TRD creation.
 1. **Simpler codebase.** No `DbAdapter` interface to maintain (50+ methods). No dual-adapter burden.
 2. **Cleaner extension.** Adding a webhook handler, a dashboard polling endpoint, or agent process communication is a new tRPC procedure — no interface change required.
 3. **Process isolation.** The daemon can be restarted independently of the CLI. Long-running agent processes connect to the same daemon.
-4. **No SQLite.** Removes `better-sqlite3` from the dependency tree for new installations.
+4. **No Postgres.** Removes `pg` from the dependency tree for new installations.

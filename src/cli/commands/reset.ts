@@ -1002,7 +1002,7 @@ export const resetCommand = new Command("reset")
       }
 
       // 6b. Clean up orphaned worktrees — directories in .foreman-worktrees/ that either have
-      //     no SQLite run record OR only have completed/merged runs (finalize should remove them
+      //     no Postgres run record OR only have completed/merged runs (finalize should remove them
       //     but sometimes fails to do so)
       if (!dryRun) {
         const worktreesDir = getWorkspaceRoot(projectPath);

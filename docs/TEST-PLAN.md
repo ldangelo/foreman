@@ -6,7 +6,7 @@
 
 | Layer | Files | Tests | Coverage |
 |-------|-------|-------|----------|
-| Store (SQLite) | `store.ts` | 15 ✅ | Good |
+| Store (Postgres) | `store.ts` | 15 ✅ | Good |
 | Everything else | 20 files | 0 | ❌ None |
 
 ## Test Strategy
@@ -186,7 +186,7 @@ foreman run --dry-run
 
 # 5. Run (single agent, Pi for speed)
 foreman run --max-agents 1 --runtime pi
-# Verify: Worktree created, agent process started, run in SQLite
+# Verify: Worktree created, agent process started, run in Postgres
 
 # 6. Monitor
 foreman monitor
@@ -226,7 +226,7 @@ foreman plan "Build a simple todo API with CRUD endpoints"
 # - 4 planning tasks created (create-prd, refine-prd, create-trd, refine-trd)
 # - Each step executes sequentially
 # - PRD.md and TRD.md created in docs/
-# - All steps tracked in SQLite
+# - All steps tracked in Postgres
 # - foreman status shows completed planning tasks
 ```
 

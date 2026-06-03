@@ -108,7 +108,7 @@
       "argsPreview": "{\"limit\":80,\"path\":\"/Users/ldangelo/Development/Fortium/.foreman-worktrees/foreman/foreman-93880/src/cli/commands/dashboard.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"import { Command } from \\\"commander\\\";\\nimport chalk from \\\"chalk\\\";\\nimport { existsSync } from \\\"node:fs\\\";\\nimport { join } from \\\"node:path\\\";\\nimport type Database from \\\"better-sqlite3\\\";\\nimport {\\…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"import { Command } from \\\"commander\\\";\\nimport chalk from \\\"chalk\\\";\\nimport { existsSync } from \\\"node:fs\\\";\\nimport { join } from \\\"node:path\\\";\\nimport type Database from \\\"pg\\\";\\nimport {\\…",
       "completedAt": "2026-04-21T00:03:26.396Z"
     },
     {
@@ -118,7 +118,7 @@
       "argsPreview": "{\"limit\":100,\"path\":\"/Users/ldangelo/Development/Fortium/.foreman-worktrees/foreman/foreman-93880/src/cli/commands/task.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman task` CLI commands — manage native tasks in the Foreman SQLite store.\\n *\\n * Sub-commands:\\n *   foreman task create --title <text> [--description <text>] [--type <type>]\\n *            …",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman task` CLI commands — manage native tasks in the Foreman Postgres store.\\n *\\n * Sub-commands:\\n *   foreman task create --title <text> [--description <text>] [--type <type>]\\n *            …",
       "completedAt": "2026-04-21T00:03:29.724Z"
     },
     {
@@ -285,7 +285,7 @@
       "toolCallId": "call_function_dj6kp10w8z2x_1",
       "toolName": "edit",
       "startedAt": "2026-04-21T00:05:28.413Z",
-      "argsPreview": "{\"newText\":\"## Task Tracking\\n\\nForeman uses **native tasks** stored in the SQLite store (`.foreman/foreman.db`). Tasks are created, tracked, and closed entirely within Foreman.\\n\\n```bash\\n# Native task lifecycle\\nforeman task create \\\"Im…",
+      "argsPreview": "{\"newText\":\"## Task Tracking\\n\\nForeman uses **native tasks** stored in the Postgres store (`.foreman/foreman.db`). Tasks are created, tracked, and closed entirely within Foreman.\\n\\n```bash\\n# Native task lifecycle\\nforeman task create \\\"Im…",
       "updateCount": 0,
       "isError": false,
       "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"Successfully replaced text in /Users/ldangelo/Development/Fortium/.foreman-worktrees/foreman/foreman-93880/README.md.\"}],\"details\":{\"diff\":\"     ...\\n 532 ```\\n 533 \\n 534 ## Task Tracking\\n 535 \\n-536 Fo…",

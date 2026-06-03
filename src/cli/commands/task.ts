@@ -55,7 +55,7 @@ interface RunActivityInfo {
  * Fetch live run activity information for a task.
  * 
  * For registered projects (daemon-backed): uses tRPC to query the Postgres store
- * via the Foreman daemon's Unix socket. Falls back to SQLite for unregistered projects.
+ * via the Foreman daemon's Unix socket. Falls back to Postgres for unregistered projects.
  */
 async function fetchRunActivity(
   projectPath: string,
@@ -104,11 +104,11 @@ async function fetchRunActivity(
         completedAt: run.finished_at ?? null,
       };
     } catch {
-      // Daemon unavailable or run not found — fall through to SQLite
+      // Daemon unavailable or run not found — fall through to Postgres
     }
   }
 
-  // Fallback: use SQLite store (for unregistered projects or daemon unavailability)
+  // Fallback: use Postgres store (for unregistered projects or daemon unavailability)
   const store = ForemanStore.forProject(projectPath);
   try {
     const run = store.getRun(runId);
@@ -1083,7 +1083,7 @@ const showCommand = new Command("show")
       }
 
       // ── Live Run Activity Section ─────────────────────────────────────────
-      // Fetch current run state from the SQLite store (mirrors dashboard data)
+      // Fetch current run state from the Postgres store (mirrors dashboard data)
       // Only shown for tasks with an active run_id to avoid unnecessary DB access
       if (task.run_id) {
         const activity = await fetchRunActivity(projectPath, task.run_id);

@@ -1,5 +1,5 @@
 /**
- * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.
+ * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.
  *
  * Options:
  *   --agent <name>   Filter to a specific agent/role (default: show all)
@@ -793,7 +793,7 @@ function fetchEventsFromStoreForRun(store: ForemanStore, runId: string, limit: n
 export { formatMessage };
 
 export const inboxCommand = new Command("inbox")
-  .description("View the SQLite message inbox for agents in a pipeline run")
+  .description("View the Postgres message inbox for agents in a pipeline run")
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
   .option("--run <id>", "Filter to a specific run ID (default: latest run)")
   .option("--bead <id>", "Resolve run by bead ID (uses most recent run for that bead)")

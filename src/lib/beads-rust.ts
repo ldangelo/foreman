@@ -123,7 +123,7 @@ export async function execBr(
   args: string[],
   cwd?: string,
 ): Promise<unknown> {
-  // --lock-timeout: wait up to 10s for SQLite lock instead of failing with SQLITE_BUSY
+  // --lock-timeout: wait up to 10s for backend locks instead of failing immediately
   // when concurrent agents hold read locks on .beads/beads.db.
   const finalArgs = [...args, "--json", "--lock-timeout", "10000"];
   try {
@@ -149,7 +149,7 @@ export async function execBr(
  * @deprecated BeadsRustClient is deprecated — use NativeTaskStore via
  * `createTaskClient()` instead. The native task store requires no external binary,
  * uses the Postgres backing store managed by the Foreman daemon, and supports
- * concurrent agents without SQLite lock contention.
+ * concurrent agents without backend lock contention.
  *
  * Migration guide:
  *   Before: const client = new BeadsRustClient(projectPath);

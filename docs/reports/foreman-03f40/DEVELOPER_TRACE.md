@@ -249,7 +249,7 @@ Now I have a thorough understanding of the codebase. Let me plan the implementat
 - Error: no
 - Updates: 0
 - Args: `{"path":"/Users/ldangelo/.foreman/worktrees/9c825a66-276b-4419-8594-219783b4cf4f/foreman-03f40/src/lib/task-store.ts"}`
-- Result: `{"content":[{"type":"text","text":"/**\n * NativeTaskStore — wraps the native `tasks` SQLite table for use as a\n * task-tracking back-end inside the Dispatcher.\n *\n * Implements methods for the full lifecycle of native tasks:\n *   - ha…`
+- Result: `{"content":[{"type":"text","text":"/**\n * NativeTaskStore — wraps the native `tasks` Postgres table for use as a\n * task-tracking back-end inside the Dispatcher.\n *\n * Implements methods for the full lifecycle of native tasks:\n *   - ha…`
 
 ### read (`call_function_vkmbvuacl2tg_1`)
 

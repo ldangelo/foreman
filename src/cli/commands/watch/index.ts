@@ -109,7 +109,7 @@ export const watchCommand = new Command("watch")
       projectId,
     };
 
-    // SQLite-backed store is only still needed for inbox fallback.
+    // Postgres-backed store is only still needed for inbox fallback.
     const store = noInbox ? null : ForemanStore.forProject(projectPath);
 
     // SIGWINCH handler for resize

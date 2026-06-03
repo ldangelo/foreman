@@ -733,7 +733,7 @@ export class Refinery {
    */
   private async addFailureNote(seedId: string, note: string): Promise<void> {
     // Enqueue instead of calling br directly — multiple agent workers run
-    // refinery concurrently, and direct calls cause SQLITE_BUSY on beads DB.
+    // refinery concurrently, and direct calls can contend on beads backend locks.
     try {
       enqueueAddNotesToBead(this.store, seedId, note.slice(0, 500), "refinery");
     } catch (err: unknown) {
@@ -883,7 +883,7 @@ export class Refinery {
       const runs = await this.lookupRunsByStatuses(retryStatuses, projectId);
       const matching = runs.filter((r) => r.seed_id === seedId);
       // Prefer a completed run over newer stuck/failed runs for the same seed.
-      // SQLite returns rows ordered by created_at DESC so stuck/failed may appear
+      // Postgres returns rows ordered by created_at DESC so stuck/failed may appear
       // first even though a completed run exists from an earlier attempt.
       const completedRun = matching.find((r) => r.status === "completed");
       return completedRun ? [completedRun] : matching.slice(0, 1);
@@ -1002,7 +1002,7 @@ export class Refinery {
     if (opts?.runId) {
       // Fetch by ID directly - bypasses status check entirely.
       // This is the most reliable path for immediate autoMerge calls because
-      // the status update happens before autoMerge is called, but due to SQLite
+      // the status update happens before autoMerge is called, but due to Postgres
       // WAL timing, the query might not see it immediately.
        const fetchedRun = await this.lookupRun(opts.runId);
        rawRuns = fetchedRun ? [fetchedRun] : [];

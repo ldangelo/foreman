@@ -50,7 +50,7 @@ br close <id>          # Complete
 ```
 CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
                       |              |
-                   SQLite         Pi SDK (in-process)
+                   PostgreSQL         Pi SDK (in-process)
                    (state)        createAgentSession()
                       |              |
                    br (beads_rust)   Pipeline Executor
@@ -70,8 +70,8 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 - `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
 - `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
 - `src/orchestrator/auto-merge.ts` — immediate post-pipeline merge trigger
-- `src/lib/store.ts` — SQLite state (runs, progress, messages)
-- `src/lib/sqlite-mail-client.ts` — Agent Mail (SQLite-backed, no external server)
+- `src/lib/store.ts` — PostgreSQL state (runs, progress, messages)
+- `src/lib/postgres-mail-client.ts` — Agent Mail (Postgres-backed)
 - `src/lib/workflow-loader.ts` — YAML workflow config parser
 - `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
 
@@ -202,7 +202,7 @@ phases:
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
 - **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
 - **Auto-reset on failure**: `markStuck()` resets bead to open when pipeline fails (rate limits); marks failed for permanent errors
-- **Agent Mail is SQLite-backed**: Messages stored in `.foreman/foreman.db` (shared across all workers), not a separate mail.db
+- **Agent Mail is PostgreSQL-backed**: Messages stored in Postgres (shared across all workers), not a separate mail database
 - **SESSION_LOG.md excluded from commits**: Causes merge conflicts when multiple pipelines run concurrently; finalize prompt runs `git reset HEAD SESSION_LOG.md` after `git add -A`
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
 

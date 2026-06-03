@@ -33,7 +33,7 @@ No feature is considered started until a failing test exists. No feature is cons
 - **Web Framework:** Hono 4.x with @hono/node-server
 - **CLI Framework:** Commander 14.x
 - **WebSocket:** ws 8.x
-- **Database:** better-sqlite3 12.x
+- **Database:** pg 12.x
 
 ### Testing
 - **Unit/Integration Testing:** Vitest 4.x

@@ -264,8 +264,8 @@ TrdTask {
 | Phase | Command | Input | Output | Tool |
 |-------|---------|-------|--------|------|
 | Plan | `foreman plan <desc>` | Product description | PRD.md + TRD.md in docs/ | `dispatchPlanStep()` → Pi `/ensemble:create-prd`, `create-trd` |
-| Sling PRD | `foreman sling prd <prd>` | PRD file path | Native tasks in SQLite (status=open/ready) | Embedded Pi `/ensemble:create-trd-foreman` → `parseTrd()` → `sling-executor` |
-| Sling TRD | `foreman sling trd <trd>` | TRD file path | Native tasks in SQLite (status=open/ready) | `parseTrd()` → `sling-executor` (existing, unchanged) |
+| Sling PRD | `foreman sling prd <prd>` | PRD file path | Native tasks in Postgres (status=open/ready) | Embedded Pi `/ensemble:create-trd-foreman` → `parseTrd()` → `sling-executor` |
+| Sling TRD | `foreman sling trd <trd>` | TRD file path | Native tasks in Postgres (status=open/ready) | `parseTrd()` → `sling-executor` (existing, unchanged) |
 | Run | `foreman run` | None (dispatches ready tasks) | Agent execution | `dispatcher.dispatch()` |
 
 ### 5.1 Updated plan completion hint

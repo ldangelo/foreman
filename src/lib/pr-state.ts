@@ -142,7 +142,7 @@ export async function getPrState(options: GetPrStateOptions): Promise<PrState> {
 
   // Step 2: Get PR info from GitHub
   const prResult = await gh(
-    ["pr", "view", branchName, "--json", "state,number,headRefOid,url,isMerged", "--jq", "."],
+    ["pr", "view", branchName, "--json", "state,number,headRefOid,url", "--jq", "."],
     projectPath,
   );
 
@@ -179,7 +179,6 @@ export async function getPrState(options: GetPrStateOptions): Promise<PrState> {
     number?: number;
     headRefOid?: string;
     url?: string;
-    isMerged?: boolean;
   };
   try {
     prData = JSON.parse(prResult.stdout) as typeof prData;
@@ -200,11 +199,9 @@ export async function getPrState(options: GetPrStateOptions): Promise<PrState> {
   const headSha = prData.headRefOid ?? null;
   const url = prData.url ?? null;
   const number = prData.number ?? null;
-  const isMerged = prData.isMerged ?? false;
-
   // Determine status
   let status: PrStateStatus;
-  if (isMerged || state === "MERGED") {
+  if (state === "MERGED") {
     status = "merged";
   } else if (state === "OPEN") {
     status = "open";
@@ -286,7 +283,7 @@ export async function getPrStatesForTasks(
   await Promise.all(
     branchesToCheck.map(async ({ taskId, branchName }) => {
       const prResult = await gh(
-        ["pr", "view", branchName, "--json", "state,number,headRefOid,url,isMerged", "--jq", "."],
+        ["pr", "view", branchName, "--json", "state,number,headRefOid,url", "--jq", "."],
         projectPath,
       );
 
@@ -334,10 +331,8 @@ export async function getPrStatesForTasks(
     const headSha = prData.headRefOid ?? null;
     const url = prData.url ?? null;
     const number = prData.number ?? null;
-    const isMerged = prData.isMerged ?? false;
-
     let status: PrStateStatus;
-    if (isMerged || state === "MERGED") {
+    if (state === "MERGED") {
       status = "merged";
     } else if (state === "OPEN") {
       status = "open";
@@ -381,5 +376,4 @@ interface GitHubPrData {
   number?: number;
   headRefOid?: string;
   url?: string;
-  isMerged?: boolean;
 }

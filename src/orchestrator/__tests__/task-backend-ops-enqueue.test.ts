@@ -3,7 +3,7 @@
  *
  * These functions route br write operations through the ForemanStore
  * bead_write_queue table instead of calling br directly, eliminating
- * concurrent SQLite lock contention.
+ * concurrent backend lock contention.
  */
 
 import { describe, it, expect } from "vitest";

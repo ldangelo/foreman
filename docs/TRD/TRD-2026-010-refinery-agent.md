@@ -64,13 +64,13 @@ auto-merge.ts
 | `src/orchestrator/refinery.ts` | `preserveBeadChanges()` | Extract `.seeds/` changes from a branch via patch, apply to target branch before deletion |
 | `src/orchestrator/auto-merge.ts` | `autoMerge()` | Top-level trigger. Reconciles completed runs into queue, drains entries, handles strategy routing (`auto`/`pr`/`none`) |
 | `src/orchestrator/auto-merge.ts` | `syncBeadStatusAfterMerge()` | Syncs bead status from run status to br after merge outcome (immediate post-merge sync) |
-| `src/orchestrator/merge-queue.ts` | `MergeQueue` | SQLite-backed FIFO queue. `enqueue`, `dequeue`, `reconcile`, `resetForRetry`, `getOrderedPending` (cluster-aware) |
+| `src/orchestrator/merge-queue.ts` | `MergeQueue` | Postgres-backed FIFO queue. `enqueue`, `dequeue`, `reconcile`, `resetForRetry`, `getOrderedPending` (cluster-aware) |
 | `src/orchestrator/conflict-resolver.ts` | `ConflictResolver` | Tier cascade (Tiers 1–4 + fallback), rebase conflict auto-resolve, post-merge tests |
 | `src/orchestrator/conflict-resolver.ts` | `REPORT_FILES` | Constants: report filenames that can be auto-resolved |
 | `src/orchestrator/merge-validator.ts` | `MergeValidator` | Post-AI resolution validation: conflict markers, prose detection, markdown fencing, syntax check |
 | `src/orchestrator/merge-config.ts` | `MergeQueueConfig` / `loadMergeConfig()` | Tier thresholds, cost limits, syntax checkers, prose detection patterns |
 | `src/orchestrator/task-backend-ops.ts` | `enqueueCloseSeed()`, `enqueueResetSeedToOpen()`, etc. | Enqueue br write operations via ForemanStore bead_write_queue (serialized by dispatcher) |
-| `src/orchestrator/task-backend-ops.ts` | `syncBeadStatusOnStartup()` | Reconcile br status from SQLite on foreman startup (dry-run mode supported) |
+| `src/orchestrator/task-backend-ops.ts` | `syncBeadStatusOnStartup()` | Reconcile br status from Postgres on foreman startup (dry-run mode supported) |
 | `src/orchestrator/types.ts` | `MergeReport`, `MergedRun`, `ConflictRun`, `FailedRun`, `CreatedPr`, `PrReport` | Result types for merge operations |
 
 ---
@@ -118,9 +118,9 @@ Report files (`QA_REPORT.md`, `REVIEW.md`, `TASK.md`, `SESSION_LOG.md`, etc.) ar
 
 `ConflictResolver.isReportFile()` determines which files are auto-resolvable (includes `.beads/` files — latest bead state wins).
 
-### 5. Bead Write Queue (SQLite Contention Avoidance)
+### 5. Bead Write Queue (Postgres Contention Avoidance)
 
-Multiple `agent-worker` processes can call `autoMerge()` concurrently after `finalize`, all writing to the shared `.beads/beads.db`. Direct `br` CLI calls cause `SQLITE_BUSY` contention.
+Multiple `agent-worker` processes can call `autoMerge()` concurrently after `finalize`, all writing to the shared `.beads/beads.db`. Direct `br` CLI calls cause `POSTGRES_BUSY` contention.
 
 **Solution**: All br write operations are enqueued via `ForemanStore.enqueueBeadWrite()`:
 - `enqueueCloseSeed()` — close after successful merge
@@ -130,7 +130,7 @@ Multiple `agent-worker` processes can call `autoMerge()` concurrently after `fin
 - `enqueueSetBeadStatus()` — arbitrary status transitions
 - `enqueueMarkBeadFailed()` — permanent failure marker
 
-The **dispatcher** (single process) drains the queue sequentially, eliminating SQLite lock contention.
+The **dispatcher** (single process) drains the queue sequentially, eliminating Postgres lock contention.
 
 ### 6. Bead Closure Timing
 
@@ -221,7 +221,7 @@ interface MergeReport {
 }
 ```
 
-### MergeQueueEntry (SQLite-backed)
+### MergeQueueEntry (Postgres-backed)
 
 ```typescript
 interface MergeQueueEntry {
@@ -374,4 +374,4 @@ interface AutoMergeOpts {
 }
 ```
 
-`runId` is preferred over `overrideRun` for immediate auto-merge calls because it fetches by ID directly without status filtering, eliminating SQLite WAL timing issues where the `completed` status hasn't been committed/visible to a query yet.
+`runId` is preferred over `overrideRun` for immediate auto-merge calls because it fetches by ID directly without status filtering, eliminating Postgres WAL timing issues where the `completed` status hasn't been committed/visible to a query yet.

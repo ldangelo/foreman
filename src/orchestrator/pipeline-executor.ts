@@ -30,7 +30,7 @@ import {
 import { rotateReport } from "./agent-worker-finalize.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
-import type { AgentMailClient } from "../lib/sqlite-mail-client.js";
+import type { AgentMailClient } from "../lib/agent-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";

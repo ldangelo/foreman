@@ -77,7 +77,7 @@ describe("isIgnorableControllerPath", () => {
     expect(isIgnorableControllerPath(".omx/state/ralph.json")).toBe(true);
     expect(isIgnorableControllerPath(".beads/issues.jsonl")).toBe(true);
     expect(isIgnorableControllerPath(".foreman/log.txt")).toBe(true);
-    expect(isIgnorableControllerPath("storage.sqlite3-wal")).toBe(true);
+    expect(isIgnorableControllerPath("storage.runtime-wal")).toBe(true);
   });
 });
 

@@ -9,7 +9,7 @@
  *   - bead-closed     — bead status synced in br after merge outcome
  *
  * These tests use a mock store.sendMessage() to capture sent messages
- * without requiring a real SQLite database.
+ * without requiring a real Postgres database.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

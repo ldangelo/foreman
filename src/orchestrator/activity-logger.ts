@@ -6,7 +6,7 @@
  *
  * This enables operators to understand what happened in a pipeline run
  * by inspecting the commit (via `git show HEAD:ACTIVITY_LOG.json`) without
- * needing to query the SQLite events table.
+ * needing to query the Postgres events table.
  *
  * @module src/orchestrator/activity-logger
  */

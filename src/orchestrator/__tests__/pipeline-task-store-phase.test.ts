@@ -85,7 +85,7 @@ describe("NativeTaskStore.updatePhase()", () => {
     // Create a mock DB
     const mockRun = vi.fn();
     const mockPrepare = vi.fn(() => ({ run: mockRun }));
-    const mockDb = { prepare: mockPrepare } as unknown as import("better-sqlite3").Database;
+    const mockDb = { prepare: mockPrepare } as any;
 
     const store = new NativeTaskStore(mockDb);
     store.updatePhase(null, "developer");
@@ -99,7 +99,7 @@ describe("NativeTaskStore.updatePhase()", () => {
     const { NativeTaskStore } = await import("../../lib/task-store.js");
     const mockRun = vi.fn();
     const mockPrepare = vi.fn(() => ({ run: mockRun }));
-    const mockDb = { prepare: mockPrepare } as unknown as import("better-sqlite3").Database;
+    const mockDb = { prepare: mockPrepare } as any;
 
     const store = new NativeTaskStore(mockDb);
     // undefined coerces to null via ?? null in the executor call
@@ -112,7 +112,7 @@ describe("NativeTaskStore.updatePhase()", () => {
     const { NativeTaskStore } = await import("../../lib/task-store.js");
     const mockRun = vi.fn();
     const mockPrepare = vi.fn(() => ({ run: mockRun }));
-    const mockDb = { prepare: mockPrepare } as unknown as import("better-sqlite3").Database;
+    const mockDb = { prepare: mockPrepare } as any;
 
     const store = new NativeTaskStore(mockDb);
     store.updatePhase("task-xyz", "reviewer");
@@ -128,7 +128,7 @@ describe("NativeTaskStore.updatePhase()", () => {
     const capturedArgs: unknown[][] = [];
     const mockRun = vi.fn((...args: unknown[]) => { capturedArgs.push(args); });
     const mockPrepare = vi.fn(() => ({ run: mockRun }));
-    const mockDb = { prepare: mockPrepare } as unknown as import("better-sqlite3").Database;
+    const mockDb = { prepare: mockPrepare } as any;
 
     const store = new NativeTaskStore(mockDb);
     store.updatePhase("task-abc", "finalize");

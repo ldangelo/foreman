@@ -2,7 +2,7 @@
  * doctor-bead-status-sync.test.ts
  *
  * Unit tests for Doctor.checkBeadStatusSync() — the doctor check that
- * detects and optionally fixes bead status drift between SQLite and br.
+ * detects and optionally fixes bead status drift between Postgres and br.
  *
  * Seed: bd-8ctu
  */

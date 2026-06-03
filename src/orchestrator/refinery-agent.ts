@@ -19,7 +19,7 @@ import { ForemanStore, type Run } from "../lib/store.js";
 import { runWithPiSdk, type PiRunResult } from "./pi-sdk-runner.js";
 import { createSendMailTool } from "./pi-sdk-tools.js";
 import { PostgresMailClient } from "../lib/postgres-mail-client.js";
-import { SqliteMailClient, type AgentMailClient } from "../lib/sqlite-mail-client.js";
+import { NullAgentMailClient, type AgentMailClient } from "../lib/agent-mail-client.js";
 import { createProjectMailClient } from "../lib/project-mail-client.js";
 import {
   createBashTool,
@@ -105,7 +105,7 @@ export class RefineryAgent {
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config, projectPath };
     this.runLookup = runLookup ?? ForemanStore.forProject(this.projectPath);
-    this.mailClient = new SqliteMailClient();
+    this.mailClient = new NullAgentMailClient();
   }
 
   /**

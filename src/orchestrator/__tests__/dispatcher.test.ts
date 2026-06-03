@@ -448,7 +448,7 @@ describe("Dispatcher override-backed control-plane reads", () => {
     expect(typeof overrides.getRun.mock.calls[0]?.[0]).toBe("string");
   });
 
-  it("uses registered createRun override result instead of local SQLite createRun", async () => {
+  it("uses registered createRun override result instead of local Postgres createRun", async () => {
     const store = {
       createRun: vi.fn(() => {
         throw new Error("local createRun should not be used");

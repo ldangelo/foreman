@@ -129,8 +129,8 @@ describe("project-mail-client", () => {
     }
   });
 
-  it("falls back to SqliteMailClient when the project is not registered", async () => {
-    const projectPath = mkdtempSync(join(tmpdir(), "project-mail-client-sqlite-"));
+  it("falls back to NullAgentMailClient when the project is not registered", async () => {
+    const projectPath = mkdtempSync(join(tmpdir(), "project-mail-client-postgres-"));
 
     try {
       writeFileSync(join(projectPath, ".env"), "DATABASE_URL=postgresql://user:pass@host/db\n", "utf8");
@@ -138,14 +138,14 @@ describe("project-mail-client", () => {
 
       const mailClient = await createProjectMailClient(projectPath);
 
-      expect(mailClient.constructor.name).toBe("SqliteMailClient");
+      expect(mailClient.constructor.name).toBe("NullAgentMailClient");
       expect(initPoolMock).not.toHaveBeenCalled();
     } finally {
       rmSync(projectPath, { recursive: true, force: true });
     }
   });
 
-  it("falls back to SqliteMailClient when no project DATABASE_URL is available", async () => {
+  it("falls back to NullAgentMailClient when no project DATABASE_URL is available", async () => {
     const projectPath = mkdtempSync(join(tmpdir(), "project-mail-client-no-db-"));
 
     try {
@@ -155,7 +155,7 @@ describe("project-mail-client", () => {
 
       const mailClient = await createProjectMailClient(projectPath);
 
-      expect(mailClient.constructor.name).toBe("SqliteMailClient");
+      expect(mailClient.constructor.name).toBe("NullAgentMailClient");
       expect(initPoolMock).not.toHaveBeenCalled();
     } finally {
       rmSync(projectPath, { recursive: true, force: true });

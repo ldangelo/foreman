@@ -1,35 +1,37 @@
-import Database from "better-sqlite3";
 import { mkdirSync, existsSync, realpathSync } from "node:fs";
-import { join, dirname, resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 
-/**
- * Resolve the path to the better-sqlite3 native addon when running from a
- * bundled context (i.e. `dist/foreman-bundle.js`).
- *
- * During development / `npm run build`, the addon is resolved by the bindings
- * module via node_modules, so no special handling is needed. But when the CLI
- * is run as a standalone bundle (esbuild output), node_modules may not exist,
- * so we look for `better_sqlite3.node` placed alongside the bundle by the
- * postbundle copy step in scripts/bundle.ts.
- *
- * @returns Absolute path to better_sqlite3.node, or undefined (use default loader).
- */
-function resolveBundledNativeBinding(): string | undefined {
-  try {
-    // import.meta.url is available in ESM. In a bundled context this resolves
-    // to the bundle file's path (e.g. /path/to/dist/foreman-bundle.js).
-    const selfDir = dirname(fileURLToPath(import.meta.url));
-    const candidate = join(selfDir, "better_sqlite3.node");
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  } catch {
-    // Swallow — fileURLToPath / import.meta.url unavailable in some edge cases
-  }
-  return undefined;
+type LocalStoreRunResult = { changes: number; lastInsertRowid?: number | bigint };
+
+type LocalStoreStatement = {
+  run: (...args: unknown[]) => LocalStoreRunResult;
+  get: (...args: unknown[]) => any;
+  all: (...args: unknown[]) => any[];
+};
+
+type LocalStoreDatabase = {
+  prepare: (...args: unknown[]) => LocalStoreStatement;
+  exec: (...args: unknown[]) => void;
+  pragma: (...args: unknown[]) => unknown;
+  transaction: (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown;
+  close: () => void;
+};
+
+function createDisabledLocalStoreDb(): LocalStoreDatabase {
+  const noopRun = (): LocalStoreRunResult => ({ changes: 0 });
+  const noopGet = (): undefined => undefined;
+  const noopAll = (): any[] => [];
+
+  return {
+    prepare: () => ({ run: noopRun, get: noopGet, all: noopAll }),
+    exec: () => undefined,
+    pragma: () => 0,
+    transaction: (fn) => (...args: unknown[]) => fn(...args),
+    close: () => undefined,
+    open: true,
+  } as LocalStoreDatabase & { open: boolean };
 }
 
 function normalizeProjectPath(path: string): string {
@@ -194,7 +196,7 @@ export interface Message {
   recipient_agent_type: string;
   subject: string;
   body: string;
-  read: number; // 0 = unread, 1 = read (SQLite boolean)
+  read: number; // 0 = unread, 1 = read (Postgres boolean)
   created_at: string;
   deleted_at: string | null;
 }
@@ -204,7 +206,7 @@ export interface Message {
  *
  * Operations are inserted by agent-workers, refinery, pipeline-executor, and
  * auto-merge, then drained and executed sequentially by the dispatcher.
- * This eliminates concurrent br CLI invocations that cause SQLite contention.
+ * This eliminates concurrent br CLI invocations that cause Postgres contention.
  */
 export interface BeadWriteEntry {
   /** Unique entry ID (UUID). */
@@ -224,7 +226,7 @@ export interface BeadWriteEntry {
 // ── Native Task interfaces ───────────────────────────────────────────────
 
 /**
- * A task row from the native SQLite `tasks` table (PRD-2026-006 REQ-003).
+ * A task row from the native Postgres `tasks` table (PRD-2026-006 REQ-003).
  * Matches the TASKS_SCHEMA column definitions.
  */
 export interface NativeTask {
@@ -435,7 +437,7 @@ CREATE INDEX IF NOT EXISTS idx_merge_costs_date ON merge_costs (recorded_at);
 // Bead write queue DDL — project-scoped serialized write queue for br operations.
 // Agent-workers, refinery, pipeline-executor, and auto-merge enqueue writes here.
 // The dispatcher drains this table sequentially, executing br CLI commands one at a
-// time, eliminating concurrent SQLite lock contention on .beads/beads.jsonl.
+// time, eliminating concurrent backend lock contention on .beads/beads.jsonl.
 const BEAD_WRITE_QUEUE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS bead_write_queue (
   id TEXT PRIMARY KEY,
@@ -651,15 +653,15 @@ function normalizeLegacyTaskStatus(status: string): string {
   return status;
 }
 
-function tasksTableNeedsClosedStatusMigration(db: Database.Database): boolean {
+function tasksTableNeedsClosedStatusMigration(db: LocalStoreDatabase): boolean {
   const row = db.prepare(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
+    "SELECT sql FROM information_schema.tables WHERE table_name = 'tasks'",
   ).get() as { sql: string | null } | undefined;
   const schemaSql = row?.sql;
   return typeof schemaSql === "string" && !schemaSql.includes("'closed'");
 }
 
-function migrateLegacyTasksTable(db: Database.Database): void {
+function migrateLegacyTasksTable(db: LocalStoreDatabase): void {
   const taskRows = db
     .prepare(
       `SELECT id, title, description, type, priority, status, run_id, branch,
@@ -731,13 +733,12 @@ function migrateLegacyTasksTable(db: Database.Database): void {
 // ── Store ───────────────────────────────────────────────────────────────
 
 export class ForemanStore {
-  private db: Database.Database;
+  private db: LocalStoreDatabase;
 
   /**
-   * Create a ForemanStore backed by a project-local SQLite database.
+   * Create a disabled ForemanStore compatibility object for a project.
    *
-   * The database is stored at `<projectPath>/.foreman/foreman.db`, keeping
-   * all state scoped to the project rather than the user's home directory.
+   * Current state access should go through the Postgres-backed daemon APIs.
    *
    * @param projectPath - Absolute path to the project root directory.
    */
@@ -748,38 +749,27 @@ export class ForemanStore {
   /**
    * Open the project database in READONLY mode for safe concurrent dashboard reads.
    *
-   * Returns a raw better-sqlite3 `Database` instance opened with `{ readonly: true }`.
-   * The caller is responsible for calling `.close()` when done.
+   * Returns a disabled local-store compatibility handle.
+   * Postgres-backed dashboard reads should use the daemon APIs.
    *
    * This is intentionally a static factory that bypasses the normal ForemanStore
    * constructor (which runs migrations and writes to the DB) — the dashboard reads
    * should never write to a project's database.
    *
    * @param projectPath - Absolute path to the project root directory.
-   * @returns A readonly better-sqlite3 Database (throws if DB does not exist).
+   * @returns A disabled local-store compatibility handle.
    */
-  static openReadonly(projectPath: string): Database.Database {
-    const dbPath = join(projectPath, ".foreman", "foreman.db");
-    const nativeBinding = resolveBundledNativeBinding();
-    const db = nativeBinding
-      ? new Database(dbPath, { readonly: true, nativeBinding })
-      : new Database(dbPath, { readonly: true });
-    return db;
+  static openReadonly(_projectPath: string): LocalStoreDatabase {
+    return createDisabledLocalStoreDb();
   }
 
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? join(homedir(), ".foreman", "foreman.db");
     mkdirSync(join(resolvedPath, ".."), { recursive: true });
 
-    // When running from a bundle (dist/foreman-bundle.js), use the native
-    // addon copied by the postbundle step rather than relying on node_modules.
-    const nativeBinding = resolveBundledNativeBinding();
-    this.db = nativeBinding
-      ? new Database(resolvedPath, { nativeBinding })
-      : new Database(resolvedPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
-    this.db.pragma("busy_timeout = 30000");
+    this.db = createDisabledLocalStoreDb();
+    return;
+
     this.db.exec(SCHEMA);
 
     // Run idempotent migrations (errors are silently ignored — they indicate
@@ -823,7 +813,7 @@ export class ForemanStore {
   }
 
   /** Expose the underlying database for modules that need direct access (e.g. MergeQueue). */
-  getDb(): Database.Database {
+  getDb(): LocalStoreDatabase {
     return this.db;
   }
 
@@ -1666,7 +1656,7 @@ export class ForemanStore {
    *
    * Called by agent-workers, refinery, pipeline-executor, and auto-merge
    * instead of invoking the br CLI directly. The dispatcher drains this queue
-   * and executes br commands one at a time, eliminating SQLite lock contention.
+   * and executes br commands one at a time, eliminating backend lock contention.
    *
    * @param sender - Human-readable source identifier (e.g. "agent-worker", "refinery")
    * @param operation - Operation type: "close-seed" | "reset-seed" | "mark-failed" | "add-notes" | "add-labels"
@@ -2019,7 +2009,7 @@ export class ForemanStore {
 
   /**
    * Atomically claim a task by transitioning its status from 'ready' to 'in-progress'
-   * and recording the associated run_id in a single SQLite transaction.
+   * and recording the associated run_id in a single Postgres transaction.
    *
    * Implements REQ-017 AC-017.2: the UPDATE is atomic — if two concurrent dispatcher
    * instances attempt to claim the same task, exactly one succeeds (the WHERE clause

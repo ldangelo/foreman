@@ -1,6 +1,6 @@
 /**
  * Postgres-backed ForemanStore implementation.
- * Replaces SQLite-based storage with Postgres for multi-project support.
+ * Replaces Postgres-based storage with Postgres for multi-project support.
  */
 
 import { PostgresAdapter } from "./db/postgres-adapter.js";

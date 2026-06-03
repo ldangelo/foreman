@@ -401,7 +401,7 @@ grep "agent-mail" ~/.foreman/logs/<runId>.err
 
 2. **Agent Mail client failed to initialize** — Check logs for errors.
    ```bash
-   grep "SqliteMailClient\|mail.*fail" ~/.foreman/logs/<runId>.err
+   grep "PostgresMailClient\|mail.*fail" ~/.foreman/logs/<runId>.err
    ```
 
 ### Duplicate lifecycle mail (phase-started/phase-complete sent twice)

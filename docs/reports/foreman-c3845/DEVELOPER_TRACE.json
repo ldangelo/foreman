@@ -62,7 +62,7 @@
       "argsPreview": "{\"glob\":\"*.ts\",\"path\":\"/Users/ldangelo/Development/Fortium/foreman/src/cli/commands\",\"pattern\":\"inbox\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"inbox.ts:2:  * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\\ninbox.ts:279: export const inboxCommand = new Command(\\\"inbox\\\")\\ninbox.ts:280:   .description(\\\"View the SQLi…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"inbox.ts:2:  * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\\ninbox.ts:279: export const inboxCommand = new Command(\\\"inbox\\\")\\ninbox.ts:280:   .description(\\\"View the SQLi…",
       "completedAt": "2026-04-30T01:38:46.186Z"
     },
     {
@@ -72,7 +72,7 @@
       "argsPreview": "{\"path\":\"/Users/ldangelo/Development/Fortium/foreman/src/cli/commands/inbox.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
       "completedAt": "2026-04-30T01:38:48.703Z"
     },
     {
@@ -202,7 +202,7 @@
       "argsPreview": "{\"limit\":45,\"offset\":1,\"path\":\"/Users/ldangelo/Development/Fortium/foreman/src/cli/commands/inbox.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
       "completedAt": "2026-04-30T01:40:28.130Z"
     },
     {

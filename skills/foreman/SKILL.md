@@ -77,7 +77,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan --dry-run "Build som
 ```
 
 Creates an **epic bead** with 4 child beads (sequential dependencies). Each step dispatches
-through the dispatcher with full tracking in SQLite:
+through the dispatcher with full tracking in Postgres:
 
 1. `/ensemble:create-prd` — Analyze description, define requirements
 2. `/ensemble:refine-prd` — Strengthen acceptance criteria, edge cases
@@ -281,7 +281,7 @@ Tasks with `external_id` already matching a bead ID are skipped as duplicates.
 
 | Aspect | Native tasks (`foreman task`) | Beads (`br`/`bd`) |
 |--------|------------------------------|-------------------|
-| Storage | SQLite (`~/.foreman/foreman.db`) | `.beads/beads.jsonl` |
+| Storage | Postgres (`~/.foreman/foreman.db`) | `.beads/beads.jsonl` |
 | Dispatch | ✅ Used by `foreman run` | ❌ |
 | Dashboard | ✅ Shown in UI | ❌ |
 | CLI | `foreman task *` | `br`/`bd` |

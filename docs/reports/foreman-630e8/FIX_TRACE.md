@@ -36,7 +36,7 @@ You are the fix agent in the Foreman pipeline for task: Cleanup README.md
 Now I have a clear picture. The architecture has evolved to a daemon/Postgres model. Let me update the README.md to reflect:
 
 1. **Daemon-based architecture** - persistent process with tRPC over Unix socket
-2. **Postgres storage** - replaced SQLite as the primary store
+2. **Postgres storage** - replaced Postgres as the primary store
 3. **TrpcClient** - how CLI commands communicate with the daemon
 4. **Updated storage locations**
 
@@ -243,7 +243,7 @@ The README.md has been updated to accurately reflect…
 - Error: no
 - Updates: 0
 - Args: `{"newText":"## Task Tracking\n\nForeman uses **native tasks** stored in **Postgres** via ForemanDaemon. Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures routed through the Unix socket.\n\n```bash\n# Na…`
-- Result: `{"content":[{"type":"text","text":"Successfully replaced text in README.md."}],"details":{"diff":"     ...\n 642 ```\n 643 \n 644 ## Task Tracking\n 645 \n-646 Foreman uses **native tasks** stored in the SQLite store (`.foreman/foreman.db`…`
+- Result: `{"content":[{"type":"text","text":"Successfully replaced text in README.md."}],"details":{"diff":"     ...\n 642 ```\n 643 \n 644 ## Task Tracking\n 645 \n-646 Foreman uses **native tasks** stored in the Postgres store (`.foreman/foreman.db`…`
 
 ### edit (`call_function_v65h8tyx7qg0_1`)
 
@@ -323,8 +323,8 @@ The README.md has been updated to accurately reflect…
 - Completed: 2026-04-27T12:18:38.995Z
 - Error: no
 - Updates: 0
-- Args: `{"path":"README.md","pattern":"SQLite"}`
-- Result: `{"content":[{"type":"text","text":"README.md:20: - **Progress tracking** — every task, agent, and phase tracked in Postgres, with beads/SQLite fallback where needed\nREADME.md:563: Check environment health: br binary, Pi binary, Agent Mail…`
+- Args: `{"path":"README.md","pattern":"Postgres"}`
+- Result: `{"content":[{"type":"text","text":"README.md:20: - **Progress tracking** — every task, agent, and phase tracked in Postgres, with beads/Postgres fallback where needed\nREADME.md:563: Check environment health: br binary, Pi binary, Agent Mail…`
 
 ### read (`call_function_9ns11c3cbuxw_1`)
 
@@ -333,7 +333,7 @@ The README.md has been updated to accurately reflect…
 - Error: no
 - Updates: 0
 - Args: `{"limit":15,"offset":730,"path":"README.md"}`
-- Result: `{"content":[{"type":"text","text":"\n### Storage locations\n\n| Path | Contents |\n|---|---|\n| `.beads/` | legacy/compatibility beads_rust task database (JSONL, git-tracked) |\n| `.foreman/foreman.db` | SQLite: runs, merge_queue, projects…`
+- Result: `{"content":[{"type":"text","text":"\n### Storage locations\n\n| Path | Contents |\n|---|---|\n| `.beads/` | legacy/compatibility beads_rust task database (JSONL, git-tracked) |\n| `.foreman/foreman.db` | Postgres: runs, merge_queue, projects…`
 
 ### edit (`call_function_yu88vuynjvy2_1`)
 

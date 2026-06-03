@@ -12,17 +12,17 @@ Foreman decomposes development work into parallelizable tasks, dispatches them t
 
 You already have AI coding agents. What you don't have is a way to run several of them simultaneously on the same codebase without them stepping on each other. Foreman solves this:
 
-- **Work decomposition** — PRD → TRD → native tasks (PostgreSQL-backed via daemon, SQLite for standalone)
+- **Work decomposition** — PRD → TRD → native tasks (PostgreSQL-backed via daemon, PostgreSQL for standalone)
 - **Git isolation** — each agent gets its own worktree (zero conflicts during development)
 - **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
 - **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
 - **Persistent daemon** — ForemanDaemon optionally runs in background to serve tRPC over Unix socket + HTTP, sharing a Postgres pool across all CLI invocations
-- **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations; SQLite or Postgres-backed depending on daemon mode
-- **Dual task storage** — native tasks (Postgres/SQLite) or beads_rust (`br`) for git-tracked legacy compatibility
+- **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations; PostgreSQL or Postgres-backed depending on daemon mode
+- **Dual task storage** — native tasks (Postgres) or beads_rust (`br`) for git-tracked legacy compatibility
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
-- **Progress tracking** — every task, agent, and phase tracked in SQLite or PostgreSQL
+- **Progress tracking** — every task, agent, and phase tracked in PostgreSQL
 
-> **Note:** Foreman uses PostgreSQL when the daemon is running (for multi-project aggregation) and SQLite for standalone development. Legacy beads_rust is only needed for backward compatibility via `foreman task import --from-beads`.
+> **Note:** Foreman uses PostgreSQL when the daemon is running (for multi-project aggregation) and PostgreSQL for standalone development. Legacy beads_rust is only needed for backward compatibility via `foreman task import --from-beads`.
 
 ## Architecture
 
@@ -61,7 +61,7 @@ Foreman CLI / Dispatcher
 - `foreman daemon status` — PID, socket path, health endpoint
 - Auto-restart on unexpected exit (detected via `foreman doctor`)
 
-> **Note:** The daemon is optional. Without it, Foreman uses direct project-level SQLite storage (`.foreman/foreman.db`) for tasks, runs, and messaging. When the daemon is running, it acts as a shared Postgres-backed layer that avoids per-invocation connection overhead and enables multi-project aggregation.
+> **Note:** Foreman uses PostgreSQL via `DATABASE_URL`. The daemon owns the shared Postgres pool and exposes a tRPC layer for CLI commands, avoiding per-invocation connection overhead and enabling multi-project aggregation.
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
 1. **Explorer** (Haiku, 30 turns, read-only) — codebase analysis → `EXPLORER_REPORT.md`
@@ -127,7 +127,7 @@ flowchart TD
     subgraph WORKER["agent-worker process (detached)"]
         W --> X[Read + delete config.json]
         X --> Y[Open worktree log\nOpen ~/.foreman/logs/runId.log]
-        Y --> Z[Init SqliteMailClient\n(daemon-backed Postgres mail)]
+        Y --> Z[Init PostgresMailClient\n(daemon-backed Postgres mail)]
         Z --> AA{pipeline mode?}
         AA -- No --> AB[Single agent via Pi RPC]
         AA -- Yes --> AC[runPipeline]
@@ -330,11 +330,11 @@ foreman status
 foreman merge
 ```
 
-> **Note:** The daemon is required for full multi-project orchestration. Without it, Foreman uses project-level SQLite for single-project development.
+> **Note:** The daemon is required for full multi-project orchestration. Without it, Foreman uses project-level PostgreSQL for single-project development.
 
 ## Messaging
 
-Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are stored in **SQLite** for standalone development or **PostgreSQL** (via ForemanDaemon) for multi-project aggregation.
+Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are stored in **PostgreSQL** for standalone development or **PostgreSQL** (via ForemanDaemon) for multi-project aggregation.
 
 ### How agents send messages
 
@@ -774,11 +774,11 @@ For release tagging and version bumps, use conventional commits and the release 
 
 ## Task Tracking
 
-Foreman supports two task storage backends: **native tasks** (PostgreSQL via daemon, SQLite for standalone) and **beads_rust** (`br`) for git-tracked legacy compatibility.
+Foreman supports two task storage backends: **native tasks** (PostgreSQL via daemon, PostgreSQL for standalone) and **beads_rust** (`br`) for git-tracked legacy compatibility.
 
 ### Native tasks (default)
 
-Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures (when daemon is running) or directly via SQLite.
+Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures (when daemon is running) or directly via PostgreSQL.
 
 ```bash
 # Native task lifecycle
@@ -791,7 +791,7 @@ foreman task dep add task-tests task-feature   # tests depend on feature
 foreman task dep list task-123                 # show dependencies
 ```
 
-All task operations route through `TrpcClient` → daemon's Postgres store when daemon is running; otherwise they use direct SQLite access via ForemanStore.
+All task operations route through `TrpcClient` → daemon's Postgres store when daemon is running; otherwise they use direct PostgreSQL access via ForemanStore.
 
 For projects using [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for backward compatibility:
 
@@ -866,14 +866,14 @@ export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5
 
 | Path | Contents |
 |---|---|
-| `.foreman/` | Project-level state (SQLite DB, tasks, runs, messages) |
+| `.foreman/` | Project-level config, workflow assets, and runtime metadata |
 | `.beads/` | Legacy beads_rust task data (JSONL, git-tracked) |
 | `~/.foreman/daemon.sock` | ForemanDaemon Unix socket (tRPC over HTTP) — optional |
 | `~/.foreman/daemon.pid` | Daemon process ID — optional |
 | `~/.foreman/logs/` | Per-run agent logs + daemon stdout/stderr |
 | `DATABASE_URL` | PostgreSQL connection string — only required when running daemon |
 
-**Storage model:** Without the daemon, Foreman uses project-level SQLite (`.foreman/foreman.db`) for all state (tasks, runs, messages, etc.). When `foreman daemon start` is running, it shares a Postgres pool across all CLI invocations, enabling multi-project aggregation but not required for basic operation. For most use cases, native tasks with PostgreSQL (daemon) or SQLite (standalone) are sufficient; beads_rust is only needed for backward compatibility.
+**Storage model:** Foreman stores application state in PostgreSQL through the daemon/tRPC layer. For most use cases, native tasks with PostgreSQL are sufficient; beads_rust is only needed for backward compatibility.
 
 ## Project Structure
 
@@ -905,7 +905,7 @@ foreman/
 │       ├── db/
 │       │   ├── pool-manager.ts     # Postgres pool singleton (daemon only)
 │       │   └── postgres-adapter.ts # Postgres DB operations (daemon only)
-│       ├── store.ts                # Project-level SQLite store (default)
+│       ├── store.ts                # Project-level PostgreSQL store (default)
 │       ├── postgres-store.ts       # Postgres-backed store (daemon mode)
 │       ├── beads-rust.ts           # Compatibility br CLI wrapper
 │       └── git.ts                  # Git worktree management

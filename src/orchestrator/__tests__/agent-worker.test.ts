@@ -110,7 +110,7 @@ describe("agent-worker.ts", () => {
      *
      * Source-inspection is used here because the integration approach (spawning
      * the worker with a bad API key) fails before reaching resetSeedToOpen due to
-     * SQLite FOREIGN KEY constraints on the unregistered project_id. The source
+     * Postgres FOREIGN KEY constraints on the unregistered project_id. The source
      * inspection approach is lighter and catches the same regression risk: that
      * a refactor accidentally removes the resetSeedToOpen calls.
      */

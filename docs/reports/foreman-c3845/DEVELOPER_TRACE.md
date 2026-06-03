@@ -150,7 +150,7 @@ I see two issues: (1) the test expects `.args` but the interface uses `argsPrevi
 - Error: no
 - Updates: 0
 - Args: `{"glob":"*.ts","path":"/Users/ldangelo/Development/Fortium/foreman/src/cli/commands","pattern":"inbox"}`
-- Result: `{"content":[{"type":"text","text":"inbox.ts:2:  * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\ninbox.ts:279: export const inboxCommand = new Command(\"inbox\")\ninbox.ts:280:   .description(\"View the SQLi…`
+- Result: `{"content":[{"type":"text","text":"inbox.ts:2:  * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\ninbox.ts:279: export const inboxCommand = new Command(\"inbox\")\ninbox.ts:280:   .description(\"View the SQLi…`
 
 ### read (`call_function_s9u1o2ty7srr_1`)
 
@@ -159,7 +159,7 @@ I see two issues: (1) the test expects `.args` but the interface uses `argsPrevi
 - Error: no
 - Updates: 0
 - Args: `{"path":"/Users/ldangelo/Development/Fortium/foreman/src/cli/commands/inbox.ts"}`
-- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
+- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
 
 ### grep (`call_function_eodwgic5e08k_1`)
 
@@ -276,7 +276,7 @@ I see two issues: (1) the test expects `.args` but the interface uses `argsPrevi
 - Error: no
 - Updates: 0
 - Args: `{"limit":45,"offset":1,"path":"/Users/ldangelo/Development/Fortium/foreman/src/cli/commands/inbox.ts"}`
-- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
+- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
 
 ### read (`call_function_43ffmrm0nxlz_1`)
 

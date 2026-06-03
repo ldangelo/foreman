@@ -7,15 +7,15 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { createSendMailTool } from "../pi-sdk-tools.js";
-import type { SqliteMailClient } from "../../lib/sqlite-mail-client.js";
+import type { NullAgentMailClient } from "../../lib/agent-mail-client.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-function makeMailClient(sendFn?: () => Promise<void>): SqliteMailClient {
+function makeMailClient(sendFn?: () => Promise<void>): NullAgentMailClient {
   return {
     sendMessage: vi.fn().mockImplementation(sendFn ?? (() => Promise.resolve())),
     fetchInbox: vi.fn().mockResolvedValue([]),
-  } as unknown as SqliteMailClient;
+  } as unknown as NullAgentMailClient;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -99,7 +99,7 @@ function log(msg: string): void {
  */
 export async function finalize(config: FinalizeConfig, logFile: string, vcs: VcsBackend): Promise<FinalizeResult> {
   const { seedId, seedTitle, worktreePath } = config;
-  // `storeProjectPath` is used only to open the SQLite store for the merge
+  // `storeProjectPath` is used only to open the Postgres store for the merge
   // queue — it must never be undefined, so we infer it from the workspace path
   // when the caller didn't pass projectPath explicitly.
   const storeProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
@@ -358,7 +358,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // On push failure the bead stays in_progress (caller resets to open via resetSeedToOpen).
   if (pushSucceeded) {
     // Queue the status update instead of calling br directly — prevents
-    // SQLite contention with concurrent agent-workers (all br writes go
+    // Postgres contention with concurrent agent-workers (all br writes go
     // through the dispatcher's sequential drain).
     try {
       const statusStore = ForemanStore.forProject(storeProjectPath);

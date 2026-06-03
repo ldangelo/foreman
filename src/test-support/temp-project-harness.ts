@@ -36,7 +36,7 @@ function sleep(ms: number): Promise<void> {
 
 function isRetryableStoreError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /disk I\/O error|database is locked|SQLITE_BUSY|SQLITE_IOERR/i.test(message);
+  return /disk I\/O error|database is locked|busy|ioerr/i.test(message);
 }
 
 function readLogTail(homeDir: string | undefined): string {

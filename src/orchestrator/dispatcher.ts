@@ -395,21 +395,6 @@ export class Dispatcher {
       console.error(`[bead-writer][${this.resolveProjectId()}] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
-    // Clear br's blocked_issues_cache before querying ready seeds.
-    // The cache goes stale when beads are closed by the refinery, auto-close
-    // logic, or manual operations outside br's normal flow.
-    try {
-      const beadsDbPath = join(this.projectPath, ".beads", "beads.db");
-      if (existsSync(beadsDbPath)) {
-        execFileSync("sqlite3", [
-          beadsDbPath,
-          "DELETE FROM blocked_issues_cache;",
-        ], { timeout: 5000 });
-      }
-    } catch {
-      // sqlite3 not available or .beads/beads.db missing — non-fatal
-    }
-
     // ── onError=stop guard ─────────────────────────────────────────────────
     // When the workflow's onError is "stop", refuse to dispatch if any recent
     // runs ended in a terminal failure state.
@@ -442,7 +427,7 @@ export class Dispatcher {
     const available = Math.max(0, maxAgents - activeAgentCount);
 
     // ── Task store coexistence (REQ-014 / REQ-017) ────────────────────────
-    // Decide whether to query the native SQLite task store or fall back to
+    // Decide whether to query the native Postgres task store or fall back to
     // the BeadsRustClient based on FOREMAN_TASK_STORE and hasNativeTasks().
     const taskStoreMode = resolveTaskStoreMode();
     let usingNativeStore = false;
@@ -1461,7 +1446,7 @@ export class Dispatcher {
    * Writes a WorkerConfig JSON file and spawns `agent-worker.ts` as a
    * detached child process that survives the parent foreman process exiting.
    * The worker runs the SDK `query()` loop independently and updates the
-   * SQLite store with progress/completion.
+   * Postgres store with progress/completion.
    */
   private async spawnAgent(
     model: ModelSelection,
@@ -1678,7 +1663,7 @@ export class Dispatcher {
    * This is the single writer for all br CLI operations — called by the dispatcher
    * process only. Agent-workers, refinery, pipeline-executor, and auto-merge enqueue
    * operations via ForemanStore.enqueueBeadWrite() instead of calling br directly,
-   * eliminating concurrent SQLite lock contention on .beads/beads.jsonl.
+   * eliminating concurrent backend lock contention on .beads/beads.jsonl.
    *
    * Each entry is processed in insertion order. If an individual operation fails,
    * the error is logged but draining continues (non-fatal per-entry). A single
@@ -1689,7 +1674,6 @@ export class Dispatcher {
   async drainBeadWriterInbox(): Promise<number> {
     const pending = this.store.getPendingBeadWrites();
     if (pending.length === 0) return 0;
-    const beadsDbPath = join(this.projectPath, ".beads", "beads.db");
     const beadsDirPath = join(this.projectPath, ".beads");
     if (!existsSync(beadsDirPath)) {
       for (const entry of pending) {
@@ -1726,12 +1710,12 @@ export class Dispatcher {
         const seedId = payload.seedId as string;
 
         // All br commands get --lock-timeout so they wait for concurrent agent
-        // reads to release the SQLite lock instead of failing with SQLITE_BUSY.
+        // reads to release backend locks instead of failing immediately.
         const lockArgs = ["--lock-timeout", "10000"];
 
         switch (entry.operation) {
           case "close-seed":
-            // Use --no-db to write directly to JSONL, bypassing the SQLite blocked cache.
+            // Use --no-db to write directly to JSONL, bypassing cached readiness state.
             execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
             console.error(`[bead-writer][${this.resolveProjectId()}] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
@@ -1814,22 +1798,7 @@ export class Dispatcher {
           ...execOpts,
           timeout: Math.max(execOpts.timeout, 60_000),
         });
-        // Clear the blocked_issues_cache so br ready reflects newly-unblocked beads.
-        // Using sqlite3 CLI is safer and faster than deleting the entire DB.
-        try {
-          execFileSync("sqlite3", [
-            beadsDbPath,
-            "DELETE FROM blocked_issues_cache;",
-          ], execOpts);
-          console.error(`[bead-writer] Cleared blocked_issues_cache after processing ${processed}/${pending.length} entries`);
-        } catch {
-          // Fallback: delete DB files if sqlite3 not available
-          const beadsDir = join(this.projectPath, ".beads");
-          for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
-            try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
-          }
-          console.error(`[bead-writer] Deleted DB (fallback) after processing ${processed}/${pending.length} entries`);
-        }
+        console.error(`[bead-writer] Processed ${processed}/${pending.length} entries`);
       } catch (flushErr: unknown) {
         const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
         console.error(`[bead-writer] Warning: post-drain cleanup failed: ${msg.slice(0, 200)}`);
@@ -1918,7 +1887,7 @@ export interface WorkerConfig {
   pipeline?: boolean;
   skipExplore?: boolean;
   skipReview?: boolean;
-  /** Absolute path to the SQLite DB file (e.g. .foreman/foreman.db) */
+  /** Legacy local-store path retained for compatibility only. */
   dbPath?: string;
   /**
    * Resolved workflow type (e.g. "smoke", "feature", "bug").

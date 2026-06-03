@@ -3,9 +3,9 @@ import { join } from "node:path";
 
 import { listRegisteredProjects } from "../cli/commands/project-task-support.js";
 import { initPool, isPoolInitialised } from "./db/pool-manager.js";
-import type { AgentMailClient } from "./sqlite-mail-client.js";
+import type { AgentMailClient } from "./agent-mail-client.js";
 import { PostgresMailClient } from "./postgres-mail-client.js";
-import { SqliteMailClient } from "./sqlite-mail-client.js";
+import { NullAgentMailClient } from "./agent-mail-client.js";
 
 export function resolveProjectDatabaseUrl(projectPath?: string): string | undefined {
   if (!projectPath) {
@@ -44,7 +44,7 @@ export async function createProjectMailClient(projectPath: string): Promise<Agen
     }
   }
 
-  const mailClient = new SqliteMailClient();
+  const mailClient = new NullAgentMailClient();
   await mailClient.ensureProject(projectPath);
   return mailClient;
 }

@@ -15,7 +15,7 @@
 
 When users run `foreman run` today, each agent task is spawned inside a tmux session that executes `tsx agent-worker.ts`. The agent-worker process calls the Claude Agent SDK `query()` function headlessly, piping all stdout/stderr to log files. The result: the tmux pane is blank. When a user runs `foreman attach <id>`, they see an empty terminal with no visible activity -- no streaming output, no tool calls, no ability to interact.
 
-This is the single largest usability gap in Foreman. Users expect to see a live Claude Code session when they attach -- the same experience they get running `claude` directly in a terminal. Instead they must tail log files or poll the SQLite store for progress updates, losing the interactive debugging and intervention capabilities that make Claude Code powerful.
+This is the single largest usability gap in Foreman. Users expect to see a live Claude Code session when they attach -- the same experience they get running `claude` directly in a terminal. Instead they must tail log files or poll the Postgres store for progress updates, losing the interactive debugging and intervention capabilities that make Claude Code powerful.
 
 ### 1.2 Solution
 
@@ -39,7 +39,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 - Manages 3-5 concurrent Foreman agent runs daily
 - Needs high-level visibility into agent progress without deep diving
 - Primary workflow: `foreman run --bead X`, check `foreman status`, occasionally `foreman attach` to investigate stuck agents
-- Pain point: Cannot tell if an agent is making progress or spinning its wheels without checking logs or the SQLite store
+- Pain point: Cannot tell if an agent is making progress or spinning its wheels without checking logs or the Postgres store
 - Success metric: Can glance at a tmux pane and immediately understand agent state
 
 **Persona 2: Hands-on Developer ("Dev")**
@@ -88,7 +88,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 | O-1 | Interactive tmux sessions | `foreman attach` shows a live Claude Code session with streaming output; user can type into it |
 | O-2 | Pipeline preservation | All 5 phases (Explorer, Developer, QA, Reviewer, Finalize) execute correctly via CLI invocations |
 | O-3 | Session resume | `foreman run --resume` uses `claude --resume <sessionId>` for native resume |
-| O-4 | Progress tracking | Foreman tracks total run cost and basic progress in SQLite |
+| O-4 | Progress tracking | Foreman tracks total run cost and basic progress in Postgres |
 | O-5 | Direct replacement | SDK-based agent-worker is replaced directly; no feature flags or parallel code paths |
 
 ### 3.2 Success Metrics
@@ -178,7 +178,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 
 ### FR-4: Progress and Cost Extraction
 
-**Description:** Extract total run cost from `claude` CLI session data to update the SQLite store. Per-phase cost breakdown is deferred.
+**Description:** Extract total run cost from `claude` CLI session data to update the Postgres store. Per-phase cost breakdown is deferred.
 
 **Details:**
 - After the full pipeline completes, extract total cost from available CLI output or session data
@@ -234,7 +234,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 **Details:**
 - Replaces the current `agent-worker.ts` which uses SDK `query()` internally
 - Implemented as TypeScript (`pipeline-runner.ts`) using `child_process.spawn()` to invoke `claude`
-- Can directly import and call `ForemanStore` for SQLite updates (same process, no IPC needed)
+- Can directly import and call `ForemanStore` for Postgres updates (same process, no IPC needed)
 - Between phases, the orchestrator:
   - Parses the previous phase's report file for verdict (PASS/FAIL)
   - Decides whether to proceed, retry, or fail
@@ -287,7 +287,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 | Requirement | Details |
 |------------|---------|
 | Log files | Pipeline orchestrator should still write structured logs to `~/.foreman/logs/<runId>.log` |
-| SQLite store | All run state, progress, and cost data must continue flowing to the ForemanStore |
+| Postgres store | All run state, progress, and cost data must continue flowing to the ForemanStore |
 | Notification server | `NotificationClient` should still POST status updates to the notification server |
 | tmux capture-pane | `foreman attach --follow` capture-pane polling must show real content (not blank) |
 
@@ -407,7 +407,7 @@ Then: The claude process receives the user's input
 | `claude` CLI binary | Required | Must be installed and in PATH. Minimum version >= 1.0 |
 | tmux 3.x | Required | MVP requires tmux; no detached fallback |
 | `@anthropic-ai/claude-agent-sdk` | Retained (planning only) | Still used for `dispatchPlanStep()` (PRD/TRD generation). Removed from agent worker pipeline |
-| ForemanStore (SQLite) | Required | No schema changes expected; same progress/run tracking |
+| ForemanStore (Postgres) | Required | No schema changes expected; same progress/run tracking |
 | Seeds CLI (`sd`) | Required | Used in Finalize phase; no changes needed |
 
 ### 8.2 Verified Claude CLI Flags
@@ -512,7 +512,7 @@ foreman run
         --> agent-worker.ts
           --> query({ prompt, options }) [SDK call, headless]
           --> for await (message of query) { ... }  [processes messages in-process]
-          --> store.updateRun(...)  [direct SQLite writes]
+          --> store.updateRun(...)  [direct Postgres writes]
 ```
 
 ### Proposed (CLI-based)
@@ -534,7 +534,7 @@ foreman run
             --> [LIVE CLAUDE CODE TUI IN TMUX PANE]
           --> parseReport("QA_REPORT.md") --> retry loop if FAIL
           --> finalize()  [git add/commit/push, sd close]
-          --> store.updateRun(...)  [direct SQLite writes]
+          --> store.updateRun(...)  [direct Postgres writes]
 ```
 
 ### Key Difference

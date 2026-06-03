@@ -47,7 +47,7 @@ This TRD translates PRD-2026-005 into an implementable plan for inserting a mid-
 - New `PipelineEventBus` typed event emitter (`src/orchestrator/pipeline-events.ts`) wrapping Node `EventEmitter` with a `safeEmit` pattern that routes handler errors to `pipeline:error` without crashing the executor.
 - Refactored `pipeline-executor.ts` emitting structured `PipelineEvent` values at each phase lifecycle boundary, replacing the existing `onPipelineComplete`/`onPipelineFailure` callbacks with registered event handlers.
 - New `RebaseHook` class (`src/orchestrator/rebase-hook.ts`) that registers on `phase:complete` events, executes `vcs.rebase()` when `workflow.rebaseAfterPhase` matches the completed phase, handles clean and conflict branches, sends `rebase-context` mail to QA, and escalates to the troubleshooter on conflict.
-- SQLite migration adding `rebase_conflict` and `rebase_resolving` to the `runs.status` field.
+- Postgres migration adding `rebase_conflict` and `rebase_resolving` to the `runs.status` field.
 - Workflow YAML schema extension adding `rebaseAfterPhase` (optional string) and `rebaseTarget` (optional string) top-level keys with phase-name validation in `workflow-loader.ts`.
 - Observable pipeline states surfaced in `foreman status`, `foreman dashboard`, and `foreman inbox --type`.
 
@@ -124,7 +124,7 @@ foreman run
   |                       |-- Re-dispatches developer phase
   |                       +-- Forwards EXPLORER_REPORT.md
   |
-  +-- SQLite Store
+  +-- Postgres Store
   |     |-- runs.status: + rebase_conflict, rebase_resolving
   |
   +-- foreman status / dashboard / inbox
@@ -215,7 +215,7 @@ src/orchestrator/__tests__/
 
 src/lib/
   workflow-loader.ts          -- (modified) rebaseAfterPhase, rebaseTarget keys + validation
-  store.ts                    -- (modified) SQLite migration for new status values
+  store.ts                    -- (modified) Postgres migration for new status values
 
 src/cli/commands/
   status.ts                   -- (modified) display rebase_conflict / rebase_resolving labels
@@ -271,7 +271,7 @@ export interface WorkflowConfig {
 
 **Validation rule:** If `rebaseAfterPhase` is present, `workflow-loader.ts` must verify the named phase exists in `phases`. Throws with message: `"rebaseAfterPhase names unknown phase '<name>'. Valid phases: <list>."`.
 
-### 4.2 SQLite Migration (`src/lib/store.ts`)
+### 4.2 Postgres Migration (`src/lib/store.ts`)
 
 **Migration:** Add `rebase_conflict` and `rebase_resolving` to the `runs.status` check constraint.
 
@@ -502,7 +502,7 @@ Add the opt-in comment block shown in section 4.5. The two lines are commented o
 
 ---
 
-### Phase B: SQLite Schema Migration
+### Phase B: Postgres Schema Migration
 
 ---
 
@@ -512,13 +512,13 @@ Add the opt-in comment block shown in section 4.5. The two lines are commented o
 **Estimate:** 2h
 **Depends:** None
 
-Add `rebase_conflict` and `rebase_resolving` to the SQLite `runs.status` check constraint via a versioned migration. Extend the `RunStatus` TypeScript union type. Update all `switch`/`case` and `if`/`else` status handlers in `store.ts` to handle the new values (at minimum: a `default` case or explicit handling). Ensure `updateRunStatus()` accepts both new values.
+Add `rebase_conflict` and `rebase_resolving` to the Postgres `runs.status` check constraint via a versioned migration. Extend the `RunStatus` TypeScript union type. Update all `switch`/`case` and `if`/`else` status handlers in `store.ts` to handle the new values (at minimum: a `default` case or explicit handling). Ensure `updateRunStatus()` accepts both new values.
 
 **Validates PRD ACs:** AC-012-1, AC-012-2, AC-012-3
 
 **Implementation ACs:**
-- ( ) AC-I-005-1: Given a run record, when `updateRunStatus(runId, 'rebase_conflict')` is called, then the record's status field is `'rebase_conflict'` without a SQLite constraint error.
-- ( ) AC-I-005-2: Given a run record, when `updateRunStatus(runId, 'rebase_resolving')` is called, then the record's status field is `'rebase_resolving'` without a SQLite constraint error.
+- ( ) AC-I-005-1: Given a run record, when `updateRunStatus(runId, 'rebase_conflict')` is called, then the record's status field is `'rebase_conflict'` without a Postgres constraint error.
+- ( ) AC-I-005-2: Given a run record, when `updateRunStatus(runId, 'rebase_resolving')` is called, then the record's status field is `'rebase_resolving'` without a Postgres constraint error.
 - ( ) AC-I-005-3: Given the migration applied to an existing database with existing runs, when queried, then all pre-existing runs retain their original status values.
 - ( ) AC-I-005-4: Given the `RunStatus` type, when `'rebase_conflict'` and `'rebase_resolving'` are passed to `updateRunStatus()`, then TypeScript accepts them without type errors.
 
@@ -529,7 +529,7 @@ Add `rebase_conflict` and `rebase_resolving` to the SQLite `runs.status` check c
 **File:** `src/lib/__tests__/store-rebase-status.test.ts`
 **Estimate:** 1h
 
-- ( ) AC-T-005-1: Given a fresh in-memory SQLite database with migration applied, when `updateRunStatus(id, 'rebase_conflict')` is called, then `getRun(id).status === 'rebase_conflict'`.
+- ( ) AC-T-005-1: Given a fresh in-memory Postgres database with migration applied, when `updateRunStatus(id, 'rebase_conflict')` is called, then `getRun(id).status === 'rebase_conflict'`.
 - ( ) AC-T-005-2: Given the same database, when `updateRunStatus(id, 'rebase_resolving')` is called, then `getRun(id).status === 'rebase_resolving'`.
 - ( ) AC-T-005-3: Given a database with pre-existing `running` status runs, when migration is applied, then those rows remain `running`.
 - ( ) AC-T-005-4: Given `updateRunStatus(id, 'invalid_status' as RunStatus)`, when TypeScript compiles, then a type error is raised (compile-time guard).
@@ -548,7 +548,7 @@ Add `rebase_conflict` and `rebase_resolving` to the SQLite `runs.status` check c
 
 Implement `RebaseHook` class:
 
-- Constructor accepts `{ workflow: WorkflowConfig, vcs: VcsBackend, store: Store, mailClient: SqliteMailClient, eventBus: PipelineEventBus }`.
+- Constructor accepts `{ workflow: WorkflowConfig, vcs: VcsBackend, store: Store, mailClient: PostgresMailClient, eventBus: PipelineEventBus }`.
 - `register()` method registers `phase:complete` handler on the event bus.
 - On `phase:complete`: if `workflow.rebaseAfterPhase !== event.phase` skip silently.
 - Resolve target: `workflow.rebaseTarget ?? ('origin/' + await vcs.detectDefaultBranch(worktreePath))`.
@@ -1041,7 +1041,7 @@ Implement a new troubleshooter skill specifically for mid-pipeline rebase confli
 
 ---
 
-### Phase B: SQLite Schema Migration — 0.5 days
+### Phase B: Postgres Schema Migration — 0.5 days
 
 | Task | Estimate | Dependencies | Status |
 |------|----------|-------------|--------|
@@ -1049,7 +1049,7 @@ Implement a new troubleshooter skill specifically for mid-pipeline rebase confli
 | TRD-005-TEST | 1h | TRD-005 | ( ) |
 
 **Phase B Total:** 3h (~0.4 days)
-**Gate:** New status values accepted by SQLite and TypeScript. Existing data unaffected.
+**Gate:** New status values accepted by Postgres and TypeScript. Existing data unaffected.
 
 *Note: Phases A and B can proceed in parallel — neither depends on Phase 0.*
 
@@ -1131,7 +1131,7 @@ Implement a new troubleshooter skill specifically for mid-pipeline rebase confli
 |-------|-------------|---------------------|-----------------|---------------|
 | 0 | Event-Driven Foundation | 4 (2 + 2) | 12h | 1.5 |
 | A | Workflow YAML Schema | 4 (2 + 2) | 5h | 0.6 |
-| B | SQLite Migration | 2 (1 + 1) | 3h | 0.4 |
+| B | Postgres Migration | 2 (1 + 1) | 3h | 0.4 |
 | C | Rebase Hook | 8 (4 + 4) | 20h | 2.5 |
 | D | QA Mail | 4 (2 + 2) | 6h | 0.75 |
 | E | Observability | 8 (4 + 4) | 10.5h | 1.3 |

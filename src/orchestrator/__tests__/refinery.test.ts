@@ -1003,7 +1003,7 @@ describe("Refinery.mergeCompleted()", () => {
     const stuckRun = makeRun({ id: "run-new-stuck", seed_id: "seed-dup", status: "failed" });
 
     store.getRunsByStatus.mockReturnValue([]);
-    // SQLite returns stuck first (most recent created_at DESC)
+    // Postgres returns stuck first (most recent created_at DESC)
     store.getRunsByStatuses.mockReturnValue([stuckRun, completedRun]);
 
     (removeWorktree as any).mockResolvedValue(undefined);

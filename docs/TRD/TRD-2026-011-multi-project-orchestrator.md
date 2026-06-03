@@ -13,12 +13,12 @@
 
 ### ADR-001: API-First Daemon Architecture (replaces Phased Migration)
 
-**Chosen approach:** tRPC daemon — CLI commands are thin wrappers over a tRPC client that connects to a persistent Foreman daemon. The daemon owns the Postgres connection pool. No `DbAdapter` interface, no `SqliteAdapter`.
+**Chosen approach:** tRPC daemon — CLI commands are thin wrappers over a tRPC client that connects to a persistent Foreman daemon. The daemon owns the Postgres connection pool. No `DbAdapter` interface, no `PostgresAdapter`.
 
-**Rationale:** The v1.0 adapter-pattern approach (extract `DbAdapter` interface, build `SqliteAdapter`, migrate to `PostgresAdapter`) was rejected after adversarial review. Problems: (1) 50+ method `DbAdapter` interface is a maintenance burden; (2) dual-adapter path requires 8h SqliteAdapter extraction on critical path; (3) SQLite backward compat adds complexity with no benefit in v1 (fresh installs don't need SQLite). The tRPC daemon approach eliminates the adapter layer entirely: the daemon speaks directly to Postgres, the CLI speaks only to the daemon's tRPC procedures.
+**Rationale:** The v1.0 adapter-pattern approach (extract `DbAdapter` interface, build `PostgresAdapter`, migrate to `PostgresAdapter`) was rejected after adversarial review. Problems: (1) 50+ method `DbAdapter` interface is a maintenance burden; (2) dual-adapter path requires 8h PostgresAdapter extraction on critical path; (3) Postgres backward compat adds complexity with no benefit in v1 (fresh installs don't need Postgres). The tRPC daemon approach eliminates the adapter layer entirely: the daemon speaks directly to Postgres, the CLI speaks only to the daemon's tRPC procedures.
 
 **Alternatives considered:**
-- **Adapter pattern (v1.0):** `DbAdapter` interface → `SqliteAdapter` → `PostgresAdapter`. Phased migration. Maintains backward compat for SQLite users. High interface maintenance cost.
+- **Adapter pattern (v1.0):** `DbAdapter` interface → `PostgresAdapter` → `PostgresAdapter`. Phased migration. Maintains backward compat for Postgres users. High interface maintenance cost.
 - **Big-bang Postgres replacement (rejected):** Replace `ForemanStore` with direct Postgres calls in one pass. Cleanest but highest risk — 40+ consumer files must be updated simultaneously.
 
 **Data flows:**
@@ -55,7 +55,7 @@ The daemon is a long-lived Node.js HTTP server. It starts via `foreman daemon st
 
 ┌──────────────────────────────────────────────────────────────────┐
 │                    PostgresAdapter (src/lib/db/)                  │
-│   Direct Postgres queries. No SQLite. No adapter interface.       │
+│   Direct Postgres queries. No Postgres. No adapter interface.       │
 │   Methods grouped by domain: projects, tasks, runs, events.       │
 └──────────────────────────────────────────────────────────────────┘
                                                │
@@ -516,6 +516,6 @@ All tables include `project_id` as a required column. All queries in task-contex
 
 **Files NOT created in v1:**
 - `src/lib/db/adapter.ts` (removed — no DbAdapter interface)
-- `src/lib/db/sqlite-adapter.ts` (removed — no SQLite)
+- `src/lib/db/postgres-adapter.ts` (removed — no Postgres)
 - `src/lib/store.ts` (deprecated — replaced by tRPC procedures)
 - `src/lib/task-store.ts` (deprecated — replaced by tRPC procedures)

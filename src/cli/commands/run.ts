@@ -279,7 +279,7 @@ export function isIgnorableControllerPath(path: string): boolean {
     || path.startsWith("SessionLogs/")
     || path === "SESSION_LOG.md"
     || path === "RUN_LOG.md"
-    || path.startsWith("storage.sqlite3");
+    || path.startsWith("storage.");
 }
 
 function withCommonBinaryPath(): NodeJS.ProcessEnv {
@@ -730,7 +730,7 @@ export const runCommand = new Command("run")
       }
 
       // ── Startup Bead Sync ────────────────────────────────────────────────
-      // Reconcile br seed statuses against SQLite run statuses before dispatching.
+      // Reconcile br seed statuses against Postgres run statuses before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
       if (!dryRun && project && backendType === "beads") {
         try {

@@ -68,7 +68,6 @@ shows unexpected counts.
 
 Fix:
 ```bash
-sqlite3 {{projectRoot}}/.beads/beads.db "DELETE FROM blocked_issues_cache;"
 cd {{projectRoot}} && npm test 2>&1 | tail -50
 ```
 
@@ -88,7 +87,6 @@ br show <blocking-bead-id>
 Fix: If the blocking bead's branch is merged into dev but `br` still shows it open/blocking:
 ```bash
 br close --force <blocking-bead-id>
-sqlite3 {{projectRoot}}/.beads/beads.db "DELETE FROM blocked_issues_cache;"
 br sync --flush-only
 cd {{projectRoot}} && npm test 2>&1 | tail -50
 ```
@@ -312,7 +310,6 @@ br show <blocking-bead-id>
 For each case where the blocker bead is CLOSED but the blocked bead is still BLOCKED:
 ```bash
 br close --force <blocked-bead-id>
-sqlite3 {{projectRoot}}/.beads/beads.db "DELETE FROM blocked_issues_cache;"
 ```
 
 #### Step 4 — Sync and dispatch

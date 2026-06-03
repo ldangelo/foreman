@@ -98,23 +98,23 @@ describe("closeSeed — br backend", () => {
     expect(args[0]).toBe("close");
   });
 
-  it("calls execFileSync twice for close (br close + sqlite3 cache clear)", async () => {
+  it("calls execFileSync twice for close (br close + postgres cache clear)", async () => {
     mockExecFileSync.mockReturnValue(Buffer.from(""));
 
     await closeSeed("bd-flush-test", "/my/project");
 
     // Two execFileSync calls:
     // 1. br close --no-db (write to JSONL)
-    // 2. sqlite3 ... DELETE FROM blocked_issues_cache; (clear cache)
+    // 2. postgres ... DELETE FROM blocked_issues_cache; (clear cache)
     expect(mockExecFileSync).toHaveBeenCalledTimes(2);
     const [, args] = mockExecFileSync.mock.calls[0] as [string, string[], unknown];
     expect(args[0]).toBe("close");
     expect(args).toContain("--no-db");
 
-    // Second call should be sqlite3 to clear blocked_issues_cache
-    const [sqlite3Cmd, sqlite3Args] = mockExecFileSync.mock.calls[1] as [string, string[], unknown];
-    expect(sqlite3Cmd).toBe("sqlite3");
-    expect((sqlite3Args as string[]).some((a: string) => a.includes("blocked_issues_cache"))).toBe(true);
+    // Second call should be postgres to clear blocked_issues_cache
+    const [postgresCmd, postgresArgs] = mockExecFileSync.mock.calls[1] as [string, string[], unknown];
+    expect(postgresCmd).toBe("postgres");
+    expect((postgresArgs as string[]).some((a: string) => a.includes("blocked_issues_cache"))).toBe(true);
   });
 
   it("does not throw when close --no-db fails (error suppressed)", async () => {

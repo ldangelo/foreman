@@ -83,8 +83,8 @@ Next step: foreman sling prd docs/PRD/PRD-YYYY-NNN.md --auto
 | Command | Input | Output | Tool |
 |---------|-------|--------|------|
 | `foreman plan` | Product description | PRD.md + TRD.md (markdown files) | `dispatchPlanStep()` → Pi |
-| `foreman sling prd` | PRD file path | Native tasks (SQLite, status=open) | Embedded Pi → `parseTrd()` → `sling-executor` |
-| `foreman sling trd` | TRD file path | Native tasks (SQLite, status=open) | `parseTrd()` → `sling-executor` (existing) |
+| `foreman sling prd` | PRD file path | Native tasks (Postgres, status=open) | Embedded Pi → `parseTrd()` → `sling-executor` |
+| `foreman sling trd` | TRD file path | Native tasks (Postgres, status=open) | `parseTrd()` → `sling-executor` (existing) |
 | `foreman run` | None | Dispatched agent execution | `dispatcher.dispatch()` |
 
 ---
