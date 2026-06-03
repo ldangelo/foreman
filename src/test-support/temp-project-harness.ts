@@ -2,12 +2,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ForemanStore } from "../lib/store.js";
 import { NativeTaskClient } from "../lib/native-task-client.js";
-import { NativeTaskStore } from "../lib/task-store.js";
 import { installBundledPrompts } from "../lib/prompt-loader.js";
 import { installBundledWorkflows } from "../lib/workflow-loader.js";
 import { autoMerge } from "../orchestrator/auto-merge.js";
+import { initPool, isPoolInitialised } from "../lib/db/pool-manager.js";
+import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
+import { PostgresStore } from "../lib/postgres-store.js";
+import { startPostgresTestcontainer } from "./postgres-testcontainer.js";
 
 interface SeedTaskOptions {
   title: string;
@@ -52,16 +54,11 @@ function readLogTail(homeDir: string | undefined): string {
   }).join("\n");
 }
 
-async function withStore<T>(projectPath: string, fn: (store: ForemanStore, taskStore: NativeTaskStore) => T | Promise<T>): Promise<T> {
+async function withRetry<T>(fn: () => T | Promise<T>): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      const store = ForemanStore.forProject(projectPath);
-      try {
-        return await fn(store, new NativeTaskStore(store.getDb()));
-      } finally {
-        store.close();
-      }
+      return await fn();
     } catch (err) {
       lastError = err;
       if (attempt === 5 || !isRetryableStoreError(err)) {
@@ -71,6 +68,15 @@ async function withStore<T>(projectPath: string, fn: (store: ForemanStore, taskS
     }
   }
   throw lastError;
+}
+
+async function ensureTestDatabase(projectPath: string): Promise<string> {
+  const databaseUrl = process.env.DATABASE_URL ?? await startPostgresTestcontainer();
+  if (!isPoolInitialised()) {
+    initPool({ databaseUrl });
+  }
+  writeFileSync(join(projectPath, ".env"), `DATABASE_URL=${databaseUrl}\n`, "utf-8");
+  return databaseUrl;
 }
 
 function initGitRepo(projectPath: string): void {
@@ -100,16 +106,43 @@ function initGitRepo(projectPath: string): void {
   execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, stdio: "pipe" });
 }
 
-export function createTempProjectHarness(): TempProjectHarness {
+export async function createTempProjectHarness(): Promise<TempProjectHarness> {
   const projectPath = realpathSync(mkdtempSync(join(tmpdir(), "foreman-e2e-project-")));
   mkdirSync(join(projectPath, ".foreman"), { recursive: true });
   initGitRepo(projectPath);
+  await ensureTestDatabase(projectPath);
   installBundledPrompts(projectPath, true);
   installBundledWorkflows(projectPath, true);
 
-  void withStore(projectPath, (store) => {
-    store.registerProject("temp-project", projectPath);
+  const adapter = new PostgresAdapter();
+  const projectName = `temp-project-${projectPath.split("-").pop()}`;
+  const project = await adapter.createProject({
+    name: projectName,
+    path: projectPath,
+    defaultBranch: "main",
+    status: "active",
   });
+  const registryBaseDir = process.env.FOREMAN_REGISTRY_BASE_DIR ?? join(process.env.HOME ?? tmpdir(), ".foreman");
+  const registryDir = join(registryBaseDir, "projects");
+  mkdirSync(registryDir, { recursive: true });
+  writeFileSync(join(registryDir, "projects.json"), JSON.stringify([
+    {
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      githubUrl: project.github_url ?? "",
+      repoKey: project.repo_key ?? null,
+      defaultBranch: project.default_branch ?? "main",
+      status: project.status ?? "active",
+      createdAt: project.created_at,
+      updatedAt: project.updated_at,
+      lastSyncAt: project.last_sync_at ?? null,
+    },
+  ], null, 2), "utf-8");
+  const getRunStatuses = () => withRetry(async () =>
+    (await adapter.listRuns(project.id, { limit: 1000 })).map((row) => row.status)
+  );
+  const store = new PostgresStore(project.id, adapter);
 
   return {
     projectPath,
@@ -117,46 +150,37 @@ export function createTempProjectHarness(): TempProjectHarness {
       rmSync(projectPath, { recursive: true, force: true });
     },
     seedTask(opts) {
-      return withStore(projectPath, (_store, taskStore) => {
+      return withRetry(async () => {
         const description = opts.scenario
           ? `FOREMAN_TEST_SCENARIO=${JSON.stringify(opts.scenario)}`
           : undefined;
-        const task = taskStore.create({
+        const task = await adapter.createTask(project.id, {
           title: opts.title,
           description,
           type: opts.type ?? "smoke",
           priority: opts.priority ?? 1,
         });
         if (opts.approved !== false) {
-          taskStore.approve(task.id);
+          await adapter.approveTask(project.id, task.id);
         }
         return task.id;
       });
     },
     addDependency(blockedTaskId, blockerTaskId) {
-      return withStore(projectPath, (_store, taskStore) => {
-        taskStore.update(blockedTaskId, { status: "blocked", force: true });
-        taskStore.addDependency(blockedTaskId, blockerTaskId, "blocks");
+      return withRetry(async () => {
+        await adapter.updateTask(project.id, blockedTaskId, { status: "blocked" });
+        await adapter.addTaskDependency(project.id, blockedTaskId, blockerTaskId, "blocks");
       });
     },
     getTaskStatus(taskId) {
-      return withStore(projectPath, (_store, taskStore) => taskStore.get(taskId)?.status ?? null);
+      return withRetry(async () => (await adapter.getTask(project.id, taskId))?.status ?? null);
     },
-    getRunStatuses() {
-      return withStore(projectPath, (store) =>
-        (
-          store.getDb().prepare("SELECT status FROM runs ORDER BY created_at DESC, rowid DESC").all() as Array<{ status: string }>
-        ).map((row) => row.status)
-      );
-    },
+    getRunStatuses,
     async waitForRunCount(count, timeoutMs = 30_000) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
-        const runCount = withStore(
-          projectPath,
-          (store) => (store.getDb().prepare("SELECT COUNT(*) as count FROM runs").get() as { count: number }).count,
-        );
-        if (await runCount >= count) return;
+        const runCount = (await adapter.listRuns(project.id, { limit: 1000 })).length;
+        if (runCount >= count) return;
         await sleep(200);
       }
       throw new Error(
@@ -167,28 +191,23 @@ export function createTempProjectHarness(): TempProjectHarness {
       const terminalStatuses = new Set(["merged", "failed", "conflict", "completed", "test-failed", "pr-created"]);
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
-        const runs = withStore(
-          projectPath,
-          (store) => store.getDb().prepare("SELECT status FROM runs ORDER BY created_at ASC, rowid ASC").all() as Array<{ status: string }>,
-        );
-        const resolvedRuns = await runs;
+        const resolvedRuns = (await adapter.listRuns(project.id, { limit: 1000 })).slice().reverse();
         if (resolvedRuns.length >= count && resolvedRuns.slice(0, count).every((run) => terminalStatuses.has(run.status))) {
           return;
         }
         await sleep(250);
       }
-      const resolvedStatuses = (await this.getRunStatuses()).join(", ");
+      const resolvedStatuses = (await getRunStatuses()).join(", ");
       throw new Error(
         `Timed out waiting for ${count} terminal run(s). Current statuses: ${resolvedStatuses}\n${readLogTail(process.env.HOME)}`,
       );
     },
     async drainMergeQueue() {
-      await withStore(projectPath, async (store) => {
-        await autoMerge({
-          store,
-          taskClient: new NativeTaskClient(projectPath),
-          projectPath,
-        });
+      await autoMerge({
+        store: store as any,
+        taskClient: new NativeTaskClient(projectPath, { registeredProjectId: project.id }),
+        projectPath,
+        registeredProjectId: project.id,
       });
     },
     readRepoFile(relativePath) {

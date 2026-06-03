@@ -289,6 +289,21 @@ phases:
     expect(testPhase?.bash).toBe("npm run test:unit");
   });
 
+  it("feature workflow inserts PR review phases after finalize", () => {
+    const config = loadWorkflowConfig("feature", tmpDir);
+    const phaseNames = config.phases.map((phase) => phase.name);
+    expect(phaseNames.slice(phaseNames.indexOf("finalize"))).toEqual([
+      "finalize",
+      "create-pr",
+      "pr-wait",
+      "prepare-pr-review",
+      "pr-review",
+    ]);
+    expect(config.phases.find((phase) => phase.name === "create-pr")?.builtin).toBe(true);
+    expect(config.phases.find((phase) => phase.name === "pr-wait")?.artifact).toBe("PR_WAIT_REPORT.md");
+    expect(config.phases.find((phase) => phase.name === "pr-review")?.artifact).toBe("PR_REVIEW_REPORT.md");
+  });
+
   it("does not use Anthropic Haiku for bundled finalize phases", () => {
     for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
       const config = loadWorkflowConfig(workflowName, tmpDir);
