@@ -654,6 +654,7 @@ Foreman integrates with GitHub for bi-directional issue tracking, webhook-driven
 - **Auto-import rules** — Issues with `foreman` or `foreman:dispatch` label can be imported directly into Foreman
 - **Priority mapping** — `foreman:priority:0-4` labels map GitHub issues onto Foreman task priorities
 - **PR visibility** — Pull request events and merge outcomes are recorded alongside task and run state
+- **PR review workflow** — Foreman PR workflows include an explicit PR review gate with `create-pr` → `pr-wait` → `prepare-pr-review` → `pr-review` phases before merge
 - **Release automation** — Conventional commits and GitHub Actions drive release tagging and binary publishing
 
 ### Label Conventions
