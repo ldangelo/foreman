@@ -457,12 +457,40 @@ export class Refinery {
         const currentBranchHead = await this.vcsBackend
           .resolveRef(this.projectPath, branchName)
           .catch(() => null);
+        if (existingPr.state === "OPEN") {
+          // Open PRs track their branch head. Reuse them even when the branch SHA
+          // changed after a PR-review retry; creating another PR for the same
+          // head branch would fail with "a pull request ... already exists".
+          await this.persistRunEvent(
+            run,
+            "pr-created",
+            {
+              seedId: run.seed_id,
+              branchName,
+              baseBranch,
+              prUrl: existingPr.url,
+              existing: true,
+              reopened: false,
+              headChanged: existingPr.headRefOid != null && currentBranchHead != null && currentBranchHead !== existingPr.headRefOid,
+              draft: opts.draft ?? false,
+            },
+          );
+          const prState: Run["pr_state"] = opts.draft ?? false ? "draft" : "open";
+          await this.persistRunUpdate(run, {
+            status: opts.updateRunStatus ? "pr-created" : run.status,
+            pr_url: existingPr.url,
+            pr_state: prState,
+            pr_head_sha: currentBranchHead ?? existingPr.headRefOid ?? null,
+          });
+          return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
+        }
+
         if (
-          existingPr.headRefOid !== null &&
-          currentBranchHead !== null &&
+          existingPr.headRefOid != null &&
+          currentBranchHead != null &&
           currentBranchHead !== existingPr.headRefOid
         ) {
-          // HEAD SHA changed — PR is stale; create fresh PR below.
+          // Non-open PRs with a different SHA are stale; create fresh PR below.
           // Log this mismatch so it's visible in run events.
           await this.persistRunEvent(run, "pr-stale", {
             seedId: run.seed_id,
@@ -472,7 +500,7 @@ export class Refinery {
             currentHead: currentBranchHead,
           });
         } else {
-          // HEAD SHA unchanged — safe to reuse the existing PR.
+          // HEAD SHA unchanged — safe to reuse the existing closed PR by reopening it.
           let reopenedExistingPr = false;
           if (existingPr.state === "CLOSED") {
             try {

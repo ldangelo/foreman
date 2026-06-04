@@ -434,7 +434,60 @@ describe("MQ-T058d: PR creation strategy decision", () => {
       }
     });
 
-    it("creates a fresh PR when the branch SHA has changed (stale PR, AC-2)", async () => {
+    it("reuses an open PR when the branch SHA changed after retry", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-90", seed_id: "seed-open-pr-retry" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
+            if (cmd === "git") {
+              callback(null, { stdout: "", stderr: "" });
+              return;
+            }
+            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              callback(null, {
+                stdout: JSON.stringify({
+                  state: "OPEN",
+                  headRefName: "foreman/seed-open-pr-retry",
+                  headRefOid: "oldsha",
+                  url: "https://github.com/org/repo/pull/90",
+                }),
+                stderr: "",
+              });
+              return;
+            }
+            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+          },
+        );
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-90", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/90");
+        const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const createCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "create",
+        );
+        expect(createCall).toBeUndefined();
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-created",
+          expect.objectContaining({ existing: true, headChanged: true, prUrl: "https://github.com/org/repo/pull/90" }),
+          "run-90",
+        );
+        expect(store.updateRun).toHaveBeenCalledWith(
+          "run-90",
+          expect.objectContaining({ pr_url: "https://github.com/org/repo/pull/90", pr_head_sha: "abc123" }),
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("creates a fresh PR when a non-open PR branch SHA has changed (stale PR, AC-2)", async () => {
       const { store, refinery } = createTestRefinery();
       const run = makeRun({ id: "run-88", seed_id: "seed-reopen-fallback" });
       store.getRun.mockReturnValue(run);
