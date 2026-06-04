@@ -98,4 +98,61 @@ describe("pi observability trace", () => {
     expect(markdown).toContain("# FIX Trace — foreman-56b46");
     expect(markdown).toContain("DEVELOPER_REPORT.md");
   });
+
+  it("sanitizes absolute worktree paths in tool call argsPreview", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
+    const trace = createPhaseTrace({
+      runId: "run-sanitize-1",
+      seedId: "foreman-56b46",
+      phase: "developer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath,
+      rawPrompt: "Fix the bug",
+    });
+
+    // Simulate a tool call with an absolute path in args
+    // The args contain a read tool call with the worktree path embedded
+    const toolCallArgsWithPath = JSON.stringify({ path: join(worktreePath, "src", "index.ts") });
+    trace.toolCalls.push({
+      toolCallId: "tool-call-1",
+      toolName: "read",
+      startedAt: new Date().toISOString(),
+      argsPreview: toolCallArgsWithPath, // already sanitized at capture time
+      updateCount: 0,
+    });
+
+    const paths = await writePhaseTrace(trace);
+    const json = JSON.parse(await readFile(paths.jsonPath, "utf-8")) as {
+      toolCalls: Array<{ toolCallId: string; argsPreview?: string }>;
+    };
+
+    // The argsPreview should not contain the absolute worktree path
+    const argsPreview = json.toolCalls[0]?.argsPreview ?? "";
+    expect(argsPreview).not.toContain(worktreePath);
+    // It should be replaced with the placeholder
+    expect(argsPreview).toContain("<worktree>");
+  });
+
+  it("sanitizes worktreePath field in JSON trace output", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
+    const trace = createPhaseTrace({
+      runId: "run-sanitize-2",
+      seedId: "foreman-56b46",
+      phase: "developer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath,
+      rawPrompt: "Fix the bug",
+    });
+    finalizePhaseTrace(trace, { success: true, finalMessage: "Done." });
+
+    const paths = await writePhaseTrace(trace);
+    const json = await readFile(paths.jsonPath, "utf-8");
+
+    // The worktreePath should not appear as-is in the JSON
+    expect(json).not.toContain(worktreePath);
+    // It should be replaced with the placeholder
+    expect(json).toContain("<worktree>");
+  });
 });

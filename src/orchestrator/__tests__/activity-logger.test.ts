@@ -1,9 +1,13 @@
 import { describe, it, expect } from "vitest";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   createPhaseRecord,
   detectWarnings,
   finalizePhaseRecord,
+  writeIncrementalPipelineReport,
 } from "../activity-logger.js";
 
 describe("activity logger observability", () => {
@@ -78,5 +82,63 @@ describe("activity logger observability", () => {
     expect(detectWarnings([finalized])).toContain(
       "Command phase contract failures: fix",
     );
+  });
+
+  it("creates phase record with builtin phaseType for PR workflow phases", () => {
+    const prPhase = createPhaseRecord("create-pr", "MiniMax", {
+      phaseType: "builtin",
+      artifactExpected: "docs/reports/foreman-e59b5/QA_REPORT.md",
+    });
+
+    expect(prPhase.phaseType).toBe("builtin");
+    expect(prPhase.name).toBe("create-pr");
+  });
+
+  it("writeIncrementalPipelineReport includes builtin phases in phase table", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-activity-"));
+    const seedId = "foreman-e59b5";
+    const runId = "run-test-001";
+
+    const phases = [
+      {
+        name: "explorer",
+        phaseType: "prompt" as const,
+        skipped: false,
+        success: true,
+        costUsd: 0.05,
+        turns: 2,
+        artifactExpected: "EXPLORER_REPORT.md",
+        artifactPresent: true,
+        traceFile: "docs/reports/foreman-e59b5/EXPLORER_TRACE.json",
+      },
+      {
+        name: "create-pr",
+        phaseType: "builtin" as const,
+        skipped: false,
+        success: true,
+        costUsd: 0,
+        turns: 0,
+        artifactExpected: "docs/reports/foreman-e59b5/QA_REPORT.md",
+        artifactPresent: false,
+      },
+    ];
+
+    await writeIncrementalPipelineReport({
+      worktreePath,
+      seedId,
+      runId,
+      completedPhases: phases,
+      targetBranch: "main",
+      vcsBranchName: "feature/test",
+    });
+
+    const reportPath = join(worktreePath, "docs", "reports", seedId, "PIPELINE_REPORT.md");
+    const report = await readFile(reportPath, "utf-8");
+
+    // Verify both phases appear in the table
+    expect(report).toContain("`explorer`");
+    expect(report).toContain("`create-pr`");
+    // Verify builtin phase type is shown
+    expect(report).toContain("builtin");
   });
 });

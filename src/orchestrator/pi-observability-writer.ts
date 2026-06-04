@@ -20,6 +20,32 @@ export function getPhaseTracePaths(worktreePath: string, seedId: string, phase: 
   };
 }
 
+/**
+ * Replace occurrences of the absolute worktree path in a string with a
+ * stable placeholder so that committed trace artifacts do not leak
+ * host-specific paths.
+ */
+function sanitizeWorktreePath(value: string, worktreePath: string): string {
+  if (!worktreePath || value.indexOf(worktreePath) === -1) return value;
+  return value.split(worktreePath).join("<worktree>");
+}
+
+/**
+ * Serialize a PhaseTrace to JSON with worktree path sanitization.
+ * The `worktreePath` field and any string values containing the absolute
+ * path are replaced with `<worktree>` to prevent leakage.
+ */
+function serializeTrace(trace: PhaseTrace): string {
+  // Clone and sanitize the worktreePath field
+  const sanitized = JSON.stringify(trace, (_key, value) => {
+    if (typeof value === "string") {
+      return sanitizeWorktreePath(value, trace.worktreePath);
+    }
+    return value;
+  }, 2);
+  return sanitized;
+}
+
 function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): string {
   const lines: string[] = [
     `# ${trace.phase.toUpperCase()} Trace — ${trace.seedId}`,
@@ -79,7 +105,7 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
 export async function writePhaseTrace(trace: PhaseTrace): Promise<PhaseTraceWriteResult> {
   const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase);
   await mkdir(join(trace.worktreePath, "docs", "reports", trace.seedId), { recursive: true });
-  await writeFile(paths.jsonPath, `${JSON.stringify(trace, null, 2)}\n`, "utf-8");
+  await writeFile(paths.jsonPath, `${serializeTrace(trace)}\n`, "utf-8");
   await writeFile(paths.markdownPath, `${renderTraceMarkdown(trace, paths.relativeJsonPath)}\n`, "utf-8");
   return paths;
 }

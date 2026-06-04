@@ -59,11 +59,27 @@ function truncate(value: string, max = 240): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
 
-function summarizeUnknown(value: unknown): string | undefined {
+/**
+ * Sanitize a string value by replacing occurrences of the worktree absolute
+ * path with a stable placeholder `<worktree>`. This prevents host-specific
+ * paths from leaking into committed trace artifacts.
+ *
+ * Handles both plain strings and JSON-stringified values that may embed the path.
+ */
+function sanitizeValue(value: string, worktreePath: string): string {
+  if (!worktreePath || value.indexOf(worktreePath) === -1) return value;
+  return value.split(worktreePath).join("<worktree>");
+}
+
+function summarizeUnknown(value: unknown, worktreePath?: string): string | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value === "string") return truncate(value.replace(/\s+/g, " ").trim());
+  if (typeof value === "string") {
+    const truncated = truncate(value.replace(/\s+/g, " ").trim());
+    return worktreePath ? sanitizeValue(truncated, worktreePath) : truncated;
+  }
   try {
-    return truncate(JSON.stringify(value));
+    const stringified = truncate(JSON.stringify(value));
+    return worktreePath ? sanitizeValue(stringified, worktreePath) : stringified;
   } catch {
     return truncate(String(value));
   }
@@ -185,7 +201,7 @@ export function createPiObservabilityExtensionWithEmitter(
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         startedAt: new Date().toISOString(),
-        argsPreview: summarizeUnknown(event.args),
+        argsPreview: summarizeUnknown(event.args, trace.worktreePath),
         updateCount: 0,
       });
       if (event.toolName === "edit" || event.toolName === "write" || event.toolName === "bash") {
@@ -194,7 +210,7 @@ export function createPiObservabilityExtensionWithEmitter(
           phase: trace.phase,
           seedId: trace.seedId,
           toolName: event.toolName,
-          argsPreview: summarizeUnknown(event.args),
+          argsPreview: summarizeUnknown(event.args, trace.worktreePath),
           message: `tool=${event.toolName}`,
         });
       }
@@ -204,7 +220,7 @@ export function createPiObservabilityExtensionWithEmitter(
       const tool = findTool(trace, event.toolCallId);
       if (!tool) return;
       tool.updateCount += 1;
-      const partial = summarizeUnknown(event.partialResult);
+      const partial = summarizeUnknown(event.partialResult, trace.worktreePath);
       if (partial) tool.resultPreview = partial;
     });
 
@@ -216,6 +232,7 @@ export function createPiObservabilityExtensionWithEmitter(
         event.content
           ?.map((part: unknown) => (part && typeof part === "object" && "text" in part ? (part as { text?: unknown }).text : part))
           .filter(Boolean),
+        trace.worktreePath,
       );
       if (contentPreview) tool.resultPreview = contentPreview;
     });
@@ -225,7 +242,7 @@ export function createPiObservabilityExtensionWithEmitter(
       if (!tool) return;
       tool.completedAt = new Date().toISOString();
       tool.isError = event.isError;
-      const result = summarizeUnknown(event.result);
+      const result = summarizeUnknown(event.result, trace.worktreePath);
       if (result) tool.resultPreview = result;
     });
 
