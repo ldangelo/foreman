@@ -70,6 +70,8 @@ Foreman CLI / Dispatcher
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
 5. **Finalize** — git add/commit/push, native task merge/close update (or beads fallback)
 
+After Finalize, Foreman creates a PR, waits for CodeRabbit review, collects findings, and runs an explicit PR review gate (`create-pr` → `pr-wait` → `prepare-pr-review` → `pr-review`) before refinery merges.
+
 Dev ↔ QA retries up to 2x before proceeding to Review.
 
 ## Dispatch Flow
