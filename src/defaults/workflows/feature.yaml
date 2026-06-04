@@ -101,7 +101,7 @@ phases:
   - name: pr-wait
     builtin: true
     artifact: PR_WAIT_REPORT.md
-    timeoutSecs: 600
+    timeoutSecs: 1200
     mail:
       onStart: true
       onComplete: true

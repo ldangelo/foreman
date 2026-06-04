@@ -988,7 +988,7 @@ async function runPrWaitBuiltinPhase(args: {
   if (!prNumber) throw new Error("PR metadata missing prNumber");
 
   const timeoutMs = (args.phase.timeoutSecs ?? 600) * 1000;
-  const pollIntervalMs = 15_000;
+  const pollIntervalMs = 60_000;
   const startedAt = Date.now();
   let lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   let timedOut = false;
