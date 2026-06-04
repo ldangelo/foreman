@@ -25,6 +25,8 @@ phases:
   # to a prompt: phase.
   - name: fix
     command: "/skill:ensemble-fix-issue {task.title} {task.description}"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -41,6 +43,8 @@ phases:
   # Artifact is written from stdout; verdict is parsed from output.
   - name: test
     bash: "npm run test:unit"
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     artifact: TEST_RESULTS.md
     verdict: true
     retryWith: fix
@@ -56,6 +60,8 @@ phases:
   # FINALIZE_REPORT.md is also written by the agent as a human-readable summary.
   - name: finalize
     prompt: finalize-bug.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
     maxTurns: 30

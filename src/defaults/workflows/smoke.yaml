@@ -15,6 +15,8 @@ setupCache:
 phases:
   - name: explorer
     prompt: explorer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
     models:
       default: haiku
     maxTurns: 5
@@ -27,6 +29,8 @@ phases:
 
   - name: developer
     prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: haiku
     maxTurns: 5
@@ -37,6 +41,8 @@ phases:
 
   - name: qa
     prompt: qa.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     models:
       default: haiku
     maxTurns: 5
@@ -51,6 +57,8 @@ phases:
 
   - name: reviewer
     prompt: reviewer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
     models:
       default: sonnet
     maxTurns: 5
@@ -66,6 +74,8 @@ phases:
 
   - name: finalize
     prompt: finalize.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
     maxTurns: 10

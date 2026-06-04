@@ -21,6 +21,8 @@ rebaseAfterPhase: developer
 phases:
   - name: explorer
     prompt: explorer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
@@ -34,6 +36,8 @@ phases:
 
   - name: developer
     prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
@@ -48,6 +52,8 @@ phases:
 
   - name: qa
     prompt: qa.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
@@ -63,6 +69,8 @@ phases:
 
   - name: reviewer
     prompt: reviewer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
@@ -79,6 +87,8 @@ phases:
 
   - name: finalize
     prompt: finalize.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
     maxTurns: 30
@@ -115,6 +125,8 @@ phases:
 
   - name: pr-review
     prompt: pr-review.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     models:
       default: MiniMax
     maxTurns: 40

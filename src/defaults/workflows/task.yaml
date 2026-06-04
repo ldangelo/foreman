@@ -21,6 +21,8 @@ rebaseAfterPhase: developer
 phases:
   - name: fix
     command: "/skill:ensemble-fix-issue {task.title} {task.description}"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
@@ -37,6 +39,8 @@ phases:
   - name: test
     bash: "npm run test:unit"
     timeoutSecs: 180
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     artifact: TEST_RESULTS.md
     verdict: true
     retryWith: fix
@@ -49,6 +53,8 @@ phases:
   # Standard finalize with human-readable summary for auto-merge context.
   - name: finalize
     prompt: finalize.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
       P0: MiniMax-highspeed

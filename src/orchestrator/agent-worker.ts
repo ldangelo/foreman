@@ -34,7 +34,7 @@ import { updateTerminalRunStatus } from "./agent-worker-run-status.js";
 import { createDualWriteStore } from "./rate-limit-dual-write.js";
 import { writeMarkStuckEvent, writeMarkStuckProgress } from "./agent-worker-mark-stuck-observability.js";
 import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";
-import type { AgentRole, WorkerNotification } from "./types.js";
+import type { WorkerNotification } from "./types.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import type { AgentMailClient } from "../lib/agent-mail-client.js";
 import { createProjectMailClient, resolveProjectDatabaseUrl } from "../lib/project-mail-client.js";
@@ -292,6 +292,7 @@ interface WorkerConfig {
   seedDescription?: string;
   seedComments?: string;
   model: string;
+  allowedTools?: string[];
   worktreePath: string;
   /** Project root directory (contains .beads/). Used as cwd for br commands. */
   projectPath?: string;
@@ -638,7 +639,7 @@ interface PhaseResult {
  * Run a single pipeline phase as a separate SDK session.
  */
 async function runPhase(
-  role: Exclude<AgentRole, "lead" | "worker" | "sentinel">,
+  role: string,
   prompt: string,
   config: WorkerConfig,
   progress: RunProgress,
@@ -649,7 +650,10 @@ async function runPhase(
   observability?: PhaseObservabilityInput,
   observabilityWriter?: PipelineObservabilityWriter,
 ): Promise<PhaseResult> {
-  const roleConfig = ROLE_CONFIGS[role];
+  const baseRoleConfig = (ROLE_CONFIGS as Record<string, typeof ROLE_CONFIGS.developer | undefined>)[role] ?? ROLE_CONFIGS.developer;
+  const roleConfig = config.allowedTools
+    ? { ...baseRoleConfig, role: role as typeof baseRoleConfig.role, allowedTools: config.allowedTools }
+    : baseRoleConfig;
   // Use the model resolved by the pipeline executor (from workflow YAML + bead priority).
   // Falls back to ROLE_CONFIGS[role].model for backward compat (no-YAML / direct invocation).
   const resolvedModel: string = config.model || roleConfig.model;

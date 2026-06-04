@@ -22,6 +22,8 @@ phases:
   # Use /ensemble:refactor or /ensemble:chore for refactoring-specific agents.
   - name: fix
     command: "/skill:ensemble-fix-issue {task.title} {task.description}"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: sonnet
       P0: opus
@@ -36,6 +38,8 @@ phases:
   # Runs the project's unit test suite to validate the chore quickly.
   - name: test
     bash: "npm run test:unit"
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     artifact: TEST_RESULTS.md
     verdict: true
     retryWith: fix
@@ -48,6 +52,8 @@ phases:
   # Summarises changes for auto-merge.
   - name: finalize
     prompt: finalize.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
     maxTurns: 20

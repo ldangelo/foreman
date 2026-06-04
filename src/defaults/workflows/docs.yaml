@@ -16,6 +16,8 @@ phases:
   # The agent writes or updates documentation based on the task title/description.
   - name: develop
     prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: sonnet
       P0: opus
@@ -33,6 +35,8 @@ phases:
   # Quick validation: verify docs build or lint, then auto-merge.
   - name: finalize
     prompt: finalize.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
     maxTurns: 15

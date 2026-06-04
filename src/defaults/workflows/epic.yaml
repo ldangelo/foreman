@@ -43,6 +43,8 @@ phases:
   # skipIfArtifact checks for docs/PRD/PRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: prd
     command: "/skill:ensemble-create-prd {task.title}"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -57,6 +59,8 @@ phases:
   # skipIfArtifact checks for docs/TRD/TRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: trd
     command: "/skill:ensemble-create-trd"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -73,6 +77,8 @@ phases:
   # We anchor it to docs/reports/{seedId}/ so it's committed with the worktree.
   - name: implement
     command: "mkdir -p docs/reports/{task.id} && /skill:ensemble-implement-trd && mv IMPLEMENT_REPORT.md docs/reports/{task.id}/IMPLEMENT_REPORT.md 2>/dev/null || true"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -89,6 +95,8 @@ phases:
   # ── Phase 4: Developer (fix issues from finalize / qa) ──────────────────
   - name: developer
     prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -104,6 +112,8 @@ phases:
   # ── Phase 5: QA ──────────────────────────────────────────────────────────
   - name: qa
     prompt: qa.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -120,6 +130,8 @@ phases:
   # ── Phase 6: finalize ───────────────────────────────────────────────────
   - name: finalize
     prompt: finalize.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
     maxTurns: 30

@@ -16,6 +16,8 @@ phases:
   # Investigate the question and produce a written analysis.
   - name: explore
     prompt: explorer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
     models:
       default: sonnet
       P0: opus
@@ -30,6 +32,8 @@ phases:
   # Summarise findings. No merge — merge_strategy is "none".
   - name: finalize
     prompt: finalize.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
     maxTurns: 15

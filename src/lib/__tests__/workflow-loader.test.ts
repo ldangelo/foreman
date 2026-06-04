@@ -91,6 +91,26 @@ describe("validateWorkflowConfig", () => {
     // unknown fields are simply not included
     expect((config.phases[0] as unknown as Record<string, unknown>)["unknown"]).toBeUndefined();
   });
+
+  it("parses per-phase tool allowlists", () => {
+    const raw = {
+      name: "w",
+      phases: [{
+        name: "pr-review",
+        prompt: "pr-review.md",
+        tools: { allowed: ["Bash", "Edit", "Read", "Write"] },
+      }],
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.phases[0].tools?.allowed).toEqual(["Bash", "Edit", "Read", "Write"]);
+  });
+
+  it("throws when tools.allowed is not a string array", () => {
+    expect(() => validateWorkflowConfig({
+      name: "w",
+      phases: [{ name: "developer", prompt: "developer.md", tools: { allowed: ["Read", ""] } }],
+    }, "w")).toThrow(WorkflowConfigError);
+  });
 });
 
 // ── validateWorkflowConfig — setup block ─────────────────────────────────────

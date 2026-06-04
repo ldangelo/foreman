@@ -106,6 +106,12 @@ export interface WorkflowPhaseFiles {
   leaseSecs?: number;
 }
 
+/** Per-phase tool configuration. */
+export interface WorkflowPhaseTools {
+  /** SDK/Pi tool names allowed for this phase. Overrides the role default allowlist. */
+  allowed?: string[];
+}
+
 /** Per-phase configuration in a workflow YAML. */
 export interface WorkflowPhaseConfig {
   /** Phase name: "explorer" | "developer" | "qa" | "reviewer" | "finalize" | custom */
@@ -158,6 +164,8 @@ export interface WorkflowPhaseConfig {
   mail?: WorkflowPhaseMail;
   /** File reservation config for this phase. */
   files?: WorkflowPhaseFiles;
+  /** Tool allowlist override for this phase. */
+  tools?: WorkflowPhaseTools;
   /**
    * When true, this phase is implemented as a built-in TypeScript function
    * rather than an SDK agent call. Currently only "finalize" uses this.
@@ -441,6 +449,23 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
     if (typeof p["bash"] === "string") phase.bash = p["bash"];
     if (typeof p["command"] === "string") phase.command = p["command"];
+
+    if (isRecord(p["tools"])) {
+      const toolsRaw = p["tools"];
+      const allowedRaw = toolsRaw["allowed"];
+      if (allowedRaw !== undefined) {
+        if (!Array.isArray(allowedRaw)) {
+          throw new WorkflowConfigError(workflowName, `phases[${i}].tools.allowed must be an array of strings`);
+        }
+        const allowed = allowedRaw.map((tool, toolIndex) => {
+          if (typeof tool !== "string" || !tool.trim()) {
+            throw new WorkflowConfigError(workflowName, `phases[${i}].tools.allowed[${toolIndex}] must be a non-empty string`);
+          }
+          return tool;
+        });
+        phase.tools = { allowed };
+      }
+    }
 
     // Exactly one of bash, command, or prompt must be set (unless builtin: true)
     const hasPrompt = typeof p["prompt"] === "string";
