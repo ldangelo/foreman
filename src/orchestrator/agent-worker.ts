@@ -979,17 +979,22 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function readPrNumberFromMetadata(worktreePath: string): number {
+  const metadataPath = join(worktreePath, "PR_METADATA.json");
+  const raw = readFileSync(metadataPath, "utf8");
+  const metadata = JSON.parse(raw) as { prNumber?: number; prUrl?: string };
+  const prNumber = metadata.prNumber ?? (metadata.prUrl ? parsePrNumber(metadata.prUrl) : undefined);
+  if (!prNumber) throw new Error("PR metadata missing prNumber");
+  return prNumber;
+}
+
 async function runPrWaitBuiltinPhase(args: {
   config: WorkerConfig;
   phase: WorkflowPhaseConfig;
   pipelineProjectPath: string;
   log: (msg: string) => void;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
-  const metadataPath = join(args.config.worktreePath, "PR_METADATA.json");
-  const raw = readFileSync(metadataPath, "utf8");
-  const metadata = JSON.parse(raw) as { prNumber?: number; prUrl?: string };
-  const prNumber = metadata.prNumber ?? (metadata.prUrl ? parsePrNumber(metadata.prUrl) : undefined);
-  if (!prNumber) throw new Error("PR metadata missing prNumber");
+  const prNumber = readPrNumberFromMetadata(args.config.worktreePath);
 
   const timeoutMs = (args.phase.timeoutSecs ?? 600) * 1000;
   const pollIntervalMs = 60_000;
@@ -1035,15 +1040,35 @@ async function runPreparePrReviewBuiltinPhase(args: {
   pipelineProjectPath: string;
   log: (msg: string) => void;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
-  const metadataPath = join(args.config.worktreePath, "PR_METADATA.json");
-  const raw = readFileSync(metadataPath, "utf8");
-  const metadata = JSON.parse(raw) as { prNumber?: number; prUrl?: string };
-  const prNumber = metadata.prNumber ?? (metadata.prUrl ? parsePrNumber(metadata.prUrl) : undefined);
-  if (!prNumber) throw new Error("PR metadata missing prNumber");
+  const prNumber = readPrNumberFromMetadata(args.config.worktreePath);
   const context = await collectPrReviewContext(args.pipelineProjectPath, prNumber);
   await writePrReviewFindings(args.config.worktreePath, context);
   args.log(`[PR-REVIEW] Collected ${context.blockingFindings.length} blocking CodeRabbit finding(s), ${context.failedChecks.length} failed check(s)`);
   return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: `blocking=${context.blockingFindings.length} failedChecks=${context.failedChecks.length}` };
+}
+
+async function validatePrReviewGate(args: {
+  worktreePath: string;
+  pipelineProjectPath: string;
+  log: (msg: string) => void;
+}): Promise<{ success: boolean; reason?: string }> {
+  const prNumber = readPrNumberFromMetadata(args.worktreePath);
+  const waitSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
+  const waitStatus = summarizePrWaitStatus(waitSnapshot);
+  const reviewContext = await collectPrReviewContext(args.pipelineProjectPath, prNumber);
+
+  args.log(
+    `[PR-REVIEW] Final gate for PR #${prNumber}: checksTerminal=${String(waitStatus.checksTerminal)} ` +
+      `codeRabbitSeen=${String(waitStatus.codeRabbitSeen)} mergeConflict=${String(waitStatus.mergeConflict)} ` +
+      `blocking=${reviewContext.blockingFindings.length} failedChecks=${reviewContext.failedChecks.length}`,
+  );
+
+  if (waitStatus.mergeConflict) return { success: false, reason: `pr_review_merge_conflict: ${waitStatus.mergeConflictReason ?? "unknown"}` };
+  if (!waitStatus.checksTerminal) return { success: false, reason: `pr_review_checks_pending: ${waitStatus.pendingChecks.join(", ") || "unknown"}` };
+  if (!waitStatus.codeRabbitSeen) return { success: false, reason: "pr_review_coderabbit_not_observed" };
+  if (reviewContext.failedChecks.length > 0) return { success: false, reason: `pr_review_failed_checks: ${reviewContext.failedChecks.map((check) => check.name).join(", ")}` };
+  if (reviewContext.blockingFindings.length > 0) return { success: false, reason: `pr_review_blocking_findings: ${reviewContext.blockingFindings.length}` };
+  return { success: true };
 }
 
 async function runPipeline(
@@ -1385,6 +1410,25 @@ async function runPipeline(
         if (troubleshooterResolved) {
           // Troubleshooter resolved the issue — treat as success
           finalizeSucceeded = true;
+        }
+      }
+
+      const hasPrReviewPhase = workflowConfig.phases.some((phase) => phase.name === "pr-review");
+      if (finalizeSucceeded && hasPrReviewPhase && existsSync(join(worktreePath, "PR_METADATA.json"))) {
+        try {
+          const gate = await validatePrReviewGate({ worktreePath, pipelineProjectPath, log });
+          if (!gate.success) {
+            finalizeSucceeded = false;
+            finalizeRetryable = false;
+            finalizeFailureReason = gate.reason ?? "pr_review_gate_failed";
+            log(`[PR-REVIEW] Final gate failed — ${finalizeFailureReason}`);
+          }
+        } catch (gateErr: unknown) {
+          const gateMsg = gateErr instanceof Error ? gateErr.message : String(gateErr);
+          finalizeSucceeded = false;
+          finalizeRetryable = false;
+          finalizeFailureReason = `pr_review_gate_error: ${gateMsg}`;
+          log(`[PR-REVIEW] Final gate errored — ${gateMsg}`);
         }
       }
 
