@@ -23,6 +23,7 @@ Do NOT run tests if conflict markers are found.
 3. Choose the narrowest verification that can prove the task:
    - For localized CLI/status/output/display changes, run targeted tests or targeted command-level verification first
    - Only broaden to `npm test -- --reporter=dot 2>&1` when the task is broad, when targeted verification is insufficient, or when targeted checks reveal broader regression risk
+   - If you pipe test output through another command, preserve the test command exit code. Use `set -o pipefail` with `tee`, or avoid pipes. Do **not** use patterns like `npm test ... 2>&1 | tail -30` because `tail` can return success while tests fail.
 4. If tests fail due to the changes, do not modify source code. Report the failure clearly and route the task back to Developer.
 5. If the full test suite has pre-existing failures unrelated to this implementation, verify they existed BEFORE your changes by checking git stash state. If pre-existing failures are the ONLY failures, set verdict to PASS and note the pre-existing failures in the report.
 6. Write any additional test recommendations needed for uncovered edge cases, but do not implement source changes in QA
@@ -40,7 +41,7 @@ Do NOT run tests if conflict markers are found.
 
 ## Test Results
 - Targeted command(s) run: <specific command(s) or manual verification used first>
-- Full suite command (if run): `npm test -- --reporter=dot 2>&1`
+- Full suite command (if run): `npm test -- --reporter=dot 2>&1` (or `set -o pipefail; npm test -- --reporter=dot 2>&1 | tee /tmp/qa-test.log` when piping output)
 - Test suite: X passed, Y failed | SKIPPED
 - Raw summary: <copy the pass/fail count lines from the command actually used>
 - New tests added: N
