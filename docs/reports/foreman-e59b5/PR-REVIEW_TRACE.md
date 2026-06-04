@@ -5,8 +5,8 @@
 - Model: `minimax/MiniMax-M2.7`
 - Workflow: `feature`
 - Workflow path: `/Users/ldangelo/.foreman/workflows/feature.yaml`
-- Started: 2026-06-04T21:54:25.376Z
-- Completed: 2026-06-04T21:55:12.821Z
+- Started: 2026-06-04T22:15:43.524Z
+- Completed: 2026-06-04T22:16:45.092Z
 - Success: yes
 - Expected artifact: `PR_REVIEW_REPORT.md`
 - Artifact present: yes
@@ -87,185 +87,165 @@ Verdict rules:
 ## Final Assistant Output
 
 ```text
+Now let me refresh the PR state and verify the current status.
 
+Let me verify whether the absolute paths are still present in the committed artifacts:
+Now I have a complete picture. Let me write the review report.
+PR review complete. Here's the summary:
 
-I'll start by reading the required input files to understand the current state.
+**Verdict: FAIL**
 
+### Key findings:
+- **14 blocking CodeRabbit issues** (2 HIGH, 12 MEDIUM) — all verified present in committed files
+- **0 failed CI checks** — CI is green
+- **PR is mergeable** (CLEAN state) — no merge conflicts
 
-Let me refresh the PR state and examine the current state of the files to verify the findings.
-
-
-Now I have all the information needed. Let me write the PR Review Report:
-
-
-**PR Review Report written to `PR_REVIEW_REPORT.md`**
-
-**Summary:**
-- **6 blocking CodeRabbit findings** (2 HIGH, 4 MEDIUM) — all confirmed valid via direct file inspection
-- **1 failed check** — `git-backend.test.ts:1054` — unrelated (test f…
+### The core…
 ```
 
 ## Tool Calls
 
-### read (`call_function_7ee8vnaarrlg_1`)
+### read (`call_function_8sts43ajh5gn_1`)
 
-- Started: 2026-06-04T21:54:29.343Z
-- Completed: 2026-06-04T21:54:29.346Z
+- Started: 2026-06-04T22:15:46.435Z
+- Completed: 2026-06-04T22:15:46.438Z
 - Error: no
 - Updates: 0
 - Args: `{"path":"PR_METADATA.json"}`
-- Result: `{"content":[{"type":"text","text":"{\n  \"prUrl\": \"https://github.com/ldangelo/foreman/pull/207\",\n  \"prNumber\": 207,\n  \"branchName\": \"foreman/foreman-e59b5\",\n  \"headSha\": \"ddd74887e577756b25f263941db964d32194079c\",\n  \"bas…`
+- Result: `{"content":[{"type":"text","text":"{\n  \"prUrl\": \"https://github.com/ldangelo/foreman/pull/207\",\n  \"prNumber\": 207,\n  \"branchName\": \"foreman/foreman-e59b5\",\n  \"headSha\": \"b9eabfc4561e11d6444a9240854dac6b9334d34f\",\n  \"bas…`
 
-### read (`call_function_7ee8vnaarrlg_2`)
+### read (`call_function_8sts43ajh5gn_2`)
 
-- Started: 2026-06-04T21:54:29.343Z
-- Completed: 2026-06-04T21:54:29.346Z
+- Started: 2026-06-04T22:15:46.435Z
+- Completed: 2026-06-04T22:15:46.438Z
 - Error: no
 - Updates: 0
 - Args: `{"path":"PR_WAIT_REPORT.md"}`
-- Result: `{"content":[{"type":"text","text":"# PR Wait Report\n\n## PR\n- Number: 207\n- URL: https://github.com/ldangelo/foreman/pull/207\n- Head SHA: ddd74887e577756b25f263941db964d32194079c\n- Mergeable: MERGEABLE\n- Merge State: UNSTABLE\n\n## C…`
+- Result: `{"content":[{"type":"text","text":"# PR Wait Report\n\n## PR\n- Number: 207\n- URL: https://github.com/ldangelo/foreman/pull/207\n- Head SHA: b9eabfc4561e11d6444a9240854dac6b9334d34f\n- Mergeable: MERGEABLE\n- Merge State: CLEAN\n\n## Chec…`
 
-### read (`call_function_7ee8vnaarrlg_3`)
+### read (`call_function_8sts43ajh5gn_3`)
 
-- Started: 2026-06-04T21:54:29.344Z
-- Completed: 2026-06-04T21:54:29.347Z
+- Started: 2026-06-04T22:15:46.436Z
+- Completed: 2026-06-04T22:15:46.438Z
 - Error: no
 - Updates: 0
 - Args: `{"path":"PR_REVIEW_FINDINGS.md"}`
-- Result: `{"content":[{"type":"text","text":"# PR Review Findings\n\n- PR: #207 (https://github.com/ldangelo/foreman/pull/207)\n- Head SHA: ddd74887e577756b25f263941db964d32194079c\n\n## Blocking CodeRabbit Findings\n\n### 1. HIGH — docs/reports/for…`
+- Result: `{"content":[{"type":"text","text":"# PR Review Findings\n\n- PR: #207 (https://github.com/ldangelo/foreman/pull/207)\n- Head SHA: b9eabfc4561e11d6444a9240854dac6b9334d34f\n\n## Blocking CodeRabbit Findings\n\n### 1. HIGH — docs/reports/for…`
 
-### bash (`call_function_fa478c5cg5fw_1`)
+### bash (`call_function_nk0t7lvce00g_1`)
 
-- Started: 2026-06-04T21:54:33.325Z
-- Completed: 2026-06-04T21:54:34.193Z
+- Started: 2026-06-04T22:15:50.023Z
+- Completed: 2026-06-04T22:15:50.065Z
+- Error: yes
+- Updates: 2
+- Args: `{"command":"gh pr view 207 --json mergeStateStatus,mergeable,state,headRefName,headSha,url,statusCheckRollup,reviewDecision"}`
+- Result: `{"content":[{"type":"text","text":"Unknown JSON field: \"headSha\"\nAvailable fields:\n  additions\n  assignees\n  author\n  autoMergeRequest\n  baseRefName\n  baseRefOid\n  body\n  changedFiles\n  closed\n  closedAt\n  closingIssuesRefere…`
+
+### bash (`call_function_nk0t7lvce00g_2`)
+
+- Started: 2026-06-04T22:15:50.023Z
+- Completed: 2026-06-04T22:15:50.652Z
 - Error: no
 - Updates: 2
-- Args: `{"command":"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && gh pr view 207 --json state,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments"}`
-- Result: `{"content":[{"type":"text","text":"(no output)\n\n[Showing lines 2-2 of 2 (50.0KB limit). Full output: /var/folders/_9/pvt46w153qd3zk4gcrrplcxc0000gp/T/pi-bash-c1129d98d67a0a51.log]"}],"details":{"truncation":{"content":"","truncated":true…`
+- Args: `{"command":"gh api repos/ldangelo/foreman/pulls/207/reviews --jq 'length'"}`
+- Result: `{"content":[{"type":"text","text":"3\n"}]}`
 
-### bash (`call_function_fa478c5cg5fw_2`)
+### bash (`call_function_nk0t7lvce00g_3`)
 
-- Started: 2026-06-04T21:54:33.325Z
-- Completed: 2026-06-04T21:54:34.828Z
+- Started: 2026-06-04T22:15:50.024Z
+- Completed: 2026-06-04T22:15:50.652Z
+- Error: no
+- Updates: 2
+- Args: `{"command":"gh api repos/ldangelo/foreman/pulls/207/comments --jq 'length'"}`
+- Result: `{"content":[{"type":"text","text":"24\n"}]}`
+
+### bash (`call_function_jegxlzmnietb_1`)
+
+- Started: 2026-06-04T22:15:52.864Z
+- Completed: 2026-06-04T22:15:53.452Z
+- Error: no
+- Updates: 2
+- Args: `{"command":"gh pr view 207 --json mergeStateStatus,mergeable,state,headRefName,headRefOid,url,statusCheckRollup,reviewDecision,isDraft"}`
+- Result: `{"content":[{"type":"text","text":"{\"headRefName\":\"foreman/foreman-e59b5\",\"headRefOid\":\"b9eabfc4561e11d6444a9240854dac6b9334d34f\",\"isDraft\":false,\"mergeStateStatus\":\"CLEAN\",\"mergeable\":\"MERGEABLE\",\"reviewDecision\":\"CHA…`
+
+### bash (`call_function_jegxlzmnietb_2`)
+
+- Started: 2026-06-04T22:15:52.865Z
+- Completed: 2026-06-04T22:15:53.452Z
+- Error: no
+- Updates: 2
+- Args: `{"command":"gh api repos/ldangelo/foreman/pulls/207/reviews --jq '.[].state'"}`
+- Result: `{"content":[{"type":"text","text":"CHANGES_REQUESTED\nCHANGES_REQUESTED\nCHANGES_REQUESTED\n"}]}`
+
+### bash (`call_function_f13n4002xfvy_1`)
+
+- Started: 2026-06-04T22:15:58.568Z
+- Completed: 2026-06-04T22:15:59.009Z
+- Error: yes
+- Updates: 2
+- Args: `{"command":"gh api repos/ldangelo/foreman/pulls/207/comments --jq '.[] | \"Line \\(.line // ..original_line // \"N/A\"): \\(.body[0:200])\"'"}`
+- Result: `{"content":[{"type":"text","text":"failed to parse jq expression (line 1, column 26)\n    .[] | \"Line \\(.line // ..original_line // \"N/A\"): \\(.body[0:200])\"\n                             ^  unexpected token \"original_line\"\n\n\nCom…`
+
+### bash (`call_function_f13n4002xfvy_2`)
+
+- Started: 2026-06-04T22:15:58.568Z
+- Completed: 2026-06-04T22:15:59.228Z
 - Error: no
 - Updates: 3
-- Args: `{"command":"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && gh run view 26981699065 --repo ldangelo/foreman 2>/dev/null || echo \"Checking failed test...\""}`
-- Result: `{"content":[{"type":"text","text":"\nX foreman/foreman-e59b5 CI ldangelo/foreman#207 · 26981699065\nTriggered via pull_request about 4 minutes ago\n\nJOBS\nX Test (Node 20) in 3m59s (ID 79622236317)\n  ✓ Set up job\n  ✓ Initialize containe…`
+- Args: `{"command":"gh api repos/ldangelo/foreman/pulls/207/files --jq '.[].filename'"}`
+- Result: `{"content":[{"type":"text","text":"PR_METADATA.json\nPR_METADATA.json.2026-06-04T21-50-12-604Z\nPR_REVIEW_FINDINGS.2026-06-04T21-54-23-883Z.md\nPR_REVIEW_FINDINGS.md\nPR_REVIEW_REPORT.2026-06-04T21-54-25-369Z.md\nPR_REVIEW_REPORT.md\nPR_WA…`
 
-### bash (`call_function_yybiahma5u35_1`)
+### bash (`call_function_cy370ng20zxj_1`)
 
-- Started: 2026-06-04T21:54:38.340Z
-- Completed: 2026-06-04T21:54:39.874Z
-- Error: no
-- Updates: 2
-- Args: `{"command":"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && gh run view 26981699065 --log-failed --repo ldangelo/foreman 2>&1 | head -100"}`
-- Result: `{"content":[{"type":"text","text":"Test (Node 20)\tRun PR-required test lanes\t﻿2026-06-04T21:50:44.9617880Z ##[group]Run npm run test:ci\nTest (Node 20)\tRun PR-required test lanes\t2026-06-04T21:50:44.9618440Z ^[[36;1mnpm run test:ci^[[0…`
-
-### bash (`call_function_yybiahma5u35_2`)
-
-- Started: 2026-06-04T21:54:38.340Z
-- Completed: 2026-06-04T21:54:39.875Z
-- Error: no
-- Updates: 7
-- Args: `{"command":"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && git log --oneline -5 && echo \"---\" && git show --stat HEAD"}`
-- Result: `{"content":[{"type":"text","text":"ddd7488 Harden trace and pipeline report artifacts (foreman-e59b5)\ne22b1e7 Add finalize validation and report artifacts (foreman-e59b5)\nbd1815c Harden trace and pipeline report artifacts (foreman-e59b5)…`
-
-### bash (`call_function_cb8g1nux553y_1`)
-
-- Started: 2026-06-04T21:54:43.697Z
-- Completed: 2026-06-04T21:54:43.723Z
-- Error: no
-- Updates: 2
-- Args: `{"command":"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && git diff --name-only main..HEAD | grep -E \"git-backend\" || echo \"No git-backend files modified\""}`
-- Result: `{"content":[{"type":"text","text":"No git-backend files modified\n"}]}`
-
-### bash (`call_function_cb8g1nux553y_2`)
-
-- Started: 2026-06-04T21:54:43.697Z
-- Completed: 2026-06-04T21:54:43.728Z
-- Error: no
-- Updates: 2
-- Args: `{"command":"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && git status --porcelain"}`
-- Result: `{"content":[{"type":"text","text":" M PR_METADATA.json\n M PR_REVIEW_FINDINGS.md\n D PR_REVIEW_REPORT.md\n M PR_WAIT_REPORT.md\n M docs/reports/foreman-e59b5/FINALIZE_REPORT.md\n M docs/reports/foreman-e59b5/FINALIZE_TRACE.json\n M docs/re…`
-
-### bash (`call_function_35bzyq832j1z_1`)
-
-- Started: 2026-06-04T21:54:48.718Z
-- Completed: 2026-06-04T21:54:48.745Z
-- Error: no
-- Updates: 2
-- Args: `{"command":"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && git diff main..HEAD --name-only"}`
-- Result: `{"content":[{"type":"text","text":"PR_METADATA.json\nPR_REVIEW_FINDINGS.md\nPR_REVIEW_REPORT.md\nPR_WAIT_REPORT.md\ndocs/reports/foreman-e59b5/DEVELOPER_REPORT.md\ndocs/reports/foreman-e59b5/DEVELOPER_TRACE.json\ndocs/reports/foreman-e59b5…`
-
-### bash (`call_function_35bzyq832j1z_2`)
-
-- Started: 2026-06-04T21:54:48.718Z
-- Completed: 2026-06-04T21:54:48.745Z
+- Started: 2026-06-04T22:16:01.435Z
+- Completed: 2026-06-04T22:16:01.914Z
 - Error: no
 - Updates: 3
-- Args: `{"command":"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && git log --oneline main..HEAD"}`
-- Result: `{"content":[{"type":"text","text":"ddd7488 Harden trace and pipeline report artifacts (foreman-e59b5)\ne22b1e7 Add finalize validation and report artifacts (foreman-e59b5)\nbd1815c Harden trace and pipeline report artifacts (foreman-e59b5)…`
+- Args: `{"command":"gh api repos/ldangelo/foreman/pulls/207/comments --jq '.[].body[0:300]'"}`
+- Result: `{"content":[{"type":"text","text":"_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_\n\n**Developer expected artifact metadata is still pointing to the wrong path.**\n\n`expectedArtifact` is `DEVELOPER_REPORT.md`, but the generated report …`
 
-### read (`call_function_nb3z8h41o3hu_1`)
+### bash (`call_function_7qst66qej2sb_1`)
 
-- Started: 2026-06-04T21:54:52.745Z
-- Completed: 2026-06-04T21:54:52.746Z
+- Started: 2026-06-04T22:16:13.633Z
+- Completed: 2026-06-04T22:16:13.646Z
+- Error: no
+- Updates: 2
+- Args: `{"command":"grep -c \"/Users/\" docs/reports/foreman-e59b5/EXPLORER_TRACE.json docs/reports/foreman-e59b5/EXPLORER_TRACE.md docs/reports/foreman-e59b5/PIPELINE_REPORT.md docs/reports/foreman-e59b5/REVIEWER_TRACE.md docs/reports/foreman-e59…`
+- Result: `{"content":[{"type":"text","text":"docs/reports/foreman-e59b5/EXPLORER_TRACE.json:23\ndocs/reports/foreman-e59b5/EXPLORER_TRACE.md:22\ndocs/reports/foreman-e59b5/PIPELINE_REPORT.md:9\ndocs/reports/foreman-e59b5/REVIEWER_TRACE.md:28\ndocs/r…`
+
+### bash (`call_function_7qst66qej2sb_2`)
+
+- Started: 2026-06-04T22:16:13.633Z
+- Completed: 2026-06-04T22:16:13.646Z
+- Error: no
+- Updates: 2
+- Args: `{"command":"grep -n \"artifactPresent.*false\" docs/reports/foreman-e59b5/EXPLORER_TRACE.json docs/reports/foreman-e59b5/FINALIZE_TRACE.json docs/reports/foreman-e59b5/QA_TRACE.json 2>/dev/null"}`
+- Result: `{"content":[{"type":"text","text":"docs/reports/foreman-e59b5/FINALIZE_TRACE.json:232:  \"artifactPresent\": false\ndocs/reports/foreman-e59b5/QA_TRACE.json:402:  \"artifactPresent\": false\n"}]}`
+
+### bash (`call_function_7qst66qej2sb_3`)
+
+- Started: 2026-06-04T22:16:13.633Z
+- Completed: 2026-06-04T22:16:13.646Z
+- Error: no
+- Updates: 2
+- Args: `{"command":"grep -n \"QA_REPORT.md\\|DEVELOPER_REPORT.md\\|FINALIZE_VALIDATION.md\" docs/reports/foreman-e59b5/PIPELINE_REPORT.md 2>/dev/null"}`
+- Result: `{"content":[{"type":"text","text":"26:| `developer` | prompt | pass | 286.9s | $0.1822 | 54 turns | DEVELOPER_REPORT.md (missing) | `docs/reports/foreman-e59b5/DEVELOPER_TRACE.json` | |\n27:| `qa` | prompt | pass | 131.5s | $0.0197 | 10 tu…`
+
+### bash (`call_function_8wd63s7krum5_1`)
+
+- Started: 2026-06-04T22:16:16.286Z
+- Completed: 2026-06-04T22:16:16.299Z
+- Error: no
+- Updates: 2
+- Args: `{"command":"grep -n \"tail -30\\|tail -50\" docs/reports/foreman-e59b5/QA_TRACE.json docs/reports/foreman-e59b5/QA_TRACE.md 2>/dev/null"}`
+- Result: `{"content":[{"type":"text","text":"docs/reports/foreman-e59b5/QA_TRACE.json:172:      \"argsPreview\": \"{\\\"command\\\":\\\"cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && npm test -- --reporte…`
+
+### write (`call_function_1nwu9w4cle2z_1`)
+
+- Started: 2026-06-04T22:16:39.393Z
+- Completed: 2026-06-04T22:16:39.394Z
 - Error: no
 - Updates: 0
-- Args: `{"limit":50,"path":"docs/reports/foreman-e59b5/EXPLORER_TRACE.json"}`
-- Result: `{"content":[{"type":"text","text":"{\n  \"version\": 1,\n  \"runId\": \"8fd4b0d5-0f77-482d-83a9-fb67ed643308\",\n  \"seedId\": \"foreman-e59b5\",\n  \"phase\": \"explorer\",\n  \"phaseType\": \"prompt\",\n  \"model\": \"minimax/MiniMax-M2.…`
-
-### read (`call_function_nb3z8h41o3hu_2`)
-
-- Started: 2026-06-04T21:54:52.745Z
-- Completed: 2026-06-04T21:54:52.747Z
-- Error: no
-- Updates: 0
-- Args: `{"limit":30,"path":"docs/reports/foreman-e59b5/PIPELINE_REPORT.md"}`
-- Result: `{"content":[{"type":"text","text":"# Pipeline Report — foreman-e59b5\n\n**Run ID:** `8fd4b0d5-0f77-482d-83a9-fb67ed643308`\n**Workflow:** `feature`\n**Workflow Path:** `/Users/ldangelo/.foreman/workflows/feature.yaml`\n**Target Branch:** `…`
-
-### read (`call_function_nb3z8h41o3hu_3`)
-
-- Started: 2026-06-04T21:54:52.745Z
-- Completed: 2026-06-04T21:54:52.748Z
-- Error: no
-- Updates: 0
-- Args: `{"limit":30,"path":"docs/reports/foreman-e59b5/EXPLORER_TRACE.md"}`
-- Result: `{"content":[{"type":"text","text":"# EXPLORER Trace — foreman-e59b5\n\n- Run ID: `8fd4b0d5-0f77-482d-83a9-fb67ed643308`\n- Phase type: `prompt`\n- Model: `minimax/MiniMax-M2.7`\n- Workflow: `feature`\n- Workflow path: `/Users/ldangelo/.for…`
-
-### read (`call_function_77ksfwnojj01_1`)
-
-- Started: 2026-06-04T21:54:56.250Z
-- Completed: 2026-06-04T21:54:56.252Z
-- Error: no
-- Updates: 0
-- Args: `{"limit":30,"path":"docs/reports/foreman-e59b5/REVIEWER_TRACE.md"}`
-- Result: `{"content":[{"type":"text","text":"# REVIEWER Trace — foreman-e59b5\n\n- Run ID: `8fd4b0d5-0f77-482d-83a9-fb67ed643308`\n- Phase type: `prompt`\n- Model: `minimax/MiniMax-M2.7`\n- Workflow: `feature`\n- Workflow path: `/Users/ldangelo/.for…`
-
-### grep (`call_function_77ksfwnojj01_2`)
-
-- Started: 2026-06-04T21:54:56.250Z
-- Completed: 2026-06-04T21:54:56.259Z
-- Error: no
-- Updates: 0
-- Args: `{"path":"docs/reports/foreman-e59b5","pattern":"/Users/"}`
-- Result: `{"content":[{"type":"text","text":"DEVELOPER_TRACE.json:8:   \"worktreePath\": \"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5\",\nDEVELOPER_TRACE.json:10:   \"workflowPath\": \"/Users/ldangelo/.fore…`
-
-### write (`call_function_ovt8rsysx8om_1`)
-
-- Started: 2026-06-04T21:55:05.390Z
-- Completed: 2026-06-04T21:55:05.393Z
-- Error: no
-- Updates: 0
-- Args: `{"content":"# PR Review Report: Harden trace and pipeline report artifacts\n\n## Seed: foreman-e59b5\n## Run: 8fd4b0d5-0f77-482d-83a9-fb67ed643308\n\n## Findings Reviewed\n- CodeRabbit blocking findings: 6 (2 HIGH, 4 MEDIUM)\n- Failed chec…`
-- Result: `{"content":[{"type":"text","text":"Successfully wrote 5695 bytes to PR_REVIEW_REPORT.md"}]}`
-
-### read (`call_function_ud39tzmxrasq_1`)
-
-- Started: 2026-06-04T21:55:08.320Z
-- Completed: 2026-06-04T21:55:08.321Z
-- Error: no
-- Updates: 0
-- Args: `{"path":"PR_REVIEW_REPORT.md"}`
-- Result: `{"content":[{"type":"text","text":"# PR Review Report: Harden trace and pipeline report artifacts\n\n## Seed: foreman-e59b5\n## Run: 8fd4b0d5-0f77-482d-83a9-fb67ed643308\n\n## Findings Reviewed\n- CodeRabbit blocking findings: 6 (2 HIGH, 4…`
+- Args: `{"path":"PR_REVIEW_REPORT.md","content":"# PR Review Report: Harden trace and pipeline report artifacts\n\n## Seed: {seedId}\n## Run: {runId}\n\n## Findings Reviewed\n- CodeRabbit blocking findings: 14 (2 HIGH, 12 MEDIUM)\n- Failed checks:…`
+- Result: `{"content":[{"type":"text","text":"Successfully wrote 5820 bytes to PR_REVIEW_REPORT.md"}]}`
 

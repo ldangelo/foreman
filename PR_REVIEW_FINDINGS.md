@@ -1,7 +1,7 @@
 # PR Review Findings
 
 - PR: #207 (https://github.com/ldangelo/foreman/pull/207)
-- Head SHA: ddd74887e577756b25f263941db964d32194079c
+- Head SHA: b9eabfc4561e11d6444a9240854dac6b9334d34f
 
 ## Blocking CodeRabbit Findings
 
@@ -229,5 +229,320 @@ contains any user-specific absolute paths.
 
 <!-- This is an auto-generated comment by CodeRabbit -->
 
+### 7. MEDIUM — docs/reports/foreman-e59b5/FINALIZE_TRACE.json:12
+- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3359120784
+
+_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
+
+**Sanitize host-specific absolute paths before trace serialization.**
+
+Line 8, Line 10, Line 12, Line 24, and Line 189 still expose `/Users/ldangelo/...` paths in committed artifacts. This violates the reviewer-safe artifact requirement and leaks local environment details.
+
+
+
+
+Also applies to: 24-25, 34-35, 189-189
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@docs/reports/foreman-e59b5/FINALIZE_TRACE.json` around lines 8 - 12, The
+FINALIZE_TRACE.json contains host-specific absolute paths (e.g. values of
+worktreePath, workflowPath and embedded paths in rawPrompt and other string
+fields) that must be sanitized before serialization; update the finalize/export
+routine that writes FINALIZE_TRACE.json to run a sanitizer over all string
+fields (identify by keys like "worktreePath", "workflowPath", "rawPrompt" and
+any other path-like strings), replacing the user home prefix (/Users/ldangelo or
+$HOME) with a neutral token (e.g. "~" or "<REDACTED_HOME>") or converting to
+relative paths, and ensure this sanitizer is applied consistently just prior to
+writing the file so no host-specific absolute paths are emitted in committed
+artifacts.
+```
+
+</details>
+
+<!-- fingerprinting:phantom:poseidon:hawk -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+
+### 8. MEDIUM — docs/reports/foreman-e59b5/FINALIZE_TRACE.json:15
+- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3359120788
+
+_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
+
+**Fix finalize artifact presence/path contract mismatch.**
+
+Line 192 reports `artifactPresent: false`, but Line 145 confirms `docs/reports/foreman-e59b5/FINALIZE_VALIDATION.md` was written. The expected-artifact check is still not aligned to `docs/reports/<seed>/...`.
+
+
+
+
+Also applies to: 145-146, 192-192
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@docs/reports/foreman-e59b5/FINALIZE_TRACE.json` around lines 14 - 15, The
+expected-artifact path check is using just "expectedArtifact" (e.g.
+FINALIZE_VALIDATION.md) while the actual output is written under
+docs/reports/<seed>/FINALIZE_VALIDATION.md causing artifactPresent to be false;
+update the artifact presence validation to resolve full report paths by joining
+the report base directory (docs/reports/<seed>/) with expectedArtifact before
+existence checks or change expectedArtifact to the full relative path
+(docs/reports/<seed>/FINALIZE_VALIDATION.md) so the artifact lookup and the
+written file location match (ensure the code that sets/reads expectedArtifact
+and where artifactPresent is computed uses the same resolved path).
+```
+
+</details>
+
+<!-- fingerprinting:phantom:poseidon:hawk -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+
+### 9. MEDIUM — docs/reports/foreman-e59b5/PR-REVIEW_TRACE.md:7
+- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3359120793
+
+_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
+
+**PR-review trace leaks absolute paths.**
+
+This trace artifact exposes `/Users/ldangelo/.foreman/` paths in the workflow path header (line 7) and bash command arguments (lines 144, 153, 162), contradicting the acceptance criterion that committed trace artifacts must not contain user-specific absolute paths.
+
+
+
+
+
+Also applies to: 144-144, 153-153, 162-162
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@docs/reports/foreman-e59b5/PR-REVIEW_TRACE.md` at line 7, The trace file
+docs/reports/foreman-e59b5/PR-REVIEW_TRACE.md contains user-specific absolute
+paths (e.g. "/Users/ldangelo/.foreman/workflows/feature.yaml" in the workflow
+path header and similar occurrences in the bash command arguments at the
+locations around lines 144, 153, 162); update the trace generation/sanitization
+so it replaces absolute home-directory paths with either repository-relative
+paths or a generic placeholder (e.g. "$HOME" or "<REDACTED_HOME>") before
+writing, and regenerate the trace so the workflow path header and the bash
+command argument entries no longer contain /Users/... paths. Ensure the
+sanitizer is applied to the string that emits the workflow path header and to
+the code that serializes bash command arguments so all occurrences are scrubbed.
+```
+
+</details>
+
+<!-- fingerprinting:phantom:triton:puma -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+
+### 10. MEDIUM — docs/reports/foreman-e59b5/DEVELOPER_REPORT.md:20
+- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3359195249
+
+_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
+
+**Report status is inconsistent with the generated artifacts.**
+
+Line 15 and Line 20 state sanitization/completion, but the committed traces in this same seed still contain absolute `/Users/...` paths and `artifactPresent: false` mismatches. Please update this report to reflect the actual state (or regenerate artifacts after fixes).
+
+<details>
+<summary>🧰 Tools</summary>
+
+<details>
+<summary>🪛 LanguageTool</summary>
+
+[grammar] ~16-~16: Ensure spelling is correct
+Context: ...hase reporting**: Code review confirmed builtin phases (`create-pr`, `pr-wait`, `prepar...
+
+(QB_NEW_EN_ORTHOGRAPHY_ERROR_IDS_1)
+
+</details>
+
+</details>
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@docs/reports/foreman-e59b5/DEVELOPER_REPORT.md` around lines 15 - 20, Update
+the developer report to accurately reflect current artifacts: note that
+sanitizeValue() and sanitizeWorktreePath() did not fully remove absolute
+worktree paths from the committed traces and that some reports show
+artifactPresent: false mismatches; either regenerate the artifacts after fixing
+the sanitization or change the report text to state the known failures and next
+steps (include references to the sanitization helpers
+sanitizeValue()/sanitizeWorktreePath(), the pipeline activity collector
+ctx.activityPhases, and the writer function writeIncrementalPipelineReport to
+guide where fixes or re-runs should occur).
+```
+
+</details>
+
+<!-- fingerprinting:phantom:poseidon:hawk -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+
+### 11. MEDIUM — docs/reports/foreman-e59b5/DEVELOPER_TRACE.json:10
+- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3359195261
+
+_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
+
+**Trace JSON still leaks absolute local paths.**
+
+Line 8 and Line 10 expose `/Users/...` paths in committed artifact metadata. This breaks the trace sanitization requirement for reviewer-safe artifacts.
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@docs/reports/foreman-e59b5/DEVELOPER_TRACE.json` around lines 8 - 10, The
+DEVELOPER_TRACE.json currently stores absolute user-specific paths in the fields
+"worktreePath" and "workflowPath"; update the trace generation logic so those
+fields are sanitized before writing (e.g., convert to repository-relative paths,
+replace the user home prefix with aplaceholder like "~" or "$HOME", or redact to
+a neutral value) and ensure all occurrences where "worktreePath" and
+"workflowPath" are populated use this sanitizer function so committed trace
+artifacts contain no absolute /Users/... paths.
+```
+
+</details>
+
+<!-- fingerprinting:phantom:poseidon:hawk -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+
+### 12. MEDIUM — docs/reports/foreman-e59b5/QA_REPORT.md:3
+- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3359195266
+
+_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
+
+**QA verdict overstates compliance with acceptance criteria.**
+
+The PASS summary claims no absolute-path leaks and complete artifact/path alignment, but the committed trace artifacts in this seed still include `/Users/...` entries and false artifact-presence values. Please correct the verdict/evidence or regenerate corrected artifacts.
+
+
+
+
+Also applies to: 49-53
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@docs/reports/foreman-e59b5/QA_REPORT.md` at line 3, The QA verdict "##
+Verdict: PASS" overstates compliance; update the verdict and evidence in
+QA_REPORT.md to accurately reflect that absolute-path leaks (e.g., "/Users/...")
+and incorrect artifact-presence values were found, and either change the header
+from "PASS" to "FAIL" or "REQUIRES FIX" and add a concise bullet list citing the
+problematic entries and that artifacts need regeneration; then regenerate or
+replace the committed trace artifacts to remove absolute paths and correct
+presence flags and repeat the same corrections for the similar sections
+referenced (lines 49-53).
+```
+
+</details>
+
+<!-- fingerprinting:phantom:poseidon:hawk -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+
+### 13. MEDIUM — docs/reports/foreman-e59b5/QA_TRACE.json:173
+- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3359195270
+
+_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
+
+**Piped test commands here can mask failures.**
+
+These recorded commands pipe test output to `tail` without `set -o pipefail`, which can report success even when the test command fails. That directly conflicts with the stated QA/test evidence requirement.
+
+
+
+
+Also applies to: 192-193, 202-203
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@docs/reports/foreman-e59b5/QA_TRACE.json` around lines 172 - 173, The
+recorded test command in the "argsPreview" JSON (the string containing "npm test
+... | tail -30") pipes output through tail which can hide failures; change the
+recorded command to preserve exit status by either (a) prefixing with "set -o
+pipefail &&" so the pipeline fails if npm test fails, or (b) avoid piping to
+tail and capture logs via tee or redirection and then truncate for display while
+keeping the original command's exit code; update the "argsPreview" value(s) that
+contain the piped command accordingly (every occurrence like the one shown) so
+QA traces reflect the real test failure behavior.
+```
+
+</details>
+
+<!-- fingerprinting:phantom:poseidon:hawk -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+
+### 14. MEDIUM — docs/reports/foreman-e59b5/QA_TRACE.md:248
+- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3359195277
+
+_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
+
+**Test evidence commands are still piped through `tail` without `pipefail`.**
+
+These command forms can hide failing exits and undermine QA evidence reliability.
+
+
+
+
+Also applies to: 265-266, 274-275
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@docs/reports/foreman-e59b5/QA_TRACE.md` around lines 247 - 248, The QA trace
+uses piped shell commands like the Args entry containing "cd ... && npm test --
+--reporter=dot 2>&1 | tail -30" which can mask exit failures; update each such
+command (including the occurrences referenced at lines around the shown Args and
+the other occurrences noted) to enable pipefail before piping (for example by
+running the pipeline under a shell that sets -o pipefail or by prefixing with a
+command that sets pipefail), so the overall pipeline returns a non-zero exit
+when any stage fails; ensure you update every instance of the piped form (the
+Args strings with "… | tail -30") to include pipefail semantics.
+```
+
+</details>
+
+<!-- fingerprinting:phantom:poseidon:hawk -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+
 ## Failed Checks
-1. Test (Node 20) — FAILURE (https://github.com/ldangelo/foreman/actions/runs/26981699065/job/79622236317)
+None.
