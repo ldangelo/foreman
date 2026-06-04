@@ -9,6 +9,8 @@ describe("pr-review-context", () => {
       { user: { login: "someone" }, body: "Critical: not from CodeRabbit" },
       { user: { login: "coderabbitai" }, body: "Medium severity issue" },
       { user: { login: "coderabbitai[bot]" }, body: "_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_" },
+      { user: { login: "coderabbitai[bot]" }, body: "_⚠️ Potential issue_ | _🟡 Minor_ | _⚡ Quick win_" },
+      { user: { login: "coderabbitai[bot]" }, body: "[![Review Change Stack](image)](url)\n\nHigh confidence summary text" },
     ], "review-comment");
 
     expect(findings).toHaveLength(3);
