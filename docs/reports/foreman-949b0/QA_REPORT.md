@@ -3,60 +3,63 @@
 ## Verdict: PASS
 
 ## Test Results
-- Targeted command(s) run: `npx vitest run src/orchestrator/__tests__/pr-review-context.test.ts --reporter=dot`
-- Full suite command (if run): `npx vitest run -c vitest.unit.config.ts 2>&1 | grep -E "Test Files|Tests:|passed|failed"`
-- Test suite: 238 passed, 1 failed (239 test files)
-- Raw summary:
-  ```
-  Test Files: 1 failed | 238 passed (239)
-       Tests: 1 failed | 3269 passed | 6 skipped (3276)
-  ```
-- New tests added: 2 new test cases added to `pr-review-context.test.ts` covering minor severity and review stack edge cases
 
-## Issues Found
-- **Pre-existing test failure** in `src/orchestrator/__tests__/pipeline-model-resolution.test.ts:130` — One test (`it("resolves model from workflow")`) fails both with and without the changes in this worktree. Verified via `git stash` comparison: the same test fails on `origin/main` as well. This is a pre-existing failure unrelated to this implementation.
+- **Targeted command(s) run:** `npx vitest run src/orchestrator/__tests__/pr-review-context.test.ts --reporter=dot`
+- **Full suite command:** `npx vitest run -c vitest.unit.config.ts 2>&1 | grep -E "Test Files|Tests:|passed|failed"`
+- **pr-review-context tests:** 9 passed (9)
+- **Full unit suite:** 239 test files, 3272 passed, 6 skipped
+- **Raw summary:**
+  ```
+  Test Files: 239 passed (239)
+       Tests: 3272 passed | 6 skipped (3278)
+  ```
 
 ## Changes Reviewed
 
-### Files Modified (from `git diff HEAD~1 --stat`)
-- `docs/standards/constitution.md` — Added one sentence about explicit PR review gate (task requirement)
-- `src/orchestrator/__tests__/pr-review-context.test.ts` — Added 2 test cases for CodeRabbit findings edge cases
-- `src/orchestrator/pr-review-context.ts` — Fixed `parseBlockingSeverity` to handle non-comment signal lines and correctly classify emoji severity
+### Files Modified (from `git diff HEAD~5..HEAD~1`)
+
+1. **`src/orchestrator/pr-review-context.ts`** — Core PR review workflow enhancements
+2. **`src/orchestrator/__tests__/pr-review-context.test.ts`** — Test coverage for new behavior
 
 ### Change Details
 
-**`docs/standards/constitution.md`** (task goal):
-```
-+> **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize,
-+which waits for CodeRabbit analysis and requires a PASS verdict before merging.
-```
+**`src/orchestrator/pr-review-context.ts`** (line ranges from diff):
+- `parseBlockingSeverity()` (line ~140): Fixed to skip HTML comment lines (`<!-- ... -->`) when finding the signal line for severity classification. Fixed emoji mapping: 🟣=critical, 🔴=high, 🟠=medium (removed 🟡 from medium classification — minor findings are not blocking)
+- `summarizePrWaitStatus()`: Now waits for `codeRabbitComplete` (actual review submission or successful status check) rather than just `codeRabbitSeen` (any comment visible). This prevents premature passing when CodeRabbit has commented but hasn't completed its review.
+- `collectPrWaitSnapshot()`: Now fetches and counts CodeRabbit review submissions via `gh api /pulls/{number}/reviews`
+- Added `GhReview` interface, `codeRabbitReviews` field to `PrWaitSnapshot`/`PrWaitStatus`
+- Added helper functions `normalizeCheckState()`, `isTerminalCheckState()` for robust GitHub status parsing
+- `renderPrWaitReport()`: Reports "COMPLETE" instead of "SEEN" when CodeRabbit finished, shows review count
 
-**`src/orchestrator/pr-review-context.ts`** (bug fix in the same area):
-- Fixed `parseBlockingSeverity()` to ignore HTML comment lines (`<!-- ... -->`) when extracting the signal line for severity classification
-- Fixed emoji classification: 🟣 maps to critical, 🔴 maps to high, 🟠 maps to medium (was incorrectly classifying 🔴 as critical)
+**`src/orchestrator/__tests__/pr-review-context.test.ts`** (test coverage):
+- Added case for `_🟡 Minor_` emoji (expects no finding extracted — minor is not blocking)
+- Added case for image-only CodeRabbit summary `[![Review Change Stack](image)](url)` (expects no finding extracted — no severity signal)
+- Added `codeRabbitComplete` expectations to existing tests
+- Renamed one test for accuracy ("waits for CodeRabbit completion after early CodeRabbit comments")
+- Added tests for `codeRabbitReviews` tracking via CodeRabbit review submission detection
 
-**`src/orchestrator/__tests__/pr-review-context.test.ts`** (new test coverage):
-- Added test for `_⚠️ Potential issue_ | _🟡 Minor_ | _⚡ Quick win_` (minor severity)
-- Added test for `[![Review Change Stack](image)](url)\n\nHigh confidence summary text` (image-only comment)
+## Issues Found
+
+**None.** All tests pass. No pre-existing failures in the relevant test files.
+
+### Pre-existing Test Flakiness (unrelated to this task)
+- `src/orchestrator/__tests__/pipeline-verdict-retry.test.ts` — Has a flaky `afterEach` cleanup that can fail with `ENOTEMPTY` when temp directories aren't fully removed. Does NOT fail consistently and is unrelated to PR review workflow changes.
 
 ## Verification Summary
 
 | Check | Result |
 |-------|--------|
 | Conflict markers | None found in source files |
-| `pr-review-context` tests | 7/7 passed |
-| Full unit suite | 3269 passed, 1 pre-existing failure |
-| Pre-existing failure verified | Yes — same test fails on `origin/main` |
-| Docs change | Minimal, 1 sentence added as required |
-
-## Pre-existing Failure Details
-- **File:** `src/orchestrator/__tests__/pipeline-model-resolution.test.ts:130`
-- **Test:** `it("resolves model from workflow")`
-- **Symptom:** Assertion fails on expected code pattern (`const phaseModel = resolvedModel`)
-- **Status:** Confirmed pre-existing by running same test suite against `git stash` (clean main) — same failure occurs
-- **Conclusion:** Not related to this task; does not block PASS verdict
+| `pr-review-context` tests | 9/9 passed |
+| Full unit suite | 3272 passed, 6 skipped, 0 failed |
+| `parseBlockingSeverity` fix | Correctly skips HTML comments, maps 🟣/🔴/🟠 properly, excludes 🟡 minor |
+| `summarizePrWaitStatus` fix | Now waits for CodeRabbit completion, not just visible comments |
+| `collectPrWaitSnapshot` fix | Fetches CodeRabbit review count to detect completion |
+| New test coverage | Minor severity and image-only comment edge cases covered |
 
 ## QA Notes
-- The task goal (docs-only PR exercising workflow phases) is a pipeline-run task, not a unit-test task. QA verifies the code changes that enable the pipeline correctly.
-- The `pr-review-context.ts` changes fix a real bug in `parseBlockingSeverity` — correctly skipping HTML comment-only lines and properly mapping emoji severities
-- All targeted tests pass; the single suite failure is pre-existing
+
+- The task is a canary to exercise PR review workflow phases. The code changes enable the pipeline to correctly wait for CodeRabbit's full review completion (not just first comment) before passing `pr-wait`.
+- The `parseBlockingSeverity` fix prevents HTML comment noise (e.g., `<!-- summary -->`, `<!-- details -->`) from corrupting severity detection in CodeRabbit's multi-line review comments.
+- The `codeRabbitComplete` logic ensures the pipeline correctly waits for one of: (a) a CodeRabbit review submission, or (b) a SUCCESS CodeRabbit status check — rather than passing as soon as any CodeRabbit comment is visible. This is the correct behavior for a PR review gate.
+- The test additions cover the edge cases of minor-severity findings and image-only review summaries, ensuring non-blocking feedback doesn't produce spurious findings.
