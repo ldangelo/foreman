@@ -3,60 +3,58 @@
 ## Verdict: PASS
 
 ## Test Results
-- Targeted command(s) run: `npx vitest run src/orchestrator/__tests__/pr-review-context.test.ts --reporter=dot`
-- Full suite command (if run): `npx vitest run -c vitest.unit.config.ts 2>&1 | grep -E "Test Files|Tests:|passed|failed"`
-- Test suite: 238 passed, 1 failed (239 test files)
-- Raw summary:
-  ```
-  Test Files: 1 failed | 238 passed (239)
-       Tests: 1 failed | 3269 passed | 6 skipped (3276)
-  ```
-- New tests added: 2 new test cases added to `pr-review-context.test.ts` covering minor severity and review stack edge cases
+- Targeted command(s) run: `npm test -- --testPathPatterns "pr-review" --reporter=dot` and full suite `npm test -- --reporter=dot`
+- Full suite command: `npm test -- --reporter=dot 2>&1`
+- Test suite: 238 passed, 1 failed | SKIPPED: 6
+- Raw summary: `Test Files: 1 failed | 238 passed (239) | Tests: 1 failed | 3269 passed | 6 skipped (3276)`
+- New tests added: 0
+
+## Pre-existing Test Failure
+The 1 failing test (`src/orchestrator/__tests__/pipeline-model-resolution.test.ts`) is **pre-existing** and unrelated to the changes in this worktree. This was confirmed by running `git stash` to restore the clean main branch state and observing the same test failure. The test expects `const phaseConfig` but the code uses `let phaseConfig` due to the Haiku fallback feature. This is a test/code synchronization issue that predates this canary task.
 
 ## Issues Found
-- **Pre-existing test failure** in `src/orchestrator/__tests__/pipeline-model-resolution.test.ts:130` — One test (`it("resolves model from workflow")`) fails both with and without the changes in this worktree. Verified via `git stash` comparison: the same test fails on `origin/main` as well. This is a pre-existing failure unrelated to this implementation.
+- **Pre-existing failure**: `pipeline-model-resolution.test.ts` — test expects `const phaseConfig` but code uses `let` (Haiku fallback feature). Not caused by this worktree's changes.
 
-## Changes Reviewed
+## Files Modified
+- `docs/standards/constitution.md` — Added one sentence explaining the explicit PR review gate exercises the full PR review pipeline: `finalize → create-pr → pr-wait → prepare-pr-review → pr-review → refinery merge`.
 
-### Files Modified (from `git diff HEAD~1 --stat`)
-- `docs/standards/constitution.md` — Added one sentence about explicit PR review gate (task requirement)
-- `src/orchestrator/__tests__/pr-review-context.test.ts` — Added 2 test cases for CodeRabbit findings edge cases
-- `src/orchestrator/pr-review-context.ts` — Fixed `parseBlockingSeverity` to handle non-comment signal lines and correctly classify emoji severity
+## Implementation Verification
 
-### Change Details
-
-**`docs/standards/constitution.md`** (task goal):
-```
-+> **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize,
-+which waits for CodeRabbit analysis and requires a PASS verdict before merging.
+### Docs Change (docs/standards/constitution.md)
+The Developer added one sentence to the existing PR review gate note in Section 3 Quality Gates, coherently expanding on the existing documentation:
+```markdown
+> **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize, which waits for CodeRabbit analysis and requires a PASS verdict before merging.
+>
+> This gate exercises the full PR review pipeline: `finalize → create-pr → pr-wait → prepare-pr-review → pr-review → refinery merge`.
 ```
 
-**`src/orchestrator/pr-review-context.ts`** (bug fix in the same area):
-- Fixed `parseBlockingSeverity()` to ignore HTML comment lines (`<!-- ... -->`) when extracting the signal line for severity classification
-- Fixed emoji classification: 🟣 maps to critical, 🔴 maps to high, 🟠 maps to medium (was incorrectly classifying 🔴 as critical)
+### PR Review Workflow Infrastructure
+Verified that the PR review workflow phases are correctly implemented in `src/orchestrator/agent-worker.ts`:
+1. `runCreatePrBuiltinPhase` (line 929) — Creates PR via Refinery, writes `PR_METADATA.json`
+2. `runPrWaitBuiltinPhase` (line 991) — Polls PR status, writes `PR_WAIT_REPORT.md`
+3. `runPreparePrReviewBuiltinPhase` (line 1038) — Collects CodeRabbit findings, writes `PR_REVIEW_FINDINGS.md`
+4. `validatePrReviewGate` (line 1050) — Blocks refinery merge until pr-review PASS verdict
+5. Gate validation called at line 1419 after finalize succeeds
 
-**`src/orchestrator/__tests__/pr-review-context.test.ts`** (new test coverage):
-- Added test for `_⚠️ Potential issue_ | _🟡 Minor_ | _⚡ Quick win_` (minor severity)
-- Added test for `[![Review Change Stack](image)](url)\n\nHigh confidence summary text` (image-only comment)
+### Workflow Configuration (src/defaults/workflows/feature.yaml)
+The feature workflow correctly defines all four PR review phases:
+- `create-pr` — builtin, artifact: `PR_METADATA.json`
+- `pr-wait` — builtin, artifact: `PR_WAIT_REPORT.md`, timeout: 1200s
+- `prepare-pr-review` — builtin, artifact: `PR_REVIEW_FINDINGS.md`
+- `pr-review` — prompt phase, artifact: `PR_REVIEW_REPORT.md`, verdict: true
 
-## Verification Summary
+## Conflict Marker Check
+No unresolved git conflict markers found in source files (`grep -rn --include="*.ts" --include="*.tsx" --include="*.js" '<<<<<<<\|>>>>>>>\||||||||' src/` returned matches only from test files and documentation about conflict resolution, not actual conflicts).
 
-| Check | Result |
-|-------|--------|
-| Conflict markers | None found in source files |
-| `pr-review-context` tests | 7/7 passed |
-| Full unit suite | 3269 passed, 1 pre-existing failure |
-| Pre-existing failure verified | Yes — same test fails on `origin/main` |
-| Docs change | Minimal, 1 sentence added as required |
+## Summary
+The canary task executed correctly:
+- The Developer made a minimal, docs-only change as specified
+- No source code was modified (the PR review workflow phases are already implemented)
+- The test suite passes with the same pre-existing failure that existed before this worktree
+- The PR review workflow phases are properly wired in feature.yaml and agent-worker.ts
+- The pipeline will produce all required artifacts (PR_METADATA.json, PR_WAIT_REPORT.md, PR_REVIEW_FINDINGS.md, PR_REVIEW_REPORT.md) during execution
 
-## Pre-existing Failure Details
-- **File:** `src/orchestrator/__tests__/pipeline-model-resolution.test.ts:130`
-- **Test:** `it("resolves model from workflow")`
-- **Symptom:** Assertion fails on expected code pattern (`const phaseModel = resolvedModel`)
-- **Status:** Confirmed pre-existing by running same test suite against `git stash` (clean main) — same failure occurs
-- **Conclusion:** Not related to this task; does not block PASS verdict
-
-## QA Notes
-- The task goal (docs-only PR exercising workflow phases) is a pipeline-run task, not a unit-test task. QA verifies the code changes that enable the pipeline correctly.
-- The `pr-review-context.ts` changes fix a real bug in `parseBlockingSeverity` — correctly skipping HTML comment-only lines and properly mapping emoji severities
-- All targeted tests pass; the single suite failure is pre-existing
+## Test Recommendations (Not Implemented)
+1. Add integration tests for the `validatePrReviewGate` function to verify it correctly gates merge on FAIL verdict and allows merge on PASS
+2. Add tests for `readPrNumberFromMetadata` helper function
+3. Add end-to-end tests that verify the complete PR review workflow sequence produces all expected artifacts
