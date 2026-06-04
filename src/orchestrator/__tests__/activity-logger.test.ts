@@ -79,4 +79,41 @@ describe("activity logger observability", () => {
       "Command phase contract failures: fix",
     );
   });
+
+  it("records builtin phase type with workflow metadata", () => {
+    const record = createPhaseRecord("create-pr", "builtin", {
+      phaseType: "builtin",
+      artifactExpected: "PR_METADATA.json",
+      workflowName: "default",
+      workflowPath: ".foreman/workflows/default.yaml",
+    });
+
+    expect(record.name).toBe("create-pr");
+    expect(record.phaseType).toBe("builtin");
+    expect(record.artifactExpected).toBe("PR_METADATA.json");
+    expect(record.workflowName).toBe("default");
+    expect(record.workflowPath).toBe(".foreman/workflows/default.yaml");
+  });
+
+  it("finalizePhaseRecord carries builtin phase type and workflow info through to result", () => {
+    const record = createPhaseRecord("create-pr", "builtin", {
+      phaseType: "builtin",
+      artifactExpected: "PR_METADATA.json",
+      workflowName: "default",
+      workflowPath: ".foreman/workflows/default.yaml",
+    });
+
+    const finalized = finalizePhaseRecord(record, {
+      success: true,
+      costUsd: 0,
+      turns: 0,
+      workflowName: "default",
+      workflowPath: ".foreman/workflows/default.yaml",
+    });
+
+    expect(finalized.phaseType).toBe("builtin");
+    expect(finalized.workflowName).toBe("default");
+    expect(finalized.workflowPath).toBe(".foreman/workflows/default.yaml");
+    expect(finalized.verdict).toBe("pass");
+  });
 });
