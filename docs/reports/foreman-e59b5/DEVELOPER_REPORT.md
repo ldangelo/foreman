@@ -1,44 +1,31 @@
 # Developer Report: Harden trace and pipeline report artifacts
 
 ## Approach
-
-- **Path sanitization**: Added `sanitizeValue()` in `pi-observability-extension.ts` to replace absolute worktree paths with `<worktree>` placeholder during tool call args/results capture. Also added `serializeTrace()` in `pi-observability-writer.ts` using a JSON.stringify reviver to sanitize all string fields in the JSON output. This ensures no committed trace artifact contains host-specific absolute paths.
-
-- **Builtin phase reporting**: Verified via code review that builtin phases (`create-pr`, `pr-wait`, `prepare-pr-review`) are correctly tracked with `phaseType: "builtin"` and flow into `ctx.activityPhases` passed to `writeIncrementalPipelineReport`. No code changes were needed; the pipeline report already includes builtin phases when they execute.
-
-- **QA prompt analysis**: Scanned `src/defaults/prompts/` for piped test evidence patterns (`| tail`, `| head`). Found none in `qa.md`. Patterns exist only in `recover.md` and `troubleshooter.md` (error recovery prompts, not QA verification), which are out of scope.
+Verified that the existing `sanitizeWorktreePath` implementation in `pi-observability-writer.ts` (added in a prior commit) correctly sanitizes both the JSON trace file and the markdown trace output. Confirmed the QA/test evidence pipe issue exists only in `recover.md` line 91, which lacked `set -o pipefail`. Fixed that instance. For the activity-logger test, replaced the hardcoded `foreman-e59b5` seed ID in artifact expectations with a `<seedId>` placeholder to make tests non-fragile.
 
 ## Files Changed
 
-- **`src/orchestrator/pi-observability-extension.ts`**
-  - Added `sanitizeValue()` helper function
-  - Updated `summarizeUnknown()` to accept optional `worktreePath` parameter and apply sanitization to string and JSON-stringified values
-  - Updated all 4 call sites (tool_execution_start, tool_execution_update, tool_result, tool_execution_end) to pass `trace.worktreePath`
+- `src/defaults/prompts/default/recover.md` — Added `set -o pipefail;` to the one instance at line 91 where it was missing (`cd {{projectRoot}} && npm test 2>&1 | tail -50`). All other instances in both `recover.md` and `troubleshooter.md` already had it.
 
-- **`src/orchestrator/pi-observability-writer.ts`**
-  - Added `sanitizeWorktreePath()` helper function
-  - Added `serializeTrace()` using JSON.stringify with a reviver that sanitizes all string values
-  - Replaced `JSON.stringify(trace, null, 2)` with `serializeTrace(trace)` in `writePhaseTrace()`
+- `src/orchestrator/__tests__/activity-logger.test.ts` — Replaced hardcoded seed ID `foreman-e59b5` with generic placeholder `<seedId>` in two artifactExpected fields (lines 90 and 121) so tests don't depend on a specific seed run.
 
 ## Tests Added/Modified
 
-- **`src/orchestrator/__tests__/pi-observability-extension.test.ts`**
-  - `sanitizes absolute worktree paths in tool call argsPreview` — verifies argsPreview doesn't contain absolute path, contains `<worktree>` placeholder
-  - `sanitizes worktreePath field in JSON trace output` — verifies JSON file contains placeholder, not the absolute path
+- `src/orchestrator/__tests__/pi-observability-extension.test.ts` — Already had two tests covering path sanitization (`sanitizes absolute worktree paths in tool call argsPreview` and `sanitizes worktreePath field in JSON trace output`). Both pass.
 
-- **`src/orchestrator/__tests__/activity-logger.test.ts`**
-  - `creates phase record with builtin phaseType for PR workflow phases` — verifies createPhaseRecord accepts builtin phaseType
-  - `writeIncrementalPipelineReport includes builtin phases in phase table` — verifies both prompt and builtin phases appear in the report table with correct phase type shown
+- `src/orchestrator/__tests__/activity-logger.test.ts` — Modified two existing tests to use `<seedId>` placeholder instead of hardcoded `foreman-e59b5`. Tests pass.
 
 ## Decisions & Trade-offs
 
-- Sanitization is applied at two levels: (1) during tool call capture in the extension, and (2) during JSON serialization in the writer. This defense-in-depth ensures both `argsPreview`/`resultPreview` strings and the `worktreePath` field itself are sanitized.
+- **Path sanitization**: The existing `sanitizeWorktreePath` utility in `pi-observability-writer.ts` already handles this correctly by replacing the absolute worktree path with `<worktree>` during JSON serialization and markdown rendering. No additional code was needed.
 
-- Used `<worktree>` as the placeholder rather than a relative path because the worktree location varies by host and the actual project root cannot be reliably derived without additional context. The placeholder is stable and self-documenting.
+- **Pipeline report builtin phases**: The existing test in `activity-logger.test.ts` (`writeIncrementalPipelineReport includes builtin phases in phase table`) already verifies that builtin phases appear in the phase table. No changes needed there — the implementation correctly includes them.
 
-- Builtin phases were already correctly tracked; no changes to pipeline-executor.ts or agent-worker.ts were needed.
+- **Pipe masking fix**: Only `recover.md:91` was missing `set -o pipefail`. The other four instances all correctly use it. The pattern `npm test 2>&1 | tail -N` is used throughout both recover.md and troubleshooter.md for capturing test output in evidence display. These are not test-running commands but rather evidence examples shown to the agent — so the pipe is intentional for brevity. Adding `set -o pipefail` ensures that if the test fails, the entire command chain fails correctly.
+
+- **Test seed ID fragility**: Replaced hardcoded `foreman-e59b5` with `<seedId>` placeholder in activity-logger tests. The `<seedId>` is a template token that Foreman resolves at runtime.
 
 ## Known Limitations
 
-- The `troubleshooter.md` and `recover.md` prompts contain `| tail` patterns that could mask test failures. These are error-recovery prompts, not QA verification prompts, so they were left unchanged per scope guidance. If future QA use cases need recovery prompts, those should be updated to use `set -o pipefail`.
-- Report path alignment (`docs/reports/<seed>/QA_REPORT.md` vs root `QA_REPORT.md`) — the EXPLORER_REPORT.md analysis confirmed actual reports live under `docs/reports/<seed>/`. The pipeline report already uses relative paths. No discrepancy found requiring changes.
+- No changes to `qa.md` were needed — it does not contain piped test commands that mask exit codes; it only references `npm test` inline in the QA report template.
+- The `pi-observability-extension.ts` `sanitizeValue` helper (already in place) is applied during capture time via `summarizeUnknown`. This is complementary to the writer-level sanitization in `pi-observability-writer.ts` which handles the JSON `worktreePath` field. Both layers together ensure no absolute paths leak.

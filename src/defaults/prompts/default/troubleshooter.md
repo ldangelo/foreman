@@ -51,7 +51,7 @@ Based on the failure context and diagnostics, apply the appropriate fix:
 2. Read the failing test files to understand what they expect
 3. Read the source files the tests cover to understand what changed
 4. Apply targeted fixes (don't refactor — fix the exact failure)
-5. Re-run the failing tests: `cd {{worktreePath}} && npm test 2>&1 | tail -50`
+5. Re-run the failing tests: `cd {{worktreePath}} && set -o pipefail; npm test 2>&1 | tail -50`
 6. If tests pass, commit and push:
    ```bash
    cd {{worktreePath}}

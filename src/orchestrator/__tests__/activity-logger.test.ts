@@ -87,11 +87,13 @@ describe("activity logger observability", () => {
   it("creates phase record with builtin phaseType for PR workflow phases", () => {
     const prPhase = createPhaseRecord("create-pr", "MiniMax", {
       phaseType: "builtin",
-      artifactExpected: "docs/reports/foreman-e59b5/QA_REPORT.md",
+      artifactExpected: "docs/reports/<seedId>/QA_REPORT.md",
     });
 
     expect(prPhase.phaseType).toBe("builtin");
     expect(prPhase.name).toBe("create-pr");
+    // Artifact path uses a placeholder — actual path is resolved at pipeline runtime
+    expect(prPhase.artifactExpected).toContain("<seedId>");
   });
 
   it("writeIncrementalPipelineReport includes builtin phases in phase table", async () => {
@@ -118,7 +120,7 @@ describe("activity logger observability", () => {
         success: true,
         costUsd: 0,
         turns: 0,
-        artifactExpected: "docs/reports/foreman-e59b5/QA_REPORT.md",
+        artifactExpected: "docs/reports/<seedId>/QA_REPORT.md",
         artifactPresent: false,
       },
     ];
