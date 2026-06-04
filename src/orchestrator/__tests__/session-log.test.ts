@@ -293,12 +293,13 @@ describe("writeSessionLog", () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it("creates the SessionLogs/ directory if it does not exist", async () => {
+  it("creates the Foreman session-logs directory if it does not exist", async () => {
     const date = new Date(2026, 2, 17, 14, 32);
-    await writeSessionLog(tmpDir, makeData(), date);
+    const filepath = await writeSessionLog(tmpDir, makeData(), date);
 
     const { access } = await import("node:fs/promises");
-    await expect(access(join(tmpDir, "SessionLogs"))).resolves.toBeUndefined();
+    await expect(access(filepath)).resolves.toBeUndefined();
+    expect(filepath).toContain("reports/session-logs");
   });
 
   it("writes the session log file with the correct filename", async () => {
@@ -313,8 +314,8 @@ describe("writeSessionLog", () => {
   it("returns the absolute path to the written file", async () => {
     const date = new Date(2026, 2, 17, 14, 32);
     const filepath = await writeSessionLog(tmpDir, makeData(), date);
-    expect(filepath).toContain(tmpDir);
-    expect(filepath).toContain("SessionLogs");
+    expect(filepath).toContain(".foreman");
+    expect(filepath).toContain("reports/session-logs");
     expect(filepath).toMatch(/\.md$/);
   });
 

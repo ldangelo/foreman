@@ -14,6 +14,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -407,8 +408,10 @@ export async function generateActivityLog(
     totalDurationSeconds,
   };
 
-  // Write to file
-  const filePath = join(worktreePath, "ACTIVITY_LOG.json");
+  // Write to Foreman's report store, not the agent worktree.
+  const reportsDir = getForemanHomePath("reports", "runs", runId, seedId);
+  await mkdir(reportsDir, { recursive: true });
+  const filePath = join(reportsDir, "ACTIVITY_LOG.json");
   const content = JSON.stringify(activityLog, null, 2);
   await writeFile(filePath, content, "utf-8");
 }
@@ -513,7 +516,7 @@ export async function writeIncrementalPipelineReport(opts: {
   vcsBranchName?: string;
 }): Promise<void> {
   const { worktreePath, seedId, runId, completedPhases, targetBranch, vcsBranchName } = opts;
-  const reportsDir = join(worktreePath, "docs", "reports", seedId);
+  const reportsDir = getForemanHomePath("reports", "runs", runId, seedId);
 
   await mkdir(reportsDir, { recursive: true });
 

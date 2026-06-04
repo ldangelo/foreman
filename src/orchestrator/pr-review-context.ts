@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { resolveArtifactPath } from "../lib/report-paths.js";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -266,12 +267,16 @@ export async function collectPrWaitSnapshot(projectPath: string, prNumber: numbe
   };
 }
 
-export async function writePrReviewFindings(worktreePath: string, context: PrReviewContext): Promise<void> {
-  await writeFile(join(worktreePath, "PR_REVIEW_FINDINGS.md"), renderPrReviewFindings(context), "utf8");
+export async function writePrReviewFindings(worktreePath: string, context: PrReviewContext, reportDir?: string): Promise<void> {
+  const path = resolveArtifactPath(worktreePath, reportDir ? join(reportDir, "PR_REVIEW_FINDINGS.md") : "PR_REVIEW_FINDINGS.md");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, renderPrReviewFindings(context), "utf8");
 }
 
-export async function writePrWaitReport(worktreePath: string, snapshot: PrWaitSnapshot, timedOut: boolean): Promise<void> {
-  await writeFile(join(worktreePath, "PR_WAIT_REPORT.md"), renderPrWaitReport(snapshot, timedOut), "utf8");
+export async function writePrWaitReport(worktreePath: string, snapshot: PrWaitSnapshot, timedOut: boolean, reportDir?: string): Promise<void> {
+  const path = resolveArtifactPath(worktreePath, reportDir ? join(reportDir, "PR_WAIT_REPORT.md") : "PR_WAIT_REPORT.md");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, renderPrWaitReport(snapshot, timedOut), "utf8");
 }
 
 export function renderPrWaitReport(snapshot: PrWaitSnapshot, timedOut: boolean): string {

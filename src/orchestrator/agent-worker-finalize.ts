@@ -15,7 +15,7 @@
 
 import { writeFileSync, renameSync, existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -23,6 +23,7 @@ import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { enqueueSetBeadStatus } from "./task-backend-ops.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
+import { resolveArtifactPath } from "../lib/report-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -67,12 +68,12 @@ export interface FinalizeResult {
  * debugging.  Non-fatal — any rename error is silently swallowed.
  */
 export function rotateReport(worktreePath: string, filename: string): void {
-  const p = join(worktreePath, filename);
+  const p = resolveArtifactPath(worktreePath, filename);
   if (!existsSync(p)) return;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const ext = filename.endsWith(".md") ? ".md" : "";
   const base = ext ? filename.slice(0, -3) : filename;
-  const rotated = join(worktreePath, `${base}.${stamp}${ext}`);
+  const rotated = join(dirname(p), `${base}.${stamp}${ext}`);
   try {
     renameSync(p, rotated);
   } catch {

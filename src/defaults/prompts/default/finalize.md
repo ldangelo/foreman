@@ -32,10 +32,10 @@ Then verify again with `pwd`. If you cannot change to that directory, send an er
 ```
 
 ### Step 1: Dependency Install (non-fatal)
-Run `npm ci` to perform a clean, deterministic dependency install. If it fails, log the error in docs/reports/{{seedId}}/FINALIZE_REPORT.md and continue — do not stop.
+Run `npm ci` to perform a clean, deterministic dependency install. If it fails, log the error in {{reportDir}}/FINALIZE_REPORT.md and continue — do not stop.
 
 ### Step 2: Type Check (non-fatal)
-Run `npx tsc --noEmit` to check for type errors. If it fails, log the error in docs/reports/{{seedId}}/FINALIZE_REPORT.md and continue — do not stop.
+Run `npx tsc --noEmit` to check for type errors. If it fails, log the error in {{reportDir}}/FINALIZE_REPORT.md and continue — do not stop.
 
 ### Step 3: Stage all files (excluding diagnostic artifacts)
 Run the stage command (skip if empty — some backends auto-stage):
@@ -123,9 +123,9 @@ QA already validated this bead. Finalize should rerun the full test suite only w
 
 First create the reports directory, then write `FINALIZE_VALIDATION.md`:
 ```bash
-mkdir -p docs/reports/{{seedId}}
+mkdir -p "{{reportDir}}"
 ```
-Then write `docs/reports/{{seedId}}/FINALIZE_VALIDATION.md`:
+Then write `{{reportDir}}/FINALIZE_VALIDATION.md`:
 
 ```markdown
 # Finalize Validation: {{seedTitle}}
@@ -170,12 +170,12 @@ Capture the full output and exit code. The `--reporter=dot` flag reduces per-tes
 
 **If tests PASS (exit code 0):**
 - Write `## Target Integration` with `- Status: SUCCESS`
-- Write `## Verdict: PASS` in `docs/reports/{{seedId}}/FINALIZE_VALIDATION.md`
+- Write `## Verdict: PASS` in `{{reportDir}}/FINALIZE_VALIDATION.md`
 - Continue to Step 8 (push)
 
 **If tests FAIL (non-zero exit code):**
 - Write `## Target Integration` with `- Status: SUCCESS`
-- Write `## Verdict: FAIL` in `docs/reports/{{seedId}}/FINALIZE_VALIDATION.md`
+- Write `## Verdict: FAIL` in `{{reportDir}}/FINALIZE_VALIDATION.md`
 - Include test failure details in the `## Test Validation` section
 - Classify the failures in `## Failure Scope`:
   - `MODIFIED_FILES` if the failures are in files changed by this bead or are clearly caused by this bead's work
@@ -200,7 +200,7 @@ Run:
 ```
 
 ### Step 9: Write FINALIZE_REPORT.md
-Write a `docs/reports/{{seedId}}/FINALIZE_REPORT.md` file summarizing:
+Write a `{{reportDir}}/FINALIZE_REPORT.md` file summarizing:
 - Whether `npm ci` succeeded or failed (include any error details)
 - Whether `npx tsc --noEmit` passed or failed (include any error details)
 - The commit hash (from `git rev-parse --short HEAD`)

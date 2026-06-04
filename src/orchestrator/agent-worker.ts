@@ -41,6 +41,7 @@ import { createProjectMailClient, resolveProjectDatabaseUrl } from "../lib/proje
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
+import { resolveArtifactPath } from "../lib/report-paths.js";
 import { autoMerge } from "./auto-merge.js";
 import { collectPrReviewContext, collectPrWaitSnapshot, summarizePrWaitStatus, writePrReviewFindings, writePrWaitReport } from "./pr-review-context.js";
 import { Refinery } from "./refinery.js";
@@ -956,7 +957,9 @@ async function runCreatePrBuiltinPhase(args: {
   });
   const prNumber = parsePrNumber(pr.prUrl);
   const headSha = vcsBackend ? await vcsBackend.getHeadId(config.worktreePath).catch(() => undefined) : undefined;
-  await writeFile(join(config.worktreePath, "PR_METADATA.json"), JSON.stringify({
+  const metadataPath = resolveArtifactPath(config.worktreePath, config.taskMeta?.projectReportsDir ? join(config.taskMeta.projectReportsDir, "PR_METADATA.json") : "PR_METADATA.json");
+  await mkdir(join(metadataPath, ".."), { recursive: true });
+  await writeFile(metadataPath, JSON.stringify({
     prUrl: pr.prUrl,
     prNumber,
     branchName: pr.branchName,
@@ -979,8 +982,8 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function readPrNumberFromMetadata(worktreePath: string): number {
-  const metadataPath = join(worktreePath, "PR_METADATA.json");
+function readPrNumberFromMetadata(worktreePath: string, reportDir?: string): number {
+  const metadataPath = resolveArtifactPath(worktreePath, reportDir ? join(reportDir, "PR_METADATA.json") : "PR_METADATA.json");
   const raw = readFileSync(metadataPath, "utf8");
   const metadata = JSON.parse(raw) as { prNumber?: number; prUrl?: string };
   const prNumber = metadata.prNumber ?? (metadata.prUrl ? parsePrNumber(metadata.prUrl) : undefined);
@@ -994,7 +997,7 @@ async function runPrWaitBuiltinPhase(args: {
   pipelineProjectPath: string;
   log: (msg: string) => void;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
-  const prNumber = readPrNumberFromMetadata(args.config.worktreePath);
+  const prNumber = readPrNumberFromMetadata(args.config.worktreePath, args.config.taskMeta?.projectReportsDir);
 
   const timeoutMs = (args.phase.timeoutSecs ?? 600) * 1000;
   const pollIntervalMs = 60_000;
@@ -1015,7 +1018,7 @@ async function runPrWaitBuiltinPhase(args: {
     lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   }
 
-  await writePrWaitReport(args.config.worktreePath, lastSnapshot, timedOut);
+  await writePrWaitReport(args.config.worktreePath, lastSnapshot, timedOut, args.config.taskMeta?.projectReportsDir);
   const finalStatus = summarizePrWaitStatus(lastSnapshot);
   const success = finalStatus.checksTerminal && finalStatus.codeRabbitComplete && !finalStatus.mergeConflict;
   return {
@@ -1040,9 +1043,9 @@ async function runPreparePrReviewBuiltinPhase(args: {
   pipelineProjectPath: string;
   log: (msg: string) => void;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
-  const prNumber = readPrNumberFromMetadata(args.config.worktreePath);
+  const prNumber = readPrNumberFromMetadata(args.config.worktreePath, args.config.taskMeta?.projectReportsDir);
   const context = await collectPrReviewContext(args.pipelineProjectPath, prNumber);
-  await writePrReviewFindings(args.config.worktreePath, context);
+  await writePrReviewFindings(args.config.worktreePath, context, args.config.taskMeta?.projectReportsDir);
   args.log(`[PR-REVIEW] Collected ${context.blockingFindings.length} blocking CodeRabbit finding(s), ${context.failedChecks.length} failed check(s)`);
   return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: `blocking=${context.blockingFindings.length} failedChecks=${context.failedChecks.length}` };
 }
@@ -1051,8 +1054,9 @@ async function validatePrReviewGate(args: {
   worktreePath: string;
   pipelineProjectPath: string;
   log: (msg: string) => void;
+  reportDir?: string;
 }): Promise<{ success: boolean; reason?: string }> {
-  const prNumber = readPrNumberFromMetadata(args.worktreePath);
+  const prNumber = readPrNumberFromMetadata(args.worktreePath, args.reportDir);
   const waitSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   const waitStatus = summarizePrWaitStatus(waitSnapshot);
   const reviewContext = await collectPrReviewContext(args.pipelineProjectPath, prNumber);
@@ -1414,9 +1418,10 @@ async function runPipeline(
       }
 
       const hasPrReviewPhase = workflowConfig.phases.some((phase) => phase.name === "pr-review");
-      if (finalizeSucceeded && hasPrReviewPhase && existsSync(join(worktreePath, "PR_METADATA.json"))) {
+      const prMetadataPath = resolveArtifactPath(worktreePath, config.taskMeta?.projectReportsDir ? join(config.taskMeta.projectReportsDir, "PR_METADATA.json") : "PR_METADATA.json");
+      if (finalizeSucceeded && hasPrReviewPhase && existsSync(prMetadataPath)) {
         try {
-          const gate = await validatePrReviewGate({ worktreePath, pipelineProjectPath, log });
+          const gate = await validatePrReviewGate({ worktreePath, pipelineProjectPath, log, reportDir: config.taskMeta?.projectReportsDir });
           if (!gate.success) {
             finalizeSucceeded = false;
             finalizeRetryable = false;

@@ -42,7 +42,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -58,7 +58,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 30
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -75,7 +75,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 20
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -92,7 +92,7 @@ phases:
     models:
       default: MiniMax
     maxTurns: 30
-    artifact: FINALIZE_VALIDATION.md
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -103,14 +103,14 @@ phases:
 
   - name: create-pr
     builtin: true
-    artifact: PR_METADATA.json
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
     mail:
       onStart: true
       onComplete: true
 
   - name: pr-wait
     builtin: true
-    artifact: PR_WAIT_REPORT.md
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
     mail:
       onStart: true
@@ -118,7 +118,7 @@ phases:
 
   - name: prepare-pr-review
     builtin: true
-    artifact: PR_REVIEW_FINDINGS.md
+    artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
     mail:
       onStart: true
       onComplete: true
@@ -130,7 +130,7 @@ phases:
     models:
       default: MiniMax
     maxTurns: 40
-    artifact: PR_REVIEW_REPORT.md
+    artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 3

@@ -8,12 +8,12 @@ Your job is to review PR feedback after the branch has been pushed and a PR has 
 - Seed: {seedId}
 - Run: {runId}
 - Worktree: {worktreePath}
-- Wait report: `PR_WAIT_REPORT.md`
-- Findings file: `PR_REVIEW_FINDINGS.md`
-- PR metadata: `PR_METADATA.json`
+- Wait report: `{{reportDir}}/PR_WAIT_REPORT.md`
+- Findings file: `{{reportDir}}/PR_REVIEW_FINDINGS.md`
+- PR metadata: `{{reportDir}}/PR_METADATA.json`
 
 ## Responsibilities
-1. Read `PR_METADATA.json`, `PR_WAIT_REPORT.md`, and `PR_REVIEW_FINDINGS.md`.
+1. Read `{{reportDir}}/PR_METADATA.json`, `{{reportDir}}/PR_WAIT_REPORT.md`, and `{{reportDir}}/PR_REVIEW_FINDINGS.md`.
 2. Refresh PR state with `gh pr view` / `gh api` before deciding; the findings file is initial context, not the sole source of truth.
 3. Triage only:
    - CodeRabbit recommendations with severity `critical`, `high`, or `medium`.
@@ -23,7 +23,7 @@ Your job is to review PR feedback after the branch has been pushed and a PR has 
 5. Do not fix low/nit comments.
 6. Do not refactor unrelated code.
 7. If a failed check is unrelated, pre-existing, flaky, or unclear, report that and stop.
-8. Write `PR_REVIEW_REPORT.md` with actionable findings for the developer retry loop.
+8. Write `{{reportDir}}/PR_REVIEW_REPORT.md` with actionable findings for the developer retry loop.
 
 ## Allowed git actions
 Read-only git/GitHub inspection only. This phase must not mutate the branch, commit, push, rebase, merge, or edit source/docs files.

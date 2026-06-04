@@ -37,6 +37,7 @@ import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "
 import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncrementalPipelineReport, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
+import { resolveArtifactPath } from "../lib/report-paths.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -251,13 +252,13 @@ export interface PipelineContext {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function readReport(worktreePath: string, filename: string): string | null {
-  const p = join(worktreePath, filename);
+  const p = resolveArtifactPath(worktreePath, filename);
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
 function readRelativeFile(worktreePath: string, relativePath?: string): string | null {
   if (!relativePath) return null;
-  const path = join(worktreePath, relativePath);
+  const path = resolveArtifactPath(worktreePath, relativePath);
   try { return readFileSync(path, "utf-8"); } catch { return null; }
 }
 
@@ -981,7 +982,7 @@ async function runPhaseSequence(
         phase.skipIfArtifact,
         phaseMeta,
       );
-      const artifactPath = join(worktreePath, interpolatedSkip);
+      const artifactPath = resolveArtifactPath(worktreePath, interpolatedSkip);
       if (existsSync(artifactPath)) {
         ctx.log(`[${phaseName.toUpperCase()}] Skipping — ${phase.skipIfArtifact} already exists at ${artifactPath}`);
         await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (artifact already present: ${artifactPath})\n`);
@@ -1100,6 +1101,7 @@ async function runPhaseSequence(
         requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
         feedbackContext,
         worktreePath,
+        reportDir: phaseMeta.projectReportsDir,
         baseBranch: config.targetBranch,
         ...vcsPromptVars,
       }, ctx.promptOpts);
@@ -1177,7 +1179,7 @@ async function runPhaseSequence(
       }
 
       const result = await ctx.runBuiltinPhase(phase);
-      const artifactPresent = interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined;
+      const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
       const phaseSucceeded = result.success && (!interpolatedArtifact || artifactPresent === true);
       const phaseError = result.error ?? (phaseSucceeded ? undefined : `Expected artifact missing: ${interpolatedArtifact}`);
 
@@ -1285,7 +1287,7 @@ async function runPhaseSequence(
         error: result.error,
         commandsRun: [resolvedBashCommand],
         artifactExpected: interpolatedArtifact,
-        artifactPresent: interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined,
+        artifactPresent: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
       });
       progress.costUsd += 0;
       await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
@@ -1368,7 +1370,7 @@ async function runPhaseSequence(
       ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
     }
 
-    const artifactPresent = interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined;
+    const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
     activityPhase.artifactPresent = artifactPresent;
     activityPhase.traceFile = result.traceFile;
     activityPhase.traceMarkdownFile = result.traceMarkdownFile;

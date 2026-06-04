@@ -38,9 +38,9 @@ If you hit an unrecoverable error, invoke:
 - If QA feedback is present, fix the cited failing area first before making any broader changes.
 
 ## Developer Report
-After implementation, write **docs/reports/{{seedId}}/DEVELOPER_REPORT.md** summarizing your work. Create the directory if it doesn't exist:
+After implementation, write **{{reportDir}}/DEVELOPER_REPORT.md** summarizing your work. Create the directory if it doesn't exist:
 ```bash
-mkdir -p docs/reports/{{seedId}}
+mkdir -p "{{reportDir}}"
 ```
 
 ```markdown

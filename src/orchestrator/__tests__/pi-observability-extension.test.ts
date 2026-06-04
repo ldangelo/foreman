@@ -73,7 +73,7 @@ describe("pi observability trace", () => {
     expect(trace.commandHonored).toBe(true);
   });
 
-  it("writes json and markdown trace artifacts under docs/reports/<seed>", async () => {
+  it("writes json and markdown trace artifacts under Foreman reports", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
     const trace = createPhaseTrace({
       runId: "run-789",
@@ -92,7 +92,7 @@ describe("pi observability trace", () => {
     const json = JSON.parse(await readFile(paths.jsonPath, "utf-8")) as { phase: string; seedId: string };
     const markdown = await readFile(paths.markdownPath, "utf-8");
 
-    expect(paths.relativeJsonPath).toBe("docs/reports/foreman-56b46/FIX_TRACE.json");
+    expect(paths.relativeJsonPath).toContain(".foreman/reports/runs/run-789/foreman-56b46/FIX_TRACE.json");
     expect(json.phase).toBe("fix");
     expect(json.seedId).toBe("foreman-56b46");
     expect(markdown).toContain("# FIX Trace — foreman-56b46");

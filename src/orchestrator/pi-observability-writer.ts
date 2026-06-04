@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 
 import type { PhaseTrace, PhaseTraceWriteResult } from "./pi-observability-types.js";
 
@@ -7,11 +8,13 @@ function traceBaseName(phase: string): string {
   return `${phase.toUpperCase()}_TRACE`;
 }
 
-export function getPhaseTracePaths(worktreePath: string, seedId: string, phase: string): PhaseTraceWriteResult {
-  const reportsDir = join(worktreePath, "docs", "reports", seedId);
+export function getPhaseTracePaths(worktreePath: string, seedId: string, phase: string, runId?: string): PhaseTraceWriteResult {
+  const reportsDir = runId
+    ? getForemanHomePath("reports", "runs", runId, seedId)
+    : join(worktreePath, "docs", "reports", seedId);
   const base = traceBaseName(phase);
-  const relativeJsonPath = join("docs", "reports", seedId, `${base}.json`);
-  const relativeMarkdownPath = join("docs", "reports", seedId, `${base}.md`);
+  const relativeJsonPath = join(reportsDir, `${base}.json`);
+  const relativeMarkdownPath = join(reportsDir, `${base}.md`);
   return {
     jsonPath: join(reportsDir, `${base}.json`),
     markdownPath: join(reportsDir, `${base}.md`),
@@ -77,8 +80,8 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
 }
 
 export async function writePhaseTrace(trace: PhaseTrace): Promise<PhaseTraceWriteResult> {
-  const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase);
-  await mkdir(join(trace.worktreePath, "docs", "reports", trace.seedId), { recursive: true });
+  const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase, trace.runId);
+  await mkdir(join(paths.jsonPath, ".."), { recursive: true });
   await writeFile(paths.jsonPath, `${JSON.stringify(trace, null, 2)}\n`, "utf-8");
   await writeFile(paths.markdownPath, `${renderTraceMarkdown(trace, paths.relativeJsonPath)}\n`, "utf-8");
   return paths;

@@ -32,6 +32,7 @@ import { resolveTaskStoreMode } from "../lib/task-client-factory.js";
 export { resolveTaskStoreMode } from "../lib/task-client-factory.js";
 export type { TaskStoreMode } from "../lib/task-client-factory.js";
 import type { TaskMeta } from "../lib/interpolate.js";
+import { getRunReportsDir } from "../lib/report-paths.js";
 import type {
   SeedInfo,
   DispatchResult,
@@ -1531,6 +1532,7 @@ export class Dispatcher {
           description: seed.description ?? '',
           type: seed.type ?? '',
           priority: typeof seed.priority === 'number' ? seed.priority : 2,
+          projectReportsDir: getRunReportsDir(this.overrides?.externalProjectId ?? this.resolveProjectId(), seed.id, runId),
         },
         githubIssueNumber: seed.githubIssueNumber,
         // FR-1: Directory guardrail — verify agent cwd matches expected worktree

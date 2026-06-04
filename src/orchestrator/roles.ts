@@ -494,6 +494,7 @@ export function buildPhasePrompt(
     /** Absolute path to the worktree. Passed to finalize prompt so it can cd
      *  to the correct directory before running git commands. */
     worktreePath?: string;
+    reportDir?: string;
     // ── VCS command variables (TRD-026: finalize phase) ───────────────────
     /** Command to stage all changes (e.g. 'git add -A'). Empty for auto-staging backends. */
     vcsStageCommand?: string;
@@ -555,6 +556,7 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     agentRole: phaseName,
     baseBranch: context.baseBranch ?? "main",
     worktreePath: context.worktreePath ?? "",
+    reportDir: context.reportDir ?? "",
     seedType: context.seedType ?? "",
     // VCS finalize command variables (TRD-026)
     vcsStageCommand: context.vcsStageCommand ?? "git add -A",
