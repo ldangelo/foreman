@@ -16,6 +16,8 @@ foreman debug <task-or-bead-id>           # AI-powered deep-dive on a specific t
 foreman debug <task-or-bead-id> --raw     # Raw artifacts without AI analysis
 ```
 
+Foreman PR workflows include an explicit PR review gate after the branch is finalized.
+
 ---
 
 ## Agent Issues
