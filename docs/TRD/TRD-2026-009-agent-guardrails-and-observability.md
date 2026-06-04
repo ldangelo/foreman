@@ -20,13 +20,13 @@ The implementation adds guardrails and observability via three new modules, new 
 **Key architectural decisions:**
 
 1. **`isAncestor` already exists in GitBackend** (via `merge-base --is-ancestor`). The PRD FR-5 section incorrectly stated it was missing. No interface update needed.
-2. **New event types are string literals** — `store.logEvent()` accepts any `EventType`, and the SQLite schema (`details TEXT`) stores arbitrary JSON. No store migration required for new event types.
+2. **New event types are string literals** — `store.logEvent()` accepts any `EventType`, and the Postgres schema (`details TEXT`) stores arbitrary JSON. No store migration required for new event types.
 3. **Guardrail integration via Pi SDK tool hooks** — The Pi SDK accepts a `tools` array with factory functions that can wrap tool execution. We inject directory-verification logic before each tool call.
 4. **Phase tracking via `PhaseRecord[]` accumulation** — The existing `PhaseRecord` interface in `session-log.ts` is extended to capture the full activity data needed for `ACTIVITY_LOG.json`.
 5. **VCS-backend-agnostic stale detection** — Uses only `getHeadId`, `fetch`, `resolveRef`, and `rebase` — all existing methods on `VcsBackend`.
 
 **Alternatives considered:**
-- **WebSocket live view**: PRD explicitly excludes real-time streaming UI. Heartbeat events are written to SQLite for polling-based dashboards.
+- **WebSocket live view**: PRD explicitly excludes real-time streaming UI. Heartbeat events are written to Postgres for polling-based dashboards.
 - **Agent self-correction**: Guardrail enforces constraints but does not direct agent behavior. The agent receives directory corrections but decides what to do with them.
 - **Pre-tool hook as a custom Pi SDK tool**: More complex to register and invoke. Tool-factories are the correct integration point.
 
@@ -785,7 +785,7 @@ describe("guardrails and observability e2e", () => {
 
 ┌─────────────────────────────────────────────────────────────┐
 │ ForemanStore (store.ts)                                      │
-│  ├─ logEvent() → writes events to SQLite                   │
+│  ├─ logEvent() → writes events to Postgres                   │
 │  └─ New event types: phase-start, heartbeat, guardrail-*   │
 │                     worktree-rebased, worktree-rebase-failed│
 └─────────────────────────────────────────────────────────────┘
@@ -886,7 +886,7 @@ Pipeline completes → generateActivityLog()
 ### Sprint 3: Observability — Phase Events + Heartbeat (FR-2, FR-3)
 - **Duration**: 10h
 - **Tasks**: TRD-009-005, TRD-009-005-TEST, TRD-009-006, TRD-009-006-TEST, TRD-009-007
-- **Deliverable**: Phase-start and heartbeat events writing to SQLite every 60s
+- **Deliverable**: Phase-start and heartbeat events writing to Postgres every 60s
 
 ### Sprint 4: Self-Documenting Commits (FR-4)
 - **Duration**: 10h

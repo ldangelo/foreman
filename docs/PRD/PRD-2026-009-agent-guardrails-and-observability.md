@@ -28,7 +28,7 @@ This PRD defines a set of **guardrails** (runtime-enforced constraints) and **ob
 | Pain Point | Current Behavior | Impact |
 |---|---|---|
 | Agent `cd`s to wrong directory | All subsequent commands/edit tools operate in unexpected location; agent may edit files in main foreman dir instead of worktree | Wrong code changed; wasted turns; corrupted state |
-| No real-time progress reporting | Operator must tail log files or poll SQLite events table | Operator blind during execution |
+| No real-time progress reporting | Operator must tail log files or poll Postgres events table | Operator blind during execution |
 | Agent re-runs tests already done | `test` phase runs; then `finalize` re-runs type-check and npm ci, potentially failing | Wasted time; timeouts in finalize phase |
 | Commit not self-documenting | Must query DB events + log files to reconstruct what happened | Can't understand history from `git log` alone |
 | Worktree not rebased before retry | Agent sees stale uncommitted changes from previous run | Agent re-implements already-fixed code |

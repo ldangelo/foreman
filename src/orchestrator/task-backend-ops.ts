@@ -7,7 +7,7 @@
  *   - closeSeed()               — marks a task complete (finalize phase)
  *   - resetSeedToOpen()         — resets a task back to open (markStuck path)
  *   - addLabelsToBead()         — appends phase-tracking labels after each pipeline phase
- *   - syncBeadStatusOnStartup() — reconciles br seed status from SQLite on startup
+ *   - syncBeadStatusOnStartup() — reconciles br seed status from Postgres on startup
  *
  * TRD-024: sd backend removed. Always uses Beads Rust CLI at ~/.local/bin/br.
  *
@@ -40,7 +40,7 @@ type StartupBeadStatusStore = {
 //
 // These functions enqueue br write operations via the ForemanStore bead_write_queue
 // table instead of calling the br CLI directly. The dispatcher (single process)
-// drains the queue sequentially, eliminating SQLite lock contention.
+// drains the queue sequentially, eliminating backend lock contention.
 //
 // Usage: call these from agent-worker, refinery, pipeline-executor, and auto-merge
 // instead of the corresponding direct functions (closeSeed, resetSeedToOpen, etc.).
@@ -48,7 +48,7 @@ type StartupBeadStatusStore = {
 /**
  * Enqueue a "close seed" operation for deferred sequential execution by the dispatcher.
  *
- * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param store - ForemanStore for the project (shared Postgres DB).
  * @param seedId - The bead/seed ID to close.
  * @param sender - Human-readable source label (e.g. "refinery", "agent-worker").
  */
@@ -65,7 +65,7 @@ export function enqueueCloseSeed(store: ForemanStore, seedId: string, sender: st
 /**
  * Enqueue a "reset seed to open" operation for deferred sequential execution by the dispatcher.
  *
- * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param store - ForemanStore for the project (shared Postgres DB).
  * @param seedId - The bead/seed ID to reset.
  * @param sender - Human-readable source label.
  */
@@ -82,7 +82,7 @@ export function enqueueResetSeedToOpen(store: ForemanStore, seedId: string, send
 /**
  * Enqueue a "mark bead failed" operation for deferred sequential execution by the dispatcher.
  *
- * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param store - ForemanStore for the project (shared Postgres DB).
  * @param seedId - The bead/seed ID to mark as failed.
  * @param sender - Human-readable source label.
  */
@@ -100,7 +100,7 @@ export function enqueueMarkBeadFailed(store: ForemanStore, seedId: string, sende
  * Enqueue an "add notes to bead" operation for deferred sequential execution by the dispatcher.
  * Does nothing when notes is empty (consistent with addNotesToBead).
  *
- * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param store - ForemanStore for the project (shared Postgres DB).
  * @param seedId - The bead/seed ID.
  * @param notes - Note text to add.
  * @param sender - Human-readable source label.
@@ -122,7 +122,7 @@ export function enqueueAddNotesToBead(store: ForemanStore, seedId: string, notes
  * Enqueue an "add labels to bead" operation for deferred sequential execution by the dispatcher.
  * Does nothing when labels array is empty (consistent with addLabelsToBead).
  *
- * @param store - ForemanStore for the project (shared SQLite DB).
+ * @param store - ForemanStore for the project (shared Postgres DB).
  * @param seedId - The bead/seed ID.
  * @param labels - Array of label strings to add.
  * @param sender - Human-readable source label.
@@ -174,34 +174,16 @@ function execOpts(projectPath?: string): { stdio: "pipe"; timeout: number; cwd?:
 /**
  * Close (complete) a bead in the br backend.
  *
- * Uses `br close --no-db` to write directly to JSONL, bypassing
- * the SQLite blocked cache. After the JSONL write, clears the
- * blocked_issues_cache so br ready reflects the close immediately.
- * The dispatcher also clears this cache at dispatch startup as a safety net.
+ * Uses `br close --no-db` to write directly to JSONL.
  *
  * @param projectPath - The project root directory that contains .beads/.
  */
 export async function closeSeed(seedId: string, projectPath?: string): Promise<void> {
   const bin = brPath();
-  const beadsDir = join(projectPath ?? process.cwd(), ".beads");
 
   try {
-    // Write close directly to JSONL (bypass broken DB cache)
     execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline"], execOpts(projectPath));
     console.error(`[task-backend-ops] Closed seed ${seedId} via br --no-db`);
-
-    // Clear the blocked_issues_cache so br ready reflects the close immediately.
-    // Faster than deleting the entire DB (avoids full JSONL reimport).
-    try {
-      execFileSync("sqlite3", [join(beadsDir, "beads.db"), "DELETE FROM blocked_issues_cache;"], execOpts(projectPath));
-      console.error(`[task-backend-ops] Cleared blocked_issues_cache for ${seedId}`);
-    } catch {
-      // Fallback: delete DB
-      for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
-        try { unlinkSync(join(beadsDir, dbFile)); } catch { /* may not exist */ }
-      }
-      console.error(`[task-backend-ops] Deleted br DB (fallback) for ${seedId}`);
-    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[task-backend-ops] Warning: br close failed for ${seedId}: ${msg.slice(0, 200)}`);
@@ -364,7 +346,7 @@ export interface SyncResult {
 }
 
 /**
- * Sync bead status from SQLite to br on foreman startup.
+ * Sync bead status from Postgres to br on foreman startup.
  *
  * Queries all terminal runs from the selected store and reconciles the
  * expected seed status (derived from run status) with the actual status stored in br.
@@ -380,7 +362,7 @@ export interface SyncResult {
  * is not aborted. After all updates, calls `br sync --flush-only` to
  * persist changes to .beads/beads.jsonl.
  *
- * @param store       - SQLite store to query runs from.
+ * @param store       - Postgres store to query runs from.
  * @param taskClient  - br client providing show() method for status queries.
  * @param projectId   - Project ID to scope the run query.
  * @param opts.dryRun       - Detect mismatches but do not fix them.

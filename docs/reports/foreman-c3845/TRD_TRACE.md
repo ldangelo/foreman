@@ -161,7 +161,7 @@ The document covers:
 - Error: no
 - Updates: 0
 - Args: `{"path":"/Users/ldangelo/.foreman/worktrees/9c825a66-276b-4419-8594-219783b4cf4f/foreman-c3845/src/cli/commands/inbox.ts"}`
-- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
+- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
 
 ### bash (`call_function_3qhnydy6bik8_1`)
 

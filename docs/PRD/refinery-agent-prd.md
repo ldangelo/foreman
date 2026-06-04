@@ -652,8 +652,8 @@ refinery_agent:
 | System | Integration | Protocol |
 |--------|-------------|----------|
 | VcsBackend | Git/Jujutsu operations | Direct |
-| Foreman Store | Run state, events | SQLite |
-| Agent Mail | Notifications | SQLite mail client |
+| Foreman Store | Run state, events | Postgres |
+| Agent Mail | Notifications | Postgres mail client |
 | Beads | Task status sync | br CLI |
 | CI/CD | Test results | Webhook callback |
 | Secrets Manager | API keys | Env/Secrets |
@@ -786,7 +786,7 @@ refinery_agent:
 - ConflictResolver: `src/orchestrator/conflict-resolver.ts`
 - MergeQueue: `src/orchestrator/merge-queue.ts`
 - VCS Backend: `src/lib/vcs/interface.ts`
-- Agent Mail: `src/lib/sqlite-mail-client.ts`
+- Agent Mail: `src/lib/postgres-mail-client.ts`
 
 ### 12.3 Open Questions
 

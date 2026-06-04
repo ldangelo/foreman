@@ -13,9 +13,9 @@
 
 ### 1.1 Overview
 
-This PRD enhances Foreman's agent session management by introducing tmux-based agent spawning and interactive session attachment. Today, Foreman agents run as headless detached Node processes with file-descriptor-based logging. The only way to observe a running agent is to tail its log file or poll SQLite for progress updates. The `foreman attach` command resumes an SDK session via `claude --resume`, which takes exclusive control and cannot be safely detached.
+This PRD enhances Foreman's agent session management by introducing tmux-based agent spawning and interactive session attachment. Today, Foreman agents run as headless detached Node processes with file-descriptor-based logging. The only way to observe a running agent is to tail its log file or poll Postgres for progress updates. The `foreman attach` command resumes an SDK session via `claude --resume`, which takes exclusive control and cannot be safely detached.
 
-This enhancement wraps each agent worker process inside a named tmux session, enabling interactive attachment with safe detach/reattach as the default mode, read-only follow mode for passive observation, TTY-aware auto-attach during dispatch, and robust zombie session detection. The approach is inspired by Overstory's tmux-based agent management while preserving Foreman's existing architecture: TypeScript-orchestrated pipelines, Claude Agent SDK `query()` calls, SQLite state tracking, and isolated git worktrees.
+This enhancement wraps each agent worker process inside a named tmux session, enabling interactive attachment with safe detach/reattach as the default mode, read-only follow mode for passive observation, TTY-aware auto-attach during dispatch, and robust zombie session detection. The approach is inspired by Overstory's tmux-based agent management while preserving Foreman's existing architecture: TypeScript-orchestrated pipelines, Claude Agent SDK `query()` calls, Postgres state tracking, and isolated git worktrees.
 
 ### 1.2 Problem Statement
 
@@ -25,9 +25,9 @@ This enhancement wraps each agent worker process inside a named tmux session, en
 
 3. **No detach/reattach.** Once attached via `claude --resume`, there is no way to detach and return later. The session runs in the foreground until completion or interruption.
 
-4. **No zombie detection at the process level.** The monitor detects stuck agents via timeout heuristics and seed status polling, but cannot detect a dead process whose tmux session or PID no longer exists. A process that crashes silently leaves a "running" row in SQLite until the timeout fires (default: 60 minutes).
+4. **No zombie detection at the process level.** The monitor detects stuck agents via timeout heuristics and seed status polling, but cannot detect a dead process whose tmux session or PID no longer exists. A process that crashes silently leaves a "running" row in Postgres until the timeout fires (default: 60 minutes).
 
-5. **Blind dispatching.** `foreman run` dispatches agents and exits (or enters watch mode polling SQLite). There is no option to immediately attach to a spawned agent's terminal for real-time observation.
+5. **Blind dispatching.** `foreman run` dispatches agents and exits (or enters watch mode polling Postgres). There is no option to immediately attach to a spawned agent's terminal for real-time observation.
 
 6. **Session identity is opaque.** Session keys like `foreman:sdk:claude-sonnet-4-6:uuid:session-uuid` are not human-friendly. Users must cross-reference run IDs, seed IDs, and session keys to find the right agent.
 
@@ -41,7 +41,7 @@ Dispatcher.spawnAgent()
      - cwd: worktreePath
      - child.unref()                      -- parent exits freely
   3. Worker reads config, runs SDK query() loop
-  4. Worker updates SQLite with progress every 2s
+  4. Worker updates Postgres with progress every 2s
 
 foreman attach <id>
   1. Look up run by run-id or seed-id
@@ -53,7 +53,7 @@ foreman attach <id>
 - `src/cli/commands/attach.ts` -- Current attach command (146 lines)
 - `src/orchestrator/dispatcher.ts` -- Agent spawning via `spawnWorkerProcess()` (723 lines)
 - `src/orchestrator/agent-worker.ts` -- Worker process entry point (872 lines)
-- `src/lib/store.ts` -- SQLite store with Run, RunProgress types
+- `src/lib/store.ts` -- Postgres store with Run, RunProgress types
 - `src/orchestrator/monitor.ts` -- Health monitoring (161 lines)
 - `src/cli/commands/run.ts` -- Dispatch CLI with `--no-watch` flag
 
@@ -75,7 +75,7 @@ foreman attach <id>
 **Persona 1: Active Monitor (Primary)**
 - Runs 3-5 agents simultaneously via `foreman run`
 - Wants to glance at agent progress without disrupting work
-- Currently relies on `foreman status` (polls SQLite) or `tail -f` log files
+- Currently relies on `foreman status` (polls Postgres) or `tail -f` log files
 - Needs: read-only follow mode, enhanced session listing with phase/cost info
 
 **Persona 2: Debugging Developer (Primary)**
@@ -168,7 +168,7 @@ foreman attach <id>
 1. When tmux is available, `spawnWorkerProcess()` creates a tmux session named `foreman-<seedId>` and runs the worker inside it.
 2. The worker process (tsx agent-worker.ts) runs as the sole command in the tmux session.
 3. Existing file-descriptor logging (`~/.foreman/logs/<runId>.{out,err}`) continues to work (tmux does not interfere with stdout/stderr redirection).
-4. The tmux session name is stored in the SQLite `runs` table (new column: `tmux_session`).
+4. The tmux session name is stored in the Postgres `runs` table (new column: `tmux_session`).
 5. When the worker completes (success or failure), the tmux session remains alive indefinitely for the user to review final output. Cleanup relies on explicit `foreman reset`, `foreman doctor --fix`, or manual `tmux kill-session`.
 6. If a tmux session with the same name already exists (from a previous stuck run), it is killed before creating the new one.
 
@@ -334,13 +334,13 @@ foreman attach <id>
 | tmux version | Supports tmux >= 3.0 (macOS Homebrew default, Ubuntu 20.04+) |
 | macOS + Linux | Works on both platforms (primary: macOS via Homebrew) |
 | Existing workflows | All current `foreman run`, `foreman attach`, `foreman status` behaviors preserved when tmux is unavailable |
-| SQLite schema | New column added via migration; existing databases upgraded seamlessly |
+| Postgres schema | New column added via migration; existing databases upgraded seamlessly |
 
 ### NFR-4: Observability
 
 | Requirement | Description |
 |---|---|
-| Session events | `tmux_session_created`, `tmux_session_killed`, `tmux_zombie_detected` events logged to SQLite events table |
+| Session events | `tmux_session_created`, `tmux_session_killed`, `tmux_zombie_detected` events logged to Postgres events table |
 | Doctor checks | `foreman doctor` reports tmux availability, orphaned sessions, and session/run mismatches |
 
 ---
@@ -507,7 +507,7 @@ Behavior changes:
 | `buildWorkerEnv()` | Reuse as-is; tmux inherits the worker's environment |
 | `NotificationClient` | No changes needed; HTTP notifications work the same inside tmux |
 
-### 9.4 SQLite Schema Change
+### 9.4 Postgres Schema Change
 
 ```sql
 -- Migration (idempotent via ALTER TABLE failure pattern)
@@ -576,7 +576,7 @@ ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL;
 
 | Metric | Target | Measurement |
 |---|---|---|
-| Zombie detection time | <30 seconds (from 60 min) | Time from process death to run status change in SQLite |
+| Zombie detection time | <30 seconds (from 60 min) | Time from process death to run status change in Postgres |
 | Session attachment adoption | >70% of active runs are attached to at least once | CLI usage telemetry (opt-in) |
 | User-reported visibility satisfaction | >80% positive | Post-launch survey |
 | Fallback rate (tmux unavailable) | <10% of users | `foreman doctor` reports aggregated in issue tracker |

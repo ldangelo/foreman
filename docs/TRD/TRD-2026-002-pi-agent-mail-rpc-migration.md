@@ -87,12 +87,12 @@ Foreman CLI (commander)
   |     |-> Fire-and-forget: failures silently ignored, disk-file fallback
   |
   |-- Pi Merge Agent Daemon [NEW]
-  |     |-> Follows SentinelAgent pattern (timer-based loop, start/stop, PID in SQLite)
+  |     |-> Follows SentinelAgent pattern (timer-based loop, start/stop, PID in Postgres)
   |     |-> Polls Agent Mail for "branch-ready" messages
   |     |-> Drives T1-T4 merge tiers via extracted Refinery functions
   |     |-> Lock file (~/.foreman/merge.lock) yields to manual foreman merge
   |
-  |-- ForemanStore (SQLite) -- existing, extended with merge_agent_configs table
+  |-- ForemanStore (Postgres) -- existing, extended with merge_agent_configs table
   |-- NotificationServer/Bus -- existing, marked @deprecated
   |
 packages/foreman-pi-extensions/ [NEW]
@@ -129,7 +129,7 @@ Foreman Dispatcher
   |       |     |-> foreman-audit: log usage
   |       |
   |       |-- stdout >> { event: "agent_end", ... }
-  |       |     |-> Update RunProgress in SQLite
+  |       |     |-> Update RunProgress in Postgres
   |       |     |-> Phase transition: set new env vars, send new prompt
   |       |     |-> OR: fork session for Dev<->QA retry
   |       |
@@ -163,7 +163,7 @@ spawnWorkerProcess(config)
   |     |-> DetachedSpawnStrategy.spawn(config)
   |           |-> existing behavior: tsx agent-worker.ts <configPath>
   |           |-> SDK query() calls per phase
-  |           |-> All SQLite updates, br operations, notifications preserved
+  |           |-> All Postgres updates, br operations, notifications preserved
   |
   |-- isPiAvailable() -> true, but spawn fails
         |-> log warning
@@ -174,7 +174,7 @@ spawnWorkerProcess(config)
 
 ## 3. Data Architecture
 
-### 3.1 New SQLite Tables
+### 3.1 New Postgres Tables
 
 ```sql
 -- Merge Agent daemon configuration (follows sentinel_configs pattern)
@@ -556,9 +556,9 @@ Implement `PiRpcSpawnStrategy` class that implements the `SpawnStrategy` interfa
 - [ ] Given operator cancellation, when Foreman closes stdin, then Pi performs clean shutdown via `session_shutdown` hook
 - [ ] Given `PiRpcSpawnStrategy.spawn()` fails, when the error is caught, then Foreman falls back to `DetachedSpawnStrategy` and logs a warning
 - [ ] Given env vars `FOREMAN_PHASE`, `FOREMAN_ALLOWED_TOOLS`, `FOREMAN_MAX_TURNS`, `FOREMAN_MAX_TOKENS`, `FOREMAN_RUN_ID`, `FOREMAN_SEED_ID`, when the Pi process is spawned, then all env vars are set in the child process environment
-- [ ] Given a `budget_exceeded` event from foreman-budget extension, when the RPC event loop receives it, then the run is marked 'stuck' with reason 'BUDGET_EXCEEDED' in SQLite (AC-004-3)
+- [ ] Given a `budget_exceeded` event from foreman-budget extension, when the RPC event loop receives it, then the run is marked 'stuck' with reason 'BUDGET_EXCEEDED' in Postgres (AC-004-3)
 - [ ] Given a Pi session is started, when the session ID is available, then it is stored in `runs.session_key` (existing TEXT column, no migration needed) (AC-019-2)
-- [ ] Given a `tool_execution_start` or `tool_execution_end` event, when received in the RPC event loop, then `RunProgress` is updated immediately in SQLite (per-event, not batched)
+- [ ] Given a `tool_execution_start` or `tool_execution_end` event, when received in the RPC event loop, then `RunProgress` is updated immediately in Postgres (per-event, not batched)
 
 [depends: TRD-010, TRD-011, TRD-006]
 
@@ -573,7 +573,7 @@ Unit and integration tests for PiRpcSpawnStrategy: spawn, initialization, exit d
 - [ ] Given a mock Pi process that fails to spawn, when the error occurs, then DetachedSpawnStrategy is used as fallback
 - [ ] Given a mock budget_exceeded event, when processed by event loop, then run is marked 'stuck' with reason 'BUDGET_EXCEEDED'
 - [ ] Given a mock Pi session with session ID, when stored, then runs.session_key contains the Pi session ID
-- [ ] Given a mock tool_execution_start event, when received, then RunProgress is updated in SQLite immediately
+- [ ] Given a mock tool_execution_start event, when received, then RunProgress is updated in Postgres immediately
 
 ---
 
@@ -586,7 +586,7 @@ Update `spawnWorkerProcess()` in `dispatcher.ts` to use the three-tier strategy:
 - [ ] Given Pi is available but spawn fails, when the failure is caught, then `DetachedSpawnStrategy` is used with a warning logged
 - [ ] Given Pi is not available, when `spawnWorkerProcess()` is called, then `DetachedSpawnStrategy` is used directly
 - [ ] Given `FOREMAN_SPAWN_STRATEGY=tmux`, when `spawnWorkerProcess()` is called, then `TmuxSpawnStrategy` is still used (backward compat)
-- [ ] Given fallback to `DetachedSpawnStrategy`, when the agent completes, then all SQLite updates, notification POSTs, and br operations are preserved identically
+- [ ] Given fallback to `DetachedSpawnStrategy`, when the agent completes, then all Postgres updates, notification POSTs, and br operations are preserved identically
 - [ ] Given `TmuxSpawnStrategy`, when its source is inspected, then `@deprecated` JSDoc is present
 
 [depends: TRD-012, TRD-010]
@@ -821,14 +821,14 @@ Tests for branch-ready message sending and failure handling.
 ---
 
 #### TRD-024: Notification System Deprecation + Agent Mail Channel (8h) [satisfies REQ-012]
-Mark `NotificationServer` and `NotificationBus` with `@deprecated` JSDoc tags. Implement Agent Mail as an alternative notification channel in `agent-worker.ts` for phase completion, run status changes, and error events. Preserve SQLite polling fallback. Note: AC-012-2 (status/monitor via Agent Mail) is owned by TRD-035.
+Mark `NotificationServer` and `NotificationBus` with `@deprecated` JSDoc tags. Implement Agent Mail as an alternative notification channel in `agent-worker.ts` for phase completion, run status changes, and error events. Preserve Postgres polling fallback. Note: AC-012-2 (status/monitor via Agent Mail) is owned by TRD-035.
 
 **Validates PRD ACs:** AC-012-1, AC-012-3, AC-012-4
 **Implementation AC:**
 - [ ] Given `NotificationServer` class, when its JSDoc is updated, then `@deprecated` tag is present with migration note
 - [ ] Given `NotificationBus` class, when its JSDoc is updated, then `@deprecated` tag is present with migration note
 - [ ] Given a pipeline run, when a phase completes, then status update is sent to Agent Mail (in addition to HTTP POST)
-- [ ] Given Agent Mail is down, when status updates need communication, then SQLite polling fallback continues to work
+- [ ] Given Agent Mail is down, when status updates need communication, then Postgres polling fallback continues to work
 - [ ] Given a run error, when the error is recorded, then an Agent Mail notification is sent to the operator inbox
 - [ ] Given Agent Mail configured, when `foreman run` starts, then agent registrations are sent for all pipeline roles
 
@@ -913,7 +913,7 @@ Tests for Docker Compose up/health, message latency, and audit overhead benchmar
 ### Phase 4: Pi Merge Agent Daemon (P3) -- Week 7-8
 
 #### TRD-028: Merge Agent Daemon Core (6h) [satisfies REQ-008]
-Implement `MergeAgentDaemon` class in `src/orchestrator/merge-agent.ts` following the `SentinelAgent` pattern. Timer-based polling loop with `start()`/`stop()`. Polls Agent Mail `merge-agent` inbox for "branch-ready" messages. PID tracking in `merge_agent_configs` SQLite table. Lock file (`~/.foreman/merge.lock`) to yield to manual `foreman merge`.
+Implement `MergeAgentDaemon` class in `src/orchestrator/merge-agent.ts` following the `SentinelAgent` pattern. Timer-based polling loop with `start()`/`stop()`. Polls Agent Mail `merge-agent` inbox for "branch-ready" messages. PID tracking in `merge_agent_configs` Postgres table. Lock file (`~/.foreman/merge.lock`) to yield to manual `foreman merge`.
 
 **Validates PRD ACs:** AC-008-1, AC-008-5, AC-008-6
 **Implementation AC:**
@@ -921,7 +921,7 @@ Implement `MergeAgentDaemon` class in `src/orchestrator/merge-agent.ts` followin
 - [ ] Given a "branch-ready" message arrives, when the daemon polls, then it dequeues the message and begins merge processing
 - [ ] Given `foreman merge` is invoked manually, when the lock file exists, then the daemon skips processing (yields to manual)
 - [ ] Given the daemon starts, when stale "branch-ready" messages exist from before startup, then they are acknowledged and processed
-- [ ] Given the daemon is running, when `stop()` is called, then the polling loop stops and the PID is cleared from SQLite
+- [ ] Given the daemon is running, when `stop()` is called, then the polling loop stops and the PID is cleared from Postgres
 - [ ] Given the `merge_agent_configs` table, when the daemon starts, then its PID is stored for monitoring
 
 [depends: TRD-020]
@@ -1009,7 +1009,7 @@ Implement `foreman merge-agent start`, `foreman merge-agent stop`, `foreman merg
 
 **Validates PRD ACs:** AC-016-3
 **Implementation AC:**
-- [ ] Given `foreman merge-agent start`, when invoked, then the merge agent daemon is started and PID is stored in SQLite
+- [ ] Given `foreman merge-agent start`, when invoked, then the merge agent daemon is started and PID is stored in Postgres
 - [ ] Given `foreman merge-agent stop`, when invoked, then the daemon is stopped and PID is cleared
 - [ ] Given `foreman merge-agent status`, when invoked, then it displays: running status, PID, uptime
 - [ ] Given `foreman merge --status`, when invoked, then it displays: daemon status, pending branch-ready messages count, recent merge results
@@ -1026,7 +1026,7 @@ Tests for merge-agent CLI commands.
 
 ---
 
-#### TRD-033: Merge Agent SQLite Schema (2h) [satisfies REQ-008] [satisfies ARCH]
+#### TRD-033: Merge Agent Postgres Schema (2h) [satisfies REQ-008] [satisfies ARCH]
 Add `merge_agent_configs` table to `store.ts` following the `sentinel_configs` pattern. Add CRUD methods: `upsertMergeAgentConfig()`, `getMergeAgentConfig()`. Add migration to MIGRATIONS array.
 
 **Validates PRD ACs:** (infrastructure for AC-008-*)
@@ -1068,14 +1068,14 @@ Tests measuring merge processing latency from message arrival to merge start.
 ---
 
 #### TRD-035: Agent Mail Status/Monitor Integration (4h) [satisfies REQ-012] [satisfies REQ-016]
-Wire Agent Mail data into `foreman status` and `foreman monitor` CLI commands. When Agent Mail is available, display live phase, turn count, and cost sourced from Agent Mail messages. Fall back to SQLite polling when Agent Mail is unavailable.
+Wire Agent Mail data into `foreman status` and `foreman monitor` CLI commands. When Agent Mail is available, display live phase, turn count, and cost sourced from Agent Mail messages. Fall back to Postgres polling when Agent Mail is unavailable.
 
 **Validates PRD ACs:** AC-012-2, AC-016-1
 **Implementation AC:**
 - [ ] Given Agent Mail is available, when `foreman status` is invoked, then it displays live phase, turn count, and cost from Agent Mail messages
 - [ ] Given Agent Mail is available, when `foreman monitor` is invoked, then it shows real-time updates from Agent Mail
-- [ ] Given Agent Mail is unavailable, when `foreman status` is invoked, then it falls back to SQLite polling (existing behavior preserved)
-- [ ] Given Agent Mail is available but returns stale data, when compared to SQLite, then the most recent data source wins
+- [ ] Given Agent Mail is unavailable, when `foreman status` is invoked, then it falls back to Postgres polling (existing behavior preserved)
+- [ ] Given Agent Mail is available but returns stale data, when compared to Postgres, then the most recent data source wins
 
 [depends: TRD-020, TRD-024]
 
@@ -1085,8 +1085,8 @@ Tests for Agent Mail data in status/monitor commands with fallback scenarios.
 **Validates PRD ACs:** AC-012-2, AC-016-1
 **Implementation AC:**
 - [ ] Given mock Agent Mail with run data, when `foreman status` renders, then Agent Mail data is displayed
-- [ ] Given Agent Mail unavailable, when `foreman status` renders, then SQLite data is displayed without error
-- [ ] Given mock Agent Mail with stale data, when compared to SQLite, then the freshest source is used
+- [ ] Given Agent Mail unavailable, when `foreman status` renders, then Postgres data is displayed without error
+- [ ] Given mock Agent Mail with stale data, when compared to Postgres, then the freshest source is used
 
 ---
 
@@ -1206,7 +1206,7 @@ Tests for Pi crash detection, session resume, and DetachedSpawnStrategy fallback
 
 | Task ID | Title | Est. | Depends | Priority |
 |---------|-------|------|---------|----------|
-| TRD-033 | Merge Agent SQLite Schema | 2h | -- | P3 |
+| TRD-033 | Merge Agent Postgres Schema | 2h | -- | P3 |
 | TRD-033-TEST | Schema Tests | 1h | TRD-033 | P3 |
 | TRD-029 | Extract Reusable Merge Functions | 4h | -- | P3 |
 | TRD-029-TEST | Merge Function Tests | 3h | TRD-029 | P3 |
@@ -1288,7 +1288,7 @@ TRD-029 -> TRD-030 (AI resolution)
 - `DetachedSpawnStrategy` unchanged -- zero regression when Pi absent
 - `TmuxSpawnStrategy` deprecated, not removed -- available via env var override
 - All disk-file reports (EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md) continue to be written
-- SQLite polling fallback preserved for `foreman status` / `foreman monitor`
+- Postgres polling fallback preserved for `foreman status` / `foreman monitor`
 - `NotificationServer` / `NotificationBus` remain in codebase for fallback path
 
 ---
@@ -1338,7 +1338,7 @@ TRD-029 -> TRD-030 (AI resolution)
 
 ### TD-004: Agent Mail as fire-and-forget
 **Decision:** All Agent Mail sends are fire-and-forget with 500ms timeout. No retries.
-**Rationale:** Agent Mail is supplementary, not critical path. The pipeline must complete identically whether Agent Mail is up or down. Disk files + SQLite are the source of truth.
+**Rationale:** Agent Mail is supplementary, not critical path. The pipeline must complete identically whether Agent Mail is up or down. Disk files + Postgres are the source of truth.
 
 ### TD-005: Merge agent lock file
 **Decision:** Use `~/.foreman/merge.lock` (file-based lock) to coordinate between daemon and manual `foreman merge`.
@@ -1357,8 +1357,8 @@ TRD-029 -> TRD-030 (AI resolution)
 **Rationale:** Agent Mail is an external dependency that may be unavailable. JSONL provides guaranteed local durability. The dual-write approach means no audit data is lost even if Agent Mail is down, while Agent Mail provides FTS5 search capability when available.
 
 ### TD-009: RunProgress updates per tool_execution event
-**Decision:** Update `RunProgress` in SQLite on every `tool_execution_start`/`tool_execution_end` event, not batched per turn.
-**Rationale:** Real-time progress enables `foreman status` to show current activity immediately. The slight increase in SQLite writes is negligible compared to the pipeline's overall I/O.
+**Decision:** Update `RunProgress` in Postgres on every `tool_execution_start`/`tool_execution_end` event, not batched per turn.
+**Rationale:** Real-time progress enables `foreman status` to show current activity immediately. The slight increase in Postgres writes is negligible compared to the pipeline's overall I/O.
 
 ### TD-010: Reuse existing runs.session_key for Pi session IDs
 **Decision:** Store Pi session IDs in the existing `runs.session_key` TEXT column. No schema migration needed.

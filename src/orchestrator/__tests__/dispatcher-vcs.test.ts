@@ -596,7 +596,7 @@ describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace cre
       projectId: "proj-001",
       beadId: "test-seed",
       repoPath: "/tmp/project",
-      baseBranch: undefined,
+      baseBranch: "main",
     });
   });
 });

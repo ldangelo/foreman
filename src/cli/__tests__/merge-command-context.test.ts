@@ -255,7 +255,7 @@ describe("merge command registered context", () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it("uses the registered run lookup for --resolve without local SQLite", async () => {
+  it("uses the registered run lookup for --resolve without local Postgres", async () => {
     mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "my-project", path: "/mock/project" }]);
     mockGetProjectByPath.mockReturnValue({ id: "proj-local", path: "/mock/project" });
     mockLocalGetRun.mockReturnValue(null);

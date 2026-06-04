@@ -1,9 +1,10 @@
 /**
  * Postgres-backed ForemanStore implementation.
- * Replaces SQLite-based storage with Postgres for multi-project support.
+ * Replaces Postgres-based storage with Postgres for multi-project support.
  */
 
 import { PostgresAdapter } from "./db/postgres-adapter.js";
+import { query } from "./db/pool-manager.js";
 import type { IStore } from "./store-interface.js";
 import type {
   Project,
@@ -180,7 +181,7 @@ export class PostgresStore implements IStore {
 
   async updateRun(
     runId: string,
-    updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at">>,
+    updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at" | "merge_strategy">>,
   ): Promise<void> {
     const updateData: Record<string, string | null> = {};
     if (updates.status) updateData.status = updates.status;
@@ -188,6 +189,7 @@ export class PostgresStore implements IStore {
     if (updates.session_key !== undefined) updateData.session_key = updates.session_key;
     if (updates.started_at !== undefined) updateData.started_at = updates.started_at;
     if (updates.completed_at !== undefined) updateData.completed_at = updates.completed_at;
+    if (updates.merge_strategy !== undefined) updateData.merge_strategy = updates.merge_strategy;
     await this.adapter.updateRun(this.projectId, runId, updateData);
   }
 
@@ -311,24 +313,74 @@ export class PostgresStore implements IStore {
     await this.adapter.recordCost(this.projectId, runId, { tokensIn, tokensOut, cacheRead, estimatedCost });
   }
 
-  async getCosts(_projectId?: string, _since?: string): Promise<Cost[]> {
-    return [];
+  async getCosts(_projectId?: string, since?: string): Promise<Cost[]> {
+    const params: unknown[] = [this.projectId];
+    const conditions = ["r.project_id = $1"];
+    if (since) {
+      params.push(since);
+      conditions.push(`c.recorded_at >= $${params.length}`);
+    }
+    return query<Cost>(
+      `SELECT c.id, c.run_id, c.tokens_in, c.tokens_out, c.cache_read,
+              c.estimated_cost::float AS estimated_cost,
+              c.recorded_at::text AS recorded_at
+         FROM costs c
+         JOIN runs r ON r.id = c.run_id
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY c.recorded_at DESC`,
+      params,
+    );
   }
 
-  async getCostBreakdown(_runId: string): Promise<{ byPhase: Record<string, number>; byAgent: Record<string, number> }> {
-    return { byPhase: {}, byAgent: {} };
+  async getCostBreakdown(runId: string): Promise<{ byPhase: Record<string, number>; byAgent: Record<string, number> }> {
+    const rows = await query<{ agent_type: string; estimated_cost: number }>(
+      `SELECT r.agent_type, c.estimated_cost::float AS estimated_cost
+         FROM costs c
+         JOIN runs r ON r.id = c.run_id
+        WHERE r.project_id = $1 AND r.id = $2`,
+      [this.projectId, runId],
+    );
+    const total = rows.reduce((sum, row) => sum + Number(row.estimated_cost), 0);
+    const agent = rows[0]?.agent_type ?? "unknown";
+    return { byPhase: { total }, byAgent: { [agent]: total } };
   }
 
-  async getPhaseMetrics(_projectId?: string, _since?: string): Promise<{
+  async getPhaseMetrics(_projectId?: string, since?: string): Promise<{
     totalCost: number;
     totalTokens: number;
     tasksByStatus: Record<string, number>;
   }> {
-    return { totalCost: 0, totalTokens: 0, tasksByStatus: {} };
+    const costs = await this.getCosts(this.projectId, since);
+    const statuses = await query<{ status: string; count: number }>(
+      `SELECT status, count(*)::int AS count FROM runs WHERE project_id = $1 GROUP BY status`,
+      [this.projectId],
+    );
+    const mapStatus = (status: string): string => {
+      if (status === "success") return "completed";
+      if (status === "failure") return "failed";
+      if (status === "cancelled" || status === "skipped") return "reset";
+      return status;
+    };
+    return {
+      totalCost: costs.reduce((sum, cost) => sum + Number(cost.estimated_cost), 0),
+      totalTokens: costs.reduce((sum, cost) => sum + cost.tokens_in + cost.tokens_out + cost.cache_read, 0),
+      tasksByStatus: Object.fromEntries(statuses.map((row) => [mapStatus(row.status), row.count])),
+    };
   }
 
   async getSuccessRate(_projectId?: string): Promise<{ rate: number | null; merged: number; failed: number }> {
-    return { rate: null, merged: 0, failed: 0 };
+    const rows = await query<{ status: string; count: number }>(
+      `SELECT status, count(*)::int AS count
+         FROM runs
+        WHERE project_id = $1 AND status IN ('success', 'failure')
+        GROUP BY status`,
+      [this.projectId],
+    );
+    const counts = Object.fromEntries(rows.map((row) => [row.status, row.count]));
+    const merged = counts.success ?? 0;
+    const failed = counts.failure ?? 0;
+    const total = merged + failed;
+    return { rate: total === 0 ? null : merged / total, merged, failed };
   }
 
   async updateRunProgress(runId: string, progress: RunProgress): Promise<void> {
@@ -442,13 +494,18 @@ export class PostgresStore implements IStore {
   // ── Bead Write Queue ────────────────────────────────────────────────
 
   async getPendingBeadWrites(): Promise<BeadWriteEntry[]> {
-    // Not implemented in Postgres yet
-    return [];
+    const rows = await query<BeadWriteEntry>(
+      `SELECT id, project_id, sender, operation, payload, created_at, processed_at
+         FROM bead_write_queue
+        WHERE project_id = $1 AND processed_at IS NULL
+        ORDER BY created_at ASC`,
+      [this.projectId],
+    );
+    return rows;
   }
 
-  async markBeadWriteProcessed(_id: string): Promise<boolean> {
-    // Not implemented in Postgres yet
-    return false;
+  async markBeadWriteProcessed(id: string): Promise<boolean> {
+    return this.adapter.markBeadWriteProcessed(this.projectId, id);
   }
 
   // ── Merge Queue ─────────────────────────────────────────────────────
@@ -572,6 +629,12 @@ export class PostgresStore implements IStore {
     completed_at: string | null;
     created_at: string;
     progress: string | null;
+    base_branch?: string | null;
+    merge_strategy?: "auto" | "pr" | "none" | null;
+    commit_sha?: string | null;
+    pr_url?: string | null;
+    pr_state?: "none" | "draft" | "open" | "merged" | "closed" | null;
+    pr_head_sha?: string | null;
   }): Run {
     return {
       id: row.id,
@@ -585,6 +648,12 @@ export class PostgresStore implements IStore {
       completed_at: row.completed_at,
       created_at: row.created_at,
       progress: row.progress,
+      base_branch: row.base_branch,
+      merge_strategy: row.merge_strategy,
+      commit_sha: row.commit_sha,
+      pr_url: row.pr_url,
+      pr_state: row.pr_state,
+      pr_head_sha: row.pr_head_sha,
     };
   }
 }

@@ -11,7 +11,7 @@ Foreman now uses an explicit **lane-based** test contract so failures are easier
 
 ### `test:integration`
 - Deterministic local-state tests
-- Real temp repos, SQLite, subprocesses, VCS backends, and command-level integration
+- Real temp repos, Postgres, subprocesses, VCS backends, and command-level integration
 - Still no provider/network dependency
 
 ### `test:e2e:smoke`

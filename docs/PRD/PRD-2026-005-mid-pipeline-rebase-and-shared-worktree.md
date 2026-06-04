@@ -155,7 +155,7 @@ Dispatcher
 | Finalize | `src/orchestrator/agent-worker-finalize.ts` | Current rebase-before-push logic (retained) |
 | VCS interface | `src/lib/vcs/interface.ts` | `rebase()`, `getConflictingFiles()`, `abortRebase()` already present |
 | Run store | `src/lib/store.ts` | `runs` table; `status` field needs `rebase_conflict` value |
-| Agent mail | `src/lib/sqlite-mail-client.ts` | `send_mail` tool; new `rebase-context` mail type needed |
+| Agent mail | `src/lib/postgres-mail-client.ts` | `send_mail` tool; new `rebase-context` mail type needed |
 | Dispatcher | `src/orchestrator/dispatcher.ts` | Creates workspaces; must check for shared-branch active runs (v2) |
 | Troubleshooter | `onFailure.troubleshooter` | Existing resolve-conflict skill; target for mid-pipeline escalation |
 
@@ -210,7 +210,7 @@ After a clean rebase (no conflicts), pipeline-executor computes the diff of upst
 
 In v2, the dispatcher checks whether a task belongs to a story that has an active shared worktree. If so, the task is queued until the worktree is free, then dispatched to the existing branch/worktree in serial. One finalize per story. Intra-story conflicts are eliminated because tasks never run concurrently on the same branch.
 
-v2 is **Could/Won't** for this release. Interface constraints (dispatcher queuing API, shared workspace registry in SQLite) are documented here to avoid design rework.
+v2 is **Could/Won't** for this release. Interface constraints (dispatcher queuing API, shared workspace registry in Postgres) are documented here to avoid design rework.
 
 ---
 
@@ -237,7 +237,7 @@ After the phase named in `rebaseAfterPhase` completes successfully, the pipeline
 **MoSCoW:** Must
 **Type:** Feature
 
-When `vcs.rebase()` returns a non-empty conflict list, the pipeline executor shall immediately halt phase progression, mark the run status as `rebase_conflict` in the SQLite store, and emit a structured conflict event.
+When `vcs.rebase()` returns a non-empty conflict list, the pipeline executor shall immediately halt phase progression, mark the run status as `rebase_conflict` in the Postgres store, and emit a structured conflict event.
 
 **Acceptance Criteria:**
 
@@ -375,7 +375,7 @@ The dispatcher shall support a future `sharedWorktree: true` mode per workflow i
 
 - **AC-010-1:** Given `sharedWorktree: true` in the workflow YAML, when the dispatcher encounters a task whose story already has an active run, then the task is placed in a `queued` state in the runs table rather than immediately dispatched.
 - **AC-010-2:** Given a shared worktree run completes, when the next queued task for the same story is dispatched, then it receives the existing worktree path and branch name rather than creating a new workspace.
-- **AC-010-3:** Given the SQLite `runs` table, when shared worktree mode is implemented, then a `story_workspace_id` column links runs sharing a worktree, enabling status queries across the story.
+- **AC-010-3:** Given the Postgres `runs` table, when shared worktree mode is implemented, then a `story_workspace_id` column links runs sharing a worktree, enabling status queries across the story.
 
 ### REQ-011: Shared Worktree Mode -- Serial Finalize
 
@@ -400,7 +400,7 @@ In shared worktree mode, finalize shall run once after the last task in the stor
 **MoSCoW:** Must
 **Type:** Observability
 
-The SQLite `runs` table `status` field shall support two new values: `rebase_conflict` (mid-pipeline rebase hit unresolvable conflicts, troubleshooter invoked) and `rebase_resolving` (troubleshooter is actively working on the conflict).
+The Postgres `runs` table `status` field shall support two new values: `rebase_conflict` (mid-pipeline rebase hit unresolvable conflicts, troubleshooter invoked) and `rebase_resolving` (troubleshooter is actively working on the conflict).
 
 **Acceptance Criteria:**
 
@@ -502,7 +502,7 @@ New code introduced by this feature shall meet Foreman's coverage standards: uni
 | Phase | Scope | Duration | Dependencies |
 |-------|-------|----------|-------------|
 | Phase A | Workflow YAML schema update (`rebaseAfterPhase`, `rebaseTarget`). Validation in `workflow-loader.ts`. Unit tests for loader. | 1 day | None |
-| Phase B | SQLite schema migration: add `rebase_conflict`, `rebase_resolving` to `status` enum. Update `store.ts` type definitions. | 0.5 days | None |
+| Phase B | Postgres schema migration: add `rebase_conflict`, `rebase_resolving` to `status` enum. Update `store.ts` type definitions. | 0.5 days | None |
 | Phase C | Pipeline executor rebase hook: post-phase rebase call, conflict detection, status transition, troubleshooter escalation, resume-from-developer logic. Unit tests with mocked VcsBackend. | 3 days | Phase A, Phase B |
 | Phase D | QA rebase-context mail: diff computation after clean rebase, mail construction, delivery via `send_mail` tool. Unit tests. | 1 day | Phase C |
 | Phase E | Observability: dashboard status indicators, `foreman inbox` type filter, operator mail notifications. | 1.5 days | Phase B, Phase C |
@@ -603,7 +603,7 @@ The troubleshooter does not need modification for v1; it receives the conflict c
 
 | Metric | Baseline | Target | Measurement Method |
 |--------|----------|--------|--------------------|
-| Conflict-driven retry rate | ~50% of pipeline runs | < 10% of pipeline runs | Run status tracking in SQLite; ratio of `rebase_conflict` + `failed` (conflict cause) to total completed runs |
+| Conflict-driven retry rate | ~50% of pipeline runs | < 10% of pipeline runs | Run status tracking in Postgres; ratio of `rebase_conflict` + `failed` (conflict cause) to total completed runs |
 | Token cost per delivered task | 2x average (due to retries) | <= 1.15x average | Aggregate token usage per closed bead divided by count of closed beads, before vs. after |
 | Troubleshooter conflict resolution rate | N/A (new) | >= 70% | Count of `rebase_conflict` → `in_progress` (resolved) vs. `rebase_conflict` → `failed` (unresolved) |
 | Regression rate on non-rebase pipelines | 0% | 0% | Existing CI test suite pass rate |
@@ -616,7 +616,7 @@ The troubleshooter does not need modification for v1; it receives the conflict c
 
 | Release | Contents | Gate Criteria |
 |---------|----------|---------------|
-| v0.1-alpha | Workflow YAML schema update (`rebaseAfterPhase`, `rebaseTarget`). SQLite migration for new status values. Loader validation. | Loader unit tests green. Schema migration applies cleanly on existing DB. |
+| v0.1-alpha | Workflow YAML schema update (`rebaseAfterPhase`, `rebaseTarget`). Postgres migration for new status values. Loader validation. | Loader unit tests green. Schema migration applies cleanly on existing DB. |
 | v0.2-alpha | Pipeline executor rebase hook (clean path only). No escalation yet -- clean rebase continues, conflict aborts run with `failed`. QA rebase-context mail. | Clean-path integration test passes. No regression on existing tests. Rebase-context mail delivered in test. |
 | v0.3-alpha | Troubleshooter escalation path. Resume-from-developer logic. `rebase_conflict` and `rebase_resolving` status transitions. | Conflict-path integration test passes. Run resumes from developer after mock troubleshooter resolution. AC-004-3 (max retry after resume) verified. |
 | v0.4-beta | Full observability: dashboard indicators, inbox filtering, operator mail notifications. Default workflow comment block. | Dashboard shows `REBASE CONFLICT` label. Inbox filtering works. All 48 ACs verified. |

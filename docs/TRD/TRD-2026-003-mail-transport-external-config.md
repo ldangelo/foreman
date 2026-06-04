@@ -40,7 +40,7 @@ This TRD translates PRD-2026-003 into an implementable plan for two independentl
 
 **Part 2 -- Externalized Prompts and Workflow Config:** Move phase system prompts from TypeScript template literals in `roles.ts` to user-editable markdown files in `~/.foreman/prompts/`. Move phase mechanical config (model, budget, tools) to `~/.foreman/phases.json`. Move pipeline phase sequences to `~/.foreman/workflows.json` keyed by seed type. Add `foreman init` config seeding and a Reproducer phase for bug workflows. Three new loader modules plus bundled defaults.
 
-**Scope:** 25 implementation tasks + 22 paired test tasks = 47 total tasks across 4 phases. No SQLite schema changes. No changes to `foreman status` or `foreman monitor`. Full backward compatibility when Agent Mail is unavailable or config files are absent.
+**Scope:** 25 implementation tasks + 22 paired test tasks = 47 total tasks across 4 phases. No Postgres schema changes. No changes to `foreman status` or `foreman monitor`. Full backward compatibility when Agent Mail is unavailable or config files are absent.
 
 **Key architectural constraints:**
 - `roles.ts` prompt functions and `ROLE_CONFIGS` remain as fallback defaults -- no deletions
@@ -147,7 +147,7 @@ src/
 UNCHANGED:
   src/orchestrator/roles.ts       -- prompt functions + ROLE_CONFIGS kept as fallbacks
   src/orchestrator/dispatcher.ts  -- spawn strategy untouched
-  src/lib/store.ts                -- SQLite schema untouched
+  src/lib/store.ts                -- Postgres schema untouched
   src/orchestrator/foreman-inbox-processor.ts -- untouched
 ```
 
@@ -155,9 +155,9 @@ UNCHANGED:
 
 ## 3. Data Architecture
 
-### 3.1 No SQLite Schema Changes
+### 3.1 No Postgres Schema Changes
 
-Per REQ-020, neither Part 1 nor Part 2 introduces any SQLite schema changes. All new data is either transient (Agent Mail messages) or file-based (`~/.foreman/` config files).
+Per REQ-020, neither Part 1 nor Part 2 introduces any Postgres schema changes. All new data is either transient (Agent Mail messages) or file-based (`~/.foreman/` config files).
 
 ### 3.2 Agent Mail Message Subject Format (After TRD-007)
 
@@ -945,7 +945,7 @@ The NFR tasks below are validated through the implementation and test tasks abov
 
 ---
 
-#### TRD-NFR-003: No SQLite Schema Changes [satisfies REQ-020]
+#### TRD-NFR-003: No Postgres Schema Changes [satisfies REQ-020]
 
 - Validated by: Code review -- `src/lib/store.ts` must have zero diff
 - Validates PRD ACs: AC-020-1, AC-020-2
@@ -1176,7 +1176,7 @@ A task is complete when:
 | REQ-017 | Zero regression without Agent Mail | TRD-008 | TRD-008-TEST |
 | REQ-018 | Zero regression without config files | TRD-NFR-001, TRD-016a | TRD-016-TEST |
 | REQ-019 | Invalid config resilience | TRD-NFR-002, TRD-010, TRD-011, TRD-013 | TRD-010-TEST, TRD-011-TEST, TRD-013-TEST |
-| REQ-020 | No SQLite schema changes | TRD-NFR-003 | Code review |
+| REQ-020 | No Postgres schema changes | TRD-NFR-003 | Code review |
 | REQ-021 | Existing CLI commands unchanged | TRD-NFR-004 | Code review |
 | REQ-022 | Performance | TRD-NFR-005, TRD-002 (AbortController timeout) | TRD-002-TEST, Performance validation |
 | REQ-023 | Explorer report read path | TRD-006 | TRD-006-TEST |
@@ -1192,7 +1192,7 @@ A task is complete when:
 
 **Decision:** Retain the existing sequential `await`-chain in `runPipeline()` and add inbox reads between phases.
 
-**Rationale:** ~60 lines of new code for Part 1. Zero new processes. Zero SQLite changes. Full backward compatibility. The alternatives (daemon-per-phase, central state machine, thread-based) require 200-800+ lines of new code and introduce architectural complexity that is not justified by the requirements.
+**Rationale:** ~60 lines of new code for Part 1. Zero new processes. Zero Postgres changes. Full backward compatibility. The alternatives (daemon-per-phase, central state machine, thread-based) require 200-800+ lines of new code and introduce architectural complexity that is not justified by the requirements.
 
 ### TD-002: Fallback-First Design
 

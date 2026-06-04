@@ -5,7 +5,7 @@ description: "beads_rust (br) issue tracker CLI. Use when: (1) managing issues/b
 
 # br — Beads Rust Issue Tracker
 
-`br` is an agent-first issue tracker that combines SQLite for querying with JSONL for an audit trail. It manages issues (called "beads") with full dependency tracking, epics, labels, and a rich query system.
+`br` is an agent-first issue tracker that combines Postgres for querying with JSONL for an audit trail. It manages issues (called "beads") with full dependency tracking, epics, labels, and a rich query system.
 
 ## When to Use
 
@@ -18,7 +18,7 @@ description: "beads_rust (br) issue tracker CLI. Use when: (1) managing issues/b
 ## Prerequisites
 
 - **br binary**: `brew install beads` or download from releases
-- **SQLite**: Built into macOS/Linux
+- **Postgres**: Built into macOS/Linux
 - **Initialized workspace**: `br init` in your project directory
 
 ## Quick Reference
@@ -44,7 +44,7 @@ description: "beads_rust (br) issue tracker CLI. Use when: (1) managing issues/b
 br init
 ```
 
-Creates `.beads/` directory with SQLite database and JSONL audit log.
+Creates `.beads/` directory with Postgres database and JSONL audit log.
 
 ### Create Issues
 

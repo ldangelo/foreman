@@ -89,21 +89,21 @@ export async function resolveRepoRootProjectPath(
   // when run from within a registered project's repo.
   try {
     const projects = await listRegisteredProjects();
-    const projectsByUrl = new Map(
-      projects
-        .filter((p): p is RegisteredProjectSummary & { githubUrl: string } =>
-          Boolean(p.githubUrl),
-        )
-        .map((p) => [p.githubUrl.replace(/\.git$/, ""), p]),
-    );
-    if (projectsByUrl.size > 0) {
+    const projectsByRemoteKey = new Map<string, RegisteredProjectSummary>();
+    for (const project of projects) {
+      if (!project.githubUrl) continue;
+      const value = project.githubUrl.trim().replace(/\.git$/, "");
+      projectsByRemoteKey.set(value, project);
+      projectsByRemoteKey.set(value.replace(/^https:\/\/github\.com\//, ""), project);
+    }
+    if (projectsByRemoteKey.size > 0) {
       try {
         const rawUrl = await vcs.getRemoteUrl(repoRoot, "origin");
         if (rawUrl) {
           const normalizedUrl = rawUrl.trim().replace(/\.git$/, "");
-          // Normalize SSH (git@github.com:owner/repo) to HTTPS (https://github.com/owner/repo)
           const remoteUrl = normalizedUrl.replace(/^git@([^:]+):/, "https://$1/");
-          const registered = projectsByUrl.get(remoteUrl);
+          const remoteKey = remoteUrl.replace(/^https:\/\/github\.com\//, "");
+          const registered = projectsByRemoteKey.get(remoteUrl) ?? projectsByRemoteKey.get(remoteKey);
           if (registered) {
             return registered.path;
           }

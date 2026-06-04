@@ -128,7 +128,7 @@ Add `merge_strategy TEXT DEFAULT 'auto'` column to the `runs` table in `store.ts
 Write vitest tests for:
 - `createRun()` with explicit merge_strategy stores and retrieves correctly
 - `createRun()` without merge_strategy defaults to `'auto'`
-- Migration: existing runs without the column still work (SQLite ALTER TABLE compatibility)
+- Migration: existing runs without the column still work (Postgres ALTER TABLE compatibility)
 
 ---
 

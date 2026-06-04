@@ -158,7 +158,7 @@ The terminal is divided into three panels:
 
 ### FR-3: Agent Panel
 
-- Show all active runs from SQLite (`status = 'pending' | 'running'`)
+- Show all active runs from Postgres (`status = 'pending' | 'running'`)
 - Each agent card shows: status icon, seed_id, status, phase, cost, turn count, tool count, last tool call
 - Collapsed by default (single line per agent)
 - Press number key (1-9) to expand a specific agent card inline
@@ -208,7 +208,7 @@ The terminal is divided into three panels:
 
 The inbox panel shows new messages as they arrive:
 
-1. **Between poll cycles**: Use a background timer (100ms) to check the SQLite inbox for new messages since last poll
+1. **Between poll cycles**: Use a background timer (100ms) to check the Postgres inbox for new messages since last poll
 2. **Append-only display**: New messages append to the bottom of the inbox panel without flickering the rest of the display
 3. **Scroll buffer**: Only keep last 20 messages in the scroll buffer; older messages are trimmed
 4. **Visual indicator**: When a new message arrives, briefly flash/highlight the new line, then return to normal
@@ -218,7 +218,7 @@ The inbox panel shows new messages as they arrive:
 
 | Data Source Unavailable | Panel Behavior |
 |------------------------|----------------|
-| SQLite runs table missing | Agents panel shows "DB unavailable — agents unknown" |
+| Postgres runs table missing | Agents panel shows "DB unavailable — agents unknown" |
 | Task store (br) unavailable | Board panel shows "Task backend unavailable — board unknown" |
 | Inbox table missing | Inbox panel shows "Inbox unavailable — messages unknown" |
 | All sources unavailable | Full-screen error message, exit on any key |
@@ -253,7 +253,7 @@ The inbox panel shows new messages as they arrive:
 
 - Consumes existing modules: `dashboard.ts`, `board.ts`, `inbox.ts`, `watch-ui.ts`
 - No new external dependencies required
-- Reuses SQLite schema for runs and messages (already in `store.ts`)
+- Reuses Postgres schema for runs and messages (already in `store.ts`)
 - Reuses `NativeTaskStore` for board data
 
 ---
@@ -336,7 +336,7 @@ src/cli/commands/watch/
 - [ ] New message arrival is visually indicated
 
 ### AC-9: Graceful Degradation
-- [ ] Missing SQLite runs: agent panel shows muted placeholder, does not crash
+- [ ] Missing Postgres runs: agent panel shows muted placeholder, does not crash
 - [ ] Missing task backend: board panel shows muted placeholder, does not crash
 - [ ] Missing inbox table: inbox panel shows muted placeholder, does not crash
 - [ ] All sources unavailable: full-screen error, exit on keypress
@@ -360,7 +360,7 @@ src/cli/commands/watch/
 | `board.ts` | `loadBoardTasks()` for board data; read-only summary only |
 | `inbox.ts` | `formatMessage()`, `formatTimestamp()` for abbreviated inbox rendering |
 | `NativeTaskStore` | Board data access for task counts |
-| `ForemanStore` | SQLite runs and messages queries |
+| `ForemanStore` | Postgres runs and messages queries |
 | `fetchTaskCounts()` | br task counts for board summary |
 
 ### No New Dependencies
@@ -382,7 +382,7 @@ The unified watch command uses only existing code:
 | Very long agent list (>10) | Scroll within agent panel, show "+N more" indicator |
 | Very long inbox (>20 messages) | Trim oldest messages from scroll buffer |
 | Task backend (br) not installed | Board panel shows "br unavailable — counts unknown" in muted state |
-| SQLite database locked | Retry once, then show "DB locked — retrying..." status |
+| Postgres database locked | Retry once, then show "DB locked — retrying..." status |
 | Terminal too narrow (< 60 cols) | Show warning: "Terminal too narrow for unified view. Use `foreman dashboard` instead." |
 | New inbox message arrives during key input | Queue message for display on next render cycle |
 | `a` action on non-backlog task | Show "Task must be in backlog status to approve" |

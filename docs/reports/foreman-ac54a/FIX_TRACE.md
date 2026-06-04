@@ -120,7 +120,7 @@ The implementation is complete. Here's a summary of what was implemented to sati
 - Error: no
 - Updates: 0
 - Args: `{"path":"src/cli/commands/inbox.ts"}`
-- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
+- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
 
 ### read (`call_function_7lwlz07sxvmr_3`)
 
@@ -624,7 +624,7 @@ The implementation is complete. Here's a summary of what was implemented to sati
 - Error: no
 - Updates: 0
 - Args: `{"limit":50,"offset":1,"path":"src/cli/commands/inbox.ts"}`
-- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
+- Result: `{"content":[{"type":"text","text":"/**\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\n *\n * Options:\n *   --agent <name>   Filter to a specific agent/role (default: show all)\n *   --run <id>       Fil…`
 
 ### grep (`call_function_7xu9pz4c6bdt_1`)
 
@@ -642,7 +642,7 @@ The implementation is complete. Here's a summary of what was implemented to sati
 - Error: no
 - Updates: 0
 - Args: `{"limit":100,"offset":440,"path":"src/cli/commands/inbox.ts"}`
-- Result: `{"content":[{"type":"text","text":"export const inboxCommand = new Command(\"inbox\")\n  .description(\"View the SQLite message inbox for agents in a pipeline run\")\n  .option(\"--agent <name>\", \"Filter to a specific agent/role (default…`
+- Result: `{"content":[{"type":"text","text":"export const inboxCommand = new Command(\"inbox\")\n  .description(\"View the Postgres message inbox for agents in a pipeline run\")\n  .option(\"--agent <name>\", \"Filter to a specific agent/role (default…`
 
 ### edit (`call_function_izpw28dghq68_1`)
 
@@ -650,7 +650,7 @@ The implementation is complete. Here's a summary of what was implemented to sati
 - Completed: 2026-04-30T02:31:37.706Z
 - Error: no
 - Updates: 0
-- Args: `{"newText":"export const inboxCommand = new Command(\"inbox\")\n  .description(\"View the SQLite message inbox for agents in a pipeline run\")\n  .option(\"--agent <name>\", \"Filter to a specific agent/role (default: show all)\")\n  .opti…`
+- Args: `{"newText":"export const inboxCommand = new Command(\"inbox\")\n  .description(\"View the Postgres message inbox for agents in a pipeline run\")\n  .option(\"--agent <name>\", \"Filter to a specific agent/role (default: show all)\")\n  .opti…`
 - Result: `{"content":[{"type":"text","text":"Successfully replaced text in src/cli/commands/inbox.ts."}],"details":{"diff":"     ...\n 449   .option(\"--ack\", \"Mark shown messages as read after displaying them\")\n 450   .option(\"--full\", \"Show…`
 
 ### read (`call_function_8gih6nu49ceu_1`)

@@ -13,7 +13,7 @@ vi.mock("../stale-worktree-check.js", () => ({
   checkAndRebaseStaleWorktree: (...args: unknown[]) => mockCheckAndRebaseStaleWorktree(...args),
 }));
 
-import { Dispatcher, DetachedSpawnStrategy, purgeOrphanedWorkerConfigs } from "../dispatcher.js";
+import { Dispatcher, DetachedSpawnStrategy, buildWorkerEnv, purgeOrphanedWorkerConfigs } from "../dispatcher.js";
 import { PLAN_STEP_CONFIG } from "../roles.js";
 import type { SeedInfo } from "../types.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
@@ -448,7 +448,7 @@ describe("Dispatcher override-backed control-plane reads", () => {
     expect(typeof overrides.getRun.mock.calls[0]?.[0]).toBe("string");
   });
 
-  it("uses registered createRun override result instead of local SQLite createRun", async () => {
+  it("uses registered createRun override result instead of local Postgres createRun", async () => {
     const store = {
       createRun: vi.fn(() => {
         throw new Error("local createRun should not be used");
@@ -496,6 +496,40 @@ describe("Dispatcher override-backed control-plane reads", () => {
     expect(result.runId).toBe("run-registered");
     expect(store.createRun).not.toHaveBeenCalled();
     expect(overrides.runOps.createRun).toHaveBeenCalledOnce();
+  });
+});
+
+describe("buildWorkerEnv — Pi permission isolation", () => {
+  it("defaults worker Pi permission to bypassed even when parent env is minimal", () => {
+    const previousPiPermission = process.env.PI_PERMISSION_LEVEL;
+    const previousForemanPiPermission = process.env.FOREMAN_PI_PERMISSION_LEVEL;
+    process.env.PI_PERMISSION_LEVEL = "minimal";
+    delete process.env.FOREMAN_PI_PERMISSION_LEVEL;
+
+    try {
+      const env = buildWorkerEnv(false, "seed-001", "run-001", "model");
+
+      expect(env.PI_PERMISSION_LEVEL).toBe("bypassed");
+    } finally {
+      if (previousPiPermission === undefined) delete process.env.PI_PERMISSION_LEVEL;
+      else process.env.PI_PERMISSION_LEVEL = previousPiPermission;
+      if (previousForemanPiPermission === undefined) delete process.env.FOREMAN_PI_PERMISSION_LEVEL;
+      else process.env.FOREMAN_PI_PERMISSION_LEVEL = previousForemanPiPermission;
+    }
+  });
+
+  it("allows Foreman-specific override of worker Pi permission", () => {
+    const previousForemanPiPermission = process.env.FOREMAN_PI_PERMISSION_LEVEL;
+    process.env.FOREMAN_PI_PERMISSION_LEVEL = "high";
+
+    try {
+      const env = buildWorkerEnv(false, "seed-001", "run-001", "model");
+
+      expect(env.PI_PERMISSION_LEVEL).toBe("high");
+    } finally {
+      if (previousForemanPiPermission === undefined) delete process.env.FOREMAN_PI_PERMISSION_LEVEL;
+      else process.env.FOREMAN_PI_PERMISSION_LEVEL = previousForemanPiPermission;
+    }
   });
 });
 

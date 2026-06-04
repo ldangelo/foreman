@@ -711,14 +711,14 @@ export const resetCommand = new Command("reset")
       const registered = opts.project
         ? (await listRegisteredProjects()).find((record) => record.id === opts.project || record.name === opts.project)
         : (await listRegisteredProjects()).find((record) => record.path === projectPath);
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
       const { taskClient, backendType } = await createTaskClient(projectPath, {
         registeredProjectId: registered?.id,
       });
       const seeds: IShowUpdateClient = taskClient;
       const store = ForemanStore.forProject(projectPath);
-      if (registered) {
-        ensureCliPostgresPool(projectPath);
-      }
       const helperStore: ResetRunStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalResetRunStore(store);
       const project = store.getProjectByPath(projectPath);
       const runtimeProjectId = registered?.id ?? project?.id;
@@ -1002,7 +1002,7 @@ export const resetCommand = new Command("reset")
       }
 
       // 6b. Clean up orphaned worktrees — directories in .foreman-worktrees/ that either have
-      //     no SQLite run record OR only have completed/merged runs (finalize should remove them
+      //     no Postgres run record OR only have completed/merged runs (finalize should remove them
       //     but sometimes fails to do so)
       if (!dryRun) {
         const worktreesDir = getWorkspaceRoot(projectPath);

@@ -1,5 +1,5 @@
 /**
- * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.
+ * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.
  *
  * Options:
  *   --agent <name>   Filter to a specific agent/role (default: show all)
@@ -658,6 +658,91 @@ function adaptDaemonMessage(row: DaemonMailMessage): Message {
   };
 }
 
+function phaseFromSender(sender: string): string | undefined {
+  const match = sender.match(/^(explorer|developer|qa|reviewer|finalize|refinery)(?:-|$)/);
+  return match?.[1];
+}
+
+function messagePhase(msg: Message): string | undefined {
+  return parseMessageBody(msg.body).phase ?? phaseFromSender(msg.sender_agent_type);
+}
+
+function messageSeed(msg: Message): string {
+  return parseMessageBody(msg.body).seedId ?? msg.run_id;
+}
+
+function messageActivity(msg: Message): string {
+  const parsed = parseMessageBody(msg.body);
+  const parts: string[] = [];
+  if (parsed.phase ?? phaseFromSender(msg.sender_agent_type)) parts.push(`phase=${parsed.phase ?? phaseFromSender(msg.sender_agent_type)}`);
+  if (parsed.kind) parts.push(`kind=${parsed.kind}`);
+  if (parsed.status) parts.push(`status=${parsed.status}`);
+  if (parsed.verdict) parts.push(`verdict=${parsed.verdict}`);
+  if (parsed.tool) parts.push(`tool=${parsed.tool}`);
+  if (parsed.commandHonored !== undefined) parts.push(`honored=${parsed.commandHonored ? "yes" : "no"}`);
+  if (parsed.error) parts.push(`error=${parsed.error}`);
+  if (parsed.message && !parsed.error) parts.push(parsed.message);
+  return parts.length > 0 ? parts.join(" ") : msg.subject;
+}
+
+function messageArgs(msg: Message): string | null {
+  const parsed = parseMessageBody(msg.body);
+  return parsed.argsPreview ?? parsed.body ?? parsed.message ?? null;
+}
+
+function renderRunProgressSummary(messages: Message[], runs: Run[]): string {
+  if (messages.length === 0 && runs.length === 0) return "";
+
+  const byRun = new Map<string, Message[]>();
+  for (const msg of messages) {
+    const list = byRun.get(msg.run_id) ?? [];
+    list.push(msg);
+    byRun.set(msg.run_id, list);
+  }
+
+  const runById = new Map(runs.map((run) => [run.id, run]));
+  const activeRunIds = runs
+    .filter((run) => run.status === "pending" || run.status === "running")
+    .map((run) => run.id);
+  const runIds = new Set<string>([...messages.map((msg) => msg.run_id), ...activeRunIds]);
+  const lines: string[] = [chalk.bold("Run Summary")];
+  for (const runId of runIds) {
+    const list = (byRun.get(runId) ?? []).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const run = runById.get(runId);
+    const latest = list[list.length - 1];
+    const latestError = [...list].reverse().find((msg) => msg.subject === "agent-error" || parseMessageBody(msg.body).error);
+    const phase = latest ? messagePhase(latest) : undefined;
+    const parsedLatest = latest ? parseMessageBody(latest.body) : {};
+    const seed = run?.seed_id ?? (latest ? messageSeed(latest) : runId);
+    const status = run?.status ?? "unknown";
+    const stage = phase
+      ? `${phase}${parsedLatest.kind ? `:${parsedLatest.kind}` : ""}`
+      : "unknown";
+    const lastAt = latest ? formatTimestamp(latest.created_at) : "—";
+    const error = latestError ? parseMessageBody(latestError.body).error : undefined;
+    lines.push(`- ${seed}  run=${runId.slice(0, 8)}…  status=${status}  stage=${stage}  last=${lastAt}`);
+    if (error) lines.push(`  ${chalk.red("error:")} ${wrapText(error, Math.max(40, getTerminalWidth() - 10)).replace(/\n/g, "\n  ")}`);
+  }
+  return lines.join("\n");
+}
+
+function renderRecentActivity(messages: Message[]): string {
+  if (messages.length === 0) return "";
+  const width = Math.max(40, getTerminalWidth() - 4);
+  const lines: string[] = [chalk.bold("Recent Activity")];
+  for (const msg of messages) {
+    const phase = messagePhase(msg) ?? "—";
+    const activity = messageActivity(msg);
+    lines.push(`[${formatTimestamp(msg.created_at)}] ${messageSeed(msg)} ${phase} ${msg.sender_agent_type} → ${msg.recipient_agent_type}`);
+    lines.push(`  ${activity}`);
+    const args = messageArgs(msg);
+    if (args && args !== activity) {
+      lines.push(`  args: ${wrapText(args, width).replace(/\n/g, "\n        ")}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
@@ -749,6 +834,11 @@ function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null 
   return seedRuns[0]?.id ?? null;
 }
 
+function getInboxStatusRuns(store: ForemanStore): ReturnType<ForemanStore["getRunsByStatuses"]> {
+  if (typeof store.getRunsByStatuses !== "function") return [];
+  return store.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+}
+
 // ── Events helper ───────────────────────────────────────────────────────────
 
 function fetchEventsFromStore(store: ForemanStore, limit: number): PipelineEvent[] {
@@ -793,7 +883,7 @@ function fetchEventsFromStoreForRun(store: ForemanStore, runId: string, limit: n
 export { formatMessage };
 
 export const inboxCommand = new Command("inbox")
-  .description("View the SQLite message inbox for agents in a pipeline run")
+  .description("View the Postgres message inbox for agents in a pipeline run")
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
   .option("--run <id>", "Filter to a specific run ID (default: latest run)")
   .option("--bead <id>", "Resolve run by bead ID (uses most recent run for that bead)")
@@ -861,9 +951,18 @@ export const inboxCommand = new Command("inbox")
           messages = messages.filter((m) => m.read === 0);
         }
 
+        const summaryRuns = daemon
+          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+          : getInboxStatusRuns(store!);
+        const chronologicalMessages = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages found across all runs${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
+          console.log(renderRunProgressSummary(chronologicalMessages, summaryRuns));
+          console.log("");
+          console.log(renderRecentActivity(chronologicalMessages.slice(-Math.min(chronologicalMessages.length, 12))));
+          console.log("");
           if (fullPayload) {
             console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
             for (const msg of messages) {
@@ -872,10 +971,7 @@ export const inboxCommand = new Command("inbox")
             }
             console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
           } else {
-            const rows = messages.map((msg) => formatMessageTable(msg));
-            console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}`);
-            console.log(renderMessageTable(rows));
-            console.log(`${messages.length} message(s) shown.`);
+            console.log(`${messages.length} message(s) analyzed. Use --full for complete raw payloads.`);
           }
         }
 

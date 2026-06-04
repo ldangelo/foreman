@@ -24,7 +24,7 @@ import { createGetRunStatusTool, createCloseBeadTool, createSendMailTool } from 
 import { validateWorkflowConfig, loadWorkflowConfig } from "../../lib/workflow-loader.js";
 import { getTroubleshooterBudget } from "../../lib/config.js";
 import type { ForemanStore } from "../../lib/store.js";
-import type { SqliteMailClient } from "../../lib/sqlite-mail-client.js";
+import type { NullAgentMailClient } from "../../lib/agent-mail-client.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -67,11 +67,11 @@ function makeStore(runData?: {
   } as unknown as ForemanStore;
 }
 
-function makeMailClient(): SqliteMailClient {
+function makeMailClient(): NullAgentMailClient {
   return {
     sendMessage: vi.fn().mockResolvedValue(undefined),
     fetchInbox: vi.fn().mockResolvedValue([]),
-  } as unknown as SqliteMailClient;
+  } as unknown as NullAgentMailClient;
 }
 
 // ── ROLE_CONFIGS: troubleshooter ─────────────────────────────────────────────

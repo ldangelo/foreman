@@ -28,7 +28,7 @@ function toIssue(projectPath: string, issue: Issue): Issue {
 }
 
 /**
- * NativeTaskClient adapts the project-local SQLite task store to ITaskClient.
+ * NativeTaskClient adapts the project-local Postgres task store to ITaskClient.
  *
  * This is primarily used by deterministic test-runtime and native-task-only
  * execution paths where the br CLI should not be required.
@@ -57,7 +57,7 @@ export class NativeTaskClient implements ITaskClient {
       created_at: row.created_at,
       updated_at: row.updated_at,
       description: row.description,
-      labels: [`project:${this.projectPath}`],
+      labels: [`project:${this.projectPath}`, ...(row.labels ?? [])],
     });
   }
 
@@ -202,7 +202,7 @@ export class NativeTaskClient implements ITaskClient {
         status: row.status,
         description: row.description ?? null,
         notes: null,
-        labels: [`project:${this.projectPath}`],
+        labels: [`project:${this.projectPath}`, ...(row.labels ?? [])],
       }));
     }
 

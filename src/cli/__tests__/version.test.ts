@@ -197,14 +197,12 @@ describe("homebrew auto-update workflow", () => {
     expect(raw).toContain("foreman --version");
   });
 
-  it("foreman.rb install uses libexec for binary co-location", () => {
+  it("foreman.rb install uses libexec for the binary", () => {
     const raw = readFileSync(
       path.join(root, "homebrew-tap/Formula/foreman.rb"),
       "utf8"
     );
-    // Binary and side-car must be co-located in libexec
     expect(raw).toContain("libexec");
-    expect(raw).toContain("better_sqlite3.node");
   });
 
   it("update-homebrew-tap.yml uses SSH deploy key (not PAT)", () => {

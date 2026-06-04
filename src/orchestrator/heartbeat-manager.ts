@@ -1,7 +1,7 @@
 /**
  * Heartbeat manager — Periodic observability events during active pipeline phases.
  *
- * Writes structured heartbeat events to the SQLite events table every N seconds
+ * Writes structured heartbeat events to the Postgres events table every N seconds
  * (default: 60s), capturing turn count, tool call breakdown, files changed,
  * cost estimates, and last activity for operator visibility.
  *
@@ -71,7 +71,7 @@ export interface HeartbeatEventWriter {
 /**
  * Manages periodic heartbeat events during an active pipeline phase.
  *
- * Tracks session statistics and writes heartbeat events to the SQLite store
+ * Tracks session statistics and writes heartbeat events to the Postgres store
  * at configured intervals. The manager is non-blocking and handles store
  * write failures gracefully.
  *

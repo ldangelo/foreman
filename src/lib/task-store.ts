@@ -1,6 +1,6 @@
 /**
- * NativeTaskStore — wraps the native `tasks` SQLite table for use as a
- * task-tracking back-end inside the Dispatcher.
+ * NativeTaskStore — legacy task table adapter retained for compatibility.
+ * New task storage is Postgres-backed via the daemon.
  *
  * Implements methods for the full lifecycle of native tasks:
  *   - hasNativeTasks() — coexistence check (REQ-014)
@@ -22,8 +22,16 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { Database } from "better-sqlite3";
 import type { Issue } from "./task-client.js";
+
+type Database = {
+  prepare: (sql: string) => {
+    run: (...args: unknown[]) => any;
+    get: (...args: unknown[]) => any;
+    all: (...args: unknown[]) => any[];
+  };
+  transaction: (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => any;
+};
 
 // ── Priority helpers ─────────────────────────────────────────────────────
 
@@ -237,10 +245,10 @@ function rowToIssue(row: TaskRow): Issue {
 // ── NativeTaskStore ──────────────────────────────────────────────────────
 
 /**
- * Provides read/write access to the `tasks` table inside the Foreman SQLite
+ * Provides read/write access to the `tasks` table inside the Foreman Postgres
  * database.  The `db` instance is obtained from `ForemanStore.getDb()`.
  *
- * Thread-safety: SQLite in WAL mode with busy_timeout=30 000 ms handles
+ * Thread-safety: Postgres in WAL mode with busy_timeout=30 000 ms handles
  * concurrent readers/writers; the claim() method uses a single synchronous
  * transaction so it is effectively atomic within the same process.
  */
@@ -273,7 +281,7 @@ export class NativeTaskStore {
   private tableExists(tableName: string): boolean {
     try {
       const row = this.db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .prepare("SELECT table_name AS name FROM information_schema.tables WHERE table_name = ?")
         .get(tableName) as { name?: string } | undefined;
       return row?.name === tableName;
     } catch {

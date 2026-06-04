@@ -31,8 +31,10 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { createDirectoryGuardrail, wrapToolWithGuardrail, type GuardrailConfig } from "./guardrails.js";
 import { getModel } from "@mariozechner/pi-ai";
+import { existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createPhaseTrace,
   createPiObservabilityExtensionWithEmitter,
@@ -160,6 +162,61 @@ function parseModelString(model: string) {
   };
 }
 
+export function shouldSandboxPiExtensions(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.FOREMAN_PI_EXTENSIONS?.trim().toLowerCase() !== "user";
+}
+
+export interface SandboxedPiResourcePaths {
+  extensionPaths: string[];
+  skillPaths: string[];
+  promptTemplatePaths: string[];
+}
+
+function firstExistingPath(paths: string[]): string | undefined {
+  return paths.find((path) => existsSync(path));
+}
+
+function getForemanRoot(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+function resolveEnsemblePiRoot(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const foremanRoot = getForemanRoot();
+  return firstExistingPath([
+    env.FOREMAN_ENSEMBLE_PI_PATH?.trim() ?? "",
+    env.ENSEMBLE_PI_PATH?.trim() ?? "",
+    join(foremanRoot, "..", "ensemble", "packages", "pi"),
+  ].filter(Boolean));
+}
+
+function resolveForemanSendMailSkillPath(): string | undefined {
+  const foremanRoot = getForemanRoot();
+  return firstExistingPath([
+    join(foremanRoot, "src", "defaults", "skills", "send-mail", "SKILL.md"),
+    join(foremanRoot, "dist", "defaults", "skills", "send-mail", "SKILL.md"),
+  ]);
+}
+
+export function getSandboxedPiResourcePaths(env: NodeJS.ProcessEnv = process.env): SandboxedPiResourcePaths {
+  const extensionPaths: string[] = [];
+  const skillPaths: string[] = [];
+  const promptTemplatePaths: string[] = [];
+  const ensemblePiRoot = resolveEnsemblePiRoot(env);
+
+  if (ensemblePiRoot) {
+    extensionPaths.push(join(ensemblePiRoot, "extensions"));
+    skillPaths.push(join(ensemblePiRoot, "skills"));
+    promptTemplatePaths.push(join(ensemblePiRoot, "prompts"));
+  }
+
+  const sendMailSkillPath = resolveForemanSendMailSkillPath();
+  if (sendMailSkillPath) {
+    skillPaths.push(sendMailSkillPath);
+  }
+
+  return { extensionPaths, skillPaths, promptTemplatePaths };
+}
+
 // ── Main entry point ────────────────────────────────────────────────────
 
 /**
@@ -168,6 +225,19 @@ function parseModelString(model: string) {
  * Creates an in-memory AgentSession, sends the prompt, listens for events
  * to track tool calls / turns / cost, and resolves with structured results.
  */
+export function getPiSdkEventError(event: AgentSessionEvent): string | undefined {
+  const eventRecord = event as Record<string, unknown>;
+  if (eventRecord.stopReason === "error") {
+    return typeof eventRecord.errorMessage === "string" && eventRecord.errorMessage
+      ? eventRecord.errorMessage
+      : "Pi SDK event stopped with error";
+  }
+  if (typeof eventRecord.errorMessage === "string" && eventRecord.errorMessage) {
+    return eventRecord.errorMessage;
+  }
+  return undefined;
+}
+
 export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   // Resolve model — getModel is strictly typed for known providers/IDs;
   // use type assertions for dynamic values from workflow YAML.
@@ -197,10 +267,18 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     // Explicitly set agentDir and auth so detached worker processes find credentials.
     const agentDir = getAgentDir();
     const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+    const sandboxPiExtensions = shouldSandboxPiExtensions();
+    const sandboxResources = sandboxPiExtensions ? getSandboxedPiResourcePaths() : undefined;
     const resourceLoader = new DefaultResourceLoader({
       cwd: opts.cwd,
       agentDir,
       settingsManager: SettingsManager.create(opts.cwd, agentDir),
+      noExtensions: sandboxPiExtensions,
+      noSkills: sandboxPiExtensions,
+      noPromptTemplates: sandboxPiExtensions,
+      additionalExtensionPaths: sandboxResources?.extensionPaths,
+      additionalSkillPaths: sandboxResources?.skillPaths,
+      additionalPromptTemplatePaths: sandboxResources?.promptTemplatePaths,
       extensionFactories: phaseTrace ? [createPiObservabilityExtensionWithEmitter(phaseTrace, opts.onTraceEvent)] : [],
     });
     await resourceLoader.reload();
@@ -220,6 +298,12 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
 
     // Subscribe to events for tracking
     session.subscribe((event: AgentSessionEvent) => {
+      const eventError = getPiSdkEventError(event);
+      if (eventError) {
+        success = false;
+        errorMessage = eventError;
+      }
+
       switch (event.type) {
         case "turn_start":
           totalTurns++;

@@ -47,6 +47,28 @@ interface PollerProject {
   status?: string;
 }
 
+const GITHUB_TASK_TYPES = new Set(["task", "bug", "feature", "story", "epic", "chore", "docs", "question"]);
+
+export function normalizeGithubIssueLabels(issue: GitHubIssue): string[] {
+  const raw = issue.labels.map((label) => label.name.trim()).filter(Boolean);
+  return Array.from(new Set([...raw, ...raw.map((label) => `github:${label}`)]));
+}
+
+export function inferTaskTypeFromGitHubLabels(issue: GitHubIssue): string {
+  const labels = issue.labels.map((label) => label.name.trim().toLowerCase());
+
+  for (const label of labels) {
+    const explicitType = label.match(/^(?:type|task-type):(.+)$/)?.[1];
+    if (explicitType && GITHUB_TASK_TYPES.has(explicitType)) return explicitType;
+  }
+
+  for (const label of labels) {
+    if (GITHUB_TASK_TYPES.has(label)) return label;
+  }
+
+  return "task";
+}
+
 // ---------------------------------------------------------------------------
 // GitHubIssuesPoller
 // ---------------------------------------------------------------------------
@@ -232,9 +254,15 @@ export class GitHubIssuesPoller {
       if (existing.length > 0) {
         // Already imported — update if changed (safe re-sync)
         const task = existing[0]!;
+        const labels = normalizeGithubIssueLabels(issue);
+        const type = inferTaskTypeFromGitHubLabels(issue);
+        const taskLabels = task.labels ?? [];
+        const labelsChanged = labels.length !== taskLabels.length || labels.some((label) => !taskLabels.includes(label));
         const changed =
           task.title !== issue.title ||
           task.description !== (issue.body ?? null) ||
+          task.type !== type ||
+          labelsChanged ||
           task.status !== (issue.state === "open" ? task.status : "closed");
 
         if (changed) {
@@ -242,6 +270,8 @@ export class GitHubIssuesPoller {
             title: issue.title,
             description: issue.body ?? null,
             state: issue.state,
+            type,
+            labels,
             lastSyncAt: new Date().toISOString(),
           });
           updated++;
@@ -255,11 +285,11 @@ export class GitHubIssuesPoller {
         const task = await this.adapter.createTask(projectId, {
           title: issue.title,
           description: issue.body ?? undefined,
-          type: "task",
+          type: inferTaskTypeFromGitHubLabels(issue),
           priority: 2,
           status,
           externalId,
-          labels: issue.labels.map((l) => `github:${l.name}`),
+          labels: normalizeGithubIssueLabels(issue),
           external_repo: `${owner}/${repo}`,
           github_issue_number: issue.number,
           sync_enabled: true,

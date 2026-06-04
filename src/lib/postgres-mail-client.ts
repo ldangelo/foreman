@@ -1,5 +1,5 @@
 import { PostgresStore } from "./postgres-store.js";
-import type { AgentMailClient, AgentMailMessage } from "./sqlite-mail-client.js";
+import type { AgentMailClient, AgentMailMessage } from "./agent-mail-client.js";
 import { listRegisteredProjects } from "../cli/commands/project-task-support.js";
 
 export class PostgresMailClient implements AgentMailClient {

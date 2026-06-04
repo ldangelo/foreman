@@ -12,13 +12,13 @@ Key design decisions:
 - **Agent runs in the worktree**: the `worktreePath` is looked up from the run record via `ForemanStore.forProject()`, so the agent can edit files directly
 - **Task prompt drives the loop**: `buildRefineryTaskPrompt()` creates the prompt instructing the agent to: verify build → fix failures → run tests → report
 - **Fix tracking via Edit tool calls**: `result.toolBreakdown["Edit"]` is used as a proxy for fix iteration count — when ≥ maxFixIterations, escalate
-- **`send_mail` tool for escalations**: wired via `createSendMailTool(mailClient, "refinery-agent")` using the existing `SqliteMailClient`
+- **`send_mail` tool for escalations**: wired via `createSendMailTool(mailClient, "refinery-agent")` using the existing `PostgresMailClient`
 - **Merge via VcsBackend**: on success, `vcsBackend.merge()` is called (not gh pr merge), making the agent backend-agnostic
 
 ## Files Changed
 
 - **`src/orchestrator/refinery-agent.ts`** — Complete rewrite of `runAgent()`:
-  - Added imports: `ForemanStore`, `SqliteMailClient`, `createSendMailTool`, `runWithPiSdk`, `PiRunResult`, `MergeResult`
+  - Added imports: `ForemanStore`, `PostgresMailClient`, `createSendMailTool`, `runWithPiSdk`, `PiRunResult`, `MergeResult`
   - Replaced stub `runAgent()` with full implementation using Pi SDK agent session
   - Added `buildRefineryTaskPrompt()` helper to generate the fix/build/test loop prompt
   - Added `RefineryTaskPromptOptions` interface

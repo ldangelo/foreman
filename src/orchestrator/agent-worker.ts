@@ -4,13 +4,13 @@
  *
  * Spawned as a detached child process by the dispatcher. Survives parent exit.
  * Reads config from a JSON file passed as argv[2], runs the SDK query(),
- * and updates the SQLite store with progress/completion.
+ * and updates the Postgres store with progress/completion.
  *
  * Usage: tsx agent-worker.ts <config-file>
  */
 
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { request as httpRequest } from "node:http";
 import { runPhaseSession } from "./phase-runner.js";
@@ -36,17 +36,19 @@ import { writeMarkStuckEvent, writeMarkStuckProgress } from "./agent-worker-mark
 import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";
 import type { AgentRole, WorkerNotification } from "./types.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
-import type { AgentMailClient } from "../lib/sqlite-mail-client.js";
+import type { AgentMailClient } from "../lib/agent-mail-client.js";
 import { createProjectMailClient, resolveProjectDatabaseUrl } from "../lib/project-mail-client.js";
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { autoMerge } from "./auto-merge.js";
+import { collectPrReviewContext, collectPrWaitSnapshot, summarizePrWaitStatus, writePrReviewFindings, writePrWaitReport } from "./pr-review-context.js";
 import { Refinery } from "./refinery.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 import type { TaskMeta } from "../lib/interpolate.js";
+import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -160,14 +162,14 @@ function sendMailText(
   });
 }
 
-function compactTraceValue(value: string): string {
+function compactTraceValue(value: string, maxLength = 160): string {
   let compact = value
     .replace(/\/Users\/ldangelo\/Development\/Fortium\/\.foreman-worktrees\/foreman\/foreman-[^/\s]+/g, "<worktree>")
     .replace(/\/Users\/ldangelo\/Development\/Fortium\/foreman/g, "<repo>")
     .replace(/\s+/g, " ")
     .trim();
-  if (compact.length > 160) {
-    compact = `${compact.slice(0, 157)}…`;
+  if (compact.length > maxLength) {
+    compact = `${compact.slice(0, Math.max(1, maxLength - 1))}…`;
   }
   return compact;
 }
@@ -189,7 +191,7 @@ function buildTraceMailPayload(event: {
     kind: event.kind,
     message: compactTraceValue(event.message),
     tool: event.toolName,
-    argsPreview: event.argsPreview ? compactTraceValue(event.argsPreview) : undefined,
+    argsPreview: event.argsPreview ? compactTraceValue(event.argsPreview, 2000) : undefined,
     traceFile: event.traceFile,
     traceMarkdownFile: event.traceMarkdownFile,
     commandHonored: event.commandHonored,
@@ -427,7 +429,7 @@ async function main(): Promise<void> {
   // Create notification client using FOREMAN_NOTIFY_URL (set in env above if provided by dispatcher)
   const notifyClient = new NotificationClient(process.env.FOREMAN_NOTIFY_URL);
 
-  // Create daemon-backed mail client when Postgres is available; fall back to SQLite mail otherwise.
+  // Create daemon-backed mail client when Postgres is available; fall back to Postgres mail otherwise.
   let agentMailClient: AnyMailClient | null = null;
   try {
     const mailClient = await createProjectMailClient(storeProjectPath);
@@ -915,6 +917,131 @@ async function runTroubleshooterPhase(
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
+function parsePrNumber(prUrl: string): number | undefined {
+  const match = /\/pull\/(\d+)(?:\b|$)/.exec(prUrl);
+  return match ? Number(match[1]) : undefined;
+}
+
+async function runCreatePrBuiltinPhase(args: {
+  config: WorkerConfig;
+  store: ForemanStore;
+  runtimeTaskClient: ITaskClient;
+  pipelineProjectPath: string;
+  registeredProjectId?: string;
+  registeredReadStore?: PostgresStore;
+  vcsBackend?: VcsBackend;
+  workflowConfig: WorkflowConfig;
+  log: (msg: string) => void;
+  agentMailClient: AnyMailClient | null;
+}): Promise<import("./pipeline-executor.js").PhaseResult> {
+  const { config, store, runtimeTaskClient, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, workflowConfig, log, agentMailClient } = args;
+  const refinery = new Refinery(
+    store,
+    runtimeTaskClient,
+    pipelineProjectPath,
+    vcsBackend,
+    registeredProjectId && registeredReadStore ? { registeredProjectId, runLookup: registeredReadStore } : undefined,
+  );
+  const pr = await refinery.ensurePullRequestForRun({
+    runId: config.runId,
+    baseBranch: config.targetBranch,
+    updateRunStatus: false,
+    bodyNote: workflowConfig.merge === "auto"
+      ? "Automatically published before PR review and refinery merge."
+      : "Published for operator review.",
+  });
+  const prNumber = parsePrNumber(pr.prUrl);
+  const headSha = vcsBackend ? await vcsBackend.getHeadId(config.worktreePath).catch(() => undefined) : undefined;
+  await writeFile(join(config.worktreePath, "PR_METADATA.json"), JSON.stringify({
+    prUrl: pr.prUrl,
+    prNumber,
+    branchName: pr.branchName,
+    headSha,
+    baseBranch: config.targetBranch,
+  }, null, 2) + "\n", "utf8");
+  log(`[CREATE-PR] PR ready: ${pr.prUrl}`);
+  sendMail(agentMailClient, "foreman", "pr-created", {
+    seedId: config.seedId,
+    runId: config.runId,
+    branchName: pr.branchName,
+    prUrl: pr.prUrl,
+    prNumber,
+    strategy: workflowConfig.merge ?? "auto",
+  });
+  return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: pr.prUrl };
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runPrWaitBuiltinPhase(args: {
+  config: WorkerConfig;
+  phase: WorkflowPhaseConfig;
+  pipelineProjectPath: string;
+  log: (msg: string) => void;
+}): Promise<import("./pipeline-executor.js").PhaseResult> {
+  const metadataPath = join(args.config.worktreePath, "PR_METADATA.json");
+  const raw = readFileSync(metadataPath, "utf8");
+  const metadata = JSON.parse(raw) as { prNumber?: number; prUrl?: string };
+  const prNumber = metadata.prNumber ?? (metadata.prUrl ? parsePrNumber(metadata.prUrl) : undefined);
+  if (!prNumber) throw new Error("PR metadata missing prNumber");
+
+  const timeoutMs = (args.phase.timeoutSecs ?? 600) * 1000;
+  const pollIntervalMs = 15_000;
+  const startedAt = Date.now();
+  let lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
+  let timedOut = false;
+
+  while (true) {
+    const status = summarizePrWaitStatus(lastSnapshot);
+    if (status.mergeConflict) break;
+    if (status.checksTerminal && status.codeRabbitSeen) break;
+    if (Date.now() - startedAt >= timeoutMs) {
+      timedOut = true;
+      break;
+    }
+    args.log(`[PR-WAIT] Waiting for PR #${prNumber}: checksTerminal=${String(status.checksTerminal)} codeRabbitSeen=${String(status.codeRabbitSeen)} mergeConflict=${String(status.mergeConflict)}`);
+    await sleep(Math.min(pollIntervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt))));
+    lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
+  }
+
+  await writePrWaitReport(args.config.worktreePath, lastSnapshot, timedOut);
+  const finalStatus = summarizePrWaitStatus(lastSnapshot);
+  const success = finalStatus.checksTerminal && finalStatus.codeRabbitSeen && !finalStatus.mergeConflict;
+  return {
+    success,
+    costUsd: 0,
+    turns: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    error: success
+      ? undefined
+      : finalStatus.mergeConflict
+        ? `PR has merge conflicts: ${finalStatus.mergeConflictReason ?? "unknown"}`
+        : finalStatus.checksTerminal
+          ? "CodeRabbit review was not observed before timeout"
+          : "PR checks did not reach a terminal state before timeout",
+    outputText: `checksTerminal=${String(finalStatus.checksTerminal)} codeRabbitSeen=${String(finalStatus.codeRabbitSeen)} mergeConflict=${String(finalStatus.mergeConflict)} timedOut=${String(timedOut)}`,
+  };
+}
+
+async function runPreparePrReviewBuiltinPhase(args: {
+  config: WorkerConfig;
+  pipelineProjectPath: string;
+  log: (msg: string) => void;
+}): Promise<import("./pipeline-executor.js").PhaseResult> {
+  const metadataPath = join(args.config.worktreePath, "PR_METADATA.json");
+  const raw = readFileSync(metadataPath, "utf8");
+  const metadata = JSON.parse(raw) as { prNumber?: number; prUrl?: string };
+  const prNumber = metadata.prNumber ?? (metadata.prUrl ? parsePrNumber(metadata.prUrl) : undefined);
+  if (!prNumber) throw new Error("PR metadata missing prNumber");
+  const context = await collectPrReviewContext(args.pipelineProjectPath, prNumber);
+  await writePrReviewFindings(args.config.worktreePath, context);
+  args.log(`[PR-REVIEW] Collected ${context.blockingFindings.length} blocking CodeRabbit finding(s), ${context.failedChecks.length} failed check(s)`);
+  return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: `blocking=${context.blockingFindings.length} failedChecks=${context.failedChecks.length}` };
+}
+
 async function runPipeline(
   config: WorkerConfig,
   store: ForemanStore,
@@ -1012,6 +1139,34 @@ async function runPipeline(
       },
       epicTasks: config.epicTasks,
       runPhase,
+      async runBuiltinPhase(phase: WorkflowPhaseConfig) {
+        try {
+          if (phase.name === "create-pr") {
+            return await runCreatePrBuiltinPhase({
+              config,
+              store,
+              runtimeTaskClient,
+              pipelineProjectPath,
+              registeredProjectId,
+              registeredReadStore,
+              vcsBackend,
+              workflowConfig,
+              log,
+              agentMailClient,
+            });
+          }
+          if (phase.name === "pr-wait") {
+            return await runPrWaitBuiltinPhase({ config, phase, pipelineProjectPath, log });
+          }
+          if (phase.name === "prepare-pr-review") {
+            return await runPreparePrReviewBuiltinPhase({ config, pipelineProjectPath, log });
+          }
+          return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `Unknown builtin phase: ${phase.name}` };
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: msg };
+        }
+      },
       registerAgent,
       sendMail,
       sendMailText,
@@ -1091,21 +1246,24 @@ async function runPipeline(
       });
     },
 
-    // Finalize post-processing: determine push success, enqueue to merge queue, update run status.
-    // P0 fix: Only send branch-ready if pipeline succeeded AND we're at the finalize phase.
+    // Pipeline post-processing: determine finalize push success, then enqueue merge after
+    // any post-finalize phases (for example create-pr/pr-review) complete.
     async onPipelineComplete({ progress, success }) {
-      // Guard: only finalize post-processing when the pipeline reached finalize.
-      // Earlier phase failures are already handled by markStuck().
-      if (progress.currentPhase !== "finalize") {
-        log(`[FINALIZE] Skipping branch-ready: success=${String(success)}, currentPhase=${progress.currentPhase}`);
+      const hasFinalizePhase = workflowConfig.phases.some((phase) => phase.name === "finalize");
+      if (!hasFinalizePhase) {
+        log(`[PIPELINE] Skipping branch-ready: workflow has no finalize phase`);
         return;
       }
+      const hasCreatePrPhase = workflowConfig.phases.some((phase) => phase.name === "create-pr");
       const { runId, projectId, seedId, seedTitle, worktreePath } = config;
 
-      // Read finalize outcome from agent mail.
+      // Read finalize outcome from agent mail. If a later post-finalize phase failed,
+      // preserve the actual phase name instead of reporting every pipeline failure
+      // as finalize_validation_failed.
+      const failedPhase = success ? "finalize" : (progress.currentPhase ?? "finalize");
       let finalizeSucceeded = success;
       let finalizeRetryable = true;
-      let finalizeFailureReason = success ? "" : "finalize_validation_failed";
+      let finalizeFailureReason = success ? "" : `${failedPhase}_failed`;
       if (agentMailClient) {
         const foremanMsgs = await agentMailClient.fetchInbox("foreman");
         const finalizeSender = `finalize-${seedId}`;
@@ -1209,7 +1367,7 @@ async function runPipeline(
       const troubleshooterEnabled = !finalizeSucceeded && !!workflowConfig.onFailure && !shouldSkipTroubleshooter;
       let troubleshooterResolved = false;
       if (troubleshooterEnabled) {
-        const failureContext = `Pipeline failed at finalize phase. finalizeRetryable=${String(finalizeRetryable)}`;
+        const failureContext = `Pipeline failed at ${failedPhase} phase. finalizeRetryable=${String(finalizeRetryable)}`;
         troubleshooterResolved = await runTroubleshooterPhase(
           config,
           workflowConfig,
@@ -1242,40 +1400,44 @@ async function runPipeline(
         });
         notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
 
-        let prCreated = false;
-        try {
-          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
-          const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);
-          const pr = await refinery.ensurePullRequestForRun({
-            runId,
-            baseBranch: config.targetBranch,
-            updateRunStatus: false,
-            bodyNote: workflowConfig.merge === "auto"
-              ? "Automatically published before refinery PR merge."
-              : "Published by finalize for operator review.",
-          });
-          prCreated = true;
-          log(`[FINALIZE] PR ready: ${pr.prUrl}`);
-          sendMail(agentMailClient, "foreman", "pr-created", {
-            seedId,
-            runId,
-            branchName: pr.branchName,
-            prUrl: pr.prUrl,
-            strategy: workflowConfig.merge ?? "auto",
-          });
-
-          if ((workflowConfig.merge ?? "auto") !== "auto") {
-            await updateTerminalRunStatus({
+        let prCreated = hasCreatePrPhase;
+        if (hasCreatePrPhase) {
+          log(`[PIPELINE] PR creation handled by create-pr phase`);
+        } else {
+          try {
+            const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
+            const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);
+            const pr = await refinery.ensurePullRequestForRun({
               runId,
-              projectId: registeredProjectId,
-              projectPath: pipelineProjectPath,
-              updates: { status: "pr-created", completed_at: now },
+              baseBranch: config.targetBranch,
+              updateRunStatus: false,
+              bodyNote: workflowConfig.merge === "auto"
+                ? "Automatically published before refinery PR merge."
+                : "Published by finalize for operator review.",
             });
-            notifyClient.send({ type: "status", runId, status: "pr-created", timestamp: now });
+            prCreated = true;
+            log(`[FINALIZE] PR ready: ${pr.prUrl}`);
+            sendMail(agentMailClient, "foreman", "pr-created", {
+              seedId,
+              runId,
+              branchName: pr.branchName,
+              prUrl: pr.prUrl,
+              strategy: workflowConfig.merge ?? "auto",
+            });
+
+            if ((workflowConfig.merge ?? "auto") !== "auto") {
+              await updateTerminalRunStatus({
+                runId,
+                projectId: registeredProjectId,
+                projectPath: pipelineProjectPath,
+                updates: { status: "pr-created", completed_at: now },
+              });
+              notifyClient.send({ type: "status", runId, status: "pr-created", timestamp: now });
+            }
+          } catch (prErr: unknown) {
+            const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
+            log(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
           }
-        } catch (prErr: unknown) {
-          const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
-          log(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
         }
 
         let skipMergeQueue = false;
@@ -1421,8 +1583,8 @@ async function runPipeline(
           notifyClient.send({ type: "status", runId, status: terminalStatus, timestamp: now });
           sendMail(agentMailClient, "foreman", "agent-error", {
             seedId,
-            phase: "finalize",
-            error: finalizeFailureReason || "Finalize failed",
+            phase: failedPhase,
+            error: finalizeFailureReason || `${failedPhase} failed`,
             retryable: finalizeRetryable,
           });
           if (finalizeRetryable) {
@@ -1467,8 +1629,8 @@ async function runPipeline(
         log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
         await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
       } else {
-        log(`PIPELINE STUCK for ${seedId} — finalize failed ($${progress.costUsd.toFixed(4)})`);
-        await appendFile(logFile, `\n[PIPELINE] STUCK — finalize failed ($${progress.costUsd.toFixed(4)})\n`);
+        log(`PIPELINE STUCK for ${seedId} — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})`);
+        await appendFile(logFile, `\n[PIPELINE] STUCK — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})\n`);
       }
     },
   });
@@ -1517,7 +1679,7 @@ async function markStuck(
   // For permanent failures, mark as 'failed' so the task is NOT auto-retried —
   // the operator must investigate and re-open it manually.
   // Enqueue via the bead write queue instead of calling br directly — the
-  // dispatcher drains the queue sequentially, preventing SQLite contention.
+  // dispatcher drains the queue sequentially, preventing Postgres contention.
   if (isRateLimit) {
     enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");
     log(`Enqueued reset-seed for ${seedId} (rate limited — will retry on next dispatch)`);
@@ -1528,7 +1690,7 @@ async function markStuck(
 
   // Add failure reason as a note on the bead for visibility.
   // This allows anyone looking at the bead to see why it failed without
-  // having to dig into log files or SQLite.
+  // having to dig into log files or Postgres.
   const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
   const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;
   enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");
@@ -1551,7 +1713,7 @@ function log(msg: string): void {
  *
  * When main() rejects (e.g. config parse failure, ForemanStore.forProject()
  * throws, or runPipeline() propagates an uncaught error), we attempt to:
- *   1. Update the run status to "failed" in SQLite so the run is not left stuck.
+ *   1. Update the run status to "failed" in Postgres so the run is not left stuck.
  *   2. Send an Agent Mail "worker-error" message to the "foreman" mailbox so
  *      the operator can see the error without having to grep log files.
  *
@@ -1567,7 +1729,7 @@ async function fatalHandler(err: unknown): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`[foreman-worker] Fatal: ${msg}`);
 
-  // Try to recover enough context to update SQLite + send Agent Mail.
+  // Try to recover enough context to update Postgres + send Agent Mail.
   const configPath = process.argv[2];
   if (!configPath) {
     process.exit(1);
@@ -1593,7 +1755,7 @@ async function fatalHandler(err: unknown): Promise<void> {
 
   if (runId && projectPath) {
     // Repair the fatal run status with the registered backend when available,
-    // falling back to local SQLite for unregistered projects.
+    // falling back to local Postgres for unregistered projects.
     try {
       await updateFatalRunStatus({
         runId,
@@ -1606,7 +1768,7 @@ async function fatalHandler(err: unknown): Promise<void> {
       console.error(`[foreman-worker] Could not update run status: ${storeMsg}`);
     }
 
-    // Send SQLite mail notification so the run record reflects the fatal error.
+    // Send Postgres mail notification so the run record reflects the fatal error.
     // agentMailClient is not in scope here — create a fresh one.
     if (seedId && runId) {
       try {
@@ -1623,7 +1785,7 @@ async function fatalHandler(err: unknown): Promise<void> {
           }),
         );
       } catch {
-        // Mail unavailable — SQLite update above is sufficient.
+        // Mail unavailable — Postgres update above is sufficient.
       }
     }
   }

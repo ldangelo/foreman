@@ -86,7 +86,7 @@ The `BeadsRustClient` in `src/lib/beads-rust.ts` already exists and is partially
 ### 3.2 Non-Goals
 
 - Rewriting agent pipeline business logic (Explorer, Developer, QA, Reviewer, Finalize phases).
-- Changing the SQLite state store (`ForemanStore`) schema or behavior.
+- Changing the Postgres state store (`ForemanStore`) schema or behavior.
 - Changing git worktree management.
 - Rewriting the TRD parser or `sling` execution engine (already `br`-aware).
 - Adding new agent capabilities not related to the task store.
@@ -420,7 +420,7 @@ The bv-based dispatch ordering (sync + robot-triage) must complete within 3 seco
 
 ### REQ-NF-004 -- Backwards compatibility for existing runs
 
-In-flight SQLite run records that reference seeds IDs must continue to be trackable during and after migration. The `seed_id` column in the SQLite store stores issue IDs which are the same format in both `sd` and `br`.
+In-flight Postgres run records that reference seeds IDs must continue to be trackable during and after migration. The `seed_id` column in the Postgres store stores issue IDs which are the same format in both `sd` and `br`.
 
 ### REQ-NF-005 -- Test coverage
 
@@ -644,7 +644,7 @@ Mitigation: During Phase 1-2, `foreman doctor` checks for both `br` and `sd` bin
 
 **Given** an active run tracking br issue `xyz`,
 **When** `brClient.show("xyz")` returns `status: "closed"`,
-**Then** `Monitor.checkAll()` marks the SQLite run as `completed` and logs a `complete` event.
+**Then** `Monitor.checkAll()` marks the Postgres run as `completed` and logs a `complete` event.
 
 ### AC-013 -- foreman reset resets br task status
 
@@ -758,7 +758,7 @@ Exit criteria: `grep -r "SeedsClient\|execSd\|~/.bun/bin/sd" src/` returns zero 
 
 **Q3.** What is the br equivalent for `sd blocked`? The `foreman status` command calls `sd blocked --json` to count blocked tasks. If `br` has no `blocked` subcommand, this count must be derived from `br list --status=open` minus `br ready`.
 
-**Q4.** Should `foreman migrate-seeds` attempt to preserve original issue IDs? `br` may assign new sequential IDs on create. If SQLite run records reference seeds IDs and those IDs change, the monitor will fail to find in-flight runs. The recommended approach is to complete or reset all in-flight runs before migration, but an ID-preservation option in `br create` (if available) would simplify rollback.
+**Q4.** Should `foreman migrate-seeds` attempt to preserve original issue IDs? `br` may assign new sequential IDs on create. If Postgres run records reference seeds IDs and those IDs change, the monitor will fail to find in-flight runs. The recommended approach is to complete or reset all in-flight runs before migration, but an ID-preservation option in `br create` (if available) would simplify rollback.
 
 **Q5.** Is `bv --robot-triage --format toon` output stable enough for programmatic parsing? The `toon` (Token-Optimized Output Notation) format is described as lower-LLM-context, but if its schema changes between bv versions, `BvClient` parsing will break silently. A version pin or output schema validation may be needed.
 

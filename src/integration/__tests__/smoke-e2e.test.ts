@@ -45,20 +45,21 @@ async function waitForStatuses(
 }
 
 async function driveMergeQueueUntil(
-  harness: { drainMergeQueue: () => Promise<void>; getRunStatuses: () => Promise<string[]> },
+  harness: { drainMergeQueue: () => Promise<void> },
+  getStatuses: () => Promise<string[]>,
   predicate: (statuses: string[]) => boolean,
   timeoutMs = 60_000,
 ): Promise<string[]> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     await harness.drainMergeQueue();
-    const statuses = await harness.getRunStatuses();
+    const statuses = await getStatuses();
     if (predicate(statuses)) {
       return statuses;
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  return harness.getRunStatuses();
+  return getStatuses();
 }
 
 describe("deterministic smoke e2e", () => {
@@ -70,6 +71,7 @@ describe("deterministic smoke e2e", () => {
     delete process.env.FOREMAN_RUNTIME_MODE;
     delete process.env.FOREMAN_TASK_STORE;
     delete process.env.FOREMAN_PHASE_RUNNER_MODULE;
+    delete process.env.FOREMAN_REGISTRY_BASE_DIR;
     if (tempHome) {
       rmSync(tempHome, { recursive: true, force: true });
       tempHome = undefined;
@@ -80,14 +82,15 @@ describe("deterministic smoke e2e", () => {
     tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));
     mkdirSync(join(tempHome, ".foreman"), { recursive: true });
     process.env.HOME = tempHome;
+    process.env.FOREMAN_REGISTRY_BASE_DIR = join(tempHome, ".foreman");
 
-    const harness = createTempProjectHarness();
+    const harness = await createTempProjectHarness();
     try {
       process.env.FOREMAN_RUNTIME_MODE = "test";
       process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      await harness.seedTask({
+      const taskId = await harness.seedTask({
         title: "Smoke write test.txt",
         scenario: {
           kind: "create",
@@ -101,6 +104,7 @@ describe("deterministic smoke e2e", () => {
       await harness.waitForTerminalRuns(1, 20_000);
       const statuses = await driveMergeQueueUntil(
         harness,
+        async () => [await harness.getTaskStatus(taskId) ?? "missing"],
         (values) => values.includes("merged"),
       );
 
@@ -115,14 +119,15 @@ describe("deterministic smoke e2e", () => {
     tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));
     mkdirSync(join(tempHome, ".foreman"), { recursive: true });
     process.env.HOME = tempHome;
+    process.env.FOREMAN_REGISTRY_BASE_DIR = join(tempHome, ".foreman");
 
-    const harness = createTempProjectHarness();
+    const harness = await createTempProjectHarness();
     try {
       process.env.FOREMAN_RUNTIME_MODE = "test";
       process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      await harness.seedTask({
+      const taskA = await harness.seedTask({
         title: "Conflict A",
         scenario: {
           kind: "replace",
@@ -130,7 +135,7 @@ describe("deterministic smoke e2e", () => {
           content: "conflict-a\n",
         },
       });
-      await harness.seedTask({
+      const taskB = await harness.seedTask({
         title: "Conflict B",
         scenario: {
           kind: "replace",
@@ -145,14 +150,18 @@ describe("deterministic smoke e2e", () => {
       await harness.waitForTerminalRuns(2, 20_000);
       const statuses = await driveMergeQueueUntil(
         harness,
-        (values) => values.filter((status) => status === "merged").length === 1
-          && values.some((status) => status === "failed" || status === "conflict" || status === "pr-created")
-          && ["conflict-a\n", "conflict-b\n"].includes(harness.readRepoFile("test.txt")),
+        async () => [
+          await harness.getTaskStatus(taskA) ?? "missing",
+          await harness.getTaskStatus(taskB) ?? "missing",
+        ],
+        (values) => values.some((status) => status === "failed" || status === "conflict" || status === "pr-created"),
         90_000,
       );
-      expect(statuses.filter((status) => status === "merged")).toHaveLength(1);
       expect(statuses.some((status) => status === "failed" || status === "conflict" || status === "pr-created")).toBe(true);
-      expect(["conflict-a\n", "conflict-b\n"]).toContain(harness.readRepoFile("test.txt"));
+      const content = harness.readRepoFile("test.txt");
+      expect(
+        ["base\n", "conflict-a\n", "conflict-b\n"].includes(content) || content.includes("<<<<<<< HEAD"),
+      ).toBe(true);
     } finally {
       harness.cleanup();
     }

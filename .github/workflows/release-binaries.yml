@@ -335,8 +335,6 @@ jobs:
             curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${TAG}/foreman-${TAG}-${PLATFORM}-${ARCH}.tar.gz" | tar xz
             chmod +x foreman-*
             sudo mv foreman-* /usr/local/bin/foreman
-
-            # Note: better_sqlite3.node side-car must stay in the same directory as the binary
             ```
 
             ### Requirements

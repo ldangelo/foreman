@@ -125,7 +125,7 @@
       "argsPreview": "{\"path\":\"/Users/ldangelo/.foreman/worktrees/9c825a66-276b-4419-8594-219783b4cf4f/foreman-c3845/src/cli/commands/inbox.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
       "completedAt": "2026-04-30T01:26:21.075Z"
     },
     {

@@ -229,7 +229,7 @@
       "argsPreview": "{\"newText\":\"## Task Tracking\\n\\nForeman uses **native tasks** stored in **Postgres** via ForemanDaemon. Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures routed through the Unix socket.\\n\\n```bash\\n# Na…",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"Successfully replaced text in README.md.\"}],\"details\":{\"diff\":\"     ...\\n 642 ```\\n 643 \\n 644 ## Task Tracking\\n 645 \\n-646 Foreman uses **native tasks** stored in the SQLite store (`.foreman/foreman.db`…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"Successfully replaced text in README.md.\"}],\"details\":{\"diff\":\"     ...\\n 642 ```\\n 643 \\n 644 ## Task Tracking\\n 645 \\n-646 Foreman uses **native tasks** stored in the Postgres store (`.foreman/foreman.db`…",
       "completedAt": "2026-04-27T12:17:38.101Z"
     },
     {
@@ -316,10 +316,10 @@
       "toolCallId": "call_function_mvitjyfgagpg_1",
       "toolName": "grep",
       "startedAt": "2026-04-27T12:18:38.980Z",
-      "argsPreview": "{\"path\":\"README.md\",\"pattern\":\"SQLite\"}",
+      "argsPreview": "{\"path\":\"README.md\",\"pattern\":\"Postgres\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"README.md:20: - **Progress tracking** — every task, agent, and phase tracked in Postgres, with beads/SQLite fallback where needed\\nREADME.md:563: Check environment health: br binary, Pi binary, Agent Mail…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"README.md:20: - **Progress tracking** — every task, agent, and phase tracked in Postgres, with beads/Postgres fallback where needed\\nREADME.md:563: Check environment health: br binary, Pi binary, Agent Mail…",
       "completedAt": "2026-04-27T12:18:38.995Z"
     },
     {
@@ -329,7 +329,7 @@
       "argsPreview": "{\"limit\":15,\"offset\":730,\"path\":\"README.md\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"\\n### Storage locations\\n\\n| Path | Contents |\\n|---|---|\\n| `.beads/` | legacy/compatibility beads_rust task database (JSONL, git-tracked) |\\n| `.foreman/foreman.db` | SQLite: runs, merge_queue, projects…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"\\n### Storage locations\\n\\n| Path | Contents |\\n|---|---|\\n| `.beads/` | legacy/compatibility beads_rust task database (JSONL, git-tracked) |\\n| `.foreman/foreman.db` | Postgres: runs, merge_queue, projects…",
       "completedAt": "2026-04-27T12:18:40.962Z"
     },
     {
@@ -403,7 +403,7 @@
       "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"git commit is only allowed during finalize\"}],\"details\":{}}"
     }
   ],
-  "finalMessage": "\n\nNow I have a clear picture. The architecture has evolved to a daemon/Postgres model. Let me update the README.md to reflect:\n\n1. **Daemon-based architecture** - persistent process with tRPC over Unix socket\n2. **Postgres storage** - replaced SQLite as the primary store\n3. **TrpcClient** - how CLI commands communicate with the daemon\n4. **Updated storage locations**\n\n\nThe README has been updated. Let me verify the key changes are in place:\n\n\nThe README.md has been updated to accurately reflect…",
+  "finalMessage": "\n\nNow I have a clear picture. The architecture has evolved to a daemon/Postgres model. Let me update the README.md to reflect:\n\n1. **Daemon-based architecture** - persistent process with tRPC over Unix socket\n2. **Postgres storage** - replaced Postgres as the primary store\n3. **TrpcClient** - how CLI commands communicate with the daemon\n4. **Updated storage locations**\n\n\nThe README has been updated. Let me verify the key changes are in place:\n\n\nThe README.md has been updated to accurately reflect…",
   "completedAt": "2026-04-27T12:19:20.314Z",
   "success": true,
   "artifactPresent": false,

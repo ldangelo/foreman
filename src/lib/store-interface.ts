@@ -1,6 +1,6 @@
 /**
  * Common interface for task stores.
- * Both ForemanStore (SQLite) and PostgresStore implement this interface.
+ * Both ForemanStore (Postgres) and PostgresStore implement this interface.
  */
 
 import type {

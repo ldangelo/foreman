@@ -135,7 +135,7 @@ Valid values: `auto` (default), `pr`, `none`. When absent, defaults to `auto` (p
 
 **Priority:** Must | **Complexity:** Low
 
-The resolved merge strategy must be available to the auto-merge and refinery code paths. The dispatcher stores the workflow's merge strategy in the run record (SQLite) so that downstream merge logic can read it without re-parsing the YAML.
+The resolved merge strategy must be available to the auto-merge and refinery code paths. The dispatcher stores the workflow's merge strategy in the run record (Postgres) so that downstream merge logic can read it without re-parsing the YAML.
 
 - AC-005-1: Given a dispatched run, when auto-merge processes it, then it reads the merge strategy from the run record and branches accordingly (merge vs. PR vs. skip).
 

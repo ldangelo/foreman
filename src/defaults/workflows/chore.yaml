@@ -49,7 +49,7 @@ phases:
   - name: finalize
     prompt: finalize.md
     models:
-      default: haiku
+      default: MiniMax
     maxTurns: 20
     artifact: FINALIZE_VALIDATION.md
     verdict: true

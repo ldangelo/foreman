@@ -11,7 +11,7 @@
 
 ## 1. Executive Summary
 
-Foreman is actively migrating away from the **beads-first** architecture (beads_rust `br` as the sole task store, with `seeds` `sd` as a historical predecessor) toward **native task management** (SQLite-backed tasks in `foreman.db`, multi-project support). During this transition, a growing body of documentation describes the old architecture — creating a risk that operators confuse archived design documents with current operating procedures.
+Foreman is actively migrating away from the **beads-first** architecture (beads_rust `br` as the sole task store, with `seeds` `sd` as a historical predecessor) toward **native task management** (Postgres-backed tasks in `foreman.db`, multi-project support). During this transition, a growing body of documentation describes the old architecture — creating a risk that operators confuse archived design documents with current operating procedures.
 
 This PRD defines a **Historical Context Banner System** that injects a standardized notice into archived documents so readers immediately understand when they are reading a description of an older system state rather than current behavior. The system must be precise (touch only archival docs), low-noise (readers are not overwhelmed), and useful (the banner adds meaningful context without clutter).
 

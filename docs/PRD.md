@@ -130,7 +130,7 @@ The brain — SKILL.md instructions that enable Jarvis (or any OpenClaw agent) t
 Real-time web UI for monitoring all active projects and agents.
 
 #### 4.2.4 Foreman State Store
-SQLite database (`~/.foreman/foreman.db`) tracking:
+Postgres database (`~/.foreman/foreman.db`) tracking:
 - Projects (repo path, status, created_at)
 - Runs (project_id, bead_id, agent_type, session_key, worktree_path, status, started_at, completed_at)
 - Costs (run_id, tokens_in, tokens_out, estimated_cost)
@@ -255,7 +255,7 @@ Aggregate cost, token usage, and performance across all projects.
 |---|---|---|
 | Frontend | Svelte + Tailwind | Lightweight, fast, good for real-time UIs |
 | Backend | Node.js (Express or Hono) | Simple REST + WebSocket server |
-| Database | SQLite (via better-sqlite3) | Zero config, single file, fast reads |
+| Database | Postgres (via pg) | Zero config, single file, fast reads |
 | Real-time | WebSocket | Live agent status, event streaming |
 | Charts | Chart.js or Recharts | Cost/token visualization |
 | Process | Single `foreman dashboard` command | No Docker, no build step for dev |
@@ -296,11 +296,11 @@ WS   /ws/events                       # Real-time event stream
 - [ ] Implement `foreman init` — registers project in `~/.foreman/foreman.db`
 - [ ] Implement `foreman status` — reads beads + shows summary
 
-#### P1.2 — SQLite State Store
+#### P1.2 — Postgres State Store
 **Priority:** P0 | **Estimate:** 3h | **Runtime:** Claude Code
 - [ ] Design schema (projects, runs, costs, events tables)
 - [ ] Create migration system (simple versioned SQL files)
-- [ ] Implement data access layer (better-sqlite3)
+- [ ] Implement data access layer (pg)
 - [ ] Write tests for CRUD operations
 
 #### P1.3 — Beads Integration Layer
@@ -338,7 +338,7 @@ WS   /ws/events                       # Real-time event stream
 - [ ] Create worktree per task
 - [ ] Generate agent instructions (AGENTS.md with task context, bead ID, bd commands)
 - [ ] Spawn via OpenClaw `sessions_spawn` (runtime: "acp")
-- [ ] Record run in SQLite (session_key, worktree, bead_id, started_at)
+- [ ] Record run in Postgres (session_key, worktree, bead_id, started_at)
 - [ ] Configurable max concurrent agents
 - [ ] Implement `foreman run`
 
@@ -348,7 +348,7 @@ WS   /ws/events                       # Real-time event stream
 - [ ] Detect stuck agents (no progress for configurable timeout)
 - [ ] Auto-restart stuck agents (with retry count limit)
 - [ ] On completion: update bead status, record costs, trigger merge check
-- [ ] Event logging to SQLite
+- [ ] Event logging to Postgres
 - [ ] Implement as background process or cron-triggered
 
 #### P2.4 — Refinery (Merge Manager)
@@ -370,7 +370,7 @@ WS   /ws/events                       # Real-time event stream
 - [ ] Express/Hono server on port 3850
 - [ ] REST API endpoints (see §5.3)
 - [ ] WebSocket server for real-time events
-- [ ] SQLite queries for project/run/cost data
+- [ ] Postgres queries for project/run/cost data
 - [ ] Beads CLI integration for live bead graph
 - [ ] OpenClaw integration for agent status
 - [ ] Implement `foreman dashboard`
@@ -512,7 +512,7 @@ notify_on_failure = true
 
 | Week | Phase | Deliverable |
 |---|---|---|
-| Week 1 | Foundation | CLI skeleton, SQLite store, Beads integration, Git worktree manager |
+| Week 1 | Foundation | CLI skeleton, Postgres store, Beads integration, Git worktree manager |
 | Week 2 | Orchestration (pt 1) | PRD decomposer, Agent dispatcher |
 | Week 3 | Orchestration (pt 2) + Dashboard start | Monitor, Refinery, Dashboard backend |
 | Week 4 | Dashboard + Skill | Dashboard UI (all 3 pages), OpenClaw skill, Agent templates |
@@ -542,7 +542,7 @@ notify_on_failure = true
 |---|---|---|
 | 2026-03-10 | Use Beads over TaskNotes for agent work tracking | Beads is purpose-built for agent workflows (atomic claiming, dependency graph, context compaction). TaskNotes stays for human task management. |
 | 2026-03-10 | Build on OpenClaw rather than forking Gastown | Already running OpenClaw, runtime-agnostic, integrated with existing workflows, maintained platform |
-| 2026-03-10 | SQLite for dashboard state (not Dolt) | Dashboard needs fast reads for real-time UI. Beads/Dolt handles work tracking. SQLite handles operational state (runs, costs, events). |
+| 2026-03-10 | Postgres for dashboard state (not Dolt) | Dashboard needs fast reads for real-time UI. Beads/Dolt handles work tracking. Postgres handles operational state (runs, costs, events). |
 | 2026-03-10 | Svelte + Node for dashboard (not Phoenix) | Faster to prototype, lower barrier for client deployment. Can migrate to Phoenix later if needed. |
 
 ---

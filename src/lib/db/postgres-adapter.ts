@@ -58,10 +58,12 @@ export interface RunRow {
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
+  branch: string | null;
   status: string;
   started_at: string | null;
   completed_at: string | null;
   base_branch: string | null;
+  merge_strategy: "auto" | "pr" | "none" | null;
   created_at: string;
   progress: string | null;
 }
@@ -215,6 +217,7 @@ function runRowSelectSql(): string {
       COALESCE(agent_type, 'claude-code') AS agent_type,
       session_key,
       worktree_path,
+      branch,
       status,
       started_at,
       finished_at AS completed_at,
@@ -566,9 +569,9 @@ export class PostgresAdapter {
       `INSERT INTO tasks (
          id, project_id, title, description, type, priority, status,
          external_id, branch, created_at, updated_at, approved_at, closed_at,
-         external_repo, github_issue_number, github_milestone, sync_enabled
+         external_repo, github_issue_number, github_milestone, sync_enabled, labels
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING *`,
       [
         id,
@@ -596,6 +599,7 @@ export class PostgresAdapter {
         (taskData.sync_enabled as boolean | undefined) ??
           (taskData.syncEnabled as boolean | undefined) ??
           false,
+        (taskData.labels as string[] | null | undefined) ?? null,
       ],
     );
     return rows[0];
@@ -1108,7 +1112,9 @@ export class PostgresAdapter {
          started_at,
          finished_at AS completed_at,
          created_at,
-         CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress`,
+         CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress,
+         base_branch,
+         merge_strategy`,
       [
         projectId,
         seedId,
@@ -1118,7 +1124,7 @@ export class PostgresAdapter {
         options?.sessionKey ?? null,
         options?.worktreePath ?? null,
         options?.baseBranch ?? null,
-        options?.mergeStrategy ?? null,
+        options?.mergeStrategy ?? "auto",
       ],
     );
     return rows[0];
@@ -1167,7 +1173,7 @@ export class PostgresAdapter {
   async updateRun(
     projectId: string,
     runId: string,
-    updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at" | "base_branch">>
+    updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at" | "base_branch" | "merge_strategy">>
   ): Promise<void> {
     const setClauses: string[] = ["updated_at = now()"];
     const params: unknown[] = [];
@@ -1199,6 +1205,10 @@ export class PostgresAdapter {
     if (updates.base_branch !== undefined) {
       setClauses.push(`base_branch = $${i++}`);
       params.push(updates.base_branch);
+    }
+    if (updates.merge_strategy !== undefined) {
+      setClauses.push(`merge_strategy = $${i++}`);
+      params.push(updates.merge_strategy);
     }
     params.push(runId, projectId);
     await execute(
@@ -2086,6 +2096,7 @@ export class PostgresAdapter {
       description?: string | null;
       state?: "open" | "closed";
       labels?: string[];
+      type?: string;
       milestone?: string | null;
       syncEnabled?: boolean;
       lastSyncAt?: string;
@@ -2110,6 +2121,10 @@ export class PostgresAdapter {
       setParts.push("labels = $" + i++ + "::text[]");
       params.push(updates.labels);
     }
+    if (updates.type !== undefined) {
+      setParts.push("type = $" + i++);
+      params.push(updates.type);
+    }
     if (updates.milestone !== undefined) {
       setParts.push("github_milestone = $" + i++);
       params.push(updates.milestone);
@@ -2126,7 +2141,7 @@ export class PostgresAdapter {
       return null;
     }
     setParts.push("updated_at = now()");
-    params.push(projectId, taskId);
+    params.push(taskId, projectId);
     const sql = "UPDATE tasks SET " + setParts.join(", ") + " WHERE id = $" + i + " AND project_id = $" + (i + 1) + " RETURNING *";
     const rows = await query<TaskRow>(sql, params);
     return rows[0] ?? null;

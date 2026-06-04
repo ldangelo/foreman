@@ -2,7 +2,7 @@
  * Integration tests for Dispatcher — native task store path, beads fallback,
  * FOREMAN_TASK_STORE overrides, and atomic claim transaction.
  *
- * Uses real ForemanStore + NativeTaskStore with in-memory SQLite.
+ * Uses real ForemanStore + NativeTaskStore with in-memory Postgres.
  * Verifies TRD-007 / REQ-014 / REQ-017.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -106,7 +106,7 @@ interface StoreContext {
 
 function setupStore(): StoreContext {
   const tmpDir = mkdtempSync(join(tmpdir(), "foreman-dispatcher-integration-test-"));
-  // Use in-memory SQLite for isolation; store DB file for inspection if needed
+  // Use in-memory Postgres for isolation; store DB file for inspection if needed
   const dbPath = join(tmpDir, "test.db");
   const store = new ForemanStore(dbPath);
   const taskStore = new NativeTaskStore(store.getDb());

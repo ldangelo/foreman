@@ -14,7 +14,7 @@
 
 ### 1.1 Architecture Overview
 
-The merge queue system converts the existing `Refinery` class into a thin wrapper that delegates to new purpose-built modules. The `Refinery` class is preserved (minimizing blast radius for callers) but its internals are gutted and replaced with delegation to `MergeQueue`, `ConflictResolver`, and related modules. The system introduces five new modules that integrate with the existing SQLite store, git operations layer, and agent worker pipeline.
+The merge queue system converts the existing `Refinery` class into a thin wrapper that delegates to new purpose-built modules. The `Refinery` class is preserved (minimizing blast radius for callers) but its internals are gutted and replaced with delegation to `MergeQueue`, `ConflictResolver`, and related modules. The system introduces five new modules that integrate with the existing Postgres store, git operations layer, and agent worker pipeline.
 
 ```
 foreman merge (CLI)
@@ -23,7 +23,7 @@ foreman merge (CLI)
 Refinery (thin wrapper -- preserves public API, delegates internally)
   |
   v
-MergeQueue (SQLite-backed persistent queue)
+MergeQueue (Postgres-backed persistent queue)
   |-- reconcile(): scan completed runs, validate branches, enqueue missing
   |-- dequeue(): atomic claim of next pending entry
   |
@@ -59,17 +59,17 @@ ConflictPatterns (learning, FR-7)
 
 | File | Purpose | Dependencies |
 |------|---------|-------------|
-| `src/orchestrator/merge-queue.ts` | MergeQueue class: SQLite queue CRUD, reconciliation, dequeue atomics | `store.ts`, `git.ts` |
+| `src/orchestrator/merge-queue.ts` | MergeQueue class: Postgres queue CRUD, reconciliation, dequeue atomics | `store.ts`, `git.ts` |
 | `src/orchestrator/conflict-resolver.ts` | Per-file 4-tier cascade logic, cost tracking, Anthropic Messages API calls | `merge-validator.ts`, `merge-queue.ts`, `conflict-patterns.ts`, `git.ts`, `@anthropic-ai/sdk` |
 | `src/orchestrator/conflict-cluster.ts` | Graph-based overlap clustering, connected components, re-clustering | `merge-queue.ts` |
 | `src/orchestrator/merge-validator.ts` | Prose detection, syntax checking, conflict marker detection, markdown fencing | `config.ts` |
-| `src/orchestrator/conflict-patterns.ts` | Pattern learning SQLite table, tier skip logic, success context | `store.ts` |
+| `src/orchestrator/conflict-patterns.ts` | Pattern learning Postgres table, tier skip logic, success context | `store.ts` |
 | `src/orchestrator/merge-config.ts` | Config loader for `.foreman/config.json` merge queue settings | -- |
 | `src/cli/commands/worktree.ts` | Worktree list/clean CLI commands | `git.ts`, `store.ts` |
 
 ### 1.3 Data Architecture
 
-#### 1.3.1 New SQLite Tables
+#### 1.3.1 New Postgres Tables
 
 **merge_queue** -- Persistent merge queue entries
 
@@ -225,14 +225,14 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 ### 2.2 Sprint 2: Merge Queue Core (FR-3)
 
-#### Story 2.1: MergeQueue SQLite Backend
+#### Story 2.1: MergeQueue Postgres Backend
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
 | MQ-T007 | Add `merge_queue` table migration to store.ts using existing idempotent migration pattern (`CREATE TABLE IF NOT EXISTS`, add to `MIGRATIONS` array) | 2h | -- | `src/lib/store.ts` | [x] |
 | MQ-T008 | Implement `MergeQueue` class with `enqueue()`, `dequeue()`, `peek()`, `list()`, `updateStatus()`, `remove()` methods. Dequeue uses atomic `UPDATE ... WHERE status='pending' ORDER BY enqueued_at LIMIT 1 RETURNING *` | 4h | MQ-T007 | `src/orchestrator/merge-queue.ts` | [x] |
 | MQ-T009 | Implement `reconcile()` method -- cross-reference `runs` table (status=completed) with `merge_queue` entries. Validate branch existence via `git rev-parse --verify`. Enqueue missing entries. Log reconciliation actions | 3h | MQ-T008 | `src/orchestrator/merge-queue.ts` | [x] |
-| MQ-T010 | Add 5-second busy timeout configuration for concurrent SQLite access (`this.db.pragma('busy_timeout = 5000')`) | 1h | MQ-T007 | `src/lib/store.ts` | [x] |
+| MQ-T010 | Add 5-second busy timeout configuration for concurrent Postgres access (`this.db.pragma('busy_timeout = 5000')`) | 1h | MQ-T007 | `src/lib/store.ts` | [x] |
 | MQ-T011 | Write unit tests for MergeQueue CRUD -- enqueue, dequeue atomicity, peek, list with status filter, idempotent enqueue, reconciliation with branch validation | 4h | MQ-T008, MQ-T009 | `src/orchestrator/__tests__/merge-queue.test.ts` | [x] |
 
 #### Story 2.2: Merge Queue Configuration
@@ -422,7 +422,7 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 | Sprint | Focus | Tasks | Est. Hours | Key Deliverables |
 |--------|-------|-------|-----------|-----------------|
 | 1 | Foundation | MQ-T001 to MQ-T006 | 16h | Auto-commit state files, safe branch deletion |
-| 2 | Merge Queue Core | MQ-T007 to MQ-T020 (excl. MQ-T014/T015), MQ-T018b | 37h | SQLite queue, config loader, auto-enqueue, CLI integration, Refinery thin-wrapper migration |
+| 2 | Merge Queue Core | MQ-T007 to MQ-T020 (excl. MQ-T014/T015), MQ-T018b | 37h | Postgres queue, config loader, auto-enqueue, CLI integration, Refinery thin-wrapper migration |
 | 3a | Deterministic Resolution | MQ-T021 to MQ-T029 | 30h | MergeValidator, Tier 1-2 resolution with dual-check gate |
 | 3b | AI-Powered Resolution | MQ-T030 to MQ-T037 | 26h | Tier 3 (Sonnet) and Tier 4 (Opus) via Messages API, cost tracking |
 | 4 | Resolution Orchestration | MQ-T038 to MQ-T046 | 31h | Per-file cascade orchestration, post-merge validation (AI-only), event logging |
@@ -591,7 +591,7 @@ Sprint 8 (Polish) -- depends on Sprint 2
 - [ ] AC-7.2: Tiers with >= 2 failures and 0 successes skipped
 - [ ] AC-7.3: Past successful resolutions provided as AI context
 - [ ] AC-7.4: Pattern recording never blocks merge
-- [ ] AC-7.5: Pattern data persists in SQLite
+- [ ] AC-7.5: Pattern data persists in Postgres
 - [ ] AC-7.6: Post-merge test failures record all AI-resolved files
 - [ ] AC-7.7: Files with >= 2 test failure records prefer Fallback
 
@@ -662,7 +662,7 @@ Sprint 8 (Polish) -- depends on Sprint 2
 
 - No secrets in code -- Claude API keys via env vars
 - Non-interactive shell commands only (agent constraint)
-- SQLite WAL mode with busy timeout for concurrent access
+- Postgres WAL mode with busy timeout for concurrent access
 - Cost controls prevent runaway AI spending (per-session budget cap)
 
 ### 6.5 Compatibility
@@ -681,7 +681,7 @@ Sprint 8 (Polish) -- depends on Sprint 2
 |------|-----------|--------|------------|---------------|
 | AI produces invalid code | Medium | High | Multi-layer validation (MergeValidator), full test suite post-merge | MQ-T030 to MQ-T037 |
 | Cost escalation | Low | Medium | Per-session budget cap, per-file size gate, pattern learning skips | MQ-T032, MQ-T052, MQ-T067 |
-| Concurrent merge corruption | Low | High | SQLite WAL + atomic dequeue, sequential processing | MQ-T008, MQ-T010 |
+| Concurrent merge corruption | Low | High | Postgres WAL + atomic dequeue, sequential processing | MQ-T008, MQ-T010 |
 | Migration breaks existing store | Low | High | Idempotent migrations, no destructive changes | MQ-T007, MQ-T064, MQ-T069 |
 | Post-merge test failure blocks pipeline | Medium | Medium | `git reset --hard HEAD~1` + PR escalation, continue with next entry | MQ-T042 |
 | `tsc --noEmit` slow on large projects | Medium | Low | 15s timeout per file, configurable checker map | MQ-T022 |

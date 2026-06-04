@@ -1,69 +1,41 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { ForemanStore } from '../store.js';
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  createPostgresProjectFixture,
+  startPostgresTestcontainer,
+  stopPostgresTestcontainer,
+} from "../../test-support/postgres-testcontainer.js";
 
-describe('merge_strategy in runs table', () => {
-  let store: ForemanStore;
-  let tmpDir: string;
-  let projectId: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'foreman-merge-test-'));
-    store = new ForemanStore(join(tmpDir, 'test.db'));
-    const project = store.registerProject('test-project', tmpDir);
-    projectId = project.id;
+/** merge_strategy coverage now targets production PostgresStore. */
+describe("merge_strategy in Postgres runs table", { timeout: 120_000 }, () => {
+  beforeAll(async () => {
+    await startPostgresTestcontainer();
   });
 
-  afterEach(() => {
-    store.close();
-    rmSync(tmpDir, { recursive: true, force: true });
+  afterAll(async () => {
+    await stopPostgresTestcontainer();
   });
 
-  const makeRun = (mergeStrategy: 'auto' | 'pr' | 'none' | undefined) =>
-    store.createRun(projectId, 'seed-1', 'developer', undefined, {
-      mergeStrategy,
-    });
+  it.each(["pr", "none", "auto"] as const)("stores and retrieves merge_strategy: %s", async (strategy) => {
+    const { store, project } = await createPostgresProjectFixture(`merge-${strategy}`);
+    const run = await store.createRun(project.id, `seed-${strategy}`, "developer", null, { mergeStrategy: strategy });
 
-  const get = (id: string) => store.getRun(id)?.merge_strategy;
-
-  it('stores and retrieves merge_strategy: pr', () => {
-    const run = makeRun('pr');
-    expect(run.merge_strategy).toBe('pr');
-    expect(get(run.id)).toBe('pr');
+    expect(run.merge_strategy).toBe(strategy);
+    expect((await store.getRun(run.id))?.merge_strategy).toBe(strategy);
   });
 
-  it('stores and retrieves merge_strategy: none', () => {
-    const run = makeRun('none');
-    expect(run.merge_strategy).toBe('none');
-    expect(get(run.id)).toBe('none');
+  it("defaults merge_strategy to auto when not specified", async () => {
+    const { store, project } = await createPostgresProjectFixture("merge-default");
+    const run = await store.createRun(project.id, "seed-default", "developer", null);
+
+    expect(run.merge_strategy).toBe("auto");
+    expect((await store.getRun(run.id))?.merge_strategy).toBe("auto");
   });
 
-  it('defaults to merge_strategy: auto when not specified', () => {
-    const run = makeRun(undefined);
-    expect(run.merge_strategy).toBe('auto');
-    expect(get(run.id)).toBe('auto');
-  });
+  it("updateRun can change merge_strategy", async () => {
+    const { store, project } = await createPostgresProjectFixture("merge-update");
+    const run = await store.createRun(project.id, "seed-update", "developer", null, { mergeStrategy: "none" });
 
-  it('stores and retrieves merge_strategy: auto explicitly', () => {
-    const run = makeRun('auto');
-    expect(run.merge_strategy).toBe('auto');
-    expect(get(run.id)).toBe('auto');
-  });
-
-  it('updateRun can change merge_strategy', () => {
-    const run = makeRun('none');
-    expect(run.merge_strategy).toBe('none');
-    store.updateRun(run.id, { merge_strategy: 'pr' });
-    expect(get(run.id)).toBe('pr');
-  });
-
-  it('migration adds merge_strategy column with default auto', () => {
-    // The migration `ALTER TABLE runs ADD COLUMN merge_strategy TEXT DEFAULT 'auto'`
-    // runs during store construction so the column is available from the start.
-    const run = makeRun(undefined);
-    expect(run.merge_strategy).toBe('auto');
-    expect(get(run.id)).toBe('auto');
+    await store.updateRun(run.id, { merge_strategy: "pr" });
+    expect((await store.getRun(run.id))?.merge_strategy).toBe("pr");
   });
 });

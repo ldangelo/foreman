@@ -535,7 +535,7 @@ describe("autoMerge() — merge outcomes", () => {
       const entry = makeEntry(1);
       // Simulate the run that was just updated in the agent-worker before calling autoMerge.
       // This is the race condition fix: by passing the run directly, we bypass the getRun()
-      // query that might fail due to SQLite WAL timing issues.
+      // query that might fail due to Postgres WAL timing issues.
       const completedRun = {
         id: entry.run_id,
         seed_id: entry.seed_id,
@@ -837,7 +837,7 @@ describe("syncBeadStatusAfterMerge()", () => {
     expect(mockSetBeadStatus).toHaveBeenCalledWith(
       expect.anything(), "bd-x", "closed", "auto-merge",
     );
-    // Should NOT call taskClient.update directly (avoids SQLITE_BUSY)
+    // Should NOT call taskClient.update directly (avoids backend lock contention)
     expect(taskClient.update).not.toHaveBeenCalled();
   });
 

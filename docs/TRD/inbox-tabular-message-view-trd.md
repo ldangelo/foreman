@@ -38,7 +38,7 @@ Users need a **tabular layout** that displays structured message data in aligned
 6. `--full` flag preserved for detailed payload inspection (no change)
 
 ### Non-Goals
-- Do NOT change the underlying data model or SQLite schema
+- Do NOT change the underlying data model or Postgres schema
 - Do NOT add new filtering capabilities
 - Do NOT change `--watch` mode behavior (live output stays as-is)
 - Do NOT modify the dashboard inbox panel

@@ -30,7 +30,7 @@ import {
 import { rotateReport } from "./agent-worker-finalize.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
-import type { AgentMailClient } from "../lib/sqlite-mail-client.js";
+import type { AgentMailClient } from "../lib/agent-mail-client.js";
 import type { ForemanStore, RunProgress } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";
@@ -175,6 +175,8 @@ export interface PipelineContext {
   epicTasks?: EpicTask[];
   /** The runPhase function from agent-worker.ts */
   runPhase: RunPhaseFn;
+  /** Execute a TypeScript builtin phase such as create-pr. */
+  runBuiltinPhase?: (phase: import("../lib/workflow-loader.js").WorkflowPhaseConfig) => Promise<PhaseResult>;
   /** Register an agent identity for mail */
   registerAgent: (client: AnyMailClient | null, roleHint: string) => Promise<void>;
   /** Send structured mail */
@@ -1082,9 +1084,9 @@ async function runPhaseSequence(
     }
 
     // TRD-004/TRD-005: Build prompt only for prompt:-based phases.
-    // Bash and command phases handle their own execution without buildPhasePrompt.
+    // Bash, command, and builtin phases handle their own execution without buildPhasePrompt.
     let prompt = "";
-    if (!phase.bash) {
+    if (!phase.bash && !phase.builtin) {
       prompt = phase.command
         ? interpolateTaskPlaceholders(phase.command, phaseMeta)
         : buildPhasePrompt(phaseName, {
@@ -1162,6 +1164,93 @@ async function runPhaseSequence(
     }
 
     const phaseConfig = { ...config, model: phaseModel };
+
+    if (phase.builtin) {
+      if (!ctx.runBuiltinPhase) {
+        const errorMsg = `Builtin phase ${phaseName} is not supported by this runner`;
+        ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
+        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+      }
+
+      const result = await ctx.runBuiltinPhase(phase);
+      const artifactPresent = interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined;
+      const phaseSucceeded = result.success && (!interpolatedArtifact || artifactPresent === true);
+      const phaseError = result.error ?? (phaseSucceeded ? undefined : `Expected artifact missing: ${interpolatedArtifact}`);
+
+      phaseRecords.push({
+        name: phaseName,
+        phaseType,
+        skipped: false,
+        success: phaseSucceeded,
+        costUsd: 0,
+        turns: 0,
+        error: phaseError,
+        artifactExpected: interpolatedArtifact,
+        artifactPresent,
+      });
+
+      if (ctx.activityPhases) {
+        const completedActivityPhase = finalizePhaseRecord(
+          { ...activityPhase, artifactPresent },
+          {
+            success: phaseSucceeded,
+            costUsd: 0,
+            turns: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            error: phaseError,
+            toolCalls: 0,
+            toolBreakdown: {},
+            filesChanged: progress.filesChanged ?? [],
+            workflowName: workflowConfig.name,
+            workflowPath: workflowConfig.sourcePath,
+          },
+        );
+        ctx.activityPhases.push(completedActivityPhase);
+
+        let branchName: string | undefined;
+        try {
+          branchName = config.vcsBackend?.getCurrentBranch ? await config.vcsBackend.getCurrentBranch(worktreePath) : undefined;
+        } catch {
+          branchName = undefined;
+        }
+        writeIncrementalPipelineReport({
+          worktreePath,
+          seedId,
+          runId,
+          completedPhases: ctx.activityPhases,
+          targetBranch: config.targetBranch,
+          vcsBranchName: branchName,
+        }).catch((err) => {
+          ctx.log(`[PIPELINE] Warning: failed to write incremental report: ${String(err)}`);
+        });
+      }
+
+      progress.costUsd += 0;
+      await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
+
+      if (!phaseSucceeded) {
+        const errorMsg = phaseError ?? `${phaseName} failed`;
+        ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
+        await appendFile(logFile, `\n[PIPELINE] ${phaseName} FAIL: ${errorMsg}\n`);
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: phaseName, error: errorMsg, retryable: false,
+        });
+        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+      }
+
+      if (phase.mail?.onComplete !== false) {
+        ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
+          seedId, phase: phaseName, status: "completed", cost: 0, turns: 0,
+        });
+      }
+      await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: 0 }, observabilityWriter);
+      await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
+      i++;
+      continue;
+    }
 
     // TRD-004: Bash phase — execute via execFile instead of SDK agent
     if (phase.bash) {

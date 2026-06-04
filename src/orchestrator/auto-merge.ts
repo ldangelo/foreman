@@ -71,7 +71,7 @@ function sendMail(
 /**
  * Immediately sync a bead's status in the br backend after a merge outcome.
  *
- * Fetches the latest run status from SQLite, maps it to the expected bead
+ * Fetches the latest run status from Postgres, maps it to the expected bead
  * status via mapRunStatusToSeedStatus(), updates br, then flushes with
  * `br sync --flush-only`.
  *
@@ -98,7 +98,7 @@ export async function syncBeadStatusAfterMerge(
   const expectedStatus = mapRunStatusToSeedStatus(run.status);
   // Enqueue the status update instead of calling br directly.
   // Multiple agent workers can trigger autoMerge concurrently after finalize,
-  // and direct br calls contend on the beads SQLite database (SQLITE_BUSY).
+  // and direct br calls contend on the beads backend lock.
   // The dispatcher's bead writer queue serializes all br operations.
   enqueueSetBeadStatus(store, seedId, expectedStatus, "auto-merge");
 

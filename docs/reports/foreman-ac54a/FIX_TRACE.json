@@ -89,7 +89,7 @@
       "argsPreview": "{\"path\":\"src/cli/commands/inbox.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
       "completedAt": "2026-04-30T02:23:35.191Z"
     },
     {
@@ -649,7 +649,7 @@
       "argsPreview": "{\"limit\":50,\"offset\":1,\"path\":\"src/cli/commands/inbox.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the SQLite message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.\\n *\\n * Options:\\n *   --agent <name>   Filter to a specific agent/role (default: show all)\\n *   --run <id>       Fil…",
       "completedAt": "2026-04-30T02:31:10.302Z"
     },
     {
@@ -669,14 +669,14 @@
       "argsPreview": "{\"limit\":100,\"offset\":440,\"path\":\"src/cli/commands/inbox.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"export const inboxCommand = new Command(\\\"inbox\\\")\\n  .description(\\\"View the SQLite message inbox for agents in a pipeline run\\\")\\n  .option(\\\"--agent <name>\\\", \\\"Filter to a specific agent/role (default…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"export const inboxCommand = new Command(\\\"inbox\\\")\\n  .description(\\\"View the Postgres message inbox for agents in a pipeline run\\\")\\n  .option(\\\"--agent <name>\\\", \\\"Filter to a specific agent/role (default…",
       "completedAt": "2026-04-30T02:31:18.386Z"
     },
     {
       "toolCallId": "call_function_izpw28dghq68_1",
       "toolName": "edit",
       "startedAt": "2026-04-30T02:31:37.701Z",
-      "argsPreview": "{\"newText\":\"export const inboxCommand = new Command(\\\"inbox\\\")\\n  .description(\\\"View the SQLite message inbox for agents in a pipeline run\\\")\\n  .option(\\\"--agent <name>\\\", \\\"Filter to a specific agent/role (default: show all)\\\")\\n  .opti…",
+      "argsPreview": "{\"newText\":\"export const inboxCommand = new Command(\\\"inbox\\\")\\n  .description(\\\"View the Postgres message inbox for agents in a pipeline run\\\")\\n  .option(\\\"--agent <name>\\\", \\\"Filter to a specific agent/role (default: show all)\\\")\\n  .opti…",
       "updateCount": 0,
       "isError": false,
       "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"Successfully replaced text in src/cli/commands/inbox.ts.\"}],\"details\":{\"diff\":\"     ...\\n 449   .option(\\\"--ack\\\", \\\"Mark shown messages as read after displaying them\\\")\\n 450   .option(\\\"--full\\\", \\\"Show…",

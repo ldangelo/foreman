@@ -337,7 +337,7 @@ describe("parseSprintSummary", () => {
 | Sprint | Focus | Tasks | Est. Hours | Key Deliverables |
 |--------|-------|-------|-----------|-----------------|
 | 1 | Foundation | MQ-T001 to MQ-T006 | 16h | Auto-commit, safe deletion |
-| 2 | Merge Queue Core | MQ-T007 to MQ-T020 | 37h | SQLite queue, CLI integration |
+| 2 | Merge Queue Core | MQ-T007 to MQ-T020 | 37h | Postgres queue, CLI integration |
 
 ## 4. Dependency Graph`;
 

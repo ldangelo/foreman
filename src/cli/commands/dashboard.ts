@@ -2,7 +2,6 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type Database from "better-sqlite3";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import {
   ForemanStore,
@@ -351,7 +350,7 @@ function readProjectDbSnapshot(
     return makeOfflineSnapshot(project);
   }
 
-  let db: Database.Database | null = null;
+  let db: ReturnType<typeof ForemanStore.openReadonly> | null = null;
   try {
     db = ForemanStore.openReadonly(project.path);
 
@@ -500,7 +499,7 @@ export async function readProjectSnapshot(
   // Run all reads concurrently for performance (REQ-019)
   return Promise.all(
     projects.map((project) =>
-      // Wrap in a Promise so better-sqlite3 sync calls don't block the event loop
+      // Wrap in a Promise so synchronous fallback reads don't block the event loop
       // and so errors are captured per-project rather than aborting all reads.
       Promise.resolve().then(() => readProjectDbSnapshot(project, eventsLimit))
     )
@@ -1159,6 +1158,13 @@ export const dashboardCommand = new Command("dashboard")
     const handleNeedsHumanKey = (chunk: string | Buffer) => {
       const key = chunk.toString();
       const tasks = needsHumanTasks;
+
+      // In raw mode Ctrl+C is delivered as a byte (ETX) instead of SIGINT.
+      // Treat it the same as SIGINT so the live dashboard detaches cleanly.
+      if (key === "\u0003" || key === "q" || key === "Q") {
+        onSigint();
+        return;
+      }
 
       if (key === "\u001B[A" || key === "k") {
         if (tasks.length > 0) {

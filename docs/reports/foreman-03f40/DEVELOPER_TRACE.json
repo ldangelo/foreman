@@ -172,7 +172,7 @@
       "argsPreview": "{\"path\":\"/Users/ldangelo/.foreman/worktrees/9c825a66-276b-4419-8594-219783b4cf4f/foreman-03f40/src/lib/task-store.ts\"}",
       "updateCount": 0,
       "isError": false,
-      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * NativeTaskStore — wraps the native `tasks` SQLite table for use as a\\n * task-tracking back-end inside the Dispatcher.\\n *\\n * Implements methods for the full lifecycle of native tasks:\\n *   - ha…",
+      "resultPreview": "{\"content\":[{\"type\":\"text\",\"text\":\"/**\\n * NativeTaskStore — wraps the native `tasks` Postgres table for use as a\\n * task-tracking back-end inside the Dispatcher.\\n *\\n * Implements methods for the full lifecycle of native tasks:\\n *   - ha…",
       "completedAt": "2026-04-28T23:08:38.631Z"
     },
     {

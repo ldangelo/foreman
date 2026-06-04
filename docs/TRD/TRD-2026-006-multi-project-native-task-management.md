@@ -13,7 +13,7 @@ design_readiness_score: 4.0
 
 ### Chosen Approach: Option C -- Extend Existing Infrastructure
 
-Extend the existing `NativeTaskStore` class (`src/lib/task-store.ts`, 168 lines) and the `foreman.db` SQLite schema (which already includes `tasks` and `task_dependencies` DDL) with the missing methods (`create()`, `approve()`, `ready()`, dependency graph operations, cycle detection). Build `ProjectRegistry` as a standalone class reading `~/.foreman/projects.json`. Add Commander subcommand groups for `foreman project` and `foreman task`. Dashboard reads all project DBs read-only in parallel.
+Extend the existing `NativeTaskStore` class (`src/lib/task-store.ts`, 168 lines) and the `foreman.db` Postgres schema (which already includes `tasks` and `task_dependencies` DDL) with the missing methods (`create()`, `approve()`, `ready()`, dependency graph operations, cycle detection). Build `ProjectRegistry` as a standalone class reading `~/.foreman/projects.json`. Add Commander subcommand groups for `foreman project` and `foreman task`. Dashboard reads all project DBs read-only in parallel.
 
 **Key insight:** The `tasks` and `task_dependencies` tables already exist in `store.ts` DDL. The `NativeTaskStore` class already has `hasNativeTasks()`, `list()`, `claim()`, `updatePhase()`, and `updateStatus()`. The `ITaskClient` interface in `task-client.ts` defines the contract the dispatcher uses. This TRD extends what exists rather than replacing it, and the dispatcher's coexistence check (`hasNativeTasks()`) is already partially implemented.
 
@@ -21,9 +21,9 @@ Extend the existing `NativeTaskStore` class (`src/lib/task-store.ts`, 168 lines)
 
 | Option | Pros | Cons | Rejected Because |
 |--------|------|------|------------------|
-| A: Separate SQLite DB per feature | Clean isolation, no migration risk | Two DB files per project, connection management complexity, WAL contention across files | Unnecessary complexity; existing `foreman.db` already has the tables |
+| A: Separate Postgres DB per feature | Clean isolation, no migration risk | Two DB files per project, connection management complexity, WAL contention across files | Unnecessary complexity; existing `foreman.db` already has the tables |
 | B: Replace NativeTaskStore with new class | Clean-slate design, no legacy baggage | Breaks existing pipeline-executor calls to `updatePhase()`, ~168 lines rewritten | Working code exists; extend, don't rewrite |
-| D: JSON file store (no SQLite) | Simple, human-readable, git-trackable | No concurrent access safety, no transactions, no atomic claim | Multi-agent concurrency requires SQLite transactions |
+| D: JSON file store (no Postgres) | Simple, human-readable, git-trackable | No concurrent access safety, no transactions, no atomic claim | Multi-agent concurrency requires Postgres transactions |
 
 ### Architecture Diagram
 
@@ -100,7 +100,7 @@ Pipeline Integration:
 
 5. Dashboard aggregates across projects:
    -> Reads ~/.foreman/projects.json
-   -> Opens each project's foreman.db read-only (SQLITE_OPEN_READONLY)
+   -> Opens each project's foreman.db read-only (POSTGRES_OPEN_READONLY)
    -> Queries tasks, runs, merge_queue in parallel
    -> Renders unified TUI with "Needs Human" panel at top
 ```
@@ -277,7 +277,7 @@ Pipeline Integration:
 - Validates PRD ACs: AC-017.1, AC-017.2, AC-017.3
 - Implementation ACs:
   - Given the native task store is active (`hasNativeTasks()` returns true), when `dispatcher.getReadyTasks()` runs, then it calls `NativeTaskStore.ready()` directly (no shell exec, no `br` invocation)
-  - Given the dispatcher claims a task, when `claim(taskId, runId)` is called, then the status update and run_id assignment happen in the same SQLite transaction (already implemented in `NativeTaskStore.claim()`)
+  - Given the dispatcher claims a task, when `claim(taskId, runId)` is called, then the status update and run_id assignment happen in the same Postgres transaction (already implemented in `NativeTaskStore.claim()`)
   - Given `FOREMAN_TASK_STORE=native`, when the tasks table is empty, then the dispatcher returns an empty array (does not fall back to beads)
   - Given `FOREMAN_TASK_STORE=beads`, when called, then the dispatcher uses `BeadsRustClient` regardless of native task table contents
 
@@ -341,7 +341,7 @@ Pipeline Integration:
 **4h** | [satisfies REQ-010, REQ-019] [depends: TRD-001, TRD-005]
 - Validates PRD ACs: AC-010.1, AC-010.2, AC-010.3, AC-019.1, AC-019.2
 - Implementation ACs:
-  - Given `foreman dashboard` is invoked, when the registry has N projects, then each project's `foreman.db` is opened with `SQLITE_OPEN_READONLY` flag and queried in parallel
+  - Given `foreman dashboard` is invoked, when the registry has N projects, then each project's `foreman.db` is opened with `POSTGRES_OPEN_READONLY` flag and queried in parallel
   - Given a project whose database is inaccessible, when the dashboard renders, then that project shows `[offline]` without crashing
   - Given the refresh interval is configured (default 5s), when the interval fires, then all project databases are re-queried and the TUI re-renders
   - Given 7 registered projects with 200 tasks each, when the dashboard refreshes, then the total refresh time is under 2000ms

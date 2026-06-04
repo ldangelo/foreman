@@ -15,7 +15,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 - Multi-agent pipeline orchestrator with beads_rust task graph integration
 - Pipeline phases: Explorer → Developer → QA → Reviewer → Finalize
 - YAML-driven workflow configuration (`src/defaults/workflows/`)
-- SQLite-backed Agent Mail system (`sqlite-mail-client.ts`)
+- Postgres-backed Agent Mail system (`postgres-mail-client.ts`)
 - Auto-merge queue: completed branches merge to `dev` automatically
 - `foreman debug` command: AI-powered pipeline execution analysis
 - `foreman sling` command: TRD → task hierarchy decomposition

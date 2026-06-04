@@ -9,7 +9,7 @@ import { Type, type Static } from "@mariozechner/pi-ai";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { AgentMailClient } from "../lib/sqlite-mail-client.js";
+import type { AgentMailClient } from "../lib/agent-mail-client.js";
 import type { ForemanStore } from "../lib/store.js";
 
 const execFileAsync = promisify(execFile);
@@ -23,10 +23,10 @@ const SendMailParams = Type.Object({
 });
 
 /**
- * Create a send-mail ToolDefinition that uses the given SqliteMailClient.
+ * Create a send-mail ToolDefinition that uses the given NullAgentMailClient.
  *
  * The agent calls this tool with { to, subject, body } and the mail is
- * sent directly via the SQLite mail client — no bash command, no skill
+ * sent directly via the configured mail client — no bash command, no skill
  * expansion, no prompt interpretation required.
  */
 export function createSendMailTool(

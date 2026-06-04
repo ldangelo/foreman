@@ -18,7 +18,7 @@ foreman <command> --help    # Show command-specific help
 
 ### `foreman init`
 
-Initialize Foreman in a project. Creates `.foreman/` directory, installs default workflow configs, prompts, and registers the project in the SQLite store.
+Initialize Foreman in a project. Creates `.foreman/` directory, installs default workflow configs, prompts, and registers the project in the Postgres store.
 
 ```bash
 foreman init                      # Initialize with auto-detected name

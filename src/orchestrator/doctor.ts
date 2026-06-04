@@ -1857,10 +1857,10 @@ export class Doctor {
   }
 
   /**
-   * Check for bead status drift between SQLite and the br backend.
+   * Check for bead status drift between Postgres and the br backend.
    *
    * Calls syncBeadStatusOnStartup() to detect (and optionally fix) mismatches
-   * between the run status recorded in SQLite and the corresponding seed status
+   * between the run status recorded in Postgres and the corresponding seed status
    * in br.  Drift occurs when foreman was interrupted before a br update could
    * complete (e.g. after a crash, token exhaustion, or manual reset).
    *
@@ -1883,7 +1883,7 @@ export class Doctor {
 
     if (this.isNativeTaskBackend()) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "skip",
         message: "Native task backend active — skipping bead status reconciliation",
       };
@@ -1891,7 +1891,7 @@ export class Doctor {
 
     if (!this.taskClient) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "skip",
         message: "No task client configured — skipping bead status reconciliation",
       };
@@ -1900,7 +1900,7 @@ export class Doctor {
     const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "skip",
         message: "No project registered — skipping bead status reconciliation",
       };
@@ -1916,7 +1916,7 @@ export class Doctor {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "fail",
         message: `Bead status sync failed: ${msg}`,
       };
@@ -1924,9 +1924,9 @@ export class Doctor {
 
     if (result.mismatches.length === 0) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "pass",
-        message: "SQLite and br bead statuses are in sync",
+        message: "Postgres and br bead statuses are in sync",
       };
     }
 
@@ -1938,7 +1938,7 @@ export class Doctor {
 
     if (dryRun) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "warn",
         message: `${result.mismatches.length} bead status mismatch(es) detected. Would fix (dry-run): ${mismatchList}${truncated}`,
         details: mismatchList + truncated,
@@ -1956,7 +1956,7 @@ export class Doctor {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          name: "bead status sync (SQLite ↔ br)",
+          name: "bead status sync (Postgres ↔ br)",
           status: "fail",
           message: `Bead status sync (fix pass) failed: ${msg}`,
           details: mismatchList + truncated,
@@ -1967,7 +1967,7 @@ export class Doctor {
         ? ` (${fixResult.errors.length} error(s): ${fixResult.errors[0]})`
         : "";
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: fixResult.errors.length > 0 ? "warn" : "fixed",
         message: `${fixResult.mismatches.length} bead status mismatch(es) detected`,
         fixApplied: `Fixed ${fixResult.synced} seed status(es) in br${errSuffix}`,
@@ -1976,9 +1976,9 @@ export class Doctor {
     }
 
     return {
-      name: "bead status sync (SQLite ↔ br)",
+      name: "bead status sync (Postgres ↔ br)",
       status: "warn",
-      message: `${result.mismatches.length} bead status mismatch(es) detected between SQLite and br. Use --fix to repair: ${mismatchList}${truncated}`,
+      message: `${result.mismatches.length} bead status mismatch(es) detected between Postgres and br. Use --fix to repair: ${mismatchList}${truncated}`,
       details: mismatchList + truncated,
     };
   }

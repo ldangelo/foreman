@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { GitHubIssuesPoller, closeLinkedGithubIssue, type PollSummary } from "../github-poller.js";
+import { GitHubIssuesPoller, closeLinkedGithubIssue, inferTaskTypeFromGitHubLabels, normalizeGithubIssueLabels, type PollSummary } from "../github-poller.js";
 import type { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import type { ProjectRegistry } from "../../lib/project-registry.js";
 import type { GhCli, GitHubIssue } from "../../lib/gh-cli.js";
@@ -216,6 +216,30 @@ describe("GitHubIssuesPoller", () => {
       expect((adapter.createTask as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]?.status).toBe("ready");
     });
 
+    it("creates a feature task for issues with the feature label", async () => {
+      const issue = makeIssue(141, "Feature issue", ["feature"]);
+      const mockGh = { listIssues: vi.fn().mockResolvedValue([issue]) } as any;
+      const adapter = createMockAdapter({
+        listTasks: vi.fn().mockResolvedValue([]),
+        createTask: vi.fn().mockResolvedValue({ id: "task-feature", project_id: "proj-1" } as any),
+      });
+      const registry = createMockRegistry();
+
+      const poller = new GitHubIssuesPoller(adapter, registry, { autoImport: true }, mockGh);
+      await poller.pollRepo("proj-1", "test", "repo");
+
+      const payload = (adapter.createTask as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+      expect(payload.type).toBe("feature");
+      expect(payload.labels).toEqual(expect.arrayContaining(["feature", "github:feature"]));
+    });
+
+    it("preserves workflow labels for workflow routing", () => {
+      const issue = makeIssue(142, "Smoke issue", ["workflow:smoke"]);
+
+      expect(inferTaskTypeFromGitHubLabels(issue)).toBe("task");
+      expect(normalizeGithubIssueLabels(issue)).toEqual(expect.arrayContaining(["workflow:smoke", "github:workflow:smoke"]));
+    });
+
     it("creates a ready task for issues with foreman:dispatch label", async () => {
       const issue = makeIssue(44, "Dispatch-labeled issue", ["foreman:dispatch"]);
       const mockGh = { listIssues: vi.fn().mockResolvedValue([issue]) } as any;
@@ -267,6 +291,35 @@ describe("GitHubIssuesPoller", () => {
       expect(result.imported).toBe(0);
       expect(result.updated).toBe(0); // no change detected
       expect(adapter.createTask).not.toHaveBeenCalled();
+    });
+
+    it("updates existing task when GitHub labels imply a different type", async () => {
+      const issue = makeIssue(1470, "Existing feature", ["feature"]);
+      const existingTask = makeTaskRow({
+        id: "existing-task-1470",
+        title: "Existing feature",
+        description: "Body for issue #1470",
+        external_id: "github:test/repo#1470",
+      });
+      const mockGh = { listIssues: vi.fn().mockResolvedValue([issue]) } as any;
+      const adapter = createMockAdapter({
+        listTasks: vi.fn().mockResolvedValue([existingTask]),
+        updateTaskGitHubFields: vi.fn().mockResolvedValue(null),
+      });
+      const registry = createMockRegistry();
+
+      const poller = new GitHubIssuesPoller(adapter, registry, { autoImport: true }, mockGh);
+      const result = await poller.pollRepo("proj-1", "test", "repo");
+
+      expect(result.updated).toBe(1);
+      expect(adapter.updateTaskGitHubFields).toHaveBeenCalledWith(
+        "proj-1",
+        "existing-task-1470",
+        expect.objectContaining({
+          type: "feature",
+          labels: expect.arrayContaining(["feature", "github:feature"]),
+        }),
+      );
     });
 
     it("updates existing task when title or body changed (safe re-sync)", async () => {

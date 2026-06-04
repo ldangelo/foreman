@@ -6,7 +6,7 @@ Integrated the Pi SDK directly into the RefineryAgent's `runAgent()` method to c
 
 ## Files Changed
 
-- `src/orchestrator/refinery-agent.ts` — Integrated Pi SDK `runWithPiSdk()` into `runAgent()` method. Added `ForemanStore` and `SqliteMailClient` instances for mail. Added model/config options. Implemented fix iteration loop with build/test verification. Uses `createBashTool`, `createReadTool`, `createEditTool`, `createWriteTool`, `createGrepTool`, `createFindTool`, `createLsTool` from `@mariozechner/pi-coding-agent` plus `createSendMailTool` for escalations.
+- `src/orchestrator/refinery-agent.ts` — Integrated Pi SDK `runWithPiSdk()` into `runAgent()` method. Added `ForemanStore` and `PostgresMailClient` instances for mail. Added model/config options. Implemented fix iteration loop with build/test verification. Uses `createBashTool`, `createReadTool`, `createEditTool`, `createWriteTool`, `createGrepTool`, `createFindTool`, `createLsTool` from `@mariozechner/pi-coding-agent` plus `createSendMailTool` for escalations.
 
 - `src/orchestrator/__tests__/refinery-agent.test.ts` — Added 3 new tests: model config options, PR state read failure handling, config validation. All 11 tests passing.
 
@@ -21,7 +21,7 @@ Integrated the Pi SDK directly into the RefineryAgent's `runAgent()` method to c
 
 ## Decisions & Trade-offs
 
-1. **SqliteMailClient initialization pattern**: `SqliteMailClient` requires `ensureProject()` to be called before use, but it's async and the constructor is synchronous. Solved by storing an `mailInitialized` flag and calling `ensureMailClient()` at the start of `processQueue()`.
+1. **PostgresMailClient initialization pattern**: `PostgresMailClient` requires `ensureProject()` to be called before use, but it's async and the constructor is synchronous. Solved by storing an `mailInitialized` flag and calling `ensureMailClient()` at the start of `processQueue()`.
 
 2. **Worktree path resolution**: Uses `run.worktree_path` from the store if available, falling back to `join(projectPath, "worktrees", seedId)`. This matches how the pipeline stores worktree paths.
 

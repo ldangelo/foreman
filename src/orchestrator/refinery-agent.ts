@@ -15,11 +15,12 @@ import { execFile as execFileSync } from "node:child_process";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type { MergeQueueEntry } from "./merge-queue.js";
 import { PIPELINE_BUFFERS } from "../lib/config.js";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 import { ForemanStore, type Run } from "../lib/store.js";
 import { runWithPiSdk, type PiRunResult } from "./pi-sdk-runner.js";
 import { createSendMailTool } from "./pi-sdk-tools.js";
 import { PostgresMailClient } from "../lib/postgres-mail-client.js";
-import { SqliteMailClient, type AgentMailClient } from "../lib/sqlite-mail-client.js";
+import { NullAgentMailClient, type AgentMailClient } from "../lib/agent-mail-client.js";
 import { createProjectMailClient } from "../lib/project-mail-client.js";
 import {
   createBashTool,
@@ -81,7 +82,7 @@ export function wrapLocalRefineryQueue(queue: { list: (status?: "pending" | "mer
 const DEFAULT_CONFIG = {
   pollIntervalMs: 60_000, // 60 seconds
   maxFixIterations: 2,
-  logDir: "docs/reports",
+  logDir: getForemanHomePath("logs", "refinery"),
   systemPromptPath: "./src/orchestrator/prompts/refinery-agent.md",
   model: "MiniMax",
 } as const;
@@ -105,7 +106,7 @@ export class RefineryAgent {
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config, projectPath };
     this.runLookup = runLookup ?? ForemanStore.forProject(this.projectPath);
-    this.mailClient = new SqliteMailClient();
+    this.mailClient = new NullAgentMailClient();
   }
 
   /**

@@ -58,9 +58,9 @@ The dashboard replaces the need to switch between `foreman status`, `foreman boa
 |-----------|--------|-----------|
 | TUI Framework | Pure ANSI + Node.js readline | Lightweight, no React dependency, supports raw terminal mode |
 | Terminal Panes | Existing multiplexer adapters | Reuse `ensemble-multiplexer-adapters` for WezTerm/Zellij/tmux |
-| State Management | `StateManager` class | Aggregates data from SQLite stores, calculates cross-references |
+| State Management | `StateManager` class | Aggregates data from Postgres stores, calculates cross-references |
 | Real-time Updates | Signal file polling | Signal files in `.foreman/signals/` for state change notifications |
-| Data Sources | Existing SQLite stores | `ForemanStore` for runs, `NativeTaskStore` for tasks, mail from messages table |
+| Data Sources | Existing Postgres stores | `ForemanStore` for runs, `NativeTaskStore` for tasks, mail from messages table |
 | Keyboard Input | Node.js `readline` raw mode | Vim-style navigation with debouncing |
 
 ### 1.4 Constraints
@@ -96,7 +96,7 @@ The dashboard replaces the need to switch between `foreman status`, `foreman boa
 │           ▼                    ▼                      ▼                       │
 │  ┌────────────────┐   ┌─────────────────┐   ┌──────────────────────┐        │
 │  │ RunStore       │   │ TaskStore        │   │ MailStore             │        │
-│  │ (ForemanStore) │   │ (NativeTaskStore)│   │ (SqliteMailClient)   │        │
+│  │ (ForemanStore) │   │ (NativeTaskStore)│   │ (PostgresMailClient)   │        │
 │  └────────────────┘   └─────────────────┘   └──────────────────────┘        │
 │                                                                               │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
@@ -277,7 +277,7 @@ const STATUS_TO_COLUMN: Record<string, BoardColumn> = {
 **File:** `src/dashboard/state-manager.ts`
 
 **Responsibilities:**
-- Aggregate data from ForemanStore (runs), NativeTaskStore (tasks), SqliteMailClient (messages)
+- Aggregate data from ForemanStore (runs), NativeTaskStore (tasks), PostgresMailClient (messages)
 - Calculate cross-references (run → bead, mail → run, bead → run)
 - Maintain unified DashboardState
 - Trigger re-renders on state changes
@@ -854,7 +854,7 @@ const taskStore = new NativeTaskStore(store.getDb(), { projectKey });
 const tasks = taskStore.getAllTasks();
 ```
 
-**SqliteMailClient** (agent mail):
+**PostgresMailClient** (agent mail):
 ```typescript
 // Get messages with unread status
 const messages = store.getAllMessagesGlobal(100)

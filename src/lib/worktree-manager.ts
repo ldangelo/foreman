@@ -115,6 +115,31 @@ export class WorktreeManager {
     return null;
   }
 
+  #resolveStartPoint(repoPath: string, baseBranch?: string): string {
+    if (!baseBranch) return "HEAD";
+
+    try {
+      execFileSync("git", ["fetch", "origin", "--prune"], {
+        cwd: repoPath,
+        stdio: "pipe",
+      });
+    } catch {
+      // Offline/local-only repos are valid in tests and development. Fall back
+      // to local refs; worktree creation will report a clear error if missing.
+    }
+
+    const remoteRef = `origin/${baseBranch}`;
+    try {
+      execFileSync("git", ["rev-parse", "--verify", remoteRef], {
+        cwd: repoPath,
+        stdio: "pipe",
+      });
+      return remoteRef;
+    } catch {
+      return baseBranch;
+    }
+  }
+
   /**
    * Get the worktree directory for a specific project+bead.
    */
@@ -148,26 +173,32 @@ export class WorktreeManager {
     // Resolve the actual git repo path. The provided repoPath may be a store
     // directory rather than the git repo root. Search up the tree for .git.
     const resolvedRepoPath = this.#findGitRepo(repoPath) ?? repoPath;
+    const startPoint = this.#resolveStartPoint(resolvedRepoPath, baseBranch);
 
     // Ensure parent directory exists
     mkdirSync(this.getProjectRoot(projectId), { recursive: true, mode: 0o700 });
 
     // If worktree already exists — reuse it with rebase
     if (existsSync(worktreePath)) {
-      await this._rebaseWorktree(worktreePath, baseBranch ?? "HEAD");
+      await this._rebaseWorktree(worktreePath, startPoint);
       return { projectId, beadId, branchName, path: worktreePath, exists: true };
     }
 
-    // Branch may exist without a worktree — try to attach worktree
+    // Branch may exist without a worktree — reset it to the clean start point
+    // before attaching. A stale leftover branch must not inherit old internal
+    // state when dispatch is intended to start fresh.
     try {
-      execFileSync("git", ["worktree", "add", "-b", branchName, worktreePath, baseBranch ?? "HEAD"], {
+      execFileSync("git", ["worktree", "add", "-b", branchName, worktreePath, startPoint], {
         cwd: resolvedRepoPath,
         stdio: "pipe",
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("already exists")) {
-        // Branch exists, just attach worktree
+        execFileSync("git", ["branch", "-f", branchName, startPoint], {
+          cwd: resolvedRepoPath,
+          stdio: "pipe",
+        });
         execFileSync("git", ["worktree", "add", worktreePath, branchName], {
           cwd: resolvedRepoPath,
           stdio: "pipe",

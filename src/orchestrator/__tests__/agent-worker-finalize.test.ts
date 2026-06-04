@@ -30,7 +30,7 @@ vi.mock("../agent-worker-enqueue.js", () => ({
   enqueueToMergeQueue: mockEnqueueToMergeQueue,
 }));
 
-// Mock ForemanStore so we don't need a real SQLite database
+// Mock ForemanStore so we don't need a real Postgres database
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: {
     forProject: vi.fn(() => ({

@@ -2,7 +2,7 @@
  * TRD-NF-004-TEST: Verify in-flight run compatibility.
  *
  * Monitor handles "issue not found" / "404" errors as transient during
- * migration, not as hard failures. This allows existing SQLite run records
+ * migration, not as hard failures. This allows existing Postgres run records
  * with sd-format seed IDs to be processed safely.
  */
 
