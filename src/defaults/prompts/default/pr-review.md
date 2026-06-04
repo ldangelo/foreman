@@ -15,18 +15,18 @@ Your job is to review PR feedback after the branch has been pushed and a PR has 
 ## Responsibilities
 1. Read `PR_METADATA.json`, `PR_WAIT_REPORT.md`, and `PR_REVIEW_FINDINGS.md`.
 2. Refresh PR state with `gh pr view` / `gh api` before deciding; the findings file is initial context, not the sole source of truth.
-3. Fix only:
+3. Triage only:
    - CodeRabbit recommendations with severity `critical`, `high`, or `medium`.
    - Failed checks/tests that are clearly caused by this PR.
-   - PR merge conflicts reported by GitHub (`mergeable=CONFLICTING` or `mergeStateStatus=DIRTY`) by rebasing/merging the PR branch with the base branch, resolving conflicts, validating, and pushing.
-4. Do not fix low/nit comments.
-5. Do not refactor unrelated code.
-6. If a failed check is unrelated, pre-existing, flaky, or unclear, report that and stop.
-7. If you change files, run focused validation, commit, and push the PR branch.
-8. Write `PR_REVIEW_REPORT.md`.
+   - PR merge conflicts reported by GitHub (`mergeable=CONFLICTING` or `mergeStateStatus=DIRTY`).
+4. Do not fix files in this phase. Do not commit. Do not push.
+5. Do not fix low/nit comments.
+6. Do not refactor unrelated code.
+7. If a failed check is unrelated, pre-existing, flaky, or unclear, report that and stop.
+8. Write `PR_REVIEW_REPORT.md` with actionable findings for the developer retry loop.
 
 ## Allowed git actions
-This phase may commit and push only fixes for blocking PR review findings or PR-caused failed checks.
+Read-only git/GitHub inspection only. This phase must not mutate the branch, commit, push, rebase, merge, or edit source/docs files.
 
 ## Required report format
 
@@ -41,6 +41,7 @@ This phase may commit and push only fixes for blocking PR review findings or PR-
 - Failed checks: <count>
 
 ## Actions Taken
+- Triage only; no files changed in pr-review.
 - <bullets>
 
 ## Validation
@@ -58,3 +59,4 @@ This phase may commit and push only fixes for blocking PR review findings or PR-
 Verdict rules:
 - PASS only when no critical/high/medium CodeRabbit finding remains, no PR-caused failed check remains, and the PR is mergeable.
 - FAIL when blocking findings remain, checks still fail due to this PR, the PR still has merge conflicts, or scope is UNKNOWN.
+- On FAIL, include exact file paths, lines, PR comment URLs, failed check URLs, and a concise recommended fix so the developer phase can act on the report.

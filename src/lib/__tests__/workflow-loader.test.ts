@@ -321,7 +321,9 @@ phases:
     ]);
     expect(config.phases.find((phase) => phase.name === "create-pr")?.builtin).toBe(true);
     expect(config.phases.find((phase) => phase.name === "pr-wait")?.artifact).toBe("PR_WAIT_REPORT.md");
-    expect(config.phases.find((phase) => phase.name === "pr-review")?.artifact).toBe("PR_REVIEW_REPORT.md");
+    const prReviewPhase = config.phases.find((phase) => phase.name === "pr-review");
+    expect(prReviewPhase?.artifact).toBe("PR_REVIEW_REPORT.md");
+    expect(prReviewPhase?.tools?.allowed).not.toContain("Edit");
   });
 
   it("does not use Anthropic Haiku for bundled finalize phases", () => {

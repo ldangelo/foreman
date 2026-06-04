@@ -126,7 +126,7 @@ phases:
   - name: pr-review
     prompt: pr-review.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
+      allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
     models:
       default: MiniMax
     maxTurns: 40

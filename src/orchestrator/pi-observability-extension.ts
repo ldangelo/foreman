@@ -44,7 +44,7 @@ interface ToolCallEventLike {
 
 export function getForbiddenVcsAction(command: string | undefined, phase: string): "git commit" | "git push" | undefined {
   if (!command) return undefined;
-  if (phase === "finalize" || phase === "pr-review") return undefined;
+  if (phase === "finalize") return undefined;
   const normalized = command.replace(/\s+/g, " ").trim().toLowerCase();
   if (/(^|[;&|]\s*|&&\s*|\|\|\s*)git commit\b/.test(normalized) || /\bgit commit\b/.test(normalized)) {
     return "git commit";
@@ -164,7 +164,7 @@ export function createPiObservabilityExtensionWithEmitter(
       if (event.toolName !== "bash") return;
       const forbidden = getForbiddenVcsAction(event.input?.command, trace.phase);
       if (!forbidden) return;
-      const warning = `Blocked ${forbidden} during non-finalize/pr-review phase`;
+      const warning = `Blocked ${forbidden} outside finalize phase`;
       trace.warnings.push(warning);
       emit?.({
         kind: "warning",
@@ -176,7 +176,7 @@ export function createPiObservabilityExtensionWithEmitter(
       });
       return {
         block: true,
-        reason: `${forbidden} is only allowed during finalize or pr-review`,
+        reason: `${forbidden} is only allowed during finalize`,
       };
     });
 

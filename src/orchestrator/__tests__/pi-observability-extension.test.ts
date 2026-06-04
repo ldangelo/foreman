@@ -38,13 +38,13 @@ describe("pi observability trace", () => {
     expect(trace.warnings).toContain("Expected artifact missing: DEVELOPER_REPORT.md");
   });
 
-  it("blocks git commit and git push outside finalize and pr-review", () => {
+  it("blocks git commit and git push outside finalize", () => {
     expect(getForbiddenVcsAction("git commit -m 'x'", "fix")).toBe("git commit");
     expect(getForbiddenVcsAction("npm test && git push origin head", "test")).toBe("git push");
     expect(getForbiddenVcsAction("git commit -m 'x'", "finalize")).toBeUndefined();
-    expect(getForbiddenVcsAction("git commit -m 'x'", "pr-review")).toBeUndefined();
+    expect(getForbiddenVcsAction("git commit -m 'x'", "pr-review")).toBe("git commit");
     expect(getForbiddenVcsAction("git push", "finalize")).toBeUndefined();
-    expect(getForbiddenVcsAction("git push", "pr-review")).toBeUndefined();
+    expect(getForbiddenVcsAction("git push", "pr-review")).toBe("git push");
     expect(getForbiddenVcsAction("git status", "fix")).toBeUndefined();
   });
 
