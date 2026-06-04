@@ -62,7 +62,7 @@ No feature is considered started until a failing test exists. No feature is cons
 - [ ] No linting errors
 - [ ] TypeScript compiles with zero errors (`tsc --noEmit`)
 
-> **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize, which waits for CodeRabbit analysis and requires a PASS verdict before merging.
+> **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize, which waits for CodeRabbit analysis and requires a PASS verdict before merging. This canary task exercises that PR review workflow to validate the end-to-end pipeline phases.
 
 ### Security Requirements
 - [ ] Input validation at all entry points (CLI args, HTTP routes, WebSocket messages)
