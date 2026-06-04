@@ -40,6 +40,7 @@ export interface PrWaitSnapshot {
   mergeStateStatus?: string;
   checks: GhCheck[];
   codeRabbitComments: number;
+  codeRabbitReviews?: number;
 }
 
 export interface PrWaitStatus {
@@ -47,6 +48,7 @@ export interface PrWaitStatus {
   pendingChecks: string[];
   failedChecks: FailedCheckFinding[];
   codeRabbitSeen: boolean;
+  codeRabbitComplete: boolean;
   mergeConflict: boolean;
   mergeConflictReason?: string;
 }
@@ -69,6 +71,14 @@ export interface GhCheck {
   details_url?: string;
 }
 
+export interface GhReview {
+  user?: { login?: string };
+  author?: { login?: string };
+  body?: string;
+  state?: string;
+  submittedAt?: string;
+}
+
 function isCodeRabbitAuthor(login: string | undefined): boolean {
   return /^coderabbit(ai)?(\[bot\])?$/i.test(login ?? "");
 }
@@ -77,17 +87,29 @@ function getCheckName(check: GhCheck): string {
   return check.name ?? check.context ?? "unknown check";
 }
 
+function normalizeCheckState(value: string | undefined): string | undefined {
+  return value?.toUpperCase();
+}
+
+function isTerminalCheckState(value: string | undefined): boolean {
+  const normalized = normalizeCheckState(value);
+  if (!normalized) return false;
+  return ["COMPLETED", "SUCCESS", "FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "SKIPPED", "NEUTRAL"].includes(normalized);
+}
+
 function getCheckStatus(check: GhCheck): string | undefined {
-  if (check.status) return check.status;
-  const state = check.state?.toUpperCase();
+  const status = normalizeCheckState(check.status);
+  if (status) return isTerminalCheckState(status) && status !== "COMPLETED" ? "COMPLETED" : status;
+  const state = normalizeCheckState(check.state);
   if (!state) return undefined;
-  return state === "PENDING" || state === "EXPECTED" ? "PENDING" : "COMPLETED";
+  return isTerminalCheckState(state) ? "COMPLETED" : "PENDING";
 }
 
 function getCheckConclusion(check: GhCheck): string | undefined {
-  if (check.conclusion) return check.conclusion;
-  const state = check.state?.toUpperCase();
-  if (!state || state === "PENDING" || state === "EXPECTED") return undefined;
+  const conclusion = normalizeCheckState(check.conclusion);
+  if (conclusion) return conclusion;
+  const state = normalizeCheckState(check.state ?? check.status);
+  if (!state || !isTerminalCheckState(state) || state === "COMPLETED") return undefined;
   return state;
 }
 
@@ -96,13 +118,16 @@ function isCodeRabbitCheck(check: GhCheck): boolean {
 }
 
 export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
-  const codeRabbitSeen = snapshot.codeRabbitComments > 0;
+  const codeRabbitReviews = snapshot.codeRabbitReviews ?? 0;
+  const codeRabbitSeen = snapshot.codeRabbitComments > 0 || codeRabbitReviews > 0;
+  const codeRabbitComplete = codeRabbitReviews > 0 || snapshot.checks
+    .filter(isCodeRabbitCheck)
+    .some((check) => getCheckStatus(check) === "COMPLETED");
   const pendingChecks = snapshot.checks
     .filter((check) => getCheckStatus(check) !== "COMPLETED")
-    // GitHub may leave the CodeRabbit rollup check in a null/non-terminal state
-    // even after CodeRabbit has posted its review. Once comments are visible,
-    // let prepare-pr-review/pr-review consume the findings instead of timing out.
-    .filter((check) => !(codeRabbitSeen && isCodeRabbitCheck(check)))
+    // GitHub may leave CodeRabbit's rollup status unset after the review is
+    // submitted. Only ignore that unset rollup once review completion is proven.
+    .filter((check) => !(codeRabbitComplete && isCodeRabbitCheck(check)))
     .map((check) => getCheckName(check));
   const mergeable = snapshot.mergeable?.toUpperCase();
   const mergeStateStatus = snapshot.mergeStateStatus?.toUpperCase();
@@ -115,6 +140,7 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
     pendingChecks,
     failedChecks: parseFailedChecks(snapshot.checks),
     codeRabbitSeen,
+    codeRabbitComplete,
     mergeConflict,
     mergeConflictReason,
   };
@@ -215,8 +241,14 @@ export async function collectPrWaitSnapshot(projectPath: string, prNumber: numbe
     ["pr", "view", String(prNumber), "--json", "url,headRefOid,statusCheckRollup,mergeable,mergeStateStatus"],
   );
   const { reviewComments, issueComments } = await collectPrComments(projectPath, prNumber);
+  const reviews = await ghJson<GhReview[]>(
+    projectPath,
+    ["api", "--paginate", `repos/:owner/:repo/pulls/${prNumber}/reviews`],
+  );
   const codeRabbitComments = [...reviewComments, ...issueComments]
     .filter((comment) => isCodeRabbitAuthor(comment.user?.login)).length;
+  const codeRabbitReviews = reviews
+    .filter((review) => isCodeRabbitAuthor(review.user?.login ?? review.author?.login)).length;
   return {
     prNumber,
     prUrl: pr.url,
@@ -225,6 +257,7 @@ export async function collectPrWaitSnapshot(projectPath: string, prNumber: numbe
     mergeStateStatus: pr.mergeStateStatus,
     checks: pr.statusCheckRollup ?? [],
     codeRabbitComments,
+    codeRabbitReviews,
   };
 }
 
@@ -254,14 +287,15 @@ export function renderPrWaitReport(snapshot: PrWaitSnapshot, timedOut: boolean):
     `- Pending: ${status.pendingChecks.length}`,
     ``,
     `## CodeRabbit`,
-    `- Status: ${status.codeRabbitSeen ? "SEEN" : timedOut ? "TIMEOUT" : "PENDING"}`,
+    `- Status: ${status.codeRabbitComplete ? "COMPLETE" : status.codeRabbitSeen ? "SEEN" : timedOut ? "TIMEOUT" : "PENDING"}`,
     `- Comments: ${snapshot.codeRabbitComments}`,
+    `- Reviews: ${snapshot.codeRabbitReviews ?? 0}`,
     ``,
     `## Mergeability`,
     `- Status: ${status.mergeConflict ? "CONFLICT" : "OK"}`,
     `- Reason: ${status.mergeConflictReason ?? "none"}`,
     ``,
-    `## Verdict: ${status.checksTerminal && status.codeRabbitSeen && !status.mergeConflict ? "PASS" : "FAIL"}`,
+    `## Verdict: ${status.checksTerminal && status.codeRabbitComplete && !status.mergeConflict ? "PASS" : "FAIL"}`,
   ];
   return lines.join("\n") + "\n";
 }

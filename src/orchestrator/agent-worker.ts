@@ -1005,19 +1005,19 @@ async function runPrWaitBuiltinPhase(args: {
   while (true) {
     const status = summarizePrWaitStatus(lastSnapshot);
     if (status.mergeConflict) break;
-    if (status.checksTerminal && status.codeRabbitSeen) break;
+    if (status.checksTerminal && status.codeRabbitComplete) break;
     if (Date.now() - startedAt >= timeoutMs) {
       timedOut = true;
       break;
     }
-    args.log(`[PR-WAIT] Waiting for PR #${prNumber}: checksTerminal=${String(status.checksTerminal)} codeRabbitSeen=${String(status.codeRabbitSeen)} mergeConflict=${String(status.mergeConflict)}`);
+    args.log(`[PR-WAIT] Waiting for PR #${prNumber}: checksTerminal=${String(status.checksTerminal)} codeRabbitSeen=${String(status.codeRabbitSeen)} codeRabbitComplete=${String(status.codeRabbitComplete)} mergeConflict=${String(status.mergeConflict)}`);
     await sleep(Math.min(pollIntervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt))));
     lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   }
 
   await writePrWaitReport(args.config.worktreePath, lastSnapshot, timedOut);
   const finalStatus = summarizePrWaitStatus(lastSnapshot);
-  const success = finalStatus.checksTerminal && finalStatus.codeRabbitSeen && !finalStatus.mergeConflict;
+  const success = finalStatus.checksTerminal && finalStatus.codeRabbitComplete && !finalStatus.mergeConflict;
   return {
     success,
     costUsd: 0,
@@ -1029,9 +1029,9 @@ async function runPrWaitBuiltinPhase(args: {
       : finalStatus.mergeConflict
         ? `PR has merge conflicts: ${finalStatus.mergeConflictReason ?? "unknown"}`
         : finalStatus.checksTerminal
-          ? "CodeRabbit review was not observed before timeout"
+          ? "CodeRabbit review did not complete before timeout"
           : "PR checks did not reach a terminal state before timeout",
-    outputText: `checksTerminal=${String(finalStatus.checksTerminal)} codeRabbitSeen=${String(finalStatus.codeRabbitSeen)} mergeConflict=${String(finalStatus.mergeConflict)} timedOut=${String(timedOut)}`,
+    outputText: `checksTerminal=${String(finalStatus.checksTerminal)} codeRabbitSeen=${String(finalStatus.codeRabbitSeen)} codeRabbitComplete=${String(finalStatus.codeRabbitComplete)} mergeConflict=${String(finalStatus.mergeConflict)} timedOut=${String(timedOut)}`,
   };
 }
 
@@ -1059,13 +1059,13 @@ async function validatePrReviewGate(args: {
 
   args.log(
     `[PR-REVIEW] Final gate for PR #${prNumber}: checksTerminal=${String(waitStatus.checksTerminal)} ` +
-      `codeRabbitSeen=${String(waitStatus.codeRabbitSeen)} mergeConflict=${String(waitStatus.mergeConflict)} ` +
+      `codeRabbitSeen=${String(waitStatus.codeRabbitSeen)} codeRabbitComplete=${String(waitStatus.codeRabbitComplete)} mergeConflict=${String(waitStatus.mergeConflict)} ` +
       `blocking=${reviewContext.blockingFindings.length} failedChecks=${reviewContext.failedChecks.length}`,
   );
 
   if (waitStatus.mergeConflict) return { success: false, reason: `pr_review_merge_conflict: ${waitStatus.mergeConflictReason ?? "unknown"}` };
   if (!waitStatus.checksTerminal) return { success: false, reason: `pr_review_checks_pending: ${waitStatus.pendingChecks.join(", ") || "unknown"}` };
-  if (!waitStatus.codeRabbitSeen) return { success: false, reason: "pr_review_coderabbit_not_observed" };
+  if (!waitStatus.codeRabbitComplete) return { success: false, reason: waitStatus.codeRabbitSeen ? "pr_review_coderabbit_not_complete" : "pr_review_coderabbit_not_observed" };
   if (reviewContext.failedChecks.length > 0) return { success: false, reason: `pr_review_failed_checks: ${reviewContext.failedChecks.map((check) => check.name).join(", ")}` };
   if (reviewContext.blockingFindings.length > 0) return { success: false, reason: `pr_review_blocking_findings: ${reviewContext.blockingFindings.length}` };
   return { success: true };

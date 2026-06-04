@@ -49,10 +49,11 @@ describe("pr-review-context", () => {
     expect(status.pendingChecks).toEqual(["lint", "deploy"]);
     expect(status.failedChecks.map((check) => check.name)).toEqual(["integration"]);
     expect(status.codeRabbitSeen).toBe(true);
+    expect(status.codeRabbitComplete).toBe(false);
     expect(status.mergeConflict).toBe(false);
   });
 
-  it("does not block on CodeRabbit rollup once CodeRabbit comments are visible", () => {
+  it("waits for CodeRabbit completion after early CodeRabbit comments", () => {
     const status = summarizePrWaitStatus({
       prNumber: 193,
       checks: [
@@ -62,10 +63,44 @@ describe("pr-review-context", () => {
       codeRabbitComments: 2,
     });
 
-    expect(status.checksTerminal).toBe(true);
-    expect(status.pendingChecks).toEqual([]);
+    expect(status.checksTerminal).toBe(false);
+    expect(status.pendingChecks).toEqual(["CodeRabbit"]);
     expect(status.failedChecks.map((check) => check.name)).toEqual(["Test (Node 20)"]);
     expect(status.codeRabbitSeen).toBe(true);
+    expect(status.codeRabbitComplete).toBe(false);
+  });
+
+  it("treats a submitted CodeRabbit review as complete", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 193,
+      checks: [
+        { name: "Test (Node 20)", status: "COMPLETED", conclusion: "SUCCESS" },
+        { name: "CodeRabbit", status: undefined, conclusion: undefined },
+      ],
+      codeRabbitComments: 2,
+      codeRabbitReviews: 1,
+    });
+
+    expect(status.checksTerminal).toBe(true);
+    expect(status.pendingChecks).toEqual([]);
+    expect(status.codeRabbitSeen).toBe(true);
+    expect(status.codeRabbitComplete).toBe(true);
+  });
+
+  it("treats a successful CodeRabbit status context as terminal", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 193,
+      checks: [
+        { name: "Test (Node 20)", status: "SUCCESS", conclusion: undefined },
+        { name: "CodeRabbit", status: "SUCCESS", conclusion: undefined },
+      ],
+      codeRabbitComments: 1,
+    });
+
+    expect(status.checksTerminal).toBe(true);
+    expect(status.pendingChecks).toEqual([]);
+    expect(status.codeRabbitSeen).toBe(true);
+    expect(status.codeRabbitComplete).toBe(true);
   });
 
   it("flags conflicting PRs as blocked during PR wait", () => {
@@ -79,6 +114,7 @@ describe("pr-review-context", () => {
 
     expect(status.checksTerminal).toBe(true);
     expect(status.codeRabbitSeen).toBe(true);
+    expect(status.codeRabbitComplete).toBe(false);
     expect(status.mergeConflict).toBe(true);
     expect(status.mergeConflictReason).toBe("mergeable=CONFLICTING mergeStateStatus=DIRTY");
   });
@@ -92,11 +128,12 @@ describe("pr-review-context", () => {
       mergeStateStatus: "CLEAN",
       checks: [{ name: "unit", status: "COMPLETED", conclusion: "SUCCESS" }],
       codeRabbitComments: 2,
+      codeRabbitReviews: 1,
     }, false);
 
     expect(rendered).toContain("# PR Wait Report");
     expect(rendered).toContain("- Status: COMPLETE");
-    expect(rendered).toContain("- Status: SEEN");
+    expect(rendered).toContain("- Reviews: 1");
     expect(rendered).toContain("- Status: OK");
     expect(rendered).toContain("## Verdict: PASS");
   });
