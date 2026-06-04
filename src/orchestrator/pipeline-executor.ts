@@ -1163,7 +1163,10 @@ async function runPhaseSequence(
       phaseModel = fallbackModelForPhase;
     }
 
-    const phaseConfig = { ...config, model: phaseModel, allowedTools: phase.tools?.allowed };
+    const phaseConfig = { ...config, model: phaseModel };
+    if (phase.tools?.allowed) {
+      (phaseConfig as typeof phaseConfig & { allowedTools?: string[] }).allowedTools = phase.tools.allowed;
+    }
 
     if (phase.builtin) {
       if (!ctx.runBuiltinPhase) {
