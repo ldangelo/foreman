@@ -1,0 +1,333 @@
+# REVIEWER Trace — foreman-949b0
+
+- Run ID: `682addfb-ebea-4ae1-bfbf-08c33698f6ba`
+- Phase type: `prompt`
+- Model: `minimax/MiniMax-M2.7`
+- Workflow: `feature`
+- Workflow path: `/Users/ldangelo/.foreman/workflows/feature.yaml`
+- Started: 2026-06-04T15:54:08.891Z
+- Completed: 2026-06-04T15:56:12.975Z
+- Success: yes
+- Expected artifact: `REVIEW.md`
+- Artifact present: yes
+- Expected skill: —
+- Command honored: unknown
+- JSON trace: `docs/reports/foreman-949b0/REVIEWER_TRACE.json`
+
+## Prompt
+
+```text
+You are the reviewer agent in the Foreman pipeline for task: Canary: exercise PR review workflow phases
+
+# Reviewer Agent
+
+You are a **Code Reviewer** — your job is independent quality review.
+
+## Task
+Review the implementation for: **foreman-949b0 — Canary: exercise PR review workflow phases**
+**Original requirement:** ## Context
+Exercise the new explicit PR review workflow phases on a tiny, low-risk change.
+
+Expected workflow sequence:
+
+```text
+finalize → create-pr → pr-wait → prepare-pr-review → pr-review → refinery merge
+```
+
+## Task
+Make a minimal docs-only change that is safe to merge. For example, add one short sentence to an existing docs file explaining that Foreman PR workflows include an explicit PR review gate.
+
+## Requirements
+- Keep the change tiny and docs-only.
+- Do not modify source code.
+- Do not add dependencies.
+- Do not refactor docs.
+- Ensure the pipeline produces these artifacts:
+  - `PR_METADATA.json`
+  - `PR_WAIT_REPORT.md`
+  - `PR_REVIEW_FINDINGS.md`
+  - `PR_REVIEW_REPORT.md`
+
+## Acceptance Criteria
+- PR is created by `create-pr` phase.
+- `pr-wait` waits for PR checks / CodeRabbit activity or timeout and writes `PR_WAIT_REPORT.md`.
+- `prepare-pr-review` writes `PR_REVIEW_FINDINGS.md`.
+- `pr-review` writes `PR_REVIEW_REPORT.md` with `Verdict: PASS` unless real blocking feedback exists.
+- Merge/refinery does not start before `pr-review` completes.
+- The docs-only PR either merges cleanly or fails with an actionable phase report.
+
+## VCS Context
+Backend: **git** | Branch prefix: `foreman/`
+(Different backends may handle branching, staging, and commit workflows differently — take note when reviewing VCS-related changes.)
+## Error Reporting
+If you hit an unrecoverable error, invoke:
+```
+/send-mail --run-id "682addfb-ebea-4ae1-bfbf-08c33698f6ba" --from "reviewer" --to foreman --subject agent-error --body '{"phase":"reviewer","seedId":"foreman-949b0","error":"<brief description>"}'
+```
+
+## Instructions
+1. Read TASK.md for the original task description
+2. Read EXPLORER_REPORT.md (if exists) for architecture context
+3. Read QA_REPORT.md for test results
+4. Review the changed files for this task (use git diff against the base branch). For narrow tasks, keep review scoped to the task-relevant changed files plus any directly affected neighbors.
+5. Check for:
+   - Bugs, logic errors, off-by-one errors
+   - Security vulnerabilities (injection, XSS, etc.)
+   - Missing edge cases or error handling
+   - Whether the implementation actually satisfies the requirement
+   - Code quality: naming, structure, unnecessary complexity
+6. Write your findings to **REVIEW.md**
+7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
+
+## REVIEW.md Format
+```markdown
+# Code Review: Canary: exercise PR review workflow phases
+
+## Verdict: PASS | FAIL
+
+## Summary
+One paragraph assessment.
+
+## Issues
+- **[CRITICAL]** file:line — description (must fix)
+- **[WARNING]** file:line — description (should fix)
+- **[NOTE]** file:line — description (suggestion)
+
+## Positive Notes
+- What was done well
+```
+
+## Rules
+- **DO NOT modify any files** — you are read-only, only write REVIEW.md and SESSION_LOG.md
+- Be fair but thorough — PASS means ready to ship with no remaining issues
+- Mark **FAIL** for any CRITICAL or WARNING issues that should be fixed
+- Mark **PASS** only when there are no actionable issues remaining
+- NOTEs are informational only and don't affect the verdict
+- Any issue that can reasonably be fixed by the Developer should be a WARNING, not a NOTE
+- **Write SESSION_LOG.md** documenting your session work (required, not optional)
+
+```
+
+## Final Assistant Output
+
+```text
+
+
+Now let me read the QA report and the pipeline report to understand what was done end-to-end:
+
+
+Now I have a comprehensive picture of the task. Let me write the REVIEW.md.
+
+
+Review complete. Here's a summary of what I found and produced:
+
+---
+
+## Review Summary
+
+**Verdict: PASS**
+
+### What I reviewed:
+1. **README.md** — A single two-line docs addition: "Foreman PR workflows include an explicit PR review gate that runs before merging." Inserted after the `5. Finalize` bullet in the pipeline ph…
+```
+
+## Tool Calls
+
+### read (`call_function_18099wamxdrl_1`)
+
+- Started: 2026-06-04T15:54:15.051Z
+- Completed: 2026-06-04T15:54:15.053Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/TASK.md"}`
+- Result: `{"content":[{"type":"text","text":"# Agent Task\n\n## Task Details\n**Seed ID:** foreman-949b0\n**Title:** Canary: exercise PR review workflow phases\n**Description:** ## Context\nExercise the new explicit PR review workflow phases on a ti…`
+
+### read (`call_function_18099wamxdrl_2`)
+
+- Started: 2026-06-04T15:54:15.051Z
+- Completed: 2026-06-04T15:54:15.053Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/EXPLORER_REPORT.md"}`
+- Result: `{"content":[{"type":"text","text":"# Explorer Report: Canary: exercise PR review workflow phases\n\n## Relevant Files\n- `src/defaults/workflows/feature.yaml` — Defines the full feature pipeline including the new PR review phases (`create-…`
+
+### read (`call_function_18099wamxdrl_3`)
+
+- Started: 2026-06-04T15:54:15.051Z
+- Completed: 2026-06-04T15:54:15.053Z
+- Error: yes
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/QA_REPORT.md"}`
+- Result: `{"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/QA_REPORT.md'"}],"details":{}}`
+
+### read (`call_function_18099wamxdrl_4`)
+
+- Started: 2026-06-04T15:54:15.051Z
+- Completed: 2026-06-04T15:54:15.054Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/CLAUDE.md"}`
+- Result: `{"content":[{"type":"text","text":"# Foreman — Claude Code Context\n\n## Project Overview\n\nForeman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and mer…`
+
+### read (`call_function_10elrtvn43oh_1`)
+
+- Started: 2026-06-04T15:54:22.615Z
+- Completed: 2026-06-04T15:54:22.616Z
+- Error: yes
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/PR_METADATA.json"}`
+- Result: `{"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/PR_METADATA.json'"}],"details":{}}`
+
+### read (`call_function_10elrtvn43oh_2`)
+
+- Started: 2026-06-04T15:54:22.615Z
+- Completed: 2026-06-04T15:54:22.616Z
+- Error: yes
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/PR_WAIT_REPORT.md"}`
+- Result: `{"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/PR_WAIT_REPORT.md'"}],"details":{}}`
+
+### read (`call_function_10elrtvn43oh_3`)
+
+- Started: 2026-06-04T15:54:22.615Z
+- Completed: 2026-06-04T15:54:22.616Z
+- Error: yes
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/PR_REVIEW_FINDINGS.md"}`
+- Result: `{"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/PR_REVIEW_FINDINGS.md'"}],"details":{}}`
+
+### read (`call_function_10elrtvn43oh_4`)
+
+- Started: 2026-06-04T15:54:22.615Z
+- Completed: 2026-06-04T15:54:22.616Z
+- Error: yes
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/PR_REVIEW_REPORT.md"}`
+- Result: `{"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/PR_REVIEW_REPORT.md'"}],"details":{}}`
+
+### read (`call_function_10elrtvn43oh_5`)
+
+- Started: 2026-06-04T15:54:22.615Z
+- Completed: 2026-06-04T15:54:22.616Z
+- Error: yes
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/DEVELOPER_REPORT.md"}`
+- Result: `{"content":[{"type":"text","text":"ENOENT: no such file or directory, access '/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/DEVELOPER_REPORT.md'"}],"details":{}}`
+
+### read (`call_function_r0ntjfc8jvoa_1`)
+
+- Started: 2026-06-04T15:54:27.919Z
+- Completed: 2026-06-04T15:54:27.922Z
+- Error: yes
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0"}`
+- Result: `{"content":[{"type":"text","text":"EISDIR: illegal operation on a directory, read"}],"details":{}}`
+
+### grep (`call_function_r0ntjfc8jvoa_2`)
+
+- Started: 2026-06-04T15:54:27.919Z
+- Completed: 2026-06-04T15:54:27.947Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0","pattern":"PR_METADATA\\.json|PR_WAIT_REPORT\\.md|PR_REVIEW_FINDINGS\\.md|PR_REVIEW_REPORT\\.md"}`
+- Result: `{"content":[{"type":"text","text":"src/orchestrator/agent-worker.ts:959:   await writeFile(join(config.worktreePath, \"PR_METADATA.json\"), JSON.stringify({\nsrc/orchestrator/agent-worker.ts:988:   const metadataPath = join(args.config.wor…`
+
+### grep (`call_function_nsxamtp9p76g_1`)
+
+- Started: 2026-06-04T15:54:34.485Z
+- Completed: 2026-06-04T15:54:34.503Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0","pattern":"README.md"}`
+- Result: `{"content":[{"type":"text","text":"CONTRIBUTING.md:197: See the [README](README.md) for installation instructions for each distribution method.\nsrc/test-support/temp-project-harness.ts:103:   writeFileSync(join(projectPath, \"README.md\")…`
+
+### read (`call_function_nsxamtp9p76g_2`)
+
+- Started: 2026-06-04T15:54:34.485Z
+- Completed: 2026-06-04T15:54:34.503Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/docs/reports/foreman-949b0/EXPLORER_TRACE.md"}`
+- Result: `{"content":[{"type":"text","text":"# EXPLORER Trace — foreman-949b0\n\n- Run ID: `682addfb-ebea-4ae1-bfbf-08c33698f6ba`\n- Phase type: `prompt`\n- Model: `minimax/MiniMax-M2.7`\n- Workflow: `feature`\n- Workflow path: `/Users/ldangelo/.for…`
+
+### read (`call_function_7q6nxsq0wojb_1`)
+
+- Started: 2026-06-04T15:54:43.081Z
+- Completed: 2026-06-04T15:54:43.082Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/docs/reports/foreman-949b0/QA_REPORT.md"}`
+- Result: `{"content":[{"type":"text","text":"# QA Report: Canary: exercise PR review workflow phases\n\n## Verdict: PASS\n\n## Test Results\n- Targeted command(s) run: `npx vitest run src/orchestrator/__tests__/pr-review-context.test.ts`\n- Full sui…`
+
+### read (`call_function_7q6nxsq0wojb_2`)
+
+- Started: 2026-06-04T15:54:43.081Z
+- Completed: 2026-06-04T15:54:43.082Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/docs/reports/foreman-949b0/PIPELINE_REPORT.md"}`
+- Result: `{"content":[{"type":"text","text":"# Pipeline Report — foreman-949b0\n\n**Run ID:** `682addfb-ebea-4ae1-bfbf-08c33698f6ba`\n**Workflow:** `feature`\n**Workflow Path:** `/Users/ldangelo/.foreman/workflows/feature.yaml`\n**Target Branch:** `…`
+
+### read (`call_function_7q6nxsq0wojb_3`)
+
+- Started: 2026-06-04T15:54:43.081Z
+- Completed: 2026-06-04T15:54:43.083Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/docs/reports/foreman-949b0/DEVELOPER_REPORT.md"}`
+- Result: `{"content":[{"type":"text","text":"# Developer Report: Canary: exercise PR review workflow phases\n\n## Approach\nAdded a minimal one-sentence documentation change to README.md to exercise the new explicit PR review workflow phases. The se…`
+
+### read (`call_function_eaqh4vkdsilg_1`)
+
+- Started: 2026-06-04T15:55:12.550Z
+- Completed: 2026-06-04T15:55:12.551Z
+- Error: no
+- Updates: 0
+- Args: `{"limit":20,"offset":65,"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/README.md"}`
+- Result: `{"content":[{"type":"text","text":"\n**Pipeline phases** (orchestrated by TypeScript, not AI):\n1. **Explorer** (Haiku, 30 turns, read-only) — codebase analysis → `EXPLORER_REPORT.md`\n2. **Developer** (Sonnet, 80 turns, read+write) — impl…`
+
+### read (`call_function_eaqh4vkdsilg_2`)
+
+- Started: 2026-06-04T15:55:12.550Z
+- Completed: 2026-06-04T15:55:12.551Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/SESSION_LOG.md"}`
+- Result: `{"content":[{"type":"text","text":"## Metadata\n- Date: 2026-06-04\n- Phase: qa\n- Seed: foreman-949b0\n- Run ID: 682addfb-ebea-4ae1-bfbf-08c33698f6ba\n\n## Key Activities\n1. Read TASK.md and EXPLORER_REPORT.md to understand task context\…`
+
+### write (`call_function_ly3c7j9kbho8_1`)
+
+- Started: 2026-06-04T15:55:38.944Z
+- Completed: 2026-06-04T15:55:38.945Z
+- Error: no
+- Updates: 0
+- Args: `{"content":"# Code Review: Canary: exercise PR review workflow phases\n\n## Verdict: PASS\n\n## Summary\nThis is a canary task designed to exercise the new explicit PR review workflow phases (`finalize → create-pr → pr-wait → prepare-pr-re…`
+- Result: `{"content":[{"type":"text","text":"Successfully wrote 2566 bytes to /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/REVIEW.md"}]}`
+
+### write (`call_function_21vlvp5y62yi_1`)
+
+- Started: 2026-06-04T15:55:51.593Z
+- Completed: 2026-06-04T15:55:51.594Z
+- Error: no
+- Updates: 0
+- Args: `{"content":"## Metadata\n- Date: 2026-06-04\n- Phase: reviewer\n- Seed: foreman-949b0\n- Run ID: 682addfb-ebea-4ae1-bfbf-08c33698f6ba\n\n## Key Activities\n1. Read TASK.md, EXPLORER_REPORT.md, QA_REPORT.md, and CLAUDE.md to understand the …`
+- Result: `{"content":[{"type":"text","text":"Successfully wrote 2255 bytes to /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/SESSION_LOG.md"}]}`
+
+### read (`call_function_hy0h22a1ttbj_1`)
+
+- Started: 2026-06-04T15:55:56.398Z
+- Completed: 2026-06-04T15:55:56.399Z
+- Error: no
+- Updates: 0
+- Args: `{"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0/REVIEW.md"}`
+- Result: `{"content":[{"type":"text","text":"# Code Review: Canary: exercise PR review workflow phases\n\n## Verdict: PASS\n\n## Summary\nThis is a canary task designed to exercise the new explicit PR review workflow phases (`finalize → create-pr → …`
+
+### grep (`call_function_wdowge3ylh0t_1`)
+
+- Started: 2026-06-04T15:56:01.168Z
+- Completed: 2026-06-04T15:56:01.181Z
+- Error: no
+- Updates: 0
+- Args: `{"limit":5,"path":"/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-949b0","pattern":"REVIEW\\.md|SESSION_LOG\\.md"}`
+- Result: `{"content":[{"type":"text","text":"CLAUDE.md:91: 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)\nCLAUDE.md:206: - **SESSION_LOG.md excluded from commits**: Causes merge conflicts when multiple pipelines run concurr…`
+

@@ -70,6 +70,8 @@ Foreman CLI / Dispatcher
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
 5. **Finalize** — git add/commit/push, native task merge/close update (or beads fallback)
 
+Foreman PR workflows include an explicit PR review gate that runs before merging.
+
 Dev ↔ QA retries up to 2x before proceeding to Review.
 
 ## Dispatch Flow
