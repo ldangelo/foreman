@@ -119,13 +119,20 @@ export class WorktreeManager {
     if (!baseBranch) return "HEAD";
 
     try {
-      execFileSync("git", ["fetch", "origin", "--prune"], {
+      execFileSync("git", ["fetch", "origin", baseBranch, "--prune"], {
         cwd: repoPath,
         stdio: "pipe",
       });
     } catch {
-      // Offline/local-only repos are valid in tests and development. Fall back
-      // to local refs; worktree creation will report a clear error if missing.
+      try {
+        execFileSync("git", ["fetch", "origin", "--prune"], {
+          cwd: repoPath,
+          stdio: "pipe",
+        });
+      } catch {
+        // Offline/local-only repos are valid in tests and development. Fall back
+        // to local refs; worktree creation will report a clear error if missing.
+      }
     }
 
     const remoteRef = `origin/${baseBranch}`;
@@ -134,9 +141,52 @@ export class WorktreeManager {
         cwd: repoPath,
         stdio: "pipe",
       });
+      this.#refreshLocalBaseBranch(repoPath, baseBranch, remoteRef);
       return remoteRef;
     } catch {
       return baseBranch;
+    }
+  }
+
+  #refreshLocalBaseBranch(repoPath: string, baseBranch: string, remoteRef: string): void {
+    try {
+      execFileSync("git", ["rev-parse", "--verify", remoteRef], { cwd: repoPath, stdio: "pipe" });
+    } catch {
+      return;
+    }
+
+    let currentBranch: string | undefined;
+    try {
+      currentBranch = execFileSync("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+        cwd: repoPath,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    } catch {
+      currentBranch = undefined;
+    }
+
+    try {
+      if (currentBranch === baseBranch) {
+        if (!this.#hasTrackedChanges(repoPath)) {
+          execFileSync("git", ["reset", "--hard", remoteRef], { cwd: repoPath, stdio: "pipe" });
+        }
+      } else {
+        execFileSync("git", ["branch", "-f", baseBranch, remoteRef], { cwd: repoPath, stdio: "pipe" });
+      }
+    } catch {
+      // Best-effort only. Worktree creation still uses origin/<baseBranch>, so
+      // a locked/dirty local branch cannot make new worktrees stale.
+    }
+  }
+
+  #hasTrackedChanges(repoPath: string): boolean {
+    try {
+      execFileSync("git", ["diff", "--quiet"], { cwd: repoPath, stdio: "pipe" });
+      execFileSync("git", ["diff", "--cached", "--quiet"], { cwd: repoPath, stdio: "pipe" });
+      return false;
+    } catch {
+      return true;
     }
   }
 

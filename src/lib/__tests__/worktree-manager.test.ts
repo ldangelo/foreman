@@ -69,7 +69,7 @@ describe("WorktreeManager", () => {
     });
 
     expect(git(worktree.path, ["rev-parse", "HEAD"])).toBe(newHead);
-    expect(git(repo, ["rev-parse", "main"])).toBe(oldHead);
+    expect(git(repo, ["rev-parse", "main"])).toBe(newHead);
   });
 
   it("resets leftover branches to the fetched origin target before attaching", async () => {
