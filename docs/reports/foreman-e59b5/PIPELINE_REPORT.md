@@ -5,18 +5,18 @@
 **Workflow Path:** `/Users/ldangelo/.foreman/workflows/feature.yaml`
 **Target Branch:** `main`
 **VCS Branch:** `foreman/foreman-e59b5`
-**Generated:** 2026-06-04T21:48:50.871Z
+**Generated:** 2026-06-04T22:07:03.435Z
 **Status:** IN_PROGRESS
 
 ## Summary
 
 | Metric | Value |
 |--------|-------|
-| Phases completed | 15 |
-| Total cost | $1.2361 |
-| Total turns | 398 |
-| Total tool calls | 3065 |
-| Total duration | 3367.6s |
+| Phases completed | 23 |
+| Total cost | $1.5675 |
+| Total turns | 493 |
+| Total tool calls | 6092 |
+| Total duration | 4459.9s |
 
 ## Phase Results
 
@@ -37,12 +37,20 @@
 | `developer` | prompt | pass | 137.9s | $0.0766 | 27 turns | DEVELOPER_REPORT.md (missing) | `docs/reports/foreman-e59b5/DEVELOPER_TRACE.json` | |
 | `qa` | prompt | pass | 292.3s | $0.1402 | 51 turns | QA_REPORT.md (missing) | `docs/reports/foreman-e59b5/QA_TRACE.json` | |
 | `reviewer` | prompt | pass | 272.4s | $0.1766 | 44 turns | REVIEW.md (present) | `docs/reports/foreman-e59b5/REVIEWER_TRACE.json` | |
+| `finalize` | prompt | pass | 81.7s | $0.0145 | 15 turns | FINALIZE_VALIDATION.md (missing) | `docs/reports/foreman-e59b5/FINALIZE_TRACE.json` | |
+| `create-pr` | builtin | pass | 1.1s | - | 0 turns | PR_METADATA.json (present) | — | |
+| `pr-wait` | builtin | pass | 250.2s | - | 0 turns | PR_WAIT_REPORT.md (present) | — | |
+| `prepare-pr-review` | builtin | pass | 1.4s | - | 0 turns | PR_REVIEW_FINDINGS.md (present) | — | |
+| `pr-review` | prompt | pass | 47.5s | $0.0253 | 10 turns | PR_REVIEW_REPORT.md (present) | `docs/reports/foreman-e59b5/PR-REVIEW_TRACE.json` | |
+| `developer` | prompt | pass | 236.6s | $0.0856 | 24 turns | DEVELOPER_REPORT.md (missing) | `docs/reports/foreman-e59b5/DEVELOPER_TRACE.json` | |
+| `qa` | prompt | pass | 287.2s | $0.0755 | 30 turns | QA_REPORT.md (missing) | `docs/reports/foreman-e59b5/QA_TRACE.json` | |
+| `reviewer` | prompt | pass | 186.6s | $0.1305 | 16 turns | REVIEW.md (present) | `docs/reports/foreman-e59b5/REVIEWER_TRACE.json` | |
 
 ## Phase Inputs
 
 ## Warnings
 
-- Missing phase artifacts: developer -> DEVELOPER_REPORT.md, qa -> QA_REPORT.md, finalize -> FINALIZE_VALIDATION.md, developer -> DEVELOPER_REPORT.md, qa -> QA_REPORT.md, developer -> DEVELOPER_REPORT.md, qa -> QA_REPORT.md
+- Missing phase artifacts: developer -> DEVELOPER_REPORT.md, qa -> QA_REPORT.md, finalize -> FINALIZE_VALIDATION.md, developer -> DEVELOPER_REPORT.md, qa -> QA_REPORT.md, developer -> DEVELOPER_REPORT.md, qa -> QA_REPORT.md, finalize -> FINALIZE_VALIDATION.md, developer -> DEVELOPER_REPORT.md, qa -> QA_REPORT.md
 - Long-running phases (>10min): pr-wait (12min)
 
 ## Files Changed
@@ -66,3 +74,6 @@
 - `docs/reports/foreman-e59b5/DEVELOPER_REPORT.md`
 - `SessionLogs/session-040626-16:39.md`
 - `docs/reports/foreman-e59b5/SESSION_LOG.md`
+- `/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5/docs/reports/foreman-e59b5/FINALIZE_VALIDATION.md`
+- `/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5/docs/reports/foreman-e59b5/FINALIZE_REPORT.md`
+- `/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5/SessionLogs/session-040625-16:57.md`

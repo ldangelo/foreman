@@ -1,127 +1,11 @@
 # PR Review Findings
 
 - PR: #207 (https://github.com/ldangelo/foreman/pull/207)
-- Head SHA: e22b1e7740bb80713646e40c3667e1872d7bb5d1
+- Head SHA: ddd74887e577756b25f263941db964d32194079c
 
 ## Blocking CodeRabbit Findings
 
-### 1. MEDIUM — docs/reports/foreman-e59b5/DEVELOPER_TRACE.json:15
-- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931762
-
-_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
-
-**Developer expected artifact metadata is still pointing to the wrong path.**
-
-`expectedArtifact` is `DEVELOPER_REPORT.md`, but the generated report is written to `docs/reports/foreman-e59b5/DEVELOPER_REPORT.md`, leading to incorrect `artifactPresent: false`.
- 
-
-
-Also applies to: 575-576, 692-692
-
-<details>
-<summary>🤖 Prompt for AI Agents</summary>
-
-```
-Verify each finding against current code. Fix only still-valid issues, skip the
-rest with a brief reason, keep changes minimal, and validate.
-
-In `@docs/reports/foreman-e59b5/DEVELOPER_TRACE.json` around lines 14 - 15, The
-DEVELOPER_TRACE.json metadata has expectedArtifact set to "DEVELOPER_REPORT.md"
-which doesn't match the actual generated artifact path; update the
-expectedArtifact value in DEVELOPER_TRACE.json (and the other occurrences noted)
-so it references the full generated report name (include the directory prefix
-used by the generator) or build the value dynamically from the same report
-output path generator so expectedArtifact equals the actual produced
-"DEVELOPER_REPORT.md" path; make this change for the entries referenced by the
-key expectedArtifact in DEVELOPER_TRACE.json and the other two occurrences to
-ensure artifactPresent becomes true.
-```
-
-</details>
-
-<!-- fingerprinting:phantom:triton:hawk -->
-
-<!-- This is an auto-generated comment by CodeRabbit -->
-
-### 2. MEDIUM — docs/reports/foreman-e59b5/DEVELOPER_TRACE.md:7
-- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931766
-
-_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
-
-**Developer markdown trace still leaks absolute local paths.**
-
-Header metadata and command previews still contain `/Users/...` paths, which should be sanitized before committing trace artifacts.
- 
-
-
-Also applies to: 501-502, 510-511, 600-601, 610-611, 627-628, 637-638
-
-<details>
-<summary>🤖 Prompt for AI Agents</summary>
-
-```
-Verify each finding against current code. Fix only still-valid issues, skip the
-rest with a brief reason, keep changes minimal, and validate.
-
-In `@docs/reports/foreman-e59b5/DEVELOPER_TRACE.md` at line 7, The
-DEVELOPER_TRACE.md output currently includes leaked absolute local paths like
-the string "Workflow path: `/Users/ldangelo/.foreman/workflows/feature.yaml`";
-add a sanitizer that replaces user-home and other absolute filesystem paths with
-a normalized placeholder (e.g., "~/" or "<REDACTED_PATH>") before writing header
-metadata and command previews. Implement and call a single helper (e.g.,
-sanitizeAbsolutePaths or sanitizeTracePaths) from the trace generation/write
-path so both header metadata and command-preview blocks are processed, and
-ensure writeTrace/emitDeveloperTrace (or the function that composes
-DEVELOPER_TRACE.md) uses it. Also add unit tests that assert absolute paths are
-redacted in the produced trace.
-```
-
-</details>
-
-<!-- fingerprinting:phantom:triton:hawk -->
-
-<!-- This is an auto-generated comment by CodeRabbit -->
-
-### 3. MEDIUM — docs/reports/foreman-e59b5/DEVELOPER_TRACE.md:12
-- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931769
-
-_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
-
-**Expected artifact path is still out of sync with generated location.**
-
-Line 11 expects `DEVELOPER_REPORT.md` at root, but Line 637 writes to `docs/reports/foreman-e59b5/DEVELOPER_REPORT.md`, causing incorrect artifact presence reporting on Line 12.
- 
-
-
-Also applies to: 637-638
-
-<details>
-<summary>🤖 Prompt for AI Agents</summary>
-
-```
-Verify each finding against current code. Fix only still-valid issues, skip the
-rest with a brief reason, keep changes minimal, and validate.
-
-In `@docs/reports/foreman-e59b5/DEVELOPER_TRACE.md` around lines 11 - 12, The
-expected artifact path in DEVELOPER_TRACE.md is out of sync with where the
-report is actually generated (DEVELOPER_REPORT.md); update the expectation to
-match the generated location or change the generator to emit the report at the
-expected root location. Specifically, either modify the expected artifact
-declaration inside DEVELOPER_TRACE.md to point to
-docs/reports/foreman-e59b5/DEVELOPER_REPORT.md, or change the code that writes
-DEVELOPER_REPORT.md so it writes to the project root instead of
-docs/reports/foreman-e59b5; adjust the single source of truth so the
-filename/symbol DEVELOPER_REPORT.md is consistent between the trace expectation
-and the generation step.
-```
-
-</details>
-
-<!-- fingerprinting:phantom:triton:hawk -->
-
-<!-- This is an auto-generated comment by CodeRabbit -->
-
-### 4. HIGH — docs/reports/foreman-e59b5/EXPLORER_TRACE.json:10
+### 1. HIGH — docs/reports/foreman-e59b5/EXPLORER_TRACE.json:10
 - URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931772
 
 _⚠️ Potential issue_ | _🔴 Critical_ | _⚡ Quick win_
@@ -158,7 +42,7 @@ the repeated path keys noted) are normalized before writing the file.
 
 <!-- This is an auto-generated comment by CodeRabbit -->
 
-### 5. MEDIUM — docs/reports/foreman-e59b5/EXPLORER_TRACE.md:7
+### 2. MEDIUM — docs/reports/foreman-e59b5/EXPLORER_TRACE.md:7
 - URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931775
 
 _⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
@@ -194,7 +78,7 @@ normalized so no host-specific filesystem paths remain.
 
 <!-- This is an auto-generated comment by CodeRabbit -->
 
-### 6. HIGH — docs/reports/foreman-e59b5/PIPELINE_REPORT.md:5
+### 3. HIGH — docs/reports/foreman-e59b5/PIPELINE_REPORT.md:5
 - URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931778
 
 _⚠️ Potential issue_ | _🔴 Critical_ | _⚡ Quick win_
@@ -232,7 +116,7 @@ absolute paths are committed.
 
 <!-- This is an auto-generated comment by CodeRabbit -->
 
-### 7. MEDIUM — docs/reports/foreman-e59b5/PIPELINE_REPORT.md:27
+### 4. MEDIUM — docs/reports/foreman-e59b5/PIPELINE_REPORT.md:27
 - URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931782
 
 _⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
@@ -269,46 +153,7 @@ expected file paths.
 
 <!-- This is an auto-generated comment by CodeRabbit -->
 
-### 8. HIGH — docs/reports/foreman-e59b5/QA_TRACE.json:10
-- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931786
-
-_⚠️ Potential issue_ | _🔴 Critical_ | _⚡ Quick win_
-
-**QA trace still contains raw absolute worktree paths.**
-
-The committed trace includes `/Users/...` path data in top-level metadata and tool previews. This must be sanitized to `<worktree>`/relative paths before writing artifacts.
- 
-
-
-Also applies to: 72-73, 92-93, 102-103
-
-<details>
-<summary>🤖 Prompt for AI Agents</summary>
-
-```
-Verify each finding against current code. Fix only still-valid issues, skip the
-rest with a brief reason, keep changes minimal, and validate.
-
-In `@docs/reports/foreman-e59b5/QA_TRACE.json` around lines 8 - 10, QA_TRACE.json
-currently contains raw absolute paths (e.g., worktreePath and workflowPath) that
-leak user-specific directories; before writing artifacts replace absolute
-prefixes with a sanitized token or convert to relative paths (e.g., swap
-"/Users/..." to "<worktree>/" or relative) across top-level metadata and any
-tool preview entries. Update the code that emits the trace (the logic that sets
-worktreePath, workflowPath and populates tool previews) to perform
-normalization/sanitization consistently for those keys and any similar fields
-(sanitize worktreePath, workflowPath and all tool preview path entries) so
-written artifacts never include raw absolute paths. Ensure the sanitizer is
-applied right before serializing/writing the QA_TRACE artifact.
-```
-
-</details>
-
-<!-- fingerprinting:phantom:triton:hawk -->
-
-<!-- This is an auto-generated comment by CodeRabbit -->
-
-### 9. MEDIUM — docs/reports/foreman-e59b5/QA_TRACE.json:146
+### 5. MEDIUM — docs/reports/foreman-e59b5/QA_TRACE.json
 - URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931790
 
 _⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
@@ -346,118 +191,7 @@ artifactPresent=true when the write succeeded for "QA_REPORT.md".
 
 <!-- This is an auto-generated comment by CodeRabbit -->
 
-### 10. MEDIUM — docs/reports/foreman-e59b5/QA_TRACE.md:7
-- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931793
-
-_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
-
-**Absolute host paths are still leaking in committed trace content.**
-
-Line 7 and multiple tool-call previews still include `/Users/...` paths, which violates the trace sanitization acceptance criteria for committed artifacts.
- 
-
-
-Also applies to: 166-167, 184-185, 193-194
-
-<details>
-<summary>🤖 Prompt for AI Agents</summary>
-
-```
-Verify each finding against current code. Fix only still-valid issues, skip the
-rest with a brief reason, keep changes minimal, and validate.
-
-In `@docs/reports/foreman-e59b5/QA_TRACE.md` at line 7, Committed trace content
-contains hardcoded absolute host paths like "/Users/..." (e.g., the "Workflow
-path" entry in QA_TRACE.md and multiple tool-call previews); update the trace
-generation/sanitization step to scrub host-specific absolute paths by replacing
-any leading user home segments (patterns like ^/Users/[^/]+/) with a stable
-placeholder (e.g., ~/ or <HOST_HOME>/) before writing artifacts, and regenerate
-the affected traces (QA_TRACE.md entries around the Workflow path and the
-tool-call preview blocks) so no `/Users/...` strings remain in committed files.
-```
-
-</details>
-
-<!-- fingerprinting:phantom:triton:hawk -->
-
-<!-- This is an auto-generated comment by CodeRabbit -->
-
-### 11. MEDIUM — docs/reports/foreman-e59b5/QA_TRACE.md:12
-- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931797
-
-_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
-
-**Expected artifact path is inconsistent with actual write location.**
-
-Line 11 expects `QA_REPORT.md` at root, but Line 230 shows the artifact is written to `docs/reports/foreman-e59b5/QA_REPORT.md`, which also explains the false `Artifact present: no` on Line 12.
- 
-
-
-Also applies to: 229-230
-
-<details>
-<summary>🤖 Prompt for AI Agents</summary>
-
-```
-Verify each finding against current code. Fix only still-valid issues, skip the
-rest with a brief reason, keep changes minimal, and validate.
-
-In `@docs/reports/foreman-e59b5/QA_TRACE.md` around lines 11 - 12, The QA trace
-shows a mismatch between the declared expected artifact name "QA_REPORT.md" and
-the actual artifact write location recorded later in the trace, causing the
-false "Artifact present: no" result; fix by making the expected artifact path
-and the recorded write location consistent: either change the expected artifact
-declaration that references "QA_REPORT.md" to the same path used when the
-artifact is written, or change the write step so it writes to the root
-"QA_REPORT.md"; update the corresponding "Expected artifact" and "Artifact
-present" entries in QA_TRACE.md (and the trace entry that records the artifact
-write) so they reference the exact same artifact path string.
-```
-
-</details>
-
-<!-- fingerprinting:phantom:triton:hawk -->
-
-<!-- This is an auto-generated comment by CodeRabbit -->
-
-### 12. HIGH — docs/reports/foreman-e59b5/REVIEWER_TRACE.json:10
-- URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931798
-
-_⚠️ Potential issue_ | _🔴 Critical_ | _⚡ Quick win_
-
-**Trace artifact still contains unsanitized absolute paths.**
-
-This JSON includes raw `/Users/.../.foreman/worktrees/...` values in `worktreePath` and tool previews. Committed traces must replace these with repo-relative or `<worktree>` placeholders.
- 
-
-
-Also applies to: 45-46, 62-63, 72-73, 152-153, 162-163, 182-183, 202-203, 252-253, 262-263, 322-323, 332-333, 345-356
-
-<details>
-<summary>🤖 Prompt for AI Agents</summary>
-
-```
-Verify each finding against current code. Fix only still-valid issues, skip the
-rest with a brief reason, keep changes minimal, and validate.
-
-In `@docs/reports/foreman-e59b5/REVIEWER_TRACE.json` around lines 8 - 10, The
-trace JSON contains hardcoded absolute paths in fields like worktreePath and
-workflowPath (and in tool preview entries); update the trace
-generation/sanitization logic to replace any user-specific absolute paths with
-repo-relative paths or a placeholder (e.g., "<worktree>") before writing
-REVIEWER_TRACE.json: detect and sanitize values for "worktreePath",
-"workflowPath" and any tool-preview/path fields (the same sanitizer should cover
-the other occurrences mentioned) so no /Users/.../.foreman/worktrees/... values
-are committed.
-```
-
-</details>
-
-<!-- fingerprinting:phantom:triton:hawk -->
-
-<!-- This is an auto-generated comment by CodeRabbit -->
-
-### 13. MEDIUM — docs/reports/foreman-e59b5/REVIEWER_TRACE.md:7
+### 6. MEDIUM — docs/reports/foreman-e59b5/REVIEWER_TRACE.md:7
 - URL: https://github.com/ldangelo/foreman/pull/207#discussion_r3358931800
 
 _⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_
@@ -496,4 +230,4 @@ contains any user-specific absolute paths.
 <!-- This is an auto-generated comment by CodeRabbit -->
 
 ## Failed Checks
-None.
+1. Test (Node 20) — FAILURE (https://github.com/ldangelo/foreman/actions/runs/26981699065/job/79622236317)
