@@ -2,16 +2,17 @@ import { describe, expect, it } from "vitest";
 import { parseCodeRabbitFindings, parseFailedChecks, renderPrReviewFindings, renderPrWaitReport, summarizePrWaitStatus } from "../pr-review-context.js";
 
 describe("pr-review-context", () => {
-  it("extracts only CodeRabbit critical/high/medium findings", () => {
+  it("extracts only CodeRabbit critical/high/medium/major findings", () => {
     const findings = parseCodeRabbitFindings([
       { user: { login: "coderabbitai[bot]" }, body: "**High**: fix this", path: "src/a.ts", line: 12, html_url: "https://example/1" },
       { user: { login: "coderabbitai[bot]" }, body: "Low: optional nit", path: "src/b.ts" },
       { user: { login: "someone" }, body: "Critical: not from CodeRabbit" },
       { user: { login: "coderabbitai" }, body: "Medium severity issue" },
+      { user: { login: "coderabbitai[bot]" }, body: "_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_" },
     ], "review-comment");
 
-    expect(findings).toHaveLength(2);
-    expect(findings.map((finding) => finding.severity)).toEqual(["high", "medium"]);
+    expect(findings).toHaveLength(3);
+    expect(findings.map((finding) => finding.severity)).toEqual(["high", "medium", "medium"]);
     expect(findings[0]).toMatchObject({ path: "src/a.ts", line: 12, source: "review-comment" });
   });
 

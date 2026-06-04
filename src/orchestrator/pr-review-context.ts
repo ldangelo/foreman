@@ -122,9 +122,11 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
 
 export function parseBlockingSeverity(text: string): BlockingSeverity | undefined {
   const normalized = text.toLowerCase();
-  if (/\bcritical\b/.test(normalized)) return "critical";
+  if (/\bcritical\b|🟣|🔴/.test(normalized)) return "critical";
   if (/\bhigh\b/.test(normalized)) return "high";
-  if (/\bmedium\b/.test(normalized)) return "medium";
+  // CodeRabbit's current inline format uses "🟠 Major" rather than
+  // "medium"/"high". Treat Major as blocking so pr-review sees it.
+  if (/\bmajor\b|🟠|\bmedium\b|🟡/.test(normalized)) return "medium";
   return undefined;
 }
 
