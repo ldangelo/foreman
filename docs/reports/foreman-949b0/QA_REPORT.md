@@ -3,60 +3,80 @@
 ## Verdict: PASS
 
 ## Test Results
-- Targeted command(s) run: `npx vitest run src/orchestrator/__tests__/pr-review-context.test.ts --reporter=dot`
-- Full suite command (if run): `npx vitest run -c vitest.unit.config.ts 2>&1 | grep -E "Test Files|Tests:|passed|failed"`
-- Test suite: 238 passed, 1 failed (239 test files)
-- Raw summary:
-  ```
-  Test Files: 1 failed | 238 passed (239)
-       Tests: 1 failed | 3269 passed | 6 skipped (3276)
-  ```
-- New tests added: 2 new test cases added to `pr-review-context.test.ts` covering minor severity and review stack edge cases
+
+### Targeted Tests Run
+
+**1. PR review context tests:**
+```bash
+npm run test:unit -- src/orchestrator/__tests__/pr-review-context.test.ts
+```
+- Test Files: 1 passed (1)
+- Tests: 9 passed (9)
+- Duration: 103ms
+
+**2. Workflow loader and observability extension tests:**
+```bash
+npm run test:unit -- src/lib/__tests__/workflow-loader.test.ts src/orchestrator/__tests__/pi-observability-extension.test.ts
+```
+- Test Files: 2 passed (2)
+- Tests: 88 passed (88)
+- Duration: 218ms
+
+### Full Unit Test Suite
+```bash
+npm run test:unit -- --reporter=dot
+```
+- Test Files: 239 passed
+- Tests: 3272 passed, 6 skipped (3278 total)
+- Duration: 12.19s
 
 ## Issues Found
-- **Pre-existing test failure** in `src/orchestrator/__tests__/pipeline-model-resolution.test.ts:130` — One test (`it("resolves model from workflow")`) fails both with and without the changes in this worktree. Verified via `git stash` comparison: the same test fails on `origin/main` as well. This is a pre-existing failure unrelated to this implementation.
 
-## Changes Reviewed
+None. All tests pass.
 
-### Files Modified (from `git diff HEAD~1 --stat`)
-- `docs/standards/constitution.md` — Added one sentence about explicit PR review gate (task requirement)
-- `src/orchestrator/__tests__/pr-review-context.test.ts` — Added 2 test cases for CodeRabbit findings edge cases
-- `src/orchestrator/pr-review-context.ts` — Fixed `parseBlockingSeverity` to handle non-comment signal lines and correctly classify emoji severity
+## Files Modified (Reviewed)
 
-### Change Details
+The implementation consists of 9 commits with changes to:
 
-**`docs/standards/constitution.md`** (task goal):
+| File | Change Summary |
+|------|---------------|
+| `src/defaults/prompts/default/pr-review.md` | Changed from "Fix only" to "Triage only"; made pr-review read-only (no Edit tool, no commit/push) |
+| `src/defaults/workflows/feature.yaml` | Removed Edit from pr-review tools, increased retryOnFail from 1 to 3 |
+| `src/lib/__tests__/workflow-loader.test.ts` | Updated test to verify pr-review config (no Edit, retryOnFail=3) |
+| `src/orchestrator/__tests__/pi-observability-extension.test.ts` | Updated to block git commit/push during pr-review (not allowed) |
+| `src/orchestrator/__tests__/pr-review-context.test.ts` | Added tests for CodeRabbit completion detection and addressed comments |
+| `src/orchestrator/agent-worker.ts` | Added `validatePrReviewGate()`; changed `codeRabbitSeen` to `codeRabbitComplete` |
+| `src/orchestrator/pi-observability-extension.ts` | Changed to block git commit/push only outside finalize (not pr-review) |
+| `src/orchestrator/pipeline-executor.ts` | Fixed allowedTools propagation |
+| `src/orchestrator/pr-review-context.ts` | Added `codeRabbitReviews`, `GhReview` interface, `codeRabbitComplete` tracking |
+
+## Docs Change (Canary Artifact)
+
+The minimal docs-only change was made in commit `29cfdc4`:
+```diff
+> **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize, which waits for CodeRabbit analysis and requires a PASS verdict before merging.
 ```
-+> **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize,
-+which waits for CodeRabbit analysis and requires a PASS verdict before merging.
-```
 
-**`src/orchestrator/pr-review-context.ts`** (bug fix in the same area):
-- Fixed `parseBlockingSeverity()` to ignore HTML comment lines (`<!-- ... -->`) when extracting the signal line for severity classification
-- Fixed emoji classification: 🟣 maps to critical, 🔴 maps to high, 🟠 maps to medium (was incorrectly classifying 🔴 as critical)
+This was added to Section 3 Quality Gates of `docs/standards/constitution.md`.
 
-**`src/orchestrator/__tests__/pr-review-context.test.ts`** (new test coverage):
-- Added test for `_⚠️ Potential issue_ | _🟡 Minor_ | _⚡ Quick win_` (minor severity)
-- Added test for `[![Review Change Stack](image)](url)\n\nHigh confidence summary text` (image-only comment)
+## Implementation Notes
 
-## Verification Summary
+The PR review workflow phases are correctly implemented:
 
-| Check | Result |
-|-------|--------|
-| Conflict markers | None found in source files |
-| `pr-review-context` tests | 7/7 passed |
-| Full unit suite | 3269 passed, 1 pre-existing failure |
-| Pre-existing failure verified | Yes — same test fails on `origin/main` |
-| Docs change | Minimal, 1 sentence added as required |
+1. **`finalize`** - Commits changes
+2. **`create-pr`** - Creates PR, writes `PR_METADATA.json` (builtin)
+3. **`pr-wait`** - Waits for checks terminal + CodeRabbit completion, writes `PR_WAIT_REPORT.md` (builtin)
+4. **`prepare-pr-review`** - Collects CodeRabbit findings, writes `PR_REVIEW_FINDINGS.md` (builtin)
+5. **`pr-review`** - Read-only triage phase (prompt-based), writes `PR_REVIEW_REPORT.md`
+6. **`refinery merge`** - Gated by `validatePrReviewGate()` which blocks if:
+   - Merge conflict exists
+   - Checks not terminal
+   - CodeRabbit not complete
+   - Failed checks present
+   - Blocking findings present
 
-## Pre-existing Failure Details
-- **File:** `src/orchestrator/__tests__/pipeline-model-resolution.test.ts:130`
-- **Test:** `it("resolves model from workflow")`
-- **Symptom:** Assertion fails on expected code pattern (`const phaseModel = resolvedModel`)
-- **Status:** Confirmed pre-existing by running same test suite against `git stash` (clean main) — same failure occurs
-- **Conclusion:** Not related to this task; does not block PASS verdict
-
-## QA Notes
-- The task goal (docs-only PR exercising workflow phases) is a pipeline-run task, not a unit-test task. QA verifies the code changes that enable the pipeline correctly.
-- The `pr-review-context.ts` changes fix a real bug in `parseBlockingSeverity` — correctly skipping HTML comment-only lines and properly mapping emoji severities
-- All targeted tests pass; the single suite failure is pre-existing
+Key architectural decisions verified:
+- `pr-review` is now read-only (triage only) - Edit tool removed
+- `codeRabbitComplete` (not `codeRabbitSeen`) gates the wait and merge
+- `retryOnFail: 3` allows developer retry loop for actionable fixes
+- Git commit/push blocked during pr-review phase
