@@ -1,7 +1,23 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import type { PhaseTrace, PhaseTraceWriteResult } from "./pi-observability-types.js";
+
+/**
+ * Produce a serialization-safe copy of a PhaseTrace with the absolute
+ * `worktreePath` replaced by the repo-relative `relativeWorktreePath`.
+ * The original trace object is not mutated.
+ */
+function sanitizeTrace(trace: PhaseTrace): PhaseTrace {
+  const sanitized = { ...trace };
+  // Replace the absolute host-specific path with the relative path for committed artifacts.
+  // Use "." when worktreePath is already at the worktree root.
+  sanitized.relativeWorktreePath = relative(".", trace.worktreePath) || ".";
+  // Omit the absolute worktreePath from committed JSON by deleting it;
+  // internal callers still have it on the original object.
+  delete (sanitized as Record<string, unknown>).worktreePath;
+  return sanitized;
+}
 
 function traceBaseName(phase: string): string {
   return `${phase.toUpperCase()}_TRACE`;
@@ -79,7 +95,8 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
 export async function writePhaseTrace(trace: PhaseTrace): Promise<PhaseTraceWriteResult> {
   const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase);
   await mkdir(join(trace.worktreePath, "docs", "reports", trace.seedId), { recursive: true });
-  await writeFile(paths.jsonPath, `${JSON.stringify(trace, null, 2)}\n`, "utf-8");
+  const sanitized = sanitizeTrace(trace);
+  await writeFile(paths.jsonPath, `${JSON.stringify(sanitized, null, 2)}\n`, "utf-8");
   await writeFile(paths.markdownPath, `${renderTraceMarkdown(trace, paths.relativeJsonPath)}\n`, "utf-8");
   return paths;
 }

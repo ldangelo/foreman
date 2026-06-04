@@ -33,7 +33,14 @@ export interface PhaseTrace {
   phase: string;
   phaseType: PhaseExecutionType;
   model: string;
+  /** Internal absolute worktree path (NOT serialized to committed artifacts) */
   worktreePath: string;
+  /**
+   * Repo-relative worktree path for committed trace artifacts.
+   * Computed as `path.relative(worktreeRoot, worktreePath)` or "." if at root.
+   * This field is what gets serialized to `*_TRACE.json` files that may be committed.
+   */
+  relativeWorktreePath?: string;
   workflowName?: string;
   workflowPath?: string;
   startedAt: string;

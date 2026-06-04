@@ -46,7 +46,7 @@ phases:
     models:
       default: haiku
     maxTurns: 5
-    artifact: QA_REPORT.md
+    artifact: docs/reports/{{seedId}}/QA_REPORT.md
     verdict: true
     retryWith: developer
     retryOnFail: 2

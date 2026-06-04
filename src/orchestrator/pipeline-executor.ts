@@ -1191,6 +1191,8 @@ async function runPhaseSequence(
         error: phaseError,
         artifactExpected: interpolatedArtifact,
         artifactPresent,
+        workflowName: workflowConfig.name,
+        workflowPath: workflowConfig.sourcePath,
       });
 
       if (ctx.activityPhases) {
@@ -1286,6 +1288,8 @@ async function runPhaseSequence(
         commandsRun: [resolvedBashCommand],
         artifactExpected: interpolatedArtifact,
         artifactPresent: interpolatedArtifact ? existsSync(join(worktreePath, interpolatedArtifact)) : undefined,
+        workflowName: workflowConfig.name,
+        workflowPath: workflowConfig.sourcePath,
       });
       progress.costUsd += 0;
       await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);

@@ -98,4 +98,36 @@ describe("pi observability trace", () => {
     expect(markdown).toContain("# FIX Trace — foreman-56b46");
     expect(markdown).toContain("DEVELOPER_REPORT.md");
   });
+
+  it("sanitizes absolute worktreePath in committed JSON trace", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
+    // Simulate a host-specific absolute path (leak target)
+    const trace = createPhaseTrace({
+      runId: "run-sanitize",
+      seedId: "foreman-56b46",
+      phase: "explorer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath,
+      rawPrompt: "Explore the codebase",
+      workflowName: "default",
+    });
+    finalizePhaseTrace(trace, { success: true, finalMessage: "Explored." });
+
+    // Verify the original trace still has the absolute path (internal use)
+    expect(trace.worktreePath).toBe(worktreePath);
+    expect(trace.worktreePath).toContain(tmpdir());
+
+    const paths = await writePhaseTrace(trace);
+    const json = JSON.parse(await readFile(paths.jsonPath, "utf-8")) as { worktreePath?: string; relativeWorktreePath?: string };
+
+    // The absolute path must NOT appear in the committed JSON
+    expect(json.worktreePath).toBeUndefined();
+    // A relative path must be present instead
+    expect(json.relativeWorktreePath).toBeDefined();
+    // The relative path must not be an absolute path (no leading slash = not host-specific)
+    expect(json.relativeWorktreePath!.startsWith("/")).toBe(false);
+    // Must not contain the host-specific worktree segment
+    expect(json.relativeWorktreePath!).not.toContain(".foreman/worktrees");
+  });
 });
