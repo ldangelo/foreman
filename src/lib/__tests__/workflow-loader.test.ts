@@ -323,6 +323,7 @@ phases:
     expect(config.phases.find((phase) => phase.name === "pr-wait")?.artifact).toBe("PR_WAIT_REPORT.md");
     const prReviewPhase = config.phases.find((phase) => phase.name === "pr-review");
     expect(prReviewPhase?.artifact).toBe("PR_REVIEW_REPORT.md");
+    expect(prReviewPhase?.retryOnFail).toBe(3);
     expect(prReviewPhase?.tools?.allowed).not.toContain("Edit");
   });
 

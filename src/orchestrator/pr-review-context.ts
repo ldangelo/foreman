@@ -162,11 +162,16 @@ export function parseBlockingSeverity(text: string): BlockingSeverity | undefine
   return undefined;
 }
 
+function isAddressedCodeRabbitComment(body: string): boolean {
+  return /(?:✅\s*)?addressed\s+in\s+commit\b/i.test(body);
+}
+
 export function parseCodeRabbitFindings(comments: GhComment[], source: CodeRabbitFinding["source"]): CodeRabbitFinding[] {
   const findings: CodeRabbitFinding[] = [];
   for (const comment of comments) {
     if (!isCodeRabbitAuthor(comment.user?.login)) continue;
     const body = comment.body ?? "";
+    if (isAddressedCodeRabbitComment(body)) continue;
     const severity = parseBlockingSeverity(body);
     if (!severity) continue;
     findings.push({

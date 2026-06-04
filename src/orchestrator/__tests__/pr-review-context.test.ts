@@ -11,6 +11,7 @@ describe("pr-review-context", () => {
       { user: { login: "coderabbitai[bot]" }, body: "_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_" },
       { user: { login: "coderabbitai[bot]" }, body: "_⚠️ Potential issue_ | _🟡 Minor_ | _⚡ Quick win_" },
       { user: { login: "coderabbitai[bot]" }, body: "[![Review Change Stack](image)](url)\n\nHigh confidence summary text" },
+      { user: { login: "coderabbitai[bot]" }, body: "_⚠️ Potential issue_ | _🟠 Major_\n\n✅ Addressed in commit abc123" },
     ], "review-comment");
 
     expect(findings).toHaveLength(3);
