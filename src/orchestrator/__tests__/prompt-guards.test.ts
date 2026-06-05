@@ -30,7 +30,8 @@ describe("developer prompt guardrails", () => {
     expect(prompt).toContain("Mergeable: CONFLICTING");
     expect(prompt).toContain("git rebase origin/{{baseBranch}}");
     expect(prompt).toContain("Do **not** decide “the task is already implemented”");
-    expect(prompt).toContain("git rebase --continue");
+    expect(prompt).toContain("GIT_EDITOR=true git rebase --continue");
+    expect(prompt).toContain("detached workers do not hang in an editor");
   });
 
   it("biases localized tasks toward the smallest diff", () => {

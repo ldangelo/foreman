@@ -75,7 +75,7 @@ Based on the failure context and diagnostics, apply the appropriate fix:
    ```bash
    cd {{worktreePath}}
    git add -A
-   git rebase --continue 2>&1
+   GIT_EDITOR=true git rebase --continue 2>&1
    # If rebase --continue fails, check git status again
    ```
 5. Then retry finalize:
@@ -104,7 +104,7 @@ Based on the failure context and diagnostics, apply the appropriate fix:
 3. If conflicts occur, resolve them by preserving the task's intended change plus current `{{baseBranch}}` updates. Then:
    ```bash
    git add -A
-   git rebase --continue 2>&1
+   GIT_EDITOR=true git rebase --continue 2>&1
    ```
 4. Validate focused tests/build for touched areas.
 5. Push the resolved branch:

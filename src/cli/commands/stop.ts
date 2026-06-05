@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { Command } from "commander";
 import chalk from "chalk";
 
@@ -152,12 +153,30 @@ async function stopRun(
   const pid = getWorkerPid(run);
   const signal = force ? "SIGKILL" : "SIGTERM";
 
-  // Kill process by PID if available
+  // Kill process by PID if available. Also kill descendant process groups first: agent tool
+  // commands can outlive the worker and otherwise leave hung editors/shells behind.
   if (pid && isAlive(pid)) {
-    console.log(`    ${chalk.yellow("send")} ${signal} to pid ${pid}`);
+    const descendantGroups = getDescendantProcessGroups(pid);
+    for (const pgid of descendantGroups) {
+      console.log(`    ${chalk.yellow("send")} ${signal} to process group ${pgid}`);
+      if (!dryRun) {
+        try {
+          process.kill(-pgid, signal);
+          processKilled = true;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`Failed to send ${signal} to process group ${pgid}: ${msg}`);
+          console.log(`    ${chalk.red("error")} sending ${signal} to process group ${pgid}: ${msg}`);
+        }
+      }
+    }
+
+    const workerGroup = getProcessGroup(pid);
+    const workerTarget = workerGroup === pid ? -pid : pid;
+    console.log(`    ${chalk.yellow("send")} ${signal} to ${workerTarget < 0 ? `process group ${pid}` : `pid ${pid}`}`);
     if (!dryRun) {
       try {
-        process.kill(pid, signal);
+        process.kill(workerTarget, signal);
         processKilled = true;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -284,15 +303,22 @@ function printStopResult(run: Run, result: StopResult): void {
 }
 
 async function findRun(store: StopStore, id: string, projectId: string): Promise<Run | null> {
-  // Try by run ID first — must belong to this project to avoid cross-project leakage
-  const byRunId = await store.getRun(id);
-  if (byRunId && byRunId.project_id === projectId) return byRunId;
+  // Try by run ID first — must belong to this project to avoid cross-project leakage.
+  // Postgres run IDs are UUIDs; skip getRun for bead IDs so adapters don't parse them as UUIDs.
+  if (isUuid(id)) {
+    const byRunId = await store.getRun(id);
+    if (byRunId && byRunId.project_id === projectId) return byRunId;
+  }
 
   // Then by seed ID (most recent run for this project)
   const bySeedId = await store.getRunsForSeed(id, projectId);
   if (bySeedId.length > 0) return bySeedId[0];
 
   return null;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 function getWorkerPid(run: Run): number | null {
@@ -311,6 +337,46 @@ function isAlive(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function getProcessGroup(pid: number): number | null {
+  return readProcessTable().find((entry) => entry.pid === pid)?.pgid ?? null;
+}
+
+function getDescendantProcessGroups(pid: number): number[] {
+  const table = readProcessTable();
+  const childrenByParent = new Map<number, Array<{ pid: number; pgid: number }>>();
+  for (const entry of table) {
+    const children = childrenByParent.get(entry.ppid) ?? [];
+    children.push(entry);
+    childrenByParent.set(entry.ppid, children);
+  }
+
+  const groups = new Set<number>();
+  const queue = [...(childrenByParent.get(pid) ?? [])];
+  const selfGroup = table.find((entry) => entry.pid === pid)?.pgid;
+  while (queue.length > 0) {
+    const entry = queue.shift()!;
+    if (entry.pgid !== selfGroup && entry.pgid !== process.pid) {
+      groups.add(entry.pgid);
+    }
+    queue.push(...(childrenByParent.get(entry.pid) ?? []));
+  }
+  return [...groups];
+}
+
+function readProcessTable(): Array<{ pid: number; ppid: number; pgid: number }> {
+  try {
+    const output = execFileSync("ps", ["axo", "pid=,ppid=,pgid="], { encoding: "utf-8" });
+    return output
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/).map(Number))
+      .filter(([pid, ppid, pgid]) => Number.isFinite(pid) && Number.isFinite(ppid) && Number.isFinite(pgid))
+      .map(([pid, ppid, pgid]) => ({ pid, ppid, pgid }));
+  } catch {
+    return [];
   }
 }
 
