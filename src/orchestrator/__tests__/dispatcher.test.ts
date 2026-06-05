@@ -18,6 +18,7 @@ import { PLAN_STEP_CONFIG } from "../roles.js";
 import type { SeedInfo } from "../types.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import type { BvClient, BvTriageResult } from "../../lib/bv.js";
+import { WorktreeManager } from "../../lib/worktree-manager.js";
 import type { ForemanStore } from "../../lib/store.js";
 
 // Minimal mocks
@@ -1673,5 +1674,375 @@ describe("PLAN_STEP_CONFIG", () => {
 
   it("has maxTurns of 50", () => {
     expect(PLAN_STEP_CONFIG.maxTurns).toBe(50);
+  });
+});
+
+describe("Dispatcher.reconcileRunningIssues", () => {
+  function makeRun(overrides?: Partial<{
+    id: string;
+    seed_id: string;
+    project_id: string;
+    worktree_path: string | null;
+    status: "pending" | "running";
+  }>) {
+    return {
+      id: "run-001",
+      project_id: "proj-1",
+      seed_id: "bd-001",
+      agent_type: "claude-sonnet-4-6",
+      session_key: null,
+      worktree_path: "/tmp/worktrees/proj-1/bd-001",
+      status: "running" as const,
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      created_at: new Date().toISOString(),
+      progress: null,
+      base_branch: null,
+      ...overrides,
+    };
+  }
+
+  function makeSeedsClient(issueStatus: string) {
+    return {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn().mockResolvedValue({ status: issueStatus }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    } as unknown as ITaskClient;
+  }
+
+  it("stops a run when issue status is 'closed'", async () => {
+    const run = makeRun();
+    const seedsClient = makeSeedsClient("closed");
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run]),
+      updateRun,
+      logEvent,
+ getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
+
+    expect(stopped).toBe(1);
+    expect(updateRun).toHaveBeenCalledWith("run-001", {
+      status: "stuck",
+      completed_at: expect.any(String),
+    });
+    expect(logEvent).toHaveBeenCalledWith("proj-1", "stuck", { reason: "issue_terminal" }, "run-001");
+  });
+
+  it("stops a run when issue status is 'completed'", async () => {
+    const run = makeRun();
+    const seedsClient = makeSeedsClient("completed");
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run]),
+      updateRun,
+      logEvent,
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
+
+    expect(stopped).toBe(1);
+    expect(updateRun).toHaveBeenCalledWith("run-001", {
+      status: "stuck",
+      completed_at: expect.any(String),
+    });
+  });
+
+  it("stops a run when issue is not found (404 error)", async () => {
+    const run = makeRun();
+    const seedsClient = {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn().mockRejectedValue(new Error("not found or does not exist")),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    } as unknown as ITaskClient;
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run]),
+      updateRun,
+      logEvent,
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
+
+    expect(stopped).toBe(1);
+    expect(updateRun).toHaveBeenCalledWith("run-001", {
+      status: "stuck",
+      completed_at: expect.any(String),
+    });
+ });
+
+  it("does NOT stop a run when issue status is 'in_progress'", async () => {
+    const run = makeRun();
+    const seedsClient = makeSeedsClient("in_progress");
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run]),
+      updateRun,
+      logEvent,
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
+
+    expect(stopped).toBe(0);
+    expect(updateRun).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
+  });
+
+  it("does NOT stop a run when issue status is 'open'", async () => {
+    const run = makeRun();
+    const seedsClient = makeSeedsClient("open");
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run]),
+      updateRun,
+      logEvent,
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
+
+    expect(stopped).toBe(0);
+    expect(updateRun).not.toHaveBeenCalled();
+  });
+
+  it("stops multiple runs when multiple issues are terminal", async () => {
+    const run1 = makeRun({ id: "run-001", seed_id: "bd-001" });
+    const run2 = makeRun({ id: "run-002", seed_id: "bd-002" });
+    const seedsClient = {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn()
+        .mockResolvedValueOnce({ status: "closed" })
+        .mockResolvedValueOnce({ status: "completed" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    } as unknown as ITaskClient;
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run1, run2]),
+      updateRun,
+      logEvent,
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
+
+    expect(stopped).toBe(2);
+    expect(updateRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues checking other runs when one show() throws a non-404 error", async () => {
+    const run1 = makeRun({ id: "run-001", seed_id: "bd-001" });
+    const run2 = makeRun({ id: "run-002", seed_id: "bd-002" });
+    const seedsClient = {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn()
+        .mockRejectedValueOnce(new Error("network timeout"))
+        .mockResolvedValueOnce({ status: "closed" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    } as unknown as ITaskClient;
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run1, run2]),
+      updateRun,
+      logEvent,
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
+
+    // Only run2 was stopped; run1's error was non-404 so it was skipped
+    expect(stopped).toBe(1);
+    expect(updateRun).toHaveBeenCalledTimes(1);
+    expect(updateRun).toHaveBeenCalledWith("run-002", expect.any(Object));
+  });
+
+  it("calls worktreeManager.removeWorktree for stopped runs with worktree_path", async () => {
+    const run = makeRun({ worktree_path: "/tmp/worktrees/proj-1/bd-001" });
+    const seedsClient = makeSeedsClient("closed");
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run]),
+      updateRun,
+      logEvent,
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const removeWorktreeSpy = vi.spyOn(WorktreeManager.prototype, "removeWorktree").mockResolvedValue(undefined);
+
+    try {
+      await (dispatcher as any).reconcileRunningIssues("proj-1");
+      expect(removeWorktreeSpy).toHaveBeenCalledWith("proj-1", "bd-001", "/tmp");
+    } finally {
+      removeWorktreeSpy.mockRestore();
+    }
+  });
+
+  it("does not call removeWorktree when run has no worktree_path", async () => {
+    const run = makeRun({ worktree_path: null });
+    const seedsClient = makeSeedsClient("closed");
+    const updateRun = vi.fn();
+    const logEvent = vi.fn();
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([run]),
+      updateRun,
+      logEvent,
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const removeWorktreeSpy = vi.spyOn(WorktreeManager.prototype, "removeWorktree").mockResolvedValue(undefined);
+
+    try {
+      await (dispatcher as any).reconcileRunningIssues("proj-1");
+      expect(removeWorktreeSpy).not.toHaveBeenCalled();
+    } finally {
+      removeWorktreeSpy.mockRestore();
+    }
+  });
+});
+
+describe("Dispatcher.dispatch — reconciliation integration", () => {
+  function makeIssue(id = "bd-001"): Issue {
+    return {
+      id,
+      title: `Task ${id}`,
+      status: "open",
+      priority: "P2",
+      type: "task",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  it("calls reconcileRunningIssues at the start of dispatch before processing seeds", async () => {
+    const issue = makeIssue();
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const reconcileSpy = vi.spyOn(dispatcher as any, "reconcileRunningIssues").mockResolvedValue(0);
+
+    await dispatcher.dispatch({ dryRun: true });
+
+    expect(reconcileSpy).toHaveBeenCalledWith("proj-1");
+    // seeds.ready should have been called AFTER reconcileRunningIssues
+    reconcileSpy.mockRestore();
+  });
+
+  it("does not block dispatch when reconcileRunningIssues throws", async () => {
+    const issue = makeIssue();
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue({ status: "open" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    vi.spyOn(dispatcher as any, "reconcileRunningIssues").mockRejectedValueOnce(new Error("reconciliation failed"));
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // Should still dispatch despite reconciliation failure
+    expect(result.dispatched).toHaveLength(1);
+    consoleSpy.mockRestore();
+  });
+
+  it("logs stopped count when reconciliation stops runs", async () => {
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([]),
+      show: vi.fn().mockResolvedValue({ status: "closed" }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue([{
+        id: "run-001",
+        project_id: "proj-1",
+        seed_id: "bd-001",
+        agent_type: "claude-sonnet-4-6",
+        session_key: null,
+        worktree_path: null,
+        status: "running",
+        started_at: null,
+        completed_at: null,
+        created_at: new Date().toISOString(),
+        progress: null,
+      }]),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await dispatcher.dispatch({ dryRun: true });
+
+    const logCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
+    expect(logCalls.some((msg) => msg.includes("Stopped 1 run(s) with terminal issues"))).toBe(true);
+    consoleSpy.mockRestore();
   });
 });
