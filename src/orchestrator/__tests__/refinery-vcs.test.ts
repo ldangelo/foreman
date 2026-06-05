@@ -459,17 +459,28 @@ describe("AC-T-012-3: refinery.ts no longer imports or calls mergeWorktree", () 
     expect(r).toBeInstanceOf(Refinery);
   });
 
-  it("mergeCompleted uses vcs.mergeWithoutCommit (not gitSpecial)", async () => {
+  it("mergeCompleted uses vcs.mergeWithoutCommit for injected non-worktree test backends", async () => {
     const { store, refinery, vcs } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // AC-T-012: Confirm vcs.mergeWithoutCommit was called (replaces git merge --squash via gitSpecial)
     expect(vcs.mergeWithoutCommit).toHaveBeenCalled();
-    // Should also have called vcs.commit with the squash message
     expect(vcs.commit).toHaveBeenCalled();
+  });
+
+  it("has a dedicated integration worktree path for real git refinery merges", () => {
+    const source = readFileSync(
+      join(import.meta.dirname ?? __dirname, "..", "..", "..", "src", "orchestrator", "refinery.ts"),
+      "utf8",
+    );
+
+    expect(source).toContain("ensureIntegrationWorktree");
+    expect(source).toContain('".foreman", "integration"');
+    expect(source).toContain('gitSpecial(["worktree", "add", "--detach"');
+    expect(source).toContain('gitSpecial(["push", "origin", `HEAD:${targetBranch}`]');
+    expect(source).toContain("const useIntegrationWorktree = this.vcsBackend.name === \"git\" && existsSync(join(this.projectPath, \".git\"));");
   });
 });
 

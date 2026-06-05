@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
@@ -79,6 +80,31 @@ function shouldTreatLocalBranchDeleteFailureAsNonFatal(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return message.includes("cannot delete branch")
     && message.includes("used by worktree");
+}
+
+function safeIntegrationBranchSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "default";
+}
+
+async function ensureIntegrationWorktree(repoPath: string, projectId: string, targetBranch: string): Promise<string> {
+  const safeTarget = safeIntegrationBranchSegment(targetBranch);
+  const worktreePath = join(homedir(), ".foreman", "integration", projectId, safeTarget);
+
+  mkdirSync(join(homedir(), ".foreman", "integration", projectId), { recursive: true, mode: 0o700 });
+  await gitSpecial(["fetch", "origin", targetBranch], repoPath).catch(() => gitSpecial(["fetch", "origin"], repoPath).catch(() => ""));
+  const startRef = await gitSpecial(["rev-parse", "--verify", `origin/${targetBranch}`], repoPath)
+    .then(() => `origin/${targetBranch}`)
+    .catch(() => targetBranch);
+
+  if (!existsSync(worktreePath)) {
+    await gitSpecial(["worktree", "add", "--detach", worktreePath, startRef], repoPath);
+  }
+
+  await gitSpecial(["rebase", "--abort"], worktreePath).catch(() => "");
+  await gitSpecial(["merge", "--abort"], worktreePath).catch(() => "");
+  await gitSpecial(["reset", "--hard", startRef], worktreePath);
+  await gitSpecial(["clean", "-fd"], worktreePath);
+  return worktreePath;
 }
 
 async function runTestCommand(command: string, cwd: string): Promise<{ ok: boolean; output: string }> {
@@ -270,8 +296,11 @@ export class Refinery {
    * Returns true if rebase completed successfully.
    * Delegates to ConflictResolver.autoResolveRebaseConflicts().
    */
-  private async autoResolveRebaseConflicts(targetBranch: string): Promise<boolean> {
-    return this.conflictResolver.autoResolveRebaseConflicts(targetBranch);
+  private async autoResolveRebaseConflicts(targetBranch: string, workspacePath = this.projectPath): Promise<boolean> {
+    const resolver = workspacePath === this.projectPath
+      ? this.conflictResolver
+      : new ConflictResolver(workspacePath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
+    return resolver.autoResolveRebaseConflicts(targetBranch);
   }
 
   /**
@@ -279,14 +308,14 @@ export class Refinery {
    * so that merge operations start from a clean state for state files.
    * No-op when there are no dirty state files.
    */
-  private async autoCommitStateFiles(): Promise<void> {
+  private async autoCommitStateFiles(workspacePath = this.projectPath): Promise<void> {
     try {
       // Use vcsBackend.getModifiedFiles() to retrieve file paths with correct
       // per-line whitespace handling. This avoids the XY-code trimming issue
       // that occurs when using status() on the whole output string (git status
       // --porcelain lines starting with ' M' have a leading space that trim()
       // removes from the first line of the combined output).
-      const modifiedFiles = await this.vcsBackend.getModifiedFiles(this.projectPath);
+      const modifiedFiles = await this.vcsBackend.getModifiedFiles(workspacePath);
       if (modifiedFiles.length === 0) return;
 
       const stateFiles = modifiedFiles.filter(
@@ -295,8 +324,8 @@ export class Refinery {
 
       if (stateFiles.length === 0) return;
 
-      await this.vcsBackend.stageFiles(this.projectPath, stateFiles);
-      await this.vcsBackend.commit(this.projectPath, "chore: auto-commit state files before merge");
+      await this.vcsBackend.stageFiles(workspacePath, stateFiles);
+      await this.vcsBackend.commit(workspacePath, "chore: auto-commit state files before merge");
     } catch (err: unknown) {
       // MQ-020: Auto-commit failure is non-fatal — log and continue
       const message = err instanceof Error ? err.message : String(err);
@@ -309,8 +338,11 @@ export class Refinery {
    * conflict. Commits the removal if any tracked files were removed.
    * Delegates to ConflictResolver.removeReportFiles().
    */
-  private async removeReportFiles(): Promise<void> {
-    return this.conflictResolver.removeReportFiles();
+  private async removeReportFiles(workspacePath = this.projectPath): Promise<void> {
+    const resolver = workspacePath === this.projectPath
+      ? this.conflictResolver
+      : new ConflictResolver(workspacePath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
+    return resolver.removeReportFiles();
   }
 
   /**
@@ -320,8 +352,11 @@ export class Refinery {
    * don't need to checkout branches or deal with dirty working trees.
    * Delegates to ConflictResolver.archiveReportsPostMerge().
    */
-  private async archiveReportsPostMerge(seedId: string): Promise<void> {
-    return this.conflictResolver.archiveReportsPostMerge(seedId);
+  private async archiveReportsPostMerge(seedId: string, workspacePath = this.projectPath): Promise<void> {
+    const resolver = workspacePath === this.projectPath
+      ? this.conflictResolver
+      : new ConflictResolver(workspacePath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
+    return resolver.archiveReportsPostMerge(seedId);
   }
 
   /**
@@ -1082,6 +1117,14 @@ export class Refinery {
       }
 
       try {
+        const useIntegrationWorktree = this.vcsBackend.name === "git" && existsSync(join(this.projectPath, ".git"));
+        const mergeWorkspacePath = useIntegrationWorktree
+          ? await ensureIntegrationWorktree(this.projectPath, opts?.projectId ?? run.project_id, targetBranch)
+          : this.projectPath;
+        const mergeTargetRef = useIntegrationWorktree
+          ? await gitSpecial(["rev-parse", "--verify", `origin/${targetBranch}`], mergeWorkspacePath).then(() => `origin/${targetBranch}`).catch(() => targetBranch)
+          : targetBranch;
+
         // Early guard: if the branch has no unique commits vs target, the agent committed
         // nothing. Creating a PR would fail ("no commits between ..."). Don't reset to open
         // (that would cause infinite redispatch to the same broken worktree). Mark as a
@@ -1130,10 +1173,10 @@ export class Refinery {
         }
 
         // Commit any dirty state files (.seeds/, .foreman/) before merge
-        await this.autoCommitStateFiles();
+        await this.autoCommitStateFiles(mergeWorkspacePath);
 
         // Remove report files so they can't cause merge conflicts
-        await this.removeReportFiles();
+        await this.removeReportFiles(mergeWorkspacePath);
 
         // Ensure branch is in local refs — sentinel/remote branches may only exist
         // on origin and not be fetched yet. Silently skip if the fetch fails (the
@@ -1153,7 +1196,7 @@ export class Refinery {
           let rebaseOk = true;
           const rebaseWorkspacePath = this.vcsBackend.name === "jujutsu"
             ? (run.worktree_path ?? this.projectPath)
-            : this.projectPath;
+            : mergeWorkspacePath;
           let stashedBeforeRebase = false;
 
           try {
@@ -1176,16 +1219,16 @@ export class Refinery {
               // may have left patches applied but not committed. Save any uncommitted changes
               // so git rebase doesn't refuse to run.
               try {
-                const dirty = await this.vcsBackend.status(this.projectPath);
+                const dirty = await this.vcsBackend.status(mergeWorkspacePath);
                 if (dirty.trim()) {
-                  stashedBeforeRebase = await this.vcsBackend.saveWorktreeState(this.projectPath);
+                  stashedBeforeRebase = await this.vcsBackend.saveWorktreeState(mergeWorkspacePath);
                 }
               } catch {
                 // save failure is non-fatal — rebase will fail with a clear message if still dirty
               }
 
               try {
-                const rebaseResult = await this.vcsBackend.rebaseBranch(this.projectPath, branchName, targetBranch);
+                const rebaseResult = await this.vcsBackend.rebaseBranch(mergeWorkspacePath, branchName, targetBranch);
                 if (!rebaseResult.success) {
                   throw new Error(
                     rebaseResult.conflictingFiles?.length
@@ -1202,16 +1245,21 @@ export class Refinery {
                   rebaseOk = true;
                 } else {
                   // Rebase hit conflicts — try to auto-resolve report files and continue
-                  rebaseOk = await this.autoResolveRebaseConflicts(targetBranch);
+                  rebaseOk = await this.autoResolveRebaseConflicts(targetBranch, mergeWorkspacePath);
                 }
               }
             }
           } finally {
             // Return to target branch regardless
-            try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
+            if (!useIntegrationWorktree) {
+              try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
+            } else {
+              try { await gitSpecial(["checkout", "--detach", mergeTargetRef], mergeWorkspacePath); } catch { /* best effort */ }
+              try { await this.vcsBackend.resetHard(mergeWorkspacePath, mergeTargetRef); } catch { /* best effort */ }
+            }
 
             if (stashedBeforeRebase) {
-              try { await this.vcsBackend.restoreWorktreeState(this.projectPath); } catch { /* best effort — may be empty */ }
+              try { await this.vcsBackend.restoreWorktreeState(mergeWorkspacePath); } catch { /* best effort — may be empty */ }
             }
           }
 
@@ -1236,15 +1284,26 @@ export class Refinery {
         }
 
         // Save pre-merge HEAD so we can revert merge + archive if tests fail
-        const preMergeHead = await this.vcsBackend.getHeadId(this.projectPath);
+        const preMergeHead = await this.vcsBackend.getHeadId(mergeWorkspacePath);
 
         // Use squash merge so each feature branch becomes a single commit on
         // the target branch, regardless of how many commits the branch contains.
         // This prevents empty or noisy intermediate commits from polluting dev.
         const squashMergeOk = true;
         try {
-          await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch);
-          const mergeResult = await this.vcsBackend.mergeWithoutCommit(this.projectPath, branchName, targetBranch);
+          if (!useIntegrationWorktree) {
+            await this.vcsBackend.checkoutBranch(mergeWorkspacePath, targetBranch);
+          }
+          const mergeResult = useIntegrationWorktree
+            ? await gitSpecial(["merge", branchName, "--no-commit", "--no-ff"], mergeWorkspacePath).then(() => ({ success: true as const })).catch(async (err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                if (message.includes("CONFLICT") || message.includes("Merge conflict") || message.includes("Automatic merge failed")) {
+                  const conflicts = await gitSpecial(["diff", "--name-only", "--diff-filter=U"], mergeWorkspacePath).catch(() => "");
+                  return { success: false as const, conflicts: conflicts.split("\n").map((f) => f.trim()).filter(Boolean) };
+                }
+                throw err;
+              })
+            : await this.vcsBackend.mergeWithoutCommit(mergeWorkspacePath, branchName, targetBranch);
           if (!mergeResult.success) {
             const conflictSummary = mergeResult.conflicts?.join(", ") || "merge conflict";
             throw new Error(`Merge conflict: ${conflictSummary}`);
@@ -1268,10 +1327,10 @@ export class Refinery {
             if (codeConflicts.length > 0) {
               // Real code conflicts — abort merge and create PR instead
               try {
-                await this.vcsBackend.abortMerge(this.projectPath);
+                await this.vcsBackend.abortMerge(mergeWorkspacePath);
               } catch {
                 // abortMerge may fail if already clean; reset as fallback
-                try { await this.vcsBackend.resetHard(this.projectPath, "HEAD"); } catch { /* best effort */ }
+                try { await this.vcsBackend.resetHard(mergeWorkspacePath, "HEAD"); } catch { /* best effort */ }
               }
 
               await this.addFailureNote(
@@ -1297,8 +1356,8 @@ export class Refinery {
 
             // Only report-file conflicts — auto-resolve by accepting the branch version
             for (const f of reportConflicts) {
-              await this.vcsBackend.checkoutFile(this.projectPath, "--theirs", f);
-              await this.vcsBackend.stageFile(this.projectPath, f);
+              await this.vcsBackend.checkoutFile(mergeWorkspacePath, "--theirs", f);
+              await this.vcsBackend.stageFile(mergeWorkspacePath, f);
             }
           } else {
             // Non-conflict error — rethrow
@@ -1319,7 +1378,7 @@ export class Refinery {
             // Non-fatal — use default message
           }
           try {
-            await this.vcsBackend.commit(this.projectPath, squashMsg);
+            await this.vcsBackend.commit(mergeWorkspacePath, squashMsg);
           } catch (commitErr: unknown) {
             // commit may fail if there's nothing to commit (empty squash)
             const commitMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
@@ -1330,15 +1389,15 @@ export class Refinery {
         }
 
         // Merge succeeded — archive report files so they don't conflict with next merge
-        await this.archiveReportsPostMerge(run.seed_id);
+        await this.archiveReportsPostMerge(run.seed_id, mergeWorkspacePath);
 
         // Optionally run tests
         if (runTests) {
-          const testResult = await runTestCommand(testCommand, this.projectPath);
+          const testResult = await runTestCommand(testCommand, mergeWorkspacePath);
 
           if (!testResult.ok) {
             // Revert the merge + archive commits
-            await this.vcsBackend.resetHard(this.projectPath, preMergeHead);
+            await this.vcsBackend.resetHard(mergeWorkspacePath, preMergeHead);
 
             // Add failure note before resetting so the bead records why it was reset
             await this.addFailureNote(
@@ -1366,6 +1425,10 @@ export class Refinery {
             });
             continue;
           }
+        }
+
+        if (useIntegrationWorktree) {
+          await gitSpecial(["push", "origin", `HEAD:${targetBranch}`], mergeWorkspacePath);
         }
 
         // All good — clean up worktree and mark as merged
