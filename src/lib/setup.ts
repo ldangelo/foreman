@@ -44,9 +44,9 @@ export interface HookResult {
  * @param label - Descriptive label for logging (e.g., "afterCreate", "beforeRun")
  * @returns Promise<HookResult> with success flag, combined stdout/stderr, and timedOut flag
  *
- * @note Command parsing uses simple whitespace splitting (split(/\s+/)), which does not
- * handle quoted arguments. For example, `git clone https://github.com/org/repo.git "my folder/"`
- * would be incorrectly split. Use shell invocation (e.g., "sh -c '...'") for complex commands.
+ * Hook commands run through the platform shell so quoted arguments,
+ * environment expansion, pipes, redirection, and command chaining behave like
+ * the examples in project config.
  */
 export async function runHook(
   hookCmd: string,
@@ -55,28 +55,32 @@ export async function runHook(
   timeoutMs = 60_000,
   label = "hook",
 ): Promise<HookResult> {
-  const argv = hookCmd.trim().split(/\s+/);
-  const [cmd, ...args] = argv;
-
+  const command = hookCmd.trim();
+  if (!command) {
+    return { success: true, output: "", timedOut: false };
+  }
   console.error(`[hooks] Running ${label}: ${hookCmd} (cwd: ${workspacePath}, timeout: ${timeoutMs}ms)`);
 
   const hookEnv = { ...buildSetupEnv(), ...env };
 
   try {
-    const { stdout, stderr } = await execFileAsync(cmd, args, {
+    const { stdout, stderr } = await execFileAsync(command, {
       cwd: workspacePath,
       maxBuffer: 10 * 1024 * 1024,
       env: hookEnv,
       timeout: timeoutMs,
+      shell: true,
     });
 
     const output = [stdout, stderr].map((s) => (s ?? "").trim()).filter(Boolean).join("\n");
     console.error(`[hooks] ${label} completed successfully`);
     return { success: true, output, timedOut: false };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; message?: string; code?: string };
+    const e = err as { stdout?: string; stderr?: string; message?: string; code?: string; killed?: boolean; signal?: NodeJS.Signals };
     const errMsg = err instanceof Error ? err.message : String(err);
     const timedOut = e.code === "ETIMEDOUT" ||
+      e.killed === true ||
+      e.signal === "SIGTERM" ||
       errMsg.toLowerCase().includes("timeout") ||
       errMsg.includes("timed out");
     const output = [e.stdout, e.stderr].map((s) => (s ?? "").trim()).filter(Boolean).join("\n") || errMsg;

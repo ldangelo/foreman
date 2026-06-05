@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -39,6 +39,20 @@ describe("runHook", () => {
 
     expect(result.success).toBe(true);
     expect(result.output).toContain("test-value");
+  });
+
+  it("runs through a shell so quotes, expansion, and redirection work", async () => {
+    const workspace = makeTempDir("foreman-hook-test-");
+    const result = await runHook(
+      'printf "%s" "$MY_VAR" > "quoted file.txt"',
+      workspace,
+      { MY_VAR: "value with spaces" },
+      30_000,
+      "test",
+    );
+
+    expect(result.success).toBe(true);
+    expect(readFileSync(join(workspace, "quoted file.txt"), "utf8")).toBe("value with spaces");
   });
 
   it("handles mkdir command with arguments", async () => {

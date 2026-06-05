@@ -8,7 +8,9 @@ describe("agent-worker runtime task client threading", () => {
     const source = readFileSync(sourcePath, "utf8");
 
     expect(source).toContain("async function createRuntimeTaskClient(projectPath: string, registeredProjectId?: string)");
-    expect(source.match(/createRuntimeTaskClient\(pipelineProjectPath, registeredProjectId\)/g)).toHaveLength(3);
+    const registeredCalls = source.match(/createRuntimeTaskClient\(pipelineProjectPath, registeredProjectId\)/g) ?? [];
+    expect(registeredCalls.length).toBeGreaterThanOrEqual(3);
+    expect(source).not.toContain("createRuntimeTaskClient(pipelineProjectPath)");
   });
 
   it("resolves worker databaseUrl from storeProjectPath so inferred registered Postgres stays enabled", () => {

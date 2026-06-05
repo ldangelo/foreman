@@ -344,6 +344,8 @@ interface WorkerConfig {
    * When set, finalize commit messages are suffixed with "Fixes #{issueNumber}" (TRD-042).
    */
   githubIssueNumber?: number;
+  /** One-based dispatch attempt number for lifecycle hook environment. */
+  attemptNumber?: number;
   /**
    * Directory guardrail config (FR-1). When set, wraps tool factories with
    * cwd verification in the Pi SDK session.
@@ -383,6 +385,25 @@ function installTestWorkerGuard(config: WorkerConfig): void {
     }
   }, 1_000);
   interval.unref();
+}
+
+async function runAfterRunHook(config: WorkerConfig): Promise<void> {
+  const hooks = config.hooks as ProjectHooksConfig | undefined;
+  if (!hooks?.afterRun) return;
+
+  const hookEnv: Record<string, string> = {
+    FOREMAN_WORKSPACE_PATH: config.worktreePath,
+    FOREMAN_ISSUE_ID: config.seedId,
+    FOREMAN_ISSUE_IDENTIFIER: config.seedId,
+    FOREMAN_ATTEMPT: String(config.attemptNumber ?? 1),
+  };
+
+  try {
+    await runWorkspaceHook(hooks, "afterRun", config.worktreePath, hookEnv);
+  } catch (hookErr: unknown) {
+    const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
+    log(`[hooks] afterRun hook failed (non-fatal): ${hookMsg.slice(0, 300)}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -478,9 +499,13 @@ async function main(): Promise<void> {
 
   // ── Pipeline mode: run each phase as a separate SDK session ─────────
   if (pipeline) {
-    await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);
-    store.close();
-    log(`Pipeline worker exiting for ${seedId}`);
+    try {
+      await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);
+      log(`Pipeline worker exiting for ${seedId}`);
+    } finally {
+      await runAfterRunHook(config);
+      store.close();
+    }
     return;
   }
 
@@ -647,6 +672,7 @@ async function main(): Promise<void> {
     }
   }
 
+  await runAfterRunHook(config);
   store.close();
   log(`Worker exiting for ${seedId}`);
 }
@@ -1469,23 +1495,6 @@ async function runPipeline(
     // Pipeline post-processing: determine finalize push success, then enqueue merge after
     // any post-finalize phases (for example create-pr/pr-review) complete.
     async onPipelineComplete({ progress, success }) {
-      // Run afterRun hook (non-fatal — failures are logged but ignored)
-      // Runs regardless of success or failure
-      const hooks = config.hooks as ProjectHooksConfig | undefined;
-      if (hooks && (hooks.afterRun || hooks.timeoutMs)) {
-        const hookEnv: Record<string, string> = {
-          FOREMAN_WORKSPACE_PATH: config.worktreePath,
-          FOREMAN_ISSUE_ID: config.seedId,
-          FOREMAN_ISSUE_IDENTIFIER: config.seedId,
-          FOREMAN_ATTEMPT: "1",
-        };
-        try {
-          await runWorkspaceHook(hooks, "afterRun", config.worktreePath, hookEnv);
-        } catch (hookErr: unknown) {
-          const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
-          log(`[PIPELINE] afterRun hook failed (non-fatal): ${hookMsg.slice(0, 300)}`);
-        }
-      }
 
       const hasFinalizePhase = workflowConfig.phases.some((phase) => phase.name === "finalize");
       if (!hasFinalizePhase) {

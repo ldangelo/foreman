@@ -61,6 +61,7 @@ vi.mock("../../lib/worktree-manager.js", () => ({
 vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
+  runWorkspaceHook: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../lib/workflow-loader.js", () => ({
