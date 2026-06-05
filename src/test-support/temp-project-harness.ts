@@ -147,7 +147,7 @@ export async function createTempProjectHarness(): Promise<TempProjectHarness> {
   return {
     projectPath,
     cleanup() {
-      rmSync(projectPath, { recursive: true, force: true });
+      rmSync(projectPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
     seedTask(opts) {
       return withRetry(async () => {

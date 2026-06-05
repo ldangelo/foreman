@@ -1874,4 +1874,6 @@ async function fatalHandler(err: unknown): Promise<void> {
   process.exit(1);
 }
 
-main().catch(fatalHandler);
+main()
+  .then(() => process.exit(0))
+  .catch(fatalHandler);

@@ -22,7 +22,7 @@ Your job is to review PR feedback after the branch has been pushed and a PR has 
 4. Do not fix files in this phase. Do not commit. Do not push.
 5. Do not fix low/nit comments.
 6. Do not refactor unrelated code.
-7. If a failed check is unrelated, pre-existing, flaky, or unclear, report that and stop.
+7. Treat unresolved critical/high/medium CodeRabbit findings and any failed required check as final-gate blocking, even if they appear pre-existing, unrelated, or flaky. You may document scope, but do not mark PASS while the final gate would fail.
 8. Write `{{reportDir}}/PR_REVIEW_REPORT.md` with actionable findings for the developer retry loop.
 
 ## Allowed git actions
@@ -57,6 +57,6 @@ Read-only git/GitHub inspection only. This phase must not mutate the branch, com
 ```
 
 Verdict rules:
-- PASS only when no critical/high/medium CodeRabbit finding remains, no PR-caused failed check remains, and the PR is mergeable.
-- FAIL when blocking findings remain, checks still fail due to this PR, the PR still has merge conflicts, or scope is UNKNOWN.
+- PASS only when no critical/high/medium CodeRabbit finding remains, no required check is failing, and the PR is mergeable.
+- FAIL when blocking findings remain, any required check is still failing, the PR still has merge conflicts, or scope is UNKNOWN.
 - On FAIL, include exact file paths, lines, PR comment URLs, failed check URLs, and a concise recommended fix so the developer phase can act on the report.
