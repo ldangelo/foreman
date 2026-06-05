@@ -181,6 +181,7 @@ export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<P
     toolBreakdown: {},
     tokensIn: 0,
     tokensOut: 0,
+    filesChanged,
     outputText: filesChanged.join(", "),
   };
 }

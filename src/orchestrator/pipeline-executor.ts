@@ -71,6 +71,7 @@ export interface PhaseResult {
   traceMarkdownFile?: string;
   traceWarnings?: string[];
   commandHonored?: boolean;
+  filesChanged?: string[];
 }
 
 export interface PhaseObservabilityInput {
@@ -1521,6 +1522,13 @@ async function runPhaseSequence(
     progress.tokensOut += result.tokensOut;
     progress.costByPhase ??= {};
     progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + result.costUsd;
+    if (result.filesChanged?.length) {
+      for (const file of result.filesChanged) {
+        if (!progress.filesChanged.includes(file)) {
+          progress.filesChanged.push(file);
+        }
+      }
+    }
     await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
 
     // 7. Handle failure
@@ -1591,6 +1599,13 @@ async function runPhaseSequence(
               progress.tokensOut += fallbackResult.tokensOut;
               progress.costByPhase ??= {};
               progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + fallbackResult.costUsd;
+              if (fallbackResult.filesChanged?.length) {
+                for (const file of fallbackResult.filesChanged) {
+                  if (!progress.filesChanged.includes(file)) {
+                    progress.filesChanged.push(file);
+                  }
+                }
+              }
               await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
 
               // Handle success: send phase-complete, labels, forward artifact.

@@ -64,6 +64,8 @@ export interface PiRunResult {
   traceWarnings?: string[];
   /** Heuristic for whether a command workflow appears to have been honored. */
   commandHonored?: boolean;
+  /** Relative or repo-root paths written during the phase when a custom runner can provide them. */
+  filesChanged?: string[];
 }
 
 export interface PiRunOptions {
