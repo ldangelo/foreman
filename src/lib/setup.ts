@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 
 import type { WorkflowSetupStep, WorkflowSetupCache } from "./workflow-loader.js";
+import type { WorkspaceHooks } from "../orchestrator/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -19,6 +20,98 @@ function buildSetupEnv(): NodeJS.ProcessEnv {
     ...process.env,
     PATH: `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
   };
+}
+
+/**
+ * Result of a hook execution.
+ */
+export interface HookResult {
+  success: boolean;
+  output: string;
+  timedOut: boolean;
+}
+
+/**
+ * Run a workspace lifecycle hook command.
+ *
+ * Executes the given shell command in the workspace directory with the
+ * specified environment variables and timeout.
+ *
+ * @param hookCmd - Shell command to execute (e.g., "git clone https://github.com/org/repo.git")
+ * @param workspacePath - Working directory for the hook
+ * @param env - Additional environment variables to pass (FOREMAN_WORKSPACE_PATH etc.)
+ * @param timeoutMs - Timeout in milliseconds (default: 60000)
+ * @param label - Descriptive label for logging (e.g., "afterCreate", "beforeRun")
+ * @returns Promise<HookResult> with success flag, combined stdout/stderr, and timedOut flag
+ */
+export async function runHook(
+  hookCmd: string,
+  workspacePath: string,
+  env: Record<string, string>,
+  timeoutMs = 60_000,
+  label = "hook",
+): Promise<HookResult> {
+  const argv = hookCmd.trim().split(/\s+/);
+  const [cmd, ...args] = argv;
+
+  console.error(`[hooks] Running ${label}: ${hookCmd} (cwd: ${workspacePath}, timeout: ${timeoutMs}ms)`);
+
+  const hookEnv = { ...buildSetupEnv(), ...env };
+
+  try {
+    const { stdout, stderr } = await execFileAsync(cmd, args, {
+      cwd: workspacePath,
+      maxBuffer: 10 * 1024 * 1024,
+      env: hookEnv,
+      timeout: timeoutMs,
+    });
+
+    const output = [stdout, stderr].map((s) => (s ?? "").trim()).filter(Boolean).join("\n");
+    console.error(`[hooks] ${label} completed successfully`);
+    return { success: true, output, timedOut: false };
+  } catch (err: unknown) {
+    const e = err as { stdout?: string; stderr?: string; message?: string; code?: string };
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // Timeout detection: ETIMEDOUT code, "timeout" in message, or killed signal
+    const timedOut = e.code === "ETIMEDOUT" ||
+      errMsg.toLowerCase().includes("timeout") ||
+      errMsg.includes("timed out") ||
+      e.code === "ENOTFOUND"; // ENOTFOUND can happen on some platforms for timeouts
+    const output = [e.stdout, e.stderr].map((s) => (s ?? "").trim()).filter(Boolean).join("\n") || errMsg;
+    console.error(`[hooks] ${label} ${timedOut ? "timed out" : "failed"}: ${output.slice(0, 300)}`);
+    return { success: false, output, timedOut };
+  }
+}
+
+/**
+ * Run workspace lifecycle hooks for a given stage.
+ *
+ * @param hooks - WorkspaceHooks configuration
+ * @param stage - One of: afterCreate, beforeRun, afterRun, beforeRemove
+ * @param workspacePath - Working directory for the hooks
+ * @param env - Environment variables to pass to hooks
+ * @returns Promise that resolves when all hooks for the stage complete
+ * @throws Error if afterCreate or beforeRun hooks fail (fatal stages)
+ */
+export async function runWorkspaceHook(
+  hooks: WorkspaceHooks,
+  stage: keyof Pick<WorkspaceHooks, "afterCreate" | "beforeRun" | "afterRun" | "beforeRemove">,
+  workspacePath: string,
+  env: Record<string, string>,
+): Promise<void> {
+  const hookCmd = hooks[stage];
+  if (!hookCmd) return;
+
+  const timeoutMs = hooks.timeoutMs ?? 60_000;
+  const result = await runHook(hookCmd, workspacePath, env, timeoutMs, stage);
+
+  // Fatal stages: afterCreate, beforeRun — throw on failure
+  if (!result.success && (stage === "afterCreate" || stage === "beforeRun")) {
+    throw new Error(`Workspace hook '${stage}' failed: ${result.output}`);
+  }
+
+  // Non-fatal stages: afterRun, beforeRemove — log but don't throw
+  // (already logged in runHook)
 }
 
 /**

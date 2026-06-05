@@ -11,7 +11,7 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { EventType, ForemanStore, NativeTask, Run } from "../lib/store.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { installDependencies, runSetupWithCache } from "../lib/setup.js";
+import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
@@ -938,6 +938,8 @@ export class Dispatcher {
         let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
         // TRD-007: capture merge strategy from workflow config
         let workflowMerge: 'auto' | 'pr' | 'none' = 'auto';
+        // projectHooks is used in afterCreate/beforeRun hooks below the try block
+        let projectHooks: import("../lib/project-config.js").ProjectHooksConfig | undefined;
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
@@ -949,6 +951,7 @@ export class Dispatcher {
           try {
             const projectCfg = loadProjectConfig(this.projectPath);
             projectVcs = projectCfg?.vcs;
+            projectHooks = projectCfg?.hooks;
           } catch (projErr: unknown) {
             // Non-fatal: log and continue without project config
             const projMsg = projErr instanceof Error ? projErr.message : String(projErr);
@@ -1008,6 +1011,23 @@ export class Dispatcher {
           await runSetupWithCache(worktreePath, this.projectPath, setupSteps, setupCache);
         } else {
           await installDependencies(worktreePath);
+        }
+
+        // Run afterCreate hook (one-time setup after workspace created)
+        // Failures are fatal — block agent spawn
+        if (projectHooks && (projectHooks.afterCreate || projectHooks.timeoutMs)) {
+          const hookEnv: Record<string, string> = {
+            FOREMAN_WORKSPACE_PATH: worktreePath,
+            FOREMAN_ISSUE_ID: seed.id,
+            FOREMAN_ISSUE_IDENTIFIER: seed.id,
+            FOREMAN_ATTEMPT: "1",
+          };
+          try {
+            await runWorkspaceHook(projectHooks, "afterCreate", worktreePath, hookEnv);
+          } catch (hookErr: unknown) {
+            const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
+            throw new Error(`afterCreate hook failed for ${seed.id}: ${hookMsg}`);
+          }
         }
 
         // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
@@ -1100,6 +1120,23 @@ export class Dispatcher {
         const epicTasksForSeed = (seed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
         const epicIdForSeed = epicTasksForSeed ? seed.id : undefined;
 
+        // Run beforeRun hook (before agent launch)
+        // Failures are fatal — block agent spawn
+        if (projectHooks && (projectHooks.beforeRun || projectHooks.timeoutMs)) {
+          const hookEnv: Record<string, string> = {
+            FOREMAN_WORKSPACE_PATH: worktreePath,
+            FOREMAN_ISSUE_ID: seed.id,
+            FOREMAN_ISSUE_IDENTIFIER: seed.id,
+            FOREMAN_ATTEMPT: "1",
+          };
+          try {
+            await runWorkspaceHook(projectHooks, "beforeRun", worktreePath, hookEnv);
+          } catch (hookErr: unknown) {
+            const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
+            throw new Error(`beforeRun hook failed for ${seed.id}: ${hookMsg}`);
+          }
+        }
+
         const { sessionKey } = await this.spawnAgent(
           model,
           worktreePath,
@@ -1117,6 +1154,7 @@ export class Dispatcher {
           opts?.targetBranch,
           epicTasksForSeed,
           epicIdForSeed,
+          projectHooks,
         );
 
         // Update run with session key
@@ -1466,6 +1504,7 @@ export class Dispatcher {
     targetBranch?: string,
     epicTasks?: EpicTask[],
     epicId?: string,
+    hooks?: import("../lib/project-config.js").ProjectHooksConfig,
   ): Promise<{ sessionKey: string }> {
     const prompt = this.buildSpawnPrompt(seed.id, seed.title);
 
@@ -1540,6 +1579,8 @@ export class Dispatcher {
           expectedCwd: worktreePath,
           mode: "auto-correct",
         },
+        // Workspace lifecycle hooks for afterRun
+        hooks: hooks,
       });
 
       const sessionKey = buildSdkSessionKey(model, runId, pid);
@@ -1954,6 +1995,11 @@ export interface WorkerConfig {
     /** Optional list of allowed path prefixes. */
     allowedPaths?: string[];
   };
+  /**
+   * Workspace lifecycle hooks for pre/post-run customization.
+   * Loaded from project config and passed to the agent worker.
+   */
+  hooks?: import("../lib/project-config.js").ProjectHooksConfig;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

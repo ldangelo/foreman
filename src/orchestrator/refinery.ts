@@ -18,6 +18,9 @@ import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from 
 import { syncBeadStatusAfterMerge } from "./auto-merge.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
+import { loadProjectConfig } from "../lib/project-config.js";
+import type { ProjectHooksConfig } from "../lib/project-config.js";
+import { runWorkspaceHook } from "../lib/setup.js";
 import { NativeTaskStore } from "../lib/task-store.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import type { Run, EventType } from "../lib/store.js";
@@ -380,6 +383,31 @@ export class Refinery {
     return (process.env.FOREMAN_RUNTIME_MODE ?? "").trim().toLowerCase() === "test";
   }
 
+  /**
+   * Load workspace hooks from project config and run the beforeRemove hook.
+   * Failures are logged but ignored — non-blocking.
+   */
+  private async runBeforeRemoveHook(workspacePath: string, seedId: string): Promise<void> {
+    try {
+      const projectCfg = loadProjectConfig(this.projectPath);
+      const hooks = projectCfg?.hooks;
+      if (!hooks) return;
+
+      const hookEnv: Record<string, string> = {
+        FOREMAN_WORKSPACE_PATH: workspacePath,
+        FOREMAN_ISSUE_ID: seedId,
+        FOREMAN_ISSUE_IDENTIFIER: seedId,
+        FOREMAN_ATTEMPT: "1",
+      };
+
+      await runWorkspaceHook(hooks, "beforeRemove", workspacePath, hookEnv);
+    } catch (hookErr: unknown) {
+      // Non-fatal — log and continue with worktree removal
+      const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
+      console.error(`[Refinery] beforeRemove hook failed for ${seedId}: ${hookMsg.slice(0, 300)}`);
+    }
+  }
+
   private async getSeedContext(seedId: string): Promise<{ title: string; description: string }> {
     let seedTitle = seedId;
     let seedDescription = "";
@@ -428,6 +456,10 @@ export class Refinery {
       } catch {
         // Archive is best-effort — don't block worktree removal
       }
+
+      // Run beforeRemove hook (non-fatal — failures are logged but ignored)
+      await this.runBeforeRemoveHook(run.worktree_path, run.seed_id);
+
       try {
         await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
       } catch {
@@ -1438,6 +1470,10 @@ export class Refinery {
           } catch {
             // Archive is best-effort — don't block worktree removal
           }
+
+          // Run beforeRemove hook (non-fatal — failures are logged but ignored)
+          await this.runBeforeRemoveHook(run.worktree_path, run.seed_id);
+
           try {
             await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
           } catch {
@@ -1609,6 +1645,10 @@ export class Refinery {
       } catch {
         // Archive is best-effort — don't block worktree removal
       }
+
+      // Run beforeRemove hook (non-fatal — failures are logged but ignored)
+      await this.runBeforeRemoveHook(run.worktree_path, run.seed_id);
+
       try {
         await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
       } catch {

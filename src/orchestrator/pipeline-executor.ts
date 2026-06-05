@@ -15,6 +15,7 @@ import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import type { TaskMeta } from "../lib/interpolate.js";
+import type { ProjectHooksConfig } from "../lib/project-config.js";
 import { interpolateTaskPlaceholders } from "../lib/interpolate.js";
 import { resolvePhaseModel } from "../lib/workflow-loader.js";
 import { ROLE_CONFIGS } from "./roles.js";
@@ -147,6 +148,8 @@ export interface PipelineRunConfig {
     expectedCwd?: string;
     allowedPaths?: string[];
   };
+  /** Workspace lifecycle hooks for afterRun (passed through from WorkerConfig). */
+  hooks?: ProjectHooksConfig;
 }
 
 export interface PipelineContext {

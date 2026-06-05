@@ -50,6 +50,8 @@ import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
+import { runWorkspaceHook } from "../lib/setup.js";
+import type { ProjectHooksConfig } from "../lib/project-config.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -351,6 +353,11 @@ interface WorkerConfig {
     expectedCwd?: string;
     allowedPaths?: string[];
   };
+  /**
+   * Workspace lifecycle hooks for pre/post-run customization.
+   * Loaded from project config and passed through to the pipeline executor.
+   */
+  hooks?: ProjectHooksConfig;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -1462,6 +1469,24 @@ async function runPipeline(
     // Pipeline post-processing: determine finalize push success, then enqueue merge after
     // any post-finalize phases (for example create-pr/pr-review) complete.
     async onPipelineComplete({ progress, success }) {
+      // Run afterRun hook (non-fatal — failures are logged but ignored)
+      // Runs regardless of success or failure
+      const hooks = config.hooks as ProjectHooksConfig | undefined;
+      if (hooks && (hooks.afterRun || hooks.timeoutMs)) {
+        const hookEnv: Record<string, string> = {
+          FOREMAN_WORKSPACE_PATH: config.worktreePath,
+          FOREMAN_ISSUE_ID: config.seedId,
+          FOREMAN_ISSUE_IDENTIFIER: config.seedId,
+          FOREMAN_ATTEMPT: "1",
+        };
+        try {
+          await runWorkspaceHook(hooks, "afterRun", config.worktreePath, hookEnv);
+        } catch (hookErr: unknown) {
+          const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
+          log(`[PIPELINE] afterRun hook failed (non-fatal): ${hookMsg.slice(0, 300)}`);
+        }
+      }
+
       const hasFinalizePhase = workflowConfig.phases.some((phase) => phase.name === "finalize");
       if (!hasFinalizePhase) {
         log(`[PIPELINE] Skipping branch-ready: workflow has no finalize phase`);
