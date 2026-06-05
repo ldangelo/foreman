@@ -25,20 +25,27 @@ export const FOREMAN_HOME_PLACEHOLDER = "{foremanHome}";
  *
  * Handles both Unix-style (/Users/...) and Windows-style (\Users\...) paths.
  */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sanitizePreviewPath(value: string, worktreePath: string): string {
+  const normalizedValue = value.replace(/\\/g, "/");
+  const normalizedWorktree = worktreePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const userHomePattern = String.raw`(?:[A-Za-z]:)?/Users/[^/]+`;
+  return normalizedValue
+    .replace(new RegExp(escapeRegExp(normalizedWorktree), "g"), WORKTREE_PLACEHOLDER)
+    .replace(new RegExp(userHomePattern, "g"), WORKTREE_PLACEHOLDER);
+}
+
 export function sanitizeTrace(trace: PhaseTrace): PhaseTrace {
-  const unixPattern = "/Users/";
-  const winPattern = "\\Users\\";
   return {
     ...trace,
     worktreePath: WORKTREE_PLACEHOLDER,
     toolCalls: trace.toolCalls.map((tc) => ({
       ...tc,
-      argsPreview: tc.argsPreview
-        ? tc.argsPreview.replace(new RegExp(winPattern + "[^\\\\]+|" + unixPattern + "[^/]+", "g"), WORKTREE_PLACEHOLDER)
-        : tc.argsPreview,
-      resultPreview: tc.resultPreview
-        ? tc.resultPreview.replace(new RegExp(winPattern + "[^\\\\]+|" + unixPattern + "[^/]+", "g"), WORKTREE_PLACEHOLDER)
-        : tc.resultPreview,
+      argsPreview: tc.argsPreview ? sanitizePreviewPath(tc.argsPreview, trace.worktreePath) : tc.argsPreview,
+      resultPreview: tc.resultPreview ? sanitizePreviewPath(tc.resultPreview, trace.worktreePath) : tc.resultPreview,
     })),
   };
 }
@@ -49,7 +56,8 @@ export function sanitizeTrace(trace: PhaseTrace): PhaseTrace {
  */
 export function sanitizeForemanHomePath(path: string): string {
   const foremanHome = getForemanHomePath().replace(/\\/g, "/");
-  return path.replace(foremanHome, FOREMAN_HOME_PLACEHOLDER);
+  const normalizedPath = path.replace(/\\/g, "/");
+  return normalizedPath.replace(foremanHome, FOREMAN_HOME_PLACEHOLDER);
 }
 
 function traceBaseName(phase: string): string {

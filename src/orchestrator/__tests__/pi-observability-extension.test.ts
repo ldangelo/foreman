@@ -132,12 +132,13 @@ describe("pi observability trace", () => {
     // worktreePath must be sanitized to the placeholder
     expect(json.worktreePath).toBe(WORKTREE_PLACEHOLDER);
     // Tool call argsPreview must not contain real /Users/ path
-    expect(json.toolCalls[0].argsPreview).not.toContain("/Users/ldangelo");
-    expect(json.toolCalls[0].argsPreview).toContain(WORKTREE_PLACEHOLDER);
-    expect(json.toolCalls[0].resultPreview).not.toContain("/Users/ldangelo");
-    expect(json.toolCalls[0].resultPreview).toContain(WORKTREE_PLACEHOLDER);
+    expect(json.toolCalls[0].argsPreview).toBe(`${WORKTREE_PLACEHOLDER}/DEVELOPER_REPORT.md`.replace(/^/, "Reading file at "));
+    expect(json.toolCalls[0].resultPreview).toBe(`Wrote ${WORKTREE_PLACEHOLDER}/docs/reports/foreman-e59b5/FIX_TRACE.json`);
+    expect(json.toolCalls[0].argsPreview).not.toContain(".foreman/worktrees");
+    expect(json.toolCalls[0].resultPreview).not.toContain(".foreman/worktrees");
     // Markdown must also be clean
     expect(markdown).not.toContain("/Users/ldangelo");
-    expect(markdown).toContain(WORKTREE_PLACEHOLDER);
+    expect(markdown).not.toContain(".foreman/worktrees");
+    expect(markdown).toContain(`${WORKTREE_PLACEHOLDER}/DEVELOPER_REPORT.md`);
   });
 });
