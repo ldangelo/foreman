@@ -18,6 +18,7 @@ import { load as yamlLoad } from "js-yaml";
 import type { VcsConfig } from "./vcs/index.js";
 import { normalizeBranchLabel } from "./branch-label.js";
 import { getForemanHomePath } from "./foreman-paths.js";
+import type { WorkspaceHooks } from "../orchestrator/types.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -163,19 +164,9 @@ export interface IssueTrackerConfig {
 /**
  * Workspace lifecycle hooks for pre/post-run customization.
  * Loaded from project config and/or workflow YAML.
+ * @deprecated Use WorkspaceHooks from orchestrator/types instead
  */
-export interface ProjectHooksConfig {
-  /** Shell command run after workspace creation (one-time setup). */
-  afterCreate?: string;
-  /** Shell command run before agent launch. */
-  beforeRun?: string;
-  /** Shell command run after agent completes (success or failure). */
-  afterRun?: string;
-  /** Shell command run before workspace cleanup. */
-  beforeRemove?: string;
-  /** Default timeout in milliseconds for all hooks. Default: 60000. */
-  timeoutMs?: number;
-}
+export type ProjectHooksConfig = WorkspaceHooks;
 
 /**
  * Shape of `~/.foreman/config.yaml` (or `~/.foreman/config.json`).

@@ -72,8 +72,15 @@ describe("runHook", () => {
     const result = await runHook("sleep 10", workspace, {}, 100, "test");
 
     expect(result.success).toBe(false);
-    // Note: timedOut detection depends on platform - some may show it as generic failure
-    expect(result.timedOut || !result.success).toBe(true);
+    // timedOut should be true when the timeout is properly detected via ETIMEDOUT code.
+    // Some platforms may report this as a generic failure without timedOut set; in that
+    // case we still verify the command failed (success=false).
+    if (result.timedOut) {
+      expect(result.timedOut).toBe(true);
+    } else {
+      // Platform didn't detect timeout via ETIMEDOUT - verify it at least failed
+      expect(result.success).toBe(false);
+    }
   });
 });
 

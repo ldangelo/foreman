@@ -43,6 +43,10 @@ export interface HookResult {
  * @param timeoutMs - Timeout in milliseconds (default: 60000)
  * @param label - Descriptive label for logging (e.g., "afterCreate", "beforeRun")
  * @returns Promise<HookResult> with success flag, combined stdout/stderr, and timedOut flag
+ *
+ * @note Command parsing uses simple whitespace splitting (split(/\s+/)), which does not
+ * handle quoted arguments. For example, `git clone https://github.com/org/repo.git "my folder/"`
+ * would be incorrectly split. Use shell invocation (e.g., "sh -c '...'") for complex commands.
  */
 export async function runHook(
   hookCmd: string,
@@ -72,11 +76,9 @@ export async function runHook(
   } catch (err: unknown) {
     const e = err as { stdout?: string; stderr?: string; message?: string; code?: string };
     const errMsg = err instanceof Error ? err.message : String(err);
-    // Timeout detection: ETIMEDOUT code, "timeout" in message, or killed signal
     const timedOut = e.code === "ETIMEDOUT" ||
       errMsg.toLowerCase().includes("timeout") ||
-      errMsg.includes("timed out") ||
-      e.code === "ENOTFOUND"; // ENOTFOUND can happen on some platforms for timeouts
+      errMsg.includes("timed out");
     const output = [e.stdout, e.stderr].map((s) => (s ?? "").trim()).filter(Boolean).join("\n") || errMsg;
     console.error(`[hooks] ${label} ${timedOut ? "timed out" : "failed"}: ${output.slice(0, 300)}`);
     return { success: false, output, timedOut };
