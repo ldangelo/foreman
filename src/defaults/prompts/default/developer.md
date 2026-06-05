@@ -15,7 +15,7 @@ If you hit an unrecoverable error, invoke:
 ```
 
 ## Merge Conflict / PR-Wait Feedback Pre-flight
-If **Previous Feedback** contains any of these signals, treat it as mandatory merge-conflict work before normal implementation:
+If retry feedback contains any of these signals, treat it as mandatory merge-conflict work before normal implementation:
 - `Mergeable: CONFLICTING`
 - `Merge State: DIRTY`
 - `Status: CONFLICT`

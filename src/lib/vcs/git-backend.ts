@@ -875,6 +875,7 @@ export class GitBackend implements VcsBackend {
    * Apply a patch file to the working tree and index.
    */
   async applyPatchToIndex(workspacePath: string, patchFilePath: string): Promise<void> {
+    await this.git(["update-index", "-q", "--refresh"], workspacePath);
     await this.git(["apply", "--index", patchFilePath], workspacePath);
   }
 
