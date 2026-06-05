@@ -7,6 +7,20 @@ function traceBaseName(phase: string): string {
   return `${phase.toUpperCase()}_TRACE`;
 }
 
+/**
+ * Sanitize a PhaseTrace for committed artifact output.
+ * Replaces the absolute worktreePath with a stable placeholder so that
+ * committed traces do not leak host-specific paths.
+ *
+ * Returns a new trace object; the original is unmodified.
+ */
+export function sanitizeTraceForCommit(trace: PhaseTrace): PhaseTrace {
+  return {
+    ...trace,
+    worktreePath: "<worktree>",
+  };
+}
+
 export function getPhaseTracePaths(worktreePath: string, seedId: string, phase: string): PhaseTraceWriteResult {
   const reportsDir = join(worktreePath, "docs", "reports", seedId);
   const base = traceBaseName(phase);
@@ -79,7 +93,11 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
 export async function writePhaseTrace(trace: PhaseTrace): Promise<PhaseTraceWriteResult> {
   const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase);
   await mkdir(join(trace.worktreePath, "docs", "reports", trace.seedId), { recursive: true });
-  await writeFile(paths.jsonPath, `${JSON.stringify(trace, null, 2)}\n`, "utf-8");
-  await writeFile(paths.markdownPath, `${renderTraceMarkdown(trace, paths.relativeJsonPath)}\n`, "utf-8");
+
+  // Sanitize: replace absolute worktreePath with stable placeholder in committed artifacts
+  const sanitized = sanitizeTraceForCommit(trace);
+
+  await writeFile(paths.jsonPath, `${JSON.stringify(sanitized, null, 2)}\n`, "utf-8");
+  await writeFile(paths.markdownPath, `${renderTraceMarkdown(sanitized, paths.relativeJsonPath)}\n`, "utf-8");
   return paths;
 }
