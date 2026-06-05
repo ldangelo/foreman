@@ -1929,6 +1929,55 @@ async function runPipeline(
       if (finalizeSucceeded) {
         log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
         await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
+
+        // ── Continuation Retry: re-check issue state before considering done ──
+        // Schedule a quick re-check 1 second after clean exit to catch issues that
+        // remain active (e.g. backlog items that were updated while the agent ran).
+        const continuationCheck = async (
+          checkRunId: string,
+          checkSeedId: string,
+          checkProjectPath: string,
+          checkRegisteredProjectId?: string,
+        ): Promise<void> => {
+          try {
+            const runtimeTaskClient = await createRuntimeTaskClient(checkProjectPath, checkRegisteredProjectId);
+            const issueDetail = await runtimeTaskClient.show(checkSeedId);
+            // Issue is inactive (terminal) if status is null/undefined, "closed", or "completed".
+            // Treat null/undefined as terminal: issue was deleted or unreachable.
+            const isTerminal = !issueDetail.status ||
+              issueDetail.status === "closed" ||
+              issueDetail.status === "completed";
+            if (isTerminal) {
+              log(`[CONTINUATION] Issue ${checkSeedId} transitioned to ${issueDetail.status ?? "null/undefined"} — marking completed`);
+              await updateTerminalRunStatus({
+                runId: checkRunId,
+                projectId: config.projectId,
+                projectPath: checkProjectPath,
+                updates: { status: "completed", completed_at: new Date().toISOString() },
+              });
+            } else {
+              log(`[CONTINUATION] Issue ${checkSeedId} remains active (status=${issueDetail.status}) — keeping run as running for potential continuation`);
+              // Keep as "running" so dispatcher can re-dispatch if needed
+              await updateTerminalRunStatus({
+                runId: checkRunId,
+                projectId: config.projectId,
+                projectPath: checkProjectPath,
+                updates: { status: "running" },
+              });
+            }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log(`[CONTINUATION] Failed to re-check issue ${checkSeedId}: ${msg} — marking completed as safe default`);
+            // On error, mark as completed to avoid leaving run in limbo
+            await updateTerminalRunStatus({
+              runId: checkRunId,
+              projectId: config.projectId,
+              projectPath: checkProjectPath,
+              updates: { status: "completed", completed_at: new Date().toISOString() },
+            });
+          }
+        };
+        setTimeout(() => continuationCheck(runId, seedId, pipelineProjectPath, registeredProjectId), 1000);
       } else {
         log(`PIPELINE STUCK for ${seedId} — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})`);
         await appendFile(logFile, `\n[PIPELINE] STUCK — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})\n`);
