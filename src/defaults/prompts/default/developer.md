@@ -14,6 +14,26 @@ If you hit an unrecoverable error, invoke:
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"<brief description>"}'
 ```
 
+## Merge Conflict / PR-Wait Feedback Pre-flight
+If **Previous Feedback** contains any of these signals, treat it as mandatory merge-conflict work before normal implementation:
+- `Mergeable: CONFLICTING`
+- `Merge State: DIRTY`
+- `Status: CONFLICT`
+- `PR has merge conflicts`
+- `mergeStateStatus=DIRTY`
+
+Required sequence:
+1. Run `git fetch origin`.
+2. Rebase onto the target branch: `git rebase origin/{{baseBranch}}`.
+3. If conflicts occur, resolve the conflicted files directly, then run `git add <resolved-files>` and `git rebase --continue`.
+4. Repeat until rebase completes.
+5. Run focused verification for the resolved files.
+
+Rules for conflict feedback:
+- Do **not** decide “the task is already implemented” until the branch is rebased cleanly onto `origin/{{baseBranch}}`.
+- Do **not** abort the rebase unless you are truly unable to resolve the conflicts; if you abort, write `BLOCKED.md` and send an `agent-error` explaining the exact conflicted files.
+- This is the one allowed exception to the “do not commit” rule: `git rebase --continue` may recreate the existing task commit after conflict resolution. Still do **not** push; finalize handles pushing.
+
 ## Instructions
 1. Read TASK.md for task context
 {{explorerInstruction}}
