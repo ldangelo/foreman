@@ -37,7 +37,7 @@ import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "
 import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncrementalPipelineReport, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
-import { resolveArtifactPath } from "../lib/report-paths.js";
+import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -969,7 +969,15 @@ async function runPhaseSequence(
         : phase.builtin
           ? "builtin"
           : "prompt";
-    const phaseMeta = ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 };
+    const phaseMeta: TaskMeta = {
+      id: seedId,
+      title: seedTitle,
+      description,
+      type: config.seedType ?? '',
+      priority: 2,
+      ...ctx.taskMeta,
+      projectReportsDir: ctx.taskMeta?.projectReportsDir || getRunReportsDir(projectId, seedId, runId),
+    };
 
     progress.currentPhase = phaseName;
     await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
