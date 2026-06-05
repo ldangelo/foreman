@@ -579,7 +579,7 @@ foreman inbox --all --watch             # Live stream across all runs
 ```
 
 ### `foreman worktree`
-Manage git worktrees created for active tasks.
+Manage git worktrees created for active tasks. Agent worktrees live under `~/.foreman/worktrees/<projectId>/...`; refinery merge integration worktrees live under `~/.foreman/integration/<projectId>/<targetBranch>` and are reset before each merge attempt.
 
 ```bash
 foreman worktree list                    # List active worktrees
