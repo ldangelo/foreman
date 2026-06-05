@@ -34,6 +34,18 @@ Rules for conflict feedback:
 - Do **not** abort the rebase unless you are truly unable to resolve the conflicts; if you abort, write `BLOCKED.md` and send an `agent-error` explaining the exact conflicted files.
 - This is the one allowed exception to the “do not commit” rule: `GIT_EDITOR=true git rebase --continue` may recreate the existing task commit after conflict resolution. Use the `GIT_EDITOR=true` prefix so detached workers do not hang in an editor. Still do **not** push; finalize handles pushing.
 
+## External Review Hardening
+Before reporting done, inspect your diff as if CodeRabbit will review it.
+
+You must proactively fix:
+- path portability issues across macOS/Linux/Windows
+- masked failures in shell examples (`cmd | tail`, missing `pipefail`, broken `cd && ...; ...` chains)
+- weak tests that assert only partial behavior when exact behavior matters
+- stale comments/docs around changed code
+- any valid CodeRabbit critical/high/medium/major finding, even if it appears pre-existing, when the fix is local and safe
+
+Do not label a valid finding “pre-existing” to avoid fixing it if this task touched the same file or behavior.
+
 ## Instructions
 1. Read TASK.md for task context
 {{explorerInstruction}}

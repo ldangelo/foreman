@@ -15,15 +15,16 @@ Your job is to review PR feedback after the branch has been pushed and a PR has 
 ## Responsibilities
 1. Read `{{reportDir}}/PR_METADATA.json`, `{{reportDir}}/PR_WAIT_REPORT.md`, and `{{reportDir}}/PR_REVIEW_FINDINGS.md`.
 2. Refresh PR state with `gh pr view` / `gh api` before deciding; the findings file is initial context, not the sole source of truth.
-3. Triage only:
+3. If CodeRabbit's latest review is `CHANGES_REQUESTED` or the CodeRabbit commit status is not `success`, report `FAIL`. Do not override this as PASS unless CodeRabbit status is success/approved and all required checks pass.
+4. Triage only:
    - CodeRabbit recommendations with severity `critical`, `high`, or `medium`.
    - Failed checks/tests that are clearly caused by this PR.
    - PR merge conflicts reported by GitHub (`mergeable=CONFLICTING` or `mergeStateStatus=DIRTY`).
-4. Do not fix files in this phase. Do not commit. Do not push.
-5. Do not fix low/nit comments.
-6. Do not refactor unrelated code.
-7. Treat unresolved critical/high/medium CodeRabbit findings and any failed required check as final-gate blocking, even if they appear pre-existing, unrelated, or flaky. You may document scope, but do not mark PASS while the final gate would fail.
-8. Write `{{reportDir}}/PR_REVIEW_REPORT.md` with actionable findings for the developer retry loop.
+5. Do not fix files in this phase. Do not commit. Do not push.
+6. Do not fix low/nit comments.
+7. Do not refactor unrelated code.
+8. Treat unresolved critical/high/medium CodeRabbit findings and any failed required check as final-gate blocking, even if they appear pre-existing, unrelated, or flaky. You may document scope, but do not mark PASS while the final gate would fail.
+9. Write `{{reportDir}}/PR_REVIEW_REPORT.md` with actionable findings for the developer retry loop.
 
 ## Allowed git actions
 Read-only git/GitHub inspection only. This phase must not mutate the branch, commit, push, rebase, merge, or edit source/docs files.
@@ -57,6 +58,6 @@ Read-only git/GitHub inspection only. This phase must not mutate the branch, com
 ```
 
 Verdict rules:
-- PASS only when no critical/high/medium CodeRabbit finding remains, no required check is failing, and the PR is mergeable.
-- FAIL when blocking findings remain, any required check is still failing, the PR still has merge conflicts, or scope is UNKNOWN.
+- PASS only when no critical/high/medium CodeRabbit finding remains, CodeRabbit status is success/approved, no required check is failing, and the PR is mergeable.
+- FAIL when CodeRabbit is `CHANGES_REQUESTED`, CodeRabbit status is not `success`, blocking findings remain, any required check is still failing, the PR still has merge conflicts, or scope is UNKNOWN.
 - On FAIL, include exact file paths, lines, PR comment URLs, failed check URLs, and a concise recommended fix so the developer phase can act on the report.
