@@ -112,9 +112,12 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
+    retryWith: developer
+    retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
+      onFail: developer
 
   - name: prepare-pr-review
     builtin: true

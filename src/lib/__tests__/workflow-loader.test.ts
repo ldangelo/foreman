@@ -320,7 +320,10 @@ phases:
       "pr-review",
     ]);
     expect(config.phases.find((phase) => phase.name === "create-pr")?.builtin).toBe(true);
-    expect(config.phases.find((phase) => phase.name === "pr-wait")?.artifact).toBe("{task.projectReportsDir}/PR_WAIT_REPORT.md");
+    const prWaitPhase = config.phases.find((phase) => phase.name === "pr-wait");
+    expect(prWaitPhase?.artifact).toBe("{task.projectReportsDir}/PR_WAIT_REPORT.md");
+    expect(prWaitPhase?.retryWith).toBe("developer");
+    expect(prWaitPhase?.retryOnFail).toBe(2);
     const prReviewPhase = config.phases.find((phase) => phase.name === "pr-review");
     expect(prReviewPhase?.artifact).toBe("{task.projectReportsDir}/PR_REVIEW_REPORT.md");
     expect(prReviewPhase?.retryOnFail).toBe(3);
