@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "runId": "run-sanitize",
+  "seedId": "foreman-sanitize",
+  "phase": "developer",
+  "phaseType": "prompt",
+  "model": "minimax/MiniMax-M2.7",
+  "worktreePath": "<worktree>",
+  "startedAt": "2026-06-04T23:59:25.842Z",
+  "rawPrompt": "cd <worktree> && npm test",
+  "resolvedCommand": "npm test",
+  "expectedArtifact": "DEVELOPER_REPORT.md",
+  "commandLooksLikeLegacySlash": false,
+  "warnings": [],
+  "toolCalls": [
+    {
+      "toolCallId": "tool-001",
+      "toolName": "bash",
+      "startedAt": "2026-06-04T23:59:25.842Z",
+      "argsPreview": "cd <worktree> && npm test",
+      "resultPreview": "Test results at <worktree>/coverage/lcov.info",
+      "updateCount": 0
+    }
+  ],
+  "completedAt": "2026-06-04T23:59:25.842Z",
+  "success": true,
+  "finalMessage": "Tests passed.",
+  "artifactPresent": false
+}

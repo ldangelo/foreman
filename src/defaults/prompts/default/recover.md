@@ -51,7 +51,7 @@ The test suite failed after merging a branch. Follow this diagnosis tree in orde
 #### Step 1 — Run the tests and capture output
 
 ```bash
-cd {{projectRoot}} && npm test 2>&1 | tail -100
+cd {{projectRoot}} && set -o pipefail && npm test 2>&1 | tail -100
 ```
 
 Read the output carefully. Identify:
@@ -68,7 +68,7 @@ shows unexpected counts.
 
 Fix:
 ```bash
-cd {{projectRoot}} && npm test 2>&1 | tail -50
+cd {{projectRoot}} && set -o pipefail && npm test 2>&1 | tail -50
 ```
 
 If tests pass after clearing the cache, commit nothing — the cache is regenerated automatically.
@@ -88,7 +88,7 @@ Fix: If the blocking bead's branch is merged into dev but `br` still shows it op
 ```bash
 br close --force <blocking-bead-id>
 br sync --flush-only
-cd {{projectRoot}} && npm test 2>&1 | tail -50
+cd {{projectRoot}} && set -o pipefail && npm test 2>&1 | tail -50
 ```
 
 **C) Test with wrong expectations (test bug)**
@@ -266,7 +266,7 @@ Run the smallest relevant validation first, then broader validation as needed:
 ```bash
 cd {{projectRoot}}
 npx tsc --noEmit
-npm test 2>&1 | tail -100
+set -o pipefail && npm test 2>&1 | tail -100
 npm run build
 ```
 

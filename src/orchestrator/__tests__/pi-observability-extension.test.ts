@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import { createPhaseTrace, finalizePhaseTrace, getForbiddenVcsAction } from "../pi-observability-extension.js";
 import { writePhaseTrace } from "../pi-observability-writer.js";
+import { writeIncrementalPipelineReport } from "../activity-logger.js";
+import { createPhaseRecord, finalizePhaseRecord } from "../activity-logger.js";
 
 describe("pi observability trace", () => {
   it("detects legacy slash commands and flags missing artifact evidence", async () => {
@@ -97,5 +99,82 @@ describe("pi observability trace", () => {
     expect(json.seedId).toBe("foreman-56b46");
     expect(markdown).toContain("# FIX Trace — foreman-56b46");
     expect(markdown).toContain("DEVELOPER_REPORT.md");
+  });
+
+  it("sanitizes host-specific worktree paths in trace artifacts", async () => {
+    // Use a path that looks like a real host-specific worktree path
+    const worktreePath = "/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5";
+    const trace = createPhaseTrace({
+      runId: "run-sanitize",
+      seedId: "foreman-sanitize",
+      phase: "developer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath,
+      rawPrompt: "cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && npm test",
+      resolvedCommand: "npm test",
+      expectedArtifact: "DEVELOPER_REPORT.md",
+    });
+
+    // Add a tool call with args that contain the worktree path
+    trace.toolCalls.push({
+      toolCallId: "tool-001",
+      toolName: "bash",
+      startedAt: new Date().toISOString(),
+      argsPreview: "cd /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5 && npm test",
+      resultPreview: "Test results at /Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5/coverage/lcov.info",
+      updateCount: 0,
+    });
+
+    finalizePhaseTrace(trace, { success: true, finalMessage: "Tests passed." });
+
+    const paths = await writePhaseTrace(trace);
+    const jsonContent = await readFile(paths.jsonPath, "utf-8");
+    const markdownContent = await readFile(paths.markdownPath, "utf-8");
+
+    // Verify the host-specific path does NOT appear in artifacts
+    expect(jsonContent).not.toContain("/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5");
+    expect(markdownContent).not.toContain("/Users/ldangelo/.foreman/worktrees/52ba0d80-913d-4880-871b-a81e308c34d4/foreman-e59b5");
+
+    // Verify the placeholder IS used
+    expect(jsonContent).toContain("<worktree>");
+    expect(markdownContent).toContain("<worktree>");
+  });
+
+  it("pipeline report includes builtin PR workflow phases", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-activity-"));
+    const seedId = "foreman-pr-report";
+
+    const builtinPhases = [
+      createPhaseRecord("create-pr", undefined, { phaseType: "builtin" }),
+      createPhaseRecord("pr-wait", undefined, { phaseType: "builtin" }),
+      createPhaseRecord("prepare-pr-review", undefined, { phaseType: "builtin" }),
+      createPhaseRecord("pr-review", undefined, { phaseType: "builtin" }),
+    ];
+
+    const completedPhases = builtinPhases.map((phase, i) =>
+      finalizePhaseRecord(phase, {
+        success: true,
+        costUsd: 0,
+        turns: 0,
+      }),
+    );
+
+    await writeIncrementalPipelineReport({
+      worktreePath,
+      seedId,
+      runId: "run-pr-report",
+      completedPhases,
+    });
+
+    const reportPath = join(worktreePath, "docs", "reports", seedId, "PIPELINE_REPORT.md");
+    const reportContent = await readFile(reportPath, "utf-8");
+
+    expect(reportContent).toContain("`create-pr`");
+    expect(reportContent).toContain("`pr-wait`");
+    expect(reportContent).toContain("`prepare-pr-review`");
+    expect(reportContent).toContain("`pr-review`");
+    // Verify they show as builtin type in the phase table
+    expect(reportContent).toContain("builtin");
   });
 });

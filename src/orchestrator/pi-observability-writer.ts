@@ -3,6 +3,38 @@ import { join } from "node:path";
 
 import type { PhaseTrace, PhaseTraceWriteResult } from "./pi-observability-types.js";
 
+const WORKTREE_PLACEHOLDER = "<worktree>";
+
+/**
+ * Sanitize a PhaseTrace so it contains no host-specific absolute worktree paths.
+ * Replaces occurrences of worktreePath in all string fields with a stable placeholder.
+ */
+export function sanitizePhaseTrace(trace: PhaseTrace): PhaseTrace {
+  const wp = trace.worktreePath;
+  if (!wp) return trace;
+
+  const sanitize = (value: string | undefined): string | undefined =>
+    value ? value.split(wp).join(WORKTREE_PLACEHOLDER) : undefined;
+
+  const sanitized = { ...trace };
+  sanitized.worktreePath = WORKTREE_PLACEHOLDER;
+  sanitized.rawPrompt = sanitize(sanitized.rawPrompt) ?? "";
+  sanitized.resolvedCommand = sanitize(sanitized.resolvedCommand);
+  sanitized.systemPromptPreview = sanitize(sanitized.systemPromptPreview);
+  sanitized.finalMessage = sanitize(sanitized.finalMessage);
+  sanitized.error = sanitize(sanitized.error);
+
+  if (sanitized.toolCalls) {
+    sanitized.toolCalls = sanitized.toolCalls.map((tool) => ({
+      ...tool,
+      argsPreview: sanitize(tool.argsPreview),
+      resultPreview: sanitize(tool.resultPreview),
+    }));
+  }
+
+  return sanitized;
+}
+
 function traceBaseName(phase: string): string {
   return `${phase.toUpperCase()}_TRACE`;
 }
@@ -79,7 +111,8 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
 export async function writePhaseTrace(trace: PhaseTrace): Promise<PhaseTraceWriteResult> {
   const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase);
   await mkdir(join(trace.worktreePath, "docs", "reports", trace.seedId), { recursive: true });
-  await writeFile(paths.jsonPath, `${JSON.stringify(trace, null, 2)}\n`, "utf-8");
-  await writeFile(paths.markdownPath, `${renderTraceMarkdown(trace, paths.relativeJsonPath)}\n`, "utf-8");
+  const sanitized = sanitizePhaseTrace(trace);
+  await writeFile(paths.jsonPath, `${JSON.stringify(sanitized, null, 2)}\n`, "utf-8");
+  await writeFile(paths.markdownPath, `${renderTraceMarkdown(sanitized, paths.relativeJsonPath)}\n`, "utf-8");
   return paths;
 }
