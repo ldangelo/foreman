@@ -4,6 +4,35 @@ import { getForemanHomePath } from "../lib/foreman-paths.js";
 
 import type { PhaseTrace, PhaseTraceWriteResult } from "./pi-observability-types.js";
 
+const WORKTREE_PLACEHOLDER = "<worktree>";
+
+/**
+ * Sanitize a PhaseTrace for safe commit/publication by replacing
+ * host-specific absolute worktree paths with a stable placeholder.
+ *
+ * This ensures trace artifacts do not leak user-specific paths like
+ * `/Users/.../.foreman/worktrees/...` into committed artifacts.
+ */
+function sanitizeTrace(trace: PhaseTrace): PhaseTrace {
+  const originalPath = trace.worktreePath;
+  if (!originalPath) return trace;
+
+  const sanitizeString = (s: string | undefined): string | undefined => {
+    if (!s) return s;
+    return s.split(originalPath).join(WORKTREE_PLACEHOLDER);
+  };
+
+  return {
+    ...trace,
+    worktreePath: WORKTREE_PLACEHOLDER,
+    toolCalls: trace.toolCalls.map((tool) => ({
+      ...tool,
+      argsPreview: sanitizeString(tool.argsPreview),
+      resultPreview: sanitizeString(tool.resultPreview),
+    })),
+  };
+}
+
 function traceBaseName(phase: string): string {
   return `${phase.toUpperCase()}_TRACE`;
 }
@@ -81,8 +110,9 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
 
 export async function writePhaseTrace(trace: PhaseTrace): Promise<PhaseTraceWriteResult> {
   const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase, trace.runId);
+  const sanitized = sanitizeTrace(trace);
   await mkdir(join(paths.jsonPath, ".."), { recursive: true });
-  await writeFile(paths.jsonPath, `${JSON.stringify(trace, null, 2)}\n`, "utf-8");
-  await writeFile(paths.markdownPath, `${renderTraceMarkdown(trace, paths.relativeJsonPath)}\n`, "utf-8");
+  await writeFile(paths.jsonPath, `${JSON.stringify(sanitized, null, 2)}\n`, "utf-8");
+  await writeFile(paths.markdownPath, `${renderTraceMarkdown(sanitized, paths.relativeJsonPath)}\n`, "utf-8");
   return paths;
 }

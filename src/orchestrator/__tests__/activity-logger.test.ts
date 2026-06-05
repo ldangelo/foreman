@@ -79,4 +79,51 @@ describe("activity logger observability", () => {
       "Command phase contract failures: fix",
     );
   });
+
+  it("tracks builtin phase type correctly", () => {
+    const record = createPhaseRecord("create-pr", undefined, {
+      phaseType: "builtin",
+      artifactExpected: "docs/reports/foreman-abc/PR_METADATA.json",
+    });
+
+    expect(record.phaseType).toBe("builtin");
+    expect(record.name).toBe("create-pr");
+    expect(record.artifactExpected).toBe("docs/reports/foreman-abc/PR_METADATA.json");
+  });
+
+  it("finalizes builtin phase with success status", () => {
+    const record = createPhaseRecord("pr-wait", undefined, {
+      phaseType: "builtin",
+      artifactExpected: "docs/reports/foreman-abc/PR_WAIT_REPORT.md",
+    });
+
+    const finalized = finalizePhaseRecord(record, {
+      success: true,
+      costUsd: 0,
+      turns: 0,
+    });
+
+    expect(finalized.phaseType).toBe("builtin");
+    expect(finalized.success).toBe(true);
+    expect(finalized.verdict).toBe("pass");
+  });
+
+  it("finalizes builtin phase with failure status", () => {
+    const record = createPhaseRecord("pr-review", undefined, {
+      phaseType: "builtin",
+      artifactExpected: "docs/reports/foreman-abc/PR_REVIEW_REPORT.md",
+    });
+
+    const finalized = finalizePhaseRecord(record, {
+      success: false,
+      costUsd: 0,
+      turns: 0,
+      error: "PR review feedback: changes requested",
+    });
+
+    expect(finalized.phaseType).toBe("builtin");
+    expect(finalized.success).toBe(false);
+    expect(finalized.verdict).toBe("fail");
+    expect(finalized.error).toBe("PR review feedback: changes requested");
+  });
 });
