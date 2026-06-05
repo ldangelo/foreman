@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { PhaseTrace, PhaseTraceWriteResult } from "./pi-observability-types.js";
+import { sanitizeTracePaths } from "./pi-observability-types.js";
 
 function traceBaseName(phase: string): string {
   return `${phase.toUpperCase()}_TRACE`;
@@ -77,9 +78,11 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
 }
 
 export async function writePhaseTrace(trace: PhaseTrace): Promise<PhaseTraceWriteResult> {
-  const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase);
-  await mkdir(join(trace.worktreePath, "docs", "reports", trace.seedId), { recursive: true });
-  await writeFile(paths.jsonPath, `${JSON.stringify(trace, null, 2)}\n`, "utf-8");
-  await writeFile(paths.markdownPath, `${renderTraceMarkdown(trace, paths.relativeJsonPath)}\n`, "utf-8");
+  // Sanitize absolute worktree paths before writing to prevent host-specific leaks
+  const sanitized = sanitizeTracePaths(trace);
+  const paths = getPhaseTracePaths(sanitized.worktreePath, sanitized.seedId, sanitized.phase);
+  await mkdir(join(sanitized.worktreePath, "docs", "reports", sanitized.seedId), { recursive: true });
+  await writeFile(paths.jsonPath, `${JSON.stringify(sanitized, null, 2)}\n`, "utf-8");
+  await writeFile(paths.markdownPath, `${renderTraceMarkdown(sanitized, paths.relativeJsonPath)}\n`, "utf-8");
   return paths;
 }

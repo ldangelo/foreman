@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "runId": "run-sanitize",
+  "seedId": "foreman-sanitize",
+  "phase": "implement",
+  "phaseType": "command",
+  "model": "minimax/MiniMax-M2.7",
+  "worktreePath": "$WORKTREE",
+  "workflowName": "bug",
+  "workflowPath": "$WORKTREE/.foreman/workflows/bug.yaml",
+  "startedAt": "2026-06-05T00:24:36.952Z",
+  "rawPrompt": "Working in $WORKTREE on the bug fix",
+  "resolvedCommand": "cd $WORKTREE && git status",
+  "expectedArtifact": "DEVELOPER_REPORT.md",
+  "commandLooksLikeLegacySlash": false,
+  "warnings": [
+    "Expected artifact missing: DEVELOPER_REPORT.md",
+    "No strong evidence that the command-phase workflow was honored"
+  ],
+  "toolCalls": [
+    {
+      "toolCallId": "call_test_1",
+      "toolName": "bash",
+      "startedAt": "2026-06-05T00:24:36.952Z",
+      "completedAt": "2026-06-05T00:24:36.952Z",
+      "argsPreview": "{\"command\":\"cd $WORKTREE && git status\"}",
+      "resultPreview": "{\"output\":\"On branch main\\nYour branch is up to date with 'origin/main'.\"}",
+      "updateCount": 1
+    }
+  ],
+  "completedAt": "2026-06-05T00:24:36.952Z",
+  "success": true,
+  "finalMessage": "Done.",
+  "artifactPresent": false,
+  "commandHonored": false
+}

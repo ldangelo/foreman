@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { createPhaseTrace, finalizePhaseTrace, getForbiddenVcsAction } from "../pi-observability-extension.js";
 import { writePhaseTrace } from "../pi-observability-writer.js";
+import { sanitizeTracePaths } from "../pi-observability-types.js";
 
 describe("pi observability trace", () => {
   it("detects legacy slash commands and flags missing artifact evidence", async () => {
@@ -97,5 +98,86 @@ describe("pi observability trace", () => {
     expect(json.seedId).toBe("foreman-56b46");
     expect(markdown).toContain("# FIX Trace — foreman-56b46");
     expect(markdown).toContain("DEVELOPER_REPORT.md");
+  });
+
+  it("sanitizes absolute worktree paths in trace JSON and markdown", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
+    const absoluteWorktreePath = join(worktreePath, "project");
+    const absoluteWorkflowPath = join(absoluteWorktreePath, ".foreman", "workflows", "bug.yaml");
+
+    const trace = createPhaseTrace({
+      runId: "run-sanitize",
+      seedId: "foreman-sanitize",
+      phase: "implement",
+      phaseType: "command",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath: absoluteWorktreePath,
+      rawPrompt: `Working in ${absoluteWorktreePath} on the bug fix`,
+      resolvedCommand: `cd ${absoluteWorktreePath} && git status`,
+      expectedArtifact: "DEVELOPER_REPORT.md",
+      workflowName: "bug",
+      workflowPath: absoluteWorkflowPath,
+    });
+
+    // Add a tool call with args that contain the absolute path
+    trace.toolCalls.push({
+      toolCallId: "call_test_1",
+      toolName: "bash",
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      argsPreview: `{"command":"cd ${absoluteWorktreePath} && git status"}`,
+      resultPreview: `{"output":"On branch main\\nYour branch is up to date with 'origin/main'."}`,
+      updateCount: 1,
+    });
+
+    finalizePhaseTrace(trace, { success: true, finalMessage: "Done." });
+
+    const paths = await writePhaseTrace(trace);
+    const jsonContent = await readFile(paths.jsonPath, "utf-8");
+    const markdownContent = await readFile(paths.markdownPath, "utf-8");
+
+    // Verify absolute paths are NOT in the output
+    expect(jsonContent).not.toContain(absoluteWorktreePath);
+    expect(markdownContent).not.toContain(absoluteWorktreePath);
+
+    // Verify placeholder IS in the output
+    expect(jsonContent).toContain("$WORKTREE");
+    expect(markdownContent).toContain("$WORKTREE");
+
+    // Verify the JSON trace has the sanitized worktreePath
+    const json = JSON.parse(jsonContent) as { worktreePath: string; workflowPath?: string };
+    expect(json.worktreePath).toBe("$WORKTREE");
+    expect(json.workflowPath).toBe("$WORKTREE/.foreman/workflows/bug.yaml");
+
+    // Verify tool call args/result are sanitized
+    expect(jsonContent).toContain('"argsPreview"');
+    expect(jsonContent).toContain("$WORKTREE");
+  });
+
+  it("sanitizeTracePaths function replaces worktreePath with placeholder", () => {
+    const trace = createPhaseTrace({
+      runId: "run-test",
+      seedId: "foreman-test",
+      phase: "explorer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath: "/Users/testuser/.foreman/worktrees/abc123/foreman-test",
+      rawPrompt: "Explore the codebase",
+    });
+
+    trace.toolCalls.push({
+      toolCallId: "call_x",
+      toolName: "bash",
+      startedAt: new Date().toISOString(),
+      argsPreview: '{"command":"cd /Users/testuser/.foreman/worktrees/abc123/foreman-test && ls"}',
+      updateCount: 0,
+    });
+
+    const sanitized = sanitizeTracePaths(trace);
+
+    expect(sanitized.worktreePath).toBe("$WORKTREE");
+    expect(sanitized.toolCalls[0].argsPreview).toBe('{"command":"cd $WORKTREE && ls"}');
+    // Original trace should be unchanged
+    expect(trace.worktreePath).toContain("/Users/testuser/.foreman/worktrees/");
   });
 });

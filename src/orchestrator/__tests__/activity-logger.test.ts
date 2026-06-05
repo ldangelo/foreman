@@ -1,9 +1,13 @@
 import { describe, it, expect } from "vitest";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   createPhaseRecord,
   detectWarnings,
   finalizePhaseRecord,
+  writeIncrementalPipelineReport,
 } from "../activity-logger.js";
 
 describe("activity logger observability", () => {
@@ -78,5 +82,66 @@ describe("activity logger observability", () => {
     expect(detectWarnings([finalized])).toContain(
       "Command phase contract failures: fix",
     );
+  });
+
+  it("includes builtin phases in pipeline report phase table", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-activity-"));
+
+    // Create a builtin phase record (like create-pr phase)
+    const builtinRecord = finalizePhaseRecord(
+      createPhaseRecord("create-pr", "MiniMax", {
+        phaseType: "builtin",
+        commandsRun: ["gh pr create --title 'Fix bug'"],
+      }),
+      {
+        success: true,
+        costUsd: 0,
+        turns: 0,
+        toolCalls: 0,
+        toolBreakdown: {},
+      },
+    );
+
+    // Create a normal prompt phase record for comparison
+    const promptRecord = finalizePhaseRecord(
+      createPhaseRecord("developer", "MiniMax", {
+        phaseType: "prompt",
+      }),
+      {
+        success: true,
+        costUsd: 0.05,
+        turns: 5,
+        toolCalls: 12,
+        toolBreakdown: { read: 5, edit: 4, bash: 3 },
+      },
+    );
+
+    await writeIncrementalPipelineReport({
+      worktreePath,
+      seedId: "foreman-test",
+      runId: "run-123",
+      completedPhases: [builtinRecord, promptRecord],
+    });
+
+    const reportContent = await readFile(
+      join(worktreePath, "docs", "reports", "foreman-test", "PIPELINE_REPORT.md"),
+      "utf-8",
+    );
+
+    // Verify builtin phase appears in the phase table
+    expect(reportContent).toContain("| `create-pr` | builtin |");
+    // Verify prompt phase also appears
+    expect(reportContent).toContain("| `developer` | prompt |");
+    // Verify both phases are listed
+    expect(reportContent).toContain("Phases completed | 2");
+  });
+
+  it("builtin phase record has correct phaseType", () => {
+    const record = createPhaseRecord("create-pr", undefined, {
+      phaseType: "builtin",
+    });
+
+    expect(record.phaseType).toBe("builtin");
+    expect(record.name).toBe("create-pr");
   });
 });

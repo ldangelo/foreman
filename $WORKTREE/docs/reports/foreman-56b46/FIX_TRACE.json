@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "runId": "run-789",
+  "seedId": "foreman-56b46",
+  "phase": "fix",
+  "phaseType": "command",
+  "model": "minimax/MiniMax-M2.7",
+  "worktreePath": "$WORKTREE",
+  "startedAt": "2026-06-05T00:24:36.951Z",
+  "rawPrompt": "/ensemble:fix-issue Fix the broken inbox rendering",
+  "resolvedCommand": "/ensemble:fix-issue Fix the broken inbox rendering",
+  "expectedArtifact": "DEVELOPER_REPORT.md",
+  "expectedSkill": "ensemble-fix-issue",
+  "commandLooksLikeLegacySlash": true,
+  "warnings": [
+    "Expected artifact missing: DEVELOPER_REPORT.md",
+    "Command uses legacy slash syntax; runtime may treat it as plain prompt text",
+    "No strong evidence that the command-phase workflow was honored"
+  ],
+  "toolCalls": [],
+  "completedAt": "2026-06-05T00:24:36.951Z",
+  "success": true,
+  "finalMessage": "Done.",
+  "artifactPresent": false,
+  "commandHonored": false
+}

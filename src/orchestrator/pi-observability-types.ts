@@ -77,3 +77,52 @@ export interface PhaseTraceLiveEvent {
   traceMarkdownFile?: string;
   commandHonored?: boolean;
 }
+
+/**
+ * Sanitize a PhaseTrace by replacing absolute worktree paths with a stable placeholder.
+ * This prevents host-specific absolute paths from leaking into committed trace artifacts.
+ *
+ * - Replaces `worktreePath` with `"$WORKTREE"`
+ * - Replaces `workflowPath` with a repo-relative path if possible, otherwise `"$WORKTREE/workflows/..."`
+ * - Scrubs absolute worktree paths from all `argsPreview` and `resultPreview` strings
+ */
+export function sanitizeTracePaths(trace: PhaseTrace): PhaseTrace {
+  const worktreePath = trace.worktreePath;
+  const placeholder = "$WORKTREE";
+
+  // Build a regex that matches the absolute worktree path as a path segment
+  // This handles cases where the path appears mid-string
+  const escapedWorktree = worktreePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pathPattern = new RegExp(escapedWorktree, "g");
+
+  // Replace all occurrences of the worktree path with the placeholder
+  const replacePath = (s: string): string => s.replace(pathPattern, placeholder);
+
+  // Sanitize a required string field (always present in PhaseTrace)
+  const sanitizeRequired = (s: string): string => replacePath(s);
+
+  // Sanitize an optional string field
+  const sanitizeOptional = (s: string | undefined): string | undefined =>
+    s ? replacePath(s) : undefined;
+
+  const sanitizeToolCall = (tool: PhaseTraceToolCall): PhaseTraceToolCall => ({
+    ...tool,
+    argsPreview: sanitizeOptional(tool.argsPreview),
+    resultPreview: sanitizeOptional(tool.resultPreview),
+  });
+
+  return {
+    ...trace,
+    worktreePath: placeholder,
+    // Try to make workflowPath repo-relative if it contains the worktree path
+    workflowPath: sanitizeOptional(trace.workflowPath),
+    rawPrompt: sanitizeRequired(trace.rawPrompt),
+    systemPromptPreview: sanitizeOptional(trace.systemPromptPreview),
+    resolvedCommand: sanitizeOptional(trace.resolvedCommand),
+    expectedArtifact: sanitizeOptional(trace.expectedArtifact),
+    expectedSkill: sanitizeOptional(trace.expectedSkill),
+    finalMessage: sanitizeOptional(trace.finalMessage),
+    error: sanitizeOptional(trace.error),
+    toolCalls: trace.toolCalls.map(sanitizeToolCall),
+  };
+}
