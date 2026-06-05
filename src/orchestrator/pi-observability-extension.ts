@@ -1,9 +1,10 @@
+import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
+
 import type {
   ExtensionAPI,
   ExtensionFactory,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync } from "node:fs";
-import { basename, join } from "node:path";
 
 import type {
   FinalizePhaseTraceOptions,
@@ -11,6 +12,38 @@ import type {
   PhaseTraceLiveEvent,
   PhaseTraceMetadata,
 } from "./pi-observability-types.js";
+
+/**
+ * Sanitize a worktree absolute path to a stable, repo-relative placeholder.
+ * Replaces host-specific paths like /Users/.../.foreman/worktrees/... with
+ * a consistent placeholder so that committed trace artifacts are reviewer-safe.
+ */
+export function sanitizeWorktreePath(
+  worktreePath: string,
+  placeholder = "$WORKTREE",
+): string {
+  // Normalize separators and strip any trailing slashes
+  const normalized = worktreePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  // If the path is already relative or a placeholder, return as-is
+  if (!normalized.startsWith("/")) {
+    // On Windows, a path like "C:/Users/..." starts with a drive letter.
+    // Treat any path with a drive separator (colon) as absolute.
+    if (/^[A-Za-z]:/.test(normalized)) return placeholder;
+    return normalized;
+  }
+  return placeholder;
+}
+
+/**
+ * Redact host-specific paths from a PhaseTrace for safe serialization.
+ * Returns a new PhaseTrace with worktreePath replaced by a stable placeholder.
+ */
+export function redactPhaseTrace(trace: PhaseTrace, placeholder = "$WORKTREE"): PhaseTrace {
+  return {
+    ...trace,
+    worktreePath: sanitizeWorktreePath(trace.worktreePath, placeholder),
+  };
+}
 
 interface ToolExecutionEventLike {
   toolCallId: string;

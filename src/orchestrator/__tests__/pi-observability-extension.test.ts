@@ -1,10 +1,16 @@
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createPhaseTrace, finalizePhaseTrace, getForbiddenVcsAction } from "../pi-observability-extension.js";
+import {
+  createPhaseTrace,
+  finalizePhaseTrace,
+  getForbiddenVcsAction,
+  redactPhaseTrace,
+  sanitizeWorktreePath,
+} from "../pi-observability-extension.js";
 import { writePhaseTrace } from "../pi-observability-writer.js";
 
 describe("pi observability trace", () => {
@@ -97,5 +103,60 @@ describe("pi observability trace", () => {
     expect(json.seedId).toBe("foreman-56b46");
     expect(markdown).toContain("# FIX Trace — foreman-56b46");
     expect(markdown).toContain("DEVELOPER_REPORT.md");
+  });
+
+  it("sanitizeWorktreePath replaces absolute paths with placeholder", () => {
+    expect(sanitizeWorktreePath("/Users/ldangelo/.foreman/worktrees/abc123/")).toBe("$WORKTREE");
+    expect(sanitizeWorktreePath("C:\\Users\\ldangelo\\.foreman\\worktrees\\abc123\\")).toBe("$WORKTREE");
+    expect(sanitizeWorktreePath("/home/user/project")).toBe("$WORKTREE");
+    // Relative paths pass through unchanged
+    expect(sanitizeWorktreePath("docs/reports/foreman-56b46")).toBe("docs/reports/foreman-56b46");
+    expect(sanitizeWorktreePath("$WORKTREE")).toBe("$WORKTREE");
+  });
+
+  it("redactPhaseTrace replaces worktreePath in trace object", () => {
+    const trace = createPhaseTrace({
+      runId: "run-abc",
+      seedId: "foreman-test",
+      phase: "developer",
+      phaseType: "prompt",
+      model: "sonnet",
+      worktreePath: "/Users/ldangelo/.foreman/worktrees/foreman-test",
+      rawPrompt: "Fix the bug",
+    });
+    const redacted = redactPhaseTrace(trace);
+    expect(redacted.worktreePath).toBe("$WORKTREE");
+    // Original is unchanged
+    expect(trace.worktreePath).toBe("/Users/ldangelo/.foreman/worktrees/foreman-test");
+  });
+
+  it("writePhaseTrace produces JSON without absolute worktree paths", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-sanitize-"));
+    // Simulate a real absolute path that would leak host information
+    const realHostPath = "/Users/ldangelo/.foreman/worktrees/foreman-56b46";
+    const trace = createPhaseTrace({
+      runId: "run-sanitize",
+      seedId: "foreman-56b46",
+      phase: "developer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath: realHostPath,
+      rawPrompt: "Implement the feature",
+    });
+    finalizePhaseTrace(trace, { success: true, finalMessage: "Done." });
+
+    const paths = await writePhaseTrace(trace);
+    const jsonContent = await readFile(paths.jsonPath, "utf-8");
+    const json = JSON.parse(jsonContent);
+
+    // The written JSON must NOT contain the absolute path
+    expect(jsonContent).not.toContain("/Users/ldangelo");
+    expect(jsonContent).not.toContain(realHostPath);
+    expect(json.worktreePath).toBe("$WORKTREE");
+
+    // Markdown trace should also not contain the absolute path
+    const markdownContent = await readFile(paths.markdownPath, "utf-8");
+    expect(markdownContent).not.toContain("/Users/ldangelo");
+    expect(markdownContent).not.toContain(realHostPath);
   });
 });
