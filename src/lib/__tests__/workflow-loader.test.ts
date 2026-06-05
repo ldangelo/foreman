@@ -334,6 +334,20 @@ phases:
     expect(mergePhase?.artifact).toBe("{task.projectReportsDir}/MERGE_REPORT.md");
   });
 
+  it("bundled auto-merge workflows expose explicit PR review and merge phases", () => {
+    const workflows = ["default", "feature", "bug", "chore", "docs", "task"];
+    for (const workflowName of workflows) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const phaseNames = config.phases.map((phase) => phase.name);
+      expect(phaseNames, workflowName).toContain("create-pr");
+      expect(phaseNames, workflowName).toContain("pr-wait");
+      expect(phaseNames, workflowName).toContain("prepare-pr-review");
+      expect(phaseNames, workflowName).toContain("pr-review");
+      expect(phaseNames, workflowName).toContain("merge");
+      expect(config.phases.find((phase) => phase.name === "merge")?.builtin, workflowName).toBe(true);
+    }
+  });
+
   it("does not use Anthropic Haiku for bundled finalize phases", () => {
     for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
       const config = loadWorkflowConfig(workflowName, tmpDir);
