@@ -1,11 +1,11 @@
 import { mkdtemp, writeFile, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir } from "os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { createPhaseTrace, finalizePhaseTrace, getForbiddenVcsAction } from "../pi-observability-extension.js";
-import { writePhaseTrace } from "../pi-observability-writer.js";
+import { writePhaseTrace, WORKTREE_PLACEHOLDER } from "../pi-observability-writer.js";
 
 describe("pi observability trace", () => {
   it("detects legacy slash commands and flags missing artifact evidence", async () => {
@@ -92,10 +92,52 @@ describe("pi observability trace", () => {
     const json = JSON.parse(await readFile(paths.jsonPath, "utf-8")) as { phase: string; seedId: string };
     const markdown = await readFile(paths.markdownPath, "utf-8");
 
-    expect(paths.relativeJsonPath).toContain(".foreman/reports/runs/run-789/foreman-56b46/FIX_TRACE.json");
+    expect(paths.relativeJsonPath).toContain("{foremanHome}/reports/runs/run-789/foreman-56b46/FIX_TRACE.json");
     expect(json.phase).toBe("fix");
     expect(json.seedId).toBe("foreman-56b46");
     expect(markdown).toContain("# FIX Trace — foreman-56b46");
     expect(markdown).toContain("DEVELOPER_REPORT.md");
+  });
+
+  it("sanitizes absolute worktree paths in trace JSON and Markdown after writePhaseTrace", async () => {
+    // Build a trace that would contain a real /Users/... path in argsPreview
+    const realPath = "/Users/ldangelo/.foreman/worktrees/abc-123/foreman-e59b5";
+    const trace = createPhaseTrace({
+      runId: "run-sanitize-001",
+      seedId: "foreman-e59b5",
+      phase: "developer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath: realPath,
+      rawPrompt: "Implement the feature",
+      expectedArtifact: "DEVELOPER_REPORT.md",
+    });
+    // Simulate a tool call with an absolute path in argsPreview (as would happen in pi-observability-extension summarizeUnknown)
+    trace.toolCalls.push({
+      toolCallId: "tool-call-1",
+      toolName: "bash",
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      updateCount: 0,
+      isError: false,
+      // This argsPreview contains a real /Users/ path that must be sanitized
+      argsPreview: `Reading file at ${realPath}/DEVELOPER_REPORT.md`,
+      resultPreview: `Wrote ${realPath}/docs/reports/foreman-e59b5/FIX_TRACE.json`,
+    });
+
+    const paths = await writePhaseTrace(trace);
+    const json = JSON.parse(await readFile(paths.jsonPath, "utf-8")) as { worktreePath: string; toolCalls: Array<{ argsPreview?: string; resultPreview?: string }> };
+    const markdown = await readFile(paths.markdownPath, "utf-8");
+
+    // worktreePath must be sanitized to the placeholder
+    expect(json.worktreePath).toBe(WORKTREE_PLACEHOLDER);
+    // Tool call argsPreview must not contain real /Users/ path
+    expect(json.toolCalls[0].argsPreview).not.toContain("/Users/ldangelo");
+    expect(json.toolCalls[0].argsPreview).toContain(WORKTREE_PLACEHOLDER);
+    expect(json.toolCalls[0].resultPreview).not.toContain("/Users/ldangelo");
+    expect(json.toolCalls[0].resultPreview).toContain(WORKTREE_PLACEHOLDER);
+    // Markdown must also be clean
+    expect(markdown).not.toContain("/Users/ldangelo");
+    expect(markdown).toContain(WORKTREE_PLACEHOLDER);
   });
 });
