@@ -22,6 +22,7 @@ export interface WorktreeInfo {
   branchName: string;
   path: string;
   exists: boolean;
+  created?: boolean;
 }
 
 export interface CreateWorktreeOptions {
@@ -231,7 +232,7 @@ export class WorktreeManager {
     // If worktree already exists — reuse it with rebase
     if (existsSync(worktreePath)) {
       await this._rebaseWorktree(worktreePath, startPoint);
-      return { projectId, beadId, branchName, path: worktreePath, exists: true };
+      return { projectId, beadId, branchName, path: worktreePath, exists: true, created: false };
     }
 
     // Branch may exist without a worktree — reset it to the clean start point
@@ -260,7 +261,7 @@ export class WorktreeManager {
       }
     }
 
-    return { projectId, beadId, branchName, path: worktreePath, exists: true };
+    return { projectId, beadId, branchName, path: worktreePath, exists: true, created: true };
   }
 
   /**

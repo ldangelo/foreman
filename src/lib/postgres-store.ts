@@ -504,6 +504,10 @@ export class PostgresStore implements IStore {
     return rows;
   }
 
+  async enqueueBeadWrite(sender: string, operation: string, payload: unknown): Promise<void> {
+    await this.adapter.enqueueBeadWrite(this.projectId, sender, operation, payload);
+  }
+
   async markBeadWriteProcessed(id: string): Promise<boolean> {
     return this.adapter.markBeadWriteProcessed(this.projectId, id);
   }

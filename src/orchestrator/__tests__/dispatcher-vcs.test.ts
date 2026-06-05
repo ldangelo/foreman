@@ -42,6 +42,7 @@ vi.mock("../../lib/workflow-config-loader.js", () => ({
 vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
+  runWorkspaceHook: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock GitBackend so dispatcher's branch detection and fallback createWorkspace work in tests

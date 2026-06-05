@@ -105,9 +105,9 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   });
 
   describe('phase ordering and finalize', () => {
-    it('phases are in order: fix → test → finalize', () => {
+    it('phases are in order: fix → test → finalize → PR review → merge', () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      expect(names).toEqual(['fix', 'test', 'finalize']);
+      expect(names).toEqual(['fix', 'test', 'finalize', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
     });
 
     it('finalize phase uses the bug-specific finalize prompt', () => {

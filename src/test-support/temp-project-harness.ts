@@ -106,10 +106,24 @@ function initGitRepo(projectPath: string): void {
   execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, stdio: "pipe" });
 }
 
+function initGitRemote(projectPath: string): void {
+  const remotePath = mkdtempSync(join(tmpdir(), "foreman-e2e-remote-"));
+  execFileSync("git", ["init", "--bare", remotePath], { stdio: "pipe" });
+  execFileSync("git", ["remote", "add", "origin", remotePath], { cwd: projectPath, stdio: "pipe" });
+  execFileSync("git", ["push", "-u", "origin", "main"], { cwd: projectPath, stdio: "pipe" });
+}
+
+function syncLocalMainFromOrigin(projectPath: string): void {
+  execFileSync("git", ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], { cwd: projectPath, stdio: "pipe" });
+  execFileSync("git", ["checkout", "main"], { cwd: projectPath, stdio: "pipe" });
+  execFileSync("git", ["reset", "--hard", "origin/main"], { cwd: projectPath, stdio: "pipe" });
+}
+
 export async function createTempProjectHarness(): Promise<TempProjectHarness> {
   const projectPath = realpathSync(mkdtempSync(join(tmpdir(), "foreman-e2e-project-")));
   mkdirSync(join(projectPath, ".foreman"), { recursive: true });
   initGitRepo(projectPath);
+  initGitRemote(projectPath);
   await ensureTestDatabase(projectPath);
   installBundledPrompts(projectPath, true);
   installBundledWorkflows(projectPath, true);
@@ -209,6 +223,7 @@ export async function createTempProjectHarness(): Promise<TempProjectHarness> {
         projectPath,
         registeredProjectId: project.id,
       });
+      syncLocalMainFromOrigin(projectPath);
     },
     readRepoFile(relativePath) {
       return readFileSync(join(projectPath, relativePath), "utf-8");

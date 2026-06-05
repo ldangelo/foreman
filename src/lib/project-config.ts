@@ -18,6 +18,7 @@ import { load as yamlLoad } from "js-yaml";
 import type { VcsConfig } from "./vcs/index.js";
 import { normalizeBranchLabel } from "./branch-label.js";
 import { getForemanHomePath } from "./foreman-paths.js";
+import type { WorkspaceHooks } from "../orchestrator/types.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -161,6 +162,13 @@ export interface IssueTrackerConfig {
 }
 
 /**
+ * Workspace lifecycle hooks for pre/post-run customization.
+ * Loaded from project config and/or workflow YAML.
+ * @deprecated Use WorkspaceHooks from orchestrator/types instead
+ */
+export type ProjectHooksConfig = WorkspaceHooks;
+
+/**
  * Shape of `~/.foreman/config.yaml` (or `~/.foreman/config.json`).
  * Only the `vcs` section is currently defined; additional top-level keys may
  * be added in future phases without breaking this interface.
@@ -211,6 +219,8 @@ export interface ProjectConfig {
   staleWorktree?: StaleWorktreeConfig;
   /** Issue tracker configuration (e.g., Jira) for monitoring status transitions. */
   issueTracker?: IssueTrackerConfig;
+  /** Workspace lifecycle hooks for pre/post-run customization. */
+  hooks?: ProjectHooksConfig;
 }
 
 /** Error thrown when the project config file is present but malformed. */
@@ -564,6 +574,43 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       jira: jiraConfig,
     };
   }
+
+  // Optional hooks sub-config (workspace lifecycle hooks)
+  if ("hooks" in raw) {
+    const hooksRaw = raw["hooks"];
+    if (!isRecord(hooksRaw)) {
+      throw new ProjectConfigError(filePath, "'hooks' must be an object");
+    }
+    const hooksConfig: ProjectHooksConfig = {};
+    if ("afterCreate" in hooksRaw && typeof hooksRaw["afterCreate"] !== "string") {
+      throw new ProjectConfigError(filePath, "'hooks.afterCreate' must be a string");
+    }
+    hooksConfig.afterCreate = hooksRaw["afterCreate"] as string | undefined;
+    if ("beforeRun" in hooksRaw && typeof hooksRaw["beforeRun"] !== "string") {
+      throw new ProjectConfigError(filePath, "'hooks.beforeRun' must be a string");
+    }
+    hooksConfig.beforeRun = hooksRaw["beforeRun"] as string | undefined;
+    if ("afterRun" in hooksRaw && typeof hooksRaw["afterRun"] !== "string") {
+      throw new ProjectConfigError(filePath, "'hooks.afterRun' must be a string");
+    }
+    hooksConfig.afterRun = hooksRaw["afterRun"] as string | undefined;
+    if ("beforeRemove" in hooksRaw && typeof hooksRaw["beforeRemove"] !== "string") {
+      throw new ProjectConfigError(filePath, "'hooks.beforeRemove' must be a string");
+    }
+    hooksConfig.beforeRemove = hooksRaw["beforeRemove"] as string | undefined;
+    if ("timeoutMs" in hooksRaw) {
+      const timeoutMs = hooksRaw["timeoutMs"];
+      if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new ProjectConfigError(
+          filePath,
+          "'hooks.timeoutMs' must be a positive number (milliseconds)",
+        );
+      }
+      hooksConfig.timeoutMs = timeoutMs as number;
+    }
+    config.hooks = hooksConfig;
+  }
+
   return config;
 }
 

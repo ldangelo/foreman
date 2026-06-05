@@ -264,6 +264,51 @@ export interface SentinelResult {
   durationMs: number;
 }
 
+// ── Workspace lifecycle hooks ───────────────────────────────────────────
+
+/**
+ * Shell commands that run at specific points in the workspace lifecycle.
+ * Used for pre/post-run customization (e.g., clone repos, sync deps, archive results).
+ *
+ * @example
+ * ```yaml
+ * hooks:
+ *   afterCreate: "git clone https://github.com/org/repo.git addons/"
+ *   beforeRun: "npm run sync-deps"
+ *   afterRun: "npm run archive-results"
+ *   beforeRemove: "gcloud cleanup --workspace $FOREMAN_WORKSPACE_PATH"
+ *   timeoutMs: 60000
+ * ```
+ */
+export interface WorkspaceHooks {
+  /**
+   * One-time setup when workspace is created.
+   * Runs after `WorktreeManager.createWorktree()` and setup steps complete.
+   * Failures are fatal — block agent spawn.
+   */
+  afterCreate?: string;
+  /**
+   * Run before agent launch (after workspace creation, before spawnAgent).
+   * Failures are fatal — block agent spawn.
+   */
+  beforeRun?: string;
+  /**
+   * Run after agent completes (success or failure).
+   * Failures are logged but ignored — non-blocking.
+   */
+  afterRun?: string;
+  /**
+   * Run before workspace cleanup.
+   * Failures are logged but ignored — non-blocking.
+   */
+  beforeRemove?: string;
+  /**
+   * Default timeout in milliseconds for all hooks.
+   * Default: 60000 (60 seconds).
+   */
+  timeoutMs?: number;
+}
+
 // ── Doctor types ────────────────────────────────────────────────────────
 
 export type CheckStatus = "pass" | "warn" | "fail" | "fixed" | "skip";
