@@ -74,6 +74,18 @@ phases:
       onComplete: true
       forwardArtifactTo: foreman
 
+
+  - name: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    verdict: true
+    retryWith: fix
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: fix
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"

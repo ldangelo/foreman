@@ -48,6 +48,18 @@ phases:
       onStart: false
       onComplete: true
 
+  - name: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    verdict: true
+    retryWith: develop
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: develop
+
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"

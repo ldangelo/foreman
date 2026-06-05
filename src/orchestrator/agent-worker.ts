@@ -43,6 +43,7 @@ import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { autoMerge } from "./auto-merge.js";
+import { runCodeRabbitCliReview } from "./coderabbit-cli-review.js";
 import { collectPrReviewContext, collectPrWaitSnapshot, summarizePrWaitStatus, writePrReviewFindings, writePrWaitReport } from "./pr-review-context.js";
 import { Refinery } from "./refinery.js";
 import type { ITaskClient } from "../lib/task-client.js";
@@ -1111,6 +1112,33 @@ async function runPreparePrReviewBuiltinPhase(args: {
   return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: `blocking=${context.blockingFindings.length} failedChecks=${context.failedChecks.length}` };
 }
 
+async function runCliReviewBuiltinPhase(args: {
+  config: WorkerConfig;
+  pipelineProjectPath: string;
+  vcsBackend?: VcsBackend;
+  log: (msg: string) => void;
+}): Promise<import("./pipeline-executor.js").PhaseResult> {
+  const baseBranch = args.config.targetBranch
+    || await args.vcsBackend?.detectDefaultBranch(args.pipelineProjectPath).catch(() => "main")
+    || "main";
+  const review = await runCodeRabbitCliReview({
+    worktreePath: args.config.worktreePath,
+    baseBranch,
+    reportDir: workerReportDir(args.config),
+    log: args.log,
+  });
+  return {
+    success: review.status !== "failed",
+    costUsd: 0,
+    turns: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    error: review.status === "failed" ? review.details : undefined,
+    outputText: `status=${review.status} blocking=${review.blockingFindings.length} nonBlocking=${review.nonBlockingFindings.length}`,
+  };
+}
+
+
 async function validatePrReviewGate(args: {
   worktreePath: string;
   pipelineProjectPath: string;
@@ -1390,6 +1418,9 @@ async function runPipeline(
           }
           if (phase.name === "pr-wait") {
             return await runPrWaitBuiltinPhase({ config, phase, pipelineProjectPath, log });
+          }
+          if (phase.name === "cli-review") {
+            return await runCliReviewBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log });
           }
           if (phase.name === "prepare-pr-review") {
             return await runPreparePrReviewBuiltinPhase({ config, pipelineProjectPath, log });
