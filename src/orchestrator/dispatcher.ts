@@ -420,6 +420,20 @@ export class Dispatcher {
       console.error(`[bead-writer][${this.resolveProjectId()}] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
+    // ── Reconciliation: stop runs whose issues are terminal ───────────────
+    // Catch issues that were closed/completed while an agent was still running.
+    // These runs would otherwise continue until completion, wasting resources.
+    try {
+      const stopped = await this.reconcileRunningIssues(projectId);
+      if (stopped > 0) {
+        console.error(`[dispatch] Stopped ${stopped} run(s) with terminal issues`);
+      }
+    } catch (reconcileErr: unknown) {
+      // Non-fatal: reconciliation failures must not block dispatch
+      const msg = reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr);
+      console.error(`[dispatch] reconcileRunningIssues failed: ${msg.slice(0, 200)}`);
+    }
+
     // ── onError=stop guard ─────────────────────────────────────────────────
     // When the workflow's onError is "stop", refuse to dispatch if any recent
     // runs ended in a terminal failure state.
@@ -1722,6 +1736,68 @@ export class Dispatcher {
     }
 
     return { inBackoff: false };
+  }
+
+  /**
+   * Returns true when an issue status indicates the issue is closed/completed
+   * and any active runs should be stopped.
+   */
+  private isTerminalState(status: string | null | undefined): boolean {
+    return status === "closed" || status === "completed";
+  }
+
+  /**
+   * Stop a run whose issue has transitioned to a terminal state.
+   * Marks the run as stuck, logs the event, and archives the worktree.
+   */
+  private async cancelRun(run: Run, reason: string): Promise<void> {
+    await this.updateRunRecord(run.id, {
+      status: "stuck",
+      completed_at: new Date().toISOString(),
+    });
+    await this.logEventRecord(run.project_id, "stuck", { reason }, run.id);
+
+    // Archive the worktree for this run
+    if (run.worktree_path) {
+      const worktreeManager = new WorktreeManager();
+      await worktreeManager.removeWorktree(run.project_id, run.seed_id, this.projectPath);
+    }
+  }
+
+  /**
+   * Reconcile active runs against their underlying issue state.
+   * Stop any runs whose issues have transitioned to a terminal state
+   * (closed/completed) or are no longer found.
+   *
+   * Called at the start of each dispatch cycle to catch issues that were
+   * closed while an agent was still running.
+   *
+   * @returns The number of runs that were stopped.
+   */
+  private async reconcileRunningIssues(projectId: string): Promise<number> {
+    const activeRuns = await this.getActiveRunsRecord(projectId);
+    let stopped = 0;
+
+    for (const run of activeRuns) {
+      try {
+        const issueDetail = await this.seeds.show(run.seed_id);
+        if (this.isTerminalState(issueDetail.status)) {
+          await this.cancelRun(run, "issue_terminal");
+          stopped++;
+        }
+      } catch (err: unknown) {
+        // Issue not found — treat as terminal and stop the run
+        const msg = err instanceof Error ? err.message : String(err);
+        const lower = msg.toLowerCase();
+        if (lower.includes("not found") || lower.includes("404")) {
+          await this.cancelRun(run, "issue_terminal");
+          stopped++;
+        }
+        // Other errors: log and continue (non-fatal)
+      }
+    }
+
+    return stopped;
   }
 
   /**
