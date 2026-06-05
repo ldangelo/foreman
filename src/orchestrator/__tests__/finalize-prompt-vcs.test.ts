@@ -278,7 +278,7 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
       vcsBranchVerifyCommand: finalizeCommands.branchVerifyCommand,
       vcsCleanCommand: finalizeCommands.cleanCommand,
     });
-    expect(prompt).toContain("jj git push --bookmark foreman/bd-test --allow-new");
+    expect(prompt).toContain("jj git push --bookmark foreman/bd-test");
     expect(prompt).not.toContain("{{vcsPushCommand}}");
   });
 

@@ -68,8 +68,8 @@ export interface PushOptions {
   /** If true, force-push (overwrite remote history). Use with caution. */
   force?: boolean;
   /**
-   * Jujutsu-specific: passes --allow-new flag to allow pushing new bookmarks.
-   * GitBackend ignores this field.
+   * Jujutsu-specific compatibility hint: older jj versions needed
+   * `--allow-new` for first push of a new bookmark. GitBackend ignores it.
    */
   allowNew?: boolean;
 }

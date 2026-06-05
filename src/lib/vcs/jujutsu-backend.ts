@@ -9,7 +9,7 @@
  * - Branches are called "bookmarks" in jj (`jj bookmark`).
  * - Staging is automatic — `stageAll()` is a no-op.
  * - Commits use `jj describe -m` (no trailing `jj new`).
- * - Push requires `--allow-new` for first push of a new bookmark.
+ * - Pushes use `jj git push --bookmark`; `allowNew` retries old `--allow-new` syntax when needed.
  * - Rebase uses `jj rebase -d <destination>`.
  *
  * @module src/lib/vcs/jujutsu-backend
@@ -538,21 +538,35 @@ export class JujutsuBackend implements VcsBackend {
 
   /**
    * Push a bookmark to origin using `jj git push`.
-   * Passes `--allow-new` when `options.allowNew` is true (required for new bookmarks).
+   *
+   * Newer jj releases automatically track/create remote bookmarks when pushing
+   * with `--bookmark`, while older releases required `--allow-new`. When
+   * `options.allowNew` is set, try the legacy flag first and fall back to the
+   * modern syntax if the local jj binary rejects it.
    */
   async push(
     workspacePath: string,
     branchName: string,
     options?: PushOptions,
   ): Promise<void> {
-    const args = ["git", "push", "--bookmark", branchName];
-    if (options?.allowNew) {
-      args.push("--allow-new");
-    }
+    const baseArgs = ["git", "push", "--bookmark", branchName];
     if (options?.force) {
-      args.push("--force");
+      baseArgs.push("--force");
     }
-    await this.jj(args, workspacePath);
+
+    if (options?.allowNew) {
+      try {
+        await this.jj([...baseArgs, "--allow-new"], workspacePath);
+        return;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes("unexpected argument '--allow-new'")) {
+          throw err;
+        }
+      }
+    }
+
+    await this.jj(baseArgs, workspacePath);
   }
 
   /**
@@ -1151,7 +1165,7 @@ export class JujutsuBackend implements VcsBackend {
     return {
       stageCommand: "", // jj auto-stages
       commitCommand: `jj describe -m '${safeSeedTitle} (${seedId})${footerSuffix}'`,
-      pushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
+      pushCommand: `jj git push --bookmark foreman/${seedId}`,
       integrateTargetCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
       branchVerifyCommand: `jj bookmark list foreman/${seedId}`,
       cleanCommand: `jj workspace forget foreman-${seedId}`,
