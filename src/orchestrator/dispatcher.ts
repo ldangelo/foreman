@@ -2022,6 +2022,12 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     // Strip CLAUDECODE so the worker can spawn its own Claude SDK session
     const spawnEnv: Record<string, string | undefined> = { ...config.env };
     delete spawnEnv.CLAUDECODE;
+    if (spawnEnv.FOREMAN_RUNTIME_MODE === "test" || spawnEnv.NODE_ENV === "test" || process.env.FOREMAN_RUNTIME_MODE === "test" || process.env.NODE_ENV === "test") {
+      // Detached workers spawned from tests must not survive the test process.
+      // agent-worker installs a lightweight guard for this env flag.
+      spawnEnv.FOREMAN_WORKER_TEST_GUARD = "1";
+      spawnEnv.FOREMAN_WORKER_PARENT_PID = String(process.pid);
+    }
 
     // Spawn with cwd = worktree. The agent works from the worktree, so npm ci,
     // npm run build, npm test, and git operations all target the correct tree.

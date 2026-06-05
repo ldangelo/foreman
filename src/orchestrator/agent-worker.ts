@@ -355,6 +355,29 @@ interface WorkerConfig {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+function installTestWorkerGuard(config: WorkerConfig): void {
+  const homeDir = config.env.HOME;
+  const isTempTestHome = Boolean(homeDir?.includes("foreman-test-home-") || homeDir?.includes("foreman-no-br-home-"));
+  if (config.env.FOREMAN_WORKER_TEST_GUARD !== "1" && !isTempTestHome) return;
+  const parentPid = Number(config.env.FOREMAN_WORKER_PARENT_PID);
+  const interval = setInterval(() => {
+    const parentGone = Number.isFinite(parentPid) && parentPid > 0 && (() => {
+      try {
+        process.kill(parentPid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    })();
+    const homeGone = Boolean(homeDir) && !existsSync(homeDir);
+    const worktreeGone = !existsSync(config.worktreePath);
+    if (parentGone || homeGone || worktreeGone) {
+      process.exit(0);
+    }
+  }, 1_000);
+  interval.unref();
+}
+
 async function main(): Promise<void> {
   const configPath = process.argv[2];
   if (!configPath) {
@@ -365,6 +388,7 @@ async function main(): Promise<void> {
   // Read and delete config file (contains env vars including credentials — delete immediately)
   const config: WorkerConfig = JSON.parse(readFileSync(configPath, "utf-8"));
   try { unlinkSync(configPath); } catch { /* already deleted */ }
+  installTestWorkerGuard(config);
 
   const { runId, projectId, seedId, seedTitle, model, worktreePath, projectPath: configProjectPath, prompt, resume, pipeline } = config;
 
