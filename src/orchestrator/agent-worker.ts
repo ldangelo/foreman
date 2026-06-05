@@ -1103,6 +1103,145 @@ async function validatePrReviewGate(args: {
   return { success: true };
 }
 
+async function writeMergeReport(args: {
+  config: WorkerConfig;
+  status: "SUCCESS" | "FAIL" | "SKIPPED";
+  details: string;
+  merged?: number;
+  conflicts?: number;
+  failed?: number;
+  prNumber?: number;
+}): Promise<void> {
+  const reportPath = resolveArtifactPath(args.config.worktreePath, join(workerReportDir(args.config), "MERGE_REPORT.md"));
+  await mkdir(dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, `# Merge Report: ${args.config.seedTitle}\n\n` +
+    `## Seed: ${args.config.seedId}\n` +
+    `## Run: ${args.config.runId}\n` +
+    `## Status: ${args.status}\n\n` +
+    `## PR\n` +
+    `- Number: ${args.prNumber ?? "unknown"}\n\n` +
+    `## Result\n` +
+    `- Merged: ${args.merged ?? 0}\n` +
+    `- Conflicts: ${args.conflicts ?? 0}\n` +
+    `- Failed: ${args.failed ?? 0}\n\n` +
+    `## Details\n${args.details}\n`, "utf8");
+}
+
+async function runMergeBuiltinPhase(args: {
+  config: WorkerConfig;
+  store: ForemanStore;
+  pipelineProjectPath: string;
+  registeredProjectId?: string;
+  registeredReadStore?: PostgresStore;
+  vcsBackend?: VcsBackend;
+  workflowConfig: WorkflowConfig;
+  log: (msg: string) => void;
+  agentMailClient: AnyMailClient | null;
+}): Promise<import("./pipeline-executor.js").PhaseResult> {
+  const { config, store, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, workflowConfig, log, agentMailClient } = args;
+  const mergeStrategy = workflowConfig.merge ?? "auto";
+  const prNumber = (() => {
+    try { return readPrNumberFromMetadata(config.worktreePath, workerReportDir(config)); } catch { return undefined; }
+  })();
+
+  if (mergeStrategy !== "auto") {
+    const details = `Workflow merge strategy is ${mergeStrategy}; explicit merge phase skipped auto-merge.`;
+    await writeMergeReport({ config, status: "SKIPPED", details, prNumber });
+    log(`[MERGE] ${details}`);
+    return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: details };
+  }
+
+  const gate = await validatePrReviewGate({
+    worktreePath: config.worktreePath,
+    pipelineProjectPath,
+    log,
+    reportDir: workerReportDir(config),
+  });
+  if (!gate.success) {
+    const details = gate.reason ?? "pr_review_gate_failed";
+    await writeMergeReport({ config, status: "FAIL", details, prNumber });
+    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: details, outputText: details };
+  }
+
+  let enqueueFiles: string[] = [];
+  try {
+    const enqueueBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, config.worktreePath);
+    const enqueueDefaultBranch = await enqueueBackend.detectDefaultBranch(config.worktreePath);
+    enqueueFiles = await enqueueBackend.getChangedFiles(config.worktreePath, enqueueDefaultBranch, "HEAD");
+  } catch {
+    // Non-fatal — proceed with empty file list.
+  }
+
+  const enqueueResult = await enqueueToMergeQueue({
+    projectId: config.projectId,
+    seedId: config.seedId,
+    runId: config.runId,
+    operation: "auto_merge",
+    worktreePath: config.worktreePath,
+    getFilesModified: () => enqueueFiles,
+  });
+  if (!enqueueResult.success) {
+    const details = `Merge queue enqueue failed: ${enqueueResult.error ?? "unknown"}`;
+    await writeMergeReport({ config, status: "FAIL", details, prNumber });
+    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: details, outputText: details };
+  }
+
+  sendMail(agentMailClient, "refinery", "branch-ready", {
+    seedId: config.seedId,
+    runId: config.runId,
+    branch: `foreman/${config.seedId}`,
+    worktreePath: config.worktreePath,
+  });
+
+  const now = new Date().toISOString();
+  await updateTerminalRunStatus({
+    runId: config.runId,
+    projectId: config.projectId,
+    projectPath: pipelineProjectPath,
+    updates: { status: "completed", completed_at: now },
+  });
+
+  const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
+  const registeredAutoMergeReadStore = registeredProjectId ? registeredReadStore : undefined;
+  const currentRun = registeredAutoMergeReadStore
+    ? (await registeredAutoMergeReadStore.getRun(config.runId)) ?? undefined
+    : store.getRun(config.runId) ?? undefined;
+  const mergeResult = await autoMerge({
+    store,
+    taskClient: runtimeTaskClient,
+    projectPath: pipelineProjectPath,
+    targetBranch: config.targetBranch,
+    ...(registeredAutoMergeReadStore
+      ? { registeredProjectId, readLookup: registeredAutoMergeReadStore }
+      : {}),
+    runId: config.runId,
+    ...(currentRun ? { overrideRun: currentRun } : {}),
+  });
+
+  const details = `Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`;
+  const success = mergeResult.merged > 0 && mergeResult.conflicts === 0 && mergeResult.failed === 0;
+  await writeMergeReport({
+    config,
+    status: success ? "SUCCESS" : "FAIL",
+    details,
+    merged: mergeResult.merged,
+    conflicts: mergeResult.conflicts,
+    failed: mergeResult.failed,
+    prNumber,
+  });
+  log(`[MERGE] ${details}`);
+
+  return {
+    success,
+    costUsd: 0,
+    turns: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    error: success ? undefined : details,
+    outputText: details,
+  };
+}
+
 async function runPipeline(
   config: WorkerConfig,
   store: ForemanStore,
@@ -1222,6 +1361,19 @@ async function runPipeline(
           if (phase.name === "prepare-pr-review") {
             return await runPreparePrReviewBuiltinPhase({ config, pipelineProjectPath, log });
           }
+          if (phase.name === "merge") {
+            return await runMergeBuiltinPhase({
+              config,
+              store,
+              pipelineProjectPath,
+              registeredProjectId,
+              registeredReadStore,
+              vcsBackend,
+              workflowConfig,
+              log,
+              agentMailClient,
+            });
+          }
           return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `Unknown builtin phase: ${phase.name}` };
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -1315,8 +1467,42 @@ async function runPipeline(
         log(`[PIPELINE] Skipping branch-ready: workflow has no finalize phase`);
         return;
       }
+      const hasExplicitMergePhase = workflowConfig.phases.some((phase) => phase.name === "merge");
       const hasCreatePrPhase = workflowConfig.phases.some((phase) => phase.name === "create-pr");
       const { runId, projectId, seedId, seedTitle, worktreePath } = config;
+
+      if (hasExplicitMergePhase) {
+        const completedPhases = workflowConfig.phases.map((p) => p.name).join("→");
+        const eventType = success ? "complete" : "fail";
+        const eventData = {
+          seedId,
+          title: seedTitle,
+          costUsd: progress.costUsd,
+          numTurns: progress.turns,
+          toolCalls: progress.toolCalls,
+          filesChanged: progress.filesChanged.length,
+          phases: completedPhases,
+        };
+        if (registeredProjectId && registeredReadStore) {
+          try {
+            await registeredReadStore.logEvent(registeredProjectId, eventType, eventData, runId);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log(`[PIPELINE] Registered terminal event write failed (non-fatal); falling back to local store: ${msg}`);
+            store.logEvent(projectId, eventType, eventData, runId);
+          }
+        } else {
+          store.logEvent(projectId, eventType, eventData, runId);
+        }
+        if (success) {
+          log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
+          await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
+        } else {
+          log(`PIPELINE FAILED for ${seedId} with explicit merge workflow ($${progress.costUsd.toFixed(4)})`);
+          await appendFile(logFile, `\n[PIPELINE] FAILED ($${progress.costUsd.toFixed(4)})\n`);
+        }
+        return;
+      }
 
       // Read finalize outcome from agent mail. If a later post-finalize phase failed,
       // preserve the actual phase name instead of reporting every pipeline failure

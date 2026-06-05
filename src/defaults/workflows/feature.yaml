@@ -143,6 +143,13 @@ phases:
       onFail: developer
       forwardArtifactTo: foreman
 
+  - name: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+
 onFailure:
   name: troubleshooter
   prompt: troubleshooter.md

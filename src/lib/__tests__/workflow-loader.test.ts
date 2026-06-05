@@ -309,7 +309,7 @@ phases:
     expect(testPhase?.bash).toBe("npm run test:unit");
   });
 
-  it("feature workflow inserts PR review phases after finalize", () => {
+  it("feature workflow inserts PR review and merge phases after finalize", () => {
     const config = loadWorkflowConfig("feature", tmpDir);
     const phaseNames = config.phases.map((phase) => phase.name);
     expect(phaseNames.slice(phaseNames.indexOf("finalize"))).toEqual([
@@ -318,6 +318,7 @@ phases:
       "pr-wait",
       "prepare-pr-review",
       "pr-review",
+      "merge",
     ]);
     expect(config.phases.find((phase) => phase.name === "create-pr")?.builtin).toBe(true);
     const prWaitPhase = config.phases.find((phase) => phase.name === "pr-wait");
@@ -328,6 +329,9 @@ phases:
     expect(prReviewPhase?.artifact).toBe("{task.projectReportsDir}/PR_REVIEW_REPORT.md");
     expect(prReviewPhase?.retryOnFail).toBe(3);
     expect(prReviewPhase?.tools?.allowed).not.toContain("Edit");
+    const mergePhase = config.phases.find((phase) => phase.name === "merge");
+    expect(mergePhase?.builtin).toBe(true);
+    expect(mergePhase?.artifact).toBe("{task.projectReportsDir}/MERGE_REPORT.md");
   });
 
   it("does not use Anthropic Haiku for bundled finalize phases", () => {
