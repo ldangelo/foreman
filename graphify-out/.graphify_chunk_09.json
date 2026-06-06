@@ -1,0 +1,1421 @@
+{
+  "nodes": [
+    {
+      "id": "br_skill_beads_rust_issue_tracker",
+      "label": "Beads Rust Issue Tracker",
+      "file_type": "document",
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "br_skill_postgres_query_audit_trail",
+      "label": "Postgres Query Audit Trail",
+      "file_type": "concept",
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "br_skill_ready_issues",
+      "label": "Ready Issues",
+      "file_type": "concept",
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "br_skill_dependency_management",
+      "label": "Dependency Management",
+      "file_type": "concept",
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "br_skill_epic_management",
+      "label": "Epic Management",
+      "file_type": "concept",
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "br_skill_jsonl_audit_log",
+      "label": "JSONL Audit Log",
+      "file_type": "concept",
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "bv_skill_beads_viewer",
+      "label": "Beads Viewer",
+      "file_type": "document",
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "bv_skill_robot_triage",
+      "label": "Robot Triage",
+      "file_type": "concept",
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "bv_skill_graph_metrics",
+      "label": "Graph Metrics",
+      "file_type": "concept",
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "bv_skill_capacity_simulation",
+      "label": "Capacity Simulation",
+      "file_type": "concept",
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "bv_skill_agent_brief_export",
+      "label": "Agent Brief Export",
+      "file_type": "concept",
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "bv_skill_drift_detection",
+      "label": "Drift Detection",
+      "file_type": "concept",
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_skill_multi_agent_orchestrator",
+      "label": "Foreman Multi-Agent Orchestrator",
+      "file_type": "document",
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_skill_ensemble_pipeline",
+      "label": "Ensemble Pipeline",
+      "file_type": "concept",
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_skill_agent_dispatcher",
+      "label": "Agent Dispatcher",
+      "file_type": "concept",
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_skill_postgres_run_tracking",
+      "label": "Postgres Run Tracking",
+      "file_type": "concept",
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_skill_dashboard",
+      "label": "Dashboard",
+      "file_type": "concept",
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_skill_merge_refinery",
+      "label": "Merge Refinery",
+      "file_type": "concept",
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_skill_native_task_management",
+      "label": "Native Task Management",
+      "file_type": "concept",
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "jj_skill_jujutsu_vcs",
+      "label": "Jujutsu Version Control",
+      "file_type": "document",
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "jj_skill_bookmarks",
+      "label": "Bookmarks",
+      "file_type": "concept",
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "jj_skill_workspaces",
+      "label": "Workspaces",
+      "file_type": "concept",
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "jj_skill_undo_operations",
+      "label": "Undo Operations",
+      "file_type": "concept",
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "jj_skill_git_interop",
+      "label": "Git Interop",
+      "file_type": "concept",
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_debug_pipeline_execution_analysis",
+      "label": "Pipeline Execution Analysis",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/debug.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_developer_developer_agent",
+      "label": "Developer Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_developer_merge_conflict_preflight",
+      "label": "Merge Conflict Preflight",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_developer_external_review_hardening",
+      "label": "External Review Hardening",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_developer_developer_report",
+      "label": "Developer Report",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_explorer_explorer_agent",
+      "label": "Explorer Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/explorer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_explorer_explorer_report",
+      "label": "Explorer Report",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/explorer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_explorer_execution_contract",
+      "label": "Execution Contract",
+      "file_type": "rationale",
+      "source_file": "src/defaults/prompts/default/explorer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_finalize_bug_bug_finalize_agent",
+      "label": "Bug Workflow Finalize Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/finalize-bug.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_finalize_finalize_agent",
+      "label": "Finalize Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/finalize.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_finalize_target_drift_validation",
+      "label": "Target Drift Validation",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/finalize.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_finalize_finalize_validation",
+      "label": "Finalize Validation",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/finalize.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_finalize_branch_push",
+      "label": "Branch Push",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/finalize.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_lead_explorer_lead_explorer_delegation",
+      "label": "Lead Explorer Delegation",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/lead-explorer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_lead_reviewer_lead_reviewer_delegation",
+      "label": "Lead Reviewer Delegation",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/lead-reviewer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_lead_engineering_lead",
+      "label": "Engineering Lead",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/lead.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_lead_agent_team_workflow",
+      "label": "Agent Team Workflow",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/lead.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_pr_review_pr_review_agent",
+      "label": "PR Review Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/pr-review.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_pr_review_coderabbit_gate",
+      "label": "CodeRabbit Gate",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/pr-review.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_pr_review_pr_review_report",
+      "label": "PR Review Report",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/pr-review.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_qa_qa_agent",
+      "label": "QA Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/qa.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_qa_conflict_marker_check",
+      "label": "Conflict Marker Check",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/qa.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_qa_qa_report",
+      "label": "QA Report",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/qa.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_recover_recovery_agent",
+      "label": "Recovery Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/recover.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_recover_recovery_playbook",
+      "label": "Recovery Playbook",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/recover.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_reviewer_reviewer_agent",
+      "label": "Reviewer Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/reviewer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_reviewer_review_report",
+      "label": "Review Report",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/reviewer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_sentinel_sentinel_agent",
+      "label": "Sentinel Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/sentinel.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_troubleshooter_troubleshooter_agent",
+      "label": "Troubleshooter Agent",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/default/troubleshooter.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_troubleshooter_failure_mode_routing",
+      "label": "Failure Mode Routing",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/troubleshooter.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "default_troubleshooter_troubleshoot_report",
+      "label": "Troubleshoot Report",
+      "file_type": "concept",
+      "source_file": "src/defaults/prompts/default/troubleshooter.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "smoke_developer_smoke_developer_phase",
+      "label": "Smoke Developer Phase",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/smoke/developer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "smoke_explorer_smoke_explorer_phase",
+      "label": "Smoke Explorer Phase",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/smoke/explorer.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "smoke_finalize_smoke_finalize_phase",
+      "label": "Smoke Finalize Phase",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/smoke/finalize.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "smoke_qa_smoke_qa_phase",
+      "label": "Smoke QA Phase",
+      "file_type": "document",
+      "source_file": "src/defaults/prompts/smoke/qa.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "br_skill_beads_rust_issue_tracker",
+      "target": "br_skill_postgres_query_audit_trail",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "br_skill_beads_rust_issue_tracker",
+      "target": "br_skill_jsonl_audit_log",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "br_skill_beads_rust_issue_tracker",
+      "target": "br_skill_ready_issues",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "br_skill_beads_rust_issue_tracker",
+      "target": "br_skill_dependency_management",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "br_skill_beads_rust_issue_tracker",
+      "target": "br_skill_epic_management",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "br_skill_dependency_management",
+      "target": "br_skill_ready_issues",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "skills/br/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "bv_skill_beads_viewer",
+      "target": "bv_skill_robot_triage",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "bv_skill_beads_viewer",
+      "target": "bv_skill_graph_metrics",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "bv_skill_beads_viewer",
+      "target": "bv_skill_capacity_simulation",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "bv_skill_beads_viewer",
+      "target": "bv_skill_agent_brief_export",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "bv_skill_beads_viewer",
+      "target": "bv_skill_drift_detection",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "bv_skill_beads_viewer",
+      "target": "br_skill_beads_rust_issue_tracker",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "bv_skill_graph_metrics",
+      "target": "br_skill_dependency_management",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "bv_skill_robot_triage",
+      "target": "br_skill_ready_issues",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "skills/bv/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_multi_agent_orchestrator",
+      "target": "foreman_skill_ensemble_pipeline",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_multi_agent_orchestrator",
+      "target": "foreman_skill_agent_dispatcher",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_multi_agent_orchestrator",
+      "target": "foreman_skill_postgres_run_tracking",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_multi_agent_orchestrator",
+      "target": "foreman_skill_dashboard",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_multi_agent_orchestrator",
+      "target": "foreman_skill_merge_refinery",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_multi_agent_orchestrator",
+      "target": "foreman_skill_native_task_management",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_native_task_management",
+      "target": "br_skill_beads_rust_issue_tracker",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_agent_dispatcher",
+      "target": "foreman_skill_postgres_run_tracking",
+      "relation": "shares_data_with",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_merge_refinery",
+      "target": "default_finalize_finalize_agent",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_skill_multi_agent_orchestrator",
+      "target": "default_lead_engineering_lead",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "skills/foreman/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "jj_skill_jujutsu_vcs",
+      "target": "jj_skill_bookmarks",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "jj_skill_jujutsu_vcs",
+      "target": "jj_skill_workspaces",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "jj_skill_jujutsu_vcs",
+      "target": "jj_skill_undo_operations",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "jj_skill_jujutsu_vcs",
+      "target": "jj_skill_git_interop",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "jj_skill_workspaces",
+      "target": "foreman_skill_agent_dispatcher",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "jj_skill_git_interop",
+      "target": "default_finalize_branch_push",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "skills/jj/SKILL.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_debug_pipeline_execution_analysis",
+      "target": "foreman_skill_multi_agent_orchestrator",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/debug.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_developer_developer_agent",
+      "target": "default_developer_merge_conflict_preflight",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_developer_developer_agent",
+      "target": "default_developer_external_review_hardening",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_developer_developer_agent",
+      "target": "default_developer_developer_report",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_developer_developer_agent",
+      "target": "default_explorer_explorer_report",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_developer_merge_conflict_preflight",
+      "target": "default_finalize_target_drift_validation",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.65,
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_developer_external_review_hardening",
+      "target": "default_pr_review_coderabbit_gate",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "src/defaults/prompts/default/developer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_explorer_explorer_agent",
+      "target": "default_explorer_explorer_report",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/explorer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_explorer_explorer_agent",
+      "target": "default_explorer_execution_contract",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/explorer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_explorer_execution_contract",
+      "target": "default_developer_developer_agent",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/explorer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_finalize_bug_bug_finalize_agent",
+      "target": "default_finalize_finalize_validation",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/finalize-bug.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_finalize_bug_bug_finalize_agent",
+      "target": "default_finalize_branch_push",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/finalize-bug.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_finalize_finalize_agent",
+      "target": "default_finalize_target_drift_validation",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/finalize.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_finalize_finalize_agent",
+      "target": "default_finalize_finalize_validation",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/finalize.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_finalize_finalize_agent",
+      "target": "default_finalize_branch_push",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/finalize.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_lead_engineering_lead",
+      "target": "default_lead_agent_team_workflow",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/lead.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_lead_agent_team_workflow",
+      "target": "default_explorer_explorer_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/lead.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_lead_agent_team_workflow",
+      "target": "default_developer_developer_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/lead.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_lead_agent_team_workflow",
+      "target": "default_qa_qa_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/lead.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_lead_agent_team_workflow",
+      "target": "default_reviewer_reviewer_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/lead.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_lead_explorer_lead_explorer_delegation",
+      "target": "default_explorer_explorer_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/lead-explorer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_lead_reviewer_lead_reviewer_delegation",
+      "target": "default_reviewer_reviewer_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/lead-reviewer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_pr_review_pr_review_agent",
+      "target": "default_pr_review_coderabbit_gate",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/pr-review.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_pr_review_pr_review_agent",
+      "target": "default_pr_review_pr_review_report",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/pr-review.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_pr_review_pr_review_agent",
+      "target": "default_reviewer_reviewer_agent",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "src/defaults/prompts/default/pr-review.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_qa_qa_agent",
+      "target": "default_qa_conflict_marker_check",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/qa.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_qa_qa_agent",
+      "target": "default_qa_qa_report",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/qa.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_qa_qa_agent",
+      "target": "default_developer_developer_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/qa.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_recover_recovery_agent",
+      "target": "default_recover_recovery_playbook",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/recover.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_recover_recovery_playbook",
+      "target": "default_troubleshooter_failure_mode_routing",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "src/defaults/prompts/default/recover.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_reviewer_reviewer_agent",
+      "target": "default_reviewer_review_report",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/reviewer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_reviewer_reviewer_agent",
+      "target": "default_qa_qa_report",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/reviewer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_sentinel_sentinel_agent",
+      "target": "default_qa_qa_agent",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "src/defaults/prompts/default/sentinel.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_troubleshooter_troubleshooter_agent",
+      "target": "default_troubleshooter_failure_mode_routing",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/troubleshooter.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_troubleshooter_troubleshooter_agent",
+      "target": "default_troubleshooter_troubleshoot_report",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/troubleshooter.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_troubleshooter_failure_mode_routing",
+      "target": "default_finalize_finalize_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/troubleshooter.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "default_troubleshooter_failure_mode_routing",
+      "target": "default_qa_qa_agent",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/troubleshooter.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "smoke_developer_smoke_developer_phase",
+      "target": "default_developer_developer_agent",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "src/defaults/prompts/smoke/developer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "smoke_explorer_smoke_explorer_phase",
+      "target": "default_explorer_explorer_agent",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "src/defaults/prompts/smoke/explorer.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "smoke_finalize_smoke_finalize_phase",
+      "target": "default_finalize_finalize_agent",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "src/defaults/prompts/smoke/finalize.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "smoke_qa_smoke_qa_phase",
+      "target": "default_qa_qa_agent",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "src/defaults/prompts/smoke/qa.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "smoke_finalize_smoke_finalize_phase",
+      "target": "default_finalize_finalize_validation",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/smoke/finalize.md",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "beads_issue_analysis_tools",
+      "label": "Beads Issue Analysis Tools",
+      "nodes": [
+        "br_skill_beads_rust_issue_tracker",
+        "bv_skill_beads_viewer",
+        "foreman_skill_native_task_management"
+      ],
+      "relation": "form",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "skills/bv/SKILL.md"
+    },
+    {
+      "id": "foreman_agent_phase_prompts",
+      "label": "Foreman Agent Phase Prompts",
+      "nodes": [
+        "default_explorer_explorer_agent",
+        "default_developer_developer_agent",
+        "default_qa_qa_agent",
+        "default_reviewer_reviewer_agent",
+        "default_finalize_finalize_agent"
+      ],
+      "relation": "participate_in",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/defaults/prompts/default/lead.md"
+    },
+    {
+      "id": "pipeline_failure_recovery_prompts",
+      "label": "Pipeline Failure Recovery Prompts",
+      "nodes": [
+        "default_debug_pipeline_execution_analysis",
+        "default_recover_recovery_agent",
+        "default_troubleshooter_troubleshooter_agent",
+        "default_sentinel_sentinel_agent"
+      ],
+      "relation": "form",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "src/defaults/prompts/default/recover.md"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0
+}
