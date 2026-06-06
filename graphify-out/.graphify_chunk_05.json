@@ -1,0 +1,856 @@
+{
+  "nodes": [
+    {
+      "id": "trd_seeds_to_br_bv_migration_task_backend_migration",
+      "label": "Task Backend Migration",
+      "file_type": "concept",
+      "source_file": "docs/TRD/seeds-to-br-bv-migration.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "trd_seeds_to_br_bv_migration_itaskclient_interface",
+      "label": "Shared ITaskClient Interface",
+      "file_type": "concept",
+      "source_file": "docs/TRD/seeds-to-br-bv-migration.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "trd_seeds_to_br_bv_migration_bv_ordering",
+      "label": "Always-On bv Ordering",
+      "file_type": "concept",
+      "source_file": "docs/TRD/seeds-to-br-bv-migration.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "trd_seeds_to_br_bv_migration_worker_path_prepend",
+      "label": "Worker PATH Prepend",
+      "file_type": "concept",
+      "source_file": "docs/TRD/seeds-to-br-bv-migration.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "trd_sling_trd_sling_trd_command",
+      "label": "Sling TRD Command",
+      "file_type": "concept",
+      "source_file": "docs/TRD/sling-trd.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "trd_sling_trd_trd_parser",
+      "label": "TRD Markdown Parser",
+      "file_type": "concept",
+      "source_file": "docs/TRD/sling-trd.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "trd_sling_trd_sprint_parallelization",
+      "label": "Sprint Parallelization",
+      "file_type": "concept",
+      "source_file": "docs/TRD/sling-trd.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "trd_sling_trd_dual_write_executor",
+      "label": "Dual-Write Executor",
+      "file_type": "concept",
+      "source_file": "docs/TRD/sling-trd.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "historical_context_prd_prd_historical_context_banner_system",
+      "label": "Historical Context Banner System",
+      "file_type": "concept",
+      "source_file": "docs/experiments/historical-context-prd/PRD.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "historical_context_prd_prd_archival_directories",
+      "label": "Archival Directory Definitions",
+      "file_type": "concept",
+      "source_file": "docs/experiments/historical-context-prd/PRD.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "historical_context_prd_prd_banner_variants",
+      "label": "Banner Variants",
+      "file_type": "concept",
+      "source_file": "docs/experiments/historical-context-prd/PRD.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "historical_context_prd_prd_active_operator_doc_exclusion",
+      "label": "Active Operator Doc Exclusion",
+      "file_type": "rationale",
+      "source_file": "docs/experiments/historical-context-prd/PRD.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "historical_context_prd_rerun_prd_validation_script_behavior",
+      "label": "Validation Script Behavior",
+      "file_type": "concept",
+      "source_file": "docs/experiments/historical-context-prd-rerun/PRD.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "historical_context_trd_rerun_trd_ci_validation_step",
+      "label": "CI Validation Step",
+      "file_type": "concept",
+      "source_file": "docs/experiments/historical-context-trd-rerun/TRD.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "historical_context_trd_rerun_trd_precommit_warning_hook",
+      "label": "Pre-commit Warning Hook",
+      "file_type": "concept",
+      "source_file": "docs/experiments/historical-context-trd-rerun/TRD.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_foreman_plan_sling_compat",
+      "label": "Plan to Sling Compatibility",
+      "file_type": "concept",
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_create_trd_foreman_command",
+      "label": "create-trd-foreman Command",
+      "file_type": "concept",
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_sling_prd_subcommand",
+      "label": "foreman sling prd Subcommand",
+      "file_type": "concept",
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_trd_output_contract",
+      "label": "Sling-Compatible TRD Output Contract",
+      "file_type": "concept",
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_native_task_store_contract",
+      "label": "Native Task Store Output Contract",
+      "file_type": "concept",
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_risk_register_parser_ambiguity",
+      "label": "Parser Ambiguity Risks",
+      "file_type": "concept",
+      "source_file": "docs/experiments/plan-sling-compat-prd/RISK-REGISTER.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_trd_foreman_plan_sling_compat_option_b_architecture",
+      "label": "Option B sling prd Architecture",
+      "file_type": "rationale",
+      "source_file": "docs/experiments/plan-sling-compat-prd/TRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_trd_foreman_plan_sling_compat_pi_sdk_runner",
+      "label": "Pi SDK Runner",
+      "file_type": "concept",
+      "source_file": "docs/experiments/plan-sling-compat-prd/TRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "plan_sling_compat_prd_ac_validation_matrix_acceptance_validation_matrix",
+      "label": "Acceptance Criteria Validation Matrix",
+      "file_type": "concept",
+      "source_file": "docs/experiments/plan-sling-compat-prd/AC-VALIDATION-MATRIX.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "guides_jujutsu_considerations_jujutsu_colocated_mode",
+      "label": "Jujutsu Colocated Mode",
+      "file_type": "concept",
+      "source_file": "docs/guides/jujutsu-considerations.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "guides_jujutsu_considerations_workspaces_vs_worktrees",
+      "label": "Jujutsu Workspaces vs Git Worktrees",
+      "file_type": "concept",
+      "source_file": "docs/guides/jujutsu-considerations.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "guides_vcs_backend_interface_vcs_backend_interface",
+      "label": "VcsBackend Interface",
+      "file_type": "concept",
+      "source_file": "docs/guides/vcs-backend-interface.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "guides_vcs_backend_interface_workspace_operations",
+      "label": "Workspace Operations",
+      "file_type": "concept",
+      "source_file": "docs/guides/vcs-backend-interface.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "guides_vcs_backend_interface_finalize_commands",
+      "label": "Finalize Commands",
+      "file_type": "concept",
+      "source_file": "docs/guides/vcs-backend-interface.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "guides_vcs_configuration_vcs_backend_configuration",
+      "label": "VCS Backend Configuration",
+      "file_type": "concept",
+      "source_file": "docs/guides/vcs-configuration.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "guides_vcs_configuration_auto_detection_precedence",
+      "label": "Auto-Detection Precedence",
+      "file_type": "rationale",
+      "source_file": "docs/guides/vcs-configuration.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_backlog_lifecycle_hooks",
+      "label": "Lifecycle Hooks Backlog",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_backlog_reconciliation_terminal_state",
+      "label": "Reconciliation Stop Runs on Terminal State",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_backlog_stall_detection",
+      "label": "Stall Detection",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_backlog_structured_output_extraction",
+      "label": "Structured Output Extraction",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_sandcastle_gap_analysis_container_sandboxing_gap",
+      "label": "Container Sandboxing Gap",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-sandcastle-gap-analysis.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_sandcastle_gap_analysis_sandcastle_comparison",
+      "label": "Sandcastle Comparison",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-sandcastle-gap-analysis.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_symphony_gap_analysis_symphony_comparison",
+      "label": "Symphony Comparison",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-symphony-gap-analysis.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_symphony_gap_analysis_orchestrator_state_gaps",
+      "label": "Orchestrator State Gaps",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-symphony-gap-analysis.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "reports_foreman_improvement_recommendations_high_impact_recommendations",
+      "label": "High Impact Improvement Recommendations",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-improvement-recommendations.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "trd_seeds_to_br_bv_migration_task_backend_migration",
+      "target": "trd_seeds_to_br_bv_migration_itaskclient_interface",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/TRD/seeds-to-br-bv-migration.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "trd_seeds_to_br_bv_migration_task_backend_migration",
+      "target": "trd_seeds_to_br_bv_migration_bv_ordering",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/TRD/seeds-to-br-bv-migration.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "trd_seeds_to_br_bv_migration_task_backend_migration",
+      "target": "trd_seeds_to_br_bv_migration_worker_path_prepend",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/TRD/seeds-to-br-bv-migration.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "trd_sling_trd_sling_trd_command",
+      "target": "trd_sling_trd_trd_parser",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/TRD/sling-trd.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "trd_sling_trd_sling_trd_command",
+      "target": "trd_sling_trd_sprint_parallelization",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/TRD/sling-trd.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "trd_sling_trd_sling_trd_command",
+      "target": "trd_sling_trd_dual_write_executor",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/TRD/sling-trd.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "historical_context_prd_prd_historical_context_banner_system",
+      "target": "historical_context_prd_prd_archival_directories",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/historical-context-prd/PRD.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "historical_context_prd_prd_historical_context_banner_system",
+      "target": "historical_context_prd_prd_banner_variants",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/historical-context-prd/PRD.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "historical_context_prd_prd_active_operator_doc_exclusion",
+      "target": "historical_context_prd_prd_historical_context_banner_system",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/historical-context-prd/PRD.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "historical_context_prd_rerun_prd_validation_script_behavior",
+      "target": "historical_context_prd_prd_historical_context_banner_system",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/historical-context-prd-rerun/PRD.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "historical_context_trd_rerun_trd_ci_validation_step",
+      "target": "historical_context_prd_rerun_prd_validation_script_behavior",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/historical-context-trd-rerun/TRD.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "historical_context_trd_rerun_trd_precommit_warning_hook",
+      "target": "historical_context_prd_rerun_prd_validation_script_behavior",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/historical-context-trd-rerun/TRD.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_foreman_plan_sling_compat",
+      "target": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_create_trd_foreman_command",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_foreman_plan_sling_compat",
+      "target": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_sling_prd_subcommand",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_create_trd_foreman_command",
+      "target": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_trd_output_contract",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_sling_prd_subcommand",
+      "target": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_native_task_store_contract",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_risk_register_parser_ambiguity",
+      "target": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_trd_output_contract",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/RISK-REGISTER.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_trd_foreman_plan_sling_compat_option_b_architecture",
+      "target": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_sling_prd_subcommand",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/TRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_trd_foreman_plan_sling_compat_pi_sdk_runner",
+      "target": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_create_trd_foreman_command",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/TRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_ac_validation_matrix_acceptance_validation_matrix",
+      "target": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_foreman_plan_sling_compat",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/AC-VALIDATION-MATRIX.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_trd_output_contract",
+      "target": "trd_sling_trd_trd_parser",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "plan_sling_compat_prd_prd_foreman_plan_sling_compat_native_task_store_contract",
+      "target": "trd_sling_trd_dual_write_executor",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/PRD-FOREMAN-PLAN-SLING-COMPAT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "guides_jujutsu_considerations_jujutsu_colocated_mode",
+      "target": "guides_vcs_backend_interface_vcs_backend_interface",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/guides/jujutsu-considerations.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "guides_vcs_backend_interface_vcs_backend_interface",
+      "target": "guides_vcs_backend_interface_workspace_operations",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/guides/vcs-backend-interface.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "guides_vcs_backend_interface_vcs_backend_interface",
+      "target": "guides_vcs_backend_interface_finalize_commands",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/guides/vcs-backend-interface.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "guides_vcs_configuration_vcs_backend_configuration",
+      "target": "guides_vcs_backend_interface_vcs_backend_interface",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/guides/vcs-configuration.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "guides_vcs_configuration_auto_detection_precedence",
+      "target": "guides_vcs_configuration_vcs_backend_configuration",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/guides/vcs-configuration.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "guides_jujutsu_considerations_workspaces_vs_worktrees",
+      "target": "guides_vcs_backend_interface_workspace_operations",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "docs/guides/jujutsu-considerations.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "reports_foreman_backlog_lifecycle_hooks",
+      "target": "reports_foreman_sandcastle_gap_analysis_sandcastle_comparison",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "reports_foreman_backlog_lifecycle_hooks",
+      "target": "reports_foreman_improvement_recommendations_high_impact_recommendations",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "reports_foreman_backlog_reconciliation_terminal_state",
+      "target": "reports_foreman_symphony_gap_analysis_orchestrator_state_gaps",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "reports_foreman_backlog_stall_detection",
+      "target": "reports_foreman_symphony_gap_analysis_orchestrator_state_gaps",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "reports_foreman_backlog_structured_output_extraction",
+      "target": "reports_foreman_sandcastle_gap_analysis_sandcastle_comparison",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-backlog.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "reports_foreman_sandcastle_gap_analysis_container_sandboxing_gap",
+      "target": "reports_foreman_improvement_recommendations_high_impact_recommendations",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "docs/reports/foreman-sandcastle-gap-analysis.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "reports_foreman_symphony_gap_analysis_orchestrator_state_gaps",
+      "target": "reports_foreman_improvement_recommendations_high_impact_recommendations",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "docs/reports/foreman-symphony-gap-analysis.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "reports_foreman_sandcastle_gap_analysis_sandcastle_comparison",
+      "target": "reports_foreman_symphony_gap_analysis_symphony_comparison",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "docs/reports/foreman-sandcastle-gap-analysis.md",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "historical_context_banner_validation_flow",
+      "label": "Historical Context Banner Validation Flow",
+      "nodes": [
+        "historical_context_prd_prd_historical_context_banner_system",
+        "historical_context_prd_prd_archival_directories",
+        "historical_context_prd_prd_banner_variants",
+        "historical_context_prd_rerun_prd_validation_script_behavior",
+        "historical_context_trd_rerun_trd_ci_validation_step"
+      ],
+      "relation": "participate_in",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/historical-context-trd-rerun/TRD.md"
+    },
+    {
+      "id": "plan_to_execution_sling_flow",
+      "label": "Plan to Execution Sling Flow",
+      "nodes": [
+        "plan_sling_compat_prd_prd_foreman_plan_sling_compat_foreman_plan_sling_compat",
+        "plan_sling_compat_prd_prd_foreman_plan_sling_compat_create_trd_foreman_command",
+        "plan_sling_compat_prd_prd_foreman_plan_sling_compat_sling_prd_subcommand",
+        "plan_sling_compat_prd_prd_foreman_plan_sling_compat_trd_output_contract",
+        "trd_sling_trd_trd_parser"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/experiments/plan-sling-compat-prd/TRD-FOREMAN-PLAN-SLING-COMPAT.md"
+    },
+    {
+      "id": "orchestration_gap_recommendation_cluster",
+      "label": "Orchestration Gap Recommendation Cluster",
+      "nodes": [
+        "reports_foreman_backlog_lifecycle_hooks",
+        "reports_foreman_backlog_reconciliation_terminal_state",
+        "reports_foreman_backlog_stall_detection",
+        "reports_foreman_sandcastle_gap_analysis_sandcastle_comparison",
+        "reports_foreman_symphony_gap_analysis_orchestrator_state_gaps",
+        "reports_foreman_improvement_recommendations_high_impact_recommendations"
+      ],
+      "relation": "form",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "docs/reports/foreman-improvement-recommendations.md"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0
+}
