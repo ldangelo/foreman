@@ -363,6 +363,38 @@ interface WorkerConfig {
   hooks?: ProjectHooksConfig;
 }
 
+// ── Structured Logging Context ───────────────────────────────────────────────
+
+/**
+ * Structured log context populated once config is loaded.
+ * Used by log() to emit JSON-formatted log entries with consistent fields.
+ */
+interface LogContext {
+  issueId: string;
+  issueIdentifier: string;
+  sessionId: string | null;
+  runId: string;
+  attempt: number;
+}
+
+/** Module-level log context; initialized in main() after config is loaded. */
+let logContext: LogContext | null = null;
+
+/**
+ * Initialize the structured logging context from worker config.
+ * Must be called after config is loaded and before any log() calls.
+ */
+function initLogContext(config: WorkerConfig): void {
+  logContext = {
+    issueId: config.seedId,
+    issueIdentifier: config.seedId,
+    // sessionId comes from config.resume (SDK session ID) when resuming an existing session
+    sessionId: config.resume ?? null,
+    runId: config.runId,
+    attempt: config.attemptNumber ?? 1,
+  };
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 function installTestWorkerGuard(config: WorkerConfig): void {
@@ -418,6 +450,9 @@ async function main(): Promise<void> {
   const config: WorkerConfig = JSON.parse(readFileSync(configPath, "utf-8"));
   try { unlinkSync(configPath); } catch { /* already deleted */ }
   installTestWorkerGuard(config);
+
+  // Initialize structured logging context for JSON-formatted log output
+  initLogContext(config);
 
   const { runId, projectId, seedId, seedTitle, model, worktreePath, projectPath: configProjectPath, prompt, resume, pipeline } = config;
 
@@ -2083,8 +2118,23 @@ async function markStuck(
 
 
 function log(msg: string): void {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.error(`[foreman-worker ${ts}] ${msg}`);
+  if (logContext) {
+    const entry: Record<string, unknown> = {
+      level: "info",
+      timestamp: new Date().toISOString(),
+      message: msg,
+      issueId: logContext.issueId,
+      issueIdentifier: logContext.issueIdentifier,
+      sessionId: logContext.sessionId,
+      runId: logContext.runId,
+      attempt: logContext.attempt,
+    };
+    console.error(JSON.stringify(entry));
+  } else {
+    // Fallback for early-use before context is initialized
+    const ts = new Date().toISOString().slice(11, 23);
+    console.error(`[foreman-worker ${ts}] ${msg}`);
+  }
 }
 
 // ── Entry ────────────────────────────────────────────────────────────────────
