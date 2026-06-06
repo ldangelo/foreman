@@ -31,7 +31,20 @@ phases:
       reserve: true
       leaseSecs: 300
 
-  # ── Phase 2: finalize ───────────────────────────────────────────────────
+  # ── Phase 2: cli-review ──────────────────────────────────────────────────
+  - name: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    verdict: true
+    retryWith: develop
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: develop
+
+  # ── Phase 3: finalize ───────────────────────────────────────────────────
   # Quick validation: verify docs build or lint, then auto-merge.
   - name: finalize
     prompt: finalize.md
@@ -47,18 +60,6 @@ phases:
     mail:
       onStart: false
       onComplete: true
-
-  - name: cli-review
-    builtin: true
-    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
-    timeoutSecs: 600
-    verdict: true
-    retryWith: develop
-    retryOnFail: 2
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: develop
 
   - name: create-pr
     builtin: true
