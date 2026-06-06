@@ -1,0 +1,622 @@
+{
+  "nodes": [
+    {
+      "id": "foreman_03f40_developer_report_github_issues_integration",
+      "label": "GitHub Issues Integration",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-03f40/DEVELOPER_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_developer_report_githubissuespoller",
+      "label": "GitHubIssuesPoller",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-03f40/DEVELOPER_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_developer_report_idempotent_external_id",
+      "label": "Idempotent External ID Sync",
+      "file_type": "rationale",
+      "source_file": "docs/reports/foreman-03f40/DEVELOPER_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_developer_report_nonfatal_github_operations",
+      "label": "Non-fatal GitHub Operations",
+      "file_type": "rationale",
+      "source_file": "docs/reports/foreman-03f40/DEVELOPER_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_implement_report_ghcli_issue_crud",
+      "label": "GhCli Issue CRUD",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_implement_report_github_database_tables",
+      "label": "GitHub Database Tables",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_implement_report_github_router",
+      "label": "tRPC GitHub Router",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_implement_report_issue_cli",
+      "label": "foreman issue CLI",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_qa_report_github_integration_validation",
+      "label": "GitHub Integration QA Validation",
+      "file_type": "document",
+      "source_file": "docs/reports/foreman-03f40/QA_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_03f40_pipeline_report_epic_pipeline",
+      "label": "GitHub Epic Pipeline",
+      "file_type": "document",
+      "source_file": "docs/reports/foreman-03f40/PIPELINE_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0bd47_implement_report_guardrails_observability",
+      "label": "Agent Guardrails and Observability",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0bd47_implement_report_directory_guardrail",
+      "label": "Directory Guardrail",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0bd47_implement_report_heartbeat_manager",
+      "label": "Heartbeat Manager",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0bd47_implement_report_activity_logger",
+      "label": "Activity Logger",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0bd47_implement_report_stale_worktree_check",
+      "label": "Stale Worktree Check",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0eb34_implement_report_foreman_watch_dashboard",
+      "label": "foreman watch Dashboard",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0eb34_implement_report_watch_state",
+      "label": "WatchState",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0eb34_implement_report_watch_layout",
+      "label": "WatchLayout",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_0eb34_implement_report_live_inbox_polling",
+      "label": "Live Inbox Polling",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_6f854_implement_report_kanban_task_board",
+      "label": "Kanban Task Board",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-6f854/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_6f854_implement_report_board_task_mutations",
+      "label": "Board Task Mutations",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-6f854/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_56b46_finalize_validation_inbox_json_truncation",
+      "label": "Inbox JSON Truncation Fix",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-56b46/FINALIZE_VALIDATION.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_630e8_fix_trace_daemon_postgres_readme",
+      "label": "Daemon Postgres README Update",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-630e8/FIX_TRACE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_630e8_fix_trace_trpc_client_architecture",
+      "label": "tRPC Client Architecture",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-630e8/FIX_TRACE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_630e8_finalize_report_finalize_success",
+      "label": "Finalize Success",
+      "file_type": "document",
+      "source_file": "docs/reports/foreman-630e8/FINALIZE_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_630e8_pipeline_report_command_phase_warning",
+      "label": "Command Phase Warning",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-630e8/PIPELINE_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_85493_fix_trace_pr_state_tracking",
+      "label": "PR State Tracking",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-85493/FIX_TRACE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_85493_fix_trace_pr_head_mismatch",
+      "label": "PR Head Mismatch Detection",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-85493/FIX_TRACE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_85493_pipeline_report_missing_artifact_warning",
+      "label": "Missing Artifact Warning",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-85493/PIPELINE_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "foreman_03f40_developer_report_github_issues_integration",
+      "target": "foreman_03f40_developer_report_githubissuespoller",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/DEVELOPER_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_developer_report_github_issues_integration",
+      "target": "foreman_03f40_implement_report_ghcli_issue_crud",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_developer_report_github_issues_integration",
+      "target": "foreman_03f40_implement_report_github_database_tables",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_developer_report_github_issues_integration",
+      "target": "foreman_03f40_implement_report_github_router",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_developer_report_github_issues_integration",
+      "target": "foreman_03f40_implement_report_issue_cli",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_developer_report_idempotent_external_id",
+      "target": "foreman_03f40_developer_report_githubissuespoller",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/DEVELOPER_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_developer_report_nonfatal_github_operations",
+      "target": "foreman_03f40_developer_report_github_issues_integration",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/DEVELOPER_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_qa_report_github_integration_validation",
+      "target": "foreman_03f40_developer_report_github_issues_integration",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/QA_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_pipeline_report_epic_pipeline",
+      "target": "foreman_03f40_developer_report_github_issues_integration",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/PIPELINE_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_0bd47_implement_report_guardrails_observability",
+      "target": "foreman_0bd47_implement_report_directory_guardrail",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_0bd47_implement_report_guardrails_observability",
+      "target": "foreman_0bd47_implement_report_heartbeat_manager",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_0bd47_implement_report_guardrails_observability",
+      "target": "foreman_0bd47_implement_report_activity_logger",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_0bd47_implement_report_guardrails_observability",
+      "target": "foreman_0bd47_implement_report_stale_worktree_check",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-0bd47/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_0eb34_implement_report_foreman_watch_dashboard",
+      "target": "foreman_0eb34_implement_report_watch_state",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_0eb34_implement_report_foreman_watch_dashboard",
+      "target": "foreman_0eb34_implement_report_watch_layout",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_0eb34_implement_report_foreman_watch_dashboard",
+      "target": "foreman_0eb34_implement_report_live_inbox_polling",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_0eb34_implement_report_foreman_watch_dashboard",
+      "target": "foreman_6f854_implement_report_kanban_task_board",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_6f854_implement_report_kanban_task_board",
+      "target": "foreman_6f854_implement_report_board_task_mutations",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-6f854/IMPLEMENT_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_56b46_finalize_validation_inbox_json_truncation",
+      "target": "foreman_0eb34_implement_report_live_inbox_polling",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "docs/reports/foreman-56b46/FINALIZE_VALIDATION.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_630e8_fix_trace_daemon_postgres_readme",
+      "target": "foreman_630e8_fix_trace_trpc_client_architecture",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-630e8/FIX_TRACE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_630e8_finalize_report_finalize_success",
+      "target": "foreman_630e8_fix_trace_daemon_postgres_readme",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-630e8/FINALIZE_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_630e8_pipeline_report_command_phase_warning",
+      "target": "foreman_85493_pipeline_report_missing_artifact_warning",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "docs/reports/foreman-630e8/PIPELINE_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_85493_fix_trace_pr_state_tracking",
+      "target": "foreman_85493_fix_trace_pr_head_mismatch",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-85493/FIX_TRACE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_85493_fix_trace_pr_state_tracking",
+      "target": "foreman_03f40_developer_report_github_issues_integration",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "docs/reports/foreman-85493/FIX_TRACE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_03f40_developer_report_github_issues_integration",
+      "target": "foreman_85493_fix_trace_pr_state_tracking",
+      "relation": "shares_data_with",
+      "confidence": "INFERRED",
+      "confidence_score": 0.65,
+      "source_file": "docs/reports/foreman-85493/PIPELINE_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "github_issue_integration_stack",
+      "label": "GitHub Issue Integration Stack",
+      "nodes": [
+        "foreman_03f40_implement_report_ghcli_issue_crud",
+        "foreman_03f40_implement_report_github_database_tables",
+        "foreman_03f40_implement_report_github_router",
+        "foreman_03f40_implement_report_issue_cli",
+        "foreman_03f40_developer_report_githubissuespoller"
+      ],
+      "relation": "implement",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/IMPLEMENT_REPORT.md"
+    },
+    {
+      "id": "operator_visibility_surfaces",
+      "label": "Operator Visibility Surfaces",
+      "nodes": [
+        "foreman_0eb34_implement_report_foreman_watch_dashboard",
+        "foreman_6f854_implement_report_kanban_task_board",
+        "foreman_0bd47_implement_report_guardrails_observability",
+        "foreman_85493_fix_trace_pr_state_tracking"
+      ],
+      "relation": "form",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "docs/reports/foreman-0eb34/IMPLEMENT_REPORT.md"
+    },
+    {
+      "id": "pipeline_audit_artifacts",
+      "label": "Pipeline Audit Artifacts",
+      "nodes": [
+        "foreman_03f40_pipeline_report_epic_pipeline",
+        "foreman_03f40_qa_report_github_integration_validation",
+        "foreman_630e8_finalize_report_finalize_success",
+        "foreman_85493_pipeline_report_missing_artifact_warning"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-03f40/PIPELINE_REPORT.md"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

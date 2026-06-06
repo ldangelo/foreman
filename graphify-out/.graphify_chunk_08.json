@@ -1,0 +1,599 @@
+{
+  "nodes": [
+    {
+      "id": "foreman_c2d2c_finalize_report_readme_github_integration",
+      "label": "README GitHub Integration Update",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-c2d2c/FINALIZE_REPORT.md",
+      "source_location": "# Finalize Report",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c2d2c_finalize_validation_unrelated_project_awareness_failure",
+      "label": "Unrelated Project Awareness Test Failure",
+      "file_type": "rationale",
+      "source_file": "docs/reports/foreman-c2d2c/FINALIZE_VALIDATION.md",
+      "source_location": "## Failure Scope",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c2d2c_pipeline_report_legacy_slash_command_warning",
+      "label": "Legacy Slash Command Warning",
+      "file_type": "rationale",
+      "source_file": "docs/reports/foreman-c2d2c/PIPELINE_REPORT.md",
+      "source_location": "## Warnings",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c3845_implement_report_inbox_tabular_view",
+      "label": "Inbox Tabular Message View",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "## 1. Overview",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c3845_implement_report_tableformatter",
+      "label": "TableFormatter",
+      "file_type": "code",
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "### 3.3 `TableFormatter` class",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c3845_implement_report_extractbodyfields",
+      "label": "extractBodyFields",
+      "file_type": "code",
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "### 3.1 `extractBodyFields(body: string)`",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c3845_implement_report_truncate",
+      "label": "truncate",
+      "file_type": "code",
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "### 3.2 `truncate(str: string, maxWidth: number)`",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c3845_implement_report_full_payload_mode",
+      "label": "Full Payload Mode",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "### 3.5 Command Integration",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c3845_qa_report_pass_validation",
+      "label": "Inbox QA Pass Validation",
+      "file_type": "rationale",
+      "source_file": "docs/reports/foreman-c3845/QA_REPORT.md",
+      "source_location": "## Verdict: PASS",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c3845_trd_trace_inbox_tabular_trd",
+      "label": "Inbox Tabular TRD",
+      "file_type": "document",
+      "source_file": "docs/reports/foreman-c3845/TRD_TRACE.md",
+      "source_location": "## Final Assistant Output",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_c3845_pipeline_report_epic_workflow",
+      "label": "Epic Workflow Phases",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-c3845/PIPELINE_REPORT.md",
+      "source_location": "## Phase Inputs",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_dba6d_implement_report_refinery_agent",
+      "label": "Refinery Agent",
+      "file_type": "concept",
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "## Summary",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_dba6d_implement_report_merge_queue",
+      "label": "MergeQueue",
+      "file_type": "code",
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "### 2. Agent Worker Entry Point",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_dba6d_implement_report_vcs_backend",
+      "label": "VcsBackend",
+      "file_type": "code",
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "## Architecture",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_dba6d_implement_report_agent_log",
+      "label": "AGENT_LOG.md",
+      "file_type": "document",
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "### 2. Agent Worker Entry Point",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_dba6d_implement_report_pi_sdk_integration_gap",
+      "label": "Pi SDK Integration Gap",
+      "file_type": "rationale",
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "### Phase 2: Pi SDK Integration",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "foreman_dba6d_qa_report_preexisting_auto_merge_failure",
+      "label": "Pre-existing Auto Merge Failure",
+      "file_type": "rationale",
+      "source_file": "docs/reports/foreman-dba6d/QA_REPORT.md",
+      "source_location": "## Issues Found",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "standards_constitution_tdd_quality_gate",
+      "label": "TDD Quality Gate",
+      "file_type": "rationale",
+      "source_file": "docs/standards/constitution.md",
+      "source_location": "### Development Methodology: TDD",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "standards_constitution_pr_review_gate",
+      "label": "PR Review Gate",
+      "file_type": "rationale",
+      "source_file": "docs/standards/constitution.md",
+      "source_location": "## 3. Quality Gates",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "standards_constitution_security_requirements",
+      "label": "Security Requirements",
+      "file_type": "rationale",
+      "source_file": "docs/standards/constitution.md",
+      "source_location": "### Security Requirements",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "homebrew_tap_readme_homebrew_distribution",
+      "label": "Homebrew Distribution",
+      "file_type": "concept",
+      "source_file": "homebrew-tap/README.md",
+      "source_location": "## Foreman",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "homebrew_tap_readme_beads_rust_requirement",
+      "label": "beads_rust Requirement",
+      "file_type": "concept",
+      "source_file": "homebrew-tap/README.md",
+      "source_location": "#### 1. beads_rust (`br`) — Task tracking CLI",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "homebrew_tap_readme_anthropic_api_key_requirement",
+      "label": "Anthropic API Key Requirement",
+      "file_type": "concept",
+      "source_file": "homebrew-tap/README.md",
+      "source_location": "#### 2. Anthropic API key",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "workflows_audit_audit_formula_workflow",
+      "label": "Audit Formula Workflow",
+      "file_type": "document",
+      "source_file": "homebrew-tap/.github/workflows/audit.yml",
+      "source_location": "name: Audit Formula",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "workflows_update_formula_update_formula_workflow",
+      "label": "Update Formula Workflow",
+      "file_type": "document",
+      "source_file": "homebrew-tap/.github/workflows/update-formula.yml",
+      "source_location": "name: Update Formula",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "workflows_update_formula_release_checksums",
+      "label": "Release Checksums",
+      "file_type": "concept",
+      "source_file": "homebrew-tap/.github/workflows/update-formula.yml",
+      "source_location": "Download checksums.txt from GitHub Release",
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "foreman_c2d2c_finalize_report_readme_github_integration",
+      "target": "foreman_c2d2c_finalize_validation_unrelated_project_awareness_failure",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c2d2c/FINALIZE_VALIDATION.md",
+      "source_location": "## Test Validation",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c2d2c_pipeline_report_legacy_slash_command_warning",
+      "target": "foreman_c2d2c_finalize_report_readme_github_integration",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c2d2c/PIPELINE_REPORT.md",
+      "source_location": "## Phase Inputs",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_trd_trace_inbox_tabular_trd",
+      "target": "foreman_c3845_implement_report_inbox_tabular_view",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/TRD_TRACE.md",
+      "source_location": "## Final Assistant Output",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_implement_report_inbox_tabular_view",
+      "target": "foreman_c3845_implement_report_tableformatter",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "## 1. Overview",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_implement_report_tableformatter",
+      "target": "foreman_c3845_implement_report_extractbodyfields",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "### 3.3 `TableFormatter` class",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_implement_report_tableformatter",
+      "target": "foreman_c3845_implement_report_truncate",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "### 3.3 `TableFormatter` class",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_implement_report_inbox_tabular_view",
+      "target": "foreman_c3845_implement_report_full_payload_mode",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "### 3.5 Command Integration",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_qa_report_pass_validation",
+      "target": "foreman_c3845_implement_report_inbox_tabular_view",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/QA_REPORT.md",
+      "source_location": "## Acceptance Criteria Verification",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_pipeline_report_epic_workflow",
+      "target": "foreman_c3845_trd_trace_inbox_tabular_trd",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/PIPELINE_REPORT.md",
+      "source_location": "## Phase Inputs",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_pipeline_report_epic_workflow",
+      "target": "foreman_c3845_implement_report_inbox_tabular_view",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/PIPELINE_REPORT.md",
+      "source_location": "## Phase Results",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_dba6d_implement_report_refinery_agent",
+      "target": "foreman_dba6d_implement_report_merge_queue",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "### 2. Agent Worker Entry Point",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_dba6d_implement_report_refinery_agent",
+      "target": "foreman_dba6d_implement_report_vcs_backend",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "## Architecture",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_dba6d_implement_report_refinery_agent",
+      "target": "foreman_dba6d_implement_report_agent_log",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "### 2. Agent Worker Entry Point",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_dba6d_implement_report_pi_sdk_integration_gap",
+      "target": "foreman_dba6d_implement_report_refinery_agent",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md",
+      "source_location": "### Phase 2: Pi SDK Integration",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_dba6d_qa_report_preexisting_auto_merge_failure",
+      "target": "foreman_dba6d_implement_report_refinery_agent",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-dba6d/QA_REPORT.md",
+      "source_location": "## Test Results",
+      "weight": 1.0
+    },
+    {
+      "source": "standards_constitution_tdd_quality_gate",
+      "target": "foreman_c3845_qa_report_pass_validation",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "docs/standards/constitution.md",
+      "source_location": "## 3. Quality Gates",
+      "weight": 1.0
+    },
+    {
+      "source": "standards_constitution_tdd_quality_gate",
+      "target": "foreman_dba6d_qa_report_preexisting_auto_merge_failure",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "docs/standards/constitution.md",
+      "source_location": "## 3. Quality Gates",
+      "weight": 1.0
+    },
+    {
+      "source": "standards_constitution_pr_review_gate",
+      "target": "foreman_dba6d_implement_report_refinery_agent",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "source_file": "docs/standards/constitution.md",
+      "source_location": "## 3. Quality Gates",
+      "weight": 1.0
+    },
+    {
+      "source": "standards_constitution_security_requirements",
+      "target": "homebrew_tap_readme_anthropic_api_key_requirement",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.65,
+      "source_file": "docs/standards/constitution.md",
+      "source_location": "### Security Requirements",
+      "weight": 1.0
+    },
+    {
+      "source": "homebrew_tap_readme_homebrew_distribution",
+      "target": "homebrew_tap_readme_beads_rust_requirement",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "homebrew-tap/README.md",
+      "source_location": "### Requirements",
+      "weight": 1.0
+    },
+    {
+      "source": "homebrew_tap_readme_homebrew_distribution",
+      "target": "homebrew_tap_readme_anthropic_api_key_requirement",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "homebrew-tap/README.md",
+      "source_location": "### Requirements",
+      "weight": 1.0
+    },
+    {
+      "source": "workflows_audit_audit_formula_workflow",
+      "target": "homebrew_tap_readme_homebrew_distribution",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "homebrew-tap/.github/workflows/audit.yml",
+      "source_location": "jobs.audit.steps",
+      "weight": 1.0
+    },
+    {
+      "source": "workflows_update_formula_update_formula_workflow",
+      "target": "homebrew_tap_readme_homebrew_distribution",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "homebrew-tap/.github/workflows/update-formula.yml",
+      "source_location": "name: Update Formula",
+      "weight": 1.0
+    },
+    {
+      "source": "workflows_update_formula_update_formula_workflow",
+      "target": "workflows_update_formula_release_checksums",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "homebrew-tap/.github/workflows/update-formula.yml",
+      "source_location": "Download checksums.txt from GitHub Release",
+      "weight": 1.0
+    },
+    {
+      "source": "workflows_update_formula_update_formula_workflow",
+      "target": "workflows_audit_audit_formula_workflow",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "homebrew-tap/.github/workflows/update-formula.yml",
+      "source_location": "Validate formula syntax",
+      "weight": 1.0
+    },
+    {
+      "source": "foreman_c3845_implement_report_inbox_tabular_view",
+      "target": "foreman_c2d2c_finalize_report_readme_github_integration",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.65,
+      "source_file": "docs/reports/foreman-c3845/IMPLEMENT_REPORT.md",
+      "source_location": "# IMPLEMENT REPORT",
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "foreman_c3845_inbox_tabular_delivery_flow",
+      "label": "Inbox Tabular Delivery Flow",
+      "nodes": [
+        "foreman_c3845_trd_trace_inbox_tabular_trd",
+        "foreman_c3845_implement_report_inbox_tabular_view",
+        "foreman_c3845_implement_report_tableformatter",
+        "foreman_c3845_qa_report_pass_validation"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-c3845/PIPELINE_REPORT.md"
+    },
+    {
+      "id": "foreman_dba6d_refinery_agent_architecture",
+      "label": "Refinery Agent Architecture",
+      "nodes": [
+        "foreman_dba6d_implement_report_refinery_agent",
+        "foreman_dba6d_implement_report_merge_queue",
+        "foreman_dba6d_implement_report_vcs_backend",
+        "foreman_dba6d_implement_report_agent_log",
+        "foreman_dba6d_implement_report_pi_sdk_integration_gap"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/reports/foreman-dba6d/IMPLEMENT_REPORT.md"
+    },
+    {
+      "id": "homebrew_tap_release_distribution_pipeline",
+      "label": "Homebrew Tap Release Distribution Pipeline",
+      "nodes": [
+        "homebrew_tap_readme_homebrew_distribution",
+        "workflows_update_formula_update_formula_workflow",
+        "workflows_update_formula_release_checksums",
+        "workflows_audit_audit_formula_workflow"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "homebrew-tap/README.md"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0
+}
