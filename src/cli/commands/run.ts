@@ -13,6 +13,8 @@ import type { Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
+import { isIgnorableControllerPath } from "../../lib/controller-paths.js";
+import { syncRegisteredProjectCheckout } from "../../lib/registered-project-checkout.js";
 import type { ProjectConfig } from "../../lib/project-config.js";
 import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
@@ -272,15 +274,7 @@ async function promptYesNo(question: string): Promise<boolean> {
 
 const FOREMAN_OWNED_BRANCH = "foreman-controller";
 
-export function isIgnorableControllerPath(path: string): boolean {
-  return path === ".beads/issues.jsonl"
-    || path.startsWith(".omx/")
-    || path.startsWith(".foreman/")
-    || path.startsWith("SessionLogs/")
-    || path === "SESSION_LOG.md"
-    || path === "RUN_LOG.md"
-    || path.startsWith("storage.");
-}
+export { isIgnorableControllerPath } from "../../lib/controller-paths.js";
 
 function withCommonBinaryPath(): NodeJS.ProcessEnv {
   const home = process.env.HOME ?? "/home/nobody";
@@ -593,6 +587,14 @@ export const runCommand = new Command("run")
       // Require --project in multi-project mode
       await requireProjectOrAllInMultiMode(opts.project, false);
       const projectPath = await resolveRepoRootProjectPath(opts);
+      const registered = await resolveRunRegisteredProject(projectPath);
+      if (registered) {
+        syncRegisteredProjectCheckout({
+          projectId: registered.id,
+          projectPath,
+          defaultBranch: registered.defaultBranch,
+        });
+      }
       const projectCfg = loadProjectConfig(projectPath);
       if (!dryRun && !resume && !resumeFailed) {
         const assetIssues = collectRuntimeAssetIssues(projectPath, projectCfg);
@@ -627,7 +629,6 @@ export const runCommand = new Command("run")
       let taskClient: ITaskClient;
       let bvClient: BvClient | null = null;
       let backendType: "beads" | "native" = "beads";
-      const registered = await resolveRunRegisteredProject(projectPath);
       if (registered) {
         ensureCliPostgresPool(projectPath);
       }

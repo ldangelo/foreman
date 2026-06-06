@@ -47,6 +47,8 @@ let mockPostgresAdapterInstance: {
   recordPipelineEvent: ReturnType<typeof vi.fn>;
 };
 
+let mockSyncRegisteredProjectCheckout = vi.fn();
+
 vi.mock("fastify", () => ({
   default: vi.fn(() => mockFastify),
 }));
@@ -82,6 +84,10 @@ vi.mock("../../lib/db/postgres-adapter.js", () => ({
 
 vi.mock("../../lib/bv.js", () => ({
   BvClient: vi.fn(),
+}));
+
+vi.mock("../../lib/registered-project-checkout.js", () => ({
+  syncRegisteredProjectCheckout: (...args: unknown[]) => mockSyncRegisteredProjectCheckout(...args),
 }));
 
 vi.mock("../../lib/db/pool-manager.js", () => ({
@@ -157,6 +163,7 @@ beforeEach(() => {
     close: vi.fn(),
   };
   mockPostgresAdapterInstance = createMockPostgresAdapterInstance();
+  mockSyncRegisteredProjectCheckout = vi.fn();
   healthCheckCalls = 0;
   poolInitCalls = 0;
   poolDestroyCalls = 0;
@@ -284,6 +291,48 @@ describe("ForemanDaemon dispatch loop", () => {
       expect(createTaskClientMock).toHaveBeenCalledWith("/tmp/registered-project", {
         registeredProjectId: "proj-123",
       });
+      await daemon.stop();
+    } finally {
+      if (originalWebhookSecret !== undefined) {
+        process.env.FOREMAN_WEBHOOK_SECRET = originalWebhookSecret;
+      } else {
+        delete process.env.FOREMAN_WEBHOOK_SECRET;
+      }
+    }
+  });
+
+  it("syncs the registered checkout before dispatching a project", async () => {
+    const originalWebhookSecret = process.env.FOREMAN_WEBHOOK_SECRET;
+    delete process.env.FOREMAN_WEBHOOK_SECRET;
+
+    const createTaskClientMock = vi.mocked(await import("../../lib/task-client-factory.js")).createTaskClient;
+    const trpcClientMock = vi.mocked(await import("../../lib/trpc-client.js")).createTrpcClient;
+
+    trpcClientMock.mockReturnValue({
+      projects: {
+        list: vi.fn(async () => [
+          {
+            id: "proj-123",
+            name: "registered-project",
+            path: "/tmp/registered-project",
+            status: "active",
+            defaultBranch: "main",
+          },
+        ]),
+      },
+    } as never);
+
+    try {
+      const daemon = new ForemanDaemon({ httpPort: 9996, socketPath: join(tmpdir(), "foreman-daemon-test.sock") });
+      await daemon.start();
+
+      expect(mockSyncRegisteredProjectCheckout).toHaveBeenCalledWith({
+        projectId: "proj-123",
+        projectPath: "/tmp/registered-project",
+        defaultBranch: "main",
+        warn: expect.any(Function),
+      });
+      expect(mockSyncRegisteredProjectCheckout.mock.invocationCallOrder[0]).toBeLessThan(createTaskClientMock.mock.invocationCallOrder[0]);
       await daemon.stop();
     } finally {
       if (originalWebhookSecret !== undefined) {

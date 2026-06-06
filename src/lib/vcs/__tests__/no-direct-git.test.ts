@@ -93,6 +93,9 @@ const ALWAYS_ALLOWED: string[] = [
   "lib/worktree-manager.ts",
   // PR state service — uses git rev-parse and gh pr view for PR state tracking
   "lib/pr-state.ts",
+  // Registered checkout sync — manages the daemon-owned clone before dispatch using
+  // git-specific restore/reset semantics not exposed by VcsBackend.
+  "lib/registered-project-checkout.ts",
 ];
 
 /**

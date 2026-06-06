@@ -11,6 +11,7 @@ import { createTrpcClient } from "../lib/trpc-client.js";
 import { ForemanStore } from "../lib/store.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../lib/project-registry.js";
+import { syncRegisteredProjectCheckout } from "../lib/registered-project-checkout.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { Dispatcher } from "../orchestrator/dispatcher.js";
 import { BvClient } from "../lib/bv.js";
@@ -446,7 +447,7 @@ export class ForemanDaemon {
   /** Dispatch ready tasks for all registered projects. */
   async #dispatchAllProjects(maxAgents: number): Promise<void> {
     // Use tRPC client to get projects (same as listRegisteredProjects in CLI)
-    let projects: Array<{ id: string; name: string; path: string; status: string }> = [];
+    let projects: Array<{ id: string; name: string; path: string; status: string; defaultBranch?: string }> = [];
     try {
       const client = createTrpcClient();
       projects = await client.projects.list() as typeof projects;
@@ -460,6 +461,12 @@ export class ForemanDaemon {
     for (const project of projects) {
       if (project.status !== "active") continue;
 
+      syncRegisteredProjectCheckout({
+        projectId: project.id,
+        projectPath: project.path,
+        defaultBranch: project.defaultBranch,
+        warn: (message) => this.fastify.log.warn(message),
+      });
       try {
         const { taskClient, backendType } = await createTaskClient(project.path, {
           registeredProjectId: project.id,

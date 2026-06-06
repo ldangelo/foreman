@@ -23,6 +23,7 @@ const {
   MockPostgresMergeQueue,
   mockCreateVcsBackend,
   mockResolveRepoRootProjectPath,
+  mockSyncRegisteredProjectCheckout,
 } = vi.hoisted(() => {
   const mockProjectsList = vi.fn().mockResolvedValue([]);
   const mockCreateTaskClient = vi.fn().mockResolvedValue({ taskClient: {}, bvClient: null, backendType: "beads" });
@@ -112,6 +113,8 @@ const {
     detectDefaultBranch: vi.fn().mockResolvedValue("main"),
   });
   const mockResolveRepoRootProjectPath = vi.fn().mockResolvedValue("/mock/project");
+  const mockSyncRegisteredProjectCheckout = vi.fn();
+
 
   return {
     mockProjectsList,
@@ -136,6 +139,7 @@ const {
     MockPostgresMergeQueue,
     mockCreateVcsBackend,
     mockResolveRepoRootProjectPath,
+    mockSyncRegisteredProjectCheckout,
   };
 });
 
@@ -179,12 +183,16 @@ vi.mock("../commands/project-task-support.js", () => ({
   resolveRepoRootProjectPath: mockResolveRepoRootProjectPath,
   requireProjectOrAllInMultiMode: vi.fn(),
 }));
+vi.mock("../../lib/registered-project-checkout.js", () => ({
+  syncRegisteredProjectCheckout: mockSyncRegisteredProjectCheckout,
+}));
 
 import { runCommand } from "../commands/run.js";
 
 describe("foreman run startup refinery lookup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSyncRegisteredProjectCheckout.mockReset();
     mockProjectsList.mockResolvedValue([]);
     mockCreateTaskClients.mockResolvedValue({ taskClient: {}, bvClient: null, backendType: "beads" });
     mockGetProjectByPath.mockReturnValue(null);
@@ -205,6 +213,21 @@ describe("foreman run startup refinery lookup", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("syncs the registered checkout before dispatch setup", async () => {
+    const projectPath = "/mock/project";
+    mockProjectsList.mockResolvedValue([{ id: "proj-1", name: "my-project", path: projectPath, defaultBranch: "main" }]);
+    mockGetProjectByPath.mockReturnValue({ id: "proj-1", path: projectPath });
+
+    await runCommand.parseAsync(["--project-path", projectPath, "--no-watch"], { from: "user" });
+
+    expect(mockSyncRegisteredProjectCheckout).toHaveBeenCalledWith({
+      projectId: "proj-1",
+      projectPath,
+      defaultBranch: "main",
+    });
+    expect(mockSyncRegisteredProjectCheckout.mock.invocationCallOrder[0]).toBeLessThan(mockCreateTaskClient.mock.invocationCallOrder[0]);
   });
 
   it("injects the registered Postgres run lookup into RefineryAgent", async () => {
