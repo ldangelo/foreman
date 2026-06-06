@@ -193,6 +193,12 @@ async function withEnvVar(key: string, value: string | undefined, fn: () => Prom
   }
 }
 
+function getStructuredLogMessages(consoleSpy: ReturnType<typeof vi.spyOn>): string[] {
+  return consoleSpy.mock.calls
+    .map((args: unknown[]) => JSON.parse(String(args[0])) as { message?: string })
+    .map((entry: { message?: string }) => entry.message ?? "");
+}
+
 // ── resolveTaskStoreMode() ────────────────────────────────────────────────
 
 describe("resolveTaskStoreMode()", () => {
@@ -363,12 +369,12 @@ describe("Dispatcher — Native task store coexistence (AC-014.1)", () => {
   it("logs which path was taken (debug log for AC-014.1)", async () => {
     const store = makeMockStore({ hasNativeTasks: true, nativeTasks: [] });
     const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
     await dispatcher.dispatch({ dryRun: true });
 
-    const logs = consoleSpy.mock.calls.map((args) => String(args[0]));
+    const logs = getStructuredLogMessages(consoleSpy);
     expect(logs.some((m) => m.includes("native"))).toBe(true);
     consoleSpy.mockRestore();
   });
@@ -376,12 +382,12 @@ describe("Dispatcher — Native task store coexistence (AC-014.1)", () => {
   it("logs beads fallback path when no native tasks", async () => {
     const store = makeMockStore({ hasNativeTasks: false });
     const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
     await dispatcher.dispatch({ dryRun: true });
 
-    const logs = consoleSpy.mock.calls.map((args) => String(args[0]));
+    const logs = getStructuredLogMessages(consoleSpy);
     expect(logs.some((m) => m.includes("beads fallback") || m.includes("fallback"))).toBe(true);
     consoleSpy.mockRestore();
   });
@@ -437,12 +443,12 @@ describe("Dispatcher — FOREMAN_TASK_STORE overrides (AC-014.2)", () => {
     process.env.FOREMAN_TASK_STORE = "native";
     const store = makeMockStore({ hasNativeTasks: false, nativeTasks: [] });
     const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
     await dispatcher.dispatch({ dryRun: true });
 
-    const logs = consoleSpy.mock.calls.map((args) => String(args[0]));
+    const logs = getStructuredLogMessages(consoleSpy);
     expect(logs.some((m) => m.includes("FOREMAN_TASK_STORE=native"))).toBe(true);
     consoleSpy.mockRestore();
   });
@@ -451,12 +457,12 @@ describe("Dispatcher — FOREMAN_TASK_STORE overrides (AC-014.2)", () => {
     process.env.FOREMAN_TASK_STORE = "beads";
     const store = makeMockStore({ hasNativeTasks: true, nativeTasks: [] });
     const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
     await dispatcher.dispatch({ dryRun: true });
 
-    const logs = consoleSpy.mock.calls.map((args) => String(args[0]));
+    const logs = getStructuredLogMessages(consoleSpy);
     expect(logs.some((m) => m.includes("FOREMAN_TASK_STORE=beads"))).toBe(true);
     consoleSpy.mockRestore();
   });
