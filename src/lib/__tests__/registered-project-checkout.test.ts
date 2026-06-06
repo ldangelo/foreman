@@ -54,6 +54,16 @@ describe("syncRegisteredProjectCheckout", () => {
     expect(mockRmSync).toHaveBeenCalledWith("/repo/.beads/last-touched", { recursive: true, force: true });
     expect(mockExecFileSync).toHaveBeenCalledWith("git", ["checkout", "main"], expect.objectContaining({ cwd: "/repo" }));
     expect(mockExecFileSync).toHaveBeenCalledWith("git", ["reset", "--hard", "origin/main"], expect.objectContaining({ cwd: "/repo" }));
+
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "git",
+      ["fetch", "origin", "main", "--prune"],
+      expect.objectContaining({
+        cwd: "/repo",
+        timeout: 30_000,
+        env: expect.objectContaining({ GIT_TERMINAL_PROMPT: "0" }),
+      }),
+    );
   });
 
   it("warns and skips fast-forward when non-controller changes exist", () => {

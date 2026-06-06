@@ -589,11 +589,16 @@ export const runCommand = new Command("run")
       const projectPath = await resolveRepoRootProjectPath(opts);
       const registered = await resolveRunRegisteredProject(projectPath);
       if (registered) {
-        syncRegisteredProjectCheckout({
-          projectId: registered.id,
-          projectPath,
-          defaultBranch: registered.defaultBranch,
-        });
+        try {
+          syncRegisteredProjectCheckout({
+            projectId: registered.id,
+            projectPath,
+            defaultBranch: registered.defaultBranch,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(chalk.yellow(`[Foreman] Registered checkout sync warning: ${msg}`));
+        }
       }
       const projectCfg = loadProjectConfig(projectPath);
       if (!dryRun && !resume && !resumeFailed) {

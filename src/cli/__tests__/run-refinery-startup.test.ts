@@ -230,6 +230,21 @@ describe("foreman run startup refinery lookup", () => {
     expect(mockSyncRegisteredProjectCheckout.mock.invocationCallOrder[0]).toBeLessThan(mockCreateTaskClient.mock.invocationCallOrder[0]);
   });
 
+  it("warns and continues when registered checkout sync throws", async () => {
+    const projectPath = "/mock/project";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockProjectsList.mockResolvedValue([{ id: "proj-1", name: "my-project", path: projectPath, defaultBranch: "main" }]);
+    mockGetProjectByPath.mockReturnValue({ id: "proj-1", path: projectPath });
+    mockSyncRegisteredProjectCheckout.mockImplementation(() => {
+      throw new Error("sync exploded");
+    });
+
+    await runCommand.parseAsync(["--project-path", projectPath, "--no-watch"], { from: "user" });
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Registered checkout sync warning: sync exploded"));
+    expect(mockCreateTaskClient).toHaveBeenCalled();
+  });
+
   it("injects the registered Postgres run lookup into RefineryAgent", async () => {
     const projectPath = "/mock/project";
     mockProjectsList.mockResolvedValue([{ id: "proj-1", name: "my-project", path: projectPath }]);
