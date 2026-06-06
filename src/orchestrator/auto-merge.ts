@@ -10,11 +10,6 @@
  * for `foreman run` to be running and call autoMerge() in its dispatch loop.
  */
 
-import { execFileSync } from "node:child_process";
-import { promisify } from "node:util";
-import { join } from "node:path";
-import { homedir } from "node:os";
-
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import type { ForemanStore, Run } from "../lib/store.js";
 import type { ITaskClient } from "../lib/task-client.js";
@@ -23,9 +18,8 @@ import type { VcsBackend } from "../lib/vcs/interface.js";
 import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { PostgresMergeQueue } from "./postgres-merge-queue.js";
 import { Refinery } from "./refinery.js";
-import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
-import { enqueueAddNotesToBead, enqueueMarkBeadFailed, enqueueSetBeadStatus } from "./task-backend-ops.js";
+import { updateSeedStatus, markSeedFailed } from "./task-backend-ops.js";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -43,11 +37,6 @@ async function createAutoMergeVcsBackend(projectPath: string): Promise<VcsBacken
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Absolute path to the br binary. */
-function brPath(): string {
-  return join(homedir(), ".local", "bin", "br");
-}
 
 /**
  * Fire-and-forget helper to send a mail message via the store.
@@ -69,17 +58,13 @@ function sendMail(
 }
 
 /**
- * Immediately sync a bead's status in the br backend after a merge outcome.
+ * Immediately sync a task's status in the native task store after a merge outcome.
  *
- * Fetches the latest run status from Postgres, maps it to the expected bead
- * status via mapRunStatusToSeedStatus(), updates br, then flushes with
- * `br sync --flush-only`.
+ * Fetches the latest run status from Postgres, maps it to the expected task
+ * status via mapRunStatusToSeedStatus(), and updates the native task store.
  *
- * When `failureReason` is provided (non-empty), adds it as a note on the bead
- * so that the bead record explains WHY it was blocked/failed. This is the
- * immediate fix described in the task: rather than waiting for
- * syncBeadStatusOnStartup() on the next restart, the bead is updated right
- * away with both status and context.
+ * When `failureReason` is provided (non-empty), logs it (native task store
+ * does not have a notes field for failure context).
  *
  * Non-fatal — logs a warning on failure and lets the caller continue.
  */
@@ -96,17 +81,14 @@ export async function syncBeadStatusAfterMerge(
   if (!run) return;
 
   const expectedStatus = mapRunStatusToSeedStatus(run.status);
-  // Enqueue the status update instead of calling br directly.
-  // Multiple agent workers can trigger autoMerge concurrently after finalize,
-  // and direct br calls contend on the beads backend lock.
-  // The dispatcher's bead writer queue serializes all br operations.
-  enqueueSetBeadStatus(store, seedId, expectedStatus, "auto-merge");
+  // Update the task status directly in the native task store.
+  // Multiple agent workers can trigger autoMerge concurrently — the native
+  // task store uses Postgres MVCC for safe concurrent writes.
+  updateSeedStatus(store, seedId, expectedStatus, "auto-merge");
 
-  // Add explanatory notes to the bead when there's a failure reason.
-  // Done after the status update so that the status change is always attempted
-  // even if the note fails. addNotesToBead() is itself non-fatal.
+  // Log failure reason for diagnostics (native task store does not have notes)
   if (failureReason) {
-    enqueueAddNotesToBead(store, seedId, failureReason, "auto-merge");
+    console.error(`[auto-merge] Task ${seedId} failure reason: ${failureReason.slice(0, 200)}`);
   }
 }
 

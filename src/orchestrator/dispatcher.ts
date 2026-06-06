@@ -28,9 +28,6 @@ import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
 import { WorktreeManager } from "../lib/worktree-manager.js";
-import { resolveTaskStoreMode } from "../lib/task-client-factory.js";
-export { resolveTaskStoreMode } from "../lib/task-client-factory.js";
-export type { TaskStoreMode } from "../lib/task-client-factory.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import { getRunReportsDir } from "../lib/report-paths.js";
 import type {
@@ -465,39 +462,12 @@ export class Dispatcher {
       : activeRuns.length;
     const available = Math.max(0, maxAgents - activeAgentCount);
 
-    // ── Task store coexistence (REQ-014 / REQ-017) ────────────────────────
-    // Decide whether to query the native Postgres task store or fall back to
-    // the BeadsRustClient based on FOREMAN_TASK_STORE and hasNativeTasks().
-    const taskStoreMode = resolveTaskStoreMode();
-    let usingNativeStore = false;
-
-    if (taskStoreMode === "native") {
-      usingNativeStore = true;
-      console.error("[dispatch] FOREMAN_TASK_STORE=native — using native task store");
-    } else if (taskStoreMode === "beads") {
-      usingNativeStore = false;
-      console.error(`[dispatch][${projectId}] FOREMAN_TASK_STORE=beads — using beads fallback`);
-    } else {
-      // 'auto': use native if tasks exist, otherwise fall back to beads
-      usingNativeStore = this.overrides?.nativeTaskOps
-        ? await this.overrides.nativeTaskOps.hasNativeTasks()
-        : this.store.hasNativeTasks();
-      if (usingNativeStore) {
-        console.error("[dispatch] Native tasks detected — using native task store (AC-014.1)");
-      } else {
-        console.error(`[dispatch][${projectId}] No native tasks — using beads fallback (AC-014.1)`);
-      }
-    }
-
-    let readySeeds: Issue[];
-    if (usingNativeStore) {
-      const nativeTasks = this.overrides?.nativeTaskOps
-        ? await this.overrides.nativeTaskOps.getReadyTasks()
-        : this.store.getReadyTasks();
-      readySeeds = nativeTasks.map(nativeTaskToIssue);
-    } else {
-      readySeeds = await this.seeds.ready();
-    }
+    // ── Native task store ─────────────────────────────────────────────────
+    // Always use the native Postgres task store.
+    const nativeTasks = this.overrides?.nativeTaskOps
+      ? await this.overrides.nativeTaskOps.getReadyTasks()
+      : this.store.getReadyTasks();
+    let readySeeds: Issue[] = nativeTasks.map(nativeTaskToIssue);
 
     // Sort ready seeds using bv triage scores when available, falling back to priority sort.
     if (!opts?.seedId) {
@@ -555,7 +525,7 @@ export class Dispatcher {
         };
       }
       let target = readySeeds.find((b) => b.id === opts.seedId);
-      if (usingNativeStore && !target) {
+      if (!target) {
         // Try external_id first (for tasks that have it set)
         let nativeMatch = this.overrides?.nativeTaskOps
           ? await this.overrides.nativeTaskOps.getTaskByExternalId(opts.seedId)
@@ -581,40 +551,12 @@ export class Dispatcher {
               activeAgents: activeRuns.length,
             };
           }
-        } else {
-          usingNativeStore = false;
         }
       }
-      // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
-      // fetch directly and force-dispatch if it's open/in_progress.
       if (!target) {
-        try {
-          const bead = await this.seeds.show(opts.seedId);
-          if (bead && bead.status !== "closed" && bead.status !== "completed") {
-            log(`[dispatch] ${opts.seedId} not in br ready (stale cache?) — force-dispatching`);
-            target = bead as unknown as Issue;
-          }
-        } catch { /* bead not found */ }
-      }
-      if (!target) {
-        let reason = "Not found and not dispatchable";
-        try {
-          const bead = await this.seeds.show(opts.seedId);
-          if (!bead) {
-            reason = `Bead ${opts.seedId} not found`;
-          } else if (bead.status === "closed" || bead.status === "completed") {
-            reason = `Bead ${opts.seedId} is closed (already completed)`;
-          } else if (bead.status === "in_progress") {
-            reason = `Bead ${opts.seedId} is already in progress`;
-          } else if (bead.status === "open") {
-            reason = `Bead ${opts.seedId} is blocked (has unresolved dependencies)`;
-          }
-        } catch {
-          // fall back to default reason
-        }
         return {
           dispatched: [],
-          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason }],
+          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason: `Task ${opts.seedId} not found` }],
           resumed: [],
           activeAgents: activeRuns.length,
         };
@@ -687,131 +629,14 @@ export class Dispatcher {
         continue;
       }
 
-      // ── Auto-close feature containers ──────────────────────────────────────
-      // Feature beads are organizational containers — never dispatch agents for
-      // them. Instead, check if all children are closed and auto-close the
-      // container bead when they are.
-      if (seed.type === "feature" && !usingNativeStore) {
-        try {
-          const detail = await this.seeds.show(seed.id);
-          // br show --json returns `dependents` (the tasks this container blocks), not `children`.
-          // Use dependents to determine whether all downstream work is complete.
-          const brDetail = detail as DispatcherBeadsIssueDetail;
-          const dependents = brDetail.dependents ?? [];
-
-          if (dependents.length === 0) {
-            // No dependents — close the container directly
-            await this.seeds.close(seed.id, "Auto-closed: no dependent tasks (empty container)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no dependent tasks`);
-            skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: `Type '${seed.type}' auto-closed — no dependent tasks`,
-            });
-          } else {
-            const openDeps = dependents.filter(
-              (d) => d.status !== "closed" && d.status !== "completed",
-            );
-
-            if (openDeps.length === 0) {
-              await this.seeds.close(seed.id, "Auto-closed: all dependent tasks completed");
-              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all ${dependents.length} dependent tasks completed`);
-              skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: `Type '${seed.type}' auto-closed — all ${dependents.length} dependent tasks completed`,
-              });
-            } else {
-              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`);
-              skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: `Type '${seed.type}' is an organizational container — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`,
-              });
-            }
-          }
-        } catch (err: unknown) {
-          // If we can't inspect the container, skip it rather than crashing
-          const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check dependents: ${msg}`);
-          skipped.push({
-            seedId: seed.id,
-            title: seed.title,
-            reason: `Type '${seed.type}' is an organizational container — skipped (error checking dependents)`,
-          });
-        }
-        continue;
-      }
-
-      // ── Epic beads: dispatch through epic pipeline or auto-close ──────────
-      // Epic beads with children are dispatched as a single epic runner that
-      // executes all child tasks sequentially within one worktree.
-      // Epic beads with 0 children: if using native store (no children support),
-      // fall through to regular dispatch so the epic runs as a single-agent task.
+      // ── Epic beads: dispatch through epic pipeline ─────────────────────────
+      // Epic beads are dispatched as a single epic runner that executes all
+      // child tasks sequentially within one worktree. Native task store does not
+      // have children support, so epics dispatch as single-agent tasks.
       if (seed.type === "epic") {
-        try {
-          const detail = await this.seeds.show(seed.id);
-          const detailWithChildren = detail as { children?: string[]; status: string };
-          const childIds = detailWithChildren.children ?? [];
-
-          if (childIds.length === 0) {
-            if (usingNativeStore) {
-              // Native task store has no children support — dispatch the epic
-              // as a single-agent task through the regular pipeline. The epic's
-              // phases (developer → qa → finalize) run as a single worktree.
-              log(`[dispatch] Epic ${seed.id} has no children (native store) — dispatching as single-agent task`);
-            } else {
-              // Beads store: no children means truly empty epic — auto-close.
-              await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
-              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
-              skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: "Type 'epic' auto-closed — no children",
-              });
-              continue;
-            }
-          } else {
-            // Epic has children — query task order and dispatch through epic path.
-            // getTaskOrder returns only actionable child types (task, bug, chore).
-            const brClient = this.seeds as unknown as TaskOrderingClient;
-            const epicTasks: EpicTask[] = await getTaskOrder(
-              seed.id,
-              brClient,
-              this.projectPath,
-            );
-
-            if (epicTasks.length === 0) {
-              // All children are non-actionable types (e.g. all feature/story containers)
-              // or all children are already closed. Auto-close.
-              await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
-              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
-              skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: "Type 'epic' auto-closed — no actionable child tasks",
-              });
-              continue;
-            }
-
-            log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
-
-            // Store epicTasks for use by the dispatch logic below.
-            // We set a marker on the seed object so the dispatch code further down
-            // can include epicTasks in the worker config.
-            (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
-            // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
-          }
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Failed to prepare epic ${seed.id}: ${msg}`);
-          skipped.push({
-            seedId: seed.id,
-            title: seed.title,
-            reason: `Epic dispatch failed: ${msg}`,
-          });
-          continue;
-        }
+        log(`[dispatch] Epic ${seed.id} — dispatching as single-agent task`);
+        // Fall through to regular dispatch so the epic's phases
+        // (developer → qa → finalize) run as a single worktree.
       }
 
       // Skip seeds that are in exponential backoff after recent stuck runs
@@ -1109,37 +934,25 @@ export class Dispatcher {
         }
 
         // 6. Mark seed as in_progress before spawning agent.
-        if (usingNativeStore) {
-          // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
-          // REQ-017 AC-017.2: claim + run_id linkage in one transaction (prevents double-dispatch).
-          const claimed = this.overrides?.nativeTaskOps
-            ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
-            : this.store.claimTask(seed.id, run.id);
-          if (!claimed) {
-            // Another dispatcher instance claimed this task between our getReadyTasks() query
-            // and now — skip it and clean up the run we just created.
-            skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: "Already claimed by another dispatcher (atomic claim failed)",
-            });
-            // Best-effort cleanup: mark run as failed so it doesn't appear as active
-            try {
-              await this.updateRunRecord(run.id, { status: "failed", completed_at: new Date().toISOString() });
-            } catch {
-              // Non-fatal — run cleanup is best-effort
-            }
-            continue;
-          }
-        } else {
-          // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
-          // The agent can still run — the status update is cosmetic.
+        // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
+        const claimed = this.overrides?.nativeTaskOps
+          ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
+          : this.store.claimTask(seed.id, run.id);
+        if (!claimed) {
+          // Another dispatcher instance claimed this task between our getReadyTasks() query
+          // and now — skip it and clean up the run we just created.
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: "Already claimed by another dispatcher (atomic claim failed)",
+          });
+          // Best-effort cleanup: mark run as failed so it doesn't appear as active
           try {
-            await this.seeds.update(seed.id, { status: "in_progress" });
-          } catch (claimErr: unknown) {
-            const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
-            console.error(`[dispatch][${projectId}] Warning: br claim failed for seed=${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+            await this.updateRunRecord(run.id, { status: "failed", completed_at: new Date().toISOString() });
+          } catch {
+            // Non-fatal — run cleanup is best-effort
           }
+          continue;
         }
 
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
@@ -1176,11 +989,7 @@ export class Dispatcher {
             const now = new Date().toISOString();
             await this.updateRunRecord(run.id, { status: "failed", completed_at: now });
             try {
-              if (usingNativeStore) {
-                await this.updateNativeTaskStatus(seed.id, "failed");
-              } else {
-                await this.seeds.update(seed.id, { status: "failed" });
-              }
+              await this.updateNativeTaskStatus(seed.id, "failed");
             } catch (taskErr: unknown) {
               const taskMsg = taskErr instanceof Error ? taskErr.message : String(taskErr);
               log(`[foreman] Could not mark ${seed.id} failed after beforeRun hook failure — ${taskMsg.slice(0, 200)}`);
@@ -2074,7 +1883,7 @@ export interface WorkerConfig {
    * Optional task ID from native task store (NativeTaskStore.claim()).
    * When present, pipeline will call taskStore.updatePhase(taskId, phaseName)
    * at each phase transition for phase-level visibility (REQ-012).
-   * Null/undefined in beads fallback mode — no-op via optional chaining.
+   * Null/undefined when no task ID is available — no-op via optional chaining.
    */
   taskId?: string | null;
   /**

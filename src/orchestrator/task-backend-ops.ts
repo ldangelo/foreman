@@ -1,383 +1,186 @@
 /**
  * task-backend-ops.ts
  *
- * Task lifecycle operations for the pipeline worker using the br backend.
+ * Task lifecycle operations for the pipeline worker using the native task store.
  *
  * Provides operations used by agent-worker.ts and the run command:
  *   - closeSeed()               — marks a task complete (finalize phase)
- *   - resetSeedToOpen()         — resets a task back to open (markStuck path)
- *   - addLabelsToBead()         — appends phase-tracking labels after each pipeline phase
- *   - syncBeadStatusOnStartup() — reconciles br seed status from Postgres on startup
+ *   - resetSeedToOpen()         — resets a task back to ready (markStuck path)
+ *   - markSeedFailed()           — marks a task as failed
+ *   - updateSeedStatus() — updates task status directly
  *
- * TRD-024: sd backend removed. Always uses Beads Rust CLI at ~/.local/bin/br.
- *
- * CLI calls are made via execFileSync (no shell interpolation) for all
- * subprocess operations to avoid auto-appending --json (which execBr does)
- * and to ensure the br dirty flag is set correctly on each call.
- * Errors from the CLI subprocess are caught and logged; they must not
- * propagate to callers since a failed close/reset is non-fatal for the
- * pipeline worker itself.
+ * All operations use the native Postgres task store via ForemanStore.
+ * Beads (br CLI) operations have been removed — native tasks are mandatory.
  */
 
-import { execFileSync } from "node:child_process";
-import { unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
-import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import type { ForemanStore } from "../lib/store.js";
-import type { ITaskClient } from "../lib/task-client.js";
+import { ForemanStore } from "../lib/store.js";
+import { PostgresStore } from "../lib/postgres-store.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
 
-type StartupBeadStatusStore = {
+type StartupTaskStatusStore = {
   getRunsByStatuses(
     statuses: Parameters<ForemanStore["getRunsByStatuses"]>[0],
     projectId?: string,
   ): ReturnType<ForemanStore["getRunsByStatuses"]> | Promise<ReturnType<ForemanStore["getRunsByStatuses"]>>;
 };
 
-// ── Bead Write Queue Operations ───────────────────────────────────────────────
+// ── Native Task Operations ─────────────────────────────────────────────────────
 //
-// These functions enqueue br write operations via the ForemanStore bead_write_queue
-// table instead of calling the br CLI directly. The dispatcher (single process)
-// drains the queue sequentially, eliminating backend lock contention.
+// These functions perform task lifecycle operations directly on the native
+// Postgres task store. They are called by agent-worker, refinery,
+// pipeline-executor, and auto-merge.
 //
-// Usage: call these from agent-worker, refinery, pipeline-executor, and auto-merge
-// instead of the corresponding direct functions (closeSeed, resetSeedToOpen, etc.).
+// Unlike the deprecated Beads backend, there is no write queue or sequential
+// drain pattern — native tasks support concurrent writes via Postgres MVCC.
 
 /**
- * Enqueue a "close seed" operation for deferred sequential execution by the dispatcher.
+ * Close a task in the native task store.
  *
- * @param store - ForemanStore for the project (shared Postgres DB).
- * @param seedId - The bead/seed ID to close.
+ * @param store - ForemanStore for the project.
+ * @param seedId - The task ID to close.
  * @param sender - Human-readable source label (e.g. "refinery", "agent-worker").
  */
-export function enqueueCloseSeed(store: ForemanStore, seedId: string, sender: string): void {
+export function closeSeed(store: ForemanStore, seedId: string, sender: string): void {
   try {
-    store.enqueueBeadWrite(sender, "close-seed", { seedId });
-    console.error(`[task-backend-ops] Enqueued close-seed for ${seedId} (sender: ${sender})`);
+    const project = store.getProjectByPath(store.getProjectPath?.() ?? "");
+    if (project) {
+      // Use PostgresStore for registered projects
+      const pgStore = new PostgresStore(project.id);
+      pgStore.closeTask(seedId).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[task-backend-ops] Warning: Failed to close task ${seedId}: ${msg.slice(0, 200)}`);
+      });
+    } else {
+      // Fall back to local store operations
+      store.closeTask?.(seedId);
+    }
+    console.error(`[task-backend-ops] Closed task ${seedId} (sender: ${sender})`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: Failed to enqueue close-seed for ${seedId}: ${msg.slice(0, 200)}`);
+    console.error(`[task-backend-ops] Warning: Failed to close task ${seedId}: ${msg.slice(0, 200)}`);
   }
 }
 
 /**
- * Enqueue a "reset seed to open" operation for deferred sequential execution by the dispatcher.
- *
- * @param store - ForemanStore for the project (shared Postgres DB).
- * @param seedId - The bead/seed ID to reset.
- * @param sender - Human-readable source label.
- */
-export function enqueueResetSeedToOpen(store: ForemanStore, seedId: string, sender: string): void {
-  try {
-    store.enqueueBeadWrite(sender, "reset-seed", { seedId });
-    console.error(`[task-backend-ops] Enqueued reset-seed for ${seedId} (sender: ${sender})`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: Failed to enqueue reset-seed for ${seedId}: ${msg.slice(0, 200)}`);
-  }
-}
-
-/**
- * Enqueue a "mark bead failed" operation for deferred sequential execution by the dispatcher.
- *
- * @param store - ForemanStore for the project (shared Postgres DB).
- * @param seedId - The bead/seed ID to mark as failed.
- * @param sender - Human-readable source label.
- */
-export function enqueueMarkBeadFailed(store: ForemanStore, seedId: string, sender: string): void {
-  try {
-    store.enqueueBeadWrite(sender, "mark-failed", { seedId });
-    console.error(`[task-backend-ops] Enqueued mark-failed for ${seedId} (sender: ${sender})`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: Failed to enqueue mark-failed for ${seedId}: ${msg.slice(0, 200)}`);
-  }
-}
-
-/**
- * Enqueue an "add notes to bead" operation for deferred sequential execution by the dispatcher.
- * Does nothing when notes is empty (consistent with addNotesToBead).
- *
- * @param store - ForemanStore for the project (shared Postgres DB).
- * @param seedId - The bead/seed ID.
- * @param notes - Note text to add.
- * @param sender - Human-readable source label.
- */
-export function enqueueAddNotesToBead(store: ForemanStore, seedId: string, notes: string, sender: string): void {
-  if (!notes) return;
-  // Truncate to avoid excessive note lengths in the queue
-  const truncated = notes.length > 2000 ? notes.slice(0, 2000) + "…" : notes;
-  try {
-    store.enqueueBeadWrite(sender, "add-notes", { seedId, notes: truncated });
-    console.error(`[task-backend-ops] Enqueued add-notes for ${seedId} (sender: ${sender})`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: Failed to enqueue add-notes for ${seedId}: ${msg.slice(0, 200)}`);
-  }
-}
-
-/**
- * Enqueue an "add labels to bead" operation for deferred sequential execution by the dispatcher.
- * Does nothing when labels array is empty (consistent with addLabelsToBead).
- *
- * @param store - ForemanStore for the project (shared Postgres DB).
- * @param seedId - The bead/seed ID.
- * @param labels - Array of label strings to add.
- * @param sender - Human-readable source label.
- */
-export function enqueueAddLabelsToBead(store: ForemanStore, seedId: string, labels: string[], sender: string): void {
-  if (labels.length === 0) return;
-  try {
-    store.enqueueBeadWrite(sender, "add-labels", { seedId, labels });
-    console.error(`[task-backend-ops] Enqueued add-labels [${labels.join(", ")}] for ${seedId} (sender: ${sender})`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: Failed to enqueue add-labels for ${seedId}: ${msg.slice(0, 200)}`);
-  }
-}
-
-/**
- * Enqueue a generic "set status" operation for deferred execution.
- * Used for status transitions that don't have a dedicated enqueue function
- * (e.g. setting bead to "review" after finalize push).
- */
-export function enqueueSetBeadStatus(store: ForemanStore, seedId: string, status: string, sender: string): void {
-  try {
-    store.enqueueBeadWrite(sender, "set-status", { seedId, status });
-    console.error(`[task-backend-ops] Enqueued set-status ${status} for ${seedId} (sender: ${sender})`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: Failed to enqueue set-status for ${seedId}: ${msg.slice(0, 200)}`);
-  }
-}
-
-// ── Path constants ────────────────────────────────────────────────────────────
-
-function brPath(): string {
-  return join(homedir(), ".local", "bin", "br");
-}
-
-// ── Shared exec options ───────────────────────────────────────────────────────
-
-function execOpts(projectPath?: string): { stdio: "pipe"; timeout: number; cwd?: string } {
-  return {
-    stdio: "pipe" as const,
-    timeout: PIPELINE_TIMEOUTS.beadClosureMs,
-    ...(projectPath ? { cwd: projectPath } : {}),
-  };
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/**
- * Close (complete) a bead in the br backend.
- *
- * Uses `br close --no-db` to write directly to JSONL.
- *
- * @param projectPath - The project root directory that contains .beads/.
- */
-export async function closeSeed(seedId: string, projectPath?: string): Promise<void> {
-  const bin = brPath();
-
-  try {
-    execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline"], execOpts(projectPath));
-    console.error(`[task-backend-ops] Closed seed ${seedId} via br --no-db`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: br close failed for ${seedId}: ${msg.slice(0, 200)}`);
-  }
-}
-
-/**
- * Reset a bead back to open status in the br backend.
+ * Reset a task back to ready status in the native task store.
  * Called by markStuck() so the task reappears in the ready queue for retry.
  *
- * br update <seedId> --status open
- * br sync --flush-only  (persists the change to .beads/beads.jsonl)
- *
- * TRD-024: sd backend removed. Always uses br.
- * Errors are caught and logged to stderr; the function never throws.
- * The flush step is non-fatal: if it fails the update is still in br's memory
- * and may be recovered by syncBeadStatusOnStartup on the next restart.
- *
- * @param projectPath - The project root directory that contains .beads/.
- *   Must be provided so br auto-discovers the correct database when called
- *   from a worktree that has no .beads/ of its own.
+ * @param store - ForemanStore for the project.
+ * @param seedId - The task ID to reset.
+ * @param sender - Human-readable source label.
  */
-export async function resetSeedToOpen(seedId: string, projectPath?: string): Promise<void> {
-  const bin = brPath();
-  const args = ["update", seedId, "--status", "open"];
-
+export function resetSeedToOpen(store: ForemanStore, seedId: string, sender: string): void {
   try {
-    execFileSync(bin, args, execOpts(projectPath));
-    console.error(`[task-backend-ops] Reset seed ${seedId} to open via br`);
-
-    // Flush changes to .beads/beads.jsonl so the reset survives a process restart.
-    // Uses execFileSync (not execBr) to avoid the auto-appended --json flag.
-    try {
-      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
-      console.error(`[task-backend-ops] Flushed JSONL for reset seed ${seedId}`);
-    } catch (flushErr: unknown) {
-      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    const project = store.getProjectByPath(store.getProjectPath?.() ?? "");
+    if (project) {
+      const pgStore = new PostgresStore(project.id);
+      pgStore.resetTask(seedId).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[task-backend-ops] Warning: Failed to reset task ${seedId}: ${msg.slice(0, 200)}`);
+      });
+    } else {
+      store.resetTask?.(seedId);
     }
+    console.error(`[task-backend-ops] Reset task ${seedId} to ready (sender: ${sender})`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: br update failed for ${seedId}: ${msg.slice(0, 200)}`);
+    console.error(`[task-backend-ops] Warning: Failed to reset task ${seedId}: ${msg.slice(0, 200)}`);
   }
 }
 
 /**
- * Mark a bead as failed in the br backend.
+ * Mark a task as failed in the native task store.
  *
- * br update <seedId> --status failed
- *
- * Errors are caught and logged to stderr; the function never throws.
+ * @param store - ForemanStore for the project.
+ * @param seedId - The task ID to mark as failed.
+ * @param sender - Human-readable source label.
  */
-export async function markBeadFailed(seedId: string, projectPath?: string): Promise<void> {
-  const bin = brPath();
-  const args = ["update", seedId, "--status", "failed"];
-
+export function markSeedFailed(store: ForemanStore, seedId: string, sender: string): void {
   try {
-    execFileSync(bin, args, execOpts(projectPath));
-    console.error(`[task-backend-ops] Marked seed ${seedId} as failed via br`);
-
-    try {
-      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
-    } catch (flushErr: unknown) {
-      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    const project = store.getProjectByPath(store.getProjectPath?.() ?? "");
+    if (project) {
+      const pgStore = new PostgresStore(project.id);
+      pgStore.updateTaskStatus(seedId, "failed").catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[task-backend-ops] Warning: Failed to mark task ${seedId} as failed: ${msg.slice(0, 200)}`);
+      });
+    } else {
+      store.updateTaskStatus?.(seedId, "failed");
     }
+    console.error(`[task-backend-ops] Marked task ${seedId} as failed (sender: ${sender})`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: br update --status failed for ${seedId}: ${msg.slice(0, 200)}`);
+    console.error(`[task-backend-ops] Warning: Failed to mark task ${seedId} as failed: ${msg.slice(0, 200)}`);
   }
 }
 
 /**
- * Add a note/comment to a bead in the br backend.
- * Used by markStuck() to explain why a bead was reset to open.
+ * Update a task's status directly in the native task store.
  *
- * br update <seedId> --notes "<notes>"
- *
- * Errors are caught and logged to stderr; the function never throws.
- * Does nothing when notes is empty.
- *
- * @param seedId - The bead/seed ID
- * @param notes - The note/comment text to add
- * @param projectPath - The project root directory that contains .beads/.
+ * @param store - ForemanStore for the project.
+ * @param seedId - The task ID.
+ * @param status - The new status.
+ * @param sender - Human-readable source label.
  */
-export function addNotesToBead(seedId: string, notes: string, projectPath?: string): void {
-  if (!notes) return;
-  const bin = brPath();
-  // Truncate to avoid excessive note lengths in the br backend
-  const truncated = notes.length > 2000 ? notes.slice(0, 2000) + "…" : notes;
-  const args = ["update", seedId, "--notes", truncated];
-
+export function updateSeedStatus(store: ForemanStore, seedId: string, status: string, sender: string): void {
   try {
-    execFileSync(bin, args, execOpts(projectPath));
-    console.error(`[task-backend-ops] Added notes to seed ${seedId} via br`);
-
-    // Flush changes to .beads/beads.jsonl so the note survives a process restart.
-    try {
-      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
-      console.error(`[task-backend-ops] Flushed JSONL for notes on seed ${seedId}`);
-    } catch (flushErr: unknown) {
-      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
+    const project = store.getProjectByPath(store.getProjectPath?.() ?? "");
+    if (project) {
+      const pgStore = new PostgresStore(project.id);
+      pgStore.updateTaskStatus(seedId, status).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[task-backend-ops] Warning: Failed to update task ${seedId} status to ${status}: ${msg.slice(0, 200)}`);
+      });
+    } else {
+      store.updateTaskStatus?.(seedId, status);
     }
+    console.error(`[task-backend-ops] Updated task ${seedId} status to ${status} (sender: ${sender})`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: br update --notes failed for ${seedId}: ${msg.slice(0, 200)}`);
-  }
-}
-
-/**
- * Add labels to a bead in the br backend.
- * Called after each pipeline phase completes to track phase progress.
- *
- * br update <seedId> --labels <label1>,<label2>,...
- * br sync --flush-only  (persists the change to .beads/beads.jsonl)
- *
- * Errors are caught and logged to stderr; the function never throws.
- * The flush step is non-fatal: if it fails the label update is still in br's
- * memory and may be recovered by syncBeadStatusOnStartup on the next restart.
- *
- * @param projectPath - The project root directory that contains .beads/.
- *   Must be provided so br auto-discovers the correct database when called
- *   from a worktree that has no .beads/ of its own.
- */
-export function addLabelsToBead(seedId: string, labels: string[], projectPath?: string): void {
-  if (labels.length === 0) return;
-  const bin = brPath();
-  // Use --add-label (not --set-labels) to preserve existing labels like workflow:smoke.
-  const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l])];
-
-  try {
-    execFileSync(bin, args, execOpts(projectPath));
-    console.error(`[task-backend-ops] Added labels [${labels.join(", ")}] to seed ${seedId} via br`);
-
-    // Flush changes to .beads/beads.jsonl so the label update survives a process restart.
-    // Uses execFileSync (not execBr) to avoid the auto-appended --json flag.
-    try {
-      execFileSync(bin, ["sync", "--flush-only"], execOpts(projectPath));
-      console.error(`[task-backend-ops] Flushed JSONL for label update on seed ${seedId}`);
-    } catch (flushErr: unknown) {
-      const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-      console.error(`[task-backend-ops] Warning: br sync --flush-only failed for ${seedId}: ${msg.slice(0, 200)}`);
-    }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[task-backend-ops] Warning: br update --labels failed for ${seedId}: ${msg.slice(0, 200)}`);
+    console.error(`[task-backend-ops] Warning: Failed to update task ${seedId} status to ${status}: ${msg.slice(0, 200)}`);
   }
 }
 
 // ── Startup Sync ────────────────────────────────────────────────────────────
 
 export interface SyncResult {
-  /** Number of seeds whose status was successfully updated in br. */
+  /** Number of tasks whose status was successfully updated. */
   synced: number;
   /** All mismatches detected (includes both fixed and unfixed in dryRun mode). */
   mismatches: StateMismatch[];
-  /** Non-fatal errors encountered during the sync (per-seed failures). */
+  /** Non-fatal errors encountered during the sync (per-task failures). */
   errors: string[];
 }
 
 /**
- * Sync bead status from Postgres to br on foreman startup.
+ * Sync task status from Postgres run status to native task status on foreman startup.
  *
- * Queries all terminal runs from the selected store and reconciles the
- * expected seed status (derived from run status) with the actual status stored in br.
+ * Queries all terminal runs from the store and reconciles the expected task
+ * status (derived from run status) with the actual status stored in the task table.
  * This corrects "drift" that can occur when foreman was interrupted before
- * a br update completed.
+ * a task status update completed.
  *
  * Covers all terminal run statuses:
  *   merged, pr-created           → closed
- *   completed                    → in_progress (waiting for merge queue)
- *   failed, stuck, conflict, test-failed → open
+ *   completed                    → in-progress (waiting for merge queue)
+ *   failed, stuck, conflict, test-failed → ready (reset for retry)
  *
- * Non-fatal: individual seed errors are collected and returned; startup
- * is not aborted. After all updates, calls `br sync --flush-only` to
- * persist changes to .beads/beads.jsonl.
+ * Non-fatal: individual task errors are collected and returned; startup
+ * is not aborted.
  *
- * @param store       - Postgres store to query runs from.
- * @param taskClient  - br client providing show() method for status queries.
+ * @param store       - Store to query runs from.
  * @param projectId   - Project ID to scope the run query.
- * @param opts.dryRun       - Detect mismatches but do not fix them.
- * @param opts.projectPath  - Project root for br cwd (required so br finds .beads/).
+ * @param opts.dryRun - Detect mismatches but do not fix them.
  */
-export async function syncBeadStatusOnStartup(
-  store: StartupBeadStatusStore,
-  taskClient: Pick<ITaskClient, "show">,
+export async function syncTaskStatusOnStartup(
+  store: StartupTaskStatusStore,
   projectId: string,
-  opts?: { dryRun?: boolean; projectPath?: string },
+  opts?: { dryRun?: boolean },
 ): Promise<SyncResult> {
   const dryRun = opts?.dryRun ?? false;
-  const projectPath = opts?.projectPath;
 
-  // All terminal statuses — broader than detectAndFixMismatches which excludes failed/stuck
+  // All terminal statuses
   const terminalStatuses: Array<"completed" | "merged" | "pr-created" | "conflict" | "test-failed" | "failed" | "stuck"> = [
     "completed",
     "merged",
@@ -405,52 +208,53 @@ export async function syncBeadStatusOnStartup(
   let synced = 0;
 
   for (const run of latestBySeed.values()) {
-    const expectedSeedStatus = mapRunStatusToSeedStatus(run.status);
+    const expectedTaskStatus = mapRunStatusToSeedStatus(run.status);
     try {
-      const seedDetail = await taskClient.show(run.seed_id);
+      const task = await store.getTaskById?.(run.seed_id);
+      if (!task) {
+        // Task not found — skip silently (may have been deleted)
+        continue;
+      }
 
-      if (seedDetail.status !== expectedSeedStatus) {
+      if (task.status !== expectedTaskStatus) {
         mismatches.push({
           seedId: run.seed_id,
           runId: run.id,
           runStatus: run.status,
-          actualSeedStatus: seedDetail.status,
+          actualSeedStatus: task.status,
           expectedSeedStatus,
         });
 
         if (!dryRun) {
           try {
-            // Use execFileSync directly (not taskClient.update / execBr) so the br
-            // dirty flag is set. execBr auto-appends --json which bypasses the dirty
-            // flag, causing the subsequent sync --flush-only to be a silent no-op.
-            execFileSync(brPath(), ["update", run.seed_id, "--status", expectedSeedStatus], execOpts(projectPath));
+            store.updateTaskStatus?.(run.seed_id, expectedTaskStatus);
             synced++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            errors.push(`Failed to sync seed ${run.seed_id}: ${msg}`);
+            errors.push(`Failed to sync task ${run.seed_id}: ${msg}`);
           }
         }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("not found") && !msg.includes("Issue not found")) {
-        errors.push(`Could not check seed ${run.seed_id}: ${msg}`);
-      }
-      // Seed not found — skip silently (may have been deleted from br)
-    }
-  }
-
-  // Flush .beads/beads.jsonl to persist all updates.
-  // Uses execFileSync (not execBr) to avoid the auto-appended --json flag
-  // which bypasses br's dirty-flag mechanism and causes silent no-ops.
-  if (!dryRun && synced > 0) {
-    try {
-      execFileSync(brPath(), ["sync", "--flush-only"], execOpts(projectPath));
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`br sync --flush-only failed: ${msg}`);
+      errors.push(`Could not check task ${run.seed_id}: ${msg}`);
     }
   }
 
   return { synced, mismatches, errors };
 }
+
+// ── Deprecated Beads Operations (removed) ─────────────────────────────────────
+//
+// The following Beads-specific operations have been removed:
+//   - enqueueCloseSeed, enqueueResetSeedToOpen, enqueueMarkBeadFailed,
+//     enqueueAddNotesToBead, enqueueAddLabelsToBead, enqueueSetBeadStatus
+//   - closeSeed, resetSeedToOpen, markBeadFailed, addNotesToBead, addLabelsToBead
+//   - syncBeadStatusOnStartup
+//
+// Use the native task operations above instead:
+//   - closeSeed (store, seedId, sender)
+//   - resetSeedToOpen (store, seedId, sender)
+//   - markSeedFailed (store, seedId, sender)
+//   - updateSeedStatus (store, seedId, status, sender)
+//   - syncTaskStatusOnStartup (store, projectId, opts)

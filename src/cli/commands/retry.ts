@@ -126,7 +126,7 @@ export async function retryAction(
   store: RetryStore,
   projectPath: string,
   dispatcher?: Dispatcher,
-  backendType: TaskClientBackend = "beads",
+  backendType: TaskClientBackend = "native",
 ): Promise<number> {
   const dryRun = opts.dryRun ?? false;
 

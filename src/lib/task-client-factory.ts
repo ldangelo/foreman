@@ -6,8 +6,7 @@ import { ProjectRegistry } from "./project-registry.js";
 import { ForemanStore } from "./store.js";
 import type { ITaskClient } from "./task-client.js";
 
-export type TaskStoreMode = "native" | "beads" | "auto";
-export type TaskClientBackend = "native" | "beads";
+export type TaskClientBackend = "native";
 
 export interface TaskClientFactoryResult {
   backendType: TaskClientBackend;
@@ -15,9 +14,6 @@ export interface TaskClientFactoryResult {
 }
 
 export interface TaskClientFactoryOptions {
-  ensureBrInstalled?: boolean;
-  forceBeadsFallback?: boolean;
-  autoSelectNativeWhenAvailable?: boolean;
   registeredProjectId?: string;
 }
 
@@ -27,10 +23,6 @@ export interface TaskCounts {
   inProgress: number;
   completed: number;
   blocked: number;
-}
-
-interface BeadsTaskClient extends ITaskClient {
-  ensureBrInstalled(): Promise<void>;
 }
 
 const NATIVE_TOTAL_STATUSES = [
@@ -52,21 +44,6 @@ const NATIVE_BLOCKED_STATUSES = [
   "stuck",
   "blocked",
 ] as const;
-
-export function resolveTaskStoreMode(raw = process.env.FOREMAN_TASK_STORE): TaskStoreMode {
-  const normalized = raw?.trim().toLowerCase();
-  if (!raw || normalized === "auto") return "auto";
-  if (normalized === "native" || normalized === "beads") return normalized;
-  console.error(
-    `[dispatch] Warning: FOREMAN_TASK_STORE='${raw}' is not valid ('native'|'beads'|'auto'). Treating as 'auto'.`,
-  );
-  return "auto";
-}
-
-async function createBeadsFallbackClient(projectPath: string): Promise<BeadsTaskClient> {
-  const { BeadsRustClient } = await import("./beads-rust.js");
-  return new BeadsRustClient(projectPath) as BeadsTaskClient;
-}
 
 async function resolveRegisteredProject(
   projectPath: string,
@@ -108,125 +85,14 @@ async function resolveRegisteredProject(
   return null;
 }
 
-export function projectHasNativeTasks(projectPath: string): boolean {
-  const store = ForemanStore.forProject(projectPath);
-  try {
-    return typeof store.hasNativeTasks === "function" && store.hasNativeTasks();
-  } finally {
-    store.close();
-  }
-}
-
-export function selectTaskReadBackend(
-  projectPath: string,
-  opts?: { forceBeadsFallback?: boolean; autoSelectNativeWhenAvailable?: boolean },
-): TaskClientBackend {
-  const taskStoreMode = resolveTaskStoreMode();
-  if (taskStoreMode === "native") return "native";
-  if (taskStoreMode === "beads") return "beads";
-
-  if (opts?.forceBeadsFallback === true || opts?.autoSelectNativeWhenAvailable === true) {
-    return "beads";
-  }
-
-  return projectHasNativeTasks(projectPath) ? "native" : "beads";
-}
-
-async function projectHasNativeTasksAsync(
-  projectPath: string,
-  registeredProjectId?: string,
-): Promise<{ hasNativeTasks: boolean; registeredProjectId?: string }> {
-  const registered = await resolveRegisteredProject(projectPath, registeredProjectId);
-  if (registered) {
-    return {
-      hasNativeTasks: await new PostgresAdapter().hasNativeTasks(registered.id),
-      registeredProjectId: registered.id,
-    };
-  }
-
-  return {
-    hasNativeTasks: projectHasNativeTasks(projectPath),
-  };
-}
-
-async function selectTaskReadBackendAsync(
-  projectPath: string,
-  opts?: TaskClientFactoryOptions,
-): Promise<{ backendType: TaskClientBackend; registeredProjectId?: string }> {
-  const taskStoreMode = resolveTaskStoreMode();
-  if (opts?.forceBeadsFallback === true || opts?.autoSelectNativeWhenAvailable === true) {
-    return { backendType: "beads" };
-  }
-  if (taskStoreMode === "native") {
-    const registered = await resolveRegisteredProject(projectPath, opts?.registeredProjectId);
-    return { backendType: "native", registeredProjectId: registered?.id };
-  }
-  if (taskStoreMode === "beads") return { backendType: "beads" };
-
-  const nativeAvailability = await projectHasNativeTasksAsync(projectPath, opts?.registeredProjectId);
-  return {
-    backendType: nativeAvailability.hasNativeTasks ? "native" : "beads",
-    registeredProjectId: nativeAvailability.registeredProjectId,
-  };
-}
-
 export async function createTaskClient(
   projectPath: string,
   opts?: TaskClientFactoryOptions,
 ): Promise<TaskClientFactoryResult> {
-  const { backendType, registeredProjectId } = await selectTaskReadBackendAsync(projectPath, opts);
-  if (backendType === "native") {
-    return {
-      backendType,
-      taskClient: new NativeTaskClient(projectPath, { registeredProjectId }),
-    };
-  }
-
-  const taskClient = await createBeadsFallbackClient(projectPath);
-  if (opts?.ensureBrInstalled) {
-    await taskClient.ensureBrInstalled();
-  }
-  return { backendType, taskClient };
-}
-
-async function fetchBeadsTaskCounts(projectPath: string): Promise<TaskCounts> {
-  const brClient = await createBeadsFallbackClient(projectPath);
-
-  let openIssues: Array<{ id: string; status: string }> = [];
-  try {
-    openIssues = await brClient.list();
-  } catch {
-    // br not initialized or unavailable — treat as empty
-  }
-
-  let closedIssues: Array<{ id: string; status: string }> = [];
-  try {
-    closedIssues = await brClient.list({ status: "closed" });
-  } catch {
-    // no closed issues
-  }
-
-  let readyIssues: Array<{ id: string }> = [];
-  try {
-    readyIssues = await brClient.ready();
-  } catch {
-    // ready() may fail independently; keep other counts
-  }
-
-  const readyIds = new Set(readyIssues.map((issue) => issue.id));
-  const inProgress = openIssues.filter((issue) => issue.status === "in_progress").length;
-  const completed = closedIssues.length;
-  const ready = readyIssues.length;
-  const blocked = openIssues.filter(
-    (issue) => issue.status !== "in_progress" && !readyIds.has(issue.id),
-  ).length;
-
+  const registered = await resolveRegisteredProject(projectPath, opts?.registeredProjectId);
   return {
-    total: openIssues.length + completed,
-    ready,
-    inProgress,
-    completed,
-    blocked,
+    backendType: "native",
+    taskClient: new NativeTaskClient(projectPath, { registeredProjectId: registered?.id }),
   };
 }
 
@@ -266,8 +132,5 @@ async function fetchNativeTaskCounts(projectPath: string, registeredProjectId?: 
 }
 
 export async function fetchTaskCounts(projectPath: string): Promise<TaskCounts> {
-  const { backendType, registeredProjectId } = await selectTaskReadBackendAsync(projectPath)
-  return backendType === "native"
-    ? fetchNativeTaskCounts(projectPath, registeredProjectId)
-    : fetchBeadsTaskCounts(projectPath);
+  return fetchNativeTaskCounts(projectPath);
 }

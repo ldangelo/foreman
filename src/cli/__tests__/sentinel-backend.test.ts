@@ -43,12 +43,10 @@ describe("createSentinelTaskClient", () => {
     vi.unstubAllEnvs();
   });
 
-  it("uses the shared task-client helper and forces the compatibility fallback path", async () => {
+  it("uses the shared task-client helper for native tasks", async () => {
     const taskClient = await createSentinelTaskClient("/mock/project");
 
-    expect(mockCreateTaskClient).toHaveBeenCalledWith("/mock/project", {
-      forceBeadsFallback: true,
-    });
+    expect(mockCreateTaskClient).toHaveBeenCalledWith("/mock/project");
     expect(taskClient).toBe(sentinelTaskClient);
   });
 });

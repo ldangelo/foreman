@@ -883,7 +883,7 @@ export class NativeTaskStore {
 
   /**
    * Update the phase of a task (used by pipeline-executor to record progress).
-   * No-op when taskId is null or undefined (beads fallback mode — REQ-020).
+   * No-op when taskId is null or undefined.
    */
   updatePhase(taskId: string | null | undefined, phase: string): void {
     if (!taskId) return;

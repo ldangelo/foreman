@@ -1,9 +1,8 @@
 /**
- * Integration tests for Dispatcher — native task store path, beads fallback,
- * FOREMAN_TASK_STORE overrides, and atomic claim transaction.
+ * Integration tests for Dispatcher — native task store path and atomic claim transaction.
  *
  * Uses real ForemanStore + NativeTaskStore with in-memory Postgres.
- * Verifies TRD-007 / REQ-014 / REQ-017.
+ * Verifies TRD-007 / REQ-017.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
