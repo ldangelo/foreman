@@ -9,6 +9,7 @@ import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { EventType, ForemanStore, NativeTask, Run } from "../lib/store.js";
+import type { RunStatus } from "./read-models.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
@@ -83,7 +84,7 @@ export interface DispatcherOverrides {
   hasActiveOrPendingRun?: (seedId: string) => Promise<boolean>;
   getActiveAgentCount?: () => Promise<number>;
   externalProjectId?: string;
-  getRunsByStatus?: (status: Run["status"], projectId: string) => Promise<Run[]>;
+  getRunsByStatus?: (status: RunStatus, projectId: string) => Promise<Run[]>;
   getRunsForSeed?: (seedId: string, projectId: string) => Promise<Run[]>;
   getRun?: (runId: string) => Promise<Run | null>;
   getActiveRuns?: (projectId: string) => Promise<Run[]>;
