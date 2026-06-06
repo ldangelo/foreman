@@ -274,9 +274,7 @@ function releaseFiles(
 }
 
 async function createRuntimeTaskClient(projectPath: string, registeredProjectId?: string): Promise<ITaskClient> {
-  const runtimeMode = process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase();
   return (await createTaskClient(projectPath, {
-    forceBeadsFallback: runtimeMode === "test",
     registeredProjectId,
   })).taskClient;
 }
@@ -1365,11 +1363,10 @@ async function runPipeline(
 
   const { taskClient: runtimeTaskClient, backendType: runtimeTaskBackend } = await createTaskClient(
     pipelineProjectPath,
-      {
-        forceBeadsFallback: process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase() === "test",
-        registeredProjectId,
-      },
-    );
+    {
+      registeredProjectId,
+    },
+  );
   const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = registeredReadStore
     ? {
         async updateProgress(progress) {

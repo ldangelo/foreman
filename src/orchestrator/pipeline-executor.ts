@@ -133,7 +133,7 @@ export interface PipelineRunConfig {
   /**
    * Optional task ID from native task store.
    * When present, pipeline-executor passes it to onTaskPhaseChange(taskId, phaseName)
-   * at each phase transition (REQ-012). Null/undefined in beads fallback mode.
+   * at each phase transition (REQ-012).
    */
   taskId?: string | null;
   /**
@@ -164,7 +164,7 @@ export interface PipelineContext {
   /**
    * Optional task lifecycle callback for phase-level visibility.
    * When present, invoked after each successful phase completion with the
-   * configured task id (or null in beads fallback) and phase name.
+   * task ID and phase name.
    */
   onTaskPhaseChange?: (taskId: string | null | undefined, phaseName: string) => Promise<void> | void;
   /**

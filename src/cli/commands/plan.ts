@@ -7,7 +7,6 @@ import { normalizePriority } from "../../lib/priority.js";
 import { ForemanStore } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { type TaskRow } from "../../lib/task-store.js";
-import { selectTaskReadBackend } from "../../lib/task-client-factory.js";
 import type { ITaskClient, Issue, UpdateOptions } from "../../lib/task-client.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
@@ -196,9 +195,8 @@ class BeadsPlanTaskClient implements PlanTaskClient {
 export function createPlanClient(
   projectPath: string,
 ): PlanTaskClient {
-  return selectTaskReadBackend(projectPath) === "native"
-    ? new NativePlanTaskClient(projectPath)
-    : new BeadsPlanTaskClient(projectPath);
+  // Always use native task store
+  return new NativePlanTaskClient(projectPath);
 }
 
 export const planCommand = new Command("plan")
@@ -321,7 +319,7 @@ export const planCommand = new Command("plan")
           );
           console.log(
             chalk.dim(
-              "  1. Create an epic planning task with child planning tasks (native-first, beads fallback)",
+              "  1. Create an epic planning task with child planning tasks (native tasks only)",
             ),
           );
           console.log(chalk.dim("  2. Dispatch each step via Claude Code + Ensemble"));

@@ -61,7 +61,7 @@ describe("WorkerConfig: taskId field", () => {
     expect(config.taskId).toBe("task-abc-123");
   });
 
-  it("WorkerConfig taskId can be null (beads fallback mode)", () => {
+  it("WorkerConfig taskId can be null when no task ID is available", () => {
     const config = {
       runId: "run-001",
       projectId: "proj-001",
@@ -310,11 +310,11 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
         runId: "run-002",
         projectId: "proj-002",
         seedId: "seed-002",
-        seedTitle: "Test beads fallback",
+        seedTitle: "Test no taskId",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         env: {},
-        taskId: null,  // beads fallback — no native taskId
+        taskId: null,
       },
       workflowConfig: workflowConfig as never,
       store: mockStore as never,
