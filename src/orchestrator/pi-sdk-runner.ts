@@ -68,6 +68,17 @@ export interface PiRunResult {
   filesChanged?: string[];
 }
 
+/**
+ * Normalized stream event types for the onStreamEvent callback.
+ * These provide a simplified, stable API surface over raw Pi SDK events.
+ */
+export type StreamEvent =
+  | { type: "text"; iteration: number; timestamp: string; delta: string }
+  | { type: "toolCall"; iteration: number; timestamp: string; toolName: string; args: Record<string, unknown> }
+  | { type: "turnStart"; iteration: number; timestamp: string }
+  | { type: "turnEnd"; iteration: number; timestamp: string; tokensIn?: number; tokensOut?: number }
+  | { type: "agentEnd"; iteration: number; timestamp: string; success: boolean; message?: string };
+
 export interface PiRunOptions {
   prompt: string;
   systemPrompt: string;
@@ -83,6 +94,8 @@ export interface PiRunOptions {
   onTurnEnd?: (turn: number) => void;
   /** Called with text deltas as the assistant streams output. */
   onText?: (text: string) => void;
+  /** Live stream of normalized events for observability integrations. */
+  onStreamEvent?: (event: StreamEvent) => void;
   /** Directory guardrail config. When set, wraps tool factories with cwd verification (FR-1). */
   guardrailConfig?: GuardrailConfig;
   /** Optional phase-level observability metadata used to emit Pi hook traces. */
@@ -306,14 +319,30 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
         errorMessage = eventError;
       }
 
+      const timestamp = new Date().toISOString();
+
       switch (event.type) {
         case "turn_start":
           totalTurns++;
+          opts.onStreamEvent?.({
+            type: "turnStart",
+            iteration: totalTurns,
+            timestamp,
+          });
           break;
 
-        case "turn_end":
+        case "turn_end": {
           opts.onTurnEnd?.(totalTurns);
+          const stats = session.getSessionStats();
+          opts.onStreamEvent?.({
+            type: "turnEnd",
+            iteration: totalTurns,
+            timestamp,
+            tokensIn: stats.tokens?.input,
+            tokensOut: stats.tokens?.output,
+          });
           break;
+        }
 
         case "message_update": {
           // Capture assistant text deltas
@@ -324,6 +353,12 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
             if (delta) {
               textChunks.push(delta);
               opts.onText?.(delta);
+              opts.onStreamEvent?.({
+                type: "text",
+                iteration: totalTurns,
+                timestamp,
+                delta,
+              });
             }
           }
           break;
@@ -336,6 +371,13 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
             toolBreakdown[toolName] = (toolBreakdown[toolName] ?? 0) + 1;
             const input = (event as Record<string, unknown>).args as Record<string, unknown> | undefined;
             opts.onToolCall?.(toolName, input ?? {});
+            opts.onStreamEvent?.({
+              type: "toolCall",
+              iteration: totalTurns,
+              timestamp,
+              toolName,
+              args: input ?? {},
+            });
           }
           break;
         }
@@ -346,6 +388,13 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
             success = false;
             errorMessage = (endEvent.message as string) ?? "Agent ended without success";
           }
+          opts.onStreamEvent?.({
+            type: "agentEnd",
+            iteration: totalTurns,
+            timestamp,
+            success: endEvent.success !== false,
+            message: endEvent.message as string | undefined,
+          });
           break;
         }
 
