@@ -91,6 +91,18 @@ phases:
       onFail: developer
       forwardArtifactTo: foreman
 
+  - name: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
   - name: finalize
     prompt: finalize.md
     tools:

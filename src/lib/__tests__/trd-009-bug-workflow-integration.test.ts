@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { loadWorkflowConfig, resolveWorkflowName } from '../workflow-loader.js';
 import { join, dirname } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 // TRD-009: End-to-end integration test for bug.yaml workflow
@@ -12,8 +14,24 @@ import { fileURLToPath } from 'node:url';
 
 const BUNDLED_WORKFLOWS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'defaults', 'workflows');
 
+function loadBundledBugWorkflow() {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(join(tmpdir(), 'foreman-bug-workflow-test-'));
+  process.env.HOME = tempHome;
+  try {
+    return loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    rmSync(tempHome, { recursive: true, force: true });
+  }
+}
+
 describe('TRD-009 bug.yaml workflow integration', () => {
-  const bugWorkflow = loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
+  const bugWorkflow = loadBundledBugWorkflow();
 
   describe('workflow metadata', () => {
     it('has name "bug"', () => {
@@ -105,9 +123,9 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   });
 
   describe('phase ordering and finalize', () => {
-    it('phases are in order: fix → test → finalize → PR review → merge', () => {
+    it('phases are in order: fix → test → cli-review → finalize → PR review → merge', () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      expect(names).toEqual(['fix', 'test', 'finalize', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
+      expect(names).toEqual(['fix', 'test', 'cli-review', 'finalize', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
     });
 
     it('finalize phase uses the bug-specific finalize prompt', () => {

@@ -48,7 +48,20 @@ phases:
       onStart: false
       onComplete: true
 
-  # ── Phase 3: finalize ───────────────────────────────────────────────────
+  # ── Phase 3: cli-review ──────────────────────────────────────────────────
+  - name: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    verdict: true
+    retryWith: fix
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: fix
+
+  # ── Phase 4: finalize ───────────────────────────────────────────────────
   # Summarises changes for auto-merge.
   - name: finalize
     prompt: finalize.md
@@ -64,7 +77,6 @@ phases:
     mail:
       onStart: false
       onComplete: true
-
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
