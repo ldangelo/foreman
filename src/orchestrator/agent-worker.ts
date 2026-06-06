@@ -20,6 +20,7 @@ import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter } f
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { PostgresStore } from "../lib/postgres-store.js";
+import type { RunProgressSummary } from "./read-models.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { initPool } from "../lib/db/pool-manager.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
