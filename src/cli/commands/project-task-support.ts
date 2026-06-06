@@ -12,6 +12,7 @@ export interface RegisteredProjectSummary {
   name: string;
   path: string;
   githubUrl?: string;
+  defaultBranch?: string;
 }
 
 export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
@@ -22,12 +23,14 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
       name: string;
       path: string;
       githubUrl?: string;
+      defaultBranch?: string;
     }>;
     return projects.map((project) => ({
       id: project.id,
       name: project.name,
       path: project.path,
       githubUrl: project.githubUrl,
+      defaultBranch: project.defaultBranch,
     }));
   } catch {
     const registry = new ProjectRegistry();
@@ -37,6 +40,7 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
       name: record.name,
       path: record.path,
       githubUrl: record.githubUrl,
+      defaultBranch: record.defaultBranch,
     }));
   }
 }
