@@ -28,6 +28,7 @@ import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
 import { WorktreeManager } from "../lib/worktree-manager.js";
+import { createStructuredLogger } from "./structured-logger.js";
 import { resolveTaskStoreMode } from "../lib/task-client-factory.js";
 export { resolveTaskStoreMode } from "../lib/task-client-factory.js";
 export type { TaskStoreMode } from "../lib/task-client-factory.js";
@@ -142,6 +143,10 @@ export function nativeTaskToIssue(task: NativeTask): Issue {
     githubIssueNumber,
   };
 }
+
+// Structured logger for dispatcher operational logs.
+// Reads FOREMAN_RUN_ID and FOREMAN_SEED_ID from environment for base context.
+const dispatchLogger = createStructuredLogger();
 
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
@@ -412,12 +417,12 @@ export class Dispatcher {
     try {
       const drained = await this.drainBeadWriterInbox();
       if (drained > 0) {
-        console.error(`[bead-writer] Drained ${drained} pending bead write operations`);
+        dispatchLogger.info(`Drained ${drained} pending bead write operations`);
       }
     } catch (drainErr: unknown) {
       // Non-fatal: log and continue — drain failures must not block dispatch
       const msg = drainErr instanceof Error ? drainErr.message : String(drainErr);
-      console.error(`[bead-writer][${this.resolveProjectId()}] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
+      dispatchLogger.warn(`drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
     // ── Reconciliation: stop runs whose issues are terminal ───────────────
@@ -426,12 +431,12 @@ export class Dispatcher {
     try {
       const stopped = await this.reconcileRunningIssues(projectId);
       if (stopped > 0) {
-        console.error(`[dispatch] Stopped ${stopped} run(s) with terminal issues`);
+        dispatchLogger.info(`Stopped ${stopped} run(s) with terminal issues`);
       }
     } catch (reconcileErr: unknown) {
       // Non-fatal: reconciliation failures must not block dispatch
       const msg = reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr);
-      console.error(`[dispatch] reconcileRunningIssues failed: ${msg.slice(0, 200)}`);
+      dispatchLogger.warn(`reconcileRunningIssues failed: ${msg.slice(0, 200)}`);
     }
 
     // ── onError=stop guard ─────────────────────────────────────────────────
@@ -445,7 +450,7 @@ export class Dispatcher {
           ? await this.overrides.getRecentFailureCount(projectId, since)
           : this.store.getRunsByStatusesSince(["test-failed", "failed", "stuck", "conflict"], since, projectId).length;
         if (failedCount > 0) {
-          log(`[dispatch] onError=stop — ${failedCount} failed run(s) detected. Refusing to dispatch until resolved. Use 'foreman reset' to clear.`);
+          dispatchLogger.info(`[dispatch] onError=stop — ${failedCount} failed run(s) detected. Refusing to dispatch until resolved. Use 'foreman reset' to clear.`);
           return {
             dispatched: [],
             skipped: [],
@@ -473,19 +478,19 @@ export class Dispatcher {
 
     if (taskStoreMode === "native") {
       usingNativeStore = true;
-      console.error("[dispatch] FOREMAN_TASK_STORE=native — using native task store");
+      dispatchLogger.info("FOREMAN_TASK_STORE=native — using native task store");
     } else if (taskStoreMode === "beads") {
       usingNativeStore = false;
-      console.error(`[dispatch][${projectId}] FOREMAN_TASK_STORE=beads — using beads fallback`);
+      dispatchLogger.info("FOREMAN_TASK_STORE=beads — using beads fallback");
     } else {
       // 'auto': use native if tasks exist, otherwise fall back to beads
       usingNativeStore = this.overrides?.nativeTaskOps
         ? await this.overrides.nativeTaskOps.hasNativeTasks()
         : this.store.hasNativeTasks();
       if (usingNativeStore) {
-        console.error("[dispatch] Native tasks detected — using native task store (AC-014.1)");
+        dispatchLogger.info("Native tasks detected — using native task store (AC-014.1)");
       } else {
-        console.error(`[dispatch][${projectId}] No native tasks — using beads fallback (AC-014.1)`);
+        dispatchLogger.info("No native tasks — using beads fallback (AC-014.1)");
       }
     }
 
@@ -522,10 +527,10 @@ export class Dispatcher {
             // Neither ranked: fall back to priority sort
             return normalizePriority(a.priority) - normalizePriority(b.priority);
           });
-          log(`bv triage scored ${readySeeds.length} ready seeds`);
+          dispatchLogger.info(`bv triage scored ${readySeeds.length} ready seeds`);
         } else {
           if (!this.bvFallbackWarned) {
-            log("bv unavailable, using priority-sort fallback");
+            dispatchLogger.info("bv unavailable, using priority-sort fallback");
             this.bvFallbackWarned = true;
           }
           readySeeds = [...readySeeds].sort(
@@ -591,7 +596,7 @@ export class Dispatcher {
         try {
           const bead = await this.seeds.show(opts.seedId);
           if (bead && bead.status !== "closed" && bead.status !== "completed") {
-            log(`[dispatch] ${opts.seedId} not in br ready (stale cache?) — force-dispatching`);
+            dispatchLogger.info(`[dispatch] ${opts.seedId} not in br ready (stale cache?) — force-dispatching`);
             target = bead as unknown as Issue;
           }
         } catch { /* bead not found */ }
@@ -702,7 +707,7 @@ export class Dispatcher {
           if (dependents.length === 0) {
             // No dependents — close the container directly
             await this.seeds.close(seed.id, "Auto-closed: no dependent tasks (empty container)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no dependent tasks`);
+            dispatchLogger.info(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no dependent tasks`);
             skipped.push({
               seedId: seed.id,
               title: seed.title,
@@ -715,14 +720,14 @@ export class Dispatcher {
 
             if (openDeps.length === 0) {
               await this.seeds.close(seed.id, "Auto-closed: all dependent tasks completed");
-              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all ${dependents.length} dependent tasks completed`);
+              dispatchLogger.info(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all ${dependents.length} dependent tasks completed`);
               skipped.push({
                 seedId: seed.id,
                 title: seed.title,
                 reason: `Type '${seed.type}' auto-closed — all ${dependents.length} dependent tasks completed`,
               });
             } else {
-              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`);
+              dispatchLogger.info(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`);
               skipped.push({
                 seedId: seed.id,
                 title: seed.title,
@@ -733,7 +738,7 @@ export class Dispatcher {
         } catch (err: unknown) {
           // If we can't inspect the container, skip it rather than crashing
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check dependents: ${msg}`);
+          dispatchLogger.info(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check dependents: ${msg}`);
           skipped.push({
             seedId: seed.id,
             title: seed.title,
@@ -759,11 +764,11 @@ export class Dispatcher {
               // Native task store has no children support — dispatch the epic
               // as a single-agent task through the regular pipeline. The epic's
               // phases (developer → qa → finalize) run as a single worktree.
-              log(`[dispatch] Epic ${seed.id} has no children (native store) — dispatching as single-agent task`);
+              dispatchLogger.info(`[dispatch] Epic ${seed.id} has no children (native store) — dispatching as single-agent task`);
             } else {
               // Beads store: no children means truly empty epic — auto-close.
               await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
-              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
+              dispatchLogger.info(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
               skipped.push({
                 seedId: seed.id,
                 title: seed.title,
@@ -785,7 +790,7 @@ export class Dispatcher {
               // All children are non-actionable types (e.g. all feature/story containers)
               // or all children are already closed. Auto-close.
               await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
-              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
+              dispatchLogger.info(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
               skipped.push({
                 seedId: seed.id,
                 title: seed.title,
@@ -794,7 +799,7 @@ export class Dispatcher {
               continue;
             }
 
-            log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
+            dispatchLogger.info(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
 
             // Store epicTasks for use by the dispatch logic below.
             // We set a marker on the seed object so the dispatch code further down
@@ -804,7 +809,7 @@ export class Dispatcher {
           }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Failed to prepare epic ${seed.id}: ${msg}`);
+          dispatchLogger.info(`[dispatch] Failed to prepare epic ${seed.id}: ${msg}`);
           skipped.push({
             seedId: seed.id,
             title: seed.title,
@@ -840,7 +845,7 @@ export class Dispatcher {
         seedDetail = await this.seeds.show(seed.id);
       } catch {
         // Non-fatal: if show() fails, proceed without detail context
-        log(`Warning: failed to fetch details for seed ${seed.id}`);
+        dispatchLogger.info(`Warning: failed to fetch details for seed ${seed.id}`);
       }
 
       // Fetch bead comments (design notes, reviewer feedback, etc.) for agent context
@@ -850,7 +855,7 @@ export class Dispatcher {
           beadComments = await this.seeds.comments(seed.id);
         } catch {
           // Non-fatal: proceed without comments if fetch fails
-          log(`Warning: failed to fetch comments for seed ${seed.id}`);
+          dispatchLogger.info(`Warning: failed to fetch comments for seed ${seed.id}`);
         }
       }
 
@@ -891,7 +896,7 @@ export class Dispatcher {
             const updatedLabels = applyBranchLabel(existingLabels, labelBranch);
             try {
               await this.seeds.update(seed.id, { labels: updatedLabels });
-              log(`[foreman] Auto-labeled ${seed.id} with branch:${labelBranch}`);
+              dispatchLogger.info(`[foreman] Auto-labeled ${seed.id} with branch:${labelBranch}`);
               // Update seedDetail.labels so seedToInfo() sees the updated labels
               if (seedDetail) {
                 seedDetail = { ...seedDetail, labels: updatedLabels };
@@ -901,7 +906,7 @@ export class Dispatcher {
             } catch (labelErr: unknown) {
               // Non-fatal: label failure must not block dispatch
               const msg = labelErr instanceof Error ? labelErr.message : String(labelErr);
-              log(`Warning: failed to add branch label to ${seed.id}: ${msg}`);
+              dispatchLogger.info(`Warning: failed to add branch label to ${seed.id}: ${msg}`);
             }
           }
         }
@@ -967,7 +972,7 @@ export class Dispatcher {
           branchBackend,
         );
         if (baseBranch) {
-          log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
+          dispatchLogger.info(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
 
         // 1a. Load workflow config to get setup steps + cache config for worktree initialization
@@ -994,7 +999,7 @@ export class Dispatcher {
           } catch (projErr: unknown) {
             // Non-fatal: log and continue without project config
             const projMsg = projErr instanceof Error ? projErr.message : String(projErr);
-            log(`[foreman] Could not load project config — ${projMsg}`);
+            dispatchLogger.info(`[foreman] Could not load project config — ${projMsg}`);
           }
 
           // Resolve VCS backend: workflow > project > auto-detect
@@ -1012,7 +1017,7 @@ export class Dispatcher {
           }
         } catch {
           // Non-fatal: fall back to default installDependencies behavior
-          log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
+          dispatchLogger.info(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
         }
 
         // 1b. Create VcsBackend instance at startup (AC-020-1)
@@ -1026,10 +1031,10 @@ export class Dispatcher {
           } else {
             vcsBackend = await VcsBackendFactory.create({ backend: vcsBackendName }, this.projectPath);
           }
-          log(`[foreman] Created VcsBackend: ${vcsBackend.name}`);
+          dispatchLogger.info(`[foreman] Created VcsBackend: ${vcsBackend.name}`);
         } catch (vcsErr: unknown) {
           const vcsMsg = vcsErr instanceof Error ? vcsErr.message : String(vcsErr);
-          log(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
+          dispatchLogger.info(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
         }
 
         // 2. Create worktree at ~/.foreman/worktrees/<projectId>/<beadId> via WorktreeManager (TRD-037)
@@ -1046,7 +1051,7 @@ export class Dispatcher {
 
         // Run setup steps / install dependencies (not part of VcsBackend interface)
         if (opts?.runtimeMode === "test") {
-          log(`[foreman] Skipping workflow setup/install for ${seed.id} in test runtime`);
+          dispatchLogger.info(`[foreman] Skipping workflow setup/install for ${seed.id} in test runtime`);
         } else if (setupSteps && setupSteps.length > 0) {
           await runSetupWithCache(worktreePath, this.projectPath, setupSteps, setupCache);
         } else {
@@ -1138,7 +1143,7 @@ export class Dispatcher {
             await this.seeds.update(seed.id, { status: "in_progress" });
           } catch (claimErr: unknown) {
             const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
-            console.error(`[dispatch][${projectId}] Warning: br claim failed for seed=${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+            dispatchLogger.warn(`br claim failed for seed=${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
           }
         }
 
@@ -1183,7 +1188,7 @@ export class Dispatcher {
               }
             } catch (taskErr: unknown) {
               const taskMsg = taskErr instanceof Error ? taskErr.message : String(taskErr);
-              log(`[foreman] Could not mark ${seed.id} failed after beforeRun hook failure — ${taskMsg.slice(0, 200)}`);
+              dispatchLogger.info(`[foreman] Could not mark ${seed.id} failed after beforeRun hook failure — ${taskMsg.slice(0, 200)}`);
             }
             throw new Error(`beforeRun hook failed for ${seed.id}: ${hookMsg}`);
           }
@@ -1229,8 +1234,8 @@ export class Dispatcher {
 
         // P1: Apply stagger delay between dispatches to prevent thundering herd on Haiku quotas
         if (opts?.staggerMs && opts?.staggerMs > 0 && dispatched.length < readySeeds.length) {
-          const staggerMsg = `[dispatch] Staggering ${opts.staggerMs / 1000}s before next dispatch...`;
-          console.error(staggerMsg);
+          const staggerMsg = `Staggering ${opts.staggerMs / 1000}s before next dispatch...`;
+          dispatchLogger.info(staggerMsg);
           await new Promise((resolve) => setTimeout(resolve, opts.staggerMs));
         }
       } catch (err: unknown) {
@@ -1324,7 +1329,9 @@ export class Dispatcher {
       const model = (opts?.model ?? run.agent_type) as ModelSelection;
       const previousStatus = run.status;
 
-      log(`Resuming agent for ${run.seed_id} [${model}] session=${sessionId}`);
+      // Use a child logger with sessionId context for this resume operation
+      const resumeLogger = dispatchLogger.child({ sessionId });
+      resumeLogger.info(`Resuming agent for ${run.seed_id} [${model}] session=${sessionId}`);
 
       // Create a new run record for the resumed attempt
       const newRun = await this.createRunRecord(
@@ -1566,7 +1573,7 @@ export class Dispatcher {
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
     const isEpic = epicTasks && epicTasks.length > 0;
-    log(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
+    dispatchLogger.info(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
     const projectId = this.resolveProjectId();
@@ -1591,7 +1598,7 @@ export class Dispatcher {
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        log(`[dispatch] Stale worktree check failed for ${seed.id}: ${msg}`);
+        dispatchLogger.info(`[dispatch] Stale worktree check failed for ${seed.id}: ${msg}`);
         // Re-throw so the dispatch fails cleanly rather than spawning a broken worker
         throw err;
       }
@@ -1662,7 +1669,7 @@ export class Dispatcher {
     const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
 
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, undefined, runtimeMode);
-    log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
+    dispatchLogger.info(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
     const { pid } = await spawnWorkerProcess({
       runId,
@@ -1862,7 +1869,7 @@ export class Dispatcher {
         try {
           payload = JSON.parse(entry.payload) as Record<string, unknown>;
         } catch {
-          console.error(`[bead-writer][${this.resolveProjectId()}] Invalid JSON payload for entry ${entry.id} (${entry.operation}) — skipping`);
+          dispatchLogger.warn(`Invalid JSON payload for entry ${entry.id} (${entry.operation}) — skipping`);
           this.store.markBeadWriteProcessed(entry.id);
           continue;
         }
@@ -1877,35 +1884,35 @@ export class Dispatcher {
           case "close-seed":
             // Use --no-db to write directly to JSONL, bypassing cached readiness state.
             execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
-            console.error(`[bead-writer][${this.resolveProjectId()}] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
+            dispatchLogger.info(`Closed seed ${seedId} via --no-db (from ${entry.sender})`);
             break;
 
           case "reset-seed":
             if (latestRunHasTerminalSuccess(seedId)) {
-              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped reset-seed for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
+              dispatchLogger.info(`Skipped reset-seed for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
               break;
             }
             execFileSync(bin, ["update", seedId, "--status", "open", ...lockArgs], execOpts);
-            console.error(`[bead-writer][${this.resolveProjectId()}] Reset seed ${seedId} to open (from ${entry.sender})`);
+            dispatchLogger.info(`Reset seed ${seedId} to open (from ${entry.sender})`);
             break;
 
           case "mark-failed":
             if (latestRunHasTerminalSuccess(seedId)) {
-              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped mark-failed for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
+              dispatchLogger.info(`Skipped mark-failed for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
               break;
             }
             execFileSync(bin, ["update", seedId, "--status", "failed", ...lockArgs], execOpts);
-            console.error(`[bead-writer][${this.resolveProjectId()}] Marked seed ${seedId} as failed (from ${entry.sender})`);
+            dispatchLogger.info(`Marked seed ${seedId} as failed (from ${entry.sender})`);
             break;
 
           case "set-status": {
             const targetStatus = payload.status as string;
             if (targetStatus !== "closed" && latestRunHasTerminalSuccess(seedId)) {
-              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped set-status ${targetStatus} for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
+              dispatchLogger.info(`Skipped set-status ${targetStatus} for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
               break;
             }
             execFileSync(bin, ["update", seedId, "--status", targetStatus, ...lockArgs], execOpts);
-            console.error(`[bead-writer][${this.resolveProjectId()}] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
+            dispatchLogger.info(`Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
             break;
           }
 
@@ -1913,7 +1920,7 @@ export class Dispatcher {
             const notes = payload.notes as string;
             if (notes) {
               execFileSync(bin, ["update", seedId, "--notes", notes, ...lockArgs], execOpts);
-              console.error(`[bead-writer] Added notes to seed ${seedId} (from ${entry.sender})`);
+              dispatchLogger.info(`Added notes to seed ${seedId} (from ${entry.sender})`);
             }
             break;
           }
@@ -1923,20 +1930,20 @@ export class Dispatcher {
             if (labels && labels.length > 0) {
               const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l]), ...lockArgs];
               execFileSync(bin, args, execOpts);
-              console.error(`[bead-writer] Added labels [${labels.join(", ")}] to seed ${seedId} (from ${entry.sender})`);
+              dispatchLogger.info(`Added labels [${labels.join(", ")}] to seed ${seedId} (from ${entry.sender})`);
             }
             break;
           }
 
           default:
-            console.error(`[bead-writer] Unknown operation "${entry.operation}" for entry ${entry.id} — skipping`);
+            dispatchLogger.warn(`Unknown operation "${entry.operation}" for entry ${entry.id} — skipping`);
         }
 
         this.store.markBeadWriteProcessed(entry.id);
         processed++;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[bead-writer] Error processing entry ${entry.id} (${entry.operation}): ${msg.slice(0, 200)}`);
+        dispatchLogger.error(`Error processing entry ${entry.id} (${entry.operation}): ${msg.slice(0, 200)}`);
         // Mark as processed even on error to avoid infinite retry loops.
         // The operator can check the log for details and fix manually.
         this.store.markBeadWriteProcessed(entry.id);
@@ -1958,10 +1965,10 @@ export class Dispatcher {
           ...execOpts,
           timeout: Math.max(execOpts.timeout, 60_000),
         });
-        console.error(`[bead-writer] Processed ${processed}/${pending.length} entries`);
+        dispatchLogger.info(`Processed ${processed}/${pending.length} entries`);
       } catch (flushErr: unknown) {
         const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-        console.error(`[bead-writer] Warning: post-drain cleanup failed: ${msg.slice(0, 200)}`);
+        dispatchLogger.warn(`post-drain cleanup failed: ${msg.slice(0, 200)}`);
       }
     }
 
@@ -2210,7 +2217,7 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     await outFd.close();
     await errFd.close();
 
-    log(`  Worker pid=${child.pid} for ${config.seedId}`);
+    dispatchLogger.info(`  Worker pid=${child.pid} for ${config.seedId}`);
     return { pid: child.pid ?? null };
   }
 }
@@ -2282,11 +2289,6 @@ export function buildWorkerEnv(
   }
 
   return env;
-}
-
-function log(msg: string): void {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.error(`[foreman ${ts}] ${msg}`);
 }
 
 export function buildSdkSessionKey(

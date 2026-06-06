@@ -53,6 +53,18 @@ import type { TaskMeta } from "../lib/interpolate.js";
 import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { runWorkspaceHook } from "../lib/setup.js";
 import type { ProjectHooksConfig } from "../lib/project-config.js";
+import { createStructuredLogger } from "./structured-logger.js";
+
+// Module-level structured logger for worker operational logs.
+// Initialized with env vars (FOREMAN_RUN_ID, FOREMAN_SEED_ID) and updated with
+// full context (runId, seedId) in main() after config is loaded.
+const workerLogger = createStructuredLogger();
+
+// Callback-compatible log function for APIs that expect a (msg: string) => void.
+// Uses workerLogger.info for structured output.
+function log(msg: string): void {
+  workerLogger.info(msg);
+}
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -418,6 +430,15 @@ async function main(): Promise<void> {
   const config: WorkerConfig = JSON.parse(readFileSync(configPath, "utf-8"));
   try { unlinkSync(configPath); } catch { /* already deleted */ }
   installTestWorkerGuard(config);
+
+  // Update module-level structured logger with full context from config
+  workerLogger.setContext({
+    runId: config.runId,
+    issueId: config.seedId,
+    issueIdentifier: config.seedId,
+    sessionId: config.resume ?? null,
+    attempt: config.attemptNumber ?? null,
+  });
 
   const { runId, projectId, seedId, seedTitle, model, worktreePath, projectPath: configProjectPath, prompt, resume, pipeline } = config;
 
@@ -961,7 +982,7 @@ async function runTroubleshooterPhase(
       const report = rfs(pathJoin(config.worktreePath, "TROUBLESHOOT_REPORT.md"), "utf-8");
       const troubleshooterResolved = report.includes("RESOLVED");
       if (troubleshooterResolved) {
-        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${beadId}`);
+        workerLogger.info(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${beadId}`);
         await appendFile(logFile, `[TROUBLESHOOTER] PIPELINE RECOVERED\n`);
         return true;
       }
@@ -1342,7 +1363,7 @@ async function runPipeline(
             await registeredReadStore.updateRunProgress(config.runId, progress);
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            log(`[pipeline-observability] progress update failed (non-fatal): ${msg}`);
+            workerLogger.info(`[pipeline-observability] progress update failed (non-fatal): ${msg}`);
           }
         },
         async logEvent(eventType, data) {
@@ -1350,7 +1371,7 @@ async function runPipeline(
             await registeredReadStore.logEvent(registeredProjectId!, eventType, data, config.runId);
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            log(`[pipeline-observability] ${eventType} event failed (non-fatal): ${msg}`);
+            workerLogger.info(`[pipeline-observability] ${eventType} event failed (non-fatal): ${msg}`);
           }
         },
       }
@@ -1395,7 +1416,7 @@ async function runPipeline(
           await runtimeTaskClient.update(taskId, { status: phaseName });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[task-phase] native status update failed (non-fatal): ${msg}`);
+          workerLogger.info(`[task-phase] native status update failed (non-fatal): ${msg}`);
         }
       },
       epicTasks: config.epicTasks,
@@ -1472,13 +1493,13 @@ async function runPipeline(
     async onTaskStatusChange(taskSeedId, status) {
       if (status === "in_progress") {
         await runtimeTaskClient.update(taskSeedId, { status: "in_progress" });
-        log(`[EPIC] br update ${taskSeedId} → in_progress`);
+        workerLogger.info(`[EPIC] br update ${taskSeedId} → in_progress`);
       } else if (status === "completed") {
         await runtimeTaskClient.close(taskSeedId, "Completed via epic pipeline");
-        log(`[EPIC] br close ${taskSeedId} (completed)`);
+        workerLogger.info(`[EPIC] br close ${taskSeedId} (completed)`);
       } else if (status === "failed") {
         await runtimeTaskClient.update(taskSeedId, { status: "failed" });
-        log(`[EPIC] br update ${taskSeedId} → failed`);
+        workerLogger.info(`[EPIC] br update ${taskSeedId} → failed`);
       }
     },
 
@@ -1508,9 +1529,7 @@ async function runPipeline(
     onRateLimit(model, phase, error, retryAfterSeconds) {
       // P1: Alert when rate limit detected in logs
       const alertMsg = `[RATE_LIMIT_ALERT] ${phase} phase rate limited on ${model}` +
-        (retryAfterSeconds ? ` (Retry-After: ${retryAfterSeconds}s)` : "") +
-        ` at ${new Date().toISOString()}`;
-      console.error(alertMsg);
+        (retryAfterSeconds ? ` (Retry-After: ${retryAfterSeconds}s)` : "");
       log(alertMsg);
 
       // Also send agent-error mail for visibility
@@ -1529,7 +1548,7 @@ async function runPipeline(
 
       const hasFinalizePhase = workflowConfig.phases.some((phase) => phase.name === "finalize");
       if (!hasFinalizePhase) {
-        log(`[PIPELINE] Skipping branch-ready: workflow has no finalize phase`);
+        workerLogger.info(`[PIPELINE] Skipping branch-ready: workflow has no finalize phase`);
         return;
       }
       const hasExplicitMergePhase = workflowConfig.phases.some((phase) => phase.name === "merge");
@@ -1553,17 +1572,17 @@ async function runPipeline(
             await registeredReadStore.logEvent(registeredProjectId, eventType, eventData, runId);
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            log(`[PIPELINE] Registered terminal event write failed (non-fatal); falling back to local store: ${msg}`);
+            workerLogger.info(`[PIPELINE] Registered terminal event write failed (non-fatal); falling back to local store: ${msg}`);
             store.logEvent(projectId, eventType, eventData, runId);
           }
         } else {
           store.logEvent(projectId, eventType, eventData, runId);
         }
         if (success) {
-          log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
+          workerLogger.info(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
           await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
         } else {
-          log(`PIPELINE FAILED for ${seedId} with explicit merge workflow ($${progress.costUsd.toFixed(4)})`);
+          workerLogger.info(`PIPELINE FAILED for ${seedId} with explicit merge workflow ($${progress.costUsd.toFixed(4)})`);
           await appendFile(logFile, `\n[PIPELINE] FAILED ($${progress.costUsd.toFixed(4)})\n`);
         }
         return;
@@ -1601,7 +1620,7 @@ async function runPipeline(
           finalizeFailureReason = typeof body["error"] === "string"
             ? body["error"]
             : "finalize_non_retryable_error";
-          log(`[FINALIZE] non-retryable agent-error mail received — error: ${finalizeFailureReason}`);
+          workerLogger.info(`[FINALIZE] non-retryable agent-error mail received — error: ${finalizeFailureReason}`);
         } else if (finalizePhaseComplete?.subject === "phase-complete") {
           const body = (() => { try { return JSON.parse(finalizePhaseComplete.body ?? "{}") as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
           const status = typeof body["status"] === "string" ? body["status"] : "complete";
@@ -1612,7 +1631,7 @@ async function runPipeline(
               ? body["note"]
               : "finalize_phase_reported_failed_status";
           }
-          log(`[FINALIZE] phase-complete mail received — status=${status}, retryable=${String(finalizeRetryable)}`);
+          workerLogger.info(`[FINALIZE] phase-complete mail received — status=${status}, retryable=${String(finalizeRetryable)}`);
         } else {
           const finalizeAgentError = finalizeMsgs.find((m) => m.subject === "agent-error");
           if (finalizeAgentError?.subject === "agent-error") {
@@ -1620,7 +1639,7 @@ async function runPipeline(
             finalizeRetryable = body["retryable"] !== false;
             const errorDetail = typeof body["error"] === "string" ? body["error"] : "unknown finalize error";
             finalizeFailureReason = errorDetail;
-            log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
+            workerLogger.info(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
 
             if (errorDetail === "nothing_to_commit") {
               const beadType = config.seedType ?? "";
@@ -1649,13 +1668,13 @@ async function runPipeline(
 
               if (hasCommitsAhead) {
                 finalizeSucceeded = true;
-                log(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
+                workerLogger.info(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
               } else if (isVerificationBead) {
                 finalizeSucceeded = true;
-                log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
+                workerLogger.info(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
               } else {
                 finalizeSucceeded = true;
-                log(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
+                workerLogger.info(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
               }
             }
           } else {
@@ -1663,7 +1682,7 @@ async function runPipeline(
             // A finalize FAIL verdict may not emit phase-complete or agent-error
             // mail, so assuming success here can incorrectly enqueue failed runs
             // to the merge queue and send branch-ready.
-            log(`[FINALIZE] No finalize mail found — preserving pipeline success=${String(finalizeSucceeded)}`);
+            workerLogger.info(`[FINALIZE] No finalize mail found — preserving pipeline success=${String(finalizeSucceeded)}`);
           }
         }
       }
@@ -1705,14 +1724,14 @@ async function runPipeline(
             finalizeSucceeded = false;
             finalizeRetryable = false;
             finalizeFailureReason = gate.reason ?? "pr_review_gate_failed";
-            log(`[PR-REVIEW] Final gate failed — ${finalizeFailureReason}`);
+            workerLogger.info(`[PR-REVIEW] Final gate failed — ${finalizeFailureReason}`);
           }
         } catch (gateErr: unknown) {
           const gateMsg = gateErr instanceof Error ? gateErr.message : String(gateErr);
           finalizeSucceeded = false;
           finalizeRetryable = false;
           finalizeFailureReason = `pr_review_gate_error: ${gateMsg}`;
-          log(`[PR-REVIEW] Final gate errored — ${gateMsg}`);
+          workerLogger.info(`[PR-REVIEW] Final gate errored — ${gateMsg}`);
         }
       }
 
@@ -1734,7 +1753,7 @@ async function runPipeline(
 
         let prCreated = hasCreatePrPhase;
         if (hasCreatePrPhase) {
-          log(`[PIPELINE] PR creation handled by create-pr phase`);
+          workerLogger.info(`[PIPELINE] PR creation handled by create-pr phase`);
         } else {
           try {
             const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
@@ -1748,7 +1767,7 @@ async function runPipeline(
                 : "Published by finalize for operator review.",
             });
             prCreated = true;
-            log(`[FINALIZE] PR ready: ${pr.prUrl}`);
+            workerLogger.info(`[FINALIZE] PR ready: ${pr.prUrl}`);
             sendMail(agentMailClient, "foreman", "pr-created", {
               seedId,
               runId,
@@ -1768,7 +1787,7 @@ async function runPipeline(
             }
           } catch (prErr: unknown) {
             const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
-            log(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
+            workerLogger.info(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
           }
         }
 
@@ -1780,12 +1799,12 @@ async function runPipeline(
             const changedAgainstTarget = await completionBackend.getChangedFiles(worktreePath, completionTargetBranch, "HEAD");
             if (changedAgainstTarget.length === 0) {
               skipMergeQueue = true;
-              log(`[FINALIZE] Branch already matches ${completionTargetBranch} after troubleshooter recovery — skipping branch-ready/merge queue`);
+              workerLogger.info(`[FINALIZE] Branch already matches ${completionTargetBranch} after troubleshooter recovery — skipping branch-ready/merge queue`);
               enqueueCloseSeed(store, seedId, "agent-worker-finalize");
             }
           } catch (alreadyMergedErr: unknown) {
             const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
-            log(`[FINALIZE] Unable to verify post-troubleshooter merge state (continuing with merge queue): ${alreadyMergedMsg}`);
+            workerLogger.info(`[FINALIZE] Unable to verify post-troubleshooter merge state (continuing with merge queue): ${alreadyMergedMsg}`);
           }
         }
 
@@ -1811,7 +1830,7 @@ async function runPipeline(
               getFilesModified: () => enqueueFiles,
             });
             if (enqueueResult.success) {
-              log(`[FINALIZE] Enqueued to merge queue`);
+              workerLogger.info(`[FINALIZE] Enqueued to merge queue`);
               // Guard: Only send branch-ready after successful finalize push (double-check).
               // Primary guard is at function entry, this is defense-in-depth.
               sendMail(agentMailClient, "refinery", "branch-ready", {
@@ -1840,20 +1859,20 @@ async function runPipeline(
                 );
               } catch (drainErr: unknown) {
                 const drainMsg = drainErr instanceof Error ? drainErr.message : String(drainErr);
-                log(`[FINALIZE] Immediate merge drain failed (non-fatal): ${drainMsg}`);
+                workerLogger.info(`[FINALIZE] Immediate merge drain failed (non-fatal): ${drainMsg}`);
               }
             } else {
-              log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
+              workerLogger.info(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
             }
           } catch (enqErr: unknown) {
             const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
-            log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
+            workerLogger.info(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
           }
         } else if (mergeStrategy !== "auto") {
           if (prCreated) {
-            log(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} — PR created, skipping merge queue enqueue`);
+            workerLogger.info(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} — PR created, skipping merge queue enqueue`);
           } else {
-            log(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} but PR was not created — no merge queue enqueue`);
+            workerLogger.info(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} but PR was not created — no merge queue enqueue`);
           }
         }
       } else {
@@ -1867,7 +1886,7 @@ async function runPipeline(
             bodyNote: `Pipeline finished with failure: ${finalizeFailureReason || "unknown error"}`,
             existingOk: true,
           });
-          log(`[FINALIZE] Failure PR ready: ${pr.prUrl}`);
+          workerLogger.info(`[FINALIZE] Failure PR ready: ${pr.prUrl}`);
           sendMail(agentMailClient, "foreman", "pr-created", {
             seedId,
             runId,
@@ -1877,7 +1896,7 @@ async function runPipeline(
           });
         } catch (prErr: unknown) {
           const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
-          log(`[FINALIZE] Failed to publish PR after finalize failure: ${prMsg}`);
+          workerLogger.info(`[FINALIZE] Failed to publish PR after finalize failure: ${prMsg}`);
         }
 
         let alreadyLandedOnTarget = false;
@@ -1896,11 +1915,11 @@ async function runPipeline(
               });
               notifyClient.send({ type: "status", runId, status: "merged", timestamp: now });
               enqueueCloseSeed(store, seedId, "agent-worker-finalize");
-              log(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating bead as merged`);
+              workerLogger.info(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating bead as merged`);
             }
           } catch (alreadyMergedErr: unknown) {
             const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
-            log(`[FINALIZE] Unable to verify whether pre-existing test failure run already landed on target: ${alreadyMergedMsg}`);
+            workerLogger.info(`[FINALIZE] Unable to verify whether pre-existing test failure run already landed on target: ${alreadyMergedMsg}`);
           }
         }
 
@@ -1923,7 +1942,7 @@ async function runPipeline(
             enqueueResetSeedToOpen(store, seedId, "agent-worker-finalize");
           } else {
             enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize");
-            log(`[PIPELINE] Deterministic finalize failure for ${seedId} — marking failed without retry`);
+            workerLogger.info(`[PIPELINE] Deterministic finalize failure for ${seedId} — marking failed without retry`);
           }
         }
       }
@@ -1938,7 +1957,7 @@ async function runPipeline(
             return;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            log(`[FINALIZE] Registered terminal event write failed (non-fatal); falling back to local store: ${msg}`);
+            workerLogger.info(`[FINALIZE] Registered terminal event write failed (non-fatal); falling back to local store: ${msg}`);
           }
         }
 
@@ -1958,7 +1977,7 @@ async function runPipeline(
       });
 
       if (finalizeSucceeded) {
-        log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
+        workerLogger.info(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
         await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
 
         // ── Continuation Retry: re-check issue state before considering done ──
@@ -1979,7 +1998,7 @@ async function runPipeline(
               issueDetail.status === "closed" ||
               issueDetail.status === "completed";
             if (isTerminal) {
-              log(`[CONTINUATION] Issue ${checkSeedId} transitioned to ${issueDetail.status ?? "null/undefined"} — marking completed`);
+              workerLogger.info(`[CONTINUATION] Issue ${checkSeedId} transitioned to ${issueDetail.status ?? "null/undefined"} — marking completed`);
               await updateTerminalRunStatus({
                 runId: checkRunId,
                 projectId: config.projectId,
@@ -1987,7 +2006,7 @@ async function runPipeline(
                 updates: { status: "completed", completed_at: new Date().toISOString() },
               });
             } else {
-              log(`[CONTINUATION] Issue ${checkSeedId} remains active (status=${issueDetail.status}) — keeping run as running for potential continuation`);
+              workerLogger.info(`[CONTINUATION] Issue ${checkSeedId} remains active (status=${issueDetail.status}) — keeping run as running for potential continuation`);
               // Keep as "running" so dispatcher can re-dispatch if needed
               await updateTerminalRunStatus({
                 runId: checkRunId,
@@ -1998,7 +2017,7 @@ async function runPipeline(
             }
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            log(`[CONTINUATION] Failed to re-check issue ${checkSeedId}: ${msg} — marking completed as safe default`);
+            workerLogger.info(`[CONTINUATION] Failed to re-check issue ${checkSeedId}: ${msg} — marking completed as safe default`);
             // On error, mark as completed to avoid leaving run in limbo
             await updateTerminalRunStatus({
               runId: checkRunId,
@@ -2010,7 +2029,7 @@ async function runPipeline(
         };
         setTimeout(() => continuationCheck(runId, seedId, pipelineProjectPath, registeredProjectId), 1000);
       } else {
-        log(`PIPELINE STUCK for ${seedId} — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})`);
+        workerLogger.info(`PIPELINE STUCK for ${seedId} — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})`);
         await appendFile(logFile, `\n[PIPELINE] STUCK — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})\n`);
       }
     },
@@ -2080,12 +2099,6 @@ async function markStuck(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-function log(msg: string): void {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.error(`[foreman-worker ${ts}] ${msg}`);
-}
 
 // ── Entry ────────────────────────────────────────────────────────────────────
 

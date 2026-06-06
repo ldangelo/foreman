@@ -198,10 +198,8 @@ describe("Dispatcher — Native task store path (integration)", () => {
     const beadsClient = makeMockBeadsClient([{ id: "b-001", title: "Beads Task", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "", updated_at: "" }]);
 
     const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await dispatcher.dispatch({ dryRun: true });
-    consoleSpy.mockRestore();
 
     // Native tasks dispatched, beads NOT dispatched
     const dispatchedIds = result.dispatched.map((d) => d.seedId);
@@ -221,10 +219,8 @@ describe("Dispatcher — Native task store path (integration)", () => {
     expect(ctx.store.hasNativeTasks()).toBe(false);
 
     const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await dispatcher.dispatch({ dryRun: true });
-    consoleSpy.mockRestore();
 
     // Beads task was dispatched
     expect(result.dispatched.map((d) => d.seedId)).toContain("b-beads");
@@ -280,10 +276,8 @@ describe("Dispatcher — FOREMAN_TASK_STORE overrides (integration)", () => {
 
       const beadsClient = makeMockBeadsClient([{ id: "b-001", title: "Beads Task", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "", updated_at: "" }]);
       const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const result = await dispatcher.dispatch({ dryRun: true });
-      consoleSpy.mockRestore();
 
       // Native task dispatched, beads NOT
       expect(result.dispatched.map((d) => d.seedId)).toContain(task.id);
@@ -302,10 +296,8 @@ describe("Dispatcher — FOREMAN_TASK_STORE overrides (integration)", () => {
       const beadsIssue = { id: "b-force-beads", title: "Forced Beads Task", type: "task" as const, priority: "P2" as const, status: "open" as const, assignee: null, parent: null, created_at: "", updated_at: "" };
       const beadsClient = makeMockBeadsClient([beadsIssue]);
       const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const result = await dispatcher.dispatch({ dryRun: true });
-      consoleSpy.mockRestore();
 
       // Beads task dispatched, native NOT
       expect(result.dispatched.map((d) => d.seedId)).toContain("b-force-beads");
@@ -361,10 +353,8 @@ describe("Dispatcher — explicit bead fallback with native tasks present", () =
     const spawnSpy = vi
       .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "mock-session" });
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await dispatcher.dispatch({ dryRun: false, seedId: "bd-explicit" });
-    consoleSpy.mockRestore();
 
     expect(result.dispatched).toHaveLength(1);
     expect(result.dispatched[0]!.seedId).toBe("bd-explicit");
@@ -383,10 +373,8 @@ describe("Dispatcher — explicit bead fallback with native tasks present", () =
     const spawnSpy = vi
       .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "mock-session" });
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await dispatcher.dispatch({ dryRun: false, seedId: "bd-imported" });
-    consoleSpy.mockRestore();
 
     expect(result.dispatched).toHaveLength(1);
     expect(result.dispatched[0]!.seedId).toBe(nativeTask.id);
@@ -475,10 +463,8 @@ describe("Dispatcher — Atomic claim transaction (integration)", () => {
       // Now dispatch — should not find the claimed task (not in ready list)
       const beadsClient = makeMockBeadsClient([]);
       const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const result = await dispatcher.dispatch({ dryRun: false });
-      consoleSpy.mockRestore();
 
       // Task was not dispatched (not in ready list anymore)
       expect(result.dispatched.some((d) => d.seedId === task.id)).toBe(false);
@@ -495,10 +481,8 @@ describe("Dispatcher — Atomic claim transaction (integration)", () => {
       const spawnSpy = vi
         .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
         .mockResolvedValue({ sessionKey: "mock-session" });
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const result = await dispatcher.dispatch({ dryRun: false });
-      consoleSpy.mockRestore();
 
       // Task was dispatched
       expect(result.dispatched).toHaveLength(1);
@@ -526,7 +510,6 @@ describe("Dispatcher — Atomic claim transaction (integration)", () => {
       const spawnSpy = vi
         .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
         .mockResolvedValue({ sessionKey: "mock-session" });
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       // First dispatch succeeds
       const result1 = await dispatcher.dispatch({ dryRun: false });
@@ -539,7 +522,6 @@ describe("Dispatcher — Atomic claim transaction (integration)", () => {
 
       // Second dispatch — task not in ready list anymore, dispatches nothing
       const result2 = await dispatcher.dispatch({ dryRun: false });
-      consoleSpy.mockRestore();
 
       expect(result2.dispatched).toHaveLength(0);
 

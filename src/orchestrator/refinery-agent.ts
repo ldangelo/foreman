@@ -32,6 +32,10 @@ import {
   createLsTool,
 } from "@mariozechner/pi-coding-agent";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { createStructuredLogger } from "./structured-logger.js";
+
+// Structured logger for refinery agent operational logs.
+const refineryLogger = createStructuredLogger();
 
 const execFileAsync = promisify(execFileSync);
 
@@ -126,20 +130,20 @@ export class RefineryAgent {
   async start(): Promise<void> {
     this.running = true;
     this.systemPrompt = await this.loadSystemPrompt();
-    console.log(`[refinery-agent] Starting daemon (poll interval: ${this.config.pollIntervalMs}ms)`);
+    refineryLogger.info(`Starting daemon (poll interval: ${this.config.pollIntervalMs}ms)`);
 
     while (this.running) {
       try {
         await this.processQueue();
       } catch (err) {
-        console.error("[refinery-agent] Error in queue processing loop:", err);
+        refineryLogger.error(`Error in queue processing loop: ${err}`);
       }
 
       // Wait before next poll
       await this.sleep(this.config.pollIntervalMs);
     }
 
-    console.log("[refinery-agent] Daemon stopped");
+    refineryLogger.info("Daemon stopped");
   }
 
   /**
@@ -179,7 +183,7 @@ export class RefineryAgent {
 
     // Get pending entries in FIFO order using MergeQueue
     const entries = await this.mergeQueue.list("pending");
-    console.log(`[refinery-agent] Found ${entries.length} pending entries`);
+    refineryLogger.info(`Found ${entries.length} pending entries`);
 
     for (const entry of entries) {
       const result = await this.processEntry(entry);

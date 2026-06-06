@@ -662,15 +662,18 @@ describe("Dispatcher — BvClient ordering", () => {
       getReadyTasks: vi.fn().mockReturnValue([]),
     } as any;
 
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
     const result = await dispatcher.dispatch({ dryRun: true });
 
     // Should be sorted by priority: P1 (bd-002) < P2 (bd-003) < P3 (bd-001)
     expect(result.dispatched.map((d) => d.seedId)).toEqual(["bd-002", "bd-003", "bd-001"]);
-    // Should log a warning about fallback
-    const warnCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
-    expect(warnCalls.some((msg) => msg.includes("bv unavailable"))).toBe(true);
+    // Should log a warning about fallback (now via structured logger to console.log)
+    const logCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
+    const messages = logCalls.map((msg) => {
+      try { return JSON.parse(msg).message; } catch { return msg; }
+    });
+    expect(messages.some((msg) => msg?.includes("bv unavailable"))).toBe(true);
     consoleSpy.mockRestore();
   });
 
@@ -722,12 +725,15 @@ describe("Dispatcher — BvClient ordering", () => {
       getReadyTasks: vi.fn().mockReturnValue([]),
     } as any;
 
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
     await dispatcher.dispatch({ dryRun: true });
 
-    const warnCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
-    expect(warnCalls.some((msg) => msg.includes("bv unavailable, using priority-sort fallback"))).toBe(true);
+    const logCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
+    const messages = logCalls.map((msg) => {
+      try { return JSON.parse(msg).message; } catch { return msg; }
+    });
+    expect(messages.some((msg) => msg?.includes("bv unavailable, using priority-sort fallback"))).toBe(true);
     consoleSpy.mockRestore();
   });
 
@@ -750,7 +756,7 @@ describe("Dispatcher — BvClient ordering", () => {
       getReadyTasks: vi.fn().mockReturnValue([]),
     } as any;
 
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp", bvClient);
 
     // Dispatch three times on the same instance
@@ -758,12 +764,13 @@ describe("Dispatcher — BvClient ordering", () => {
     await dispatcher.dispatch({ dryRun: true });
     await dispatcher.dispatch({ dryRun: true });
 
-    const warnCalls = consoleSpy.mock.calls
-      .map((args) => args.join(" "))
-      .filter((msg) => msg.includes("bv unavailable, using priority-sort fallback"));
+    const logCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
+    const messages = logCalls.map((msg) => {
+      try { return JSON.parse(msg).message; } catch { return msg; }
+    }).filter((msg) => msg?.includes("bv unavailable, using priority-sort fallback"));
 
     // Warning should appear exactly once, not once per dispatch call
-    expect(warnCalls).toHaveLength(1);
+    expect(messages).toHaveLength(1);
     consoleSpy.mockRestore();
   });
 
@@ -1379,13 +1386,11 @@ describe("Dispatcher.dispatch — fetches seed details via show()", () => {
       getReadyTasks: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
 
     // Should still dispatch despite show() failure
     expect(result.dispatched).toHaveLength(1);
-    consoleSpy.mockRestore();
   });
 });
 
@@ -1483,13 +1488,11 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
       getReadyTasks: vi.fn().mockReturnValue([]),
     } as unknown as ForemanStore;
 
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
 
     // Should still dispatch despite comments() failure
     expect(result.dispatched).toHaveLength(1);
-    consoleSpy.mockRestore();
   });
 
   it("skips comments() call when ITaskClient does not implement comments", async () => {
@@ -1997,12 +2000,10 @@ describe("Dispatcher.dispatch — reconciliation integration", () => {
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     vi.spyOn(dispatcher as any, "reconcileRunningIssues").mockRejectedValueOnce(new Error("reconciliation failed"));
 
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const result = await dispatcher.dispatch({ dryRun: true });
 
     // Should still dispatch despite reconciliation failure
     expect(result.dispatched).toHaveLength(1);
-    consoleSpy.mockRestore();
   });
 
   it("logs stopped count when reconciliation stops runs", async () => {
@@ -2038,11 +2039,14 @@ describe("Dispatcher.dispatch — reconciliation integration", () => {
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
 
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     await dispatcher.dispatch({ dryRun: true });
 
     const logCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
-    expect(logCalls.some((msg) => msg.includes("Stopped 1 run(s) with terminal issues"))).toBe(true);
+    const messages = logCalls.map((msg) => {
+      try { return JSON.parse(msg).message; } catch { return msg; }
+    });
+    expect(messages.some((msg) => msg?.includes("Stopped 1 run(s) with terminal issues"))).toBe(true);
     consoleSpy.mockRestore();
   });
 });
