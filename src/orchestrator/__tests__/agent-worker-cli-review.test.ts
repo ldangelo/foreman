@@ -21,4 +21,8 @@ describe("agent-worker cli-review builtin wiring", () => {
     expect(source).toContain("args.config.targetBranch");
     expect(source).toContain("detectDefaultBranch(args.pipelineProjectPath)");
   });
+
+  it("treats skipped cli-review results as phase failure", () => {
+    expect(source).toContain("success: review.status === \"passed\"");
+  });
 });

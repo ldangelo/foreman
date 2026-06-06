@@ -204,7 +204,7 @@ function renderReport(args: {
 }
 
 function isMissingBinary(error: unknown): boolean {
-  return error instanceof Error && ("code" in error ? String((error as { code?: string }).code) === "ENOENT" : false);
+  return error instanceof Error && (error as { code?: string }).code === "ENOENT";
 }
 
 function isAuthenticationIssue(text: string): boolean {
@@ -226,7 +226,6 @@ export async function runCodeRabbitCliReview(args: {
 
   let rawOutput = "";
   let stderr = "";
-  let completionStatus: string | undefined;
   let eventError: string | undefined;
   let status: CodeRabbitCliStatus = "passed";
 
@@ -261,7 +260,7 @@ export async function runCodeRabbitCliReview(args: {
 
   const { events, malformedLines } = parseEvents(rawOutput);
   const { blocking, nonBlocking } = classifyFindings(events);
-  completionStatus = findLastEvent(events, "complete")?.status
+  const completionStatus = findLastEvent(events, "complete")?.status
     || findLastEvent(events, "status")?.status;
   const explicitError = events.find((event) => event.type === "error");
   if (explicitError) {

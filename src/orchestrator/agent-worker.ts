@@ -1128,12 +1128,12 @@ async function runCliReviewBuiltinPhase(args: {
     log: args.log,
   });
   return {
-    success: review.status !== "failed",
+    success: review.status === "passed",
     costUsd: 0,
     turns: 0,
     tokensIn: 0,
     tokensOut: 0,
-    error: review.status === "failed" ? review.details : undefined,
+    error: review.status === "passed" ? undefined : review.details,
     outputText: `status=${review.status} blocking=${review.blockingFindings.length} nonBlocking=${review.nonBlockingFindings.length}`,
   };
 }
