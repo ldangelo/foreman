@@ -2,7 +2,7 @@
  * `foreman board` — Terminal UI kanban board for managing Foreman tasks.
  *
  * Features:
- * - 6 status columns: backlog, ready, in_progress, review, blocked, closed
+ * - 6 status columns: backlog, ready, in_progress, review, needs_attention, closed
  * - vim-style navigation: j/k (vertical), h/l (horizontal)
  * - Status cycling: s (forward), S (backward)
  * - Close task: c / C (with reason)
@@ -43,7 +43,7 @@ export const BOARD_STATUSES = [
   "ready",
   "in_progress",
   "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
@@ -53,7 +53,7 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   ready: "Ready",
   in_progress: "In Progress",
   review: "Review",
-  blocked: "Blocked",
+  needs_attention: "Attention",
   closed: "Closed",
 };
 
@@ -129,6 +129,7 @@ async function resolveBoardContext(projectPath: string): Promise<BoardContext> {
 /**
  * Load all tasks from the native task store, grouped by status.
  * Tasks with unknown statuses are placed in the rightmost column (closed).
+ * Failed, stuck, and conflict statuses route to needs_attention (not closed).
  */
 export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStatus, BoardTask[]>> {
   const { client, projectId } = await resolveBoardContext(projectPath);
@@ -139,11 +140,20 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
     map.set(status, []);
   }
 
+  // Statuses that route to needs_attention column per migration comment:
+  // "conflict/failed/stuck/blocked=needs-attention"
+  const NEEDS_ATTENTION_STATUSES = new Set(["failed", "stuck", "conflict", "blocked"]);
+
   for (const row of rows) {
     const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
-    const status = BOARD_STATUSES.includes(normalizedStatus)
-      ? normalizedStatus
-      : "closed";
+    let status: BoardStatus;
+    if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
+      status = "needs_attention";
+    } else if (BOARD_STATUSES.includes(normalizedStatus)) {
+      status = normalizedStatus;
+    } else {
+      status = "closed";
+    }
     const tasks = map.get(status)!;
     tasks.push({
       id: row.id,
@@ -871,7 +881,7 @@ const NEW_TASK_TEMPLATE = `# Create a new Foreman task
 # Fields: id (optional, auto-generated if empty), title, description, type, priority, status
 # Lines starting with # are comments and will be ignored
 # Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog
-# Status: backlog, ready, in_progress, review, blocked, closed
+# Status: backlog, ready, in_progress, review, needs_attention, closed
 # Type: task, bug, feature, epic, chore, docs, question
 
 id:

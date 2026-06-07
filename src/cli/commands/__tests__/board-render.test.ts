@@ -20,7 +20,7 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "ready",
   "in_progress",
   "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 
@@ -29,7 +29,7 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   ready: "Ready",
   in_progress: "In Progress",
   review: "Review",
-  blocked: "Blocked",
+  needs_attention: "Attention",
   closed: "Closed",
 };
 

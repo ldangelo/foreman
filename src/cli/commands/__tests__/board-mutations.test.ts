@@ -14,7 +14,7 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "ready",
   "in_progress",
   "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 
@@ -110,8 +110,8 @@ describe("BoardMutations", () => {
         ["backlog", "ready"],
         ["ready", "in_progress"],
         ["in_progress", "review"],
-        ["review", "blocked"],
-        ["blocked", "closed"],
+        ["review", "needs_attention"],
+        ["needs_attention", "closed"],
         ["closed", "backlog"],
       ];
 
@@ -130,8 +130,8 @@ describe("BoardMutations", () => {
         ["ready", "backlog"],
         ["in_progress", "ready"],
         ["review", "in_progress"],
-        ["blocked", "review"],
-        ["closed", "blocked"],
+        ["needs_attention", "review"],
+        ["closed", "needs_attention"],
       ];
 
       transitions.forEach(([from, to]) => {
@@ -498,7 +498,7 @@ describe("BoardMutations", () => {
         "ready",
         "in_progress",
         "review",
-        "blocked",
+        "needs_attention",
         "closed",
       ];
 

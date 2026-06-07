@@ -449,18 +449,18 @@ function createEmptyCounts(): Record<BoardStatus, number> {
     ready: 0,
     in_progress: 0,
     review: 0,
-    blocked: 0,
+    needs_attention: 0,
     closed: 0,
   };
 }
 
-const BOARD_STATUS_SET = new Set<BoardStatus>(["backlog", "ready", "in_progress", "review", "blocked", "closed"]);
+const BOARD_STATUS_SET = new Set<BoardStatus>(["backlog", "ready", "in_progress", "review", "needs_attention", "closed"]);
 
 function countsTotal(counts: Record<BoardStatus, number>): number {
   return Object.values(counts).reduce((sum, n) => sum + n, 0);
 }
 
-const NEEDS_ATTENTION_STATUSES = new Set(["conflict", "failed", "stuck", "backlog"]);
+const NEEDS_ATTENTION_STATUSES = new Set(["conflict", "failed", "stuck", "blocked"]);
 
 // ── Key handling ──────────────────────────────────────────────────────────
 
