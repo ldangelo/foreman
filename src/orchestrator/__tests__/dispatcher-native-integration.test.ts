@@ -38,6 +38,8 @@ vi.mock("../../lib/vcs/index.js", () => ({
         branchName: "foreman/mock",
       }),
     }),
+    resolveBackend: vi.fn((config: { backend: "git" | "jujutsu" | "auto" }) =>
+      config.backend === "auto" ? "git" : config.backend),
   },
 }));
 

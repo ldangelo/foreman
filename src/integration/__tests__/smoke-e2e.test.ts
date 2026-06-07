@@ -73,7 +73,7 @@ describe("deterministic smoke e2e", () => {
     delete process.env.FOREMAN_PHASE_RUNNER_MODULE;
     delete process.env.FOREMAN_REGISTRY_BASE_DIR;
     if (tempHome) {
-      rmSync(tempHome, { recursive: true, force: true });
+      rmSync(tempHome, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       tempHome = undefined;
     }
   });
@@ -111,6 +111,7 @@ describe("deterministic smoke e2e", () => {
       expect(statuses).toContain("merged");
       expect(harness.readRepoFile("test.txt")).toContain("hello from smoke e2e");
     } finally {
+      process.chdir(originalCwd);
       harness.cleanup();
     }
   });
@@ -163,6 +164,7 @@ describe("deterministic smoke e2e", () => {
         ["base\n", "conflict-a\n", "conflict-b\n"].includes(content) || content.includes("<<<<<<< HEAD"),
       ).toBe(true);
     } finally {
+      process.chdir(originalCwd);
       harness.cleanup();
     }
   });
