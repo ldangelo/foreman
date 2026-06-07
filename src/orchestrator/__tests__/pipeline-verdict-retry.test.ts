@@ -90,7 +90,7 @@ describe("verdict-triggered retry", () => {
     // Create stub prompt files so prompt-loader doesn't throw
     const promptDir = join(tmpDir, "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
-    for (const phase of ["developer", "qa", "reviewer", "explorer"]) {
+    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix-issue"]) {
       writeFileSync(join(promptDir, `${phase}.md`), `# ${phase} stub\n`);
     }
     writeFileSync(
@@ -175,6 +175,55 @@ describe("verdict-triggered retry", () => {
       "finalize",
     ]);
     expect(qaCallCount).toBe(3);
+  });
+
+  it("bash phase failure loops back to retryWith target before marking stuck", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+    const testArtifact = join(tmpDir, "TEST_RESULTS.md");
+
+    const phases = [
+      { name: "fix", prompt: "fix-issue.md", artifact: "DEVELOPER_REPORT.md" },
+      {
+        name: "test",
+        bash: "if [ -f retry-marker ]; then echo '## Verdict: PASS'; else echo '## Verdict: FAIL'; exit 1; fi",
+        artifact: testArtifact,
+        verdict: true,
+        retryWith: "fix",
+        retryOnFail: 1,
+        mail: { onFail: "fix" },
+      },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    let fixCallCount = 0;
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "fix") {
+        fixCallCount++;
+        writeFileSync(join(tmpDir, "DEVELOPER_REPORT.md"), `# Developer Report\n\nfix pass ${fixCallCount}\n`);
+        if (fixCallCount === 2) {
+          writeFileSync(join(tmpDir, "retry-marker"), "ready\n");
+        }
+      }
+      return successResult();
+    });
+
+    const ctx = makeBasePipelineArgs(tmpDir, phases, runPhase, log) as ReturnType<typeof makeBasePipelineArgs>;
+
+    await executePipeline(ctx as never);
+
+    expect(phaseOrder).toEqual(["fix", "fix", "finalize"]);
+    expect(fixCallCount).toBe(2);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("TEST] FAIL — looping back to fix"));
+    expect(ctx.sendMailText).toHaveBeenCalledWith(
+      null,
+      "fix-seed-verdict",
+      "Test Feedback - Retry 1",
+      expect.stringContaining("## Verdict: FAIL"),
+    );
+    expect(ctx.markStuck).not.toHaveBeenCalled();
   });
 
   it("after max retries (retryOnFail: 1) exhausted, pipeline continues to finalize", async () => {
