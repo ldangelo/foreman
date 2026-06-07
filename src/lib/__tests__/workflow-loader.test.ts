@@ -301,12 +301,20 @@ phases:
     const testPhase = config.phases.find((p) => p.name === "test");
     expect(testPhase?.bash).toBe("npm run test:unit");
     expect(testPhase?.timeoutSecs).toBe(180);
+    const fixPhase = config.phases.find((p) => p.name === "fix");
+    expect(fixPhase?.prompt).toBe("fix-issue.md");
+    expect(fixPhase?.command).toBeUndefined();
   });
 
-  it("loads bundled chore workflow with unit-test bash", () => {
-    const config = loadWorkflowConfig("chore", tmpDir);
-    const testPhase = config.phases.find((p) => p.name === "test");
-    expect(testPhase?.bash).toBe("npm run test:unit");
+  it("loads bundled bug and chore workflows with scoped fix prompts", () => {
+    for (const workflow of ["bug", "chore"] as const) {
+      const config = loadWorkflowConfig(workflow, tmpDir);
+      const fixPhase = config.phases.find((p) => p.name === "fix");
+      const testPhase = config.phases.find((p) => p.name === "test");
+      expect(fixPhase?.prompt).toBe("fix-issue.md");
+      expect(fixPhase?.command).toBeUndefined();
+      expect(testPhase?.bash).toBe("npm run test:unit");
+    }
   });
 
   it("feature workflow inserts cli-review, PR review, and merge phases after reviewer", () => {

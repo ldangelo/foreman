@@ -1105,20 +1105,23 @@ async function runPhaseSequence(
       prompt = phase.command
         ? interpolateTaskPlaceholders(phase.command, phaseMeta)
         : buildPhasePrompt(phaseName, {
-        seedId,
-        seedTitle,
-        seedDescription: description,
-        seedComments: comments,
-        seedType: config.seedType,
-        runId,
-        hasExplorerReport,
-        requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
-        feedbackContext,
-        worktreePath,
-        reportDir: phaseMeta.projectReportsDir,
-        baseBranch: config.targetBranch,
-        ...vcsPromptVars,
-      }, ctx.promptOpts);
+          seedId,
+          seedTitle,
+          seedDescription: description,
+          seedComments: comments,
+          seedType: config.seedType,
+          runId,
+          hasExplorerReport,
+          requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
+          feedbackContext,
+          worktreePath,
+          reportDir: phaseMeta.projectReportsDir,
+          baseBranch: config.targetBranch,
+          ...vcsPromptVars,
+        }, {
+          ...ctx.promptOpts,
+          promptName: phase.prompt ? basename(phase.prompt, ".md") : undefined,
+        });
     }
 
     const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];

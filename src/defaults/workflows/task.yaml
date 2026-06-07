@@ -1,8 +1,8 @@
-# Task workflow: Explorer → Developer ⇄ QA → Finalize
+# Task workflow: fix prompt → bash phase → finalize → auto-merge
 #
-# Standard task pipeline. Slightly lighter than feature: skips the dedicated
-# reviewer phase. Appropriate for well-scoped implementation tasks, improvements,
-# and non-feature work that still benefits from QA validation.
+# Standard task pipeline. Slightly lighter than feature: skips dedicated
+# explorer/reviewer phases. Appropriate for well-scoped implementation tasks,
+# improvements, and non-feature work that still benefits from validation.
 #
 # Auto-selected when bead type is "task".
 
@@ -19,8 +19,11 @@ setupCache:
 rebaseAfterPhase: developer
 
 phases:
+  # ── Phase 1: fix ────────────────────────────────────────────────────────
+  # Uses the workflow-scoped fix-issue prompt so the artifact contract is
+  # explicit and isolated from other workflows.
   - name: fix
-    command: "/skill:ensemble-fix-issue {task.title} {task.description}"
+    prompt: fix-issue.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
