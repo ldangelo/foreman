@@ -235,6 +235,12 @@ describe("loadProjectConfig", () => {
     expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
     expect(() => loadProjectConfig(tmpDir)).toThrow(/'taskTypeWorkflowMap' entries must be string->string/);
   });
+
+  it("throws ProjectConfigError when taskTypeWorkflowMap references an unknown workflow", () => {
+    writeForemanConfig(tmpDir, "taskTypeWorkflowMap:\n  bug: no_such_workflow");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/no_such_workflow|unknown workflow/i);
+  });
 });
 
 // ── resolveVcsConfig ──────────────────────────────────────────────────────────

@@ -148,6 +148,12 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('feature', [], map)).toBe('feature');
     });
 
+    it('ignores invalid mapped workflows and falls back to normal resolution', () => {
+      expect(resolveWorkflowName('bug', [], { bug: 'nonexistent' })).toBe('bug');
+      expect(resolveWorkflowName('unknown', [], { unknown: 'nonexistent' })).toBe('default');
+      expect(resolveWorkflowName('unknown', [], { default: 'nonexistent' })).toBe('default');
+    });
+
     it('unknown type without config default falls back to file-existence then default', () => {
       // "question" has question.yaml in bundled workflows
       expect(resolveWorkflowName('question', [])).toBe('question');

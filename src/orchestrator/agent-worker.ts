@@ -1349,14 +1349,10 @@ async function runPipeline(
 ): Promise<void> {
   const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
 
-  // Load project config for taskTypeWorkflowMap (optional — returns null if absent)
-  let projectTaskTypeWorkflowMap: Record<string, string> | undefined;
-  try {
-    const projectCfg = loadProjectConfig(pipelineProjectPath);
-    projectTaskTypeWorkflowMap = projectCfg?.taskTypeWorkflowMap;
-  } catch {
-    // Non-fatal: continue without project config
-  }
+  // Load project config for taskTypeWorkflowMap.
+  // Invalid config must fail fast so workflow routing policy is never ignored.
+  const projectCfg = loadProjectConfig(pipelineProjectPath);
+  const projectTaskTypeWorkflowMap = projectCfg?.taskTypeWorkflowMap;
 
   const resolvedWorkflow = resolveWorkflowName(
     config.seedType ?? "feature",

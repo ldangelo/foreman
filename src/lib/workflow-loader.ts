@@ -724,6 +724,15 @@ export function getBundledWorkflowPath(workflowName: string): string | null {
 }
 
 /**
+ * Returns true when a workflow YAML exists either in ~/.foreman/workflows/
+ * or in the bundled defaults directory.
+ */
+export function hasWorkflowConfig(workflowName: string): boolean {
+  const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
+  return existsSync(globalPath) || getBundledWorkflowPath(workflowName) !== null;
+}
+
+/**
  * Install bundled workflow configs to ~/.foreman/workflows/.
  *
  * Copies all bundled workflow YAML files. Existing files are skipped unless
@@ -896,12 +905,12 @@ export function resolveWorkflowName(
   // 2. Explicit taskTypeWorkflowMap mapping
   if (taskTypeWorkflowMap) {
     const mappedWorkflow = taskTypeWorkflowMap[seedType];
-    if (mappedWorkflow) {
+    if (mappedWorkflow && hasWorkflowConfig(mappedWorkflow)) {
       return mappedWorkflow;
     }
     // 3. Default fallback from config mapping
     const defaultWorkflow = taskTypeWorkflowMap["default"];
-    if (defaultWorkflow) {
+    if (defaultWorkflow && hasWorkflowConfig(defaultWorkflow)) {
       return defaultWorkflow;
     }
   }

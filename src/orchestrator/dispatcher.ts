@@ -802,16 +802,10 @@ export class Dispatcher {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
 
-        // 1a. Load project config and resolve workflow name
-        // Load project config (optional — returns null if .foreman/config.yaml absent)
-        let projectCfg: import("../lib/project-config.js").ProjectConfig | null = null;
-        try {
-          projectCfg = loadProjectConfig(this.projectPath);
-        } catch (projErr: unknown) {
-          // Non-fatal: log and continue without project config
-          const projMsg = projErr instanceof Error ? projErr.message : String(projErr);
-          log(`[foreman] Could not load project config — ${projMsg}`);
-        }
+        // 1a. Load project config and resolve workflow name.
+        // Invalid config is dispatch-blocking so workflow routing policy cannot
+        // be silently ignored.
+        const projectCfg = loadProjectConfig(this.projectPath);
         const resolvedWorkflow = resolveWorkflowName(
           seedInfo.type ?? "feature",
           seedInfo.labels,
@@ -832,17 +826,7 @@ export class Dispatcher {
 
           // Resolve VCS backend: workflow > project > auto-detect
           const resolvedVcs = resolveVcsConfig(wfConfig.vcs, projectCfg?.vcs);
-          if (resolvedVcs.backend !== 'auto') {
-            vcsBackendName = resolvedVcs.backend;
-          } else {
-            // Auto-detect: .jj/ → jujutsu, else git
-            const { existsSync } = await import("node:fs");
-            const { join: pathJoin } = await import("node:path");
-            if (existsSync(pathJoin(this.projectPath, '.jj'))) {
-              vcsBackendName = 'jujutsu';
-            }
-            // else: stay with 'git' default
-          }
+          vcsBackendName = VcsBackendFactory.resolveBackend(resolvedVcs, this.projectPath);
         } catch {
           // Non-fatal: fall back to default installDependencies behavior
           log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);

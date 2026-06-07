@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { load as yamlLoad } from "js-yaml";
 import type { VcsConfig } from "./vcs/index.js";
 import { normalizeBranchLabel } from "./branch-label.js";
+import { hasWorkflowConfig } from "./workflow-loader.js";
 import { getForemanHomePath } from "./foreman-paths.js";
 import type { WorkspaceHooks } from "../orchestrator/types.js";
 
@@ -639,11 +640,17 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
     if (!isRecord(mapRaw)) {
       throw new ProjectConfigError(filePath, "'taskTypeWorkflowMap' must be an object");
     }
-    // Validate every entry is string -> string
+    // Validate every entry is string -> string and points to a real workflow.
     const validatedMap: Record<string, string> = {};
     for (const [k, v] of Object.entries(mapRaw)) {
       if (typeof k !== "string" || typeof v !== "string") {
         throw new ProjectConfigError(filePath, "'taskTypeWorkflowMap' entries must be string->string");
+      }
+      if (!hasWorkflowConfig(v)) {
+        throw new ProjectConfigError(
+          filePath,
+          `taskTypeWorkflowMap entry '${k}' references unknown workflow '${v}'`,
+        );
       }
       validatedMap[k] = v;
     }
