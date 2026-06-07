@@ -2,11 +2,44 @@
  * Unit tests for WatchState.ts
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+const {
+  mockListRegisteredProjects,
+  mockTasksList,
+  mockFetchDaemonDashboardState,
+  mockFetchTaskCounts,
+} = vi.hoisted(() => ({
+  mockListRegisteredProjects: vi.fn(),
+  mockTasksList: vi.fn(),
+  mockFetchDaemonDashboardState: vi.fn(),
+  mockFetchTaskCounts: vi.fn(),
+}));
+
+vi.mock("../../project-task-support.js", () => ({
+  listRegisteredProjects: mockListRegisteredProjects,
+}));
+
+vi.mock("../../../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    tasks: { list: mockTasksList },
+    projects: { stats: vi.fn() },
+  }),
+}));
+
+vi.mock("../../dashboard.js", () => ({
+  fetchDaemonDashboardState: mockFetchDaemonDashboardState,
+}));
+
+vi.mock("../../../../lib/task-client-factory.js", () => ({
+  fetchTaskCounts: mockFetchTaskCounts,
+}));
+
 import {
   initialWatchState,
   nextPanel,
   handleWatchKey,
+  pollWatchData,
   type WatchState,
   type PanelId,
 } from "../WatchState.js";
@@ -107,6 +140,50 @@ describe("WatchState", () => {
       const result = handleWatchKey(state, "\t");
       expect(result.render).toBe(true);
       expect(state.focusedPanel).toBe("board");
+    });
+  });
+
+  describe("pollWatchData", () => {
+    beforeEach(() => {
+      mockListRegisteredProjects.mockReset();
+      mockTasksList.mockReset();
+      mockFetchDaemonDashboardState.mockReset();
+      mockFetchTaskCounts.mockReset();
+
+      mockListRegisteredProjects.mockResolvedValue([
+        { id: "proj-1", name: "foreman", path: "/tmp/project" },
+      ]);
+      mockFetchDaemonDashboardState.mockResolvedValue(null);
+      mockFetchTaskCounts.mockResolvedValue({
+        total: 7,
+        ready: 1,
+        inProgress: 0,
+        completed: 1,
+        blocked: 4,
+      });
+    });
+
+    it("routes failed, stuck, conflict, and blocked rows to needs_attention counts", async () => {
+      mockTasksList.mockResolvedValue([
+        { id: "t-ready", title: "Ready", status: "ready", priority: 3 },
+        { id: "t-failed", title: "Failed", status: "failed", priority: 2 },
+        { id: "t-stuck", title: "Stuck", status: "stuck", priority: 1 },
+        { id: "t-conflict", title: "Conflict", status: "conflict", priority: 0 },
+        { id: "t-blocked", title: "Blocked", status: "blocked", priority: 4 },
+        { id: "t-merged", title: "Merged", status: "merged", priority: 2 },
+      ]);
+
+      const result = await pollWatchData("/tmp/project");
+
+      expect(result.board.counts.ready).toBe(1);
+      expect(result.board.counts.needs_attention).toBe(4);
+      expect(result.board.counts.closed).toBe(1);
+      expect(result.board.needsAttention.map((task) => task.id)).toEqual([
+        "t-conflict",
+        "t-stuck",
+        "t-failed",
+        "t-blocked",
+      ]);
     });
   });
 });

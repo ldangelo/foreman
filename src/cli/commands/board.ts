@@ -53,7 +53,7 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   ready: "Ready",
   in_progress: "In Progress",
   review: "Review",
-  needs_attention: "Attention",
+  needs_attention: "Needs Attention",
   closed: "Closed",
 };
 
@@ -143,13 +143,15 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
   // Statuses that route to needs_attention column per migration comment:
   // "conflict/failed/stuck/blocked=needs-attention"
   const NEEDS_ATTENTION_STATUSES = new Set(["failed", "stuck", "conflict", "blocked"]);
+  const isBoardStatus = (value: string): value is BoardStatus =>
+    BOARD_STATUSES.includes(value as BoardStatus);
 
   for (const row of rows) {
-    const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
+    const normalizedStatus = row.status.replace(/-/g, "_");
     let status: BoardStatus;
     if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
       status = "needs_attention";
-    } else if (BOARD_STATUSES.includes(normalizedStatus)) {
+    } else if (isBoardStatus(normalizedStatus)) {
       status = normalizedStatus;
     } else {
       status = "closed";

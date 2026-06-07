@@ -95,9 +95,10 @@ describe("task CLI daemon/Postgres integration", () => {
       return;
     }
 
-    tempHome = mkdtempSync(join(tmpdir(), "foreman-task-daemon-home-"));
+    // Keep HOME and project temp paths short enough for Unix socket path limits.
+    tempHome = mkdtempSync(join(tmpdir(), "fmd-home-"));
     mkdirSync(join(tempHome, ".foreman"), { recursive: true });
-    projectDir = mkdtempSync(join(tmpdir(), "foreman-task-daemon-project-"));
+    projectDir = mkdtempSync(join(tmpdir(), "fmd-project-"));
     mkdirSync(join(projectDir, ".foreman"), { recursive: true });
     projectName = `task-daemon-test-${Date.now().toString(36)}`;
 
