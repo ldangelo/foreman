@@ -266,6 +266,7 @@ describe("foreman run startup refinery lookup", () => {
     await runCommand.parseAsync(["--project-path", projectPath, "--no-watch"], { from: "user" });
 
     expect(mockCreateTaskClient).toHaveBeenCalledWith(projectPath, expect.objectContaining({
+      ensureBrInstalled: true,
       registeredProjectId: "proj-1",
     }));
     expect(MockDispatcher).toHaveBeenCalledTimes(1);

@@ -86,6 +86,35 @@ export interface ObservabilityConfig {
 }
 
 /**
+ * Concurrency limits configuration.
+ * Supports global limit and per-issue-state limits.
+ *
+ * @example
+ * ```yaml
+ * concurrency:
+ *   global: 10
+ *   byState:
+ *     in_progress: 5
+ *     review: 2
+ *     qa: 3
+ * ```
+ */
+export interface ConcurrencyConfig {
+  /**
+   * Global maximum number of concurrent agent runs across all states.
+   * Default: unlimited (subject to `maxAgents` CLI flag).
+   */
+  global?: number;
+  /**
+   * Per-issue-state concurrency limits.
+   * Keys are issue status values (e.g., "in_progress", "review", "qa").
+   * Values are the maximum number of concurrent runs allowed for that state.
+   * States not listed here are unlimited.
+   */
+  byState?: Record<string, number>;
+}
+
+/**
  * Stale worktree handling configuration.
  */
 export interface StaleWorktreeConfig {
@@ -217,6 +246,8 @@ export interface ProjectConfig {
   observability?: ObservabilityConfig;
   /** Stale worktree handling configuration. */
   staleWorktree?: StaleWorktreeConfig;
+  /** Concurrency limits (global and per-state). */
+  concurrency?: ConcurrencyConfig;
   /** Issue tracker configuration (e.g., Jira) for monitoring status transitions. */
   issueTracker?: IssueTrackerConfig;
   /** Workspace lifecycle hooks for pre/post-run customization. */
@@ -450,9 +481,46 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       throw new ProjectConfigError(filePath, "'staleWorktree.failOnConflict' must be a boolean");
     }
     staleConfig.failOnConflict = (staleRaw["failOnConflict"] as boolean | undefined) ?? true;
-    staleConfig.failOnConflict = (staleRaw["failOnConflict"] as boolean | undefined) ?? true;
     config.staleWorktree = staleConfig;
   }
+
+  // Optional concurrency sub-config (Backlog-006)
+  if ("concurrency" in raw) {
+    const concRaw = raw["concurrency"];
+    if (!isRecord(concRaw)) {
+      throw new ProjectConfigError(filePath, "'concurrency' must be an object");
+    }
+    const concConfig: ConcurrencyConfig = {};
+    if ("global" in concRaw) {
+      const global = concRaw["global"];
+      if (typeof global !== "number" || !Number.isFinite(global) || global < 0) {
+        throw new ProjectConfigError(
+          filePath,
+          "'concurrency.global' must be a non-negative number",
+        );
+      }
+      concConfig.global = global as number;
+    }
+    if ("byState" in concRaw) {
+      const byStateRaw = concRaw["byState"];
+      if (!isRecord(byStateRaw)) {
+        throw new ProjectConfigError(filePath, "'concurrency.byState' must be an object");
+      }
+      const byState: Record<string, number> = {};
+      for (const [state, limit] of Object.entries(byStateRaw)) {
+        if (typeof limit !== "number" || !Number.isFinite(limit) || limit < 0) {
+          throw new ProjectConfigError(
+            filePath,
+            `'concurrency.byState.${state}' must be a non-negative number`,
+          );
+        }
+        byState[state] = limit as number;
+      }
+      concConfig.byState = byState;
+    }
+    config.concurrency = concConfig;
+  }
+
   // Optional issueTracker sub-config (PRD-2026-013)
   if ("issueTracker" in raw) {
     const itRaw = raw["issueTracker"];

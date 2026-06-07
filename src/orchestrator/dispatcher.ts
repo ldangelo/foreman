@@ -456,12 +456,46 @@ export class Dispatcher {
       // Workflow config not found — continue with default behavior
     }
 
+    // ── Per-state concurrency limits (Backlog-006) ─────────────────────────
+    // Load concurrency config and build a map of active runs by issue state.
+    // States not in byState are unlimited (only constrained by global limit).
+    let concurrencyConfig: import("../lib/project-config.js").ConcurrencyConfig | undefined;
+    const activeRunsByState: Map<string, number> = new Map();
+    try {
+      const projectCfg = loadProjectConfig(this.projectPath);
+      concurrencyConfig = projectCfg?.concurrency;
+    } catch {
+      // Non-fatal: concurrency config is optional
+    }
+
     // Determine how many agent slots are available
     const activeRuns = await this.getActiveRunsRecord(projectId);
     const activeAgentCount = this.overrides?.getActiveAgentCount
       ? await this.overrides.getActiveAgentCount()
       : activeRuns.length;
-    const available = Math.max(0, maxAgents - activeAgentCount);
+    // Apply concurrency.global override if specified (caps the effective maxAgents)
+    const effectiveMaxAgents = concurrencyConfig?.global != null && concurrencyConfig.global > 0
+      ? Math.min(maxAgents, concurrencyConfig.global)
+      : maxAgents;
+    const available = Math.max(0, effectiveMaxAgents - activeAgentCount);
+
+    // Build state count map from active runs (after config loaded so byState limits available)
+    if (concurrencyConfig?.byState) {
+      await Promise.all(
+        activeRuns.map(async (run) => {
+          try {
+            const issueDetail = await this.seeds.show(run.seed_id);
+            const state = issueDetail.status;
+            activeRunsByState.set(state, (activeRunsByState.get(state) ?? 0) + 1);
+          } catch {
+            // Issue not found — skip this run from state count
+          }
+        }),
+      );
+    }
+
+    // Track per-state pending dispatches within this cycle
+    const statePendingCount: Record<string, number> = {};
 
     // ── Native task store ─────────────────────────────────────────────────
     // Prefer the native task store. Keep the task-client fallback for older
@@ -657,13 +691,37 @@ export class Dispatcher {
         continue;
       }
 
+      // ── Per-state concurrency limit check (Backlog-006) ─────────────────────
+      // Check if this seed's target state has hit its per-state concurrency limit.
+      // States not in byState are unlimited (only constrained by global available).
+      if (concurrencyConfig?.byState) {
+        const stateLimit = concurrencyConfig.byState[seed.status];
+        if (stateLimit != null && stateLimit > 0) {
+          const activeCount = activeRunsByState.get(seed.status) ?? 0;
+          const pendingCount = statePendingCount[seed.status] ?? 0;
+          if (activeCount + pendingCount >= stateLimit) {
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: `State '${seed.status}' concurrency limit reached (${stateLimit} active + pending)`,
+            });
+            continue;
+          }
+        }
+      }
+
       if (dispatched.length >= available) {
         skipped.push({
           seedId: seed.id,
           title: seed.title,
-          reason: `Agent limit reached (${maxAgents})`,
+          reason: `Agent limit reached (${effectiveMaxAgents})`,
         });
         continue;
+      }
+
+      // Track this pending dispatch for per-state limit accounting
+      if (concurrencyConfig?.byState?.[seed.status] != null) {
+        statePendingCount[seed.status] = (statePendingCount[seed.status] ?? 0) + 1;
       }
 
       // Fetch full issue details (description, notes/comments, labels) for agent context
