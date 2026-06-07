@@ -45,6 +45,8 @@ vi.mock("../../lib/vcs/index.js", () => ({
       detectDefaultBranch: async (path: string) => mockDetectDefaultBranch(path),
       branchExists: async (_path: string, branch: string) => branch !== "wzplklnookuz" && branch !== "HEAD",
     })),
+    resolveBackend: vi.fn((config: { backend: "git" | "jujutsu" | "auto" }) =>
+      config.backend === "auto" ? "jujutsu" : config.backend),
   },
 }));
 

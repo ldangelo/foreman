@@ -28,6 +28,8 @@ vi.mock("../../lib/vcs/index.js", async (importOriginal) => {
           branchName: "foreman/test",
         }),
       }),
+      resolveBackend: vi.fn((config: { backend: "git" | "jujutsu" | "auto" }) =>
+        config.backend === "auto" ? "git" : config.backend),
     },
   };
 });
