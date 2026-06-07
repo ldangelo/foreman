@@ -15,6 +15,10 @@ export interface TaskClientFactoryResult {
 
 export interface TaskClientFactoryOptions {
   registeredProjectId?: string;
+  /** @deprecated Ignored — native task clients are always selected. */
+  autoSelectNativeWhenAvailable?: boolean;
+  /** @deprecated Ignored — native task clients do not use the br binary. */
+  ensureBrInstalled?: boolean;
 }
 
 export interface TaskCounts {
@@ -118,13 +122,14 @@ async function fetchNativeTaskCounts(projectPath: string, registeredProjectId?: 
   }
 
   const store = ForemanStore.forProject(projectPath);
+  const list = (statuses: string[]) => store.listTasksByStatus?.(statuses) ?? [];
   try {
     return {
-      total: store.listTasksByStatus([...NATIVE_TOTAL_STATUSES]).length,
-      ready: store.listTasksByStatus(["ready"]).length,
-      inProgress: store.listTasksByStatus(["in-progress"]).length,
-      completed: store.listTasksByStatus(["merged", "closed"]).length,
-      blocked: store.listTasksByStatus([...NATIVE_BLOCKED_STATUSES]).length,
+      total: list([...NATIVE_TOTAL_STATUSES]).length,
+      ready: list(["ready"]).length,
+      inProgress: list(["in-progress"]).length,
+      completed: list(["merged", "closed"]).length,
+      blocked: list([...NATIVE_BLOCKED_STATUSES]).length,
     };
   } finally {
     store.close();

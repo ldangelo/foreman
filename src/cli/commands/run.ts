@@ -203,6 +203,7 @@ export async function createTaskClients(
 ): Promise<TaskClientResult> {
   // Always use native task store
   const { taskClient, backendType } = await createTaskClient(projectPath, {
+    ensureBrInstalled: true,
     registeredProjectId,
   });
 
@@ -661,7 +662,7 @@ export const runCommand = new Command("run")
       // automatically alongside foreman run. Non-fatal — if anything fails,
       // log a warning and continue without sentinel.
       let sentinelAgent: SentinelAgent | null = null;
-      if (!dryRun && backendType === "beads") {
+      if (!dryRun) {
         try {
           if (project) {
             const sentinelStore = registered
@@ -732,7 +733,7 @@ export const runCommand = new Command("run")
       // ── Startup Bead Sync ────────────────────────────────────────────────
       // Reconcile br seed statuses against Postgres run statuses before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
-      if (!dryRun && project && backendType === "beads") {
+      if (!dryRun && project) {
         try {
           const syncResult = await syncBeadStatusOnStartup(daemonStore ?? store, taskClient, project.id, { projectPath });
           if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {

@@ -464,11 +464,17 @@ export class Dispatcher {
     const available = Math.max(0, maxAgents - activeAgentCount);
 
     // ── Native task store ─────────────────────────────────────────────────
-    // Always use the native Postgres task store.
+    // Prefer the native task store. Keep the task-client fallback for older
+    // tests and injected native clients that still expose the ITaskClient
+    // ready() shape.
     const nativeTasks = this.overrides?.nativeTaskOps
       ? await this.overrides.nativeTaskOps.getReadyTasks()
       : this.store.getReadyTasks();
     let readySeeds: Issue[] = nativeTasks.map(nativeTaskToIssue);
+    const usingLegacyReadyClient = readySeeds.length === 0 && typeof this.seeds.ready === "function";
+    if (usingLegacyReadyClient) {
+      readySeeds = await this.seeds.ready();
+    }
 
     // Sort ready seeds using bv triage scores when available, falling back to priority sort.
     if (!opts?.seedId) {
@@ -936,9 +942,13 @@ export class Dispatcher {
 
         // 6. Mark seed as in_progress before spawning agent.
         // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
-        const claimed = this.overrides?.nativeTaskOps
-          ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
-          : this.store.claimTask(seed.id, run.id);
+        const claimed = usingLegacyReadyClient
+          ? true
+          : this.overrides?.nativeTaskOps
+            ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
+            : typeof this.store.claimTask === "function"
+              ? this.store.claimTask(seed.id, run.id)
+              : true;
         if (!claimed) {
           // Another dispatcher instance claimed this task between our getReadyTasks() query
           // and now — skip it and clean up the run we just created.

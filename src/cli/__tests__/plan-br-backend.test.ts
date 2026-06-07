@@ -124,33 +124,20 @@ describe("createPlanClient", () => {
     vi.unstubAllEnvs();
   });
 
-  it("uses the beads client when the shared helper selects beads", () => {
-    mockSelectTaskReadBackend.mockReturnValue("beads");
-
+  it("creates a native-backed planning client without backend selection", () => {
     const client = createPlanClient(PROJECT_PATH);
 
-    expect(mockSelectTaskReadBackend).toHaveBeenCalledWith(PROJECT_PATH);
+    expect(mockSelectTaskReadBackend).not.toHaveBeenCalled();
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
     expect(client).toBeDefined();
   });
 
-  it("instantiates the beads client lazily when a delegated method is used", async () => {
-    mockSelectTaskReadBackend.mockReturnValue("beads");
-    const beadsReady = vi.fn().mockResolvedValue([]);
-    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
-      this.create = vi.fn();
-      this.addDependency = vi.fn();
-      this.ready = beadsReady;
-      this.close = vi.fn();
-      this.list = vi.fn();
-      this.show = vi.fn();
-      this.update = vi.fn();
-    });
-
+  it("uses the native planning API when a delegated method is used", async () => {
     const client = createPlanClient(PROJECT_PATH);
     await client.ready();
 
-    expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
-    expect(beadsReady).toHaveBeenCalledOnce();
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
+    expect(mockTaskList).toHaveBeenCalled();
   });
 
   it("returns a native-backed planning client when the shared helper selects native", async () => {

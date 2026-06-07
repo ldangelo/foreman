@@ -6,8 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 // TRD-009: End-to-end integration test for bug.yaml workflow
-// Verifies that bug.yaml demonstrates all three new features:
-// 1. command: phase (TRD-005)
+// 1. workflow-scoped fix prompt (fix-issue.md)
 // 2. bash: phase (TRD-004)
 // 3. merge: auto (TRD-002, TRD-007)
 // Also verifies type-based dispatch selects bug.yaml for bead type "bug" (TRD-006)
@@ -43,20 +42,16 @@ describe('TRD-009 bug.yaml workflow integration', () => {
     });
   });
 
-  describe('TRD-005: command: phase (fix phase)', () => {
+  describe('workflow-scoped fix prompt (fix phase)', () => {
     const fixPhase = bugWorkflow.phases.find((p) => p.name === 'fix');
 
     it('fix phase exists', () => {
       expect(fixPhase).toBeDefined();
     });
 
-    it('fix phase has command: field', () => {
-      expect(fixPhase?.command).toBeDefined();
-    });
-
-    it('fix phase command contains task.* placeholder', () => {
-      expect(fixPhase?.command).toContain('{task.title}');
-      expect(fixPhase?.command).toContain('{task.description}');
+    it('fix phase has prompt: field', () => {
+      expect(fixPhase?.prompt).toBe('fix-issue.md');
+      expect(fixPhase?.command).toBeUndefined();
     });
 
     it('fix phase has all standard phase config (model, maxTurns, artifact, mail)', () => {

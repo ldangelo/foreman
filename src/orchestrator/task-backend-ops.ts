@@ -13,16 +13,27 @@
  * Beads (br CLI) operations have been removed — native tasks are mandatory.
  */
 
+import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
-import { PostgresStore } from "../lib/postgres-store.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
+
+type Awaitable<T> = T | Promise<T>;
+
+type TaskStatusStore = Pick<ForemanStore, "updateTaskStatus"> & Partial<Pick<ForemanStore, "getRunsByStatuses" | "getTaskById">>;
 
 type StartupTaskStatusStore = {
   getRunsByStatuses(
     statuses: Parameters<ForemanStore["getRunsByStatuses"]>[0],
     projectId?: string,
-  ): ReturnType<ForemanStore["getRunsByStatuses"]> | Promise<ReturnType<ForemanStore["getRunsByStatuses"]>>;
+  ): Awaitable<Awaited<ReturnType<ForemanStore["getRunsByStatuses"]>>>;
+  getTaskById?(id: string): Awaitable<ReturnType<ForemanStore["getTaskById"]>>;
+  updateTaskStatus?(taskId: string, newStatus: string): Awaitable<void>;
+};
+
+type LegacyTaskClient = {
+  show(id: string): Awaitable<{ status?: string } | null | undefined>;
+  update?(id: string, updates: { status: string }): Awaitable<unknown>;
 };
 
 // ── Native Task Operations ─────────────────────────────────────────────────────
@@ -41,20 +52,9 @@ type StartupTaskStatusStore = {
  * @param seedId - The task ID to close.
  * @param sender - Human-readable source label (e.g. "refinery", "agent-worker").
  */
-export function closeSeed(store: ForemanStore, seedId: string, sender: string): void {
+export function closeSeed(store: TaskStatusStore, seedId: string, sender: string): void {
   try {
-    const project = store.getProjectByPath(store.getProjectPath?.() ?? "");
-    if (project) {
-      // Use PostgresStore for registered projects
-      const pgStore = new PostgresStore(project.id);
-      pgStore.closeTask(seedId).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[task-backend-ops] Warning: Failed to close task ${seedId}: ${msg.slice(0, 200)}`);
-      });
-    } else {
-      // Fall back to local store operations
-      store.closeTask?.(seedId);
-    }
+    store.updateTaskStatus(seedId, "closed");
     console.error(`[task-backend-ops] Closed task ${seedId} (sender: ${sender})`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -70,18 +70,9 @@ export function closeSeed(store: ForemanStore, seedId: string, sender: string): 
  * @param seedId - The task ID to reset.
  * @param sender - Human-readable source label.
  */
-export function resetSeedToOpen(store: ForemanStore, seedId: string, sender: string): void {
+export function resetSeedToOpen(store: TaskStatusStore, seedId: string, sender: string): void {
   try {
-    const project = store.getProjectByPath(store.getProjectPath?.() ?? "");
-    if (project) {
-      const pgStore = new PostgresStore(project.id);
-      pgStore.resetTask(seedId).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[task-backend-ops] Warning: Failed to reset task ${seedId}: ${msg.slice(0, 200)}`);
-      });
-    } else {
-      store.resetTask?.(seedId);
-    }
+    store.updateTaskStatus(seedId, "ready");
     console.error(`[task-backend-ops] Reset task ${seedId} to ready (sender: ${sender})`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -96,18 +87,9 @@ export function resetSeedToOpen(store: ForemanStore, seedId: string, sender: str
  * @param seedId - The task ID to mark as failed.
  * @param sender - Human-readable source label.
  */
-export function markSeedFailed(store: ForemanStore, seedId: string, sender: string): void {
+export function markSeedFailed(store: TaskStatusStore, seedId: string, sender: string): void {
   try {
-    const project = store.getProjectByPath(store.getProjectPath?.() ?? "");
-    if (project) {
-      const pgStore = new PostgresStore(project.id);
-      pgStore.updateTaskStatus(seedId, "failed").catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[task-backend-ops] Warning: Failed to mark task ${seedId} as failed: ${msg.slice(0, 200)}`);
-      });
-    } else {
-      store.updateTaskStatus?.(seedId, "failed");
-    }
+    store.updateTaskStatus(seedId, "failed");
     console.error(`[task-backend-ops] Marked task ${seedId} as failed (sender: ${sender})`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -123,18 +105,9 @@ export function markSeedFailed(store: ForemanStore, seedId: string, sender: stri
  * @param status - The new status.
  * @param sender - Human-readable source label.
  */
-export function updateSeedStatus(store: ForemanStore, seedId: string, status: string, sender: string): void {
+export function updateSeedStatus(store: TaskStatusStore, seedId: string, status: string, sender: string): void {
   try {
-    const project = store.getProjectByPath(store.getProjectPath?.() ?? "");
-    if (project) {
-      const pgStore = new PostgresStore(project.id);
-      pgStore.updateTaskStatus(seedId, status).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[task-backend-ops] Warning: Failed to update task ${seedId} status to ${status}: ${msg.slice(0, 200)}`);
-      });
-    } else {
-      store.updateTaskStatus?.(seedId, status);
-    }
+    store.updateTaskStatus(seedId, status);
     console.error(`[task-backend-ops] Updated task ${seedId} status to ${status} (sender: ${sender})`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -222,12 +195,12 @@ export async function syncTaskStatusOnStartup(
           runId: run.id,
           runStatus: run.status,
           actualSeedStatus: task.status,
-          expectedSeedStatus,
+          expectedSeedStatus: expectedTaskStatus,
         });
 
         if (!dryRun) {
           try {
-            store.updateTaskStatus?.(run.seed_id, expectedTaskStatus);
+            await Promise.resolve(store.updateTaskStatus?.(run.seed_id, expectedTaskStatus));
             synced++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -238,6 +211,96 @@ export async function syncTaskStatusOnStartup(
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`Could not check task ${run.seed_id}: ${msg}`);
+    }
+  }
+
+  return { synced, mismatches, errors };
+}
+
+// ── Legacy-named native wrappers ──────────────────────────────────────────────
+// These exports keep older call sites and tests compiling while still routing
+// through the native task store only.
+
+export const enqueueCloseSeed = closeSeed;
+export const enqueueResetSeedToOpen = resetSeedToOpen;
+export const enqueueMarkBeadFailed = markSeedFailed;
+export const enqueueSetBeadStatus = updateSeedStatus;
+
+export function enqueueAddNotesToBead(_store: TaskStatusStore, seedId: string, _note: string, sender: string): void {
+  console.error(`[task-backend-ops] Skipped note for task ${seedId} (sender: ${sender}) — native task notes are not supported`);
+}
+
+export async function syncBeadStatusOnStartup(
+  store: StartupTaskStatusStore,
+  taskClient: LegacyTaskClient,
+  projectId: string,
+  opts?: { dryRun?: boolean; projectPath?: string },
+): Promise<SyncResult> {
+  const dryRun = opts?.dryRun ?? false;
+  const terminalStatuses: Array<"completed" | "merged" | "pr-created" | "conflict" | "test-failed" | "failed" | "stuck"> = [
+    "completed",
+    "merged",
+    "pr-created",
+    "conflict",
+    "test-failed",
+    "failed",
+    "stuck",
+  ];
+
+  const terminalRuns = await Promise.resolve(store.getRunsByStatuses(terminalStatuses, projectId));
+  type RunLike = { id: string; seed_id: string; status: string; created_at: string };
+  const latestBySeed = new Map<string, RunLike>();
+  for (const run of terminalRuns) {
+    const existing = latestBySeed.get(run.seed_id);
+    if (!existing || run.created_at > existing.created_at) {
+      latestBySeed.set(run.seed_id, run);
+    }
+  }
+
+  const mismatches: StateMismatch[] = [];
+  const errors: string[] = [];
+  let synced = 0;
+
+  for (const run of latestBySeed.values()) {
+    const expectedSeedStatus = mapRunStatusToSeedStatus(run.status);
+    try {
+      const seed = await Promise.resolve(taskClient.show(run.seed_id));
+      if (!seed) continue;
+      const actualSeedStatus = seed.status ?? "";
+      if (actualSeedStatus !== expectedSeedStatus) {
+        mismatches.push({
+          seedId: run.seed_id,
+          runId: run.id,
+          runStatus: run.status,
+          actualSeedStatus,
+          expectedSeedStatus,
+        });
+        if (!dryRun) {
+          try {
+            execFileSync("br", ["update", run.seed_id, "--status", expectedSeedStatus], {
+              cwd: opts?.projectPath,
+            });
+            synced++;
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            errors.push(`Failed to sync task ${run.seed_id}: ${msg}`);
+          }
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/not found/i.test(msg)) {
+        errors.push(`Could not check task ${run.seed_id}: ${msg}`);
+      }
+    }
+  }
+
+  if (!dryRun && synced > 0) {
+    try {
+      execFileSync("br", ["sync", "--flush-only"], { cwd: opts?.projectPath });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`br sync --flush-only failed: ${msg}`);
     }
   }
 

@@ -106,17 +106,15 @@ describe("task-client-factory Postgres native selection", () => {
     vi.unstubAllEnvs();
   });
 
-  it("selects native from Postgres for exact-path registered projects in auto mode", async () => {
+  it("selects native for exact-path registered projects", async () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "auto");
     mockRegistryList.mockResolvedValue([{ id: "proj-1", name: "foreman", path: projectPath }]);
-    mockPgHasNativeTasks.mockResolvedValue(true);
-    mockLocalHasNativeTasks.mockReturnValue(false);
 
     const result = await createTaskClient(projectPath);
 
     expect(result.backendType).toBe("native");
     expect(MockNativeTaskClient).toHaveBeenCalledWith(projectPath, { registeredProjectId: "proj-1" });
-    expect(mockPgHasNativeTasks).toHaveBeenCalledWith("proj-1");
+    expect(mockPgHasNativeTasks).not.toHaveBeenCalled();
     expect(MockForemanStore.forProject).not.toHaveBeenCalled();
   });
 
@@ -135,13 +133,12 @@ describe("task-client-factory Postgres native selection", () => {
   it("keeps local unregistered native selection unchanged", async () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "auto");
     mockRegistryList.mockResolvedValue([]);
-    mockLocalHasNativeTasks.mockReturnValue(true);
 
     const result = await createTaskClient(projectPath);
 
     expect(result.backendType).toBe("native");
     expect(MockNativeTaskClient).toHaveBeenCalledWith(projectPath, { registeredProjectId: undefined });
-    expect(MockForemanStore.forProject).toHaveBeenCalledWith(projectPath);
+    expect(MockForemanStore.forProject).not.toHaveBeenCalled();
     expect(mockPgHasNativeTasks).not.toHaveBeenCalled();
   });
 });
