@@ -221,6 +221,28 @@ export interface ProjectConfig {
   issueTracker?: IssueTrackerConfig;
   /** Workspace lifecycle hooks for pre/post-run customization. */
   hooks?: ProjectHooksConfig;
+  /**
+   * Explicit mapping from task type to workflow name.
+   *
+   * Resolution order (highest wins):
+   *   1. workflow:<name> label override (handled by resolveWorkflowName)
+   *   2. taskTypeWorkflowMap[task.type] — this config
+   *   3. taskTypeWorkflowMap["default"] — fallback for unknown types
+   *   4. File-existence fallback: ~/.foreman/workflows/<type>.yaml or bundled defaults
+   *   5. Hard fallback to "default"
+   *
+   * @example
+   * ```yaml
+   * taskTypeWorkflowMap:
+   *   bug: bug
+   *   task: task
+   *   feature: feature
+   *   docs: task
+   *   spike: feature
+   *   default: default
+   * ```
+   */
+  taskTypeWorkflowMap?: Record<string, string>;
 }
 
 /** Error thrown when the project config file is present but malformed. */
@@ -609,6 +631,23 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       hooksConfig.timeoutMs = timeoutMs as number;
     }
     config.hooks = hooksConfig;
+  }
+
+  // Optional taskTypeWorkflowMap — maps task types to workflow names
+  if ("taskTypeWorkflowMap" in raw) {
+    const mapRaw = raw["taskTypeWorkflowMap"];
+    if (!isRecord(mapRaw)) {
+      throw new ProjectConfigError(filePath, "'taskTypeWorkflowMap' must be an object");
+    }
+    // Validate every entry is string -> string
+    const validatedMap: Record<string, string> = {};
+    for (const [k, v] of Object.entries(mapRaw)) {
+      if (typeof k !== "string" || typeof v !== "string") {
+        throw new ProjectConfigError(filePath, "'taskTypeWorkflowMap' entries must be string->string");
+      }
+      validatedMap[k] = v;
+    }
+    config.taskTypeWorkflowMap = validatedMap;
   }
 
   return config;

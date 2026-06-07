@@ -802,35 +802,36 @@ export class Dispatcher {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
 
-        // 1a. Load workflow config to get setup steps + cache config for worktree initialization
-        const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
+        // 1a. Load project config and resolve workflow name
+        // Load project config (optional — returns null if .foreman/config.yaml absent)
+        let projectCfg: import("../lib/project-config.js").ProjectConfig | null = null;
+        try {
+          projectCfg = loadProjectConfig(this.projectPath);
+        } catch (projErr: unknown) {
+          // Non-fatal: log and continue without project config
+          const projMsg = projErr instanceof Error ? projErr.message : String(projErr);
+          log(`[foreman] Could not load project config — ${projMsg}`);
+        }
+        const resolvedWorkflow = resolveWorkflowName(
+          seedInfo.type ?? "feature",
+          seedInfo.labels,
+          projectCfg?.taskTypeWorkflowMap,
+        );
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
         let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
         // TRD-007: capture merge strategy from workflow config
         let workflowMerge: 'auto' | 'pr' | 'none' = 'auto';
         // projectHooks is used in afterCreate/beforeRun hooks below the try block
-        let projectHooks: import("../lib/project-config.js").ProjectHooksConfig | undefined;
+        const projectHooks: import("../lib/project-config.js").ProjectHooksConfig | undefined = projectCfg?.hooks;
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
           workflowMerge = wfConfig.merge ?? 'auto';
 
-          // Load project-level config (optional — returns null if .foreman/config.yaml absent)
-          let projectVcs: import("../lib/project-config.js").ProjectConfig["vcs"] | undefined;
-          try {
-            const projectCfg = loadProjectConfig(this.projectPath);
-            projectVcs = projectCfg?.vcs;
-            projectHooks = projectCfg?.hooks;
-          } catch (projErr: unknown) {
-            // Non-fatal: log and continue without project config
-            const projMsg = projErr instanceof Error ? projErr.message : String(projErr);
-            log(`[foreman] Could not load project config — ${projMsg}`);
-          }
-
           // Resolve VCS backend: workflow > project > auto-detect
-          const resolvedVcs = resolveVcsConfig(wfConfig.vcs, projectVcs);
+          const resolvedVcs = resolveVcsConfig(wfConfig.vcs, projectCfg?.vcs);
           if (resolvedVcs.backend !== 'auto') {
             vcsBackendName = resolvedVcs.backend;
           } else {

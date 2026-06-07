@@ -89,4 +89,68 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('bug', [])).toBe('bug');
     });
   });
+
+  // taskTypeWorkflowMap config-driven routing (foreman-676ac)
+  describe('taskTypeWorkflowMap config-driven routing', () => {
+    it('label override takes priority over config mapping', () => {
+      const map = { bug: 'bug', feature: 'feature' };
+      expect(resolveWorkflowName('bug', ['workflow:custom'], map)).toBe('custom');
+      expect(resolveWorkflowName('feature', ['workflow:override'], map)).toBe('override');
+    });
+
+    it('config mapping takes priority over file-existence fallback', () => {
+      // docs type has docs.yaml in bundled workflows, but we remap it to 'task'
+      const map = { docs: 'task' };
+      expect(resolveWorkflowName('docs', [], map)).toBe('task');
+    });
+
+    it('config mapping "default" key used when type not explicitly mapped', () => {
+      // "unknown" type has no explicit mapping, falls to "default" from config
+      const map = { default: 'feature' };
+      expect(resolveWorkflowName('unknown', [], map)).toBe('feature');
+      expect(resolveWorkflowName('random', [], map)).toBe('feature');
+    });
+
+    it('explicit type mapping takes priority over config default', () => {
+      const map = { bug: 'smoke', default: 'default' };
+      expect(resolveWorkflowName('bug', [], map)).toBe('smoke');
+      // "unknown" is not explicitly mapped, so falls to "default" from config
+      expect(resolveWorkflowName('unknown', [], map)).toBe('default');
+    });
+
+    it('without config mapping, behavior is unchanged (backward compatible)', () => {
+      // No third argument — should behave exactly like before
+      expect(resolveWorkflowName('bug')).toBe('bug');
+      expect(resolveWorkflowName('feature')).toBe('feature');
+      expect(resolveWorkflowName('smoke')).toBe('smoke');
+      expect(resolveWorkflowName('unknown')).toBe('default');
+    });
+
+    it('empty taskTypeWorkflowMap falls back to file-existence check', () => {
+      const emptyMap = {};
+      // "bug" has bug.yaml in bundled workflows
+      expect(resolveWorkflowName('bug', [], emptyMap)).toBe('bug');
+      // "unknown" has no corresponding file, falls to "default"
+      expect(resolveWorkflowName('unknown', [], emptyMap)).toBe('default');
+    });
+
+    it('maps task type to different workflow via config', () => {
+      // Example from task description: docs → task, spike → feature
+      const map = { docs: 'task', spike: 'feature' };
+      expect(resolveWorkflowName('docs', [], map)).toBe('task');
+      expect(resolveWorkflowName('spike', [], map)).toBe('feature');
+    });
+
+    it('handles identity mapping (type → same name)', () => {
+      const map = { bug: 'bug', task: 'task', feature: 'feature' };
+      expect(resolveWorkflowName('bug', [], map)).toBe('bug');
+      expect(resolveWorkflowName('task', [], map)).toBe('task');
+      expect(resolveWorkflowName('feature', [], map)).toBe('feature');
+    });
+
+    it('unknown type without config default falls back to file-existence then default', () => {
+      // "question" has question.yaml in bundled workflows
+      expect(resolveWorkflowName('question', [])).toBe('question');
+    });
+  });
 });

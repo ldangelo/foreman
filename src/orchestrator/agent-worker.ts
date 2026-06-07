@@ -53,7 +53,7 @@ import type { VcsBackend } from "../lib/vcs/interface.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { runWorkspaceHook } from "../lib/setup.js";
-import type { ProjectHooksConfig } from "../lib/project-config.js";
+import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -1348,9 +1348,20 @@ async function runPipeline(
   registeredProjectId?: string,
 ): Promise<void> {
   const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
+
+  // Load project config for taskTypeWorkflowMap (optional — returns null if absent)
+  let projectTaskTypeWorkflowMap: Record<string, string> | undefined;
+  try {
+    const projectCfg = loadProjectConfig(pipelineProjectPath);
+    projectTaskTypeWorkflowMap = projectCfg?.taskTypeWorkflowMap;
+  } catch {
+    // Non-fatal: continue without project config
+  }
+
   const resolvedWorkflow = resolveWorkflowName(
     config.seedType ?? "feature",
     config.seedLabels,
+    projectTaskTypeWorkflowMap,
   );
   // Load the workflow config (phase sequence + per-phase overrides).
   let workflowConfig: WorkflowConfig;

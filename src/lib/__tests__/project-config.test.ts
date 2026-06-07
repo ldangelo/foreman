@@ -191,6 +191,50 @@ describe("loadProjectConfig", () => {
     expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
     expect(() => loadProjectConfig(tmpDir)).toThrow(/failed to parse JSON/);
   });
+
+  // taskTypeWorkflowMap validation (foreman-676ac)
+  it("loads valid taskTypeWorkflowMap from config.yaml", () => {
+    writeForemanConfig(
+      tmpDir,
+      "taskTypeWorkflowMap:\n  bug: bug\n  task: task\n  default: default",
+    );
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg?.taskTypeWorkflowMap).toEqual({
+      bug: "bug",
+      task: "task",
+      default: "default",
+    });
+  });
+
+  it("loads taskTypeWorkflowMap with remapping (docs → task)", () => {
+    writeForemanConfig(
+      tmpDir,
+      "taskTypeWorkflowMap:\n  docs: task\n  spike: feature",
+    );
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg?.taskTypeWorkflowMap).toEqual({
+      docs: "task",
+      spike: "feature",
+    });
+  });
+
+  it("returns undefined taskTypeWorkflowMap when not configured", () => {
+    writeForemanConfig(tmpDir, "vcs:\n  backend: git");
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg?.taskTypeWorkflowMap).toBeUndefined();
+  });
+
+  it("throws ProjectConfigError when taskTypeWorkflowMap is not an object", () => {
+    writeForemanConfig(tmpDir, "taskTypeWorkflowMap: 'not-an-object'");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/'taskTypeWorkflowMap' must be an object/);
+  });
+
+  it("throws ProjectConfigError when taskTypeWorkflowMap has non-string value", () => {
+    writeForemanConfig(tmpDir, "taskTypeWorkflowMap:\n  bug: 123");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/'taskTypeWorkflowMap' entries must be string->string/);
+  });
 });
 
 // ── resolveVcsConfig ──────────────────────────────────────────────────────────
