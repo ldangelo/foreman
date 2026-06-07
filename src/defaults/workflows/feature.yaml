@@ -27,8 +27,8 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 30
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -37,7 +37,21 @@ phases:
   - name: developer
     prompt: developer.md
     tools:
-      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
+      allowed:
+        [
+          Agent,
+          Bash,
+          Edit,
+          Glob,
+          Grep,
+          Read,
+          TaskOutput,
+          TaskStop,
+          TodoWrite,
+          WebFetch,
+          WebSearch,
+          Write,
+        ]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
