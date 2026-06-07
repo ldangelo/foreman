@@ -20,7 +20,7 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "ready",
   "in_progress",
   "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 
@@ -29,7 +29,7 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   ready: "Ready",
   in_progress: "In Progress",
   review: "Review",
-  blocked: "Blocked",
+  needs_attention: "Needs Attention",
   closed: "Closed",
 };
 
@@ -223,7 +223,7 @@ describe("BoardRendering", () => {
     });
 
     it("should render six column jump labels without a merged column", () => {
-      const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 120));
+      const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 150));
 
       expect(output).toContain("[1] Backlog");
       expect(output).toContain("[6] Closed");
@@ -236,7 +236,7 @@ describe("BoardRendering", () => {
           backlog: [createTask("bd-1", { title: "Implement task board layout" })],
         }),
         "Demo",
-        120,
+        150,
       ));
 
       const lines = output.split("\n");
