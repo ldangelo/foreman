@@ -123,6 +123,18 @@ describe("loadProjectConfig", () => {
     expect(cfg!.defaultBranch).toBe("dev");
   });
 
+  it("loads positive concurrency limits", () => {
+    writeForemanConfig(
+      tmpDir,
+      "concurrency:\n  global: 3\n  byState:\n    ready: 2\n    review: 1",
+    );
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg!.concurrency).toEqual({
+      global: 3,
+      byState: { ready: 2, review: 1 },
+    });
+  });
+
   // JSON fallback
   it("falls back to ~/.foreman/config.json when config.yaml is absent", () => {
     writeForemanConfig(
@@ -178,6 +190,18 @@ describe("loadProjectConfig", () => {
     writeForemanConfig(tmpDir, "defaultBranch: 123");
     expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
     expect(() => loadProjectConfig(tmpDir)).toThrow(/defaultBranch/);
+  });
+
+  it("throws ProjectConfigError for zero concurrency.global", () => {
+    writeForemanConfig(tmpDir, "concurrency:\n  global: 0");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/concurrency\.global.*positive/);
+  });
+
+  it("throws ProjectConfigError for zero concurrency.byState limit", () => {
+    writeForemanConfig(tmpDir, "concurrency:\n  byState:\n    review: 0");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/concurrency\.byState\.review.*positive/);
   });
 
   it("throws ProjectConfigError for malformed YAML", () => {

@@ -123,9 +123,9 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── createMergeTaskClient ─────────────────────────────────────────────────
+  // ── br backend ────────────────────────────────────────────────────────────
 
-  describe("createMergeTaskClient", () => {
+  describe("when FOREMAN_TASK_STORE='beads'", () => {
     it("returns the task client from createTaskClient", async () => {
       const result = await createMergeTaskClient(PROJECT_PATH);
 
@@ -142,6 +142,7 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
         registeredProjectId: "proj-1",
       });
     });
+
   });
 
 });
