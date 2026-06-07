@@ -29,7 +29,7 @@ import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-ta
  * Throws if the br binary cannot be found.
  */
 export async function createMergeTaskClient(projectPath: string, registeredProjectId?: string): Promise<ITaskClient> {
-  const { taskClient } = await createTaskClient(projectPath, { ensureBrInstalled: true, registeredProjectId });
+  const { taskClient } = await createTaskClient(projectPath, { registeredProjectId });
   return taskClient;
 }
 

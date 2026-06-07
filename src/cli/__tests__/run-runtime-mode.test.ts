@@ -117,17 +117,6 @@ describe("run runtime mode", () => {
     expect(MockBeadsRustClient).not.toHaveBeenCalled();
   });
 
-  it("ignores the legacy autoSelectNativeWhenAvailable alias", async () => {
-    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
-
-    const result = await createTaskClient(projectPath, {
-      autoSelectNativeWhenAvailable: true,
-    });
-
-    expect(result.backendType).toBe("native");
-    expect(MockBeadsRustClient).not.toHaveBeenCalled();
-  });
-
   it("ignores legacy br task store selection in normal runtime", async () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "beads");
     const result = await createTaskClients(projectPath, "normal");

@@ -123,24 +123,14 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── br backend ────────────────────────────────────────────────────────────
+  // ── createMergeTaskClient ─────────────────────────────────────────────────
 
-  describe("when FOREMAN_TASK_STORE='beads'", () => {
+  describe("createMergeTaskClient", () => {
     it("returns the task client from createTaskClient", async () => {
       const result = await createMergeTaskClient(PROJECT_PATH);
 
       expect(result).toBeDefined();
       expect(mockCreateTaskClient).toHaveBeenCalledWith(PROJECT_PATH, {
-        ensureBrInstalled: true,
-        registeredProjectId: undefined,
-      });
-    });
-
-    it("calls ensureBrInstalled() to verify binary exists", async () => {
-      await createMergeTaskClient(PROJECT_PATH);
-
-      expect(mockCreateTaskClient).toHaveBeenCalledWith(PROJECT_PATH, {
-        ensureBrInstalled: true,
         registeredProjectId: undefined,
       });
     });
@@ -149,11 +139,9 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
       await createMergeTaskClient(PROJECT_PATH, "proj-1");
 
       expect(mockCreateTaskClient).toHaveBeenCalledWith(PROJECT_PATH, {
-        ensureBrInstalled: true,
         registeredProjectId: "proj-1",
       });
     });
-
   });
 
 });

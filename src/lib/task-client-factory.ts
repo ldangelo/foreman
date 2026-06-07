@@ -15,10 +15,6 @@ export interface TaskClientFactoryResult {
 
 export interface TaskClientFactoryOptions {
   registeredProjectId?: string;
-  /** @deprecated Ignored — native task clients are always selected. */
-  autoSelectNativeWhenAvailable?: boolean;
-  /** @deprecated Ignored — native task clients do not use the br binary. */
-  ensureBrInstalled?: boolean;
 }
 
 export interface TaskCounts {

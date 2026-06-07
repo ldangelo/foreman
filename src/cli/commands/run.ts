@@ -203,7 +203,6 @@ export async function createTaskClients(
 ): Promise<TaskClientResult> {
   // Always use native task store
   const { taskClient, backendType } = await createTaskClient(projectPath, {
-    ensureBrInstalled: true,
     registeredProjectId,
   });
 

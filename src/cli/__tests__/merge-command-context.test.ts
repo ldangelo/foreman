@@ -189,7 +189,6 @@ describe("merge command registered context", () => {
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
     expect(mockCreateVcsBackend).toHaveBeenCalledWith({ backend: "auto" }, "/canonical/project");
     expect(mockCreateTaskClient).toHaveBeenCalledWith("/canonical/project", {
-      ensureBrInstalled: true,
       registeredProjectId: "proj-1",
     });
     expect(MockPostgresStore).toHaveBeenCalledWith("proj-1");
@@ -226,7 +225,6 @@ describe("merge command registered context", () => {
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
     expect(mockCreateVcsBackend).toHaveBeenCalledWith({ backend: "auto" }, "/mock/project");
     expect(mockCreateTaskClient).toHaveBeenCalledWith("/mock/project", {
-      ensureBrInstalled: true,
       registeredProjectId: undefined,
     });
     expect(MockPostgresStore).not.toHaveBeenCalled();
