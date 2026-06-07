@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { buildInitWizardConfig, initProjectStore } from "../commands/init.js";
+import { buildInitWizardConfig, formatInitDatabaseError, initProjectStore } from "../commands/init.js";
 
 type InitProjectStore = Parameters<typeof initProjectStore>[2];
 
@@ -96,6 +96,34 @@ describe("initProjectStore — sentinel seeding", () => {
 
     expect(store.getSentinelConfig).toHaveBeenCalledWith("proj-existing");
     expect(store.upsertSentinelConfig).toHaveBeenCalledWith("proj-existing", expect.any(Object));
+  });
+});
+
+describe("formatInitDatabaseError", () => {
+  it("turns missing-password registry failures into actionable guidance", async () => {
+    const { DatabaseError } = await import("../../lib/db/pool-manager.js");
+    const err = new DatabaseError(
+      "Query failed after 4 attempts: SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string",
+      "UNKNOWN",
+      new Error("SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string"),
+    );
+
+    expect(formatInitDatabaseError(err, "/tmp/prompts")).toContain(
+      "DATABASE_URL is missing a password for the configured Postgres user.",
+    );
+    expect(formatInitDatabaseError(err, "/tmp/prompts")).toContain("/tmp/prompts/.env");
+  });
+
+  it("includes config validation errors verbatim", async () => {
+    const { DatabaseConfigError } = await import("../../lib/db/pool-manager.js");
+    const err = new DatabaseConfigError(
+      "Invalid DATABASE_URL. User 'foreman' is missing a password.",
+      "postgresql://foreman@db.example.com/foreman",
+    );
+
+    expect(formatInitDatabaseError(err, "/tmp/prompts")).toContain(
+      "Invalid DATABASE_URL. User 'foreman' is missing a password.",
+    );
   });
 });
 
