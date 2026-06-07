@@ -15,9 +15,15 @@ export interface TaskClientFactoryResult {
 
 export interface TaskClientFactoryOptions {
   registeredProjectId?: string;
-  /** @deprecated Ignored — native task clients are always selected. */
+  /**
+   * @deprecated Reserved for backward compatibility with external tooling; ignored because
+   * native task clients are always selected. TODO(TRD-024): remove in the next major release.
+   */
   autoSelectNativeWhenAvailable?: boolean;
-  /** @deprecated Ignored — native task clients do not use the br binary. */
+  /**
+   * @deprecated Reserved for backward compatibility with external tooling; ignored because
+   * native task clients do not use the br binary. TODO(TRD-024): remove in the next major release.
+   */
   ensureBrInstalled?: boolean;
 }
 

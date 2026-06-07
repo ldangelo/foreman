@@ -493,10 +493,10 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
     const concConfig: ConcurrencyConfig = {};
     if ("global" in concRaw) {
       const global = concRaw["global"];
-      if (typeof global !== "number" || !Number.isFinite(global) || global < 0) {
+      if (typeof global !== "number" || !Number.isFinite(global) || global <= 0) {
         throw new ProjectConfigError(
           filePath,
-          "'concurrency.global' must be a non-negative number",
+          "'concurrency.global' must be a positive number",
         );
       }
       concConfig.global = global as number;
@@ -508,10 +508,10 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       }
       const byState: Record<string, number> = {};
       for (const [state, limit] of Object.entries(byStateRaw)) {
-        if (typeof limit !== "number" || !Number.isFinite(limit) || limit < 0) {
+        if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) {
           throw new ProjectConfigError(
             filePath,
-            `'concurrency.byState.${state}' must be a non-negative number`,
+            `'concurrency.byState.${state}' must be a positive number`,
           );
         }
         byState[state] = limit as number;

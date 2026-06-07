@@ -21,15 +21,10 @@ import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-ta
 // ── Backend Client Factory (TRD-017) ──────────────────────────────────
 
 /**
- * Instantiate the br task-tracking client.
- *
- * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
- * the binary exists.
- *
- * Throws if the br binary cannot be found.
+ * Instantiate the native task-tracking client.
  */
 export async function createMergeTaskClient(projectPath: string, registeredProjectId?: string): Promise<ITaskClient> {
-  const { taskClient } = await createTaskClient(projectPath, { ensureBrInstalled: true, registeredProjectId });
+  const { taskClient } = await createTaskClient(projectPath, { registeredProjectId });
   return taskClient;
 }
 
