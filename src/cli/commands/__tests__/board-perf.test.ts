@@ -13,7 +13,7 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "ready",
   "in_progress",
   "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 

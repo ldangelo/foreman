@@ -167,6 +167,9 @@ function makeSeeds(issue?: Partial<Issue>): ITaskClient {
 describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(VcsBackendFactory.resolveBackend).mockImplementation(
+      (config: { backend: "git" | "jujutsu" | "auto" }) => config.backend === "auto" ? "git" : config.backend,
+    );
     mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
   });
 
@@ -266,6 +269,7 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
     // Called exactly once for the single ready seed
     expect(VcsBackendFactory.create).toHaveBeenCalledTimes(1);
   });
+
 });
 
 // ── Tests: VcsBackend Propagation to spawnAgent (AC-T-015-2) ─────────────────
@@ -273,6 +277,9 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
 describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015-2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(VcsBackendFactory.resolveBackend).mockImplementation(
+      (config: { backend: "git" | "jujutsu" | "auto" }) => config.backend === "auto" ? "git" : config.backend,
+    );
     mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
   });
 
@@ -466,6 +473,9 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
 describe("Dispatcher — VcsBackend creation failure is non-fatal (TRD-015, AC-T-015-3)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(VcsBackendFactory.resolveBackend).mockImplementation(
+      (config: { backend: "git" | "jujutsu" | "auto" }) => config.backend === "auto" ? "git" : config.backend,
+    );
     mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
   });
 
@@ -496,6 +506,9 @@ describe("Dispatcher — VcsBackend creation failure is non-fatal (TRD-015, AC-T
 describe("Dispatcher — onError=stop uses registered run failure counts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(VcsBackendFactory.resolveBackend).mockImplementation(
+      (config: { backend: "git" | "jujutsu" | "auto" }) => config.backend === "auto" ? "git" : config.backend,
+    );
     mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
   });
 
@@ -532,9 +545,11 @@ describe("buildWorkerEnv — FOREMAN_VCS_BACKEND propagation via VcsBackend.name
    * written to the temp file contains FOREMAN_VCS_BACKEND when a VcsBackend
    * is present. We test this at the spawnAgent level since buildWorkerEnv is internal.
    */
-
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(VcsBackendFactory.resolveBackend).mockImplementation(
+      (config: { backend: "git" | "jujutsu" | "auto" }) => config.backend === "auto" ? "git" : config.backend,
+    );
   });
 
   it("spawnAgent signature accepts VcsBackend type (not string)", async () => {
@@ -569,6 +584,9 @@ describe("buildWorkerEnv — FOREMAN_VCS_BACKEND propagation via VcsBackend.name
 describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace creation (TRD-037)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(VcsBackendFactory.resolveBackend).mockImplementation(
+      (config: { backend: "git" | "jujutsu" | "auto" }) => config.backend === "auto" ? "git" : config.backend,
+    );
   });
 
   it("calls WorktreeManager.createWorktree() when dispatching a seed (TRD-037)", async () => {
@@ -605,6 +623,9 @@ describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace cre
 describe("Dispatcher — registered override-backed dependency stacking", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(VcsBackendFactory.resolveBackend).mockImplementation(
+      (config: { backend: "git" | "jujutsu" | "auto" }) => config.backend === "auto" ? "git" : config.backend,
+    );
     mockShowFn = vi.fn().mockResolvedValue({ dependencies: ["dep-a"] });
   });
 
