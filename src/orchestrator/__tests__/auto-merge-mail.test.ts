@@ -93,6 +93,8 @@ vi.mock("../../lib/store.js", () => ({
     this.getProjectByPath = mockGetProjectByPath;
     this.getDb = mockGetDb;
     this.getRun = mockGetRun;
+    this.getTaskById = vi.fn().mockResolvedValue(null);
+    this.updateTaskStatus = vi.fn().mockResolvedValue(undefined);
     this.sendMessage = mockSendMessage;
     this.getRunsByStatuses = vi.fn().mockReturnValue([]);
   }),
@@ -124,6 +126,8 @@ function makeStore(): {
   getProjectByPath: ReturnType<typeof vi.fn>;
   getDb: ReturnType<typeof vi.fn>;
   getRun: ReturnType<typeof vi.fn>;
+  getTaskById: ReturnType<typeof vi.fn>;
+  updateTaskStatus: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
   getRunsByStatuses: ReturnType<typeof vi.fn>;
 } {
@@ -132,6 +136,8 @@ function makeStore(): {
     getProjectByPath: mockGetProjectByPath,
     getDb: mockGetDb,
     getRun: mockGetRun,
+    getTaskById: vi.fn().mockResolvedValue(null),
+    updateTaskStatus: vi.fn().mockResolvedValue(undefined),
     sendMessage: mockSendMessage,
     getRunsByStatuses: vi.fn().mockReturnValue([]),
   };
