@@ -60,6 +60,37 @@ describe("BoardMutations", () => {
     };
   };
 
+  describe("Mark task as ready (R key)", () => {
+    it("R should return early when no task is selected", async () => {
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [],
+      });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(result.flashTaskId).toBeNull();
+      expect(result.needsRefresh).toBe(false);
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("R should mark selected task as ready", async () => {
+      const spy = vi.spyOn(boardModule, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "backlog" });
+      const state = createState({
+        backlog: [task],
+      });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234", "ready");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.needsRefresh).toBe(true);
+      expect(result.errorMessage).toBeNull();
+    });
+  });
+
   describe("Status Cycling (s/S keys)", () => {
     it("s should advance status to next in order", () => {
       const task = createTask("bd-1234", { status: "backlog" });

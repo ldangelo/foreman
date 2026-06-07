@@ -5,6 +5,7 @@
  * - 6 status columns: backlog, ready, in_progress, review, blocked, closed
  * - vim-style navigation: j/k (vertical), h/l (horizontal)
  * - Status cycling: s (forward), S (backward)
+ * - Mark as ready: R
  * - Close task: c / C (with reason)
  * - Edit in $EDITOR: e / E (full schema)
  * - Task detail view: Enter
@@ -34,6 +35,7 @@ import {
   type TaskRow,
 } from "../../lib/task-store.js";
 import { listRegisteredProjects, resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import * as boardModule from "./board.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────────
 
@@ -413,6 +415,7 @@ function renderHelpOverlayView(width: number): ReturnType<typeof h> {
     ["g / G", "Jump to first / last task"],
     ["[1]…[6]", "Jump to column by number"],
     ["s / S", "Cycle status forward / backward"],
+    ["R", "Mark task as ready"],
     ["c", "Close task"],
     ["C", "Close task with reason"],
     ["e / E", "Edit task in editor"],
@@ -597,7 +600,7 @@ function renderBoardFrame(
         );
       }),
     ),
-    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
+    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  R mark ready  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
     state.errorMessage
       ? h(
         Box,
@@ -861,6 +864,7 @@ const KEY_C = "C";
 const KEY_e = "e";
 const KEY_E = "E";
 const KEY_r = "r";
+const KEY_R = "R";
 const KEY_q = "q";
 const KEY_QUESTION = "?";
 const KEY_n = "n";
@@ -1125,7 +1129,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const newStatusIdx = (currentStatusIdx + delta + BOARD_STATUSES.length) % BOARD_STATUSES.length;
         const newStatus = BOARD_STATUSES[newStatusIdx];
 
-        const err = await applyStatusChangeAsync(projectPath, task.id, newStatus);
+        const err = await boardModule.applyStatusChangeAsync(projectPath, task.id, newStatus);
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1208,6 +1212,21 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         if (task) {
           result.showDetail = true;
           result.detailTask = task;
+          result.needsRefresh = true;
+        }
+        break;
+      }
+
+      // ── Mark task as ready ─────────────────────────────────────────────────
+      case KEY_R: {
+        const task = getHighlightedTask(result.nav, state.tasks);
+        if (!task) break;
+
+        const err = await boardModule.applyStatusChangeAsync(projectPath, task.id, "ready");
+        if (err) {
+          result.errorMessage = err;
+        } else {
+          result.flashTaskId = task.id;
           result.needsRefresh = true;
         }
         break;
