@@ -5,10 +5,18 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  chmodSync,
+  existsSync,
+  unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ForemanDaemon } from "../index.js";
+import { ForemanDaemon, registerDirectDaemonProcess } from "../index.js";
 
 let mockFastify: {
   all: ReturnType<typeof vi.fn>;
@@ -168,6 +176,51 @@ beforeEach(() => {
   poolInitCalls = 0;
   poolDestroyCalls = 0;
   vi.clearAllMocks();
+});
+
+describe("direct daemon process registration", () => {
+  it("refuses to register when a live daemon PID is already recorded", () => {
+    const dir = fakeSocketDir();
+    const pidPath = join(dir, "daemon.pid");
+    const socketPath = join(dir, "daemon.sock");
+    try {
+      writeFileSync(pidPath, String(process.pid), "utf8");
+      const cleanup = registerDirectDaemonProcess({ pidPath, socketPath, pid: 12345 });
+      expect(cleanup).toBeNull();
+      expect(readFileSync(pidPath, "utf8").trim()).toBe(String(process.pid));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to register when the daemon socket already exists", () => {
+    const dir = fakeSocketDir();
+    const pidPath = join(dir, "daemon.pid");
+    const socketPath = join(dir, "daemon.sock");
+    try {
+      writeFileSync(socketPath, "", "utf8");
+      const cleanup = registerDirectDaemonProcess({ pidPath, socketPath, pid: process.pid });
+      expect(cleanup).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans up the PID file it registered", () => {
+    const dir = fakeSocketDir();
+    const pidPath = join(dir, "daemon.pid");
+    const socketPath = join(dir, "daemon.sock");
+    try {
+      writeFileSync(pidPath, "999999", "utf8");
+      const cleanup = registerDirectDaemonProcess({ pidPath, socketPath, pid: process.pid });
+      expect(cleanup).not.toBeNull();
+      expect(readFileSync(pidPath, "utf8").trim()).toBe(String(process.pid));
+      cleanup?.();
+      expect(existsSync(pidPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ForemanDaemon", () => {

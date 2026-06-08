@@ -1,8 +1,15 @@
 import Fastify from "fastify";
 import { fastifyRequestHandler } from "@trpc/server/adapters/fastify";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { mkdirSync, chmodSync, existsSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  mkdirSync,
+  chmodSync,
+  existsSync,
+  unlinkSync,
+  writeFileSync,
+  readFileSync,
+} from "node:fs";
 import { initPool, healthCheck, destroyPool } from "../lib/db/pool-manager.js";
 import { createContext, appRouter } from "./router.js";
 import { createWebhookHandler } from "./webhook-handler.js";
@@ -27,6 +34,7 @@ import { JiraTriggerHandler } from "../orchestrator/jira-trigger-handler.js";
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".foreman", "daemon.sock");
+const DEFAULT_PID_PATH = join(homedir(), ".foreman", "daemon.pid");
 const DEFAULT_HTTP_PORT = 3847;
 const DEFAULT_DISPATCH_INTERVAL_MS = 30_000; // 30 seconds
 const DEFAULT_MAX_AGENTS = 5;
@@ -59,6 +67,67 @@ function failStartup(cause: unknown): never {
     "[ForemanDaemon] Check DATABASE_URL and ensure Postgres is running."
   );
   process.exit(1);
+}
+
+function readPid(path: string): number | null {
+  if (!existsSync(path)) return null;
+  const pid = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
+  return Number.isNaN(pid) ? null : pid;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function registerDirectDaemonProcess(options?: {
+  pidPath?: string;
+  socketPath?: string;
+  pid?: number;
+}): (() => void) | null {
+  const pidPath = options?.pidPath ?? DEFAULT_PID_PATH;
+  const socketPath = options?.socketPath ?? DEFAULT_SOCKET_PATH;
+  const pid = options?.pid ?? process.pid;
+  const existingPid = readPid(pidPath);
+
+  if (existingPid !== null && isProcessAlive(existingPid)) {
+    console.error(
+      `[ForemanDaemon] Refusing to start: daemon already registered with PID ${existingPid}.`
+    );
+    return null;
+  }
+
+  if (existsSync(socketPath)) {
+    console.error(
+      `[ForemanDaemon] Refusing to start: socket already exists at ${socketPath}. Use 'foreman daemon restart' to recover stale sockets.`
+    );
+    return null;
+  }
+
+  mkdirSync(dirname(pidPath), { recursive: true });
+  writeFileSync(pidPath, String(pid), "utf8");
+  chmodSync(pidPath, 0o600);
+
+  return () => {
+    if (readPid(pidPath) === pid) {
+      try {
+        unlinkSync(pidPath);
+      } catch {
+        // ignore
+      }
+    }
+    if (existsSync(socketPath)) {
+      try {
+        unlinkSync(socketPath);
+      } catch {
+        // ignore
+      }
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -591,8 +660,28 @@ export class ForemanDaemon {
 // ---------------------------------------------------------------------------
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const cleanupDirectDaemon = registerDirectDaemonProcess();
+  if (!cleanupDirectDaemon) {
+    process.exit(0);
+  }
+
   const daemon = new ForemanDaemon();
+  const shutdown = async (signal: string) => {
+    console.error(`[ForemanDaemon] Received ${signal}; stopping daemon`);
+    try {
+      await daemon.stop();
+    } finally {
+      cleanupDirectDaemon();
+      process.exit(0);
+    }
+  };
+
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("exit", cleanupDirectDaemon);
+
   daemon.start().catch((err) => {
+    cleanupDirectDaemon();
     console.error("[ForemanDaemon] Startup failed:", err);
     process.exit(1);
   });
