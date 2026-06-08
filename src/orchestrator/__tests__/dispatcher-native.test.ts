@@ -173,25 +173,6 @@ function makeMockStore(opts: {
   } as unknown as ForemanStore;
 }
 
-/** Temporarily override process.env[key] for the duration of fn() */
-async function withEnvVar(key: string, value: string | undefined, fn: () => Promise<void>): Promise<void> {
-  const original = process.env[key];
-  if (value === undefined) {
-    delete process.env[key];
-  } else {
-    process.env[key] = value;
-  }
-  try {
-    await fn();
-  } finally {
-    if (original === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = original;
-    }
-  }
-}
-
 // ── nativeTaskToIssue() ──────────────────────────────────────────────────
 
 describe("nativeTaskToIssue()", () => {
@@ -477,49 +458,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
     // spawnAgent must NOT have been called (we return before reaching step 7)
     expect(spawnSpy).not.toHaveBeenCalled();
     spawnSpy.mockRestore();
-  });
-
-  it("does NOT call claimTask() when using beads path", async () => {
-    process.env.FOREMAN_TASK_STORE = "beads";
-
-    const store: ForemanStore = {
-      getActiveRuns: vi.fn().mockReturnValue([]),
-      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([]),
-      getRunsByStatuses: vi.fn().mockReturnValue([]),
-      getStuckRunsForSeed: vi.fn().mockReturnValue([]),
-      hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      getReadyTasks: vi.fn().mockReturnValue([]),
-      claimTask: vi.fn().mockReturnValue(true),
-      createRun: vi.fn().mockReturnValue({
-        id: "run-beads-001",
-        project_id: "proj-1",
-        seed_id: "b-001",
-        status: "pending",
-        created_at: new Date().toISOString(),
-      }),
-      updateRun: vi.fn(),
-      logEvent: vi.fn(),
-      sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
-    } as unknown as ForemanStore;
-
-    const beadsClient = makeMockBeadsClient([makeBeadsIssue("b-001")]);
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    const spawnSpy = vi
-      .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
-      .mockResolvedValue({ sessionKey: "sess-beads" });
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    await dispatcher.dispatch({ dryRun: false });
-    consoleSpy.mockRestore();
-    spawnSpy.mockRestore();
-
-    // claimTask() must NOT be called on the beads path (uses seeds.update() instead)
-    expect(store.claimTask).not.toHaveBeenCalled();
   });
 });
 

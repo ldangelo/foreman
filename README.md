@@ -68,7 +68,7 @@ Foreman CLI / Dispatcher
 2. **Developer** (Sonnet, 80 turns, read+write) — implementation + tests
 3. **QA** (Sonnet, 30 turns, read+bash) — test verification → `QA_REPORT.md`
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
-5. **Finalize** — git add/commit/push, native task merge/close update (or beads fallback)
+5. **Finalize** — git add/commit/push, native task merge/close update
 
 Dev ↔ QA retries up to 2x before proceeding to Review.
 
@@ -814,7 +814,7 @@ br dep add task-tests task-feature    # tests depend on feature
 br sync --flush-only               # Export DB to JSONL before committing
 ```
 
-Set `FOREMAN_TASK_STORE=native|beads|auto` to force or inspect task-store selection behavior.
+Set `FOREMAN_TASK_STORE=native` to explicitly select the native Postgres task store (accepted for backward compatibility but has no effect — native is the only supported store).
 
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
 

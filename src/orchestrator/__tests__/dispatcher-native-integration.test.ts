@@ -257,9 +257,9 @@ describe("Dispatcher — Native task store path (integration)", () => {
   });
 });
 
-// ── Integration: FOREMAN_TASK_STORE overrides ────────────────────────────
+// ── Integration: Native task store (native-only) ─────────────────────────
 
-describe("Dispatcher — FOREMAN_TASK_STORE overrides (integration)", () => {
+describe("Dispatcher — Native task store (native-only)", () => {
   let ctx: StoreContext;
 
   beforeEach(() => {
@@ -270,135 +270,31 @@ describe("Dispatcher — FOREMAN_TASK_STORE overrides (integration)", () => {
     delete process.env.FOREMAN_TASK_STORE;
   });
 
-  it("FOREMAN_TASK_STORE=native forces native store even when empty", async () => {
-    await withEnvVar("FOREMAN_TASK_STORE", "native", async () => {
-      // No native tasks — empty store
-      expect(ctx.store.hasNativeTasks()).toBe(false);
+  /**
+   * Characterization test: FOREMAN_TASK_STORE=native is accepted but has no
+   * effect — native is the only task store. The env var is accepted for
+   * backward compatibility but does not change runtime behavior.
+   */
+  it("FOREMAN_TASK_STORE=native is accepted but does not change behavior (native-only)", async () => {
+    process.env.FOREMAN_TASK_STORE = "native";
+    // No native tasks — empty store
+    expect(ctx.store.hasNativeTasks()).toBe(false);
 
-      // Create a task so there's something to dispatch
-      const task = ctx.taskStore.create({ title: "Forced Native Task" });
-      ctx.taskStore.approve(task.id);
+    // Create a task so there's something to dispatch
+    const task = ctx.taskStore.create({ title: "Native Task" });
+    ctx.taskStore.approve(task.id);
 
-      const beadsClient = makeMockBeadsClient([{ id: "b-001", title: "Beads Task", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "", updated_at: "" }]);
-      const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      const result = await dispatcher.dispatch({ dryRun: true });
-      consoleSpy.mockRestore();
-
-      // Native task dispatched, beads NOT
-      expect(result.dispatched.map((d) => d.seedId)).toContain(task.id);
-      expect(result.dispatched.map((d) => d.seedId)).not.toContain("b-001");
-      expect(beadsClient.ready).not.toHaveBeenCalled();
-    });
-  });
-
-  it("FOREMAN_TASK_STORE=beads forces beads even when native tasks exist", async () => {
-    await withEnvVar("FOREMAN_TASK_STORE", "beads", async () => {
-      // Create native tasks
-      const nativeTask = ctx.taskStore.create({ title: "Native Task" });
-      ctx.taskStore.approve(nativeTask.id);
-      expect(ctx.store.hasNativeTasks()).toBe(true);
-
-      const beadsIssue = { id: "b-force-beads", title: "Forced Beads Task", type: "task" as const, priority: "P2" as const, status: "open" as const, assignee: null, parent: null, created_at: "", updated_at: "" };
-      const beadsClient = makeMockBeadsClient([beadsIssue]);
-      const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      const result = await dispatcher.dispatch({ dryRun: true });
-      consoleSpy.mockRestore();
-
-      // Beads task dispatched, native NOT
-      expect(result.dispatched.map((d) => d.seedId)).toContain("b-force-beads");
-      expect(result.dispatched.map((d) => d.seedId)).not.toContain(nativeTask.id);
-      expect(beadsClient.ready).toHaveBeenCalled();
-    });
-  });
-
-  it("FOREMAN_TASK_STORE=auto uses native when tasks exist, beads when empty", async () => {
-    await withEnvVar("FOREMAN_TASK_STORE", "auto", async () => {
-      // No tasks — should use beads
-      const beadsIssue = { id: "b-001", title: "Beads Task", type: "task" as const, priority: "P2" as const, status: "open" as const, assignee: null, parent: null, created_at: "", updated_at: "" };
-      const beadsClient = makeMockBeadsClient([beadsIssue]);
-      const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-
-      const result1 = await dispatcher.dispatch({ dryRun: true });
-      expect(result1.dispatched.map((d) => d.seedId)).toContain("b-001");
-      expect(beadsClient.ready).toHaveBeenCalled();
-
-      // Now add a native task — should switch to native
-      const nativeTask = ctx.taskStore.create({ title: "Native Task" });
-      ctx.taskStore.approve(nativeTask.id);
-
-      const dispatcher2 = new Dispatcher(beadsClient, ctx.store, "/tmp");
-      vi.clearAllMocks();
-      const result2 = await dispatcher2.dispatch({ dryRun: true });
-      expect(result2.dispatched.map((d) => d.seedId)).toContain(nativeTask.id);
-    });
-  });
-});
-
-describe("Dispatcher — explicit bead fallback with native tasks present", () => {
-  let ctx: StoreContext;
-
-  beforeEach(() => {
-    ctx = setupStore();
-  });
-
-  afterEach(() => {
-    teardownStore(ctx);
-    delete process.env.FOREMAN_TASK_STORE;
-  });
-
-  it("falls back to beads for an explicit bead id when no native external_id row exists", async () => {
-    const nativeTask = ctx.taskStore.create({ title: "Native Task" });
-    ctx.taskStore.approve(nativeTask.id);
-
-    const beadsIssue = { id: "bd-explicit", title: "Explicit Bead", type: "bug" as const, priority: "P2" as const, status: "open" as const, assignee: null, parent: null, created_at: "", updated_at: "" };
-    const beadsClient = makeMockBeadsClient([]);
-    beadsClient.show = vi.fn().mockResolvedValue(beadsIssue);
-
+    const beadsClient = makeMockBeadsClient([{ id: "b-001", title: "Beads Task", type: "task", priority: "P2", status: "open", assignee: null, parent: null, created_at: "", updated_at: "" }]);
     const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-    const spawnSpy = vi
-      .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
-      .mockResolvedValue({ sessionKey: "mock-session" });
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const result = await dispatcher.dispatch({ dryRun: false, seedId: "bd-explicit" });
+    const result = await dispatcher.dispatch({ dryRun: true });
     consoleSpy.mockRestore();
 
-    expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0]!.seedId).toBe("bd-explicit");
-    expect(beadsClient.update).toHaveBeenCalledWith("bd-explicit", { status: "in_progress" });
-    expect(spawnSpy).toHaveBeenCalled();
-
-    spawnSpy.mockRestore();
-  });
-
-  it("uses native store for explicit bead dispatch when a matching external_id row exists", async () => {
-    const nativeTask = ctx.taskStore.create({ title: "Imported Native Task", externalId: "bd-imported" });
-    ctx.taskStore.approve(nativeTask.id);
-
-    const beadsClient = makeMockBeadsClient([]);
-    const dispatcher = new Dispatcher(beadsClient, ctx.store, "/tmp");
-    const spawnSpy = vi
-      .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
-      .mockResolvedValue({ sessionKey: "mock-session" });
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const result = await dispatcher.dispatch({ dryRun: false, seedId: "bd-imported" });
-    consoleSpy.mockRestore();
-
-    expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0]!.seedId).toBe(nativeTask.id);
-    expect(beadsClient.update).not.toHaveBeenCalled();
-    expect(spawnSpy).toHaveBeenCalled();
-
-    const updated = ctx.taskStore.get(nativeTask.id);
-    expect(updated?.status).toBe("in-progress");
-    expect(updated?.run_id).toBe(result.dispatched[0]!.runId);
-
-    spawnSpy.mockRestore();
+    // Native task dispatched, beads NOT
+    expect(result.dispatched.map((d) => d.seedId)).toContain(task.id);
+    expect(result.dispatched.map((d) => d.seedId)).not.toContain("b-001");
+    expect(beadsClient.ready).not.toHaveBeenCalled();
   });
 });
 

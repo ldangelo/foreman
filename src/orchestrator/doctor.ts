@@ -910,9 +910,9 @@ export class Doctor {
     const nativeTaskCount = this.getNativeTaskCount();
 
     return {
-      name: "task store mode",
+      name: "task store",
       status: "pass",
-      message: `Task store: native (${nativeTaskCount} tasks)`,
+      message: `Native task store active (${nativeTaskCount} tasks). Beads fallback has been removed — the native Postgres store is the only supported task store.`,
     };
   }
 
