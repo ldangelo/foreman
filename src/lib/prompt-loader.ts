@@ -22,6 +22,7 @@ import {
   copyFileSync,
   readdirSync,
 } from "node:fs";
+import { execSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -98,6 +99,65 @@ export function renderTemplate(
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
     const val = vars[key];
     return val !== undefined ? val : `{{${key}}}`;
+  });
+}
+
+// ── Command expansion ────────────────────────────────────────────────────────
+
+/**
+ * Error thrown when a shell command fails during prompt expansion.
+ */
+export class CommandExpansionError extends Error {
+  constructor(
+    public readonly command: string,
+    public readonly exitCode: number | null,
+    public readonly stderr: string,
+  ) {
+    super(
+      `Command '${command}' failed with exit code ${exitCode ?? "null"}${stderr ? `: ${stderr}` : ""}`,
+    );
+    this.name = "CommandExpansionError";
+  }
+}
+
+/**
+ * Expand !`command` placeholders in a template by executing each command
+ * and replacing the placeholder with its stdout output.
+ *
+ * Commands are executed in the provided working directory (cwd).
+ * If a command fails (non-zero exit), a CommandExpansionError is thrown.
+ *
+ * @param template - Template string potentially containing !`command` patterns
+ * @param cwd      - Working directory for command execution
+ * @returns Template with all !`command` patterns replaced by command output
+ * @throws CommandExpansionError if any command fails
+ */
+export function expandCommandPlaceholders(
+  template: string,
+  cwd: string,
+): string {
+  return template.replace(/!`([^`]+)`/g, (_match, command: string) => {
+    try {
+      const output = execSync(command, {
+        cwd,
+        encoding: "utf-8",
+        timeout: 30_000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      // execSync returns Buffer | string depending on encoding option.
+      // With encoding: "utf-8", it returns string.
+      return typeof output === "string" ? output : String(output);
+    } catch (err) {
+      const error = err as { status?: number; stderr?: Buffer | string };
+      const exitCode = error.status ?? null;
+      const stderrStr =
+        error.stderr != null
+          ? typeof error.stderr === "string"
+            ? error.stderr
+            : String(error.stderr)
+          : "";
+      throw new CommandExpansionError(command, exitCode, stderrStr);
+    }
   });
 }
 
