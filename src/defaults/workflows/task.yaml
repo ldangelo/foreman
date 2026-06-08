@@ -16,7 +16,7 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
-rebaseAfterPhase: developer
+rebaseAfterPhase: fix
 
 phases:
   # ── Phase 1: fix ────────────────────────────────────────────────────────
@@ -59,12 +59,12 @@ phases:
     maxTurns: 30
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: fix
 
   - name: reviewer
     prompt: reviewer.md
@@ -76,12 +76,12 @@ phases:
     maxTurns: 20
     artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: fix
       forwardArtifactTo: foreman
 
   # ── Phase 3: cli-review (builtin) ───────────────────────────────────────

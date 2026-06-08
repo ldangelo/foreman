@@ -296,15 +296,26 @@ phases:
     expect(config.phases.some((p) => p.name === "developer")).toBe(true);
   });
 
-  it("loads bundled task workflow with scoped fix prompt and qa retry", () => {
+  it("loads bundled task workflow with retry targets that reference existing phases", () => {
     const config = loadWorkflowConfig("task", tmpDir);
+    const phaseNames = new Set(config.phases.map((p) => p.name));
     const fixPhase = config.phases.find((p) => p.name === "fix");
     const qaPhase = config.phases.find((p) => p.name === "qa");
+
     expect(fixPhase?.prompt).toBe("fix-issue.md");
     expect(fixPhase?.command).toBeUndefined();
     expect(qaPhase?.prompt).toBe("qa.md");
-    expect(qaPhase?.retryWith).toBe("developer");
+    expect(qaPhase?.retryWith).toBe("fix");
     expect(qaPhase?.retryOnFail).toBe(2);
+
+    for (const phase of config.phases) {
+      if (phase.retryWith) {
+        expect(phaseNames.has(phase.retryWith), `${phase.name}.retryWith`).toBe(true);
+      }
+      if (phase.mail?.onFail) {
+        expect(phaseNames.has(phase.mail.onFail), `${phase.name}.mail.onFail`).toBe(true);
+      }
+    }
   });
 
   it("loads bundled bug and chore workflows with scoped fix prompts", () => {
