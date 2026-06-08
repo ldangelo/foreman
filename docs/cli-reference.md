@@ -37,7 +37,7 @@ foreman init --force              # Overwrite existing prompt files
 
 ### `foreman run`
 
-Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks (or beads via fallback), monitors agents, and auto-merges completed work.
+Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, monitors agents, and auto-merges completed work.
 
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
