@@ -187,7 +187,7 @@ Allow prompts to execute shell commands and inject output.
 
 ### Backlog-006: Per-State Concurrency Limits
 **Source:** Symphony 8.3
-**Status:** Not Started
+**Status:** Completed
 
 **Description:**
 Support concurrency limits per issue state (e.g., max 2 "In Review" at once).
