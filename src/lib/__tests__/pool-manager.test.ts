@@ -63,6 +63,14 @@ afterEach(async () => {
 
 const originalCwd = process.cwd();
 
+function restoreEnvVar(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // init / destroy lifecycle
 // ---------------------------------------------------------------------------
@@ -109,7 +117,7 @@ describe("PoolManager.init / destroy lifecycle", () => {
         "postgresql://localhost/foreman"
       );
     } finally {
-      process.env.DATABASE_URL = prev;
+      restoreEnvVar("DATABASE_URL", prev);
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
@@ -124,7 +132,7 @@ describe("PoolManager.init / destroy lifecycle", () => {
         "postgresql://user:pass@host/db"
       );
     } finally {
-      process.env.DATABASE_URL = prev;
+      restoreEnvVar("DATABASE_URL", prev);
     }
   });
 
@@ -136,7 +144,7 @@ describe("PoolManager.init / destroy lifecycle", () => {
         "User 'foreman' is missing a password.",
       );
     } finally {
-      process.env.DATABASE_URL = prev;
+      restoreEnvVar("DATABASE_URL", prev);
     }
   });
 
@@ -157,7 +165,7 @@ describe("PoolManager.init / destroy lifecycle", () => {
         "postgresql://postgres:postgres@127.0.0.1:5432/foreman"
       );
     } finally {
-      process.env.DATABASE_URL = prev;
+      restoreEnvVar("DATABASE_URL", prev);
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
