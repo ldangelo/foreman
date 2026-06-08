@@ -580,26 +580,30 @@ function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof
     );
   }
 
-  if (task.notes && task.notes.length > 0) {
-    children.push(h(Text, { key: "notes-title", bold: true }, "Notes:"));
-    for (const [noteIndex, note] of task.notes.slice(0, 5).entries()) {
-      const when = new Date(note.created_at).toLocaleString();
-      const phase = note.phase ? `${note.phase} ` : "";
-      children.push(
-        h(
-          Text,
-          { key: `note:${note.id}:meta`, dimColor: true, wrap: "truncate-end" },
-          `[${when} ${phase}${note.kind}] ${note.author}`,
-        ),
-      );
-      for (const [lineIndex, line] of note.body.split("\n").slice(0, noteIndex === 0 ? 2 : 1).entries()) {
+  if (task.notes) {
+    if (task.notes.length === 0) {
+      children.push(h(Text, { key: "notes-empty", dimColor: true }, "Notes: none yet"));
+    } else {
+      children.push(h(Text, { key: "notes-title", bold: true }, "Notes:"));
+      for (const [noteIndex, note] of task.notes.slice(0, 5).entries()) {
+        const when = new Date(note.created_at).toLocaleString();
+        const phase = note.phase ? `${note.phase} ` : "";
         children.push(
           h(
             Text,
-            { key: `note:${note.id}:body:${lineIndex}`, wrap: "truncate-end" },
-            line,
+            { key: `note:${note.id}:meta`, dimColor: true, wrap: "truncate-end" },
+            `[${when} ${phase}${note.kind}] ${note.author}`,
           ),
         );
+        for (const [lineIndex, line] of note.body.split("\n").slice(0, noteIndex === 0 ? 2 : 1).entries()) {
+          children.push(
+            h(
+              Text,
+              { key: `note:${note.id}:body:${lineIndex}`, wrap: "truncate-end" },
+              line,
+            ),
+          );
+        }
       }
     }
   }

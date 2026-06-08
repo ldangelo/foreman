@@ -1186,8 +1186,10 @@ const showCommand = new Command("show")
           limit: 25,
           newestFirst: false,
         }) as TaskNoteRow[];
-        if (notes.length > 0) {
-          console.log(chalk.bold("\n  Notes:"));
+        console.log(chalk.bold("\n  Notes:"));
+        if (notes.length === 0) {
+          console.log(chalk.dim("    (none yet)"));
+        } else {
           for (const note of notes) {
             const when = new Date(note.created_at).toLocaleString();
             const phase = note.phase ? ` ${note.phase}` : "";
@@ -1197,8 +1199,9 @@ const showCommand = new Command("show")
             }
           }
         }
-      } catch {
-        // Notes are optional for older daemons/databases.
+      } catch (err) {
+        console.log(chalk.bold("\n  Notes:"));
+        console.log(chalk.dim(`    unavailable: ${err instanceof Error ? err.message : String(err)}`));
       }
 
       // Show dependencies
