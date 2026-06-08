@@ -201,6 +201,25 @@ function computeCacheHash(worktreePath: string, keyFile: string): string | null 
   return createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
 
+async function invalidateCache(cacheDir: string, cachedPath: string): Promise<void> {
+  await fs.rm(join(cacheDir, ".complete"), { force: true });
+  await fs.rm(cachedPath, { recursive: true, force: true });
+}
+
+async function isValidCachedPath(cachedPath: string, cache: WorkflowSetupCache): Promise<boolean> {
+  const stat = await fs.lstat(cachedPath);
+  if (!stat.isDirectory()) return true;
+
+  const entries = await fs.readdir(cachedPath);
+  if (entries.length === 0) return false;
+
+  if (cache.path === "node_modules" && cache.key === "package-lock.json") {
+    return existsSync(join(cachedPath, ".package-lock.json"));
+  }
+
+  return true;
+}
+
 async function tryRestoreFromCache(
   worktreePath: string,
   projectRoot: string,
@@ -217,14 +236,9 @@ async function tryRestoreFromCache(
   if (!existsSync(cachedPath)) return false;
 
   try {
-    const stat = await fs.lstat(cachedPath);
-    if (stat.isDirectory()) {
-      const entries = await fs.readdir(cachedPath);
-      if (entries.length === 0) {
-        await fs.rm(join(cacheDir, ".complete"), { force: true });
-        await fs.rm(cachedPath, { recursive: true, force: true });
-        return false;
-      }
+    if (!(await isValidCachedPath(cachedPath, cache))) {
+      await invalidateCache(cacheDir, cachedPath);
+      return false;
     }
   } catch {
     return false;

@@ -56,6 +56,7 @@ describe("runSetupWithCache", () => {
     const setupSteps: WorkflowSetupStep[] = [
       { command: "mkdir -p node_modules/.bin" },
       { command: "touch node_modules/.bin/vitest" },
+      { command: "touch node_modules/.package-lock.json" },
       { command: "touch setup-ran.flag" },
     ];
 
@@ -68,6 +69,7 @@ describe("runSetupWithCache", () => {
 
     expect(existsSync(join(cacheDir, ".complete"))).toBe(true);
     expect(existsSync(join(cacheDir, "node_modules", ".bin", "vitest"))).toBe(true);
+    expect(existsSync(join(cacheDir, "node_modules", ".package-lock.json"))).toBe(true);
     expect(lstatSync(join(workspace1, "node_modules")).isSymbolicLink()).toBe(true);
     expect(readlinkSync(join(workspace1, "node_modules"))).toBe(join(cacheDir, "node_modules"));
 
@@ -77,6 +79,7 @@ describe("runSetupWithCache", () => {
     const secondSteps: WorkflowSetupStep[] = [
       { command: "mkdir -p node_modules/.bin" },
       { command: "touch node_modules/.bin/vitest" },
+      { command: "touch node_modules/.package-lock.json" },
       { command: "touch should-not-run.flag" },
     ];
 
@@ -85,6 +88,42 @@ describe("runSetupWithCache", () => {
     expect(existsSync(join(workspace2, "should-not-run.flag"))).toBe(false);
     expect(lstatSync(join(workspace2, "node_modules")).isSymbolicLink()).toBe(true);
     expect(readlinkSync(join(workspace2, "node_modules"))).toBe(join(cacheDir, "node_modules"));
+  });
+
+  it("treats a partial npm node_modules cache with .complete as stale and repopulates it", async () => {
+    const projectRoot = makeTempDir("foreman-setup-cache-project-");
+    tempDirs.push(projectRoot);
+
+    const cacheConfig: WorkflowSetupCache = {
+      key: "package-lock.json",
+      path: "node_modules",
+    };
+
+    const workspace = makeWorkspace("partial-npm");
+    tempDirs.push(workspace);
+
+    const hash = cacheHashFor(workspace, "package-lock.json");
+    const cacheDir = join(projectRoot, ".foreman", "setup-cache", hash);
+    const cachedPath = join(cacheDir, "node_modules");
+
+    mkdirSync(join(cachedPath, ".vite"), { recursive: true });
+    writeFileSync(join(cacheDir, ".complete"), "stale");
+
+    const setupSteps: WorkflowSetupStep[] = [
+      { command: "mkdir -p node_modules/.bin" },
+      { command: "touch node_modules/.bin/tsc" },
+      { command: "touch node_modules/.package-lock.json" },
+      { command: "touch setup-ran.flag" },
+    ];
+
+    await runSetupWithCache(workspace, projectRoot, setupSteps, cacheConfig);
+
+    expect(existsSync(join(workspace, "setup-ran.flag"))).toBe(true);
+    expect(lstatSync(join(workspace, "node_modules")).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(workspace, "node_modules"))).toBe(cachedPath);
+    expect(existsSync(join(cachedPath, ".bin", "tsc"))).toBe(true);
+    expect(existsSync(join(cachedPath, ".package-lock.json"))).toBe(true);
+    expect(existsSync(join(cacheDir, ".complete"))).toBe(true);
   });
 
   it("treats an empty cached directory with .complete as stale and repopulates it", async () => {
@@ -109,6 +148,7 @@ describe("runSetupWithCache", () => {
     const setupSteps: WorkflowSetupStep[] = [
       { command: "mkdir -p node_modules/.bin" },
       { command: "touch node_modules/.bin/vitest" },
+      { command: "touch node_modules/.package-lock.json" },
       { command: "touch setup-ran.flag" },
     ];
 
@@ -118,6 +158,7 @@ describe("runSetupWithCache", () => {
     expect(lstatSync(join(workspace, "node_modules")).isSymbolicLink()).toBe(true);
     expect(readlinkSync(join(workspace, "node_modules"))).toBe(cachedPath);
     expect(existsSync(join(cachedPath, ".bin", "vitest"))).toBe(true);
+    expect(existsSync(join(cachedPath, ".package-lock.json"))).toBe(true);
     expect(existsSync(join(cacheDir, ".complete"))).toBe(true);
   });
 });
