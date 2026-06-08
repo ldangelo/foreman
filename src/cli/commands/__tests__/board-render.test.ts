@@ -19,7 +19,6 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
   "needs_attention",
   "closed",
 ] as const;
@@ -28,7 +27,6 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   backlog: "Backlog",
   ready: "Ready",
   in_progress: "In Progress",
-  review: "Review",
   needs_attention: "Needs Attention",
   closed: "Closed",
 };
@@ -170,8 +168,8 @@ describe("BoardRendering", () => {
   });
 
   describe("Board Layout", () => {
-    it("should have 6 columns", () => {
-      expect(BOARD_STATUSES).toHaveLength(6);
+    it("should have 5 columns", () => {
+      expect(BOARD_STATUSES).toHaveLength(5);
     });
 
     it("should calculate column width correctly", () => {
@@ -188,7 +186,7 @@ describe("BoardRendering", () => {
       const numCols = BOARD_STATUSES.length;
       const colWidth = Math.max(MIN_COL_WIDTH, Math.floor((terminalWidth - 4) / numCols));
 
-      expect(colWidth).toBe(MIN_COL_WIDTH);
+      expect(colWidth).toBe(15); // 5 columns at 80 width: floor(76/5) = 15 > MIN_COL_WIDTH
     });
 
     it("should enforce max visible per column", () => {
@@ -222,11 +220,11 @@ describe("BoardRendering", () => {
       expect(getVisibleTaskCapacity(24, 20, 4)).toBe(4);
     });
 
-    it("should render six column jump labels without a merged column", () => {
+    it("should render five column jump labels without a merged column", () => {
       const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 150));
 
       expect(output).toContain("[1] Backlog");
-      expect(output).toContain("[6] Closed");
+      expect(output).toContain("[5] Closed");
       expect(output).not.toContain("Merged");
     });
 
@@ -244,9 +242,9 @@ describe("BoardRendering", () => {
       const gridLine = lines.find((line) => line.includes("│ Backlog (1)"));
 
       expect(borderLine).toBeDefined();
-      expect(borderLine?.match(/╭/g)).toHaveLength(6);
+      expect(borderLine?.match(/╭/g)).toHaveLength(5);
       expect(gridLine).toBeDefined();
-      expect(gridLine?.match(/│/g)?.length).toBeGreaterThanOrEqual(12);
+      expect(gridLine?.match(/│/g)?.length).toBeGreaterThanOrEqual(10);
     });
 
     it("should keep the selected task visible when navigating past the first page", () => {

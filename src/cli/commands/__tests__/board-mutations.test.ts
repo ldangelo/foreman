@@ -12,7 +12,6 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
   "needs_attention",
   "closed",
 ] as const;
@@ -191,8 +190,7 @@ describe("BoardMutations", () => {
       const transitions: [BoardStatus, BoardStatus][] = [
         ["backlog", "ready"],
         ["ready", "in_progress"],
-        ["in_progress", "review"],
-        ["review", "needs_attention"],
+        ["in_progress", "needs_attention"],
         ["needs_attention", "closed"],
         ["closed", "backlog"],
       ];
@@ -211,8 +209,7 @@ describe("BoardMutations", () => {
         ["backlog", "closed"],
         ["ready", "backlog"],
         ["in_progress", "ready"],
-        ["review", "in_progress"],
-        ["needs_attention", "review"],
+        ["needs_attention", "in_progress"],
         ["closed", "needs_attention"],
       ];
 
@@ -245,7 +242,7 @@ describe("BoardMutations", () => {
     });
 
     it("C should also set status to closed", () => {
-      const task = createTask("bd-1234", { status: "review" });
+      const task = createTask("bd-1234", { status: "in_progress" });
       const closedStatus = "closed";
 
       const closedTask = { ...task, status: closedStatus };
@@ -579,7 +576,6 @@ describe("BoardMutations", () => {
         "backlog",
         "ready",
         "in_progress",
-        "review",
         "needs_attention",
         "closed",
       ];

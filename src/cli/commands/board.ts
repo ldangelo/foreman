@@ -2,7 +2,8 @@
  * `foreman board` — Terminal UI kanban board for managing Foreman tasks.
  *
  * Features:
- * - 6 status columns: backlog, ready, in_progress, review, needs_attention, closed
+ * - 5 status columns: backlog, ready, in_progress, needs_attention, closed
+ * - review tasks are routed to needs_attention column
  * - vim-style navigation: j/k (vertical), h/l (horizontal)
  * - Status cycling: s (forward), S (backward)
  * - Mark as ready: R
@@ -43,7 +44,6 @@ export const BOARD_STATUSES = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
   "needs_attention",
   "closed",
 ] as const;
@@ -64,7 +64,6 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   backlog: "Backlog",
   ready: "Ready",
   in_progress: "In Progress",
-  review: "Review",
   needs_attention: "Needs Attention",
   closed: "Closed",
 };
@@ -153,8 +152,10 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
   }
 
   // Statuses that route to needs_attention column per migration comment:
-  // "conflict/failed/stuck/blocked=needs-attention"
-  const NEEDS_ATTENTION_STATUSES = new Set(["failed", "stuck", "conflict", "blocked"]);
+// "conflict/failed/stuck/blocked/review=needs-attention"
+  const NEEDS_ATTENTION_STATUSES = new Set(["failed", "stuck", "conflict", "blocked", "review"]);
+  const isBoardStatus = (value: string): value is BoardStatus =>
+    BOARD_STATUSES.includes(value as BoardStatus);
   for (const row of rows) {
     const normalizedStatus = row.status.replace(/-/g, "_");
     let status: BoardStatus;
@@ -892,7 +893,7 @@ const NEW_TASK_TEMPLATE = `# Create a new Foreman task
 # Fields: id (optional, auto-generated if empty), title, description, type, priority, status
 # Lines starting with # are comments and will be ignored
 # Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog
-# Status: backlog, ready, in_progress, review, needs_attention, closed
+# Status: backlog, ready, in_progress, needs_attention, closed
 # Type: task, bug, feature, epic, chore, docs, question
 
 id:
