@@ -15,16 +15,6 @@ export interface TaskClientFactoryResult {
 
 export interface TaskClientFactoryOptions {
   registeredProjectId?: string;
-  /**
-   * @deprecated Reserved for backward compatibility with external tooling; ignored because
-   * native task clients are always selected. TODO(TRD-024): remove in the next major release.
-   */
-  autoSelectNativeWhenAvailable?: boolean;
-  /**
-   * @deprecated Reserved for backward compatibility with external tooling; ignored because
-   * native task clients do not use the br binary. TODO(TRD-024): remove in the next major release.
-   */
-  ensureBrInstalled?: boolean;
 }
 
 export interface TaskCounts {

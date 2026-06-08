@@ -18,19 +18,28 @@ describe("init wizard config", () => {
     expect(
       buildInitWizardConfig({
         vcsBackend: "jujutsu",
-        issueTracker: "github",
-        workflowTemplate: "parallel-review",
-        authenticate: false,
+        workflowTemplate: "smoke",
       }),
     ).toContain("backend: jujutsu");
     expect(
       buildInitWizardConfig({
         vcsBackend: "jujutsu",
-        issueTracker: "github",
-        workflowTemplate: "parallel-review",
-        authenticate: false,
+        workflowTemplate: "smoke",
       }),
-    ).toContain("workflow: parallel-review");
+    ).toContain("default: smoke");
+  });
+
+  it("outputs valid ProjectConfig schema with taskTypeWorkflowMap", () => {
+    const config = buildInitWizardConfig({
+      vcsBackend: "auto",
+      workflowTemplate: "epic",
+    });
+    // Should use taskTypeWorkflowMap (ProjectConfig schema) not init: block
+    expect(config).toContain("taskTypeWorkflowMap:");
+    expect(config).toContain("default: epic");
+    expect(config).not.toContain("init:");
+    expect(config).not.toContain("issueTracker:");
+    expect(config).not.toContain("authenticate:");
   });
 });
 

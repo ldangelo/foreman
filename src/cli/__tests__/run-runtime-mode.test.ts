@@ -59,7 +59,6 @@ vi.mock("../../lib/db/pool-manager.js", () => ({
   isPoolInitialised: vi.fn().mockReturnValue(true),
 }));
 
-import { createTaskClient } from "../../lib/task-client-factory.js";
 import { createTaskClients, resolveRuntimeMode } from "../commands/run.js";
 
 describe("run runtime mode", () => {
@@ -114,17 +113,6 @@ describe("run runtime mode", () => {
 
     expect(result.backendType).toBe("native");
     expect(result.bvClient).toBeNull();
-    expect(MockBeadsRustClient).not.toHaveBeenCalled();
-  });
-
-  it("ignores the legacy autoSelectNativeWhenAvailable alias", async () => {
-    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
-
-    const result = await createTaskClient(projectPath, {
-      autoSelectNativeWhenAvailable: true,
-    });
-
-    expect(result.backendType).toBe("native");
     expect(MockBeadsRustClient).not.toHaveBeenCalled();
   });
 

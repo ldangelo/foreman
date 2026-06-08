@@ -126,12 +126,12 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
-      onFail: fdeveloperix
+      onFail: fix
 
   - name: prepare-pr-review
     builtin: true
@@ -149,12 +149,12 @@ phases:
     maxTurns: 40
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
     verdict: true
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: fix
       forwardArtifactTo: foreman
 
   - name: merge
