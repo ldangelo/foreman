@@ -815,6 +815,47 @@ describe("validateWorkflowConfig — vcs block", () => {
 
 // ── validateWorkflowConfig — epic mode (taskPhases, finalPhases) ────────────
 
+describe("validateWorkflowConfig — sandbox block", () => {
+  const bashConfig = {
+    name: "sandboxed",
+    phases: [{ name: "test", bash: "npm test" }],
+  };
+
+  it("parses sandbox for bash-only workflows", () => {
+    const config = validateWorkflowConfig(
+      { ...bashConfig, sandbox: { backend: "docker", image: "ubuntu:22.04", network: false } },
+      "sandboxed",
+    );
+
+    expect(config.sandbox).toEqual({
+      backend: "docker",
+      image: "ubuntu:22.04",
+      network: false,
+    });
+  });
+
+  it("throws when sandbox is not an object", () => {
+    expect(() => validateWorkflowConfig({ ...bashConfig, sandbox: "docker" }, "sandboxed")).toThrow(
+      /'sandbox' must be an object/,
+    );
+  });
+
+  it("throws when sandbox.limits is not an object", () => {
+    expect(() => validateWorkflowConfig({ ...bashConfig, sandbox: { limits: "2g" } }, "sandboxed")).toThrow(
+      /'sandbox.limits' must be an object/,
+    );
+  });
+
+  it("rejects sandboxed workflows with host-executed prompt phases", () => {
+    expect(() => validateWorkflowConfig(
+      { name: "sandboxed", phases: [{ name: "developer", prompt: "developer.md" }], sandbox: { backend: "docker" } },
+      "sandboxed",
+    )).toThrow(/sandbox is only supported for bash phases/);
+  });
+});
+
+// ── validateWorkflowConfig — epic mode (taskPhases, finalPhases) ────────────
+
 describe("validateWorkflowConfig — epic mode", () => {
   const epicConfig = {
     name: "epic",

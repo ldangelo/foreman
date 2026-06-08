@@ -130,8 +130,8 @@ export class DockerSandboxProvider implements SandboxProvider {
       }
     }
 
-    // Network mode
-    if (options?.network === false) {
+    // Network mode: disabled by default; opt in with network: true.
+    if (options?.network !== true) {
       args.push("--network", "none");
     }
 

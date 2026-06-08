@@ -1,10 +1,40 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { promisify } from "node:util";
+
+const { mockExecFile } = vi.hoisted(() => {
+  const mockExecFile = vi.fn();
+  Object.assign(mockExecFile, {
+    [Symbol.for("nodejs.util.promisify.custom")]: vi.fn(async (_cmd: string, args: string[]) => ({
+      stdout: args[0] === "run" ? "0123456789abcdef\n" : "ok\n",
+      stderr: "",
+    })),
+  });
+  return { mockExecFile };
+});
+
+vi.mock("node:child_process", () => ({
+  execFile: mockExecFile,
+  execFileSync: vi.fn(),
+}));
+
 import {
   DockerSandboxProvider,
   PodmanSandboxProvider,
   SandboxProviderFactory,
 } from "../sandbox-providers/index.js";
 import type { SandboxProviderConfig } from "../sandbox-provider.js";
+
+function promisifiedExecFileMock() {
+  return vi.mocked(((mockExecFile as unknown) as Record<symbol, unknown>)[promisify.custom] as ReturnType<typeof vi.fn>);
+}
+
+beforeEach(() => {
+  mockExecFile.mockReset();
+  mockExecFile.mockImplementation((_cmd, args, _opts, cb) => {
+    cb(null, args[0] === "run" ? "0123456789abcdef\n" : "ok\n", "");
+  });
+  promisifiedExecFileMock().mockClear();
+});
 
 describe("DockerSandboxProvider", () => {
   it("has name 'docker'", () => {
@@ -14,6 +44,23 @@ describe("DockerSandboxProvider", () => {
 
   it("can be instantiated without errors", () => {
     expect(() => new DockerSandboxProvider()).not.toThrow();
+  });
+
+  it("disables networking by default", async () => {
+    const provider = new DockerSandboxProvider();
+    await provider.createSandbox("/tmp/worktree", "ubuntu:22.04");
+
+    const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
+    expect(args).toContain("--network");
+    expect(args).toContain("none");
+  });
+
+  it("allows networking only when explicitly enabled", async () => {
+    const provider = new DockerSandboxProvider();
+    await provider.createSandbox("/tmp/worktree", "ubuntu:22.04", { network: true });
+
+    const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
+    expect(args).not.toContain("--network");
   });
 });
 
@@ -25,6 +72,15 @@ describe("PodmanSandboxProvider", () => {
 
   it("can be instantiated without errors", () => {
     expect(() => new PodmanSandboxProvider()).not.toThrow();
+  });
+
+  it("disables networking by default", async () => {
+    const provider = new PodmanSandboxProvider();
+    await provider.createSandbox("/tmp/worktree", "ubuntu:22.04");
+
+    const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
+    expect(args).toContain("--network");
+    expect(args).toContain("none");
   });
 });
 

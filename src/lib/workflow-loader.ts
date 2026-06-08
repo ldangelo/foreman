@@ -722,6 +722,10 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   }
 
   // ── Parse optional sandbox block (Backlog-011: Container Sandboxing) ───
+  if ("sandbox" in raw && !isRecord(raw["sandbox"])) {
+    throw new WorkflowConfigError(workflowName, "'sandbox' must be an object");
+  }
+
   if (isRecord(raw["sandbox"])) {
     const sandboxRaw = raw["sandbox"];
     const sandboxConfig: WorkflowSandboxConfig = {};
@@ -742,6 +746,10 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         throw new WorkflowConfigError(workflowName, "'sandbox.image' must be a string");
       }
       sandboxConfig.image = sandboxRaw["image"] as string;
+    }
+
+    if ("limits" in sandboxRaw && !isRecord(sandboxRaw["limits"])) {
+      throw new WorkflowConfigError(workflowName, "'sandbox.limits' must be an object");
     }
 
     if (isRecord(sandboxRaw["limits"])) {
@@ -782,6 +790,14 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     }
 
     config.sandbox = sandboxConfig;
+
+    const hostPhases = config.phases.filter((phase) => !phase.bash).map((phase) => phase.name);
+    if (hostPhases.length > 0) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `sandbox is only supported for bash phases; host-executed phases are not isolated: ${hostPhases.join(", ")}`,
+      );
+    }
   }
 
   return config;
