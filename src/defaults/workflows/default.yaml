@@ -63,7 +63,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 30
+    maxTurns: 60
     artifact: QA_REPORT.md
     verdict: true
     retryWith: developer
@@ -80,7 +80,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 20
+    maxTurns: 50
     artifact: REVIEW.md
     verdict: true
     retryWith: developer
@@ -109,7 +109,7 @@ phases:
       allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
-    maxTurns: 30
+    maxTurns: 60
     artifact: FINALIZE_VALIDATION.md
     verdict: true
     retryWith: developer
