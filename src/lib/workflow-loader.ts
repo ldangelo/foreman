@@ -208,6 +208,50 @@ export interface OnFailureConfig {
 /** Valid onError strategies for workflow-level error handling. */
 export type OnErrorStrategy = "stop" | "continue";
 
+/**
+ * Workflow-level sandbox configuration for container isolation.
+ *
+ * When present, overrides project-level sandbox configuration.
+ * Uses the same schema as project config for consistency.
+ */
+export interface WorkflowSandboxConfig {
+  /**
+   * Which sandbox backend to use.
+   * - 'docker'  — always use Docker
+   * - 'podman'  — always use Podman
+   * - 'auto'    — detect from environment (default: 'auto')
+   */
+  backend?: "docker" | "podman" | "auto";
+  /**
+   * Container image to use for sandboxes.
+   * Default: 'ubuntu:22.04'.
+   */
+  image?: string;
+  /**
+   * Resource limits for sandbox containers.
+   */
+  limits?: {
+    /** Maximum CPU units (e.g., "1" for 1 CPU, "0.5" for half). */
+    cpu?: string;
+    /** Memory limit (e.g., "2g" for 2GB, "512m" for 512MB). */
+    memory?: string;
+    /** Specific CPUs to allow (e.g., "0-1" for cores 0-1). */
+    cpuset?: string;
+    /** Maximum swap memory (e.g., "1g"). */
+    memorySwap?: string;
+  };
+  /**
+   * Enable networking in sandbox. Default: false (network disabled).
+   */
+  network?: boolean;
+  /**
+   * Cleanup policy when sandbox container exits.
+   * - 'remove'  — remove container after destroy (default)
+   * - 'keep'    — leave container stopped for debugging
+   */
+  cleanup?: "remove" | "keep";
+}
+
 /** A loaded, validated workflow configuration. */
 export interface WorkflowConfig {
   /** Workflow name (e.g. "default", "smoke"). */
@@ -308,6 +352,22 @@ export interface WorkflowConfig {
     /** When to create the PR. */
     timing?: "draft-after-developer" | "create-at-finalize" | "never";
   };
+  /**
+   * Optional sandbox configuration for container isolation.
+   * When present, overrides project-level sandbox config.
+   * Useful for workflow-specific sandbox settings (e.g., untrusted code).
+   *
+   * @example
+   * ```yaml
+   * sandbox:
+   *   backend: docker
+   *   image: ubuntu:22.04
+   *   limits:
+   *     cpu: "1"
+   *     memory: "2g"
+   * ```
+   */
+  sandbox?: WorkflowSandboxConfig;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -659,6 +719,69 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         );
       }
     }
+  }
+
+  // ── Parse optional sandbox block (Backlog-011: Container Sandboxing) ───
+  if (isRecord(raw["sandbox"])) {
+    const sandboxRaw = raw["sandbox"];
+    const sandboxConfig: WorkflowSandboxConfig = {};
+
+    if ("backend" in sandboxRaw) {
+      const backend = sandboxRaw["backend"];
+      if (backend !== undefined && backend !== "docker" && backend !== "podman" && backend !== "auto") {
+        throw new WorkflowConfigError(
+          workflowName,
+          `'sandbox.backend' must be 'docker', 'podman', or 'auto' (got: ${String(backend)})`,
+        );
+      }
+      sandboxConfig.backend = backend as "docker" | "podman" | "auto" | undefined;
+    }
+
+    if ("image" in sandboxRaw) {
+      if (typeof sandboxRaw["image"] !== "string") {
+        throw new WorkflowConfigError(workflowName, "'sandbox.image' must be a string");
+      }
+      sandboxConfig.image = sandboxRaw["image"] as string;
+    }
+
+    if (isRecord(sandboxRaw["limits"])) {
+      const limitsRaw = sandboxRaw["limits"];
+      sandboxConfig.limits = {};
+      if ("cpu" in limitsRaw && typeof limitsRaw["cpu"] !== "string") {
+        throw new WorkflowConfigError(workflowName, "'sandbox.limits.cpu' must be a string");
+      }
+      sandboxConfig.limits.cpu = limitsRaw["cpu"] as string | undefined;
+      if ("memory" in limitsRaw && typeof limitsRaw["memory"] !== "string") {
+        throw new WorkflowConfigError(workflowName, "'sandbox.limits.memory' must be a string");
+      }
+      sandboxConfig.limits.memory = limitsRaw["memory"] as string | undefined;
+      if ("cpuset" in limitsRaw && typeof limitsRaw["cpuset"] !== "string") {
+        throw new WorkflowConfigError(workflowName, "'sandbox.limits.cpuset' must be a string");
+      }
+      sandboxConfig.limits.cpuset = limitsRaw["cpuset"] as string | undefined;
+      if ("memorySwap" in limitsRaw && typeof limitsRaw["memorySwap"] !== "string") {
+        throw new WorkflowConfigError(workflowName, "'sandbox.limits.memorySwap' must be a string");
+      }
+      sandboxConfig.limits.memorySwap = limitsRaw["memorySwap"] as string | undefined;
+    }
+
+    if ("network" in sandboxRaw && typeof sandboxRaw["network"] !== "boolean") {
+      throw new WorkflowConfigError(workflowName, "'sandbox.network' must be a boolean");
+    }
+    sandboxConfig.network = sandboxRaw["network"] as boolean | undefined;
+
+    if ("cleanup" in sandboxRaw) {
+      const cleanup = sandboxRaw["cleanup"];
+      if (cleanup !== undefined && cleanup !== "remove" && cleanup !== "keep") {
+        throw new WorkflowConfigError(
+          workflowName,
+          `'sandbox.cleanup' must be 'remove' or 'keep' (got: ${String(cleanup)})`,
+        );
+      }
+      sandboxConfig.cleanup = cleanup as "remove" | "keep" | undefined;
+    }
+
+    config.sandbox = sandboxConfig;
   }
 
   return config;
