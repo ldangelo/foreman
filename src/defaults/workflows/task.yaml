@@ -43,7 +43,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 80
+    maxTurns: 120
     artifact: DEVELOPER_REPORT.md
     mail:
       onStart: true
@@ -73,7 +73,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 20
+    maxTurns: 40
     artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: fix
