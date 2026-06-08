@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
     mockCreateTaskClient,
     mockListRegisteredProjects,
     mockResolveRepoRootProjectPath,
+    mockEnsureCliPostgresPool,
     mockGetProjectByPath,
     mockLocalGetRun,
     mockSyncBeadStatusAfterMerge,
@@ -19,6 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
   const mockCreateTaskClient = vi.fn().mockResolvedValue({ taskClient: { kind: "task-client" }, backendType: "native" });
   const mockListRegisteredProjects = vi.fn().mockResolvedValue([]);
   const mockResolveRepoRootProjectPath = vi.fn().mockResolvedValue("/mock/project");
+  const mockEnsureCliPostgresPool = vi.fn();
   const mockGetProjectByPath = vi.fn().mockReturnValue({ id: "proj-local", path: "/mock/project" });
   const mockLocalGetRun = vi.fn().mockReturnValue(null);
   const mockSyncBeadStatusAfterMerge = vi.fn().mockResolvedValue(undefined);
@@ -97,6 +99,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
     mockCreateTaskClient,
     mockListRegisteredProjects,
     mockResolveRepoRootProjectPath,
+    mockEnsureCliPostgresPool,
     mockGetProjectByPath,
     mockLocalGetRun,
     mockSyncBeadStatusAfterMerge,
@@ -155,6 +158,7 @@ vi.mock("../../orchestrator/postgres-merge-cost-tracker.js", () => ({
 }));
 
 vi.mock("../commands/project-task-support.js", () => ({
+  ensureCliPostgresPool: (...args: unknown[]) => mockEnsureCliPostgresPool(...args),
   listRegisteredProjects: () => mockListRegisteredProjects(),
   resolveRepoRootProjectPath: (...args: unknown[]) => mockResolveRepoRootProjectPath(...args),
 }));
@@ -202,6 +206,7 @@ describe("merge command registered context", () => {
         runLookup: MockPostgresStore.mock.results[0].value,
       }),
     );
+    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/canonical/project");
     expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1");
     expect(MockMergeQueue).not.toHaveBeenCalled();
     expect(MockMergeCostTracker).not.toHaveBeenCalled();
@@ -227,6 +232,7 @@ describe("merge command registered context", () => {
     expect(mockCreateTaskClient).toHaveBeenCalledWith("/mock/project", {
       registeredProjectId: undefined,
     });
+    expect(mockEnsureCliPostgresPool).not.toHaveBeenCalled();
     expect(MockPostgresStore).not.toHaveBeenCalled();
     expect(MockRefinery).toHaveBeenCalledWith(
       expect.any(Object),
