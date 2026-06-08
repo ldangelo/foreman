@@ -32,6 +32,7 @@ const {
   mockPostgresStoreForProject,
   mockWrapPostgresSentinelStore,
   mockSyncBeadStatusOnStartup,
+  mockSyncTaskStatusOnStartup,
   mockPurgeOrphanedWorkerConfigs,
   MockForemanStore,
   mockWatchRunsInk,
@@ -65,6 +66,7 @@ const {
   const mockPostgresStoreForProject = vi.fn();
   const mockWrapPostgresSentinelStore = vi.fn();
   const mockSyncBeadStatusOnStartup = vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
+  const mockSyncTaskStatusOnStartup = vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
   const mockPurgeOrphanedWorkerConfigs = vi.fn().mockResolvedValue(0);
 
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
@@ -117,6 +119,7 @@ const {
     mockPostgresStoreForProject,
     mockWrapPostgresSentinelStore,
     mockSyncBeadStatusOnStartup,
+    mockSyncTaskStatusOnStartup,
     mockPurgeOrphanedWorkerConfigs,
     mockVcsCreate,
   };
@@ -165,7 +168,10 @@ vi.mock("../watch-ui.js", () => ({
   watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args),
 }));
 vi.mock("../../orchestrator/sentinel.js", () => ({ SentinelAgent: MockSentinelAgent }));
-vi.mock("../../orchestrator/task-backend-ops.js", () => ({ syncBeadStatusOnStartup: (...args: unknown[]) => mockSyncBeadStatusOnStartup(...args) }));
+vi.mock("../../orchestrator/task-backend-ops.js", () => ({
+  syncBeadStatusOnStartup: (...args: unknown[]) => mockSyncBeadStatusOnStartup(...args),
+  syncTaskStatusOnStartup: (...args: unknown[]) => mockSyncTaskStatusOnStartup(...args),
+}));
 vi.mock("../commands/sentinel.js", () => ({ wrapPostgresSentinelStore: mockWrapPostgresSentinelStore }));
 vi.mock("../commands/project-task-support.js", () => ({
   ensureCliPostgresPool: (...args: unknown[]) => mockEnsureCliPostgresPool(...args),
@@ -382,6 +388,7 @@ describe("sentinel auto-start in foreman run", () => {
     expect(mockSyncBeadStatusOnStartup).toHaveBeenCalledWith(postgresStore, expect.anything(), "registered-proj", {
       projectPath: "/mock/project",
     });
+    expect(mockSyncTaskStatusOnStartup).toHaveBeenCalledWith(postgresStore, "registered-proj");
   });
 
   it("uses the local store for startup worker cleanup when no registered project exists", async () => {

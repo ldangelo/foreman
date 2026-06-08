@@ -31,7 +31,7 @@ import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { wrapPostgresSentinelStore } from "./sentinel.js";
-import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
+import { syncBeadStatusOnStartup, syncTaskStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
@@ -727,8 +727,8 @@ export const runCommand = new Command("run")
         }
       }
 
-      // ── Startup Bead Sync ────────────────────────────────────────────────
-      // Reconcile br seed statuses against Postgres run statuses before dispatching.
+      // ── Startup Bead / Task Sync ─────────────────────────────────────────
+      // Reconcile bead/task statuses against run state before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
       if (!dryRun && project) {
         try {
@@ -747,6 +747,24 @@ export const runCommand = new Command("run")
         } catch (syncErr: unknown) {
           const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
           console.warn(chalk.yellow(`[startup] Bead sync failed (non-fatal): ${msg}`));
+        }
+
+        try {
+          const taskSyncResult = await syncTaskStatusOnStartup(daemonStore ?? store, project.id);
+          if (taskSyncResult.synced > 0 || taskSyncResult.mismatches.length > 0) {
+            console.log(
+              chalk.dim(
+                `[startup] Reconciled ${taskSyncResult.synced} task(s), ` +
+                `${taskSyncResult.mismatches.length} mismatch(es) detected`
+              )
+            );
+          }
+          for (const err of taskSyncResult.errors) {
+            console.warn(chalk.yellow(`[startup] Task sync warning: ${err}`));
+          }
+        } catch (syncErr: unknown) {
+          const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
+          console.warn(chalk.yellow(`[startup] Task sync failed (non-fatal): ${msg}`));
         }
       }
 
