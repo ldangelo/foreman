@@ -35,7 +35,6 @@ import {
   type TaskRow,
 } from "../../lib/task-store.js";
 import { listRegisteredProjects, resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
-import * as boardModule from "./board.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────────
 
@@ -980,6 +979,7 @@ export async function createTaskAsync(
 export const boardApi = {
   createTaskInEditor,
   createTaskAsync,
+  applyStatusChangeAsync,
 };
 
 function suspendRawMode(): void {
@@ -1129,7 +1129,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const newStatusIdx = (currentStatusIdx + delta + BOARD_STATUSES.length) % BOARD_STATUSES.length;
         const newStatus = BOARD_STATUSES[newStatusIdx];
 
-        const err = await boardModule.applyStatusChangeAsync(projectPath, task.id, newStatus);
+        const err = await boardApi.applyStatusChangeAsync(projectPath, task.id, newStatus);
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1222,7 +1222,12 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
-        const err = await boardModule.applyStatusChangeAsync(projectPath, task.id, "ready");
+        if (task.status !== "backlog") {
+          result.errorMessage = "Task must be in backlog to mark as ready";
+          break;
+        }
+
+        const err = await boardApi.applyStatusChangeAsync(projectPath, task.id, "ready");
         if (err) {
           result.errorMessage = err;
         } else {

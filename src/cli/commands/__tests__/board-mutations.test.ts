@@ -4,9 +4,8 @@
  * @module src/cli/commands/__tests__/board-mutations.test
  */
 
-import { describe, it, expect, vi } from "vitest";
-import * as boardModule from "../board.js";
-import { createKeyHandler, type BoardStatus, type BoardTask, type RenderState } from "../board.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { boardApi, createKeyHandler, type BoardStatus, type BoardTask, type RenderState } from "../board.js";
 
 // Constants matching board.ts
 const BOARD_STATUSES: readonly BoardStatus[] = [
@@ -19,6 +18,10 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
 ] as const;
 
 describe("BoardMutations", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // Helper to create a board task
   const createTask = (
     id: string,
@@ -75,7 +78,7 @@ describe("BoardMutations", () => {
     });
 
     it("R should mark selected task as ready", async () => {
-      const spy = vi.spyOn(boardModule, "applyStatusChangeAsync").mockResolvedValue(null);
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
       const handleKey = createKeyHandler("/tmp/project");
       const task = createTask("bd-1234", { status: "backlog" });
       const state = createState({
@@ -88,6 +91,22 @@ describe("BoardMutations", () => {
       expect(result.flashTaskId).toBe("bd-1234");
       expect(result.needsRefresh).toBe(true);
       expect(result.errorMessage).toBeNull();
+    });
+
+    it("R should show error when task is not in backlog", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "in_progress" });
+      const state = createState({
+        in_progress: [task],
+      }, { nav: { colIndex: 2, rowIndex: 0 } });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(spy).not.toHaveBeenCalled();
+      expect(result.errorMessage).toBe("Task must be in backlog to mark as ready");
+      expect(result.flashTaskId).toBeNull();
+      expect(result.needsRefresh).toBe(false);
     });
   });
 
@@ -370,7 +389,7 @@ describe("BoardMutations", () => {
 
   describe("Create New Task (n key)", () => {
     it("n key should trigger new task creation", async () => {
-      vi.spyOn(boardModule.boardApi, "createTaskInEditor").mockReturnValue({
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
         id: "bd-new",
         title: "New Task",
         description: null,
@@ -378,7 +397,7 @@ describe("BoardMutations", () => {
         priority: 2,
         status: "backlog",
       });
-      vi.spyOn(boardModule.boardApi, "createTaskAsync").mockResolvedValue({ taskId: "bd-new" });
+      vi.spyOn(boardApi, "createTaskAsync").mockResolvedValue({ taskId: "bd-new" });
 
       const handleKey = createKeyHandler("/tmp/project");
       const state = createState({
