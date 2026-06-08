@@ -9,6 +9,7 @@ import {
   getVisibleTaskCapacity,
   getVisibleTaskWindow,
   renderBoard,
+  renderTaskDetail,
   type BoardStatus,
   type BoardTask,
   type RenderState,
@@ -389,6 +390,28 @@ describe("BoardRendering", () => {
   });
 
   describe("Task Detail Panel", () => {
+    it("should render task notes when present", () => {
+      const task = createTask("bd-1234", {
+        notes: [
+          {
+            id: "note-1",
+            created_at: "2026-04-19T12:30:00Z",
+            phase: "developer",
+            kind: "progress",
+            author: "foreman",
+            body: "Implemented status normalization\nAdded tests",
+          },
+        ],
+      });
+
+      const output = stripTerminalFormatting(renderTaskDetail(task, 100));
+
+      expect(output).toContain("Notes:");
+      expect(output).toContain("developer progress");
+      expect(output).toContain("foreman");
+      expect(output).toContain("Implemented status normalization");
+    });
+
     it("should display all task fields", () => {
       const task = createTask("bd-1234", {
         title: "Full Task",

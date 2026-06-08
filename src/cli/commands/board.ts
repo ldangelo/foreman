@@ -35,6 +35,7 @@ import {
   parsePriority,
   type TaskRow,
 } from "../../lib/task-store.js";
+import type { TaskNoteRow } from "../../lib/db/postgres-adapter.js";
 import { listRegisteredProjects, resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────────
@@ -85,6 +86,15 @@ const PRIORITY_COLORS: Record<number, { textColor: string; backgroundColor: stri
   4: { textColor: "white", backgroundColor: "blackBright" },
 };
 
+export interface BoardTaskNote {
+  id: string;
+  created_at: string;
+  phase: string | null;
+  kind: string;
+  author: string;
+  body: string;
+}
+
 export interface BoardTask {
   id: string;
   title: string;
@@ -97,6 +107,7 @@ export interface BoardTask {
   updated_at: string;
   approved_at: string | null;
   closed_at: string | null;
+  notes?: BoardTaskNote[];
 }
 
 interface BoardContext {
@@ -181,6 +192,25 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
   }
 
   return map;
+}
+
+export async function loadBoardTaskNotes(projectPath: string, taskId: string): Promise<BoardTaskNote[]> {
+  const { client, projectId } = await resolveBoardContext(projectPath);
+  const notes = await client.tasks.listNotes({
+    projectId,
+    taskId,
+    limit: 10,
+    newestFirst: false,
+  }) as TaskNoteRow[];
+
+  return notes.map((note) => ({
+    id: note.id,
+    created_at: note.created_at,
+    phase: note.phase,
+    kind: note.kind,
+    author: note.author,
+    body: note.body,
+  }));
 }
 
 // ── ANSI rendering helpers ────────────────────────────────────────────────────
@@ -544,6 +574,30 @@ function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof
         ),
       ),
     );
+  }
+
+  if (task.notes && task.notes.length > 0) {
+    children.push(h(Text, { key: "notes-title", bold: true }, "Notes:"));
+    for (const [noteIndex, note] of task.notes.slice(0, 5).entries()) {
+      const when = new Date(note.created_at).toLocaleString();
+      const phase = note.phase ? `${note.phase} ` : "";
+      children.push(
+        h(
+          Text,
+          { key: `note:${note.id}:meta`, dimColor: true, wrap: "truncate-end" },
+          `[${when} ${phase}${note.kind}] ${note.author}`,
+        ),
+      );
+      for (const [lineIndex, line] of note.body.split("\n").slice(0, noteIndex === 0 ? 2 : 1).entries()) {
+        children.push(
+          h(
+            Text,
+            { key: `note:${note.id}:body:${lineIndex}`, wrap: "truncate-end" },
+            line,
+          ),
+        );
+      }
+    }
   }
 
   children.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
@@ -999,6 +1053,7 @@ export const boardApi = {
   createTaskInEditor,
   createTaskAsync,
   applyStatusChangeAsync,
+  loadTaskNotesAsync: loadBoardTaskNotes,
 };
 
 function suspendRawMode(): void {
@@ -1231,7 +1286,12 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (task) {
           result.showDetail = true;
-          result.detailTask = task;
+          try {
+            const notes = await boardApi.loadTaskNotesAsync(projectPath, task.id);
+            result.detailTask = { ...task, notes };
+          } catch {
+            result.detailTask = task;
+          }
           result.needsRefresh = true;
         }
         break;
