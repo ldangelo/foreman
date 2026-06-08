@@ -49,6 +49,17 @@ export const BOARD_STATUSES = [
 ] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
 
+function normalizeStatusForBoard(status: string): BoardStatus | null {
+  const normalized = status.replace(/-/g, "_");
+  return BOARD_STATUSES.includes(normalized as BoardStatus) ? normalized as BoardStatus : null;
+}
+
+function boardStatusToStoreStatus(status: BoardStatus): string {
+  if (status === "in_progress") return "in-progress";
+  if (status === "needs_attention") return "blocked";
+  return status;
+}
+
 const STATUS_LABELS: Record<BoardStatus, string> = {
   backlog: "Backlog",
   ready: "Ready",
@@ -144,18 +155,13 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
   // Statuses that route to needs_attention column per migration comment:
   // "conflict/failed/stuck/blocked=needs-attention"
   const NEEDS_ATTENTION_STATUSES = new Set(["failed", "stuck", "conflict", "blocked"]);
-  const isBoardStatus = (value: string): value is BoardStatus =>
-    BOARD_STATUSES.includes(value as BoardStatus);
-
   for (const row of rows) {
     const normalizedStatus = row.status.replace(/-/g, "_");
     let status: BoardStatus;
     if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
       status = "needs_attention";
-    } else if (isBoardStatus(normalizedStatus)) {
-      status = normalizedStatus;
     } else {
-      status = "closed";
+      status = normalizeStatusForBoard(row.status) ?? "closed";
     }
     const tasks = map.get(status)!;
     tasks.push({
@@ -1134,14 +1140,15 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
-        const currentStatusIdx = BOARD_STATUSES.indexOf(task.status as BoardStatus);
-        if (currentStatusIdx === -1) break;
+        const currentStatus = normalizeStatusForBoard(task.status);
+        if (!currentStatus) break;
 
+        const currentStatusIdx = BOARD_STATUSES.indexOf(currentStatus);
         const delta = key === KEY_s ? 1 : -1;
         const newStatusIdx = (currentStatusIdx + delta + BOARD_STATUSES.length) % BOARD_STATUSES.length;
         const newStatus = BOARD_STATUSES[newStatusIdx];
 
-        const err = await boardApi.applyStatusChangeAsync(projectPath, task.id, newStatus);
+        const err = await boardApi.applyStatusChangeAsync(projectPath, task.id, boardStatusToStoreStatus(newStatus));
         if (err) {
           result.errorMessage = err;
         } else {

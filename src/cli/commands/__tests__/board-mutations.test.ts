@@ -133,6 +133,22 @@ describe("BoardMutations", () => {
       expect(newStatus).toBe("backlog");
     });
 
+    it("S should move selected hyphenated in-progress task back to ready", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "in-progress" });
+      const state = createState({
+        in_progress: [task],
+      }, { nav: { colIndex: 2, rowIndex: 0 } });
+
+      const result = await handleKey("S", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234", "ready");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.needsRefresh).toBe(true);
+      expect(result.errorMessage).toBeNull();
+    });
+
     it("s should wrap from closed to backlog", () => {
       const task = createTask("bd-1234", { status: "closed" });
       const currentStatusIdx = BOARD_STATUSES.indexOf(task.status as BoardStatus);
