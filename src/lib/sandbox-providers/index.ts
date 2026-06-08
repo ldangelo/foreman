@@ -35,6 +35,16 @@ export { PodmanSandboxProvider } from "./podman.js";
  * Default container image for sandboxes.
  */
 const DEFAULT_SANDBOX_IMAGE = "ubuntu:22.04";
+const RUNTIME_PROBE_TIMEOUT_MS = 2_000;
+
+function canRunContainerCli(binary: "docker" | "podman"): boolean {
+  try {
+    execFileSync(binary, ["version"], { stdio: "pipe", timeout: RUNTIME_PROBE_TIMEOUT_MS });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Resolve sandbox backend from config, performing auto-detection if needed.
@@ -48,25 +58,18 @@ export function resolveSandboxBackend(config: SandboxProviderConfig): "docker" |
     return config.backend;
   }
 
-  // Auto-detect: check for docker first, then podman
-  if (existsSync("/var/run/docker.sock") || process.env.DOCKER_HOST) {
+  // Auto-detect: prefer Docker when environment indicators exist, but only
+  // after verifying the CLI is runnable. CLI probes use timeouts to avoid hangs.
+  if ((existsSync("/var/run/docker.sock") || process.env.DOCKER_HOST) && canRunContainerCli("docker")) {
     return "docker";
   }
 
-  // Check if docker CLI is available
-  try {
-    execFileSync("docker", ["version"], { stdio: "pipe" });
+  if (canRunContainerCli("docker")) {
     return "docker";
-  } catch {
-    // Docker not available
   }
 
-  // Check if podman CLI is available
-  try {
-    execFileSync("podman", ["version"], { stdio: "pipe" });
+  if (canRunContainerCli("podman")) {
     return "podman";
-  } catch {
-    // Podman not available
   }
 
   throw new Error(

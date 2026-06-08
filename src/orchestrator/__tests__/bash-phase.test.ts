@@ -189,6 +189,20 @@ describe('runBashPhase sandbox execution', () => {
     });
     expect(mockProvider.destroySandbox).toHaveBeenCalledWith('sandbox-1');
   });
+
+  it('preserves sandbox when cleanup is keep', async () => {
+    const { runBashPhase } = await import('../pipeline-executor.js');
+
+    await runBashPhase('echo ok', undefined, '/tmp/worktree', undefined, 30_000, {
+      backend: 'docker',
+      image: 'ubuntu:22.04',
+      cleanup: 'keep',
+    });
+
+    expect(mockProvider.createSandbox).toHaveBeenCalled();
+    expect(mockProvider.runInSandbox).toHaveBeenCalled();
+    expect(mockProvider.destroySandbox).not.toHaveBeenCalled();
+  });
 });
 
 describe('runBashPhase timeout override', () => {

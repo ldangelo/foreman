@@ -211,17 +211,17 @@ export class DockerSandboxProvider implements SandboxProvider {
         },
       });
 
-      // execFileAsync doesn't throw on non-zero exit by default, but returns exitCode in error
-      // However we treat successful execution as exitCode 0
+      // Successful execution exits with code 0.
       return {
         exitCode: 0,
         stdout: result.stdout.trim(),
         stderr: result.stderr.trim(),
       };
     } catch (err: unknown) {
-      const e = err as { exitCode?: number; stdout?: string; stderr?: string; message?: string };
-      // Non-zero exit is not necessarily an error — capture it in the result
-      const exitCode = typeof e.exitCode === "number" ? e.exitCode : 1;
+      const e = err as { code?: number | string; stdout?: string; stderr?: string; message?: string };
+      // Non-zero exit is not necessarily an error — capture it in the result.
+      const numericCode = typeof e.code === "number" ? e.code : typeof e.code === "string" ? Number.parseInt(e.code, 10) : NaN;
+      const exitCode = Number.isFinite(numericCode) ? numericCode : 1;
       return {
         exitCode,
         stdout: e.stdout?.trim() ?? "",

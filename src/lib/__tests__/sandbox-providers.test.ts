@@ -1,20 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { promisify } from "node:util";
 
-const { mockExecFile } = vi.hoisted(() => {
+const { mockExecFile, mockExecFileSync } = vi.hoisted(() => {
   const mockExecFile = vi.fn();
+  const mockExecFileSync = vi.fn();
   Object.assign(mockExecFile, {
     [Symbol.for("nodejs.util.promisify.custom")]: vi.fn(async (_cmd: string, args: string[]) => ({
       stdout: args[0] === "run" ? "0123456789abcdef\n" : "ok\n",
       stderr: "",
     })),
   });
-  return { mockExecFile };
+  return { mockExecFile, mockExecFileSync };
 });
 
 vi.mock("node:child_process", () => ({
   execFile: mockExecFile,
-  execFileSync: vi.fn(),
+  execFileSync: mockExecFileSync,
 }));
 
 import {
@@ -30,6 +31,7 @@ function promisifiedExecFileMock() {
 
 beforeEach(() => {
   mockExecFile.mockReset();
+  mockExecFileSync.mockReset();
   mockExecFile.mockImplementation((_cmd, args, _opts, cb) => {
     cb(null, args[0] === "run" ? "0123456789abcdef\n" : "ok\n", "");
   });
@@ -62,6 +64,16 @@ describe("DockerSandboxProvider", () => {
     const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
     expect(args).not.toContain("--network");
   });
+
+  it("propagates docker exec numeric exit codes", async () => {
+    promisifiedExecFileMock().mockRejectedValueOnce({ code: 42, stdout: "", stderr: "failed" });
+    const provider = new DockerSandboxProvider();
+
+    const result = await provider.runInSandbox("sandbox-1", ["false"]);
+
+    expect(result.exitCode).toBe(42);
+    expect(result.stderr).toBe("failed");
+  });
 });
 
 describe("PodmanSandboxProvider", () => {
@@ -81,6 +93,16 @@ describe("PodmanSandboxProvider", () => {
     const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
     expect(args).toContain("--network");
     expect(args).toContain("none");
+  });
+
+  it("propagates podman exec numeric string exit codes", async () => {
+    promisifiedExecFileMock().mockRejectedValueOnce({ code: "7", stdout: "", stderr: "failed" });
+    const provider = new PodmanSandboxProvider();
+
+    const result = await provider.runInSandbox("sandbox-1", ["false"]);
+
+    expect(result.exitCode).toBe(7);
+    expect(result.stderr).toBe("failed");
   });
 });
 
@@ -106,6 +128,26 @@ describe("SandboxProviderFactory", () => {
     it("returns podman when backend is explicitly podman", () => {
       const result = SandboxProviderFactory.resolveBackend({ backend: "podman" });
       expect(result).toBe("podman");
+    });
+
+    it("probes container CLIs with a timeout when backend is auto", () => {
+      const prevDockerHost = process.env.DOCKER_HOST;
+      process.env.DOCKER_HOST = "unix:///var/run/docker.sock";
+      mockExecFileSync
+        .mockImplementationOnce(() => { throw new Error("docker unavailable"); })
+        .mockImplementationOnce(() => { throw new Error("docker unavailable"); })
+        .mockImplementationOnce(() => "podman ok");
+
+      try {
+        const result = SandboxProviderFactory.resolveBackend({ backend: "auto" });
+
+        expect(result).toBe("podman");
+        expect(mockExecFileSync).toHaveBeenCalledWith("docker", ["version"], expect.objectContaining({ timeout: 2_000 }));
+        expect(mockExecFileSync).toHaveBeenCalledWith("podman", ["version"], expect.objectContaining({ timeout: 2_000 }));
+      } finally {
+        if (prevDockerHost === undefined) delete process.env.DOCKER_HOST;
+        else process.env.DOCKER_HOST = prevDockerHost;
+      }
     });
   });
 });

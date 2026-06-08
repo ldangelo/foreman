@@ -46,6 +46,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as yamlLoad } from "js-yaml";
 import { getForemanHomePath } from "./foreman-paths.js";
+import type { SandboxConfig } from "./project-config.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -208,49 +209,8 @@ export interface OnFailureConfig {
 /** Valid onError strategies for workflow-level error handling. */
 export type OnErrorStrategy = "stop" | "continue";
 
-/**
- * Workflow-level sandbox configuration for container isolation.
- *
- * When present, overrides project-level sandbox configuration.
- * Uses the same schema as project config for consistency.
- */
-export interface WorkflowSandboxConfig {
-  /**
-   * Which sandbox backend to use.
-   * - 'docker'  — always use Docker
-   * - 'podman'  — always use Podman
-   * - 'auto'    — detect from environment (default: 'auto')
-   */
-  backend?: "docker" | "podman" | "auto";
-  /**
-   * Container image to use for sandboxes.
-   * Default: 'ubuntu:22.04'.
-   */
-  image?: string;
-  /**
-   * Resource limits for sandbox containers.
-   */
-  limits?: {
-    /** Maximum CPU units (e.g., "1" for 1 CPU, "0.5" for half). */
-    cpu?: string;
-    /** Memory limit (e.g., "2g" for 2GB, "512m" for 512MB). */
-    memory?: string;
-    /** Specific CPUs to allow (e.g., "0-1" for cores 0-1). */
-    cpuset?: string;
-    /** Maximum swap memory (e.g., "1g"). */
-    memorySwap?: string;
-  };
-  /**
-   * Enable networking in sandbox. Default: false (network disabled).
-   */
-  network?: boolean;
-  /**
-   * Cleanup policy when sandbox container exits.
-   * - 'remove'  — remove container after destroy (default)
-   * - 'keep'    — leave container stopped for debugging
-   */
-  cleanup?: "remove" | "keep";
-}
+/** Workflow-level sandbox configuration for container isolation. */
+export type WorkflowSandboxConfig = SandboxConfig;
 
 /** A loaded, validated workflow configuration. */
 export interface WorkflowConfig {

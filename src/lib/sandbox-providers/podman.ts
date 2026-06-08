@@ -215,8 +215,9 @@ export class PodmanSandboxProvider implements SandboxProvider {
         stderr: result.stderr.trim(),
       };
     } catch (err: unknown) {
-      const e = err as { exitCode?: number; stdout?: string; stderr?: string; message?: string };
-      const exitCode = typeof e.exitCode === "number" ? e.exitCode : 1;
+      const e = err as { code?: number | string; stdout?: string; stderr?: string; message?: string };
+      const numericCode = typeof e.code === "number" ? e.code : typeof e.code === "string" ? Number.parseInt(e.code, 10) : NaN;
+      const exitCode = Number.isFinite(numericCode) ? numericCode : 1;
       return {
         exitCode,
         stdout: e.stdout?.trim() ?? "",
