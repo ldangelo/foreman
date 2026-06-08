@@ -20,6 +20,7 @@ import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter } f
 import { ForemanStore } from "../lib/store.js";
 import type { RunProgress } from "../lib/store.js";
 import { PostgresStore } from "../lib/postgres-store.js";
+import type { RunProgressSummary } from "./read-models.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { initPool } from "../lib/db/pool-manager.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -52,7 +53,7 @@ import type { VcsBackend } from "../lib/vcs/interface.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { runWorkspaceHook } from "../lib/setup.js";
-import type { ProjectHooksConfig } from "../lib/project-config.js";
+import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -274,9 +275,7 @@ function releaseFiles(
 }
 
 async function createRuntimeTaskClient(projectPath: string, registeredProjectId?: string): Promise<ITaskClient> {
-  const runtimeMode = process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase();
   return (await createTaskClient(projectPath, {
-    forceBeadsFallback: runtimeMode === "test",
     registeredProjectId,
   })).taskClient;
 }
@@ -1349,9 +1348,16 @@ async function runPipeline(
   registeredProjectId?: string,
 ): Promise<void> {
   const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
+
+  // Load project config for taskTypeWorkflowMap.
+  // Invalid config must fail fast so workflow routing policy is never ignored.
+  const projectCfg = loadProjectConfig(pipelineProjectPath);
+  const projectTaskTypeWorkflowMap = projectCfg?.taskTypeWorkflowMap;
+
   const resolvedWorkflow = resolveWorkflowName(
     config.seedType ?? "feature",
     config.seedLabels,
+    projectTaskTypeWorkflowMap,
   );
   // Load the workflow config (phase sequence + per-phase overrides).
   let workflowConfig: WorkflowConfig;
@@ -1365,11 +1371,10 @@ async function runPipeline(
 
   const { taskClient: runtimeTaskClient, backendType: runtimeTaskBackend } = await createTaskClient(
     pipelineProjectPath,
-      {
-        forceBeadsFallback: process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase() === "test",
-        registeredProjectId,
-      },
-    );
+    {
+      registeredProjectId,
+    },
+  );
   const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = registeredReadStore
     ? {
         async updateProgress(progress) {

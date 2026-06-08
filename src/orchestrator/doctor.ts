@@ -898,78 +898,21 @@ export class Doctor {
   }
 
   async checkBeadsInitialized(): Promise<CheckResult> {
-    if (this.isNativeTaskBackend()) {
-      return {
-        name: "beads (.beads/) initialized",
-        status: "skip",
-        message: "Native task backend active — beads fallback not required",
-      };
-    }
-
-    const beadsDir = join(this.projectPath, ".beads");
-    if (existsSync(beadsDir)) {
-      return {
-        name: "beads (.beads/) initialized",
-        status: "pass",
-        message: ".beads directory found",
-      };
-    }
-    if (this.getNativeTaskCount() > 0) {
-      return {
-        name: "beads (.beads/) initialized",
-        status: "skip",
-        message: "Native task store active — beads fallback not required",
-      };
-    }
+    // Native task store only — beads directory not required
     return {
       name: "beads (.beads/) initialized",
-      status: "fail",
-      message: `No .beads directory at ${beadsDir}. Run 'foreman init' first.`,
+      status: "skip",
+      message: "Native task backend active — beads not required",
     };
   }
 
   async checkTaskStoreMode(): Promise<CheckResult> {
     const nativeTaskCount = this.getNativeTaskCount();
-    const beadsIssueCount = await this.getBeadsIssueCount();
-
-    if (this.isNativeTaskBackend()) {
-      if (beadsIssueCount > 0) {
-        return {
-          name: "task store mode",
-          status: "warn",
-          message: `Task store: native (${nativeTaskCount} tasks)`,
-          details: "Beads data still exists alongside the native task backend. Run 'foreman task import --from-beads' and then remove .beads/ to complete migration.",
-        };
-      }
-
-      return {
-        name: "task store mode",
-        status: "pass",
-        message: `Task store: native (${nativeTaskCount} tasks)`,
-      };
-    }
-
-    if (nativeTaskCount > 0 && beadsIssueCount > 0) {
-      return {
-        name: "task store mode",
-        status: "warn",
-        message: `Task store: native (${nativeTaskCount} tasks)`,
-        details: "Both native task store and beads data exist. Run 'foreman task import --from-beads' and then remove .beads/ to complete migration.",
-      };
-    }
-
-    if (nativeTaskCount > 0) {
-      return {
-        name: "task store mode",
-        status: "pass",
-        message: `Task store: native (${nativeTaskCount} tasks)`,
-      };
-    }
 
     return {
       name: "task store mode",
       status: "pass",
-      message: "Task store: beads (fallback)",
+      message: `Task store: native (${nativeTaskCount} tasks)`,
     };
   }
 

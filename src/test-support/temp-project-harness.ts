@@ -119,6 +119,29 @@ function syncLocalMainFromOrigin(projectPath: string): void {
   execFileSync("git", ["reset", "--hard", "origin/main"], { cwd: projectPath, stdio: "pipe" });
 }
 
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function removeDirWithRetries(dirPath: string): void {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 60; attempt++) {
+    try {
+      rmSync(dirPath, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 250,
+      });
+      return;
+    } catch (err) {
+      lastError = err;
+      sleepSync(250);
+    }
+  }
+  throw lastError;
+}
+
 export async function createTempProjectHarness(): Promise<TempProjectHarness> {
   const projectPath = realpathSync(mkdtempSync(join(tmpdir(), "foreman-e2e-project-")));
   mkdirSync(join(projectPath, ".foreman"), { recursive: true });
@@ -161,7 +184,7 @@ export async function createTempProjectHarness(): Promise<TempProjectHarness> {
   return {
     projectPath,
     cleanup() {
-      rmSync(projectPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      removeDirWithRetries(projectPath);
     },
     seedTask(opts) {
       return withRetry(async () => {

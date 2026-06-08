@@ -447,6 +447,8 @@ export interface PromptLoaderOpts {
   projectRoot?: string;
   /** Workflow name (e.g. "default", "smoke"). Defaults to "default". */
   workflow?: string;
+  /** Prompt template name. Defaults to the phase name. */
+  promptName?: string;
 }
 
 /**
@@ -461,12 +463,14 @@ function resolvePrompt(
   legacyFilename: string,
   opts?: PromptLoaderOpts,
 ): string {
+  const promptName = opts?.promptName ?? phase;
   if (opts?.projectRoot) {
     const workflow = opts.workflow ?? "default";
-    return loadPrompt(phase, vars, workflow, opts.projectRoot);
+    return loadPrompt(promptName, vars, workflow, opts.projectRoot);
   }
   // Bundled fallback (backward compat / unit tests without project root)
-  return loadAndInterpolate(legacyFilename, vars as Record<string, string>);
+  const fallbackFilename = opts?.promptName ? `${opts.promptName}-prompt.md` : legacyFilename;
+  return loadAndInterpolate(fallbackFilename, vars as Record<string, string>);
 }
 
 export { PromptNotFoundError };

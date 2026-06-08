@@ -24,9 +24,9 @@ describe("agent-worker.ts — merge queue handoff", () => {
     expect(source).toContain("createTaskClient");
   });
 
-  it("routes worker runtime task selection through the shared factory even in test mode", () => {
-    expect(source).toContain("forceBeadsFallback: runtimeMode === \"test\"");
-    expect(source).not.toContain("new NativeTaskClient(");
+  it("routes worker runtime task selection through the shared factory using native tasks only", () => {
+    expect(source).toContain("createTaskClient");
+    expect(source).not.toContain("forceBeadsFallback");
   });
 
   it("creates one shared runtime task client for epic QA hooks and status updates", () => {

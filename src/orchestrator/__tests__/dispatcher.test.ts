@@ -3,14 +3,18 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:
 import * as os from "node:os";
 import { join } from "node:path";
 
-const { mockRunWithPiSdk, mockCheckAndRebaseStaleWorktree } = vi.hoisted(() => ({
+const { mockRunWithPiSdk, mockCheckAndRebaseStaleWorktree, mockLoadProjectConfig } = vi.hoisted(() => ({
   mockRunWithPiSdk: vi.fn(),
   mockCheckAndRebaseStaleWorktree: vi.fn().mockResolvedValue({ rebased: true, autoRebasePerformed: false }),
+  mockLoadProjectConfig: vi.fn(),
 }));
 
 vi.mock("../pi-sdk-runner.js", () => ({ runWithPiSdk: (...args: unknown[]) => mockRunWithPiSdk(...args) }));
 vi.mock("../stale-worktree-check.js", () => ({
   checkAndRebaseStaleWorktree: (...args: unknown[]) => mockCheckAndRebaseStaleWorktree(...args),
+}));
+vi.mock("../../lib/project-config.js", () => ({
+  loadProjectConfig: (...args: unknown[]) => mockLoadProjectConfig(...args),
 }));
 
 import { Dispatcher, DetachedSpawnStrategy, buildWorkerEnv, purgeOrphanedWorkerConfigs } from "../dispatcher.js";
@@ -2301,5 +2305,228 @@ describe("Dispatcher.dispatch — reconciliation integration", () => {
     const logCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
     expect(logCalls.some((msg) => msg.includes("Stopped 1 run(s) with terminal issues"))).toBe(true);
     consoleSpy.mockRestore();
+  });
+});
+
+describe("Dispatcher.dispatch — per-state concurrency limits (Backlog-006)", () => {
+  beforeEach(() => {
+    mockLoadProjectConfig.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("skips dispatch when per-state concurrency limit is reached", async () => {
+    // Configure concurrency limit: max 2 concurrent runs with status "review"
+    mockLoadProjectConfig.mockReturnValue({
+      concurrency: {
+        global: 10,
+        byState: {
+          review: 2,
+        },
+      },
+    });
+
+    // Create 2 active runs already in "review" state
+    const activeRuns = [
+      {
+        id: "run-001",
+        project_id: "proj-1",
+        seed_id: "bd-001",
+        agent_type: "claude-sonnet-4-6",
+        session_key: null,
+        worktree_path: null,
+        status: "running" as const,
+        started_at: null,
+        completed_at: null,
+        created_at: new Date().toISOString(),
+        progress: null,
+      },
+      {
+        id: "run-002",
+        project_id: "proj-1",
+        seed_id: "bd-002",
+        agent_type: "claude-sonnet-4-6",
+        session_key: null,
+        worktree_path: null,
+        status: "running" as const,
+        started_at: null,
+        completed_at: null,
+        created_at: new Date().toISOString(),
+        progress: null,
+      },
+    ];
+
+    // The ready seed we want to dispatch also has status "review"
+    const reviewIssue: Issue = {
+      id: "bd-003",
+      title: "Task in review",
+      type: "feature",
+      status: "review",
+      priority: "P2",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    // seeds.show returns the issue detail for active runs (to determine state)
+    // and for the seed being dispatched
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([reviewIssue]),
+      show: vi.fn().mockImplementation(async (seedId: string) => {
+        if (seedId === "bd-001" || seedId === "bd-002") {
+          return { status: "review" }; // Active runs are in "review" state
+        }
+        return { status: "review", description: null, notes: null, labels: [] }; // Seed to dispatch
+      }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue(activeRuns),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // bd-003 should be skipped because 2 "review" runs already exist and limit is 2
+    expect(result.dispatched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].seedId).toBe("bd-003");
+    expect(result.skipped[0].reason).toMatch(/review/i);
+    expect(result.skipped[0].reason).toMatch(/concurrency limit/i);
+  });
+
+  it("allows dispatch when per-state concurrency limit is not reached", async () => {
+    // Configure concurrency limit: max 2 concurrent runs with status "review"
+    mockLoadProjectConfig.mockReturnValue({
+      concurrency: {
+        global: 10,
+        byState: {
+          review: 2,
+        },
+      },
+    });
+
+    // Only 1 active run in "review" state (limit is 2, so should allow dispatch)
+    const activeRuns = [
+      {
+        id: "run-001",
+        project_id: "proj-1",
+        seed_id: "bd-001",
+        agent_type: "claude-sonnet-4-6",
+        session_key: null,
+        worktree_path: null,
+        status: "running" as const,
+        started_at: null,
+        completed_at: null,
+        created_at: new Date().toISOString(),
+        progress: null,
+      },
+    ];
+
+    const reviewIssue: Issue = {
+      id: "bd-002",
+      title: "Task in review",
+      type: "feature",
+      status: "review",
+      priority: "P2",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([reviewIssue]),
+      show: vi.fn().mockImplementation(async (seedId: string) => {
+        if (seedId === "bd-001") {
+          return { status: "review" };
+        }
+        return { status: "review", description: null, notes: null, labels: [] };
+      }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue(activeRuns),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // bd-002 should be dispatched since only 1 of 2 allowed "review" runs is active
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].seedId).toBe("bd-002");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("applies concurrency.global override to maxAgents", async () => {
+    // Configure global limit of 2 (should cap maxAgents of 5 down to 2)
+    mockLoadProjectConfig.mockReturnValue({
+      concurrency: {
+        global: 2,
+      },
+    });
+
+    // No active runs, so with global=2 we should have 2 available slots
+    const activeRuns = [] as const;
+
+    const readyIssue: Issue = {
+      id: "bd-001",
+      title: "Task",
+      type: "feature",
+      status: "open",
+      priority: "P2",
+      assignee: null,
+      parent: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const seedsClient: ITaskClient = {
+      ready: vi.fn().mockResolvedValue([readyIssue]),
+      show: vi.fn().mockResolvedValue({ status: "open", description: null, notes: null, labels: [] }),
+      update: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+    };
+
+    const store = {
+      getActiveRuns: vi.fn().mockReturnValue(activeRuns),
+      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(false),
+      getReadyTasks: vi.fn().mockReturnValue([]),
+      updateRun: vi.fn(),
+      logEvent: vi.fn(),
+    } as unknown as ForemanStore;
+
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
+    const result = await dispatcher.dispatch({ dryRun: true });
+
+    // Should dispatch since activeAgents=0 < global limit of 2
+    expect(result.dispatched).toHaveLength(1);
   });
 });

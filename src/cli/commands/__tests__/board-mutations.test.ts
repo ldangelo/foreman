@@ -4,9 +4,8 @@
  * @module src/cli/commands/__tests__/board-mutations.test
  */
 
-import { describe, it, expect, vi } from "vitest";
-import * as boardModule from "../board.js";
-import { createKeyHandler, type BoardStatus, type BoardTask, type RenderState } from "../board.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { boardApi, createKeyHandler, type BoardStatus, type BoardTask, type RenderState } from "../board.js";
 
 // Constants matching board.ts
 const BOARD_STATUSES: readonly BoardStatus[] = [
@@ -14,11 +13,15 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "ready",
   "in_progress",
   "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 
 describe("BoardMutations", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // Helper to create a board task
   const createTask = (
     id: string,
@@ -59,6 +62,53 @@ describe("BoardMutations", () => {
       ...overrides,
     };
   };
+
+  describe("Mark task as ready (R key)", () => {
+    it("R should return early when no task is selected", async () => {
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [],
+      });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(result.flashTaskId).toBeNull();
+      expect(result.needsRefresh).toBe(false);
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("R should mark selected task as ready", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "backlog" });
+      const state = createState({
+        backlog: [task],
+      });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234", "ready");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.needsRefresh).toBe(true);
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("R should show error when task is not in backlog", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "in_progress" });
+      const state = createState({
+        in_progress: [task],
+      }, { nav: { colIndex: 2, rowIndex: 0 } });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(spy).not.toHaveBeenCalled();
+      expect(result.errorMessage).toBe("Task must be in backlog to mark as ready");
+      expect(result.flashTaskId).toBeNull();
+      expect(result.needsRefresh).toBe(false);
+    });
+  });
 
   describe("Status Cycling (s/S keys)", () => {
     it("s should advance status to next in order", () => {
@@ -110,8 +160,8 @@ describe("BoardMutations", () => {
         ["backlog", "ready"],
         ["ready", "in_progress"],
         ["in_progress", "review"],
-        ["review", "blocked"],
-        ["blocked", "closed"],
+        ["review", "needs_attention"],
+        ["needs_attention", "closed"],
         ["closed", "backlog"],
       ];
 
@@ -130,8 +180,8 @@ describe("BoardMutations", () => {
         ["ready", "backlog"],
         ["in_progress", "ready"],
         ["review", "in_progress"],
-        ["blocked", "review"],
-        ["closed", "blocked"],
+        ["needs_attention", "review"],
+        ["closed", "needs_attention"],
       ];
 
       transitions.forEach(([from, to]) => {
@@ -339,7 +389,7 @@ describe("BoardMutations", () => {
 
   describe("Create New Task (n key)", () => {
     it("n key should trigger new task creation", async () => {
-      vi.spyOn(boardModule.boardApi, "createTaskInEditor").mockReturnValue({
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
         id: "bd-new",
         title: "New Task",
         description: null,
@@ -347,7 +397,7 @@ describe("BoardMutations", () => {
         priority: 2,
         status: "backlog",
       });
-      vi.spyOn(boardModule.boardApi, "createTaskAsync").mockResolvedValue({ taskId: "bd-new" });
+      vi.spyOn(boardApi, "createTaskAsync").mockResolvedValue({ taskId: "bd-new" });
 
       const handleKey = createKeyHandler("/tmp/project");
       const state = createState({
@@ -498,7 +548,7 @@ describe("BoardMutations", () => {
         "ready",
         "in_progress",
         "review",
-        "blocked",
+        "needs_attention",
         "closed",
       ];
 

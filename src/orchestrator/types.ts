@@ -131,10 +131,13 @@ export interface PrReport {
 
 // ── Worker Notification types ─────────────────────────────────────────────
 
+import type { RunStatus } from "./read-models.js";
+import type { RunProgressSummary } from "./read-models.js";
+
 export interface WorkerStatusNotification {
   type: "status";
   runId: string;
-  status: import("../lib/store.js").Run["status"];
+  status: RunStatus;
   timestamp: string;
   details?: Record<string, unknown>;
 }
@@ -142,7 +145,7 @@ export interface WorkerStatusNotification {
 export interface WorkerProgressNotification {
   type: "progress";
   runId: string;
-  progress: import("../lib/store.js").RunProgress;
+  progress: RunProgressSummary;
   timestamp: string;
 }
 

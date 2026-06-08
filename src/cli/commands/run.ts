@@ -7,7 +7,7 @@ import chalk from "chalk";
 
 import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
-import { createTaskClient, resolveTaskStoreMode } from "../../lib/task-client-factory.js";
+import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
@@ -192,29 +192,21 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
  * Instantiate the br task-tracking client(s).
  *
  * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
- * the binary exists, plus a BvClient for graph-aware triage.
- *
- * Throws if the br binary cannot be found.
+ * plus a BvClient for graph-aware triage.
  */
 export async function createTaskClients(
   projectPath: string,
-  runtimeMode: RuntimeMode = resolveRuntimeMode(),
+  _runtimeMode: RuntimeMode = resolveRuntimeMode(),
   registeredProjectId?: string,
 ): Promise<TaskClientResult> {
-  // In normal mode: auto-detect (omit the force flag so selectTaskReadBackend
-  // uses projectHasNativeTasks). In test mode: force beads fallback unless the
-  // task store is explicitly pinned to native.
-  const taskStoreMode = resolveTaskStoreMode();
-  const forceBeadsFallback = runtimeMode === "test" && taskStoreMode !== "native" ? true : undefined;
+  // Always use native task store
   const { taskClient, backendType } = await createTaskClient(projectPath, {
-    ensureBrInstalled: true,
-    forceBeadsFallback,
     registeredProjectId,
   });
 
   return {
     taskClient,
-    bvClient: backendType === "beads" ? new BvClient(projectPath) : null,
+    bvClient: null,  // BvClient only used for beads backend
     backendType,
   };
 }
@@ -667,7 +659,7 @@ export const runCommand = new Command("run")
       // automatically alongside foreman run. Non-fatal — if anything fails,
       // log a warning and continue without sentinel.
       let sentinelAgent: SentinelAgent | null = null;
-      if (!dryRun && backendType === "beads") {
+      if (!dryRun) {
         try {
           if (project) {
             const sentinelStore = registered
@@ -738,7 +730,7 @@ export const runCommand = new Command("run")
       // ── Startup Bead Sync ────────────────────────────────────────────────
       // Reconcile br seed statuses against Postgres run statuses before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
-      if (!dryRun && project && backendType === "beads") {
+      if (!dryRun && project) {
         try {
           const syncResult = await syncBeadStatusOnStartup(daemonStore ?? store, taskClient, project.id, { projectPath });
           if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {

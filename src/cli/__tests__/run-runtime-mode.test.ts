@@ -107,37 +107,35 @@ describe("run runtime mode", () => {
     expect(MockForemanStore.forProject).not.toHaveBeenCalled();
   });
 
-  it("forces the beads backend in test runtime when task store is auto", async () => {
+  it("keeps the native backend in test runtime when task store is auto", async () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "auto");
 
     const result = await createTaskClients(projectPath, "test");
 
-    expect(result.backendType).toBe("beads");
-    expect(result.bvClient).not.toBeNull();
-    expect(MockBeadsRustClient).toHaveBeenCalledWith(projectPath);
-    expect(mockPostgresHasNativeTasks).not.toHaveBeenCalled();
+    expect(result.backendType).toBe("native");
+    expect(result.bvClient).toBeNull();
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
   });
 
-  it("preserves the legacy autoSelectNativeWhenAvailable alias", async () => {
+  it("ignores the legacy autoSelectNativeWhenAvailable alias", async () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "auto");
 
     const result = await createTaskClient(projectPath, {
       autoSelectNativeWhenAvailable: true,
     });
 
-    expect(result.backendType).toBe("beads");
-    expect(MockBeadsRustClient).toHaveBeenCalledWith(projectPath);
+    expect(result.backendType).toBe("native");
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
   });
 
-  it("falls back to br in normal runtime", async () => {
-    // Stub TASK_STORE to 'beads' so auto-detect is bypassed
+  it("ignores legacy br task store selection in normal runtime", async () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "beads");
     const result = await createTaskClients(projectPath, "normal");
 
-    expect(result.backendType).toBe("beads");
-    expect(MockBeadsRustClient).toHaveBeenCalledWith(projectPath);
-    expect(mockEnsureBrInstalled).toHaveBeenCalledTimes(1);
-    expect(MockBvClient).toHaveBeenCalledWith(projectPath);
-    expect(result.bvClient).not.toBeNull();
+    expect(result.backendType).toBe("native");
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
+    expect(mockEnsureBrInstalled).not.toHaveBeenCalled();
+    expect(MockBvClient).not.toHaveBeenCalled();
+    expect(result.bvClient).toBeNull();
   });
 });

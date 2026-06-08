@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findStalePrompts, loadPrompt } from "../prompt-loader.js";
+import { findStalePrompts, getBundledPromptContent, getBundledPromptPath, loadPrompt, REQUIRED_PHASES } from "../prompt-loader.js";
 
 describe("prompt loader", () => {
   const tempDirs: string[] = [];
@@ -75,6 +75,26 @@ describe("prompt loader", () => {
     expect(loaded).toBe("local developer");
   });
 
+
+  it("tracks fix-issue prompts as workflow-scoped required prompts", () => {
+    expect(REQUIRED_PHASES.task).toContain("fix-issue");
+    expect(REQUIRED_PHASES.bug).toContain("fix-issue");
+    expect(REQUIRED_PHASES.chore).toContain("fix-issue");
+  });
+
+  it("bundles workflow-specific fix-issue prompts", () => {
+    expect(getBundledPromptPath("task", "fix-issue")).toContain(join("task", "fix-issue.md"));
+    expect(getBundledPromptPath("bug", "fix-issue")).toContain(join("bug", "fix-issue.md"));
+    expect(getBundledPromptPath("chore", "fix-issue")).toContain(join("chore", "fix-issue.md"));
+  });
+
+  it("fix-issue prompts invoke ensemble and preserve the developer artifact contract", () => {
+    for (const workflow of ["task", "bug", "chore"] as const) {
+      const content = getBundledPromptContent(workflow, "fix-issue");
+      expect(content?.startsWith("/ensemble:fix-issue {{seedTitle}} {{seedDescription}}")).toBe(true);
+      expect(content).toContain("DEVELOPER_REPORT.md");
+    }
+  });
   it("flags stale global default prompts that are missing critical markers", () => {
     const foremanHome = makeForemanHome();
     writeFileSync(

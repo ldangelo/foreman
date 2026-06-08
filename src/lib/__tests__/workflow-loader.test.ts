@@ -296,17 +296,26 @@ phases:
     expect(config.phases.some((p) => p.name === "developer")).toBe(true);
   });
 
-  it("loads bundled task workflow with unit-test bash and timeout override", () => {
+  it("loads bundled task workflow with scoped fix prompt and qa retry", () => {
     const config = loadWorkflowConfig("task", tmpDir);
-    const testPhase = config.phases.find((p) => p.name === "test");
-    expect(testPhase?.bash).toBe("npm run test:unit");
-    expect(testPhase?.timeoutSecs).toBe(180);
+    const fixPhase = config.phases.find((p) => p.name === "fix");
+    const qaPhase = config.phases.find((p) => p.name === "qa");
+    expect(fixPhase?.prompt).toBe("fix-issue.md");
+    expect(fixPhase?.command).toBeUndefined();
+    expect(qaPhase?.prompt).toBe("qa.md");
+    expect(qaPhase?.retryWith).toBe("developer");
+    expect(qaPhase?.retryOnFail).toBe(2);
   });
 
-  it("loads bundled chore workflow with unit-test bash", () => {
-    const config = loadWorkflowConfig("chore", tmpDir);
-    const testPhase = config.phases.find((p) => p.name === "test");
-    expect(testPhase?.bash).toBe("npm run test:unit");
+  it("loads bundled bug and chore workflows with scoped fix prompts", () => {
+    for (const workflow of ["bug", "chore"] as const) {
+      const config = loadWorkflowConfig(workflow, tmpDir);
+      const fixPhase = config.phases.find((p) => p.name === "fix");
+      const testPhase = config.phases.find((p) => p.name === "test");
+      expect(fixPhase?.prompt).toBe("fix-issue.md");
+      expect(fixPhase?.command).toBeUndefined();
+      expect(testPhase?.bash).toBe("npm run test:unit");
+    }
   });
 
   it("feature workflow inserts cli-review, PR review, and merge phases after reviewer", () => {

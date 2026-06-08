@@ -1437,9 +1437,9 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
       await expect(refinery.mergeCompleted({ runTests: false })).resolves.not.toThrow();
     });
 
-    it("still calls enqueueCloseSeed when using native task fallback", async () => {
+    it("still calls enqueueCloseSeed when no native task exists for the run", async () => {
       const { store, refinery } = makeMocksWithoutTask();
-      const run = makeRun({ id: "run-beads-only", seed_id: "seed-beads-only" });
+      const run = makeRun({ id: "run-no-task", seed_id: "seed-no-task" });
       store.getRunsByStatus.mockReturnValue([run]);
       (removeWorktree as any).mockResolvedValue(undefined);
 
@@ -1448,20 +1448,11 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
 
       await refinery.mergeCompleted({ runTests: false });
 
-      // enqueueCloseSeed should still be called for the bead
-      expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), "seed-beads-only", "refinery");
+      // enqueueCloseSeed should still be called for the seed
+      expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), "seed-no-task", "refinery");
 
-      // syncBeadStatusAfterMerge should be called in the fallback path (no native task)
-      expect(syncBeadStatusAfterMerge).toHaveBeenCalledTimes(1);
-      expect(syncBeadStatusAfterMerge).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.anything(),
-        "run-beads-only",
-        "seed-beads-only",
-        expect.anything(),
-        undefined,
-        expect.anything(),
-      );
+      // syncBeadStatusAfterMerge should NOT be called (beads fallback removed)
+      expect(syncBeadStatusAfterMerge).not.toHaveBeenCalled();
     });
   });
 

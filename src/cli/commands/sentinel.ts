@@ -24,9 +24,7 @@ export interface SentinelCommandTaskClient extends ITaskClient {
 }
 
 export async function createSentinelTaskClient(projectPath: string): Promise<SentinelCommandTaskClient> {
-  const { taskClient } = await createTaskClient(projectPath, {
-    forceBeadsFallback: true,
-  });
+  const { taskClient } = await createTaskClient(projectPath);
   return taskClient as SentinelCommandTaskClient;
 }
 

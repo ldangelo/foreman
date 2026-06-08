@@ -62,7 +62,7 @@ export const up = (pgm: MigrationBuilder) => {
       notNull: true,
       default: "'backlog'",
       check: `status IN (
-        'backlog', 'ready', 'in-progress',
+        'backlog', 'ready', 'in-progress', 'review',
         'explorer', 'developer', 'qa', 'reviewer', 'finalize',
         'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked'
       )`,

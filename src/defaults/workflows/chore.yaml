@@ -1,7 +1,7 @@
-# Chore workflow: command phase → bash phase → finalize → auto-merge
+# Chore workflow: fix prompt → bash phase → finalize → auto-merge
 #
 # Lean pipeline for refactors, dependency updates, tooling, and other
-# maintenance tasks. Uses command + bash phases for efficiency (TRD-2026-008).
+# maintenance tasks. Uses a workflow-scoped fix prompt plus bash validation.
 # No explorer (scope is already known) and no reviewer (changes are well-scoped).
 #
 # Auto-selected when bead type is "chore".
@@ -17,11 +17,11 @@ setupCache:
   path: node_modules
 
 phases:
-  # ── Phase 1: fix (command phase — TRD-005) ───────────────────────────────
-  # Uses /ensemble:fix-issue as the agent prompt, with task metadata interpolated.
-  # Use /ensemble:refactor or /ensemble:chore for refactoring-specific agents.
+  # ── Phase 1: fix ────────────────────────────────────────────────────────
+  # Uses the workflow-scoped fix-issue prompt so the artifact contract is
+  # explicit and isolated from other workflows.
   - name: fix
-    command: "/skill:ensemble-fix-issue {task.title} {task.description}"
+    prompt: fix-issue.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
