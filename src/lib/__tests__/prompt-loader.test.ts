@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findStalePrompts, getBundledPromptContent, getBundledPromptPath, loadPrompt, REQUIRED_PHASES } from "../prompt-loader.js";
+import { findStalePrompts, getBundledPromptContent, getBundledPromptPath, loadPrompt, REQUIRED_PHASES, expandCommandPlaceholders, CommandExpansionError } from "../prompt-loader.js";
 
 describe("prompt loader", () => {
   const tempDirs: string[] = [];
@@ -123,5 +123,104 @@ describe("prompt loader", () => {
     const stale = findStalePrompts("/ignored/project");
     expect(stale).not.toContain("default/developer.md");
     expect(stale).not.toContain("default/explorer.md");
+  });
+});
+
+describe("expandCommandPlaceholders", () => {
+  it("replaces !`echo hello` with command output", () => {
+    const template = "Output: !`echo hello`";
+    const result = expandCommandPlaceholders(template, tmpdir());
+    // echo adds trailing newline; we verify the output contains expected text
+    expect(result).toContain("Output: hello");
+    expect(result.endsWith("\n")).toBe(true);
+  });
+
+  it("replaces !`echo` with output (handles newlines correctly)", () => {
+    const template = "!`echo line1`\n!`echo line2`";
+    const result = expandCommandPlaceholders(template, tmpdir());
+    // Each echo command outputs a line with trailing newline
+    expect(result).toContain("line1");
+    expect(result).toContain("line2");
+    expect(result.split("\n").filter(l => l === "line1" || l === "line2")).toHaveLength(2);
+  });
+
+  it("throws CommandExpansionError on non-zero exit code", () => {
+    const template = "!`exit 1`";
+    expect(() => expandCommandPlaceholders(template, tmpdir())).toThrow(CommandExpansionError);
+  });
+
+  it("throws CommandExpansionError with exit code 42", () => {
+    const template = "!`bash -c 'exit 42'`";
+    try {
+      expandCommandPlaceholders(template, tmpdir());
+      expect.fail("Expected CommandExpansionError to be thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CommandExpansionError);
+      expect((err as CommandExpansionError).exitCode).toBe(42);
+      expect((err as CommandExpansionError).command).toBe("bash -c 'exit 42'");
+    }
+  });
+
+  it("preserves non-matching text", () => {
+    const template = "Hello !`echo world` - this is normal text";
+    const result = expandCommandPlaceholders(template, tmpdir());
+    // echo world outputs "world\n"; verify core content is present
+    expect(result).toContain("Hello world");
+    expect(result).toContain("this is normal text");
+  });
+
+  it("preserves text without any command placeholders", () => {
+    const template = "No commands here, just text";
+    const result = expandCommandPlaceholders(template, tmpdir());
+    expect(result).toBe("No commands here, just text");
+  });
+
+  it("expands multiple commands in one template", () => {
+    const template = "Date: !`date +%Y-%m-%d`\nTime: !`date +%H:%M:%S`";
+    const result = expandCommandPlaceholders(template, tmpdir());
+    expect(result).toContain("Date:");
+    expect(result).toContain("Time:");
+    // Each date command produces a timestamp-like output
+    expect(result.split("\n").filter(l => l.length > 0)).toHaveLength(2);
+  });
+
+  it("handles command with no output (exit 0)", () => {
+    const template = "!`true`";
+    const result = expandCommandPlaceholders(template, tmpdir());
+    expect(result).toBe("");
+  });
+
+  it("throws when command does not exist", () => {
+    const template = "!`nonexistent-command-xyz`";
+    expect(() => expandCommandPlaceholders(template, tmpdir())).toThrow(CommandExpansionError);
+  });
+
+  it("uses provided cwd for command execution", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "expand-command-test-"));
+    try {
+      const template = "!`pwd`";
+      const result = expandCommandPlaceholders(template, tmpDir);
+      // pwd returns the cwd path - verify it matches (normalize for macOS symlinks)
+      const normalizedResult = result.trim().replace(/^\/private/, "");
+      const normalizedTmpDir = tmpDir.replace(/^\/private/, "");
+      expect(normalizedResult).toBe(normalizedTmpDir);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws with meaningful error message containing command and exit code", () => {
+    const template = "!`bash -c 'echo error >&2; exit 1'`";
+    try {
+      expandCommandPlaceholders(template, tmpdir());
+      expect.fail("Expected CommandExpansionError to be thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CommandExpansionError);
+      const expansionErr = err as CommandExpansionError;
+      expect(expansionErr.command).toBe("bash -c 'echo error >&2; exit 1'");
+      expect(expansionErr.exitCode).toBe(1);
+      expect(expansionErr.message).toContain("bash -c 'echo error >&2; exit 1'");
+      expect(expansionErr.message).toContain("1");
+    }
   });
 });

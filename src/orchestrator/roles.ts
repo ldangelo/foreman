@@ -22,7 +22,7 @@ import {
   getHighspeedModel,
 } from "../lib/config.js";
 import { loadAndInterpolate } from "./template-loader.js";
-import { loadPrompt, PromptNotFoundError } from "../lib/prompt-loader.js";
+import { loadPrompt, PromptNotFoundError, expandCommandPlaceholders } from "../lib/prompt-loader.js";
 import { PI_PHASE_CONFIGS } from "./pi-rpc-spawn-strategy.js";
 
 export { PI_PHASE_CONFIGS };
@@ -580,7 +580,9 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
 
   // Map phase names to legacy template filenames for bundled fallback.
   const legacyFilename = `${phaseName}-prompt.md`;
-  return resolvePrompt(phaseName, vars, legacyFilename, opts);
+  const resolved = resolvePrompt(phaseName, vars, legacyFilename, opts);
+  const cwd = context.worktreePath ?? process.cwd();
+  return expandCommandPlaceholders(resolved, cwd);
 }
 
 export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
