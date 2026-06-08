@@ -1,10 +1,10 @@
 /**
- * Tests for TRD-019: status.ts backend selection based on FOREMAN_TASK_BACKEND.
+ * Tests for status task counts after native-first migration.
  *
  * Verifies:
- * - When FOREMAN_TASK_BACKEND='br': BeadsRustClient is used for task listing
+ * - getStatusBackend still reflects the feature-flag selection
+ * - fetchStatusCounts no longer instantiates the legacy br client
  */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
@@ -130,70 +130,35 @@ describe("TRD-019: fetchStatusCounts uses correct backend", () => {
     vi.unstubAllEnvs();
   });
 
-  describe("when FOREMAN_TASK_BACKEND='br'", () => {
+  describe("when legacy FOREMAN_TASK_BACKEND='br'", () => {
     beforeEach(() => {
       mockGetTaskBackend.mockReturnValue("br");
     });
 
-    it("instantiates BeadsRustClient with the project path", async () => {
+    it("does not instantiate BeadsRustClient", async () => {
       await fetchStatusCounts(PROJECT_PATH);
-      expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
+      expect(MockBeadsRustClient).not.toHaveBeenCalled();
     });
 
-    it("calls brClient.list() to fetch open issues", async () => {
+    it("does not call brClient.list() to fetch open issues", async () => {
       await fetchStatusCounts(PROJECT_PATH);
-      expect(mockBrList).toHaveBeenCalled();
+      expect(mockBrList).not.toHaveBeenCalled();
     });
 
-    it("calls brClient.ready() to fetch ready count", async () => {
+    it("does not call brClient.ready() to fetch ready count", async () => {
       await fetchStatusCounts(PROJECT_PATH);
-      expect(mockBrReady).toHaveBeenCalled();
+      expect(mockBrReady).not.toHaveBeenCalled();
     });
 
-    it("returns correct in_progress count from br backend", async () => {
-      mockBrList.mockResolvedValue([
-        { id: "1", status: "in_progress", title: "Task A" },
-        { id: "2", status: "open", title: "Task B" },
-        { id: "3", status: "in_progress", title: "Task C" },
-      ]);
-      mockBrReady.mockResolvedValue([{ id: "2", status: "open" }]);
-
+    it("returns zero counts when no native tasks exist", async () => {
       const counts = await fetchStatusCounts(PROJECT_PATH);
 
-      expect(counts.inProgress).toBe(2);
+      expect(counts.inProgress).toBe(0);
+      expect(counts.ready).toBe(0);
+      expect(counts.completed).toBe(0);
     });
 
-    it("returns correct ready count from br backend", async () => {
-      mockBrList.mockResolvedValue([{ id: "1", status: "open", title: "Task A" }]);
-      mockBrReady.mockResolvedValue([
-        { id: "1", status: "open" },
-        { id: "2", status: "open" },
-      ]);
-
-      const counts = await fetchStatusCounts(PROJECT_PATH);
-
-      expect(counts.ready).toBe(2);
-    });
-
-    it("counts closed issues from br closed list", async () => {
-      // list() without status filter returns open issues
-      mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-        if (opts?.status === "closed") {
-          return [
-            { id: "99", status: "closed", title: "Done" },
-            { id: "100", status: "closed", title: "Done 2" },
-          ];
-        }
-        return [{ id: "1", status: "open", title: "Active" }];
-      });
-      mockBrReady.mockResolvedValue([]);
-
-      const counts = await fetchStatusCounts(PROJECT_PATH);
-
-      expect(counts.completed).toBe(2);
-    });
-
-    it("does not call execFileSync (sd binary) for br backend", async () => {
+    it("does not call execFileSync (sd binary) for legacy backend selection", async () => {
       await fetchStatusCounts(PROJECT_PATH);
       expect(mockExecFileSync).not.toHaveBeenCalled();
     });

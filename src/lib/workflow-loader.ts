@@ -724,6 +724,15 @@ export function getBundledWorkflowPath(workflowName: string): string | null {
 }
 
 /**
+ * Returns true when a workflow YAML exists either in ~/.foreman/workflows/
+ * or in the bundled defaults directory.
+ */
+export function hasWorkflowConfig(workflowName: string): boolean {
+  const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
+  return existsSync(globalPath) || getBundledWorkflowPath(workflowName) !== null;
+}
+
+/**
  * Install bundled workflow configs to ~/.foreman/workflows/.
  *
  * Copies all bundled workflow YAML files. Existing files are skipped unless
@@ -870,18 +879,21 @@ export function findStaleWorkflows(_projectRoot: string): string[] {
  * Resolve the workflow name for a seed/bead.
  *
  * Resolution order:
- *  1. `workflow:<name>` label — explicit override
- *  2. `{seedType}.yaml` in bundled workflows directory
- *  3. "default"
+ *  1. `workflow:<name>` label — explicit override (highest priority)
+ *  2. `taskTypeWorkflowMap[seedType]` — explicit config mapping
+ *  3. `taskTypeWorkflowMap["default"]` — fallback for unknown types
+ *  4. `{seedType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
+ *  5. "default" (hard fallback)
  *
- * This removes the old hardcoded "smoke" → "smoke" and "epic" → "epic" mappings,
- * replacing them with a general file-existence check. Both smoke.yaml and epic.yaml
- * exist in defaults/workflows/ so this is backward-compatible.
+ * When `taskTypeWorkflowMap` is not provided (undefined), steps 2–3 are skipped
+ * and the resolution falls back to the file-existence check (backward compatible).
  */
 export function resolveWorkflowName(
   seedType: string,
   labels?: string[],
+  taskTypeWorkflowMap?: Record<string, string>,
 ): string {
+  // 1. workflow:<name> label override (highest priority)
   if (labels) {
     for (const label of labels) {
       if (label.startsWith("workflow:")) {
@@ -889,7 +901,21 @@ export function resolveWorkflowName(
       }
     }
   }
-  // TRD-006: type-based resolution — check if a workflow file exists for the seed type
+
+  // 2. Explicit taskTypeWorkflowMap mapping
+  if (taskTypeWorkflowMap) {
+    const mappedWorkflow = taskTypeWorkflowMap[seedType];
+    if (mappedWorkflow && hasWorkflowConfig(mappedWorkflow)) {
+      return mappedWorkflow;
+    }
+    // 3. Default fallback from config mapping
+    const defaultWorkflow = taskTypeWorkflowMap["default"];
+    if (defaultWorkflow && hasWorkflowConfig(defaultWorkflow)) {
+      return defaultWorkflow;
+    }
+  }
+
+  // 4. File-existence fallback (backward compatible with pre-config behavior)
   if (seedType) {
     const globalPath = getForemanHomePath("workflows", `${seedType}.yaml`);
     if (existsSync(globalPath)) {
@@ -900,6 +926,8 @@ export function resolveWorkflowName(
       return seedType;
     }
   }
+
+  // 5. Hard fallback to default
   return "default";
 }
 

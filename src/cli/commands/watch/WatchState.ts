@@ -173,10 +173,17 @@ async function loadBoardSummary(
   const needsAttention: BoardTask[] = [];
 
   for (const row of rows) {
-    const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
-    const status = BOARD_STATUS_SET.has(normalizedStatus) ? normalizedStatus : "closed";
+    const normalizedStatus = row.status.replace(/-/g, "_");
+    let status: BoardStatus;
+    if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
+      status = "needs_attention";
+    } else if (BOARD_STATUS_SET.has(normalizedStatus as BoardStatus)) {
+      status = normalizedStatus as BoardStatus;
+    } else {
+      status = "closed";
+    }
     counts[status] += 1;
-    if (NEEDS_ATTENTION_STATUSES.has(row.status)) {
+    if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
       needsAttention.push({
         ...row,
         projectId: project.id,
@@ -449,18 +456,18 @@ function createEmptyCounts(): Record<BoardStatus, number> {
     ready: 0,
     in_progress: 0,
     review: 0,
-    blocked: 0,
+    needs_attention: 0,
     closed: 0,
   };
 }
 
-const BOARD_STATUS_SET = new Set<BoardStatus>(["backlog", "ready", "in_progress", "review", "blocked", "closed"]);
+const BOARD_STATUS_SET = new Set<BoardStatus>(["backlog", "ready", "in_progress", "review", "needs_attention", "closed"]);
 
 function countsTotal(counts: Record<BoardStatus, number>): number {
   return Object.values(counts).reduce((sum, n) => sum + n, 0);
 }
 
-const NEEDS_ATTENTION_STATUSES = new Set(["conflict", "failed", "stuck", "backlog"]);
+const NEEDS_ATTENTION_STATUSES = new Set(["conflict", "failed", "stuck", "blocked"]);
 
 // ── Key handling ──────────────────────────────────────────────────────────
 

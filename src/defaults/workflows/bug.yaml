@@ -1,8 +1,8 @@
-# Bug fix workflow: command phase → bash phase → finalize → auto-merge
+# Bug fix workflow: fix prompt → bash phase → finalize → auto-merge
 #
-# Demonstrates all three new features from TRD-2026-008:
-#   - command: phase (fix) — sends an interpolated command to the agent
-#   - bash: phase (test) — runs npm test with verdict parsing
+# Lean bug-fix pipeline:
+#   - fix prompt — workflow-scoped issue fixing prompt
+#   - bash phase (test) — runs npm test with verdict parsing
 #   - merge: auto — auto-merge on green CI
 #
 # Auto-selected when a bead has type "bug" (TRD-006 type-based dispatch).
@@ -19,12 +19,11 @@ setupCache:
   path: node_modules
 
 phases:
-  # ── Phase 1: fix (command phase — TRD-005) ───────────────────────────────
-  # Uses /ensemble:fix-issue as the agent prompt, with task metadata interpolated.
-  # All other phase config (model, maxTurns, artifact, mail) works identically
-  # to a prompt: phase.
+  # ── Phase 1: fix ────────────────────────────────────────────────────────
+  # Uses the workflow-scoped fix-issue prompt so the artifact contract is
+  # explicit and isolated from other workflows.
   - name: fix
-    command: "/skill:ensemble-fix-issue {task.title} {task.description}"
+    prompt: fix-issue.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:

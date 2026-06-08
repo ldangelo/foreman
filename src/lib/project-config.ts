@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { load as yamlLoad } from "js-yaml";
 import type { VcsConfig } from "./vcs/index.js";
 import { normalizeBranchLabel } from "./branch-label.js";
+import { hasWorkflowConfig } from "./workflow-loader.js";
 import { getForemanHomePath } from "./foreman-paths.js";
 import type { WorkspaceHooks } from "../orchestrator/types.js";
 
@@ -83,6 +84,35 @@ export interface ObservabilityConfig {
   heartbeat?: HeartbeatConfig;
   /** Activity log configuration for self-documenting commits. */
   activityLog?: ActivityLogConfig;
+}
+
+/**
+ * Concurrency limits configuration.
+ * Supports global limit and per-issue-state limits.
+ *
+ * @example
+ * ```yaml
+ * concurrency:
+ *   global: 10
+ *   byState:
+ *     in_progress: 5
+ *     review: 2
+ *     qa: 3
+ * ```
+ */
+export interface ConcurrencyConfig {
+  /**
+   * Global maximum number of concurrent agent runs across all states.
+   * Default: unlimited (subject to `maxAgents` CLI flag).
+   */
+  global?: number;
+  /**
+   * Per-issue-state concurrency limits.
+   * Keys are issue status values (e.g., "in_progress", "review", "qa").
+   * Values are the maximum number of concurrent runs allowed for that state.
+   * States not listed here are unlimited.
+   */
+  byState?: Record<string, number>;
 }
 
 /**
@@ -217,10 +247,34 @@ export interface ProjectConfig {
   observability?: ObservabilityConfig;
   /** Stale worktree handling configuration. */
   staleWorktree?: StaleWorktreeConfig;
+  /** Concurrency limits (global and per-state). */
+  concurrency?: ConcurrencyConfig;
   /** Issue tracker configuration (e.g., Jira) for monitoring status transitions. */
   issueTracker?: IssueTrackerConfig;
   /** Workspace lifecycle hooks for pre/post-run customization. */
   hooks?: ProjectHooksConfig;
+  /**
+   * Explicit mapping from task type to workflow name.
+   *
+   * Resolution order (highest wins):
+   *   1. workflow:<name> label override (handled by resolveWorkflowName)
+   *   2. taskTypeWorkflowMap[task.type] — this config
+   *   3. taskTypeWorkflowMap["default"] — fallback for unknown types
+   *   4. File-existence fallback: ~/.foreman/workflows/<type>.yaml or bundled defaults
+   *   5. Hard fallback to "default"
+   *
+   * @example
+   * ```yaml
+   * taskTypeWorkflowMap:
+   *   bug: bug
+   *   task: task
+   *   feature: feature
+   *   docs: task
+   *   spike: feature
+   *   default: default
+   * ```
+   */
+  taskTypeWorkflowMap?: Record<string, string>;
 }
 
 /** Error thrown when the project config file is present but malformed. */
@@ -450,9 +504,46 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       throw new ProjectConfigError(filePath, "'staleWorktree.failOnConflict' must be a boolean");
     }
     staleConfig.failOnConflict = (staleRaw["failOnConflict"] as boolean | undefined) ?? true;
-    staleConfig.failOnConflict = (staleRaw["failOnConflict"] as boolean | undefined) ?? true;
     config.staleWorktree = staleConfig;
   }
+
+  // Optional concurrency sub-config (Backlog-006)
+  if ("concurrency" in raw) {
+    const concRaw = raw["concurrency"];
+    if (!isRecord(concRaw)) {
+      throw new ProjectConfigError(filePath, "'concurrency' must be an object");
+    }
+    const concConfig: ConcurrencyConfig = {};
+    if ("global" in concRaw) {
+      const global = concRaw["global"];
+      if (typeof global !== "number" || !Number.isFinite(global) || global <= 0) {
+        throw new ProjectConfigError(
+          filePath,
+          "'concurrency.global' must be a positive number",
+        );
+      }
+      concConfig.global = global as number;
+    }
+    if ("byState" in concRaw) {
+      const byStateRaw = concRaw["byState"];
+      if (!isRecord(byStateRaw)) {
+        throw new ProjectConfigError(filePath, "'concurrency.byState' must be an object");
+      }
+      const byState: Record<string, number> = {};
+      for (const [state, limit] of Object.entries(byStateRaw)) {
+        if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) {
+          throw new ProjectConfigError(
+            filePath,
+            `'concurrency.byState.${state}' must be a positive number`,
+          );
+        }
+        byState[state] = limit as number;
+      }
+      concConfig.byState = byState;
+    }
+    config.concurrency = concConfig;
+  }
+
   // Optional issueTracker sub-config (PRD-2026-013)
   if ("issueTracker" in raw) {
     const itRaw = raw["issueTracker"];
@@ -609,6 +700,29 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       hooksConfig.timeoutMs = timeoutMs as number;
     }
     config.hooks = hooksConfig;
+  }
+
+  // Optional taskTypeWorkflowMap — maps task types to workflow names
+  if ("taskTypeWorkflowMap" in raw) {
+    const mapRaw = raw["taskTypeWorkflowMap"];
+    if (!isRecord(mapRaw)) {
+      throw new ProjectConfigError(filePath, "'taskTypeWorkflowMap' must be an object");
+    }
+    // Validate every entry is string -> string and points to a real workflow.
+    const validatedMap: Record<string, string> = {};
+    for (const [k, v] of Object.entries(mapRaw)) {
+      if (typeof k !== "string" || typeof v !== "string") {
+        throw new ProjectConfigError(filePath, "'taskTypeWorkflowMap' entries must be string->string");
+      }
+      if (!hasWorkflowConfig(v)) {
+        throw new ProjectConfigError(
+          filePath,
+          `taskTypeWorkflowMap entry '${k}' references unknown workflow '${v}'`,
+        );
+      }
+      validatedMap[k] = v;
+    }
+    config.taskTypeWorkflowMap = validatedMap;
   }
 
   return config;

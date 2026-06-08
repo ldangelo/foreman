@@ -14,6 +14,7 @@ import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
 import { installBundledWorkflows } from "../../lib/workflow-loader.js";
+import { DatabaseConfigError, DatabaseError } from "../../lib/db/pool-manager.js";
 import { ensureCliPostgresPool } from "./project-task-support.js";
 
 type Awaitable<T> = T | Promise<T>;
@@ -154,6 +155,25 @@ async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
   }
 }
 
+export function formatInitDatabaseError(err: unknown, projectDir: string): string {
+  const intro = "Failed to initialize the Postgres-backed project registry.";
+  const fix = `Set DATABASE_URL in ${join(projectDir, ".env")} or your environment to a full Postgres URL like postgresql://user:password@host:5432/database.`;
+
+  if (err instanceof DatabaseConfigError) {
+    return `${intro}\n${err.message}\n${fix}`;
+  }
+
+  if (err instanceof DatabaseError && err.message.includes("client password must be a string")) {
+    return `${intro}\nDATABASE_URL is missing a password for the configured Postgres user.\n${fix}`;
+  }
+
+  if (err instanceof Error) {
+    return `${intro}\n${err.message}`;
+  }
+
+  return `${intro}\n${String(err)}`;
+}
+
 // ── Command ────────────────────────────────────────────────────────────────
 
 /**
@@ -198,21 +218,28 @@ export const initCommand = new Command("init")
     // Initialize the task-tracking backend
     await initBackend({ projectDir });
 
-    // Register project and seed sentinel config
-    ensureCliPostgresPool(projectDir);
-    const registry = new ProjectRegistry({ pg: new PostgresAdapter() });
-    let project = (await registry.list()).find((record) => record.path === projectDir || record.name === projectName);
-    if (!project) {
-      project = await registry.add({ name: projectName, path: projectDir, status: "active" });
+    let store: PostgresStore | null = null;
+    try {
+      // Register project and seed sentinel config
+      ensureCliPostgresPool(projectDir);
+      const registry = new ProjectRegistry({ pg: new PostgresAdapter() });
+      let project = (await registry.list()).find((record) => record.path === projectDir || record.name === projectName);
+      if (!project) {
+        project = await registry.add({ name: projectName, path: projectDir, status: "active" });
+      }
+      store = PostgresStore.forProject(project.id);
+      await initProjectStore(projectDir, projectName, {
+        getProjectByPath: async (path: string) => (path === projectDir ? { id: project.id } : null),
+        registerProject: async () => ({ id: project.id }),
+        getSentinelConfig: async (projectId: string) => store!.getSentinelConfig(projectId),
+        upsertSentinelConfig: async (projectId: string, config) => store!.upsertSentinelConfig(projectId, config),
+      });
+    } catch (err) {
+      console.error(chalk.red(formatInitDatabaseError(err, projectDir)));
+      process.exit(1);
+    } finally {
+      store?.close();
     }
-    const store = PostgresStore.forProject(project.id);
-    await initProjectStore(projectDir, projectName, {
-      getProjectByPath: async (path: string) => (path === projectDir ? { id: project.id } : null),
-      registerProject: async () => ({ id: project.id }),
-      getSentinelConfig: async (projectId: string) => store.getSentinelConfig(projectId),
-      upsertSentinelConfig: async (projectId: string, config) => store.upsertSentinelConfig(projectId, config),
-    });
-    store.close();
 
     // Install bundled prompt templates to .foreman/prompts/
     const spinner = ora("Installing prompt templates...").start();

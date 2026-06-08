@@ -123,6 +123,18 @@ describe("loadProjectConfig", () => {
     expect(cfg!.defaultBranch).toBe("dev");
   });
 
+  it("loads positive concurrency limits", () => {
+    writeForemanConfig(
+      tmpDir,
+      "concurrency:\n  global: 3\n  byState:\n    ready: 2\n    review: 1",
+    );
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg!.concurrency).toEqual({
+      global: 3,
+      byState: { ready: 2, review: 1 },
+    });
+  });
+
   // JSON fallback
   it("falls back to ~/.foreman/config.json when config.yaml is absent", () => {
     writeForemanConfig(
@@ -180,6 +192,18 @@ describe("loadProjectConfig", () => {
     expect(() => loadProjectConfig(tmpDir)).toThrow(/defaultBranch/);
   });
 
+  it("throws ProjectConfigError for zero concurrency.global", () => {
+    writeForemanConfig(tmpDir, "concurrency:\n  global: 0");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/concurrency\.global.*positive/);
+  });
+
+  it("throws ProjectConfigError for zero concurrency.byState limit", () => {
+    writeForemanConfig(tmpDir, "concurrency:\n  byState:\n    review: 0");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/concurrency\.byState\.review.*positive/);
+  });
+
   it("throws ProjectConfigError for malformed YAML", () => {
     writeForemanConfig(tmpDir, "vcs: {\n  broken yaml: [");
     expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
@@ -190,6 +214,56 @@ describe("loadProjectConfig", () => {
     writeForemanConfig(tmpDir, "{ bad json", "json");
     expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
     expect(() => loadProjectConfig(tmpDir)).toThrow(/failed to parse JSON/);
+  });
+
+  // taskTypeWorkflowMap validation (foreman-676ac)
+  it("loads valid taskTypeWorkflowMap from config.yaml", () => {
+    writeForemanConfig(
+      tmpDir,
+      "taskTypeWorkflowMap:\n  bug: bug\n  task: task\n  default: default",
+    );
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg?.taskTypeWorkflowMap).toEqual({
+      bug: "bug",
+      task: "task",
+      default: "default",
+    });
+  });
+
+  it("loads taskTypeWorkflowMap with remapping (docs → task)", () => {
+    writeForemanConfig(
+      tmpDir,
+      "taskTypeWorkflowMap:\n  docs: task\n  spike: feature",
+    );
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg?.taskTypeWorkflowMap).toEqual({
+      docs: "task",
+      spike: "feature",
+    });
+  });
+
+  it("returns undefined taskTypeWorkflowMap when not configured", () => {
+    writeForemanConfig(tmpDir, "vcs:\n  backend: git");
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg?.taskTypeWorkflowMap).toBeUndefined();
+  });
+
+  it("throws ProjectConfigError when taskTypeWorkflowMap is not an object", () => {
+    writeForemanConfig(tmpDir, "taskTypeWorkflowMap: 'not-an-object'");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/'taskTypeWorkflowMap' must be an object/);
+  });
+
+  it("throws ProjectConfigError when taskTypeWorkflowMap has non-string value", () => {
+    writeForemanConfig(tmpDir, "taskTypeWorkflowMap:\n  bug: 123");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/'taskTypeWorkflowMap' entries must be string->string/);
+  });
+
+  it("throws ProjectConfigError when taskTypeWorkflowMap references an unknown workflow", () => {
+    writeForemanConfig(tmpDir, "taskTypeWorkflowMap:\n  bug: no_such_workflow");
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/no_such_workflow|unknown workflow/i);
   });
 });
 

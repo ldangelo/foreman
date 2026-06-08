@@ -9,6 +9,7 @@ import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { EventType, ForemanStore, NativeTask, Run } from "../lib/store.js";
+import type { RunStatus } from "./read-models.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
@@ -28,9 +29,6 @@ import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { checkAndRebaseStaleWorktree } from "./stale-worktree-check.js";
 import { WorktreeManager } from "../lib/worktree-manager.js";
-import { resolveTaskStoreMode } from "../lib/task-client-factory.js";
-export { resolveTaskStoreMode } from "../lib/task-client-factory.js";
-export type { TaskStoreMode } from "../lib/task-client-factory.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import { getRunReportsDir } from "../lib/report-paths.js";
 import type {
@@ -86,7 +84,7 @@ export interface DispatcherOverrides {
   hasActiveOrPendingRun?: (seedId: string) => Promise<boolean>;
   getActiveAgentCount?: () => Promise<number>;
   externalProjectId?: string;
-  getRunsByStatus?: (status: Run["status"], projectId: string) => Promise<Run[]>;
+  getRunsByStatus?: (status: RunStatus, projectId: string) => Promise<Run[]>;
   getRunsForSeed?: (seedId: string, projectId: string) => Promise<Run[]>;
   getRun?: (runId: string) => Promise<Run | null>;
   getActiveRuns?: (projectId: string) => Promise<Run[]>;
@@ -458,44 +456,57 @@ export class Dispatcher {
       // Workflow config not found — continue with default behavior
     }
 
+    // ── Per-state concurrency limits (Backlog-006) ─────────────────────────
+    // Load concurrency config and build a map of active runs by issue state.
+    // States not in byState are unlimited (only constrained by global limit).
+    let concurrencyConfig: import("../lib/project-config.js").ConcurrencyConfig | undefined;
+    const activeRunsByState: Map<string, number> = new Map();
+    try {
+      const projectCfg = loadProjectConfig(this.projectPath);
+      concurrencyConfig = projectCfg?.concurrency;
+    } catch {
+      // Non-fatal: concurrency config is optional
+    }
+
     // Determine how many agent slots are available
     const activeRuns = await this.getActiveRunsRecord(projectId);
     const activeAgentCount = this.overrides?.getActiveAgentCount
       ? await this.overrides.getActiveAgentCount()
       : activeRuns.length;
-    const available = Math.max(0, maxAgents - activeAgentCount);
+    // Apply concurrency.global override if specified (caps the effective maxAgents)
+    const effectiveMaxAgents = concurrencyConfig?.global != null && concurrencyConfig.global > 0
+      ? Math.min(maxAgents, concurrencyConfig.global)
+      : maxAgents;
+    const available = Math.max(0, effectiveMaxAgents - activeAgentCount);
 
-    // ── Task store coexistence (REQ-014 / REQ-017) ────────────────────────
-    // Decide whether to query the native Postgres task store or fall back to
-    // the BeadsRustClient based on FOREMAN_TASK_STORE and hasNativeTasks().
-    const taskStoreMode = resolveTaskStoreMode();
-    let usingNativeStore = false;
-
-    if (taskStoreMode === "native") {
-      usingNativeStore = true;
-      console.error("[dispatch] FOREMAN_TASK_STORE=native — using native task store");
-    } else if (taskStoreMode === "beads") {
-      usingNativeStore = false;
-      console.error(`[dispatch][${projectId}] FOREMAN_TASK_STORE=beads — using beads fallback`);
-    } else {
-      // 'auto': use native if tasks exist, otherwise fall back to beads
-      usingNativeStore = this.overrides?.nativeTaskOps
-        ? await this.overrides.nativeTaskOps.hasNativeTasks()
-        : this.store.hasNativeTasks();
-      if (usingNativeStore) {
-        console.error("[dispatch] Native tasks detected — using native task store (AC-014.1)");
-      } else {
-        console.error(`[dispatch][${projectId}] No native tasks — using beads fallback (AC-014.1)`);
-      }
+    // Build state count map from active runs (after config loaded so byState limits available)
+    if (concurrencyConfig?.byState) {
+      await Promise.all(
+        activeRuns.map(async (run) => {
+          try {
+            const issueDetail = await this.seeds.show(run.seed_id);
+            const state = issueDetail.status;
+            activeRunsByState.set(state, (activeRunsByState.get(state) ?? 0) + 1);
+          } catch {
+            // Issue not found — skip this run from state count
+          }
+        }),
+      );
     }
 
-    let readySeeds: Issue[];
-    if (usingNativeStore) {
-      const nativeTasks = this.overrides?.nativeTaskOps
-        ? await this.overrides.nativeTaskOps.getReadyTasks()
-        : this.store.getReadyTasks();
-      readySeeds = nativeTasks.map(nativeTaskToIssue);
-    } else {
+    // Track per-state pending dispatches within this cycle
+    const statePendingCount: Record<string, number> = {};
+
+    // ── Native task store ─────────────────────────────────────────────────
+    // Prefer the native task store. Keep the task-client fallback for older
+    // tests and injected native clients that still expose the ITaskClient
+    // ready() shape.
+    const nativeTasks = this.overrides?.nativeTaskOps
+      ? await this.overrides.nativeTaskOps.getReadyTasks()
+      : this.store.getReadyTasks();
+    let readySeeds: Issue[] = nativeTasks.map(nativeTaskToIssue);
+    const usingLegacyReadyClient = readySeeds.length === 0 && typeof this.seeds.ready === "function";
+    if (usingLegacyReadyClient) {
       readySeeds = await this.seeds.ready();
     }
 
@@ -555,7 +566,7 @@ export class Dispatcher {
         };
       }
       let target = readySeeds.find((b) => b.id === opts.seedId);
-      if (usingNativeStore && !target) {
+      if (!target) {
         // Try external_id first (for tasks that have it set)
         let nativeMatch = this.overrides?.nativeTaskOps
           ? await this.overrides.nativeTaskOps.getTaskByExternalId(opts.seedId)
@@ -581,40 +592,12 @@ export class Dispatcher {
               activeAgents: activeRuns.length,
             };
           }
-        } else {
-          usingNativeStore = false;
         }
       }
-      // If not in br ready (possibly due to stale blocked cache — beads_rust#204),
-      // fetch directly and force-dispatch if it's open/in_progress.
       if (!target) {
-        try {
-          const bead = await this.seeds.show(opts.seedId);
-          if (bead && bead.status !== "closed" && bead.status !== "completed") {
-            log(`[dispatch] ${opts.seedId} not in br ready (stale cache?) — force-dispatching`);
-            target = bead as unknown as Issue;
-          }
-        } catch { /* bead not found */ }
-      }
-      if (!target) {
-        let reason = "Not found and not dispatchable";
-        try {
-          const bead = await this.seeds.show(opts.seedId);
-          if (!bead) {
-            reason = `Bead ${opts.seedId} not found`;
-          } else if (bead.status === "closed" || bead.status === "completed") {
-            reason = `Bead ${opts.seedId} is closed (already completed)`;
-          } else if (bead.status === "in_progress") {
-            reason = `Bead ${opts.seedId} is already in progress`;
-          } else if (bead.status === "open") {
-            reason = `Bead ${opts.seedId} is blocked (has unresolved dependencies)`;
-          }
-        } catch {
-          // fall back to default reason
-        }
         return {
           dispatched: [],
-          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason }],
+          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason: `Task ${opts.seedId} not found` }],
           resumed: [],
           activeAgents: activeRuns.length,
         };
@@ -687,131 +670,14 @@ export class Dispatcher {
         continue;
       }
 
-      // ── Auto-close feature containers ──────────────────────────────────────
-      // Feature beads are organizational containers — never dispatch agents for
-      // them. Instead, check if all children are closed and auto-close the
-      // container bead when they are.
-      if (seed.type === "feature" && !usingNativeStore) {
-        try {
-          const detail = await this.seeds.show(seed.id);
-          // br show --json returns `dependents` (the tasks this container blocks), not `children`.
-          // Use dependents to determine whether all downstream work is complete.
-          const brDetail = detail as DispatcherBeadsIssueDetail;
-          const dependents = brDetail.dependents ?? [];
-
-          if (dependents.length === 0) {
-            // No dependents — close the container directly
-            await this.seeds.close(seed.id, "Auto-closed: no dependent tasks (empty container)");
-            log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — no dependent tasks`);
-            skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: `Type '${seed.type}' auto-closed — no dependent tasks`,
-            });
-          } else {
-            const openDeps = dependents.filter(
-              (d) => d.status !== "closed" && d.status !== "completed",
-            );
-
-            if (openDeps.length === 0) {
-              await this.seeds.close(seed.id, "Auto-closed: all dependent tasks completed");
-              log(`[dispatch] Auto-closed ${seed.id} (type: ${seed.type}) — all ${dependents.length} dependent tasks completed`);
-              skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: `Type '${seed.type}' auto-closed — all ${dependents.length} dependent tasks completed`,
-              });
-            } else {
-              log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`);
-              skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: `Type '${seed.type}' is an organizational container — waiting on ${openDeps.length} open dependent task${openDeps.length === 1 ? "" : "s"}`,
-              });
-            }
-          }
-        } catch (err: unknown) {
-          // If we can't inspect the container, skip it rather than crashing
-          const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Skipping ${seed.id} (type: ${seed.type}) — failed to check dependents: ${msg}`);
-          skipped.push({
-            seedId: seed.id,
-            title: seed.title,
-            reason: `Type '${seed.type}' is an organizational container — skipped (error checking dependents)`,
-          });
-        }
-        continue;
-      }
-
-      // ── Epic beads: dispatch through epic pipeline or auto-close ──────────
-      // Epic beads with children are dispatched as a single epic runner that
-      // executes all child tasks sequentially within one worktree.
-      // Epic beads with 0 children: if using native store (no children support),
-      // fall through to regular dispatch so the epic runs as a single-agent task.
+      // ── Epic beads: dispatch through epic pipeline ─────────────────────────
+      // Epic beads are dispatched as a single epic runner that executes all
+      // child tasks sequentially within one worktree. Native task store does not
+      // have children support, so epics dispatch as single-agent tasks.
       if (seed.type === "epic") {
-        try {
-          const detail = await this.seeds.show(seed.id);
-          const detailWithChildren = detail as { children?: string[]; status: string };
-          const childIds = detailWithChildren.children ?? [];
-
-          if (childIds.length === 0) {
-            if (usingNativeStore) {
-              // Native task store has no children support — dispatch the epic
-              // as a single-agent task through the regular pipeline. The epic's
-              // phases (developer → qa → finalize) run as a single worktree.
-              log(`[dispatch] Epic ${seed.id} has no children (native store) — dispatching as single-agent task`);
-            } else {
-              // Beads store: no children means truly empty epic — auto-close.
-              await this.seeds.close(seed.id, "Auto-closed: no children (empty epic)");
-              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no children`);
-              skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: "Type 'epic' auto-closed — no children",
-              });
-              continue;
-            }
-          } else {
-            // Epic has children — query task order and dispatch through epic path.
-            // getTaskOrder returns only actionable child types (task, bug, chore).
-            const brClient = this.seeds as unknown as TaskOrderingClient;
-            const epicTasks: EpicTask[] = await getTaskOrder(
-              seed.id,
-              brClient,
-              this.projectPath,
-            );
-
-            if (epicTasks.length === 0) {
-              // All children are non-actionable types (e.g. all feature/story containers)
-              // or all children are already closed. Auto-close.
-              await this.seeds.close(seed.id, "Auto-closed: no actionable child tasks");
-              log(`[dispatch] Auto-closed ${seed.id} (type: epic) — no actionable child tasks`);
-              skipped.push({
-                seedId: seed.id,
-                title: seed.title,
-                reason: "Type 'epic' auto-closed — no actionable child tasks",
-              });
-              continue;
-            }
-
-            log(`[dispatch] Epic ${seed.id} has ${epicTasks.length} ordered tasks — dispatching epic runner`);
-
-            // Store epicTasks for use by the dispatch logic below.
-            // We set a marker on the seed object so the dispatch code further down
-            // can include epicTasks in the worker config.
-            (seed as unknown as Record<string, unknown>).__epicTasks = epicTasks;
-            // Fall through to normal dispatch logic (worktree creation, spawn, etc.)
-          }
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          log(`[dispatch] Failed to prepare epic ${seed.id}: ${msg}`);
-          skipped.push({
-            seedId: seed.id,
-            title: seed.title,
-            reason: `Epic dispatch failed: ${msg}`,
-          });
-          continue;
-        }
+        log(`[dispatch] Epic ${seed.id} — dispatching as single-agent task`);
+        // Fall through to regular dispatch so the epic's phases
+        // (developer → qa → finalize) run as a single worktree.
       }
 
       // Skip seeds that are in exponential backoff after recent stuck runs
@@ -825,13 +691,37 @@ export class Dispatcher {
         continue;
       }
 
+      // ── Per-state concurrency limit check (Backlog-006) ─────────────────────
+      // Check if this seed's target state has hit its per-state concurrency limit.
+      // States not in byState are unlimited (only constrained by global available).
+      if (concurrencyConfig?.byState) {
+        const stateLimit = concurrencyConfig.byState[seed.status];
+        if (stateLimit != null && stateLimit > 0) {
+          const activeCount = activeRunsByState.get(seed.status) ?? 0;
+          const pendingCount = statePendingCount[seed.status] ?? 0;
+          if (activeCount + pendingCount >= stateLimit) {
+            skipped.push({
+              seedId: seed.id,
+              title: seed.title,
+              reason: `State '${seed.status}' concurrency limit reached (${stateLimit} active + pending)`,
+            });
+            continue;
+          }
+        }
+      }
+
       if (dispatched.length >= available) {
         skipped.push({
           seedId: seed.id,
           title: seed.title,
-          reason: `Agent limit reached (${maxAgents})`,
+          reason: `Agent limit reached (${effectiveMaxAgents})`,
         });
         continue;
+      }
+
+      // Track this pending dispatch for per-state limit accounting
+      if (concurrencyConfig?.byState?.[seed.status] != null) {
+        statePendingCount[seed.status] = (statePendingCount[seed.status] ?? 0) + 1;
       }
 
       // Fetch full issue details (description, notes/comments, labels) for agent context
@@ -970,46 +860,31 @@ export class Dispatcher {
           log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
         }
 
-        // 1a. Load workflow config to get setup steps + cache config for worktree initialization
-        const resolvedWorkflow = resolveWorkflowName(seedInfo.type ?? "feature", seedInfo.labels);
+        // 1a. Load project config and resolve workflow name.
+        // Invalid config is dispatch-blocking so workflow routing policy cannot
+        // be silently ignored.
+        const projectCfg = loadProjectConfig(this.projectPath);
+        const resolvedWorkflow = resolveWorkflowName(
+          seedInfo.type ?? "feature",
+          seedInfo.labels,
+          projectCfg?.taskTypeWorkflowMap,
+        );
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
         let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
         // TRD-007: capture merge strategy from workflow config
         let workflowMerge: 'auto' | 'pr' | 'none' = 'auto';
         // projectHooks is used in afterCreate/beforeRun hooks below the try block
-        let projectHooks: import("../lib/project-config.js").ProjectHooksConfig | undefined;
+        const projectHooks: import("../lib/project-config.js").ProjectHooksConfig | undefined = projectCfg?.hooks;
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
           workflowMerge = wfConfig.merge ?? 'auto';
 
-          // Load project-level config (optional — returns null if .foreman/config.yaml absent)
-          let projectVcs: import("../lib/project-config.js").ProjectConfig["vcs"] | undefined;
-          try {
-            const projectCfg = loadProjectConfig(this.projectPath);
-            projectVcs = projectCfg?.vcs;
-            projectHooks = projectCfg?.hooks;
-          } catch (projErr: unknown) {
-            // Non-fatal: log and continue without project config
-            const projMsg = projErr instanceof Error ? projErr.message : String(projErr);
-            log(`[foreman] Could not load project config — ${projMsg}`);
-          }
-
           // Resolve VCS backend: workflow > project > auto-detect
-          const resolvedVcs = resolveVcsConfig(wfConfig.vcs, projectVcs);
-          if (resolvedVcs.backend !== 'auto') {
-            vcsBackendName = resolvedVcs.backend;
-          } else {
-            // Auto-detect: .jj/ → jujutsu, else git
-            const { existsSync } = await import("node:fs");
-            const { join: pathJoin } = await import("node:path");
-            if (existsSync(pathJoin(this.projectPath, '.jj'))) {
-              vcsBackendName = 'jujutsu';
-            }
-            // else: stay with 'git' default
-          }
+          const resolvedVcs = resolveVcsConfig(wfConfig.vcs, projectCfg?.vcs);
+          vcsBackendName = VcsBackendFactory.resolveBackend(resolvedVcs, this.projectPath);
         } catch {
           // Non-fatal: fall back to default installDependencies behavior
           log(`[foreman] Could not load workflow config '${resolvedWorkflow}' for setup steps — using default dependency install`);
@@ -1109,37 +984,29 @@ export class Dispatcher {
         }
 
         // 6. Mark seed as in_progress before spawning agent.
-        if (usingNativeStore) {
-          // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
-          // REQ-017 AC-017.2: claim + run_id linkage in one transaction (prevents double-dispatch).
-          const claimed = this.overrides?.nativeTaskOps
+        // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
+        const claimed = usingLegacyReadyClient
+          ? true
+          : this.overrides?.nativeTaskOps
             ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
-            : this.store.claimTask(seed.id, run.id);
-          if (!claimed) {
-            // Another dispatcher instance claimed this task between our getReadyTasks() query
-            // and now — skip it and clean up the run we just created.
-            skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: "Already claimed by another dispatcher (atomic claim failed)",
-            });
-            // Best-effort cleanup: mark run as failed so it doesn't appear as active
-            try {
-              await this.updateRunRecord(run.id, { status: "failed", completed_at: new Date().toISOString() });
-            } catch {
-              // Non-fatal — run cleanup is best-effort
-            }
-            continue;
-          }
-        } else {
-          // Non-fatal: br may reject the claim due to stale blocked cache (beads_rust#204).
-          // The agent can still run — the status update is cosmetic.
+            : typeof this.store.claimTask === "function"
+              ? this.store.claimTask(seed.id, run.id)
+              : true;
+        if (!claimed) {
+          // Another dispatcher instance claimed this task between our getReadyTasks() query
+          // and now — skip it and clean up the run we just created.
+          skipped.push({
+            seedId: seed.id,
+            title: seed.title,
+            reason: "Already claimed by another dispatcher (atomic claim failed)",
+          });
+          // Best-effort cleanup: mark run as failed so it doesn't appear as active
           try {
-            await this.seeds.update(seed.id, { status: "in_progress" });
-          } catch (claimErr: unknown) {
-            const claimMsg = claimErr instanceof Error ? claimErr.message : String(claimErr);
-            console.error(`[dispatch][${projectId}] Warning: br claim failed for seed=${seed.id} (non-fatal): ${claimMsg.slice(0, 200)}`);
+            await this.updateRunRecord(run.id, { status: "failed", completed_at: new Date().toISOString() });
+          } catch {
+            // Non-fatal — run cleanup is best-effort
           }
+          continue;
         }
 
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
@@ -1176,11 +1043,7 @@ export class Dispatcher {
             const now = new Date().toISOString();
             await this.updateRunRecord(run.id, { status: "failed", completed_at: now });
             try {
-              if (usingNativeStore) {
-                await this.updateNativeTaskStatus(seed.id, "failed");
-              } else {
-                await this.seeds.update(seed.id, { status: "failed" });
-              }
+              await this.updateNativeTaskStatus(seed.id, "failed");
             } catch (taskErr: unknown) {
               const taskMsg = taskErr instanceof Error ? taskErr.message : String(taskErr);
               log(`[foreman] Could not mark ${seed.id} failed after beforeRun hook failure — ${taskMsg.slice(0, 200)}`);
@@ -2074,7 +1937,7 @@ export interface WorkerConfig {
    * Optional task ID from native task store (NativeTaskStore.claim()).
    * When present, pipeline will call taskStore.updatePhase(taskId, phaseName)
    * at each phase transition for phase-level visibility (REQ-012).
-   * Null/undefined in beads fallback mode — no-op via optional chaining.
+   * Null/undefined when no task ID is available — no-op via optional chaining.
    */
   taskId?: string | null;
   /**

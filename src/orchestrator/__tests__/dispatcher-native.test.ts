@@ -1,15 +1,12 @@
 /**
- * Unit tests for Dispatcher — native task store path, beads fallback,
- * FOREMAN_TASK_STORE overrides, and atomic claim transaction.
+ * Unit tests for Dispatcher — native task store path and atomic claim transaction.
  *
- * Verifies TRD-007 / REQ-014 / REQ-017.
+ * Verifies TRD-007 / REQ-017.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   Dispatcher,
-  resolveTaskStoreMode,
   nativeTaskToIssue,
-  type TaskStoreMode,
 } from "../dispatcher.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import type { ForemanStore, NativeTask } from "../../lib/store.js";
@@ -39,6 +36,8 @@ vi.mock("../../lib/vcs/index.js", () => ({
         branchName: "foreman/mock",
       }),
     }),
+    resolveBackend: vi.fn((config: { backend: "git" | "jujutsu" | "auto" }) =>
+      config.backend === "auto" ? "git" : config.backend),
   },
 }));
 
@@ -193,48 +192,6 @@ async function withEnvVar(key: string, value: string | undefined, fn: () => Prom
   }
 }
 
-// ── resolveTaskStoreMode() ────────────────────────────────────────────────
-
-describe("resolveTaskStoreMode()", () => {
-  afterEach(() => {
-    delete process.env.FOREMAN_TASK_STORE;
-  });
-
-  it("returns 'auto' when FOREMAN_TASK_STORE is not set", () => {
-    delete process.env.FOREMAN_TASK_STORE;
-    expect(resolveTaskStoreMode()).toBe("auto");
-  });
-
-  it("returns 'auto' when FOREMAN_TASK_STORE='auto'", () => {
-    process.env.FOREMAN_TASK_STORE = "auto";
-    expect(resolveTaskStoreMode()).toBe("auto");
-  });
-
-  it("returns 'native' when FOREMAN_TASK_STORE='native'", () => {
-    process.env.FOREMAN_TASK_STORE = "native";
-    expect(resolveTaskStoreMode()).toBe("native");
-  });
-
-  it("returns 'beads' when FOREMAN_TASK_STORE='beads'", () => {
-    process.env.FOREMAN_TASK_STORE = "beads";
-    expect(resolveTaskStoreMode()).toBe("beads");
-  });
-
-  it("returns 'auto' and emits warning for invalid value", () => {
-    process.env.FOREMAN_TASK_STORE = "invalid-value";
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const mode = resolveTaskStoreMode();
-    expect(mode).toBe("auto");
-    expect(consoleSpy.mock.calls.some((args) => args[0].includes("invalid-value"))).toBe(true);
-    consoleSpy.mockRestore();
-  });
-
-  it("returns 'auto' for empty string", () => {
-    process.env.FOREMAN_TASK_STORE = "";
-    expect(resolveTaskStoreMode()).toBe("auto");
-  });
-});
-
 // ── nativeTaskToIssue() ──────────────────────────────────────────────────
 
 describe("nativeTaskToIssue()", () => {
@@ -332,161 +289,11 @@ describe("Dispatcher — Native task store coexistence (AC-014.1)", () => {
 
     const result = await dispatcher.dispatch({ dryRun: false, seedId: "bd-explicit" });
 
-    expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0]!.seedId).toBe("bd-explicit");
-    expect(store.getTaskByExternalId).toHaveBeenCalledWith("bd-explicit");
-    expect(store.claimTask).not.toHaveBeenCalled();
-    expect(beadsClient.update).toHaveBeenCalledWith("bd-explicit", { status: "in_progress" });
-    expect(spawnSpy).toHaveBeenCalled();
+    // Task not found since no native task matches and beads are not used
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]!.reason).toContain("not found");
 
     spawnSpy.mockRestore();
-  });
-
-  it("falls back to beads when hasNativeTasks() returns false (auto mode)", async () => {
-    const store = makeMockStore({ hasNativeTasks: false, nativeTasks: [] });
-    const beadsClient = makeMockBeadsClient([makeBeadsIssue("b-001"), makeBeadsIssue("b-002")]);
-
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const result = await dispatcher.dispatch({ dryRun: true });
-    consoleSpy.mockRestore();
-
-    // Beads tasks dispatched
-    expect(result.dispatched.map((d) => d.seedId)).toContain("b-001");
-    expect(result.dispatched.map((d) => d.seedId)).toContain("b-002");
-
-    // Beads queried; native store NOT queried
-    expect(beadsClient.ready).toHaveBeenCalled();
-    expect(store.getReadyTasks).not.toHaveBeenCalled();
-  });
-
-  it("logs which path was taken (debug log for AC-014.1)", async () => {
-    const store = makeMockStore({ hasNativeTasks: true, nativeTasks: [] });
-    const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    await dispatcher.dispatch({ dryRun: true });
-
-    const logs = consoleSpy.mock.calls.map((args) => String(args[0]));
-    expect(logs.some((m) => m.includes("native"))).toBe(true);
-    consoleSpy.mockRestore();
-  });
-
-  it("logs beads fallback path when no native tasks", async () => {
-    const store = makeMockStore({ hasNativeTasks: false });
-    const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    await dispatcher.dispatch({ dryRun: true });
-
-    const logs = consoleSpy.mock.calls.map((args) => String(args[0]));
-    expect(logs.some((m) => m.includes("beads fallback") || m.includes("fallback"))).toBe(true);
-    consoleSpy.mockRestore();
-  });
-});
-
-// ── Dispatcher — FOREMAN_TASK_STORE overrides (AC-014.2) ─────────────────
-
-describe("Dispatcher — FOREMAN_TASK_STORE overrides (AC-014.2)", () => {
-  afterEach(() => {
-    delete process.env.FOREMAN_TASK_STORE;
-    vi.restoreAllMocks();
-  });
-
-  it("FOREMAN_TASK_STORE=native forces native store even when hasNativeTasks() is false", async () => {
-    process.env.FOREMAN_TASK_STORE = "native";
-    const nativeTasks = [makeNativeTask("n-force-001")];
-    // hasNativeTasks returns false, but env override forces native
-    const store = makeMockStore({ hasNativeTasks: false, nativeTasks });
-    const beadsClient = makeMockBeadsClient([makeBeadsIssue("b-001")]);
-
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    const result = await dispatcher.dispatch({ dryRun: true });
-    consoleSpy.mockRestore();
-
-    // Native tasks used
-    expect(result.dispatched.map((d) => d.seedId)).toContain("n-force-001");
-    expect(result.dispatched.map((d) => d.seedId)).not.toContain("b-001");
-    expect(store.getReadyTasks).toHaveBeenCalled();
-    expect(beadsClient.ready).not.toHaveBeenCalled();
-  });
-
-  it("FOREMAN_TASK_STORE=beads forces beads even when hasNativeTasks() is true", async () => {
-    process.env.FOREMAN_TASK_STORE = "beads";
-    const nativeTasks = [makeNativeTask("n-001")];
-    // hasNativeTasks returns true, but env override forces beads
-    const store = makeMockStore({ hasNativeTasks: true, nativeTasks });
-    const beadsClient = makeMockBeadsClient([makeBeadsIssue("b-force-001")]);
-
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    const result = await dispatcher.dispatch({ dryRun: true });
-    consoleSpy.mockRestore();
-
-    // Beads tasks used, not native
-    expect(result.dispatched.map((d) => d.seedId)).toContain("b-force-001");
-    expect(result.dispatched.map((d) => d.seedId)).not.toContain("n-001");
-    expect(beadsClient.ready).toHaveBeenCalled();
-    expect(store.getReadyTasks).not.toHaveBeenCalled();
-  });
-
-  it("FOREMAN_TASK_STORE=native logs a message indicating native forced", async () => {
-    process.env.FOREMAN_TASK_STORE = "native";
-    const store = makeMockStore({ hasNativeTasks: false, nativeTasks: [] });
-    const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    await dispatcher.dispatch({ dryRun: true });
-
-    const logs = consoleSpy.mock.calls.map((args) => String(args[0]));
-    expect(logs.some((m) => m.includes("FOREMAN_TASK_STORE=native"))).toBe(true);
-    consoleSpy.mockRestore();
-  });
-
-  it("FOREMAN_TASK_STORE=beads logs a message indicating beads forced", async () => {
-    process.env.FOREMAN_TASK_STORE = "beads";
-    const store = makeMockStore({ hasNativeTasks: true, nativeTasks: [] });
-    const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    await dispatcher.dispatch({ dryRun: true });
-
-    const logs = consoleSpy.mock.calls.map((args) => String(args[0]));
-    expect(logs.some((m) => m.includes("FOREMAN_TASK_STORE=beads"))).toBe(true);
-    consoleSpy.mockRestore();
-  });
-
-  it("does not call hasNativeTasks() when FOREMAN_TASK_STORE=native", async () => {
-    process.env.FOREMAN_TASK_STORE = "native";
-    const store = makeMockStore({ hasNativeTasks: false, nativeTasks: [] });
-    const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    await dispatcher.dispatch({ dryRun: true });
-    consoleSpy.mockRestore();
-
-    // With native forced, hasNativeTasks check is bypassed
-    expect(store.hasNativeTasks).not.toHaveBeenCalled();
-  });
-
-  it("does not call hasNativeTasks() when FOREMAN_TASK_STORE=beads", async () => {
-    process.env.FOREMAN_TASK_STORE = "beads";
-    const store = makeMockStore({ hasNativeTasks: true, nativeTasks: [] });
-    const beadsClient = makeMockBeadsClient([]);
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
-    await dispatcher.dispatch({ dryRun: true });
-    consoleSpy.mockRestore();
-
-    // With beads forced, hasNativeTasks check is bypassed
-    expect(store.hasNativeTasks).not.toHaveBeenCalled();
   });
 });
 

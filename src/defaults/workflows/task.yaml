@@ -1,8 +1,8 @@
-# Task workflow: Explorer → Developer ⇄ QA → Finalize
+# Task workflow: fix prompt → bash phase → finalize → auto-merge
 #
-# Standard task pipeline. Slightly lighter than feature: skips the dedicated
-# reviewer phase. Appropriate for well-scoped implementation tasks, improvements,
-# and non-feature work that still benefits from QA validation.
+# Standard task pipeline. Slightly lighter than feature: skips dedicated
+# explorer/reviewer phases. Appropriate for well-scoped implementation tasks,
+# improvements, and non-feature work that still benefits from validation.
 #
 # Auto-selected when bead type is "task".
 
@@ -19,10 +19,27 @@ setupCache:
 rebaseAfterPhase: developer
 
 phases:
+  # ── Phase 1: fix ────────────────────────────────────────────────────────
+  # Uses the workflow-scoped fix-issue prompt so the artifact contract is
+  # explicit and isolated from other workflows.
   - name: fix
-    command: "/skill:ensemble-fix-issue {task.title} {task.description}"
+    prompt: fix-issue.md
     tools:
-      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
+      allowed:
+        [
+          Agent,
+          Bash,
+          Edit,
+          Glob,
+          Grep,
+          Read,
+          TaskOutput,
+          TaskStop,
+          TodoWrite,
+          WebFetch,
+          WebSearch,
+          Write,
+        ]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
@@ -32,22 +49,40 @@ phases:
       onStart: true
       onComplete: true
 
-  # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
-  # Executes `npm run test:unit` via /bin/sh -c in the worktree directory.
-  # {task.*} placeholders are interpolated before execution.
-  # Artifact is written from stdout; verdict is parsed from output.
-  - name: test
-    bash: "npm run test:unit"
-    timeoutSecs: 180
+  - name: qa
+    prompt: qa.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
-    artifact: TEST_RESULTS.md
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 30
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
+      onFail: developer
+
+  - name: reviewer
+    prompt: reviewer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 20
+    artifact: "{task.projectReportsDir}/REVIEW.md"
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+      forwardArtifactTo: foreman
 
   # ── Phase 3: cli-review (builtin) ───────────────────────────────────────
   - name: cli-review
@@ -56,7 +91,7 @@ phases:
     timeoutSecs: 600
     verdict: true
     retryWith: fix
-    retryOnFail: 2
+    retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
@@ -75,10 +110,11 @@ phases:
     artifact: FINALIZE_VALIDATION.md
     verdict: true
     retryWith: fix
-    retryOnFail: 1
+    retryOnFail: 3
     mail:
       onStart: false
       onComplete: true
+
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
@@ -91,7 +127,7 @@ phases:
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
     retryWith: fix
-    retryOnFail: 2
+    retryOnFail: 3
     mail:
       onStart: true
       onComplete: true

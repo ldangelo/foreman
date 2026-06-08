@@ -164,20 +164,35 @@ import { autoMerge, syncBeadStatusAfterMerge, type AutoMergeOpts } from "../auto
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+type AutoMergeStoreMock = {
+  close: ReturnType<typeof vi.fn>;
+  getProjectByPath: ReturnType<typeof vi.fn>;
+  getDb: ReturnType<typeof vi.fn>;
+  getRun: ReturnType<typeof vi.fn>;
+  getRunsByStatuses: ReturnType<typeof vi.fn>;
+  getTaskById: ReturnType<typeof vi.fn>;
+  updateTaskStatus: ReturnType<typeof vi.fn>;
+  sendMessage: ReturnType<typeof vi.fn>;
+};
+
 function makeStore(overrides: Partial<{
   getProjectByPath: ReturnType<typeof vi.fn>;
   getDb: ReturnType<typeof vi.fn>;
   getRun: ReturnType<typeof vi.fn>;
   getRunsByStatuses: ReturnType<typeof vi.fn>;
-}> = {}): ReturnType<typeof vi.fn> {
+  getTaskById: ReturnType<typeof vi.fn>;
+  updateTaskStatus: ReturnType<typeof vi.fn>;
+}> = {}): AutoMergeStoreMock {
   return {
     close: vi.fn(),
     getProjectByPath: overrides.getProjectByPath ?? mockGetProjectByPath,
     getDb: overrides.getDb ?? mockGetDb,
     getRun: overrides.getRun ?? mockGetRun,
     getRunsByStatuses: overrides.getRunsByStatuses ?? mockGetRunsByStatuses,
+    getTaskById: overrides.getTaskById ?? vi.fn().mockResolvedValue(null),
+    updateTaskStatus: overrides.updateTaskStatus ?? vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(),
-  } as unknown as ReturnType<typeof vi.fn>;
+  };
 }
 
 function makeTaskClient(overrides: Partial<{
@@ -826,19 +841,30 @@ describe("syncBeadStatusAfterMerge()", () => {
     expect(mockSetBeadStatus).not.toHaveBeenCalled();
   });
 
-  it("enqueues status update instead of calling br directly", async () => {
+  it("updates status through the native task store", async () => {
     const store = makeStore({
       getRun: vi.fn().mockReturnValue({ id: "run-1", status: "merged" }),
+      updateTaskStatus: vi.fn().mockResolvedValue(undefined),
     });
     const taskClient = makeTaskClient();
 
     await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).toHaveBeenCalledWith(
-      expect.anything(), "bd-x", "closed", "auto-merge",
-    );
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "closed");
     // Should NOT call taskClient.update directly (avoids backend lock contention)
     expect(taskClient.update).not.toHaveBeenCalled();
+  });
+
+  it("does not downgrade a task already closed by refinery back to review", async () => {
+    const store = makeStore({
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "completed" }),
+      getTaskById: vi.fn().mockResolvedValue({ id: "bd-x", status: "closed" }),
+    });
+    const taskClient = makeTaskClient();
+
+    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+
+    expect(store.updateTaskStatus).not.toHaveBeenCalled();
   });
 
   it("calls addNotesToBead with the failure reason when failureReason is provided", async () => {
@@ -890,7 +916,7 @@ describe("syncBeadStatusAfterMerge()", () => {
 
     await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "bd-x", "blocked", "auto-merge");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
   });
 
   it("maps test-failed run status to blocked", async () => {
@@ -901,7 +927,7 @@ describe("syncBeadStatusAfterMerge()", () => {
 
     await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "bd-x", "blocked", "auto-merge");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
   });
 
   it("maps failed run status to failed", async () => {
@@ -912,7 +938,7 @@ describe("syncBeadStatusAfterMerge()", () => {
 
     await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "bd-x", "failed", "auto-merge");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "failed");
   });
 
   it("always enqueues notes even when called with a failure reason", async () => {
@@ -930,8 +956,7 @@ describe("syncBeadStatusAfterMerge()", () => {
       "Merge conflict in foo.ts",
     );
 
-    // Both status and notes should be enqueued
-    expect(mockSetBeadStatus).toHaveBeenCalled();
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
     expect(mockAddNotesToBead).toHaveBeenCalledWith(expect.anything(), "bd-x", "Merge conflict in foo.ts", "auto-merge");
   });
 });

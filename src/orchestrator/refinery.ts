@@ -15,7 +15,7 @@ import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
 import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
-import { syncBeadStatusAfterMerge } from "./auto-merge.js";
+
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { loadProjectConfig } from "../lib/project-config.js";
@@ -790,12 +790,10 @@ export class Refinery {
   /**
    * Close the native task (if any) linked to this run after a successful merge.
    *
-   * Implements REQ-018: updateStatus(taskId, 'merged') on success, with fallback
-   * to syncBeadStatusAfterMerge when taskId is null (beads-only mode).
-   *
+   * Implements REQ-018: updateStatus(taskId, 'merged') on success.
    * Non-fatal — failures are silently ignored so they don't block the merge flow.
    */
-  private async closeNativeTaskPostMerge(runId: string, seedId: string): Promise<void> {
+  private async closeNativeTaskPostMerge(runId: string, _seedId: string): Promise<void> {
     try {
       if (this.registeredProjectId && this.postgresAdapter) {
         const [task] = await this.postgresAdapter.listTasks(this.registeredProjectId, {
@@ -819,18 +817,7 @@ export class Refinery {
         }
       }
 
-      // No native task — fall back to beads-only sync.
-      // Note: syncBeadStatusAfterMerge does not actually use taskClient (only
-      // enqueues bead status updates via store), so we cast to ITaskClient.
-      await syncBeadStatusAfterMerge(
-        this.store,
-        this.seeds as unknown as import("../lib/task-client.js").ITaskClient,
-        runId,
-        seedId,
-        this.projectPath,
-        undefined,
-        this.runLookup,
-      );
+      // No native task found — nothing to close (beads fallback removed)
     } catch {
       // Non-fatal — native task closure must not block the merge
     }

@@ -32,7 +32,9 @@ import { rotateReport } from "./agent-worker-finalize.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentMailClient } from "../lib/agent-mail-client.js";
-import type { ForemanStore, RunProgress } from "../lib/store.js";
+import type { ForemanStore } from "../lib/store.js";
+import type { RunProgress } from "../lib/store.js";
+import type { RunProgressSummary } from "./read-models.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";
 import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncrementalPipelineReport, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
@@ -133,7 +135,7 @@ export interface PipelineRunConfig {
   /**
    * Optional task ID from native task store.
    * When present, pipeline-executor passes it to onTaskPhaseChange(taskId, phaseName)
-   * at each phase transition (REQ-012). Null/undefined in beads fallback mode.
+   * at each phase transition (REQ-012).
    */
   taskId?: string | null;
   /**
@@ -164,7 +166,7 @@ export interface PipelineContext {
   /**
    * Optional task lifecycle callback for phase-level visibility.
    * When present, invoked after each successful phase completion with the
-   * configured task id (or null in beads fallback) and phase name.
+   * task ID and phase name.
    */
   onTaskPhaseChange?: (taskId: string | null | undefined, phaseName: string) => Promise<void> | void;
   /**
@@ -1103,20 +1105,23 @@ async function runPhaseSequence(
       prompt = phase.command
         ? interpolateTaskPlaceholders(phase.command, phaseMeta)
         : buildPhasePrompt(phaseName, {
-        seedId,
-        seedTitle,
-        seedDescription: description,
-        seedComments: comments,
-        seedType: config.seedType,
-        runId,
-        hasExplorerReport,
-        requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
-        feedbackContext,
-        worktreePath,
-        reportDir: phaseMeta.projectReportsDir,
-        baseBranch: config.targetBranch,
-        ...vcsPromptVars,
-      }, ctx.promptOpts);
+          seedId,
+          seedTitle,
+          seedDescription: description,
+          seedComments: comments,
+          seedType: config.seedType,
+          runId,
+          hasExplorerReport,
+          requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
+          feedbackContext,
+          worktreePath,
+          reportDir: phaseMeta.projectReportsDir,
+          baseBranch: config.targetBranch,
+          ...vcsPromptVars,
+        }, {
+          ...ctx.promptOpts,
+          promptName: phase.prompt ? basename(phase.prompt, ".md") : undefined,
+        });
     }
 
     const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];
@@ -1340,18 +1345,41 @@ async function runPhaseSequence(
         const errorMsg = result.error ?? `${phaseName} failed`;
         ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
         await appendFile(logFile, `\n[PIPELINE] ${phaseName} FAIL: ${errorMsg}\n`);
+
+        if (phase.retryWith) {
+          const retryTarget = phase.retryWith;
+          const maxRetries = phase.retryOnFail ?? 0;
+          const currentRetries = retryCounts[phaseName] ?? 0;
+          const feedback = (interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null)
+            ?? result.outputText
+            ?? errorMsg;
+
+          if (currentRetries < maxRetries) {
+            retryCounts[phaseName] = currentRetries + 1;
+            if (phase.mail?.onFail) {
+              const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
+              ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
+            }
+            feedbackContext = feedback;
+            ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+              seedId, phase: phaseName, error: errorMsg, retryable: true,
+            });
+            ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
+            await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
+            const targetIdx = phaseIndex.get(retryTarget);
+            if (targetIdx !== undefined) {
+              i = targetIdx;
+              continue;
+            }
+            ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — marking stuck`);
+          }
+        }
+
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
           seedId, phase: phaseName, error: errorMsg, retryable: false,
         });
-        if (phase.retryWith && retryCounts[phaseName] < (phase.retryOnFail ?? 0)) {
-          retryCounts[phaseName] = (retryCounts[phaseName] ?? 0) + 1;
-          ctx.log(`[${phaseName.toUpperCase()}] Retry ${retryCounts[phaseName]}/${phase.retryOnFail}`);
-          await appendFile(logFile, `\n[PIPELINE] ${phaseName} retry ${retryCounts[phaseName]}\n`);
-          // fall through to retry
-        } else {
-          await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
-        }
+        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
       // Handle verdict if configured
       if (phase.verdict && result.outputText) {

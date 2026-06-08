@@ -2,9 +2,10 @@
  * `foreman board` — Terminal UI kanban board for managing Foreman tasks.
  *
  * Features:
- * - 6 status columns: backlog, ready, in_progress, review, blocked, closed
+ * - 6 status columns: backlog, ready, in_progress, review, needs_attention, closed
  * - vim-style navigation: j/k (vertical), h/l (horizontal)
  * - Status cycling: s (forward), S (backward)
+ * - Mark as ready: R
  * - Close task: c / C (with reason)
  * - Edit in $EDITOR: e / E (full schema)
  * - Task detail view: Enter
@@ -43,7 +44,7 @@ export const BOARD_STATUSES = [
   "ready",
   "in_progress",
   "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
@@ -53,7 +54,7 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   ready: "Ready",
   in_progress: "In Progress",
   review: "Review",
-  blocked: "Blocked",
+  needs_attention: "Needs Attention",
   closed: "Closed",
 };
 
@@ -129,6 +130,7 @@ async function resolveBoardContext(projectPath: string): Promise<BoardContext> {
 /**
  * Load all tasks from the native task store, grouped by status.
  * Tasks with unknown statuses are placed in the rightmost column (closed).
+ * Failed, stuck, and conflict statuses route to needs_attention (not closed).
  */
 export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStatus, BoardTask[]>> {
   const { client, projectId } = await resolveBoardContext(projectPath);
@@ -139,11 +141,22 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
     map.set(status, []);
   }
 
+  // Statuses that route to needs_attention column per migration comment:
+  // "conflict/failed/stuck/blocked=needs-attention"
+  const NEEDS_ATTENTION_STATUSES = new Set(["failed", "stuck", "conflict", "blocked"]);
+  const isBoardStatus = (value: string): value is BoardStatus =>
+    BOARD_STATUSES.includes(value as BoardStatus);
+
   for (const row of rows) {
-    const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
-    const status = BOARD_STATUSES.includes(normalizedStatus)
-      ? normalizedStatus
-      : "closed";
+    const normalizedStatus = row.status.replace(/-/g, "_");
+    let status: BoardStatus;
+    if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
+      status = "needs_attention";
+    } else if (isBoardStatus(normalizedStatus)) {
+      status = normalizedStatus;
+    } else {
+      status = "closed";
+    }
     const tasks = map.get(status)!;
     tasks.push({
       id: row.id,
@@ -413,6 +426,7 @@ function renderHelpOverlayView(width: number): ReturnType<typeof h> {
     ["g / G", "Jump to first / last task"],
     ["[1]…[6]", "Jump to column by number"],
     ["s / S", "Cycle status forward / backward"],
+    ["R", "Mark task as ready"],
     ["c", "Close task"],
     ["C", "Close task with reason"],
     ["e / E", "Edit task in editor"],
@@ -597,7 +611,7 @@ function renderBoardFrame(
         );
       }),
     ),
-    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
+    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  R mark ready  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
     state.errorMessage
       ? h(
         Box,
@@ -861,6 +875,7 @@ const KEY_C = "C";
 const KEY_e = "e";
 const KEY_E = "E";
 const KEY_r = "r";
+const KEY_R = "R";
 const KEY_q = "q";
 const KEY_QUESTION = "?";
 const KEY_n = "n";
@@ -871,7 +886,7 @@ const NEW_TASK_TEMPLATE = `# Create a new Foreman task
 # Fields: id (optional, auto-generated if empty), title, description, type, priority, status
 # Lines starting with # are comments and will be ignored
 # Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog
-# Status: backlog, ready, in_progress, review, blocked, closed
+# Status: backlog, ready, in_progress, review, needs_attention, closed
 # Type: task, bug, feature, epic, chore, docs, question
 
 id:
@@ -976,6 +991,7 @@ export async function createTaskAsync(
 export const boardApi = {
   createTaskInEditor,
   createTaskAsync,
+  applyStatusChangeAsync,
 };
 
 function suspendRawMode(): void {
@@ -1125,7 +1141,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const newStatusIdx = (currentStatusIdx + delta + BOARD_STATUSES.length) % BOARD_STATUSES.length;
         const newStatus = BOARD_STATUSES[newStatusIdx];
 
-        const err = await applyStatusChangeAsync(projectPath, task.id, newStatus);
+        const err = await boardApi.applyStatusChangeAsync(projectPath, task.id, newStatus);
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1208,6 +1224,26 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         if (task) {
           result.showDetail = true;
           result.detailTask = task;
+          result.needsRefresh = true;
+        }
+        break;
+      }
+
+      // ── Mark task as ready ─────────────────────────────────────────────────
+      case KEY_R: {
+        const task = getHighlightedTask(result.nav, state.tasks);
+        if (!task) break;
+
+        if (task.status !== "backlog") {
+          result.errorMessage = "Task must be in backlog to mark as ready";
+          break;
+        }
+
+        const err = await boardApi.applyStatusChangeAsync(projectPath, task.id, "ready");
+        if (err) {
+          result.errorMessage = err;
+        } else {
+          result.flashTaskId = task.id;
           result.needsRefresh = true;
         }
         break;

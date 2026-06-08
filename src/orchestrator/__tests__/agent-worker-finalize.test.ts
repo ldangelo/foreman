@@ -11,11 +11,12 @@ import { tmpdir } from "node:os";
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockEnqueueBeadWrite } = vi.hoisted(() => ({
+const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockEnqueueBeadWrite, mockUpdateTaskStatus } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
   mockAppendFile: vi.fn().mockResolvedValue(undefined),
   mockEnqueueBeadWrite: vi.fn(),
+  mockUpdateTaskStatus: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -37,6 +38,7 @@ vi.mock("../../lib/store.js", () => ({
       getDb: vi.fn(() => ({})),
       close: vi.fn(),
       enqueueBeadWrite: mockEnqueueBeadWrite,
+      updateTaskStatus: mockUpdateTaskStatus,
     })),
   },
 }));
@@ -160,6 +162,7 @@ describe("finalize() — push succeeds", () => {
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
+    mockUpdateTaskStatus.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     // tsc succeeds by default (mockExecFileSync does nothing)
@@ -182,15 +185,7 @@ describe("finalize() — push succeeds", () => {
 
   it("sets bead to 'review' status after successful push (not closing it)", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001" }), logFile, mockVcs);
-    // Verify enqueueBeadWrite was called with "set-status" and the correct seedId/status
-    const reviewCall = mockEnqueueBeadWrite.mock.calls.find(
-      (call) =>
-        Array.isArray(call) &&
-        call[1] === "set-status" &&
-        call[2]?.status === "review" &&
-        call[2]?.seedId === "bd-test-001",
-    );
-    expect(reviewCall).toBeDefined();
+    expect(mockUpdateTaskStatus).toHaveBeenCalledWith("bd-test-001", "review");
   });
 
   it("does NOT call br close after push succeeds (bead lifecycle fix)", async () => {

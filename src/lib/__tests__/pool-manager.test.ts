@@ -20,6 +20,7 @@ import {
   isPoolInitialised,
   PoolExhaustedError,
   DatabaseError,
+  DatabaseConfigError,
   type PoolLike,
 } from "../db/pool-manager.js";
 
@@ -121,6 +122,18 @@ describe("PoolManager.init / destroy lifecycle", () => {
       initPool({ poolOverride: mockPool });
       expect(getPoolConfig()?.connectionString).toBe(
         "postgresql://user:pass@host/db"
+      );
+    } finally {
+      process.env.DATABASE_URL = prev;
+    }
+  });
+
+  it("rejects DATABASE_URL values with a username but no password", async () => {
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgresql://foreman@db.example.com/foreman";
+    try {
+      expect(() => initPool({ poolOverride: createMockPool() })).toThrow(
+        "User 'foreman' is missing a password.",
       );
     } finally {
       process.env.DATABASE_URL = prev;
@@ -394,6 +407,14 @@ describe("DatabaseError", () => {
   });
 });
 
+describe("DatabaseConfigError", () => {
+  it("captures the invalid database url", () => {
+    const err = new DatabaseConfigError("bad url", "postgresql://foreman@db.example.com/foreman");
+    expect(err.databaseUrl).toBe("postgresql://foreman@db.example.com/foreman");
+    expect(err.name).toBe("DatabaseConfigError");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // PoolManager named export
 // ---------------------------------------------------------------------------
@@ -432,6 +453,11 @@ describe("PoolManager named export", () => {
   it("PoolManager.DatabaseError is DatabaseError", async () => {
     const { PoolManager } = await import("../db/pool-manager.js");
     expect(PoolManager.DatabaseError).toBe(DatabaseError);
+  });
+
+  it("PoolManager.DatabaseConfigError is DatabaseConfigError", async () => {
+    const { PoolManager } = await import("../db/pool-manager.js");
+    expect(PoolManager.DatabaseConfigError).toBe(DatabaseConfigError);
   });
 });
 

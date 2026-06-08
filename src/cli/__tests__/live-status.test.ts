@@ -297,11 +297,11 @@ describe("daemon-backed status helpers", () => {
     mockListRegisteredProjects.mockResolvedValue([
       { id: "proj-1", name: "test-project", path: "/mock/project" },
     ]);
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") return [];
-      return [{ id: "1", status: "open", title: "Task" }];
+    mockHasNativeTasks.mockReturnValue(true);
+    mockListTasksByStatus.mockImplementation((statuses: string[]) => {
+      const rows = [{ id: "1", status: "blocked", title: "Task" }];
+      return rows.filter((row) => statuses.includes(row.status));
     });
-    mockBrReady.mockResolvedValue([]);
 
     const counts = await fetchStatusCounts("/unregistered/project");
 
@@ -424,28 +424,25 @@ describe("fetchDashboardTaskCounts()", () => {
     expect(counts).toEqual({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
   });
 
-  it("correctly counts in-progress, ready, completed, and blocked issues", async () => {
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") {
-        return [
-          { id: "c1", status: "closed", title: "Done 1" },
-          { id: "c2", status: "closed", title: "Done 2" },
-        ];
-      }
-      return [
-        { id: "1", status: "in_progress", title: "Active task" },
-        { id: "2", status: "open", title: "Ready task" },
-        { id: "3", status: "open", title: "Blocked task" },
+  it("correctly counts native in-progress, ready, completed, and blocked tasks", async () => {
+    mockHasNativeTasks.mockReturnValue(true);
+    mockListTasksByStatus.mockImplementation((statuses: string[]) => {
+      const rows = [
+        { id: "1", status: "in-progress", title: "Active task" },
+        { id: "2", status: "ready", title: "Ready task" },
+        { id: "3", status: "blocked", title: "Blocked task" },
+        { id: "c1", status: "closed", title: "Done 1" },
+        { id: "c2", status: "merged", title: "Done 2" },
       ];
+      return rows.filter((row) => statuses.includes(row.status));
     });
-    mockBrReady.mockResolvedValue([{ id: "2", status: "open", title: "Ready task" }]);
 
     const counts = await fetchDashboardTaskCounts("/mock/project");
-    expect(counts.total).toBe(5);       // 3 open + 2 closed
+    expect(counts.total).toBe(5);
     expect(counts.inProgress).toBe(1);
     expect(counts.ready).toBe(1);
     expect(counts.completed).toBe(2);
-    expect(counts.blocked).toBe(1);     // open, not in_progress, not ready
+    expect(counts.blocked).toBe(1);
   });
 
   it("returns zeros when br.list() throws", async () => {
@@ -454,15 +451,14 @@ describe("fetchDashboardTaskCounts()", () => {
     expect(counts).toEqual({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
   });
 
-  it("handles br.ready() throwing gracefully", async () => {
-    // Return 1 open issue, 0 closed
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") return [];
-      return [{ id: "1", status: "open", title: "Task" }];
+  it("returns native counts without consulting legacy ready state", async () => {
+    mockHasNativeTasks.mockReturnValue(true);
+    mockListTasksByStatus.mockImplementation((statuses: string[]) => {
+      const rows = [{ id: "1", status: "blocked", title: "Task" }];
+      return rows.filter((row) => statuses.includes(row.status));
     });
-    mockBrReady.mockRejectedValue(new Error("ready failed"));
+
     const counts = await fetchDashboardTaskCounts("/mock/project");
-    // Should still return counts (ready = 0 due to failure)
     expect(counts.total).toBe(1);
     expect(counts.ready).toBe(0);
   });

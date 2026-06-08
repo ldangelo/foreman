@@ -18,6 +18,7 @@ const {
   mockBrReady,
   mockEnsureBrInstalled,
   mockCreateTaskClient,
+  mockFetchTaskCounts,
   MockBeadsRustClient,
   mockGetProjectByPath,
   mockGetActiveRuns,
@@ -34,6 +35,7 @@ const {
   MockMergeQueue,
 } = vi.hoisted(() => {
   const mockCreateTaskClient = vi.fn().mockResolvedValue({ taskClient: { kind: "task-client" }, backendType: "native" });
+  const mockFetchTaskCounts = vi.fn().mockResolvedValue({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
   const mockGetRepoRoot = vi.fn().mockResolvedValue("/mock/project");
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
   const mockCreateVcsBackend = vi.fn().mockResolvedValue({
@@ -107,6 +109,7 @@ const {
     mockBrReady,
     mockEnsureBrInstalled,
     mockCreateTaskClient,
+    mockFetchTaskCounts,
     MockBeadsRustClient,
     mockGetProjectByPath,
     mockGetActiveRuns,
@@ -139,6 +142,7 @@ vi.mock("../../lib/task-client-factory.js", async () => {
   return {
     ...actual,
     createTaskClient: mockCreateTaskClient,
+    fetchTaskCounts: mockFetchTaskCounts,
   };
 });
 
@@ -275,6 +279,7 @@ describe("foreman status --json", () => {
     });
     mockBrList.mockResolvedValue([]);
     mockBrReady.mockResolvedValue([]);
+    mockFetchTaskCounts.mockResolvedValue({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
     mockGetProjectByPath.mockReturnValue(null);
     mockGetActiveRuns.mockReturnValue([]);
     mockGetMetrics.mockReturnValue({ totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] });
@@ -308,17 +313,14 @@ describe("foreman status --json", () => {
     expect(typeof tasks.stuck).toBe("number");
   });
 
-  it("reflects correct task counts from br backend", async () => {
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") {
-        return [{ id: "c1", status: "closed", title: "Done" }];
-      }
-      return [
-        { id: "1", status: "in_progress", title: "Active" },
-        { id: "2", status: "open", title: "Pending" },
-      ];
+  it("reflects correct native task counts", async () => {
+    mockFetchTaskCounts.mockResolvedValue({
+      total: 3,
+      ready: 1,
+      inProgress: 1,
+      completed: 1,
+      blocked: 0,
     });
-    mockBrReady.mockResolvedValue([{ id: "2", status: "open" }]);
 
     const { stdout } = await runCommand(statusCommand, ["--json"]);
     const { tasks } = JSON.parse(stdout);

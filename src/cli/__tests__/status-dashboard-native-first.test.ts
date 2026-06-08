@@ -107,25 +107,20 @@ describe("native-first task count regression targets", () => {
     expect(mockBrReady).not.toHaveBeenCalled();
   });
 
-  it("status auto mode falls back to br when no native tasks exist", async () => {
+  it("status auto mode returns zero native counts when no native tasks exist", async () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "auto");
     mockHasNativeTasks.mockReturnValue(false);
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") return [{ id: "closed-1", status: "closed" }];
-      return [{ id: "open-1", status: "open" }, { id: "run-1", status: "in_progress" }];
-    });
-    mockBrReady.mockResolvedValue([{ id: "open-1", status: "open" }]);
 
     const counts = await fetchStatusCounts(projectPath);
 
     expect(counts).toEqual({
-      total: 3,
-      ready: 1,
-      inProgress: 1,
-      completed: 1,
+      total: 0,
+      ready: 0,
+      inProgress: 0,
+      completed: 0,
       blocked: 0,
     });
-    expect(mockBrList).toHaveBeenCalled();
+    expect(mockBrList).not.toHaveBeenCalled();
   });
 
   it("dashboard native mode reads compact counts from the native task store before br fallback", async () => {

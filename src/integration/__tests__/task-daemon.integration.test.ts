@@ -95,9 +95,12 @@ describe("task CLI daemon/Postgres integration", () => {
       return;
     }
 
-    tempHome = mkdtempSync(join(tmpdir(), "foreman-task-daemon-home-"));
+    // Keep HOME and project temp paths short enough for Unix socket path limits on macOS/BSD.
+    // Long mkdtemp prefixes can push ~/.foreman/daemon.sock past the bind limit
+    // and cause the daemon to fall back to HTTP before this test sees the socket.
+    tempHome = mkdtempSync(join(tmpdir(), "fmd-home-"));
     mkdirSync(join(tempHome, ".foreman"), { recursive: true });
-    projectDir = mkdtempSync(join(tmpdir(), "foreman-task-daemon-project-"));
+    projectDir = mkdtempSync(join(tmpdir(), "fmd-project-"));
     mkdirSync(join(projectDir, ".foreman"), { recursive: true });
     projectName = `task-daemon-test-${Date.now().toString(36)}`;
 
