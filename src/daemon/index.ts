@@ -94,7 +94,7 @@ export function registerDirectDaemonProcess(options?: {
   const pid = options?.pid ?? process.pid;
   const existingPid = readPid(pidPath);
 
-  if (existingPid !== null && isProcessAlive(existingPid)) {
+  if (existingPid !== null && existingPid !== pid && isProcessAlive(existingPid)) {
     console.error(
       `[ForemanDaemon] Refusing to start: daemon already registered with PID ${existingPid}.`
     );

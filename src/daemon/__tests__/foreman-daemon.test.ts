@@ -193,6 +193,22 @@ describe("direct daemon process registration", () => {
     }
   });
 
+  it("allows registration when DaemonManager pre-wrote this process PID", () => {
+    const dir = fakeSocketDir();
+    const pidPath = join(dir, "daemon.pid");
+    const socketPath = join(dir, "daemon.sock");
+    try {
+      writeFileSync(pidPath, String(process.pid), "utf8");
+      const cleanup = registerDirectDaemonProcess({ pidPath, socketPath, pid: process.pid });
+      expect(cleanup).not.toBeNull();
+      expect(readFileSync(pidPath, "utf8").trim()).toBe(String(process.pid));
+      cleanup?.();
+      expect(existsSync(pidPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to register when the daemon socket already exists", () => {
     const dir = fakeSocketDir();
     const pidPath = join(dir, "daemon.pid");
