@@ -122,6 +122,22 @@ describe("BoardMutations", () => {
       expect(newStatus).toBe("ready");
     });
 
+    it("s should move selected ready task forward to store in-progress status", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "ready" });
+      const state = createState({
+        ready: [task],
+      }, { nav: { colIndex: 1, rowIndex: 0 } });
+
+      const result = await handleKey("s", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234", "in-progress");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.needsRefresh).toBe(true);
+      expect(result.errorMessage).toBeNull();
+    });
+
     it("S should retreat status to previous in order", () => {
       const task = createTask("bd-1234", { status: "ready" });
       const currentStatusIdx = BOARD_STATUSES.indexOf(task.status as BoardStatus);
