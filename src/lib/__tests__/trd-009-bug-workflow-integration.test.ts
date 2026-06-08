@@ -89,8 +89,8 @@ describe('TRD-009 bug.yaml workflow integration', () => {
       expect(testPhase?.verdict).toBe(true);
     });
 
-    it('test phase has retryWith: fix (cross-phase retry)', () => {
-      expect(testPhase?.retryWith).toBe('fix');
+    it('test phase retries through generic developer remediation', () => {
+      expect(testPhase?.retryWith).toBe('developer');
     });
 
     it('test phase has retryOnFail: 2', () => {
@@ -118,9 +118,9 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   });
 
   describe('phase ordering and finalize', () => {
-    it('phases are in order: fix → test → cli-review → finalize → PR review → merge', () => {
+    it('phases are in order: fix → developer remediation → test → cli-review → finalize → PR review → merge', () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      expect(names).toEqual(['fix', 'test', 'cli-review', 'finalize', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
+      expect(names).toEqual(['fix', 'developer', 'test', 'cli-review', 'finalize', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
     });
 
     it('finalize phase uses the bug-specific finalize prompt', () => {
@@ -128,10 +128,10 @@ describe('TRD-009 bug.yaml workflow integration', () => {
       expect(finalize?.prompt).toBe('finalize-bug.md');
     });
 
-    it('finalize phase has verdict: true and retryWith: fix', () => {
+    it('finalize phase has verdict: true and retries through developer remediation', () => {
       const finalize = bugWorkflow.phases.find((p) => p.name === 'finalize');
       expect(finalize?.verdict).toBe(true);
-      expect(finalize?.retryWith).toBe('fix');
+      expect(finalize?.retryWith).toBe('developer');
     });
   });
 

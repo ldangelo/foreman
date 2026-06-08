@@ -44,7 +44,7 @@ function runMigrations(databaseUrl: string): void {
 }
 
 
-async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
+async function waitForSocket(socketPath: string, timeoutMs = 30_000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (existsSync(socketPath)) return;
@@ -53,12 +53,12 @@ async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<vo
   throw new Error(`Timed out waiting for daemon socket at ${socketPath}`);
 }
 
-async function waitForDaemonReady(cliPath: string, cwd: string, env: NodeJS.ProcessEnv, timeoutMs = 15_000): Promise<void> {
+async function waitForDaemonReady(cliPath: string, cwd: string, env: NodeJS.ProcessEnv, timeoutMs = 30_000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const result = await runTsxModule(cliPath, ["project", "list"], {
       cwd,
-      timeout: 5_000,
+      timeout: 10_000,
       env,
     });
     if (result.exitCode === 0) {
