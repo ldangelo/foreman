@@ -862,6 +862,20 @@ export type DashboardReadStore = Pick<ForemanStore,
   | "close"
 >;
 
+/**
+ * Narrow read-only interface for the status command.
+ * Covers project lookup, active runs, progress, metrics, success rate, and recent outcomes.
+ */
+export type StatusReadStore = Pick<ForemanStore,
+  | "getProjectByPath"
+  | "getActiveRuns"
+  | "getRunProgress"
+  | "getRunsForSeed"
+  | "getRecentOutcomeCounts"
+  | "getSuccessRate"
+  | "getMetrics"
+>;
+
 export class ForemanStore {
   private db: LocalStoreDatabase;
 
