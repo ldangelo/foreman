@@ -278,6 +278,14 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     appendFile(opts.logFile, line + "\n").catch(() => { /* non-fatal */ });
   };
 
+  const safeEmitStreamEvent = (event: StreamEvent): void => {
+    try {
+      opts.onStreamEvent?.(event);
+    } catch (err) {
+      writeLog(`[pi-sdk-runner] onStreamEvent error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   try {
     // Explicitly set agentDir and auth so detached worker processes find credentials.
     const agentDir = getAgentDir();
@@ -324,7 +332,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       switch (event.type) {
         case "turn_start":
           totalTurns++;
-          opts.onStreamEvent?.({
+          safeEmitStreamEvent({
             type: "turnStart",
             iteration: totalTurns,
             timestamp,
@@ -334,7 +342,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
         case "turn_end": {
           opts.onTurnEnd?.(totalTurns);
           const stats = session.getSessionStats();
-          opts.onStreamEvent?.({
+          safeEmitStreamEvent({
             type: "turnEnd",
             iteration: totalTurns,
             timestamp,
@@ -353,7 +361,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
             if (delta) {
               textChunks.push(delta);
               opts.onText?.(delta);
-              opts.onStreamEvent?.({
+              safeEmitStreamEvent({
                 type: "text",
                 iteration: totalTurns,
                 timestamp,
@@ -371,7 +379,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
             toolBreakdown[toolName] = (toolBreakdown[toolName] ?? 0) + 1;
             const input = (event as Record<string, unknown>).args as Record<string, unknown> | undefined;
             opts.onToolCall?.(toolName, input ?? {});
-            opts.onStreamEvent?.({
+            safeEmitStreamEvent({
               type: "toolCall",
               iteration: totalTurns,
               timestamp,
@@ -388,7 +396,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
             success = false;
             errorMessage = (endEvent.message as string) ?? "Agent ended without success";
           }
-          opts.onStreamEvent?.({
+          safeEmitStreamEvent({
             type: "agentEnd",
             iteration: totalTurns,
             timestamp,
