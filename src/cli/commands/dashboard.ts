@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import {
   ForemanStore,
+  type DashboardReadStore,
   type Project,
   type Run,
   type RunProgress,
@@ -322,10 +323,10 @@ export interface RegisteredProject {
  * Falls back to returning only the current working directory's project if the
  * DB doesn't have multiple registered projects (REQ-010 fallback).
  *
- * @param store - ForemanStore for the current project (already open, read-write).
+ * @param store - DashboardReadStore for the current project (read-only interface).
  * @returns Array of projects to include in the multi-project dashboard.
  */
-export function readProjectRegistry(store: ForemanStore): RegisteredProject[] {
+export function readProjectRegistry(store: DashboardReadStore): RegisteredProject[] {
   const projects = store.listProjects();
   return projects.map((p) => ({ id: p.id, name: p.name, path: p.path }));
 }
@@ -850,7 +851,7 @@ export function renderDashboard(state: DashboardState): string {
  * Collect dashboard data from the store.
  * Used for single-project (legacy / --simple) mode.
  */
-export function pollDashboard(store: ForemanStore, projectId?: string, eventsLimit = 8): DashboardState {
+export function pollDashboard(store: DashboardReadStore, projectId?: string, eventsLimit = 8): DashboardState {
   const projects = projectId
     ? [store.getProject(projectId)].filter((p): p is Project => p !== null)
     : store.listProjects();

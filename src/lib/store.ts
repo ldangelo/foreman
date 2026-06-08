@@ -844,6 +844,23 @@ export type BeadWriteQueueStore = Pick<ForemanStore,
   | "markBeadWriteProcessed"
 >;
 
+/**
+ * Narrow interface for dashboard read operations.
+ * Covers all read-only methods needed by pollDashboard() and readProjectRegistry().
+ * The CLI uses this interface so pure read functions don't need the full store type.
+ */
+export type DashboardReadStore = Pick<ForemanStore,
+  | "listProjects"
+  | "getProject"
+  | "getActiveRuns"
+  | "getRunsByStatus"
+  | "getRunProgress"
+  | "getMetrics"
+  | "getEvents"
+  | "getSuccessRate"
+  | "listTasksByStatus"
+>;
+
 export class ForemanStore {
   private db: LocalStoreDatabase;
 
