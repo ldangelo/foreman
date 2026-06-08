@@ -167,13 +167,14 @@ describe("WatchState", () => {
       });
     });
 
-    it("routes failed, stuck, conflict, and blocked rows to needs_attention counts", async () => {
+    it("routes failed, stuck, conflict, blocked, and review rows to needs_attention counts", async () => {
       mockTasksList.mockResolvedValue([
         { id: "t-ready", title: "Ready", status: "ready", priority: 3 },
         { id: "t-failed", title: "Failed", status: "failed", priority: 2 },
         { id: "t-stuck", title: "Stuck", status: "stuck", priority: 1 },
         { id: "t-conflict", title: "Conflict", status: "conflict", priority: 0 },
         { id: "t-blocked", title: "Blocked", status: "blocked", priority: 4 },
+        { id: "t-review", title: "Review", status: "review", priority: 2 },
         { id: "t-merged", title: "Merged", status: "merged", priority: 2 },
       ]);
 
@@ -183,16 +184,16 @@ describe("WatchState", () => {
         backlog: 0,
         ready: 1,
         in_progress: 0,
-        review: 0,
-        needs_attention: 4,
+        needs_attention: 5,
         closed: 1,
       });
-      expect(result.board.total).toBe(6);
+      expect(result.board.total).toBe(7);
       expect(result.board.ready).toBe(1);
       expect(result.board.needsAttention.map((task) => task.id)).toEqual([
         "t-conflict",
         "t-stuck",
         "t-failed",
+        "t-review",
         "t-blocked",
       ]);
       expect(result.taskCounts).toEqual({
@@ -234,7 +235,6 @@ describe("WatchState", () => {
           backlog: 0,
           ready: 0,
           in_progress: 0,
-          review: 0,
           needs_attention: 0,
           closed: 0,
         },

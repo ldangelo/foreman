@@ -12,7 +12,6 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
   "needs_attention",
   "closed",
 ] as const;
@@ -139,7 +138,7 @@ describe("BoardNavigation", () => {
     });
 
     it("l should wrap from rightmost to leftmost", () => {
-      const nav: NavigationState = { colIndex: 5, rowIndex: 3 }; // closed column
+      const nav: NavigationState = { colIndex: 4, rowIndex: 3 }; // closed column
       nav.colIndex = (nav.colIndex + 1) % BOARD_STATUSES.length;
       nav.rowIndex = 0;
 
@@ -161,7 +160,7 @@ describe("BoardNavigation", () => {
       nav.colIndex = nav.colIndex <= 0 ? BOARD_STATUSES.length - 1 : nav.colIndex - 1;
       nav.rowIndex = 0;
 
-      expect(nav.colIndex).toBe(5); // wraps to closed
+      expect(nav.colIndex).toBe(4); // wraps to closed
       expect(nav.rowIndex).toBe(0);
     });
   });
@@ -215,15 +214,15 @@ describe("BoardNavigation", () => {
       expect(nav.colIndex).toBe(0);
     });
 
-    it("[6] should jump to closed column", () => {
+    it("[5] should jump to closed column", () => {
       const nav: NavigationState = { colIndex: 0, rowIndex: 2 };
-      const colIdx = 6 - 1;
+      const colIdx = 5 - 1;
       if (colIdx >= 0 && colIdx < BOARD_STATUSES.length) {
         nav.colIndex = colIdx;
         nav.rowIndex = 0;
       }
 
-      expect(nav.colIndex).toBe(5);
+      expect(nav.colIndex).toBe(4);
     });
 
     it("[0] should be ignored (not a valid column)", () => {
@@ -278,12 +277,12 @@ describe("BoardNavigation", () => {
   });
 
   describe("Navigation State Bounds", () => {
-    it("colIndex should always be within [0, 5]", () => {
+    it("colIndex should always be within [0, 4]", () => {
       const minCol = 0;
       const maxCol = BOARD_STATUSES.length - 1;
 
       expect(minCol).toBe(0);
-      expect(maxCol).toBe(5);
+      expect(maxCol).toBe(4);
 
       // Test that all valid navigation stays in bounds
       let nav: NavigationState = { colIndex: 0, rowIndex: 0 };
@@ -295,13 +294,13 @@ describe("BoardNavigation", () => {
     });
 
     it("colIndex should wrap correctly", () => {
-      let nav: NavigationState = { colIndex: 5, rowIndex: 0 };
+      let nav: NavigationState = { colIndex: 4, rowIndex: 0 };
       nav.colIndex = (nav.colIndex + 1) % BOARD_STATUSES.length;
       expect(nav.colIndex).toBe(0);
 
       nav.colIndex = 0;
       nav.colIndex = nav.colIndex <= 0 ? BOARD_STATUSES.length - 1 : nav.colIndex - 1;
-      expect(nav.colIndex).toBe(5);
+      expect(nav.colIndex).toBe(4);
     });
   });
 

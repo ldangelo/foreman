@@ -12,7 +12,6 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
   "needs_attention",
   "closed",
 ] as const;
@@ -59,7 +58,7 @@ describe("BoardPerformance", () => {
       const tasks = createTasksMapWithCount(33);
       const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
 
-      expect(totalTasks).toBe(198); // 33 * 6 = 198
+      expect(totalTasks).toBe(165); // 33 * 5 = 165
 
       // Simulate render timing
       const start = performance.now();
@@ -82,10 +81,10 @@ describe("BoardPerformance", () => {
     });
 
     it("should handle large task lists efficiently", () => {
-      const tasks = createTasksMapWithCount(100); // 600 total tasks
+      const tasks = createTasksMapWithCount(100); // 500 total tasks
       const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
 
-      expect(totalTasks).toBe(600);
+      expect(totalTasks).toBe(500);
 
       const start = performance.now();
 
@@ -102,7 +101,7 @@ describe("BoardPerformance", () => {
       const end = performance.now();
       const duration = end - start;
 
-      expect(processed).toBe(30); // 6 columns * 5 visible = 30
+      expect(processed).toBe(25); // 5 columns * 5 visible = 25
       expect(duration).toBeLessThan(100); // Should be very fast
     });
 
@@ -149,7 +148,7 @@ describe("BoardPerformance", () => {
       const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
 
       // Verify we have the right count
-      expect(totalTasks).toBe(600);
+      expect(totalTasks).toBe(500);
 
       // Clear the map to allow GC
       tasks.clear();

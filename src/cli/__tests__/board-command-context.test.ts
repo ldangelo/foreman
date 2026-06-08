@@ -155,8 +155,7 @@ describe("loadBoardTasks status routing", () => {
     expect(tasks.get("backlog")).toHaveLength(1);
     expect(tasks.get("ready")).toHaveLength(1);
     expect(tasks.get("in_progress")).toHaveLength(1);
-    expect(tasks.get("review")).toHaveLength(1);
-    expect(tasks.get("needs_attention")).toHaveLength(0);
+    expect(tasks.get("needs_attention")).toHaveLength(1);
   });
 
   it("routes closed and merged to closed column", async () => {
