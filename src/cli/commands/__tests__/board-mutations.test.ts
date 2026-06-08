@@ -58,6 +58,8 @@ describe("BoardMutations", () => {
       showHelp: false,
       showDetail: false,
       detailTask: null,
+      detailNotesStatus: "idle",
+      detailNotesError: null,
       ...overrides,
     };
   };
@@ -110,7 +112,7 @@ describe("BoardMutations", () => {
   });
 
   describe("Task detail (Enter key)", () => {
-    it("loads task notes before opening detail", async () => {
+    it("opens detail immediately and loads notes in the background", async () => {
       const notes = [{
         id: "note-1",
         created_at: "2026-04-19T12:30:00Z",
@@ -119,7 +121,11 @@ describe("BoardMutations", () => {
         author: "foreman",
         body: "Implemented status normalization",
       }];
-      const spy = vi.spyOn(boardApi, "loadTaskNotesAsync").mockResolvedValue(notes);
+      let resolveNotes!: (value: typeof notes) => void;
+      const notesPromise = new Promise<typeof notes>((resolve) => {
+        resolveNotes = resolve;
+      });
+      const spy = vi.spyOn(boardApi, "loadTaskNotesAsync").mockReturnValue(notesPromise);
       const handleKey = createKeyHandler("/tmp/project");
       const task = createTask("bd-1234");
       const state = createState({ backlog: [task] });
@@ -128,7 +134,9 @@ describe("BoardMutations", () => {
 
       expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234");
       expect(result.showDetail).toBe(true);
-      expect(result.detailTask?.notes).toEqual(notes);
+      expect(result.detailTask).toEqual(task);
+      expect(result.needsRefresh).toBe(false);
+      resolveNotes(notes);
     });
   });
 

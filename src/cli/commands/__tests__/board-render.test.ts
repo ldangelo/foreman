@@ -97,6 +97,8 @@ describe("BoardRendering", () => {
       showHelp: false,
       showDetail: false,
       detailTask: null,
+      detailNotesStatus: "idle",
+      detailNotesError: null,
       ...overrides,
     };
   };
@@ -406,6 +408,12 @@ describe("BoardRendering", () => {
   });
 
   describe("Task Detail Panel", () => {
+    it("should render notes loading state", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 100, "loading", null));
+      expect(output).toContain("Notes: loading");
+    });
+
     it("should render task notes when present", () => {
       const task = createTask("bd-1234", {
         notes: [
@@ -420,7 +428,7 @@ describe("BoardRendering", () => {
         ],
       });
 
-      const output = stripTerminalFormatting(renderTaskDetail(task, 100));
+      const output = stripTerminalFormatting(renderTaskDetail(task, 100, "loaded", null));
 
       expect(output).toContain("Notes:");
       expect(output).toContain("developer progress");

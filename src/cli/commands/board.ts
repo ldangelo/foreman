@@ -130,6 +130,8 @@ export interface RenderState {
   showHelp: boolean;
   showDetail: boolean;
   detailTask: BoardTask | null;
+  detailNotesStatus: "idle" | "loading" | "loaded" | "error";
+  detailNotesError: string | null;
 }
 
 // ── Board data loading ───────────────────────────────────────────────────────
@@ -501,7 +503,12 @@ function renderHelpOverlayView(width: number): ReturnType<typeof h> {
   );
 }
 
-function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof h> {
+function renderTaskDetailView(
+  task: BoardTask,
+  width: number,
+  notesStatus: RenderState["detailNotesStatus"],
+  notesError: string | null,
+): ReturnType<typeof h> {
   const panelWidth = Math.max(24, Math.min(64, width));
   const fieldWidth = Math.max(8, Math.min(14, Math.floor(panelWidth * 0.28)));
 
@@ -580,7 +587,17 @@ function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof
     );
   }
 
-  if (task.notes) {
+  if (notesStatus === "loading") {
+    children.push(h(Text, { key: "notes-loading", dimColor: true }, "Notes: loading…"));
+  } else if (notesStatus === "error") {
+    children.push(
+      h(
+        Text,
+        { key: "notes-error", dimColor: true },
+        `Notes: unavailable${notesError ? ` (${notesError})` : ""}`,
+      ),
+    );
+  } else if (task.notes) {
     if (task.notes.length === 0) {
       children.push(h(Text, { key: "notes-empty", dimColor: true }, "Notes: none yet"));
     } else {
@@ -693,7 +710,7 @@ function renderBoardFrame(
       ? h(Box, { marginTop: 1 }, renderHelpOverlayView(Math.max(24, terminalWidth - 2)))
       : null,
     state.showDetail && state.detailTask
-      ? h(Box, { marginTop: 1 }, renderTaskDetailView(state.detailTask, Math.max(24, terminalWidth - 2)))
+      ? h(Box, { marginTop: 1 }, renderTaskDetailView(state.detailTask, Math.max(24, terminalWidth - 2), state.detailNotesStatus, state.detailNotesError))
       : null,
   );
 
@@ -731,8 +748,13 @@ export function renderHelpOverlay(width: number): string {
 /**
  * Render the task detail panel (full metadata).
  */
-export function renderTaskDetail(task: BoardTask, width: number): string {
-  return renderToString(renderTaskDetailView(task, width), { columns: width });
+export function renderTaskDetail(
+  task: BoardTask,
+  width: number,
+  notesStatus: RenderState["detailNotesStatus"] = "idle",
+  notesError: string | null = null,
+): string {
+  return renderToString(renderTaskDetailView(task, width, notesStatus, notesError), { columns: width });
 }
 
 // ── Editor integration ───────────────────────────────────────────────────────
@@ -1103,6 +1125,14 @@ export interface KeyHandlerResult {
   closeReason?: string;
 }
 
+export interface KeyHandlerCallbacks {
+  onDetailNotesLoaded?: (
+    taskId: string,
+    notes: BoardTaskNote[] | null,
+    error: string | null,
+  ) => void;
+}
+
 export type KeyHandler = (
   key: string,
   state: RenderState,
@@ -1112,7 +1142,7 @@ export type KeyHandler = (
 /**
  * Create the key handler closure that captures projectPath.
  */
-export function createKeyHandler(projectPath: string): KeyHandler {
+export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallbacks = {}): KeyHandler {
   return async function handleKey(
     key: string,
     state: RenderState,
@@ -1142,7 +1172,6 @@ export function createKeyHandler(projectPath: string): KeyHandler {
       if (key === KEY_ESC || key === KEY_ENTER) {
         result.showDetail = false;
         result.detailTask = null;
-        result.needsRefresh = true;
       }
       return result;
     }
@@ -1170,13 +1199,11 @@ export function createKeyHandler(projectPath: string): KeyHandler {
           ? BOARD_STATUSES.length - 1
           : result.nav.colIndex - 1;
         result.nav.rowIndex = 0;
-        result.needsRefresh = true;
         break;
       }
       case KEY_l: {
         result.nav.colIndex = (result.nav.colIndex + 1) % BOARD_STATUSES.length;
         result.nav.rowIndex = 0;
-        result.needsRefresh = true;
         break;
       }
       case KEY_g: {
@@ -1193,7 +1220,6 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         if (colIdx >= 0 && colIdx < BOARD_STATUSES.length) {
           result.nav.colIndex = colIdx;
           result.nav.rowIndex = 0;
-          result.needsRefresh = true;
         }
         break;
       }
@@ -1294,13 +1320,10 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (task) {
           result.showDetail = true;
-          try {
-            const notes = await boardApi.loadTaskNotesAsync(projectPath, task.id);
-            result.detailTask = { ...task, notes };
-          } catch {
-            result.detailTask = task;
-          }
-          result.needsRefresh = true;
+          result.detailTask = { ...task };
+          void boardApi.loadTaskNotesAsync(projectPath, task.id)
+            .then((notes) => callbacks.onDetailNotesLoaded?.(task.id, notes, null))
+            .catch((err) => callbacks.onDetailNotesLoaded?.(task.id, null, err instanceof Error ? err.message : String(err)));
         }
         break;
       }
@@ -1334,7 +1357,6 @@ export function createKeyHandler(projectPath: string): KeyHandler {
       // ── Help ────────────────────────────────────────────────────────────────
       case KEY_QUESTION: {
         result.showHelp = true;
-        result.needsRefresh = true;
         break;
       }
 
@@ -1409,6 +1431,9 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let showHelp = false;
   let showDetail = false;
   let detailTask: BoardTask | null = null;
+  let detailNotesStatus: RenderState["detailNotesStatus"] = "idle";
+  let detailNotesError: string | null = null;
+  let detailNotesTaskId: string | null = null;
   let errorMessage: string | null = null;
   let flashTaskId: string | null = null;
   let quit = false;
@@ -1417,23 +1442,46 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   // Normalize initial navigation
   normalizeNavRowIndex(nav, tasks);
 
-  const handleKey = createKeyHandler(projectPath);
+  const renderCurrentBoard = () => {
+    const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
+    const currentState: RenderState = {
+      tasks,
+      nav,
+      totalTasks,
+      errorMessage,
+      flashTaskId,
+      showHelp,
+      showDetail,
+      detailTask,
+      detailNotesStatus,
+      detailNotesError,
+    };
 
-  // Render initial state
-  const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
-  let initialState: RenderState = {
-    tasks,
-    nav,
-    totalTasks,
-    errorMessage,
-    flashTaskId,
-    showHelp,
-    showDetail,
-    detailTask,
+    process.stdout.write(renderBoard(currentState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
   };
 
+  const handleKey = createKeyHandler(projectPath, {
+    onDetailNotesLoaded: (taskId, notes, error) => {
+      if (!showDetail || !detailTask || detailTask.id !== taskId || detailNotesTaskId !== taskId) {
+        return;
+      }
+
+      if (error) {
+        detailNotesStatus = "error";
+        detailNotesError = error;
+        detailTask = { ...detailTask, notes: [] };
+      } else {
+        detailNotesStatus = "loaded";
+        detailNotesError = null;
+        detailTask = { ...detailTask, notes: notes ?? [] };
+      }
+
+      renderCurrentBoard();
+    },
+  });
+
   process.stdout.write(HIDE_CURSOR);
-  process.stdout.write(renderBoard(initialState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
+  renderCurrentBoard();
 
   const attachRawMode = () => {
     if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
@@ -1480,6 +1528,8 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       showHelp,
       showDetail,
       detailTask,
+      detailNotesStatus,
+      detailNotesError,
     };
 
     const result = await handleKey(normalizedKey, currentState, projectPath);
@@ -1511,12 +1561,22 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     errorMessage = result.errorMessage;
     flashTaskId = result.flashTaskId;
 
-      // Refresh tasks if requested
-      if (result.needsRefresh) {
-        try {
-          tasks = await loadBoardTasks(projectPath);
-          normalizeNavRowIndex(nav, tasks);
-        } catch (err) {
+    if (!showDetail) {
+      detailNotesStatus = "idle";
+      detailNotesError = null;
+      detailNotesTaskId = null;
+    } else if (normalizedKey === KEY_ENTER && detailTask) {
+      detailNotesStatus = "loading";
+      detailNotesError = null;
+      detailNotesTaskId = detailTask.id;
+    }
+
+    // Refresh tasks if requested
+    if (result.needsRefresh) {
+      try {
+        tasks = await loadBoardTasks(projectPath);
+        normalizeNavRowIndex(nav, tasks);
+      } catch (err) {
         errorMessage = `Failed to refresh: ${err instanceof Error ? err.message : String(err)}`;
       }
       flashTaskId = null;
@@ -1527,18 +1587,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     }
 
     // Re-render
-    const newState: RenderState = {
-      tasks,
-      nav,
-      totalTasks: [...tasks.values()].reduce((sum, t) => sum + t.length, 0),
-      errorMessage,
-      flashTaskId,
-      showHelp,
-      showDetail,
-      detailTask,
-    };
-
-    process.stdout.write(renderBoard(newState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
+    renderCurrentBoard();
 
     if (quit) {
       process.stdout.write(SHOW_CURSOR + "\n");
