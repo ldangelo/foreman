@@ -192,9 +192,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
  * Instantiate the br task-tracking client(s).
  *
  * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
- * the binary exists, plus a BvClient for graph-aware triage.
- *
- * Throws if the br binary cannot be found.
+ * plus a BvClient for graph-aware triage.
  */
 export async function createTaskClients(
   projectPath: string,

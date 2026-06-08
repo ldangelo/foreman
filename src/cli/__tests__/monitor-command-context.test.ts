@@ -116,7 +116,7 @@ describe("foreman monitor project targeting", () => {
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
     expect(mockVcsCreate).toHaveBeenCalledWith({ backend: "auto" }, canonicalPath);
-    expect(mockCreateTaskClient).toHaveBeenCalledWith(canonicalPath, { registeredProjectId: "proj-1" });
+    expect(mockCreateTaskClient).toHaveBeenCalledWith(canonicalPath);
     expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith(canonicalPath);
     expect(mockPostgresForProject).toHaveBeenCalledWith("proj-1");
     expect(mockForemanForProject).not.toHaveBeenCalled();
@@ -131,7 +131,7 @@ describe("foreman monitor project targeting", () => {
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
     expect(mockVcsCreate).toHaveBeenCalledWith({ backend: "auto" }, tempDir);
-    expect(mockCreateTaskClient).toHaveBeenCalledWith(tempDir, { registeredProjectId: undefined });
+    expect(mockCreateTaskClient).toHaveBeenCalledWith(tempDir);
     expect(mockForemanForProject).toHaveBeenCalledWith(tempDir);
     expect(mockPostgresForProject).not.toHaveBeenCalled();
     expect(mockEnsureCliPostgresPool).not.toHaveBeenCalled();

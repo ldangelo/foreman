@@ -19,7 +19,7 @@ import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { PostgresMergeQueue } from "./postgres-merge-queue.js";
 import { Refinery } from "./refinery.js";
 import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
-import { enqueueSetBeadStatus, enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
+import { enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -81,10 +81,15 @@ export async function syncBeadStatusAfterMerge(
   if (!run) return;
 
   const expectedStatus = mapRunStatusToSeedStatus(run.status);
+  const existingTask = await Promise.resolve(store.getTaskById?.(seedId));
+  if (expectedStatus === "review" && (existingTask?.status === "closed" || existingTask?.status === "merged")) {
+    return;
+  }
+
   // Update the task status directly in the native task store.
   // Multiple agent workers can trigger autoMerge concurrently — the native
   // task store uses Postgres MVCC for safe concurrent writes.
-  enqueueSetBeadStatus(store, seedId, expectedStatus, "auto-merge");
+  await Promise.resolve(store.updateTaskStatus(seedId, expectedStatus));
 
   if (failureReason) {
     enqueueAddNotesToBead(store, seedId, failureReason, "auto-merge");

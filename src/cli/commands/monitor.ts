@@ -35,8 +35,8 @@ export const monitorCommand = new Command("monitor")
     try {
       const projectPath = await resolveRepoRootProjectPath({});
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+      const { taskClient } = await createTaskClient(projectPath);
       const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
-      const { taskClient } = await createTaskClient(projectPath, { registeredProjectId: registered?.id });
       if (registered) {
         ensureCliPostgresPool(projectPath);
       }

@@ -495,7 +495,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   approved_at TEXT,
   closed_at   TEXT,
   CHECK (status IN (
-    'backlog', 'ready', 'in-progress',
+    'backlog', 'ready', 'in-progress', 'review',
     'explorer', 'developer', 'qa', 'reviewer', 'finalize',
     'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked'
   ))
