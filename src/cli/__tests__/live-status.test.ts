@@ -76,8 +76,9 @@ const {
     this.listTasksByStatus = mockListTasksByStatus;
     this.getProject = vi.fn().mockReturnValue(null);
     this.close = vi.fn();
-  }) as ReturnType<typeof vi.fn> & { forProject: ReturnType<typeof vi.fn> };
+  }) as ReturnType<typeof vi.fn>& { forProject: ReturnType<typeof vi.fn>; forDashboard: ReturnType<typeof vi.fn> };
   MockForemanStore.forProject = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
+  MockForemanStore.forDashboard = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
 
   // Dashboard function mocks (used by status --live tests)
   const mockPollDashboard = vi.fn().mockReturnValue({
@@ -352,7 +353,7 @@ describe("daemon-backed status helpers", () => {
         statusCommand.parseAsync(["node", "foreman", "--live", "--project-path", "/mock/project"], { from: "node" }),
       ).rejects.toThrow("stop-live-loop");
 
-      expect(MockForemanStore.forProject).toHaveBeenCalledWith("/mock/project");
+      expect(MockForemanStore.forDashboard).toHaveBeenCalledWith("/mock/project");
       expect(pollSpy).toHaveBeenCalledTimes(1);
       expect(renderSpy).toHaveBeenCalledWith(localState);
     } finally {
