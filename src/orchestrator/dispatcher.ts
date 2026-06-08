@@ -418,6 +418,20 @@ export class Dispatcher {
       console.error(`[bead-writer][${this.resolveProjectId()}] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
+    // ── Startup workspace cleanup: remove orphaned worktrees for terminal issues ──
+    // Clean up worktrees for issues that were already in a terminal state when
+    // the daemon was not running. This catches issues closed between daemon restarts.
+    try {
+      const cleaned = await this.cleanupTerminalStateWorktrees(projectId);
+      if (cleaned > 0) {
+        console.error(`[dispatch] Cleaned ${cleaned} orphaned worktree(s) for terminal issues`);
+      }
+    } catch (cleanupErr: unknown) {
+      // Non-fatal: cleanup failures must not block dispatch
+      const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+      console.error(`[dispatch] cleanupTerminalStateWorktrees failed: ${msg.slice(0, 200)}`);
+    }
+
     // ── Reconciliation: stop runs whose issues are terminal ───────────────
     // Catch issues that were closed/completed while an agent was still running.
     // These runs would otherwise continue until completion, wasting resources.
@@ -1602,11 +1616,14 @@ export class Dispatcher {
   }
 
   /**
-   * Returns true when an issue status indicates the issue is closed/completed
-   * and any active runs should be stopped.
+   * Returns true when an issue status indicates the issue is in a terminal state
+   * (closed, completed, cancelled, done, duplicate) and any active runs should
+   * be stopped or worktrees cleaned up.
    */
   private isTerminalState(status: string | null | undefined): boolean {
-    return status === "closed" || status === "completed";
+    if (!status) return false;
+    const lower = status.toLowerCase();
+    return lower === "closed" || lower === "completed" || lower === "cancelled" || lower === "done" || lower === "duplicate";
   }
 
   /**
@@ -1661,6 +1678,43 @@ export class Dispatcher {
     }
 
     return stopped;
+  }
+
+  /**
+   * Clean up orphaned worktrees for issues that are already in a terminal state
+   * when the daemon starts. This handles the case where worktrees exist for
+   * issues that were closed while the daemon was not running.
+   *
+   * Terminal states: closed, completed, cancelled, done, duplicate
+   *
+   * @returns The number of worktrees removed.
+   */
+  private async cleanupTerminalStateWorktrees(projectId: string): Promise<number> {
+    const terminalStates = ["closed", "completed", "cancelled", "done", "duplicate"];
+    const worktreeManager = new WorktreeManager();
+    let removed = 0;
+
+    for (const state of terminalStates) {
+      try {
+        const issues = await this.seeds.list({ status: state });
+        for (const issue of issues) {
+          try {
+            await worktreeManager.removeWorktree(projectId, issue.id, this.projectPath);
+            removed++;
+          } catch (err: unknown) {
+            // Non-fatal: individual removal failures should not block cleanup
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[dispatch] cleanupTerminalStateWorktrees: failed to remove worktree for ${issue.id}: ${msg.slice(0, 200)}`);
+          }
+        }
+      } catch (err: unknown) {
+        // Non-fatal: list failures for one state should not block other states
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[dispatch] cleanupTerminalStateWorktrees: failed to list issues for state ${state}: ${msg.slice(0, 200)}`);
+      }
+    }
+
+    return removed;
   }
 
   /**
