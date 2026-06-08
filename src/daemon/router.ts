@@ -85,6 +85,7 @@ const TASK_STATUS_SCHEMA = z.enum(TASK_STATUS_VALUES).optional();
 const TASK_STATUS_ARRAY_SCHEMA = z.array(z.enum(TASK_STATUS_VALUES)).optional();
 const TASK_PRIORITY_SCHEMA = z.number().int().min(0).max(4).optional();
 const TASK_TYPE_SCHEMA = z.enum(["task", "bug", "feature", "story", "epic", "chore", "docs", "question"]).optional();
+const TASK_NOTE_KIND_SCHEMA = z.enum(["progress", "issue", "blocker", "review", "qa", "final", "failure", "manual", "system"]).optional();
 
 // ---------------------------------------------------------------------------
 // Init
@@ -179,6 +180,54 @@ const tasksRouter = t.router({
         updated_at: input.updatedAt,
         approved_at: input.approvedAt,
         closed_at: input.closedAt,
+      });
+    }),
+
+  /**
+   * Append a note to a task.
+   * POST /trpc/tasks.addNote
+   */
+  addNote: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+        runId: z.string().optional().nullable(),
+        phase: z.string().optional().nullable(),
+        author: z.string().min(1).max(255),
+        kind: TASK_NOTE_KIND_SCHEMA,
+        body: z.string().min(1),
+        metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.addTaskNote(input.projectId, input.taskId, {
+        runId: input.runId,
+        phase: input.phase,
+        author: input.author,
+        kind: input.kind,
+        body: input.body,
+        metadata: input.metadata,
+      });
+    }),
+
+  /**
+   * List task notes.
+   * GET /trpc/tasks.listNotes
+   */
+  listNotes: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+        limit: z.number().int().min(1).max(200).optional(),
+        newestFirst: z.boolean().optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listTaskNotes(input.projectId, input.taskId, {
+        limit: input.limit,
+        newestFirst: input.newestFirst,
       });
     }),
 

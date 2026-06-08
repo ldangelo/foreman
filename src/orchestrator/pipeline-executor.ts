@@ -170,6 +170,16 @@ export interface PipelineContext {
    */
   onTaskPhaseChange?: (taskId: string | null | undefined, phaseName: string) => Promise<void> | void;
   /**
+   * Optional task note callback for append-only phase timeline visibility.
+   */
+  onTaskPhaseNote?: (
+    taskId: string | null | undefined,
+    phaseName: string,
+    kind: "progress" | "failure" | "qa" | "review" | "final" | "system",
+    body: string,
+    metadata?: Record<string, unknown>,
+  ) => Promise<void> | void;
+  /**
    * Optional registered-aware observability writer for the normal single-task
    * phase progress/event path.
    */
@@ -956,6 +966,15 @@ async function runPhaseSequence(
   // P1/P2: Rate limit tracking per phase
   const rateLimitRetries: Record<string, number> = {};
 
+  const writeTaskPhaseNote = async (
+    phaseName: string,
+    kind: "progress" | "failure" | "qa" | "review" | "final" | "system",
+    body: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<void> => {
+    await ctx.onTaskPhaseNote?.(config.taskId ?? null, phaseName, kind, body, metadata);
+  };
+
   // Build a phase index for retryWith lookups
   const phaseIndex = new Map<string, number>();
   for (let idx = 0; idx < phases.length; idx++) {
@@ -1138,6 +1157,11 @@ async function runPhaseSequence(
       runId,
       targetBranch: config.targetBranch,
     }, observabilityWriter);
+    await writeTaskPhaseNote(phaseName, "progress", `${phaseName} started.`, {
+      model: phaseModel,
+      runId,
+      workflow: workflowConfig.name,
+    });
 
     // FR-3: Start heartbeat for this phase
     ctx.heartbeatManager?.start(phaseName);
@@ -1168,6 +1192,7 @@ async function runPhaseSequence(
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
           seedId, phase: phaseName, error: errorMsg, retryable: false,
         });
+        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
@@ -1191,6 +1216,7 @@ async function runPhaseSequence(
       if (!ctx.runBuiltinPhase) {
         const errorMsg = `Builtin phase ${phaseName} is not supported by this runner`;
         ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
+        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
@@ -1291,6 +1317,7 @@ async function runPhaseSequence(
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
           seedId, phase: phaseName, error: errorMsg, retryable: false,
         });
+        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
@@ -1301,6 +1328,11 @@ async function runPhaseSequence(
         });
       }
       await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: 0 }, observabilityWriter);
+      await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
+        costUsd: 0,
+        turns: 0,
+        artifactPresent,
+      });
       await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
       i++;
       continue;
@@ -1378,6 +1410,7 @@ async function runPhaseSequence(
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
           seedId, phase: phaseName, error: errorMsg, retryable: false,
         });
+        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
@@ -1404,6 +1437,11 @@ async function runPhaseSequence(
           });
         }
         await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, observabilityWriter);
+        await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
+          costUsd: result.costUsd,
+          turns: result.turns,
+          artifactPresent: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+        });
         await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
 
         if (phase.mail?.forwardArtifactTo && phase.artifact) {
@@ -1643,6 +1681,10 @@ async function runPhaseSequence(
                 });
               }
               await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: fallbackResult.costUsd }, observabilityWriter);
+              await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed after model fallback.`, {
+                costUsd: fallbackResult.costUsd,
+                turns: fallbackResult.turns,
+              });
               await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
 
               if (phase.mail?.forwardArtifactTo && phase.artifact) {
@@ -1690,6 +1732,7 @@ async function runPhaseSequence(
       ctx.sendMail(agentMailClient, "foreman", "agent-error", {
         seedId, phase: phaseName, error: errorMsg, retryable: !isRateLimit,
       });
+      await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: !isRateLimit });
       await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
@@ -1842,6 +1885,11 @@ async function runPhaseSequence(
       });
     }
     await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, observabilityWriter);
+    await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
+      costUsd: result.costUsd,
+      turns: result.turns,
+      artifactPresent,
+    });
     await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
 
     if (phase.mail?.forwardArtifactTo && phase.artifact) {

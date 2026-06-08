@@ -25,6 +25,8 @@ const mockAdapter = {
   listTasks: vi.fn(),
   getTask: vi.fn(),
   updateTask: vi.fn(),
+  addTaskNote: vi.fn(),
+  listTaskNotes: vi.fn(),
   deleteTask: vi.fn(),
   approveTask: vi.fn(),
   closeTask: vi.fn(),
@@ -263,6 +265,16 @@ describe("tasks router structure", () => {
   it("tasks router has update procedure", () => {
     // @ts-ignore
     expect(appRouter.tasks).toHaveProperty("update");
+  });
+
+  it("tasks router has addNote procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("addNote");
+  });
+
+  it("tasks router has listNotes procedure", () => {
+    // @ts-ignore
+    expect(appRouter.tasks).toHaveProperty("listNotes");
   });
 
   it("tasks router has delete procedure", () => {

@@ -236,6 +236,22 @@ export interface TRPCTasksClient {
     };
   }): Promise<unknown>;
   delete(input: { projectId: string; taskId: string }): Promise<unknown>;
+  addNote(input: {
+    projectId: string;
+    taskId: string;
+    runId?: string | null;
+    phase?: string | null;
+    author: string;
+    kind?: "progress" | "issue" | "blocker" | "review" | "qa" | "final" | "failure" | "manual" | "system";
+    body: string;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<unknown>;
+  listNotes(input: {
+    projectId: string;
+    taskId: string;
+    limit?: number;
+    newestFirst?: boolean;
+  }): Promise<unknown>;
   claim(input: { projectId: string; taskId: string; runId: string }): Promise<unknown>;
   approve(input: { projectId: string; taskId: string }): Promise<unknown>;
   close(input: { projectId: string; taskId: string }): Promise<unknown>;
@@ -453,6 +469,8 @@ export function createTrpcClient(
       create: (input) => untypedClient.mutation("tasks.create", input),
       update: (input) => untypedClient.mutation("tasks.update", input),
       delete: (input) => untypedClient.mutation("tasks.delete", input),
+      addNote: (input) => untypedClient.mutation("tasks.addNote", input),
+      listNotes: (input) => untypedClient.query("tasks.listNotes", input),
       claim: (input) => untypedClient.mutation("tasks.claim", input),
       approve: (input) => untypedClient.mutation("tasks.approve", input),
       close: (input) => untypedClient.mutation("tasks.close", input),

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
-import { PostgresAdapter, type TaskRow as PostgresTaskRow } from "./db/postgres-adapter.js";
+import { PostgresAdapter, type TaskNoteRow, type TaskRow as PostgresTaskRow } from "./db/postgres-adapter.js";
 import { ForemanStore } from "./store.js";
 import {
   InvalidStatusTransitionError,
@@ -25,6 +25,12 @@ function toIssue(projectPath: string, issue: Issue): Issue {
     description: issue.description ?? null,
     labels: issue.labels ?? [`project:${projectPath}`],
   };
+}
+
+function formatTaskNote(note: TaskNoteRow): string {
+  const timestamp = new Date(note.created_at).toISOString();
+  const phase = note.phase ? ` ${note.phase}` : "";
+  return `**${note.author}** (${timestamp}${phase}, ${note.kind}):\n${note.body}`;
 }
 
 /**
@@ -237,6 +243,13 @@ export class NativeTaskClient implements ITaskClient {
           ...(opts.description !== undefined ? { description: opts.description ?? null } : {}),
           ...(nextStatus !== undefined ? { status: nextStatus } : {}),
         });
+        if (typeof opts.notes === "string" && opts.notes.trim().length > 0) {
+          await this.postgres.addTaskNote(this.registeredProjectId!, id, {
+            author: "foreman",
+            kind: "manual",
+            body: opts.notes,
+          });
+        }
       });
       return;
     }
@@ -256,6 +269,16 @@ export class NativeTaskClient implements ITaskClient {
         ...(typeof opts.notes === "string" ? {} : {}),
       });
     });
+  }
+
+  async comments(id: string): Promise<string | null> {
+    if (!this.registeredProjectId) return null;
+    await this.withPostgresTask(id, async () => undefined);
+    const notes = await this.postgres.listTaskNotes(this.registeredProjectId, id, {
+      limit: 50,
+      newestFirst: false,
+    });
+    return notes.length > 0 ? notes.map(formatTaskNote).join("\n\n") : null;
   }
 
   async close(id: string, reason?: string): Promise<void> {

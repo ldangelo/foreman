@@ -401,6 +401,54 @@ describe("PostgresAdapter task operations", () => {
       await destroyPool();
     }
   });
+
+  it("addTaskNote inserts an append-only task note", async () => {
+    const note = {
+      id: "note-1",
+      project_id: PROJECT_ID,
+      task_id: TASK_ID,
+      run_id: RUN_ID,
+      phase: "developer",
+      author: "developer-foreman-test",
+      kind: "progress",
+      body: "Implemented changes",
+      metadata: { filesChanged: ["src/a.ts"] },
+      created_at: "2026-01-01T00:00:00Z",
+    };
+    const mockPool = makeMockPool([
+      { sqlPattern: /INSERT INTO task_notes/, rows: [note] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.addTaskNote(PROJECT_ID, TASK_ID, {
+        runId: RUN_ID,
+        phase: "developer",
+        author: "developer-foreman-test",
+        kind: "progress",
+        body: "Implemented changes",
+        metadata: { filesChanged: ["src/a.ts"] },
+      });
+      expect(result).toMatchObject(note);
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("listTaskNotes returns notes newest first by default", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /FROM task_notes/, rows: [{ id: "note-1", task_id: TASK_ID, body: "Done" }] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listTaskNotes(PROJECT_ID, TASK_ID);
+      expect(result).toHaveLength(1);
+      expect(result[0].body).toBe("Done");
+    } finally {
+      await destroyPool();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

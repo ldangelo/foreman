@@ -22,7 +22,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
-import type { TaskDependencyRow as DependencyRow, TaskRow } from "../../lib/db/postgres-adapter.js";
+import type { TaskDependencyRow as DependencyRow, TaskNoteRow, TaskRow } from "../../lib/db/postgres-adapter.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
 import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
 import { listRegisteredProjects, type RegisteredProjectSummary } from "./project-task-support.js";
@@ -1178,6 +1178,29 @@ const showCommand = new Command("show")
         // PR state fetch failed - don't show anything
       }
 
+      // Show notes timeline
+      try {
+        const notes = await client.tasks.listNotes({
+          projectId,
+          taskId: task.id,
+          limit: 25,
+          newestFirst: false,
+        }) as TaskNoteRow[];
+        if (notes.length > 0) {
+          console.log(chalk.bold("\n  Notes:"));
+          for (const note of notes) {
+            const when = new Date(note.created_at).toLocaleString();
+            const phase = note.phase ? ` ${note.phase}` : "";
+            console.log(chalk.dim(`    [${when}${phase} ${note.kind}] ${note.author}`));
+            for (const line of note.body.split("\n")) {
+              console.log(`    ${line}`);
+            }
+          }
+        }
+      } catch {
+        // Notes are optional for older daemons/databases.
+      }
+
       // Show dependencies
       const outgoing = await client.tasks.listDependencies({
         projectId,
@@ -1204,6 +1227,35 @@ const showCommand = new Command("show")
         }
       }
       console.log();
+    } catch (err) {
+      console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+  });
+
+// ── foreman task note ─────────────────────────────────────────────────────────
+
+const noteCommand = new Command("note")
+  .description("Append a note to a task")
+  .argument("<id>", "Task ID (or short prefix)")
+  .requiredOption("--body <text>", "Note body")
+  .option("--kind <kind>", "Note kind: progress, issue, blocker, review, qa, final, failure, manual, system", "manual")
+  .option("--author <name>", "Note author", "user")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action(async (id: string, opts: { body: string; kind: string; author: string; project?: string; projectPath?: string }) => {
+    try {
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
+      await client.tasks.addNote({
+        projectId,
+        taskId: resolvedId,
+        author: opts.author,
+        kind: opts.kind as "progress" | "issue" | "blocker" | "review" | "qa" | "final" | "failure" | "manual" | "system",
+        body: opts.body,
+      });
+      console.log(chalk.green(`✓ Note added to '${formatTaskIdDisplay(resolvedId)}'.`));
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
@@ -1549,6 +1601,7 @@ export const taskCommand = new Command("task")
   .addCommand(listCommand)
   .addCommand(showCommand)
   .addCommand(importCommand)
+  .addCommand(noteCommand)
   .addCommand(approveCommand)
   .addCommand(updateCommand)
   .addCommand(closeCommand)

@@ -1441,6 +1441,22 @@ async function runPipeline(
           log(`[task-phase] native status update failed (non-fatal): ${msg}`);
         }
       },
+      async onTaskPhaseNote(taskId, phaseName, kind, body, metadata) {
+        if (runtimeTaskBackend !== "native" || !taskId || !registeredProjectId) return;
+        try {
+          await new PostgresAdapter().addTaskNote(registeredProjectId, taskId, {
+            runId: config.runId,
+            phase: phaseName,
+            author: `${phaseName}-${config.seedId}`,
+            kind,
+            body,
+            metadata,
+          });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[task-note] append failed (non-fatal): ${msg}`);
+        }
+      },
       epicTasks: config.epicTasks,
       runPhase,
       async runBuiltinPhase(phase: WorkflowPhaseConfig) {

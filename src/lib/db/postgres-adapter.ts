@@ -104,6 +104,28 @@ export interface TaskDependencyRow {
   type: "blocks" | "parent-child";
 }
 
+export interface TaskNoteRow {
+  id: string;
+  project_id: string;
+  task_id: string;
+  run_id: string | null;
+  phase: string | null;
+  author: string;
+  kind: string;
+  body: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AddTaskNoteInput {
+  runId?: string | null;
+  phase?: string | null;
+  author: string;
+  kind?: string;
+  body: string;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface EventRow {
   id: string;
   project_id: string;
@@ -685,6 +707,49 @@ export class PostgresAdapter {
    * @param taskId - The task UUID.
    * @param updates - Fields to update. Supported: title, description, type, priority, status, branch, external_id.
    */
+  async addTaskNote(
+    projectId: string,
+    taskId: string,
+    input: AddTaskNoteInput,
+  ): Promise<TaskNoteRow> {
+    const rows = await query<TaskNoteRow>(
+      `INSERT INTO task_notes (
+         id, project_id, task_id, run_id, phase, author, kind, body, metadata, created_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+       RETURNING *`,
+      [
+        `note-${randomBytes(8).toString("hex")}`,
+        projectId,
+        taskId,
+        input.runId ?? null,
+        input.phase ?? null,
+        input.author,
+        input.kind ?? "progress",
+        input.body,
+        input.metadata ?? null,
+      ],
+    );
+    return rows[0];
+  }
+
+  async listTaskNotes(
+    projectId: string,
+    taskId: string,
+    opts?: { limit?: number; newestFirst?: boolean },
+  ): Promise<TaskNoteRow[]> {
+    const limit = opts?.limit ?? 50;
+    const direction = opts?.newestFirst === false ? "ASC" : "DESC";
+    return query<TaskNoteRow>(
+      `SELECT *
+       FROM task_notes
+       WHERE project_id = $1 AND task_id = $2
+       ORDER BY created_at ${direction}
+       LIMIT $3`,
+      [projectId, taskId, limit],
+    );
+  }
+
   async updateTask(
     projectId: string,
     taskId: string,
