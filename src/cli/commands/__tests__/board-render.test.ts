@@ -99,6 +99,7 @@ describe("BoardRendering", () => {
       detailTask: null,
       detailNotesStatus: "idle",
       detailNotesError: null,
+      sortMode: "updated",
       ...overrides,
     };
   };

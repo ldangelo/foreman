@@ -60,6 +60,7 @@ describe("BoardMutations", () => {
       detailTask: null,
       detailNotesStatus: "idle",
       detailNotesError: null,
+      sortMode: "updated",
       ...overrides,
     };
   };

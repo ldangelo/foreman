@@ -121,6 +121,15 @@ export interface NavigationState {
   rowIndex: number;       // position within the column's task list
 }
 
+/** Sort modes for board columns. */
+export type SortMode = "updated" | "priority";
+
+/** Sort mode display labels. */
+export const SORT_MODE_LABELS: Record<SortMode, string> = {
+  updated: "Updated",
+  priority: "Priority",
+};
+
 export interface RenderState {
   tasks: Map<BoardStatus, BoardTask[]>;
   nav: NavigationState;
@@ -132,9 +141,46 @@ export interface RenderState {
   detailTask: BoardTask | null;
   detailNotesStatus: "idle" | "loading" | "loaded" | "error";
   detailNotesError: string | null;
+  sortMode: SortMode;
 }
 
 // ── Board data loading ───────────────────────────────────────────────────────
+
+/**
+ * Sort tasks based on the selected sort mode.
+ * - "updated" (default): most recently updated first (descending updated_at)
+ * - "priority": P0 first (ascending priority), then by updated_at
+ */
+export function sortBoardTasks(tasks: BoardTask[], sortMode: SortMode): BoardTask[] {
+  const sorted = [...tasks];
+  if (sortMode === "priority") {
+    // Sort by priority ascending (P0 first), then by updated_at descending (most recent first)
+    sorted.sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+      }
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    });
+  } else {
+    // Default: sort by updated_at descending (most recently updated first)
+    sorted.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+  }
+  return sorted;
+}
+
+/**
+ * Sort all tasks in a column map based on the selected sort mode.
+ */
+export function sortBoardColumns(
+  taskMap: Map<BoardStatus, BoardTask[]>,
+  sortMode: SortMode,
+): Map<BoardStatus, BoardTask[]> {
+  const sorted = new Map<BoardStatus, BoardTask[]>();
+  for (const [status, tasks] of taskMap) {
+    sorted.set(status, sortBoardTasks(tasks, sortMode));
+  }
+  return sorted;
+}
 
 async function resolveBoardContext(projectPath: string): Promise<BoardContext> {
   const projects = await listRegisteredProjects();
@@ -469,6 +515,7 @@ function renderHelpOverlayView(width: number): ReturnType<typeof h> {
     ["g / G", "Jump to first / last task"],
     ["[1]…[6]", "Jump to column by number"],
     ["s / S", "Cycle status forward / backward"],
+    ["o", "Toggle sort: updated / priority"],
     ["R", "Mark task as ready"],
     ["c", "Close task"],
     ["C", "Close task with reason"],
@@ -697,7 +744,7 @@ function renderBoardFrame(
         );
       }),
     ),
-    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  R mark ready  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
+    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  o sort  s/S cycle status  R mark ready  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
     state.errorMessage
       ? h(
         Box,
@@ -967,6 +1014,7 @@ const KEY_e = "e";
 const KEY_E = "E";
 const KEY_r = "r";
 const KEY_R = "R";
+const KEY_o = "o";
 const KEY_q = "q";
 const KEY_QUESTION = "?";
 const KEY_n = "n";
@@ -1123,6 +1171,8 @@ export interface KeyHandlerResult {
   promptForCloseReason: boolean;
   /** Close reason for C key */
   closeReason?: string;
+  /** New sort mode, if toggled */
+  sortMode?: SortMode;
 }
 
 export interface KeyHandlerCallbacks {
@@ -1348,6 +1398,12 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
         break;
       }
 
+      // ── Toggle sort mode ─────────────────────────────────────────────────────
+      case KEY_o: {
+        result.sortMode = state.sortMode === "updated" ? "priority" : "updated";
+        break;
+      }
+
       // ── Refresh ─────────────────────────────────────────────────────────────
       case KEY_r: {
         result.needsRefresh = true;
@@ -1428,6 +1484,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   }
 
   let nav: NavigationState = { colIndex: 0, rowIndex: 0 };
+  let sortMode: SortMode = "updated"; // Default: sort by updated_at (most recent first)
   let showHelp = false;
   let showDetail = false;
   let detailTask: BoardTask | null = null;
@@ -1438,6 +1495,9 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let flashTaskId: string | null = null;
   let quit = false;
   let stdinRawMode = false;
+
+  // Apply default sorting (by updated_at descending)
+  tasks = sortBoardColumns(tasks, sortMode);
 
   // Normalize initial navigation
   normalizeNavRowIndex(nav, tasks);
@@ -1455,6 +1515,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       detailTask,
       detailNotesStatus,
       detailNotesError,
+      sortMode,
     };
 
     process.stdout.write(renderBoard(currentState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
@@ -1530,6 +1591,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       detailTask,
       detailNotesStatus,
       detailNotesError,
+      sortMode,
     };
 
     const result = await handleKey(normalizedKey, currentState, projectPath);
@@ -1561,6 +1623,13 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     errorMessage = result.errorMessage;
     flashTaskId = result.flashTaskId;
 
+    // Apply sort mode change (no reload needed, just re-sort in place)
+    if (result.sortMode !== undefined && result.sortMode !== sortMode) {
+      sortMode = result.sortMode;
+      tasks = sortBoardColumns(tasks, sortMode);
+      normalizeNavRowIndex(nav, tasks);
+    }
+
     if (!showDetail) {
       detailNotesStatus = "idle";
       detailNotesError = null;
@@ -1575,6 +1644,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     if (result.needsRefresh) {
       try {
         tasks = await loadBoardTasks(projectPath);
+        tasks = sortBoardColumns(tasks, sortMode);
         normalizeNavRowIndex(nav, tasks);
       } catch (err) {
         errorMessage = `Failed to refresh: ${err instanceof Error ? err.message : String(err)}`;
