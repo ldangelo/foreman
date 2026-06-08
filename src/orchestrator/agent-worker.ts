@@ -295,6 +295,8 @@ interface WorkerConfig {
   seedDescription?: string;
   seedComments?: string;
   model: string;
+  /** Workflow phase maxTurns limit for the current phase. */
+  maxTurns?: number;
   allowedTools?: string[];
   worktreePath: string;
   /** Project root directory (contains .beads/). Used as cwd for br commands. */
@@ -774,6 +776,7 @@ async function runPhase(
       systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
       cwd: config.worktreePath,
       model: resolvedModel,
+      maxTurns: config.maxTurns,
       allowedTools: roleConfig.allowedTools,
       customTools,
       logFile,

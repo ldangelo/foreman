@@ -165,6 +165,12 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(pipelineMatch).not.toBeNull();
   });
 
+  it("passes workflow maxTurns into phase runner sessions", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain("maxTurns?: number;");
+    expect(source).toContain("maxTurns: config.maxTurns");
+  });
+
   it("routes markStuck terminal run updates through the helper", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { updateTerminalRunStatus } from "./agent-worker-run-status.js";');

@@ -1182,7 +1182,7 @@ async function runPhaseSequence(
       phaseModel = fallbackModelForPhase;
     }
 
-    const phaseConfig = { ...config, model: phaseModel };
+    const phaseConfig = { ...config, model: phaseModel, maxTurns: phase.maxTurns };
     if (phase.tools?.allowed) {
       (phaseConfig as typeof phaseConfig & { allowedTools?: string[] }).allowedTools = phase.tools.allowed;
     }

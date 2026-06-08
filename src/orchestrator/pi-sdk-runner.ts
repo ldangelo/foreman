@@ -85,6 +85,8 @@ export interface PiRunOptions {
   cwd: string;
   /** Model string like "anthropic/claude-sonnet-4-6" */
   model: string;
+  /** Maximum assistant turns before Foreman aborts the phase. */
+  maxTurns?: number;
   /** Allowed tool names for this phase (e.g. ["Read", "Bash", "Edit", "Write"]) */
   allowedTools?: readonly string[];
   /** Custom ToolDefinitions to register (e.g. send-mail tool) */
@@ -319,6 +321,21 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       settingsManager: SettingsManager.create(opts.cwd, agentDir),
     });
 
+    let maxTurnsExceeded = false;
+    let maxTurnAbortRequested = false;
+    const requestMaxTurnAbort = (): void => {
+      const maxTurns = opts.maxTurns;
+      if (!maxTurns || totalTurns < maxTurns || maxTurnAbortRequested) return;
+      maxTurnAbortRequested = true;
+      maxTurnsExceeded = true;
+      success = false;
+      errorMessage = `Phase exceeded maxTurns (${maxTurns})`;
+      void session.abort().catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        writeLog(`[pi-sdk-runner] maxTurns abort failed: ${message}`);
+      });
+    };
+
     // Subscribe to events for tracking
     session.subscribe((event: AgentSessionEvent) => {
       const eventError = getPiSdkEventError(event);
@@ -349,6 +366,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
             tokensIn: stats.tokens?.input,
             tokensOut: stats.tokens?.output,
           });
+          requestMaxTurnAbort();
           break;
         }
 
@@ -427,7 +445,14 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     const fullPrompt = opts.systemPrompt
       ? `${opts.systemPrompt}\n\n${opts.prompt}`
       : opts.prompt;
-    await session.prompt(fullPrompt);
+    try {
+      await session.prompt(fullPrompt);
+    } catch (err: unknown) {
+      if (!maxTurnsExceeded) {
+        success = false;
+        errorMessage = err instanceof Error ? err.message : String(err);
+      }
+    }
 
     // Extract cost and token usage from session stats
     const stats = session.getSessionStats();
@@ -439,7 +464,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     session.dispose();
 
     writeLog(
-      `[pi-sdk-runner] success=${success} turns=${totalTurns} tools=${totalToolCalls} cost=$${costUsd.toFixed(4)} tokensIn=${tokensIn} tokensOut=${tokensOut}`,
+      `[pi-sdk-runner] success=${success} turns=${totalTurns} maxTurns=${opts.maxTurns ?? "none"} tools=${totalToolCalls} cost=$${costUsd.toFixed(4)} tokensIn=${tokensIn} tokensOut=${tokensOut}`, 
     );
 
     let tracePaths;
