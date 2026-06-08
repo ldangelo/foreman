@@ -2080,7 +2080,7 @@ describe("Dispatcher.cleanupTerminalStateWorktrees", () => {
     }
   });
 
-  it("returns0 when no terminal issues have worktrees", async () => {
+  it("returns 0 when no terminal issues have worktrees", async () => {
     const seedsClient = {
       ready: vi.fn().mockResolvedValue([]),
       show: vi.fn().mockResolvedValue({ status: "open" }),
@@ -2123,7 +2123,8 @@ describe("Dispatcher.cleanupTerminalStateWorktrees", () => {
       close: vi.fn().mockResolvedValue(undefined),
       list: vi.fn()
         .mockResolvedValueOnce([issue1])
-        .mockResolvedValueOnce([issue2]),
+        .mockResolvedValueOnce([issue2])
+        .mockResolvedValue([]),
     } as unknown as ITaskClient;
 
     const store = {
@@ -2162,7 +2163,8 @@ describe("Dispatcher.cleanupTerminalStateWorktrees", () => {
       close: vi.fn().mockResolvedValue(undefined),
       list: vi.fn()
         .mockRejectedValueOnce(new Error("list failed"))
-        .mockResolvedValueOnce([issue]),
+        .mockResolvedValueOnce([issue])
+        .mockResolvedValue([]),
     } as unknown as ITaskClient;
 
     const store = {
