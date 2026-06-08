@@ -732,6 +732,118 @@ function migrateLegacyTasksTable(db: LocalStoreDatabase): void {
 
 // ── Store ───────────────────────────────────────────────────────────────
 
+/**
+ * Narrow interface for run-related store operations.
+ * Covers create, read, update, and query operations for pipeline runs.
+ */
+export type RunStore = Pick<ForemanStore,
+  | "createRun"
+  | "updateRun"
+  | "getRun"
+  | "getActiveRuns"
+  | "getRunsByStatus"
+  | "getRunsByStatuses"
+  | "getRunsByStatusSince"
+  | "getRunsByStatusesSince"
+  | "purgeOldRuns"
+  | "deleteRun"
+  | "getRunsForSeed"
+  | "hasActiveOrPendingRun"
+  | "getRunsByBaseBranch"
+  | "getRunEvents"
+>;
+
+/**
+ * Narrow interface for project-related store operations.
+ * Covers project registration, lookup, and updates.
+ */
+export type ProjectStore = Pick<ForemanStore,
+  | "registerProject"
+  | "getProject"
+  | "getProjectByPath"
+  | "listProjects"
+  | "updateProject"
+>;
+
+/**
+ * Narrow interface for progress and event logging.
+ * Covers run progress tracking and event emission.
+ */
+export type ProgressEventStore = Pick<ForemanStore,
+  | "updateRunProgress"
+  | "getRunProgress"
+  | "logEvent"
+  | "getEvents"
+>;
+
+/**
+ * Narrow interface for inter-agent messaging.
+ * Covers message sending, retrieval, and management.
+ */
+export type MailStore = Pick<ForemanStore,
+  | "sendMessage"
+  | "getMessages"
+  | "getAllMessages"
+  | "getAllMessagesGlobal"
+  | "markMessageRead"
+  | "markAllMessagesRead"
+  | "deleteMessage"
+  | "getMessage"
+>;
+
+/**
+ * Narrow interface for native task management.
+ * Covers task CRUD operations and claiming.
+ */
+export type TaskStore = Pick<ForemanStore,
+  | "listTasksByStatus"
+  | "updateTaskStatus"
+  | "hasNativeTasks"
+  | "getTaskById"
+  | "getTaskByExternalId"
+  | "getReadyTasks"
+  | "claimTask"
+>;
+
+/**
+ * Narrow interface for sentinel configuration and runs.
+ * Covers CI/sentinel integration for branch monitoring.
+ */
+export type SentinelStore = Pick<ForemanStore,
+  | "upsertSentinelConfig"
+  | "getSentinelConfig"
+  | "recordSentinelRun"
+  | "updateSentinelRun"
+  | "getSentinelRuns"
+>;
+
+/**
+ * Narrow interface for cost tracking and metrics.
+ * Covers cost recording, aggregation, and success rate calculations.
+ */
+export type CostMetricsStore = Pick<ForemanStore,
+  | "recordCost"
+  | "getCosts"
+  | "getCostBreakdown"
+  | "getPhaseMetrics"
+  | "getRecentOutcomeCounts"
+  | "getSuccessRate"
+  | "getMetrics"
+  | "logRateLimitEvent"
+  | "getRateLimitCountsByModel"
+  | "getRecentRateLimitEvents"
+>;
+
+/**
+ * Narrow interface for the bead write queue.
+ * Covers sequential write operations for br CLI invocations.
+ */
+export type BeadWriteQueueStore = Pick<ForemanStore,
+  | "enqueueBeadWrite"
+  | "getPendingBeadWrites"
+  | "markBeadWriteProcessed"
+>;
+
 export class ForemanStore {
   private db: LocalStoreDatabase;
 

@@ -11,7 +11,7 @@
  * @module src/orchestrator/heartbeat-manager
  */
 
-import type { ForemanStore } from "../lib/store.js";
+import type { ProgressEventStore } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ export interface HeartbeatEventWriter {
  */
 export class HeartbeatManager {
   private config: Required<HeartbeatConfig>;
-  private store: ForemanStore;
+  private store: ProgressEventStore;
   private eventWriter?: HeartbeatEventWriter;
   private projectId: string;
   private runId: string;
@@ -116,7 +116,7 @@ export class HeartbeatManager {
 
   constructor(
     config: HeartbeatConfig,
-    store: ForemanStore,
+    store: ProgressEventStore,
     projectId: string,
     runId: string,
     vcs: VcsBackend,
@@ -314,7 +314,7 @@ export class HeartbeatManager {
  */
 export function createHeartbeatManager(
   config: HeartbeatConfig | undefined,
-  store: ForemanStore,
+  store: ProgressEventStore,
   projectId: string,
   runId: string,
   vcs: VcsBackend,
