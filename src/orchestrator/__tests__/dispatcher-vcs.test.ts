@@ -127,7 +127,6 @@ function makeStore(): ForemanStore {
     getRunsByStatus: vi.fn().mockReturnValue([]),
     getRunsByStatuses: vi.fn().mockReturnValue([]),
     getStuckRunsForSeed: vi.fn().mockReturnValue([]),
-    getPendingBeadWrites: vi.fn().mockReturnValue([]),
     hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     getRunsForSeed: vi.fn().mockReturnValue([]),
     createRun: vi.fn().mockReturnValue({ id: "run-001" }),

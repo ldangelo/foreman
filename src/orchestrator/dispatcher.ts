@@ -3,14 +3,14 @@ import { existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { EventType, ForemanStore, NativeTask, Run } from "../lib/store.js";
 import type { RunStatus } from "./read-models.js";
-import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
+import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
@@ -402,20 +402,6 @@ export class Dispatcher {
 
     if (!opts?.dryRun && this.overrides?.externalProjectId) {
       this.validateRegisteredRunOps(["createRun", "updateRun", "logEvent", "sendMessage"]);
-    }
-
-    // Drain the bead write queue before dispatching new tasks.
-    // This ensures any pending br operations from completed agent-workers are
-    // processed by the single-writer dispatcher before we query br for ready seeds.
-    try {
-      const drained = await this.drainBeadWriterInbox();
-      if (drained > 0) {
-        console.error(`[bead-writer] Drained ${drained} pending bead write operations`);
-      }
-    } catch (drainErr: unknown) {
-      // Non-fatal: log and continue — drain failures must not block dispatch
-      const msg = drainErr instanceof Error ? drainErr.message : String(drainErr);
-      console.error(`[bead-writer][${this.resolveProjectId()}] Warning: drainBeadWriterInbox failed: ${msg.slice(0, 200)}`);
     }
 
     // ── Startup workspace cleanup: remove orphaned worktrees for terminal issues ──
@@ -1732,157 +1718,6 @@ export class Dispatcher {
       if (run.status === "merged" || run.status === "pr-created") return true;
     }
     return false;
-  }
-
-  /**
-   * Drain the bead_write_queue and execute all pending br operations sequentially.
-   *
-   * This is the single writer for all br CLI operations — called by the dispatcher
-   * process only. Agent-workers, refinery, pipeline-executor, and auto-merge enqueue
-   * operations via ForemanStore.enqueueBeadWrite() instead of calling br directly,
-   * eliminating concurrent backend lock contention on .beads/beads.jsonl.
-   *
-   * Each entry is processed in insertion order. If an individual operation fails,
-   * the error is logged but draining continues (non-fatal per-entry). A single
-   * `br sync --flush-only` is called at the end to persist all changes atomically.
-   *
-   * @returns Number of entries successfully processed.
-   */
-  async drainBeadWriterInbox(): Promise<number> {
-    const pending = this.store.getPendingBeadWrites();
-    if (pending.length === 0) return 0;
-    const beadsDirPath = join(this.projectPath, ".beads");
-    if (!existsSync(beadsDirPath)) {
-      for (const entry of pending) {
-        this.store.markBeadWriteProcessed(entry.id);
-      }
-      return 0;
-    }
-
-    const bin = join(homedir(), ".local", "bin", "br");
-    const execOpts = {
-      stdio: "pipe" as const,
-      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
-      cwd: this.projectPath,
-    };
-
-    let processed = 0;
-    const projectId = this.resolveProjectId();
-    const latestRunHasTerminalSuccess = (seedId: string): boolean => {
-      const latestRun = this.store.getRunsForSeed(seedId, projectId)[0];
-      return latestRun?.status === "merged" || latestRun?.status === "pr-created";
-    };
-
-    for (const entry of pending) {
-      try {
-        let payload: Record<string, unknown>;
-        try {
-          payload = JSON.parse(entry.payload) as Record<string, unknown>;
-        } catch {
-          console.error(`[bead-writer][${this.resolveProjectId()}] Invalid JSON payload for entry ${entry.id} (${entry.operation}) — skipping`);
-          this.store.markBeadWriteProcessed(entry.id);
-          continue;
-        }
-
-        const seedId = payload.seedId as string;
-
-        // All br commands get --lock-timeout so they wait for concurrent agent
-        // reads to release backend locks instead of failing immediately.
-        const lockArgs = ["--lock-timeout", "10000"];
-
-        switch (entry.operation) {
-          case "close-seed":
-            // Use --no-db to write directly to JSONL, bypassing cached readiness state.
-            execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
-            console.error(`[bead-writer][${this.resolveProjectId()}] Closed seed ${seedId} via --no-db (from ${entry.sender})`);
-            break;
-
-          case "reset-seed":
-            if (latestRunHasTerminalSuccess(seedId)) {
-              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped reset-seed for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
-              break;
-            }
-            execFileSync(bin, ["update", seedId, "--status", "open", ...lockArgs], execOpts);
-            console.error(`[bead-writer][${this.resolveProjectId()}] Reset seed ${seedId} to open (from ${entry.sender})`);
-            break;
-
-          case "mark-failed":
-            if (latestRunHasTerminalSuccess(seedId)) {
-              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped mark-failed for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
-              break;
-            }
-            execFileSync(bin, ["update", seedId, "--status", "failed", ...lockArgs], execOpts);
-            console.error(`[bead-writer][${this.resolveProjectId()}] Marked seed ${seedId} as failed (from ${entry.sender})`);
-            break;
-
-          case "set-status": {
-            const targetStatus = payload.status as string;
-            if (targetStatus !== "closed" && latestRunHasTerminalSuccess(seedId)) {
-              console.error(`[bead-writer][${this.resolveProjectId()}] Skipped set-status ${targetStatus} for ${seedId} because latest run is already terminal-success (from ${entry.sender})`);
-              break;
-            }
-            execFileSync(bin, ["update", seedId, "--status", targetStatus, ...lockArgs], execOpts);
-            console.error(`[bead-writer][${this.resolveProjectId()}] Set seed ${seedId} to ${targetStatus} (from ${entry.sender})`);
-            break;
-          }
-
-          case "add-notes": {
-            const notes = payload.notes as string;
-            if (notes) {
-              execFileSync(bin, ["update", seedId, "--notes", notes, ...lockArgs], execOpts);
-              console.error(`[bead-writer] Added notes to seed ${seedId} (from ${entry.sender})`);
-            }
-            break;
-          }
-
-          case "add-labels": {
-            const labels = payload.labels as string[];
-            if (labels && labels.length > 0) {
-              const args = ["update", seedId, ...labels.flatMap((l) => ["--add-label", l]), ...lockArgs];
-              execFileSync(bin, args, execOpts);
-              console.error(`[bead-writer] Added labels [${labels.join(", ")}] to seed ${seedId} (from ${entry.sender})`);
-            }
-            break;
-          }
-
-          default:
-            console.error(`[bead-writer] Unknown operation "${entry.operation}" for entry ${entry.id} — skipping`);
-        }
-
-        this.store.markBeadWriteProcessed(entry.id);
-        processed++;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[bead-writer] Error processing entry ${entry.id} (${entry.operation}): ${msg.slice(0, 200)}`);
-        // Mark as processed even on error to avoid infinite retry loops.
-        // The operator can check the log for details and fix manually.
-        this.store.markBeadWriteProcessed(entry.id);
-      }
-    }
-
-    // Close operations used --no-db (write directly to JSONL). Delete the br DB
-    // so the next br command reimports from the corrected JSONL with a fresh
-    // blocked cache. This ensures br ready reflects newly-unblocked beads.
-    if (processed > 0) {
-      try {
-        // Force full re-export so JSONL stays in sync with the DB.
-        // Regular --flush-only only exports "dirty" entries, but dirty flags
-        // can get out of sync (e.g. after --no-db writes or interrupted sessions),
-        // causing bv to see stale data. --force re-exports everything.
-        // Use a longer timeout than individual bead operations since full export
-        // scales with total issue count.
-        execFileSync(bin, ["sync", "--flush-only", "--force"], {
-          ...execOpts,
-          timeout: Math.max(execOpts.timeout, 60_000),
-        });
-        console.error(`[bead-writer] Processed ${processed}/${pending.length} entries`);
-      } catch (flushErr: unknown) {
-        const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-        console.error(`[bead-writer] Warning: post-drain cleanup failed: ${msg.slice(0, 200)}`);
-      }
-    }
-
-    return processed;
   }
 
   private resolveProjectId(): string {

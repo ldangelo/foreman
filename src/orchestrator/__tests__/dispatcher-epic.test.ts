@@ -152,7 +152,6 @@ function makeStore(): ForemanStore {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
-    getPendingBeadWrites: vi.fn().mockReturnValue([]),
   } as unknown as ForemanStore;
 }
 

@@ -68,7 +68,6 @@ describe("PostgresStore testcontainer integration", { timeout: 120_000 }, () => 
     await store.recordCost(run.id, 11, 22, 0, 0.01);
     await store.logEvent(project.id, "phase-start", { phase: "developer" }, run.id);
     await store.sendMessage(run.id, "developer", "qa", "phase-complete", "done");
-    await adapter.enqueueBeadWrite(project.id, "developer", "mark-failed", { seedId: task.id });
 
     const fetchedRun = await store.getRun(run.id);
     expect(fetchedRun).toEqual(expect.objectContaining({ id: run.id, status: "running", seed_id: task.id }));
@@ -83,10 +82,5 @@ describe("PostgresStore testcontainer integration", { timeout: 120_000 }, () => 
 
     const costRows = await query<{ id: string }>(`SELECT id FROM costs WHERE run_id = $1`, [run.id]);
     expect(costRows).toHaveLength(1);
-    const queueRows = await query<{ operation: string }>(
-      `SELECT operation FROM bead_write_queue WHERE project_id = $1 AND processed_at IS NULL`,
-      [project.id],
-    );
-    expect(queueRows).toEqual([expect.objectContaining({ operation: "mark-failed" })]);
   });
 });

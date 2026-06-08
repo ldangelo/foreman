@@ -1610,42 +1610,6 @@ export class PostgresAdapter {
   }
 
   // -------------------------------------------------------------------------
-  // Bead write queue
-  // -------------------------------------------------------------------------
-
-  /**
-   * Enqueue a bead write operation.
-     */
-  async enqueueBeadWrite(
-    projectId: string,
-    sender: string,
-    operation: string,
-    payload: unknown
-  ): Promise<void> {
-    await execute(
-      `INSERT INTO bead_write_queue (project_id, sender, operation, payload, created_at, processed_at)
-       VALUES ($1, $2, $3, $4, clock_timestamp(), NULL)`,
-      [projectId, sender, operation, JSON.stringify(payload)],
-    );
-  }
-
-  /**
-   * Mark a bead write as processed.
-     */
-  async markBeadWriteProcessed(
-    projectId: string,
-    id: string
-  ): Promise<boolean> {
-    const changed = await execute(
-      `UPDATE bead_write_queue
-       SET processed_at = clock_timestamp()
-       WHERE project_id = $1 AND id = $2 AND processed_at IS NULL`,
-      [projectId, id],
-    );
-    return changed > 0;
-  }
-
-  // -------------------------------------------------------------------------
   // Sentinel operations
   // -------------------------------------------------------------------------
 

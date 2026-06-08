@@ -336,14 +336,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
     expect(onTaskPhaseChange).toHaveBeenCalledWith(null, "explorer");
   });
 
-  it("does not enqueue phase label bead writes during active pipeline phases", async () => {
+  it("does not write to bead backend during active pipeline phases", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
 
-    const enqueueBeadWrite = vi.fn();
     const mockStore = {
       updateRunProgress: vi.fn(),
       logEvent: vi.fn(),
-      enqueueBeadWrite,
     };
     const mockRunPhase = vi.fn().mockResolvedValue({
       success: true,
@@ -384,7 +382,8 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       promptOpts: { projectRoot: tmpDir, workflow: "default" },
     });
 
-    expect(enqueueBeadWrite).not.toHaveBeenCalled();
+    // Verify store was used for logging events only
+    expect(mockStore.logEvent).toHaveBeenCalled();
   });
 
   it("routes registered normal phase progress and events through the observability writer instead of direct store writes", async () => {

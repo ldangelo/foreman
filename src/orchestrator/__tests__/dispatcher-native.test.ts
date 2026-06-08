@@ -168,8 +168,6 @@ function makeMockStore(opts: {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
-    getBeadWriteQueue: vi.fn().mockReturnValue([]),
-    markBeadWriteProcessed: vi.fn(),
   } as unknown as ForemanStore;
 }
 
@@ -334,8 +332,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
     } as unknown as ForemanStore;
   }
 
@@ -387,8 +383,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
     } as unknown as ForemanStore;
 
     const beadsClient = makeMockBeadsClient([]);
@@ -446,8 +440,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
     } as unknown as ForemanStore;
 
     const beadsClient = makeMockBeadsClient([]);
@@ -503,8 +495,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
     } as unknown as ForemanStore;
 
     const beadsClient = makeMockBeadsClient([makeBeadsIssue("b-001")]);
