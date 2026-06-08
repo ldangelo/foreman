@@ -44,7 +44,7 @@ async function createAutoMergeVcsBackend(projectPath: string): Promise<VcsBacken
  * Never throws — failures are silently ignored (mail is optional infrastructure).
  */
 function sendMail(
-  store: ForemanStore,
+  store: Pick<ForemanStore, "sendMessage">,
   runId: string,
   subject: string,
   body: Record<string, unknown>,

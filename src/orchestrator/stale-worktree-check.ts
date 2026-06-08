@@ -9,7 +9,7 @@
  * @module src/orchestrator/stale-worktree-check
  */
 
-import type { ForemanStore } from "../lib/store.js";
+import type { ProgressEventStore } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ export interface StaleDetectionResult {
 // ── Main function ─────────────────────────────────────────────────────────
 
 async function logStaleWorktreeEvent(
-  store: ForemanStore,
+  store: ProgressEventStore,
   projectId: string,
   runId: string,
   eventType: "worktree-rebased" | "worktree-rebase-failed",
@@ -108,7 +108,7 @@ export async function checkAndRebaseStaleWorktree(
   vcs: VcsBackend,
   worktreePath: string,
   targetBranch: string,
-  store: ForemanStore,
+  store: ProgressEventStore,
   projectId: string,
   runId: string,
   seedId: string,
