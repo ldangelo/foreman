@@ -229,6 +229,22 @@ describe("BoardRendering", () => {
       expect(output).not.toContain("Merged");
     });
 
+    it("should render task ids in every column card", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({
+          ready: [createTask("bd-1111", { title: "Ready task", status: "ready" })],
+          in_progress: [createTask("bd-2222", { title: "Doing task", status: "in_progress" })],
+          needs_attention: [createTask("bd-3333", { title: "Blocked task", status: "needs_attention" })],
+        }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("bd-1111");
+      expect(output).toContain("bd-2222");
+      expect(output).toContain("bd-3333");
+    });
+
     it("should render aligned boxed columns for the task grid", () => {
       const output = stripTerminalFormatting(renderBoard(
         createRenderState({

@@ -376,7 +376,11 @@ function renderTaskCardView(
       h(
         Box,
         { width: "50%", minWidth: 0 },
-        h(Text, { color: metaTextColor, dimColor: !rowBackgroundColor, wrap: "truncate-end" }, task.type),
+        h(
+          Text,
+          { color: metaTextColor, dimColor: !rowBackgroundColor, wrap: "truncate-end" },
+          formatTaskIdDisplay(task.id),
+        ),
       ),
       h(
         Box,
