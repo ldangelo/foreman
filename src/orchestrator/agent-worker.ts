@@ -337,6 +337,8 @@ interface WorkerConfig {
    * When set, this run is an epic execution.
    */
   epicId?: string;
+  /** Optional native task ID used to attach phase notes/status updates. */
+  taskId?: string | null;
   /**
    * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
    */

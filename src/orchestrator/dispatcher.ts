@@ -1497,6 +1497,7 @@ export class Dispatcher {
         attemptNumber,
         epicTasks,
         epicId,
+        taskId: seed.id,
         taskMeta: {
           id: seed.id,
           title: seed.title,
@@ -1551,6 +1552,7 @@ export class Dispatcher {
       prompt: resumePrompt,
       env,
       resume: sdkSessionId,
+      taskId: seed.id,
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
