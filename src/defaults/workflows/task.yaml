@@ -1,4 +1,4 @@
-# Task workflow: fix prompt → bash phase → finalize → auto-merge
+# Task workflow: fix prompt → developer remediation → validation → finalize → auto-merge
 #
 # Standard task pipeline. Slightly lighter than feature: skips dedicated
 # explorer/reviewer phases. Appropriate for well-scoped implementation tasks,
@@ -16,7 +16,7 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
-rebaseAfterPhase: fix
+rebaseAfterPhase: developer
 
 phases:
   # ── Phase 1: fix ────────────────────────────────────────────────────────
@@ -49,6 +49,40 @@ phases:
       onStart: true
       onComplete: true
 
+  # ── Phase 2: developer remediation ─────────────────────────────────────
+  # Retry target for QA/finalize/PR-review findings. Keeps the initial fix
+  # prompt focused on the requested task while later phases use the generic
+  # developer prompt to repair existing work based on validation feedback.
+  - name: developer
+    prompt: developer.md
+    tools:
+      allowed:
+        [
+          Agent,
+          Bash,
+          Edit,
+          Glob,
+          Grep,
+          Read,
+          TaskOutput,
+          TaskStop,
+          TodoWrite,
+          WebFetch,
+          WebSearch,
+          Write,
+        ]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 180
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
   - name: qa
     prompt: qa.md
     tools:
@@ -59,12 +93,12 @@ phases:
     maxTurns: 60
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: developer
 
   - name: reviewer
     prompt: reviewer.md
@@ -76,12 +110,12 @@ phases:
     maxTurns: 40
     artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: developer
       forwardArtifactTo: foreman
 
   # ── Phase 3: cli-review (builtin) ───────────────────────────────────────
@@ -90,12 +124,12 @@ phases:
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: developer
 
   # ── Phase 4: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
@@ -109,11 +143,12 @@ phases:
     maxTurns: 60
     artifact: FINALIZE_VALIDATION.md
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 3
     mail:
       onStart: false
       onComplete: true
+      onFail: developer
 
   - name: create-pr
     builtin: true
@@ -126,12 +161,12 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: developer
 
   - name: prepare-pr-review
     builtin: true
@@ -149,12 +184,12 @@ phases:
     maxTurns: 40
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: developer
       forwardArtifactTo: foreman
 
   - name: merge

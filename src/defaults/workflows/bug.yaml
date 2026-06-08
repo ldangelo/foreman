@@ -1,8 +1,9 @@
-# Bug fix workflow: fix prompt → bash phase → finalize → auto-merge
+# Bug fix workflow: fix prompt → developer remediation → validation → finalize → auto-merge
 #
 # Lean bug-fix pipeline:
 #   - fix prompt — workflow-scoped issue fixing prompt
-#   - bash phase (test) — runs npm test with verdict parsing
+#   - test phase — runs npm test with verdict parsing
+#   - developer prompt — retry target for validation/review findings
 #   - merge: auto — auto-merge on green CI
 #
 # Auto-selected when a bead has type "bug" (TRD-006 type-based dispatch).
@@ -36,7 +37,28 @@ phases:
       onStart: true
       onComplete: true
 
-  # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
+  # ── Phase 2: developer remediation ─────────────────────────────────────
+  # Retry target for test/finalize/PR-review findings. Keeps the initial fix
+  # prompt focused on the reported bug while later phases use the generic
+  # developer prompt to repair existing work based on validation feedback.
+  - name: developer
+    prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 120
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  # ── Phase 3: test (bash phase — TRD-004) ────────────────────────────────
   # Executes `npm run test:unit` via /bin/sh -c in the worktree directory.
   # {task.*} placeholders are interpolated before execution.
   # Artifact is written from stdout; verdict is parsed from output.
@@ -46,28 +68,29 @@ phases:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     artifact: TEST_RESULTS.md
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
+      onFail: developer
 
-  # ── Phase 3: cli-review (builtin) ───────────────────────────────────────
-  # Run CodeRabbit CLI before finalize so the fix loop can address findings
-  # before PR creation and merge gates.
+  # ── Phase 4: cli-review (builtin) ───────────────────────────────────────
+  # Run CodeRabbit CLI before finalize so the developer remediation loop can
+  # address findings before PR creation and merge gates.
   - name: cli-review
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: developer
 
-  # ── Phase 4: finalize (prompt phase) ───────────────────────────────────
+  # ── Phase 5: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
   # artifact: FINALIZE_VALIDATION.md is what the pipeline reads for the validation
   # contract check (Target Integration / Test Validation sections + Verdict).
@@ -81,11 +104,12 @@ phases:
     maxTurns: 30
     artifact: FINALIZE_VALIDATION.md
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 1
     mail:
       onStart: false
       onComplete: true
+      onFail: developer
       forwardArtifactTo: foreman
   - name: create-pr
     builtin: true
@@ -98,12 +122,12 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: developer
 
   - name: prepare-pr-review
     builtin: true
@@ -121,12 +145,12 @@ phases:
     maxTurns: 40
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: developer
       forwardArtifactTo: foreman
 
   - name: merge
