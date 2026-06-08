@@ -18,11 +18,11 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
 - **Persistent daemon** — ForemanDaemon optionally runs in background to serve tRPC over Unix socket + HTTP, sharing a Postgres pool across all CLI invocations
 - **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations; PostgreSQL or Postgres-backed depending on daemon mode
-- **Dual task storage** — native tasks (Postgres) or beads_rust (`br`) for git-tracked legacy compatibility
+- **Native task storage** — PostgreSQL-backed tasks for daemon and standalone workflows
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
 - **Progress tracking** — every task, agent, and phase tracked in PostgreSQL
 
-> **Note:** Foreman uses PostgreSQL when the daemon is running (for multi-project aggregation) and PostgreSQL for standalone development. Legacy beads_rust is only needed for backward compatibility via `foreman task import --from-beads`.
+> **Note:** Foreman uses PostgreSQL when the daemon is running (for multi-project aggregation) and for standalone development. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
 
 ## Architecture
 
@@ -89,13 +89,11 @@ flowchart TD
         A[User runs foreman run] --> B[Dispatcher.dispatch]
         B --> C{daemon reachable?}
         C -- No --> DAEMON_ERR[Error: start daemon first]
-        C -- Yes --> D[native ready tasks or br fallback]
+        C -- Yes --> D[native ready tasks]
         D --> E{selectStrategy}
-        E -- bv available --> F[bv.robotTriage → score + sort by AI recommendation]
-        E -- br available --> G[br ready → sort by priority P0→P4]
-        E -- native only --> H[native ready → sort by priority]
+        E -- AI triage available --> F[score + sort by AI recommendation]
+        E -- default --> H[sort by priority P0→P4]
         F --> I[For each task...]
-        G --> I
         H --> I
         I --> J{Skip checks}
         J -- already active --> SKIP[Skip: already running]
@@ -185,7 +183,7 @@ flowchart TD
 
         subgraph P5["Phase 5: Finalize"]
             P5A[git add, commit, push\nforeman/task-id branch]
-            P5A --> P5B[native task merge/close or br fallback]
+            P5A --> P5B[native task merge/close]
             P5B --> P5C[Enqueue to MergeQueue\nmail branch-ready to merge-agent]
         end
     end
@@ -481,7 +479,7 @@ foreman run --dry-run                    # Preview without dispatching
 Each agent gets:
 - Its own git worktree (branch: `foreman/<task-id>`)
 - A `TASK.md` with task instructions, phase prompts, and task context
-- Native task status updates (or `br` fallback for legacy projects)
+- Native task status updates in PostgreSQL
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
@@ -540,7 +538,7 @@ foreman plan --prd-only "Build a REST API"    # Stop after PRD
 ```
 
 ### `foreman sling trd`
-Parse a TRD and create a native task hierarchy (or compatibility beads when explicitly requested).
+Parse a TRD and create a native task hierarchy.
 
 ```bash
 foreman sling trd docs/TRD.md           # Parse and create tasks
@@ -774,9 +772,9 @@ For release tagging and version bumps, use conventional commits and the release 
 
 ## Task Tracking
 
-Foreman supports two task storage backends: **native tasks** (PostgreSQL via daemon, PostgreSQL for standalone) and **beads_rust** (`br`) for git-tracked legacy compatibility.
+Foreman supports one runtime task store: **native tasks** backed by PostgreSQL (via the daemon or direct standalone access).
 
-### Native tasks (default)
+### Native tasks
 
 Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures (when daemon is running) or directly via PostgreSQL.
 
@@ -793,28 +791,13 @@ foreman task dep list task-123                 # show dependencies
 
 All task operations route through `TrpcClient` → daemon's Postgres store when daemon is running; otherwise they use direct PostgreSQL access via ForemanStore.
 
-For projects using [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for backward compatibility:
+For projects with existing [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) data, import it once into native tasks:
 
 ```bash
-# View ready tasks (legacy/fallback path)
-br ready
-
-# Create tasks directly in beads
-br create --title "Implement feature X" --type feature --priority 1
-br create --title "Fix bug Y" --type bug --priority 0
-
-# Work lifecycle
-br update task-abc --status=in_progress
-br close task-abc --reason="Completed"
-
-# Dependencies
-br dep add task-tests task-feature    # tests depend on feature
-
-# Sync with git
-br sync --flush-only               # Export DB to JSONL before committing
+foreman task import --from-beads
 ```
 
-Set `FOREMAN_TASK_STORE=native` to explicitly select the native Postgres task store (accepted for backward compatibility but has no effect — native is the only supported store).
+`FOREMAN_TASK_STORE=native` is accepted for backward compatibility but has no operational effect — the native Postgres task store is always used.
 
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
 
@@ -867,13 +850,13 @@ export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5
 | Path | Contents |
 |---|---|
 | `.foreman/` | Project-level config, workflow assets, and runtime metadata |
-| `.beads/` | Legacy beads_rust task data (JSONL, git-tracked) |
+| `.beads/` | Legacy beads_rust task data for one-time import (JSONL, git-tracked) |
 | `~/.foreman/daemon.sock` | ForemanDaemon Unix socket (tRPC over HTTP) — optional |
 | `~/.foreman/daemon.pid` | Daemon process ID — optional |
 | `~/.foreman/logs/` | Per-run agent logs + daemon stdout/stderr |
 | `DATABASE_URL` | PostgreSQL connection string — only required when running daemon |
 
-**Storage model:** Foreman stores application state in PostgreSQL through the daemon/tRPC layer. For most use cases, native tasks with PostgreSQL are sufficient; beads_rust is only needed for backward compatibility.
+**Storage model:** Foreman stores application state in PostgreSQL through the daemon/tRPC layer or direct standalone access. Native PostgreSQL tasks are the only supported runtime task store; beads_rust data is import-only legacy input.
 
 ## Project Structure
 
