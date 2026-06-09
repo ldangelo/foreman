@@ -696,4 +696,99 @@ describe("BoardMutations", () => {
       expect(errorMessage).toContain("ERR_123");
     });
   });
+
+  describe("Blank-id board task creation", () => {
+    it("should not pass id to API when id is undefined", async () => {
+      // Simulate board task with no id (blank YAML id field)
+      const newTask = {
+        id: undefined,
+        title: "New Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      vi.spyOn(boardApi, "createTaskAsync").mockResolvedValue({ taskId: "foreman-abc12" });
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [createTask("bd-1234")],
+      });
+
+      // Manually set up the mock for createTaskInEditor to return a task without id
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue(newTask);
+
+      const result = await handleKey("n", state, "/tmp/project");
+
+      expect(result.needsRefresh).toBe(true);
+      expect(result.flashTaskId).toBe("foreman-abc12");
+      expect(result.errorMessage).toBeNull();
+
+      // Verify createTaskAsync was called with id undefined
+      const createTaskAsyncSpy = vi.mocked(boardApi.createTaskAsync);
+      expect(createTaskAsyncSpy).toHaveBeenCalledWith("/tmp/project", expect.objectContaining({
+        id: undefined,
+        title: "New Task",
+      }));
+    });
+
+    it("should pass explicit id to API when provided", async () => {
+      const newTask = {
+        id: "custom-id-123",
+        title: "Custom Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      vi.spyOn(boardApi, "createTaskAsync").mockResolvedValue({ taskId: "custom-id-123" });
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue(newTask);
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [createTask("bd-1234")],
+      });
+
+      const result = await handleKey("n", state, "/tmp/project");
+
+      expect(result.needsRefresh).toBe(true);
+      expect(result.flashTaskId).toBe("custom-id-123");
+
+      // Verify createTaskAsync was called with the explicit id
+      const createTaskAsyncSpy = vi.mocked(boardApi.createTaskAsync);
+      expect(createTaskAsyncSpy).toHaveBeenCalledWith("/tmp/project", expect.objectContaining({
+        id: "custom-id-123",
+        title: "Custom Task",
+      }));
+    });
+
+    it("should use compact project-prefixed ID from backend when id is omitted", async () => {
+      // When id is undefined, the backend should allocate a compact ID like "foreman-abc12"
+      const newTask = {
+        id: undefined,
+        title: "Task without explicit ID",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      // Backend allocates compact ID
+      vi.spyOn(boardApi, "createTaskAsync").mockResolvedValue({ taskId: "foreman-xyz99" });
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue(newTask);
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [createTask("bd-1234")],
+      });
+
+      const result = await handleKey("n", state, "/tmp/project");
+
+      expect(result.flashTaskId).toBe("foreman-xyz99");
+      // Verify it's NOT a UUID format
+      expect(result.flashTaskId).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    });
+  });
 });

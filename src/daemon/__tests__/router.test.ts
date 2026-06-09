@@ -415,6 +415,42 @@ describe("tasks.create procedure", () => {
     expect(result.id).toBe("task-2");
   });
 
+  it("allocates compact ID when id is omitted", async () => {
+    const mockTask = {
+      id: "foreman-abc12",
+      project_id: "proj-123",
+      title: "New feature",
+      description: null,
+      type: "task",
+      priority: 2,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    mockAdapter.createTask.mockResolvedValueOnce(mockTask);
+
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore - id is intentionally omitted to test auto-allocation
+    const result = await caller.tasks.create({
+      projectId: "proj-123",
+      title: "New feature",
+    });
+
+    // Backend should have allocated a compact ID
+    expect(mockAdapter.createTask).toHaveBeenCalledWith(
+      "proj-123",
+      expect.objectContaining({ id: undefined, title: "New feature" })
+    );
+    expect(result.id).toBe("foreman-abc12");
+    // Verify it's NOT a UUID format
+    expect(result.id).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  });
+
   it("rejects empty title", async () => {
     const caller = appRouter.createCaller(mockCtx);
     // @ts-ignore

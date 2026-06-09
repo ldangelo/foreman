@@ -1069,7 +1069,7 @@ status: backlog
  */
 export function createTaskInEditor(
   onError: (msg: string) => void,
-): { id: string; title: string; description: string | null; type: string; priority: number; status: string } | null {
+): { id?: string; title: string; description: string | null; type: string; priority: number; status: string } | null {
   const editor = resolveEditor();
   const tmpFile = joinPath(tmpdir(), `foreman-task-new-${randomUUID()}.yaml`);
 
@@ -1116,7 +1116,7 @@ export function createTaskInEditor(
 
     try { unlinkSync(tmpFile); } catch { /* ignore */ }
     return {
-      id: typeof parsed.id === "string" && parsed.id.trim().length > 0 ? parsed.id.trim() : randomUUID(),
+      id: typeof parsed.id === "string" && parsed.id.trim().length > 0 ? parsed.id.trim() : undefined,
       title: String(parsed.title).trim(),
       description: typeof parsed.description === "string" ? parsed.description : null,
       type: taskType,
@@ -1132,16 +1132,17 @@ export function createTaskInEditor(
 
 /**
  * Create a new task via the tRPC API.
+ * If taskData.id is undefined, the backend allocates a compact project-prefixed ID.
  */
 export async function createTaskAsync(
   projectPath: string,
-  taskData: { id: string; title: string; description?: string | null; type?: string; priority?: number; status?: string },
+  taskData: { id?: string; title: string; description?: string | null; type?: string; priority?: number; status?: string },
 ): Promise<{ taskId: string } | string> {
   try {
     const { client, projectId } = await resolveBoardContext(projectPath);
     const created = await client.tasks.create({
       projectId,
-      id: taskData.id,
+      ...(taskData.id !== undefined ? { id: taskData.id } : {}),
       title: taskData.title,
       description: taskData.description ?? undefined,
       type: taskData.type,

@@ -147,12 +147,14 @@ const tasksRouter = t.router({
   /**
    * Create a new task.
    * POST /trpc/tasks.create
+   *
+   * If `id` is omitted, the backend allocates a compact project-prefixed ID.
    */
   create: t.procedure
     .input(
       z.object({
         projectId: PROJECT_ID_SCHEMA,
-        id: TASK_ID_SCHEMA,
+        id: TASK_ID_SCHEMA.optional(),
         title: z.string().min(1).max(1000).optional(),
         description: z.string().optional(),
         type: TASK_TYPE_SCHEMA,
