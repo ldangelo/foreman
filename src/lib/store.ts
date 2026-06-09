@@ -996,10 +996,13 @@ export class ForemanStore {
    * @param newStatus - Target status (must be in TASKS_SCHEMA CHECK constraint).
    */
   updateTaskStatus(taskId: string, newStatus: string): void {
+    // Normalize legacy 'in_progress' (underscore) to native 'in-progress' (hyphen)
+    // before writing to the database CHECK constraint.
+    const normalizedStatus = newStatus === "in_progress" ? "in-progress" : newStatus;
     const now = new Date().toISOString();
     this.db
       .prepare(`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`)
-      .run(newStatus, now, taskId);
+      .run(normalizedStatus, now, taskId);
   }
 
   /**

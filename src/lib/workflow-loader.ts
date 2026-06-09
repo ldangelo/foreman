@@ -346,7 +346,17 @@ const BUNDLED_WORKFLOWS_DIR = join(
 );
 
 /** Known workflow names with bundled defaults. */
-export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = ["default", "smoke", "epic"];
+export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = [
+  "default",
+  "smoke",
+  "epic",
+  "bug",
+  "task",
+  "feature",
+  "chore",
+  "docs",
+  "question",
+];
 
 // ── Validation ────────────────────────────────────────────────────────────────
 

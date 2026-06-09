@@ -523,7 +523,8 @@ export const runCommand = new Command("run")
   .option("--no-pipeline", "Skip the explorer/qa/reviewer pipeline — run as single worker agent")
   .option("--skip-explore", "Skip the explorer phase in the pipeline")
   .option("--skip-review", "Skip the reviewer phase in the pipeline")
-  .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
+  .option("--bead <id>", "Dispatch only this specific task (must be ready)")
+  .option("--task <id>", "Alias for --bead (task ID)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -540,7 +541,7 @@ export const runCommand = new Command("run")
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
     const skipExplore = opts.skipExplore as boolean | undefined;
     const skipReview = opts.skipReview as boolean | undefined;
-    const beadFilter = opts.bead as string | undefined;
+    const beadFilter = (opts.bead ?? opts.task) as string | undefined;
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
     const runtimeMode = resolveRuntimeMode(opts.runtimeMode as string | undefined);
 

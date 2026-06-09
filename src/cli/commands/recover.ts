@@ -411,12 +411,12 @@ function buildRecoveryPrompt(opts: {
 
 export const recoverCommand = new Command("recover")
   .description("Autonomous recovery agent for pipeline failures")
-  .argument("<bead-id>", "The bead/seed ID that needs recovery")
+  .argument("<task-id>", "The task ID that needs recovery (alias: bead-id for backward compatibility)")
   .option(
     "--reason <reason>",
     "Failure reason: test-failed | stuck | stale-blocked | finalize-conflict",
   )
-  .option("--run-id <id>", "Specific run ID (default: latest run for this seed)")
+  .option("--run-id <id>", "Specific run ID (default: latest run for this task)")
   .option("--output <text>", "Pre-captured test output to include in context")
   .option("--model <model>", "Model to use for recovery")
   .option("--raw", "Print collected context without invoking AI")

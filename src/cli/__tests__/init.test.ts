@@ -19,12 +19,14 @@ describe("init wizard config", () => {
       buildInitWizardConfig({
         vcsBackend: "jujutsu",
         workflowTemplate: "smoke",
+        issueTracker: "beads",
       }),
     ).toContain("backend: jujutsu");
     expect(
       buildInitWizardConfig({
         vcsBackend: "jujutsu",
         workflowTemplate: "smoke",
+        issueTracker: "beads",
       }),
     ).toContain("default: smoke");
   });
@@ -33,6 +35,7 @@ describe("init wizard config", () => {
     const config = buildInitWizardConfig({
       vcsBackend: "auto",
       workflowTemplate: "epic",
+      issueTracker: "beads",
     });
     // Should use taskTypeWorkflowMap (ProjectConfig schema) not init: block
     expect(config).toContain("taskTypeWorkflowMap:");
@@ -40,6 +43,38 @@ describe("init wizard config", () => {
     expect(config).not.toContain("init:");
     expect(config).not.toContain("issueTracker:");
     expect(config).not.toContain("authenticate:");
+  });
+
+  it("renders jira issue tracker config when jira is selected", () => {
+    const config = buildInitWizardConfig({
+      vcsBackend: "git",
+      workflowTemplate: "default",
+      issueTracker: "jira",
+      jira: {
+        apiUrl: "https://test.atlassian.net",
+        email: "test@example.com",
+        apiToken: "encrypted-token",
+        projectKey: "PROJ",
+        startStatus: ["In Progress"],
+      },
+    });
+    expect(config).toContain("issueTracker:");
+    expect(config).toContain("backend: jira");
+    expect(config).toContain("apiUrl: https://test.atlassian.net");
+    expect(config).toContain("email: test@example.com");
+    expect(config).toContain("apiToken: encrypted-token");
+    expect(config).toContain("key: PROJ");
+    expect(config).toContain("startStatus:");
+    expect(config).toContain("- In Progress");
+  });
+
+  it("does not render issueTracker block when beads is selected", () => {
+    const config = buildInitWizardConfig({
+      vcsBackend: "auto",
+      workflowTemplate: "default",
+      issueTracker: "beads",
+    });
+    expect(config).not.toContain("issueTracker:");
   });
 });
 

@@ -338,10 +338,10 @@ export async function retryAction(
 
 export const retryCommand = new Command("retry")
   .description(
-    "Reset a bead and optionally re-dispatch it for execution",
+    "Reset a task and optionally re-dispatch it for execution",
   )
-  .argument("<bead-id>", "Bead ID (seed ID) to retry, e.g. bd-ps1")
-  .option("--dispatch", "Dispatch the bead immediately after resetting")
+  .argument("<task-id>", "Task ID to retry (alias: bead-id for backward compatibility)")
+  .option("--dispatch", "Dispatch the task immediately after resetting")
   .option("--model <model>", "Override agent model for dispatch")
   .option("--dry-run", "Show what would happen without making changes")
   .option("--project <name>", "Registered project name (default: current directory)")
