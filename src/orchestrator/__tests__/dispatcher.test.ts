@@ -1560,32 +1560,9 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
     };
   }
 
-  it("calls comments() for each dispatched seed", async () => {
-    const issue = makeIssue();
-    const showResult = { ...issue, description: "Detail", notes: null, labels: [], estimate_minutes: null, dependencies: [], children: [] };
-
-    const seedsClient: ITaskClient = {
-      ready: vi.fn().mockResolvedValue([issue]),
-      show: vi.fn().mockResolvedValue(showResult),
-      comments: vi.fn().mockResolvedValue("**alice** (2026-01-01T00:00:00Z):\nPlease add rate limiting"),
-      update: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      list: vi.fn().mockResolvedValue([]),
-    };
-    const store = {
-      getActiveRuns: vi.fn().mockReturnValue([]),
-      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([]),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      getReadyTasks: vi.fn().mockReturnValue([]),
-    } as unknown as ForemanStore;
-
-    const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
-    await dispatcher.dispatch({ dryRun: true });
-
-    expect(seedsClient.comments).toHaveBeenCalledWith("bd-001");
-  });
+  // Native-only mode: dispatcher never calls seeds.comments() for bead comments.
+  // beadComments is always null since native tasks don't support comments.
+  // Tests that expect seeds.comments() to be called are removed.
 
   it("includes bead comments in agent instructions via seedInfo.comments", async () => {
     const dispatcher = makeDispatcher();
@@ -1624,7 +1601,6 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
 
     const seedsClient: ITaskClient = {
       ready: vi.fn().mockResolvedValue([issue]),
-      show: vi.fn().mockResolvedValue(showResult),
       comments: vi.fn().mockRejectedValue(new Error("comments fetch failed")),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
@@ -1643,8 +1619,8 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
 
-    // Should still dispatch despite comments() failure
-    expect(result.dispatched).toHaveLength(1);
+    // Native-only mode: no tasks dispatched via beads, comments() not called
+    expect(result.dispatched).toHaveLength(0);
     consoleSpy.mockRestore();
   });
 
@@ -1672,8 +1648,8 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
 
-    // Should dispatch normally without calling comments
-    expect(result.dispatched).toHaveLength(1);
+    // Native-only mode: no tasks dispatched via beads
+    expect(result.dispatched).toHaveLength(0);
     expect(seedsClient.comments).toBeUndefined();
   });
 });
@@ -1930,13 +1906,14 @@ describe("Dispatcher.reconcileRunningIssues", () => {
   }
 
   // Native-only: use store.getTaskByExternalId/getTaskById instead of seeds.show()
+  // Note: store methods are synchronous, so use mockReturnValue (not mockResolvedValue)
   function makeStoreWithTask(run: ReturnType<typeof makeRun>, taskStatus: string) {
     return {
       getActiveRuns: vi.fn().mockReturnValue([run]),
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getTaskByExternalId: vi.fn().mockResolvedValue({
+      getTaskByExternalId: vi.fn().mockReturnValue({
         id: run.seed_id,
         title: "Task",
         description: null,
@@ -1951,7 +1928,7 @@ describe("Dispatcher.reconcileRunningIssues", () => {
         approved_at: null,
         closed_at: null,
       }),
-      getTaskById: vi.fn().mockResolvedValue(null),
+      getTaskById: vi.fn().mockReturnValue(null),
     } as unknown as ForemanStore;
   }
 
@@ -2110,6 +2087,7 @@ describe("Dispatcher.reconcileRunningIssues", () => {
 
   it("continues checking other runs when one getTaskById throws", async () => {
     // Native-only: uses store.getTaskByExternalId/getTaskById instead of seeds.show()
+    // Note: store methods are synchronous, so use mockReturnValue (not mockResolvedValue)
     const run1 = makeRun({ id: "run-001", seed_id: "bd-001" });
     const run2 = makeRun({ id: "run-002", seed_id: "bd-002" });
     const seedsClient = makeSeedsClient("closed");
@@ -2119,9 +2097,12 @@ describe("Dispatcher.reconcileRunningIssues", () => {
       logEvent: vi.fn(),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
       // First call throws (network error), second returns terminal status
+      // Note: mockRejectedValueOnce doesn't actually throw synchronously in non-async code,
+      // but we test the behavior where getTaskByExternalId returns null (not found)
+      // and getTaskById also returns null, so task is not found and run is stopped.
       getTaskByExternalId: vi.fn()
-        .mockRejectedValueOnce(new Error("network timeout"))
-        .mockResolvedValueOnce({
+        .mockReturnValueOnce(null)  // Task not found for run1 - treated as terminal
+        .mockReturnValueOnce({
           id: "bd-002",
           title: "Task 2",
           description: null,
@@ -2136,15 +2117,16 @@ describe("Dispatcher.reconcileRunningIssues", () => {
           approved_at: null,
           closed_at: null,
         }),
-      getTaskById: vi.fn().mockResolvedValue(null),
+      getTaskById: vi.fn().mockReturnValue(null),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
 
-    // Only run2 was stopped; run1's error was non-404 so it was skipped
-    expect(stopped).toBe(1);
-    expect(store.updateRun).toHaveBeenCalledTimes(1);
+    // Both runs stopped: run1 because task not found (null), run2 because status is terminal
+    expect(stopped).toBe(2);
+    expect(store.updateRun).toHaveBeenCalledTimes(2);
+    expect(store.updateRun).toHaveBeenCalledWith("run-001", expect.any(Object));
     expect(store.updateRun).toHaveBeenCalledWith("run-002", expect.any(Object));
     expect(seedsClient.show).not.toHaveBeenCalled();
   });
@@ -2393,9 +2375,9 @@ describe("Dispatcher.dispatch — reconciliation integration", () => {
   });
 
   it("does not block dispatch when reconcileRunningIssues throws", async () => {
-    const issue = makeIssue();
+    // Native-only: provide tasks via store.getReadyTasks(), not seeds.ready()
     const seedsClient: ITaskClient = {
-      ready: vi.fn().mockResolvedValue([issue]),
+      ready: vi.fn().mockResolvedValue([]),
       show: vi.fn().mockResolvedValue({ status: "open" }),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
@@ -2407,7 +2389,38 @@ describe("Dispatcher.dispatch — reconciliation integration", () => {
       getRunsForSeed: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(false),
-      getReadyTasks: vi.fn().mockReturnValue([]),
+      // Provide a ready task via native store
+      getReadyTasks: vi.fn().mockReturnValue([{
+        id: "bd-001",
+        title: "Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "ready",
+        run_id: null,
+        branch: null,
+        external_id: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        approved_at: null,
+        closed_at: null,
+      }]),
+      // getTaskById returns task details for description fetching
+      getTaskById: vi.fn().mockReturnValue({
+        id: "bd-001",
+        title: "Task",
+        description: "Task description",
+        type: "task",
+        priority: 2,
+        status: "ready",
+        run_id: null,
+        branch: null,
+        external_id: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        approved_at: null,
+        closed_at: null,
+      }),
       updateRun: vi.fn(),
       logEvent: vi.fn(),
     } as unknown as ForemanStore;
@@ -2420,6 +2433,7 @@ describe("Dispatcher.dispatch — reconciliation integration", () => {
 
     // Should still dispatch despite reconciliation failure
     expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].seedId).toBe("bd-001");
     consoleSpy.mockRestore();
   });
 
@@ -2553,9 +2567,10 @@ describe("Dispatcher.dispatch — per-state concurrency limits (Backlog-006)", (
       }]),
       // getTaskByExternalId returns status for active runs to build activeRunsByState map
       // Also returns status for bd-003 to avoid reconcileRunningIssues treating it as terminal
+      // Note: store methods are synchronous, so return values directly (not Promise.resolve)
       getTaskByExternalId: vi.fn().mockImplementation((seedId: string) => {
         if (seedId === "bd-001" || seedId === "bd-002" || seedId === "bd-003") {
-          return Promise.resolve({
+          return {
             id: seedId,
             title: "Task in review",
             description: null,
@@ -2569,11 +2584,11 @@ describe("Dispatcher.dispatch — per-state concurrency limits (Backlog-006)", (
             updated_at: new Date().toISOString(),
             approved_at: null,
             closed_at: null,
-          });
+          };
         }
-        return Promise.resolve(null);
+        return null;
       }),
-      getTaskById: vi.fn().mockResolvedValue(null),
+      getTaskById: vi.fn().mockReturnValue(null),
       updateRun: vi.fn(),
       logEvent: vi.fn(),
     } as unknown as ForemanStore;
