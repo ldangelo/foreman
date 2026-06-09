@@ -324,10 +324,15 @@ phases:
     for (const workflow of ["bug", "chore"] as const) {
       const config = loadWorkflowConfig(workflow, tmpDir);
       const fixPhase = config.phases.find((p) => p.name === "fix");
-      const testPhase = config.phases.find((p) => p.name === "test");
+      const validationPhase = config.phases.find((p) => p.name === (workflow === "bug" ? "qa" : "test"));
       expect(fixPhase?.prompt).toBe("fix-issue.md");
       expect(fixPhase?.command).toBeUndefined();
-      expect(testPhase?.bash).toBe("npm run test:unit");
+      if (workflow === "bug") {
+        expect(validationPhase?.prompt).toBe("qa.md");
+        expect(config.phases.find((p) => p.name === "developer")?.retryOnly).toBe(true);
+      } else {
+        expect(validationPhase?.bash).toBe("npm run test:unit");
+      }
     }
   });
 

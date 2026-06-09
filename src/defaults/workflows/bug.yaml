@@ -1,10 +1,10 @@
-# Bug fix workflow: fix prompt → developer remediation → validation → finalize → auto-merge
+# Bug fix workflow: fix prompt → QA validation → developer remediation on failure → finalize → PR checks → auto-merge
 #
 # Lean bug-fix pipeline:
 #   - fix prompt — workflow-scoped issue fixing prompt
-#   - test phase — runs npm test with verdict parsing
-#   - developer prompt — retry target for validation/review findings
-#   - merge: auto — auto-merge on green CI
+#   - qa phase — validates the fix and writes QA_REPORT.md
+#   - developer prompt — retry-only target for QA/review/finalize findings
+#   - merge: auto — auto-merge on green CI and PR review
 #
 # Auto-selected when a bead has type "bug" (TRD-006 type-based dispatch).
 # Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
@@ -37,11 +37,12 @@ phases:
       onStart: true
       onComplete: true
 
-  # ── Phase 2: developer remediation ─────────────────────────────────────
-  # Retry target for test/finalize/PR-review findings. Keeps the initial fix
-  # prompt focused on the reported bug while later phases use the generic
-  # developer prompt to repair existing work based on validation feedback.
+  # ── Retry-only: developer remediation ──────────────────────────────────
+  # Retry target for QA/finalize/PR-review findings. Skipped during normal
+  # sequential execution; activated only when a later phase fails and uses
+  # retryWith: developer.
   - name: developer
+    retryOnly: true
     prompt: developer.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -58,15 +59,17 @@ phases:
       reserve: true
       leaseSecs: 600
 
-  # ── Phase 3: test (bash phase — TRD-004) ────────────────────────────────
-  # Executes `npm run test:unit` via /bin/sh -c in the worktree directory.
-  # {task.*} placeholders are interpolated before execution.
-  # Artifact is written from stdout; verdict is parsed from output.
-  - name: test
-    bash: "npm run test:unit"
+  # ── Phase 3: QA validation ──────────────────────────────────────────────
+  - name: qa
+    prompt: qa.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
-    artifact: TEST_RESULTS.md
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 60
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
