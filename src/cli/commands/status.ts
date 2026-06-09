@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import chalk from "chalk";
 import { createTrpcClient } from "../../lib/trpc-client.js";
-import { ForemanStore } from "../../lib/store.js";
+import { ForemanStore, type StatusReadStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
 import { renderAgentCard, formatSuccessRate, elapsed } from "../watch-ui.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
@@ -184,6 +184,55 @@ export async function fetchStatusCounts(projectPath: string): Promise<StatusCoun
 
 // ── Internal render helper ────────────────────────────────────────────────
 
+/**
+ * Render status counts using the provided store.
+ * Pure read operation - accepts narrow StatusReadStore interface.
+ */
+function renderStatusCounts(store: StatusReadStore, projectId: string): void {
+  const outcomeCounts = store.getRecentOutcomeCounts(projectId);
+  if (outcomeCounts.failed > 0) console.log(`  Failed:      ${chalk.red(outcomeCounts.failed)} ${chalk.dim("(last 24h)")}`);
+  if (outcomeCounts.stuck > 0) console.log(`  Stuck:       ${chalk.red(outcomeCounts.stuck)} ${chalk.dim("(last 24h)")}`);
+  const sr = store.getSuccessRate(projectId);
+  console.log(`  Success Rate (24h): ${formatSuccessRate(sr.rate)}${sr.rate === null ? chalk.dim(" (need 3+ runs)") : ""}`);
+}
+
+/**
+ * Render active agents using the provided store.
+ * Pure read operation - accepts narrow StatusReadStore interface.
+ */
+async function renderActiveAgents(store: StatusReadStore, projectId: string): Promise<void> {
+  const activeRuns = store.getActiveRuns(projectId);
+  if (activeRuns.length === 0) {
+    console.log(chalk.dim("  (no agents running)"));
+    return;
+  }
+
+  for (let i = 0; i < activeRuns.length; i++) {
+    const run = activeRuns[i];
+    const progress = store.getRunProgress(run.id);
+    const allRuns = store.getRunsForSeed(run.seed_id, projectId);
+    const attemptNumber = allRuns.length > 1 ? allRuns.length : undefined;
+    const previousRun = allRuns.length > 1 ? allRuns[1] : null;
+    const previousStatus = previousRun?.status;
+    console.log(renderAgentCard(run, progress, true, undefined, attemptNumber, previousStatus));
+    if (run.status === "running") {
+      const lastActivity = await getLastPiActivity(run.id);
+      if (lastActivity) {
+        console.log(`  ${chalk.dim("Last tool  ")} ${chalk.dim(lastActivity)}`);
+      }
+    }
+    if (i < activeRuns.length - 1) console.log();
+  }
+
+  const metrics = store.getMetrics(projectId);
+  if (metrics.totalCost > 0) {
+    console.log();
+    console.log(chalk.bold("Costs"));
+    console.log(`  Total: ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
+    console.log(`  Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
+  }
+}
+
 async function renderStatus(projectPath: string): Promise<void> {
   let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
   let daemonSnapshot: DaemonStatusSnapshot | null = null;
@@ -212,11 +261,7 @@ async function renderStatus(projectPath: string): Promise<void> {
     const store = ForemanStore.forProject(projectPath);
     const project = store.getProjectByPath(projectPath);
     if (project) {
-      const outcomeCounts = store.getRecentOutcomeCounts(project.id);
-      if (outcomeCounts.failed > 0) console.log(`  Failed:      ${chalk.red(outcomeCounts.failed)} ${chalk.dim("(last 24h)")}`);
-      if (outcomeCounts.stuck > 0) console.log(`  Stuck:       ${chalk.red(outcomeCounts.stuck)} ${chalk.dim("(last 24h)")}`);
-      const sr = store.getSuccessRate(project.id);
-      console.log(`  Success Rate (24h): ${formatSuccessRate(sr.rate)}${sr.rate === null ? chalk.dim(" (need 3+ runs)") : ""}`);
+      renderStatusCounts(store, project.id);
     }
     store.close();
   }
@@ -238,35 +283,7 @@ async function renderStatus(projectPath: string): Promise<void> {
     const store = ForemanStore.forProject(projectPath);
     const project = store.getProjectByPath(projectPath);
     if (project) {
-      const activeRuns = store.getActiveRuns(project.id);
-      if (activeRuns.length === 0) {
-        console.log(chalk.dim("  (no agents running)"));
-      } else {
-        for (let i = 0; i < activeRuns.length; i++) {
-          const run = activeRuns[i];
-          const progress = store.getRunProgress(run.id);
-          const allRuns = store.getRunsForSeed(run.seed_id, project.id);
-          const attemptNumber = allRuns.length > 1 ? allRuns.length : undefined;
-          const previousRun = allRuns.length > 1 ? allRuns[1] : null;
-          const previousStatus = previousRun?.status;
-          console.log(renderAgentCard(run, progress, true, undefined, attemptNumber, previousStatus));
-          if (run.status === "running") {
-            const lastActivity = await getLastPiActivity(run.id);
-            if (lastActivity) {
-              console.log(`  ${chalk.dim("Last tool  ")} ${chalk.dim(lastActivity)}`);
-            }
-          }
-          if (i < activeRuns.length - 1) console.log();
-        }
-      }
-
-      const metrics = store.getMetrics(project.id);
-      if (metrics.totalCost > 0) {
-        console.log();
-        console.log(chalk.bold("Costs"));
-        console.log(`  Total: ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
-        console.log(`  Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
-      }
+      await renderActiveAgents(store, project.id);
     } else {
       console.log(chalk.dim("  (project not registered — run 'foreman init')"));
     }
@@ -442,9 +459,9 @@ export const statusCommand = new Command("status")
           const store = ForemanStore.forProject(projectPath);
           const project = store.getProjectByPath(projectPath);
           if (project) {
-            const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-            failed = store.getRunsByStatusSince("failed", since, project.id).length;
-            stuck = store.getRunsByStatusSince("stuck", since, project.id).length;
+            const outcomeCounts = store.getRecentOutcomeCounts(project.id);
+            failed = outcomeCounts.failed;
+            stuck = outcomeCounts.stuck;
             const runs = store.getActiveRuns(project.id);
             activeRuns = runs.map((run) => ({ ...run, progress: store.getRunProgress(run.id) }));
             successRateData = store.getSuccessRate(project.id);

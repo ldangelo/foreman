@@ -26,6 +26,8 @@ const {
   mockGetRunsByStatusSince,
   mockGetRunProgress,
   mockGetDb,
+  mockGetRecentOutcomeCounts,
+  mockGetRunsForSeed,
   MockForemanStore,
   MockPostgresStore,
   mockCheckAll,
@@ -64,6 +66,8 @@ const {
   const mockGetRunsByStatusSince = vi.fn().mockReturnValue([]);
   const mockGetRunProgress = vi.fn().mockReturnValue(null);
   const mockGetDb = vi.fn().mockReturnValue({});
+  const mockGetRecentOutcomeCounts = vi.fn().mockReturnValue({ merged: 0, failed: 0, stuck: 0 });
+  const mockGetRunsForSeed = vi.fn().mockReturnValue([]);
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.getProjectByPath = mockGetProjectByPath;
     this.getActiveRuns = mockGetActiveRuns;
@@ -73,6 +77,8 @@ const {
     this.getDb = mockGetDb;
     this.close = vi.fn();
     this.getSuccessRate = vi.fn(() => ({ rate: null, merged: 0, failed: 0 }));
+    this.getRecentOutcomeCounts = mockGetRecentOutcomeCounts;
+    this.getRunsForSeed = mockGetRunsForSeed;
   });
   const MockPostgresStore = vi.fn(function MockPostgresStoreImpl(this: Record<string, unknown>) {
     this.getRun = vi.fn();
@@ -117,6 +123,8 @@ const {
     mockGetRunsByStatusSince,
     mockGetRunProgress,
     mockGetDb,
+    mockGetRecentOutcomeCounts,
+    mockGetRunsForSeed,
     MockForemanStore,
     MockPostgresStore,
     mockCheckAll,
@@ -395,11 +403,7 @@ describe("foreman status --json", () => {
 
   it("outputs failed and stuck counts from last 24h in tasks section", async () => {
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
-    mockGetRunsByStatusSince.mockImplementation((_status: string) => {
-      if (_status === "failed") return [{ id: "r1" }, { id: "r2" }];
-      if (_status === "stuck") return [{ id: "r3" }];
-      return [];
-    });
+    mockGetRecentOutcomeCounts.mockReturnValue({ merged: 0, failed: 2, stuck: 1 });
 
     const { stdout } = await runCommand(statusCommand, ["--json"]);
     const { tasks } = JSON.parse(stdout);
