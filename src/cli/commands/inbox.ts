@@ -790,6 +790,10 @@ async function resolveDaemonRunId(
   return runs[0]?.id ?? null;
 }
 
+export function selectRecentMessages(messages: Message[], limit: number): Message[] {
+  return messages.slice(Math.max(0, messages.length - limit));
+}
+
 async function fetchDaemonMessages(
   client: ReturnType<typeof createTrpcClient>,
   projectId: string,
@@ -810,7 +814,7 @@ async function fetchDaemonMessages(
     agentType: options.agent,
     unreadOnly: options.unread,
   }) as DaemonMailMessage[];
-  return rows.slice(0, options.limit).map(adaptDaemonMessage);
+  return selectRecentMessages(rows.map(adaptDaemonMessage), options.limit);
 }
 
 // ── Run resolution ────────────────────────────────────────────────────────────
@@ -1252,5 +1256,5 @@ function fetchMessages(
     const all = store.getAllMessages(runId);
     messages = unreadOnly ? all.filter((m) => m.read === 0) : all;
   }
-  return messages.slice(0, limit);
+  return selectRecentMessages(messages, limit);
 }
