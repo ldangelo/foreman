@@ -1,27 +1,24 @@
 import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { spawn, execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
-import type { NativeTask, Run, EventType } from "../lib/store.js";
+import type { NativeTask, Run, EventType, RunStore, ProgressEventStore } from "../lib/store.js";
 import type { RunStatus } from "./read-models.js";
 import type { DispatcherStoreDeps } from "./dispatcher-dependencies.js";
-import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
+import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
-import { isPiAvailable } from "./pi-rpc-spawn-strategy.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
-import { getTaskOrder } from "./task-ordering.js";
 import { getPoolConfig } from "../lib/db/pool-manager.js";
 import type { EpicTask } from "./pipeline-executor.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
@@ -43,7 +40,7 @@ import type {
   PlanStepDispatched,
 } from "./types.js";
 import type { RuntimeMode } from "../cli/commands/run.js";
-import type { TaskOrderingClient } from "./task-ordering.js";
+import { RunLifecycleService, type RunOpsOverrides, type MailSendStore } from "./run-lifecycle-service.js";
 
 interface DispatcherDependencyRef {
   id: string;
@@ -144,6 +141,7 @@ export function nativeTaskToIssue(task: NativeTask): Issue {
 
 export class Dispatcher {
   private bvFallbackWarned = false;
+  private runLifecycleService: RunLifecycleService;
 
   constructor(
     private seeds: ITaskClient,
@@ -151,7 +149,21 @@ export class Dispatcher {
     private projectPath: string,
     private bvClient?: BvClient | null,
     private overrides?: DispatcherOverrides,
-  ) {}
+  ) {
+    this.runLifecycleService = new RunLifecycleService(
+      store as unknown as RunStore,
+      {
+        logEvent: store.logEvent as ProgressEventStore["logEvent"],
+        updateRunProgress: store.updateRunProgress as ProgressEventStore["updateRunProgress"],
+        getRunProgress: store.getRunProgress as ProgressEventStore["getRunProgress"],
+        getEvents: store.getEvents as ProgressEventStore["getEvents"],
+      },
+      {
+        sendMessage: store.sendMessage as MailSendStore["sendMessage"],
+      },
+      { externalProjectId: overrides?.externalProjectId, runOps: overrides?.runOps as RunOpsOverrides, getRun: overrides?.getRun },
+    );
+  }
 
   private requireRegisteredRunOp<K extends keyof NonNullable<DispatcherOverrides["runOps"]>>(
     method: K,
@@ -185,105 +197,14 @@ export class Dispatcher {
       sessionKey?: string | null;
     },
   ): Promise<Run> {
-    if (this.overrides?.externalProjectId) {
-      const createRun = this.requireRegisteredRunOp("createRun");
-      const runId = randomUUID();
-      const createdAt = new Date().toISOString();
-      const run = await createRun({
-        runId,
-        projectId,
-        seedId,
-        agentType,
-        branchName,
-        worktreePath,
-        baseBranch: opts?.baseBranch ?? null,
-        mergeStrategy: opts?.mergeStrategy ?? null,
-      });
-      if (run) {
-        return run;
-      }
-      return {
-        id: runId,
-        project_id: projectId,
-        seed_id: seedId,
-        agent_type: agentType,
-        session_key: null,
-        worktree_path: worktreePath,
-        status: "pending",
-        started_at: null,
-        completed_at: null,
-        created_at: createdAt,
-        progress: null,
-        tmux_session: null,
-        base_branch: opts?.baseBranch ?? null,
-        merge_strategy: opts?.mergeStrategy ?? "auto",
-      };
-    }
-
-    const run = this.store.createRun(projectId, seedId, agentType, worktreePath ?? undefined, opts ? {
-      ...opts,
-      mergeStrategy: opts.mergeStrategy ?? undefined,
-    } : undefined);
-    return run;
-  }
-
-  private mapRunStatusForExternal(status: Run["status"]): "pending" | "running" | "success" | "failure" | "cancelled" | "skipped" | null {
-    switch (status) {
-      case "pending":
-        return "pending";
-      case "running":
-        return "running";
-      case "completed":
-      case "merged":
-      case "pr-created":
-        return "success";
-      case "failed":
-      case "test-failed":
-      case "stuck":
-      case "conflict":
-        return "failure";
-      case "reset":
-        return "cancelled";
-      default:
-        return null;
-    }
+    return this.runLifecycleService.createRunRecord(projectId, seedId, agentType, worktreePath, branchName, opts);
   }
 
   private async updateRunRecord(
     runId: string,
     updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
   ): Promise<void> {
-    const shouldPreserveTerminalSuccess = (currentStatus: Run["status"] | undefined, nextStatus: Run["status"] | undefined): boolean =>
-      currentStatus !== undefined
-      && nextStatus !== undefined
-      && (currentStatus === "merged" || currentStatus === "pr-created")
-      && (nextStatus === "failed" || nextStatus === "stuck");
-
-    if (this.overrides?.externalProjectId) {
-      const currentRun = this.overrides.getRun ? await this.overrides.getRun(runId) : null;
-      if (shouldPreserveTerminalSuccess(currentRun?.status, updates.status)) {
-        return;
-      }
-
-      const updateRun = this.requireRegisteredRunOp("updateRun");
-      const normalized = { ...updates };
-      if (updates.status) {
-        const mapped = this.mapRunStatusForExternal(updates.status);
-        if (!mapped) return;
-        normalized.status = mapped as Run["status"];
-      }
-      await updateRun(runId, normalized);
-      return;
-    }
-
-    const currentRun = "getRun" in this.store
-      ? await this.store.getRun(runId)
-      : null;
-    if (shouldPreserveTerminalSuccess(currentRun?.status, updates.status)) {
-      return;
-    }
-
-    await this.store.updateRun(runId, updates);
+    return this.runLifecycleService.updateRunRecord(runId, updates);
   }
 
   private async updateNativeTaskStatus(taskId: string, status: string): Promise<void> {
@@ -316,13 +237,7 @@ export class Dispatcher {
     subject: string,
     body: string,
   ): Promise<void> {
-    if (this.overrides?.externalProjectId) {
-      const sendMessage = this.requireRegisteredRunOp("sendMessage");
-      await sendMessage(runId, senderAgentType, recipientAgentType, subject, body);
-      return;
-    }
-
-    await this.store.sendMessage(runId, senderAgentType, recipientAgentType, subject, body);
+    return this.runLifecycleService.sendMailRecord(runId, senderAgentType, recipientAgentType, subject, body);
   }
 
   private async logEventRecord(
@@ -331,20 +246,14 @@ export class Dispatcher {
     payload: Record<string, unknown>,
     runId: string,
   ): Promise<void> {
-    if (this.overrides?.externalProjectId) {
-      const logEvent = this.requireRegisteredRunOp("logEvent");
-      await logEvent(runId, projectId, eventType, payload);
-      return;
-    }
-
-    await this.store.logEvent(projectId, eventType, payload, runId);
+    return this.runLifecycleService.logEventRecord(projectId, eventType, payload, runId);
   }
 
   private async getActiveRunsRecord(projectId: string): Promise<Run[]> {
     if (this.overrides?.getActiveRuns) {
       return this.overrides.getActiveRuns(projectId);
     }
-    return this.store.getActiveRuns(projectId);
+    return this.runLifecycleService.getActiveRunsRecord(projectId);
   }
 
   private async getRunsByStatusRecord(
@@ -354,7 +263,7 @@ export class Dispatcher {
     if (this.overrides?.getRunsByStatus) {
       return this.overrides.getRunsByStatus(status, projectId);
     }
-    return this.store.getRunsByStatus(status, projectId);
+    return this.runLifecycleService.getRunsByStatusRecord(status, projectId);
   }
 
   private async getRunsForSeedRecord(
@@ -364,14 +273,14 @@ export class Dispatcher {
     if (this.overrides?.getRunsForSeed) {
       return this.overrides.getRunsForSeed(seedId, projectId);
     }
-    return this.store.getRunsForSeed(seedId, projectId);
+    return this.runLifecycleService.getRunsForSeedRecord(seedId, projectId);
   }
 
   private async getRunRecord(runId: string): Promise<Run | null> {
     if (this.overrides?.getRun) {
       return this.overrides.getRun(runId);
     }
-    return this.store.getRun(runId);
+    return this.runLifecycleService.getRunRecord(runId);
   }
 
   /**
