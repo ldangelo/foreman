@@ -1069,7 +1069,7 @@ status: backlog
  */
 export function createTaskInEditor(
   onError: (msg: string) => void,
-): { id: string; title: string; description: string | null; type: string; priority: number; status: string } | null {
+): { id?: string; title: string; description: string | null; type: string; priority: number; status: string } | null {
   const editor = resolveEditor();
   const tmpFile = joinPath(tmpdir(), `foreman-task-new-${randomUUID()}.yaml`);
 
@@ -1116,7 +1116,7 @@ export function createTaskInEditor(
 
     try { unlinkSync(tmpFile); } catch { /* ignore */ }
     return {
-      id: typeof parsed.id === "string" && parsed.id.trim().length > 0 ? parsed.id.trim() : randomUUID(),
+      id: typeof parsed.id === "string" && parsed.id.trim().length > 0 ? parsed.id.trim() : undefined,
       title: String(parsed.title).trim(),
       description: typeof parsed.description === "string" ? parsed.description : null,
       type: taskType,
@@ -1135,19 +1135,30 @@ export function createTaskInEditor(
  */
 export async function createTaskAsync(
   projectPath: string,
-  taskData: { id: string; title: string; description?: string | null; type?: string; priority?: number; status?: string },
+  taskData: { id?: string; title: string; description?: string | null; type?: string; priority?: number; status?: string },
 ): Promise<{ taskId: string } | string> {
   try {
     const { client, projectId } = await resolveBoardContext(projectPath);
-    const created = await client.tasks.create({
+    const createInput: { projectId: string; id?: string; title: string; description?: string; type?: string; priority?: number; status?: string } = {
       projectId,
-      id: taskData.id,
       title: taskData.title,
-      description: taskData.description ?? undefined,
-      type: taskData.type,
-      priority: taskData.priority,
-      status: taskData.status,
-    }) as { id: string };
+    };
+    if (taskData.id) {
+      createInput.id = taskData.id;
+    }
+    if (taskData.description !== undefined) {
+      createInput.description = taskData.description ?? undefined;
+    }
+    if (taskData.type !== undefined) {
+      createInput.type = taskData.type;
+    }
+    if (taskData.priority !== undefined) {
+      createInput.priority = taskData.priority;
+    }
+    if (taskData.status !== undefined) {
+      createInput.status = taskData.status;
+    }
+    const created = await client.tasks.create(createInput) as { id: string };
     return { taskId: created.id };
   } catch (err) {
     return err instanceof Error ? err.message : String(err);

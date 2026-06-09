@@ -152,7 +152,7 @@ const tasksRouter = t.router({
     .input(
       z.object({
         projectId: PROJECT_ID_SCHEMA,
-        id: TASK_ID_SCHEMA,
+        id: TASK_ID_SCHEMA.optional(),
         title: z.string().min(1).max(1000).optional(),
         description: z.string().optional(),
         type: TASK_TYPE_SCHEMA,

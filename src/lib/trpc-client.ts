@@ -209,7 +209,7 @@ export interface TRPCTasksClient {
   get(input: { projectId: string; taskId: string }): Promise<unknown>;
   create(input: {
     projectId: string;
-    id: string;
+    id?: string;
     title?: string;
     description?: string;
     type?: string;
