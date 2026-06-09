@@ -1036,6 +1036,7 @@ async function runPhaseSequence(
   }
 
   let i = 0;
+  const retryOnlyActivations = new Set<string>();
   while (i < phases.length) {
     const phase = phases[i];
     const phaseName = phase.name;
@@ -1057,6 +1058,15 @@ async function runPhaseSequence(
       ...ctx.taskMeta,
       projectReportsDir: ctx.taskMeta?.projectReportsDir || getRunReportsDir(projectId, seedId, runId),
     };
+
+    if (phase.retryOnly && !retryOnlyActivations.has(phaseName)) {
+      ctx.log(`[${phaseName.toUpperCase()}] Skipping — retryOnly phase not activated by retryWith`);
+      await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (retryOnly)\n`);
+      phaseRecords.push({ name: phaseName, skipped: true });
+      i++;
+      continue;
+    }
+    retryOnlyActivations.delete(phaseName);
 
     progress.currentPhase = phaseName;
     await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
@@ -1358,6 +1368,7 @@ async function runPhaseSequence(
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
+              retryOnlyActivations.add(retryTarget);
               i = targetIdx;
               continue;
             }
@@ -1455,6 +1466,7 @@ async function runPhaseSequence(
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
+              retryOnlyActivations.add(retryTarget);
               i = targetIdx;
               continue;
             }
@@ -1913,6 +1925,7 @@ async function runPhaseSequence(
 
           const targetIdx = phaseIndex.get(retryTarget);
           if (targetIdx !== undefined) {
+            retryOnlyActivations.add(retryTarget);
             i = targetIdx;
             continue;
           }

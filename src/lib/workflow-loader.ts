@@ -147,6 +147,11 @@ export interface WorkflowPhaseConfig {
    * Used for resume-from-crash semantics (e.g., "EXPLORER_REPORT.md").
    */
   skipIfArtifact?: string;
+  /**
+   * Skip this phase during normal sequential execution; run it only when a
+   * failing verdict phase jumps to it via retryWith.
+   */
+  retryOnly?: boolean;
   /** Expected output artifact filename (e.g. "EXPLORER_REPORT.md"). */
   artifact?: string;
   /** Parse PASS/FAIL verdict from the artifact. */
@@ -462,6 +467,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["maxTurns"] === "number") phase.maxTurns = p["maxTurns"];
     if (typeof p["timeoutSecs"] === "number") phase.timeoutSecs = p["timeoutSecs"];
     if (typeof p["skipIfArtifact"] === "string") phase.skipIfArtifact = p["skipIfArtifact"];
+    if (typeof p["retryOnly"] === "boolean") phase.retryOnly = p["retryOnly"];
     if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];

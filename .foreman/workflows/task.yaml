@@ -49,11 +49,12 @@ phases:
       onStart: true
       onComplete: true
 
-  # ── Phase 2: developer remediation ─────────────────────────────────────
-  # Retry target for QA/finalize/PR-review findings. Keeps the initial fix
-  # prompt focused on the requested task while later phases use the generic
-  # developer prompt to repair existing work based on validation feedback.
+  # ── Retry-only: developer remediation ──────────────────────────────────
+  # Retry target for QA/finalize/PR-review findings. Skipped during normal
+  # sequential execution; activated only when a later phase fails and uses
+  # retryWith: developer.
   - name: developer
+    retryOnly: true
     prompt: developer.md
     tools:
       allowed:

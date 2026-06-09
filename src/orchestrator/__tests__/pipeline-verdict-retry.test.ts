@@ -90,7 +90,7 @@ describe("verdict-triggered retry", () => {
     // Create stub prompt files so prompt-loader doesn't throw
     const promptDir = join(tmpDir, "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
-    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix-issue"]) {
+    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix", "fix-issue"]) {
       writeFileSync(join(promptDir, `${phase}.md`), `# ${phase} stub\n`);
     }
     writeFileSync(
@@ -159,7 +159,7 @@ describe("verdict-triggered retry", () => {
         if (qaCallCount < 3) {
           writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: FAIL\nTests failed.\n");
         } else {
-          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\nAll tests pass.\n");
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n");
         }
       }
       return successResult();
@@ -175,6 +175,65 @@ describe("verdict-triggered retry", () => {
       "finalize",
     ]);
     expect(qaCallCount).toBe(3);
+  });
+
+  it("skips retryOnly developer during normal task flow", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const phases = [
+      { name: "fix", artifact: "DEVELOPER_REPORT.md" },
+      { name: "developer", artifact: "DEVELOPER_REPORT.md", retryOnly: true },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n");
+      }
+      return successResult();
+    });
+
+    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
+
+    expect(phaseOrder).toEqual(["fix", "qa", "finalize"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("DEVELOPER] Skipping — retryOnly phase"));
+  });
+
+  it("runs retryOnly developer only after a verdict failure, then retries QA", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const phases = [
+      { name: "fix", artifact: "DEVELOPER_REPORT.md" },
+      { name: "developer", artifact: "DEVELOPER_REPORT.md", retryOnly: true },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    let qaCallCount = 0;
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        qaCallCount++;
+        writeFileSync(
+          join(tmpDir, "QA_REPORT.md"),
+          qaCallCount === 1
+            ? "# QA\n\n## Verdict: FAIL\nTests failed.\n"
+            : "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n",
+        );
+      }
+      return successResult();
+    });
+
+    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
+
+    expect(phaseOrder).toEqual(["fix", "qa", "developer", "qa", "finalize"]);
+    expect(qaCallCount).toBe(2);
   });
 
   it("bash phase failure loops back to retryWith target before marking stuck", async () => {
