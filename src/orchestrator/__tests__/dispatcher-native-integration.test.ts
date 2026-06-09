@@ -214,7 +214,7 @@ describe("Dispatcher — Native task store path (integration)", () => {
     expect(beadsClient.ready).not.toHaveBeenCalled();
   });
 
-  it("dispatch() falls back to beads when no native tasks exist (auto mode)", async () => {
+  it("dispatch() does NOT fall back to beads when no native tasks exist (native-only mode)", async () => {
     const beadsIssue = { id: "b-beads", title: "Beads Task", type: "task" as const, priority: "P2" as const, status: "open" as const, assignee: null, parent: null, created_at: "", updated_at: "" };
     const beadsClient = makeMockBeadsClient([beadsIssue]);
 
@@ -227,11 +227,11 @@ describe("Dispatcher — Native task store path (integration)", () => {
     const result = await dispatcher.dispatch({ dryRun: true });
     consoleSpy.mockRestore();
 
-    // Beads task was dispatched
-    expect(result.dispatched.map((d) => d.seedId)).toContain("b-beads");
+    // Native-only: Beads task is NOT dispatched when no native tasks exist
+    expect(result.dispatched.map((d) => d.seedId)).not.toContain("b-beads");
 
-    // Beads client was called
-    expect(beadsClient.ready).toHaveBeenCalled();
+    // Beads client was NOT called (native-only path)
+    expect(beadsClient.ready).not.toHaveBeenCalled();
   });
 
   it("dispatch() skips tasks in non-ready statuses (backlog, in-progress, etc.)", async () => {

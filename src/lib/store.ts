@@ -450,6 +450,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   run_id      TEXT REFERENCES runs(id),
   branch      TEXT,
   external_id TEXT UNIQUE,
+  labels      TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   approved_at TEXT,
@@ -570,6 +571,8 @@ const MIGRATIONS = [
     ON rate_limit_events (model, recorded_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_rate_limit_events_project
     ON rate_limit_events (project_id, recorded_at DESC)`,
+  // Task labels column for branch label auto-labeling (TRD-015)
+  `ALTER TABLE tasks ADD COLUMN labels TEXT DEFAULT NULL`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -967,6 +970,21 @@ export class ForemanStore {
     this.db
       .prepare(`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`)
       .run(newStatus, now, taskId);
+  }
+
+  /**
+   * Update task labels via a short-lived write.
+   * Used by dispatcher for branch label auto-labeling.
+   *
+   * @param taskId - Task UUID to update.
+   * @param labels - New labels array.
+   */
+  updateTaskLabels(taskId: string, labels: string[]): void {
+    const now = new Date().toISOString();
+    const labelsJson = JSON.stringify(labels);
+    this.db
+      .prepare(`UPDATE tasks SET labels = ?, updated_at = ? WHERE id = ?`)
+      .run(labelsJson, now, taskId);
   }
 
   // ── Projects ────────────────────────────────────────────────────────
