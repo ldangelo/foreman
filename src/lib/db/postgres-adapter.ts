@@ -740,7 +740,7 @@ export class PostgresAdapter {
   ): Promise<TaskNoteRow[]> {
     const limit = opts?.limit ?? 50;
     const direction = opts?.newestFirst === false ? "ASC" : "DESC";
-    return query<TaskNoteRow>(
+    const notes = await query<TaskNoteRow>(
       `SELECT *
        FROM task_notes
        WHERE project_id = $1 AND task_id = $2
@@ -748,6 +748,48 @@ export class PostgresAdapter {
        LIMIT $3`,
       [projectId, taskId, limit],
     );
+    if (notes.length > 0) return notes;
+
+    const events = await query<PipelineEventRow>(
+      `SELECT *
+       FROM events
+       WHERE project_id = $1
+         AND (
+           task_id = $2
+           OR run_id IN (SELECT id FROM runs WHERE project_id = $1 AND bead_id = $2)
+         )
+         AND event_type IN ('phase-start', 'complete', 'fail', 'stuck', 'conflict')
+       ORDER BY created_at ${direction}
+       LIMIT $3`,
+      [projectId, taskId, limit],
+    );
+
+    return events.map((event) => {
+      const payload = event.payload ?? {};
+      const phase = typeof payload.phase === "string" ? payload.phase : null;
+      const reason = typeof payload.reason === "string" ? payload.reason : null;
+      const title = typeof payload.title === "string" ? payload.title : null;
+      const body = (() => {
+        if (event.event_type === "phase-start") return `${phase ?? "Phase"} started.`;
+        if (event.event_type === "complete") return `${phase ?? "Task"} completed.`;
+        if (event.event_type === "fail") return reason ? `${phase ?? "Task"} failed: ${reason}` : `${title ?? "Task"} failed.`;
+        if (event.event_type === "stuck") return reason ? `${phase ?? "Task"} stuck: ${reason}` : `${phase ?? "Task"} stuck.`;
+        if (event.event_type === "conflict") return reason ? `${phase ?? "Task"} conflict: ${reason}` : `${phase ?? "Task"} conflict.`;
+        return event.event_type;
+      })();
+      return {
+        id: `event-${event.id}`,
+        project_id: event.project_id,
+        task_id: event.task_id ?? taskId,
+        run_id: event.run_id,
+        phase,
+        author: "pipeline",
+        kind: event.event_type === "fail" || event.event_type === "stuck" || event.event_type === "conflict" ? "failure" : "progress",
+        body,
+        metadata: { source: "events", eventType: event.event_type, payload },
+        created_at: event.created_at,
+      } satisfies TaskNoteRow;
+    });
   }
 
   async updateTask(

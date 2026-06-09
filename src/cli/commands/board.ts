@@ -275,10 +275,10 @@ export async function loadBoardTaskNotes(projectPath: string, taskId: string): P
     projectId,
     taskId,
     limit: 10,
-    newestFirst: false,
+    newestFirst: true,
   }) as TaskNoteRow[];
 
-  return notes.map((note) => ({
+  return [...notes].reverse().map((note) => ({
     id: note.id,
     created_at: note.created_at,
     phase: note.phase,

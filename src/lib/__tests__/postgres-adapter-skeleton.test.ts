@@ -449,6 +449,39 @@ describe("PostgresAdapter task operations", () => {
       await destroyPool();
     }
   });
+
+  it("listTaskNotes falls back to pipeline events when no explicit notes exist", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /FROM task_notes/, rows: [] },
+      {
+        sqlPattern: /FROM events/,
+        rows: [{
+          id: "event-1",
+          project_id: PROJECT_ID,
+          task_id: TASK_ID,
+          run_id: "run-1",
+          event_type: "fail",
+          payload: { phase: "reviewer", reason: "Phase exceeded maxTurns (40)" },
+          created_at: "2026-01-01T00:00:00Z",
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listTaskNotes(PROJECT_ID, TASK_ID);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        id: "event-event-1",
+        kind: "failure",
+        author: "pipeline",
+        phase: "reviewer",
+        body: "reviewer failed: Phase exceeded maxTurns (40)",
+      });
+    } finally {
+      await destroyPool();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

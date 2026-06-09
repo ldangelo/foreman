@@ -1186,12 +1186,12 @@ const showCommand = new Command("show")
 
       // Show notes timeline
       try {
-        const notes = await client.tasks.listNotes({
+        const notes = [...await client.tasks.listNotes({
           projectId,
           taskId: task.id,
           limit: 25,
-          newestFirst: false,
-        }) as TaskNoteRow[];
+          newestFirst: true,
+        }) as TaskNoteRow[]].reverse();
         console.log(chalk.bold("\n  Notes:"));
         if (notes.length === 0) {
           console.log(chalk.dim("    (none yet)"));
