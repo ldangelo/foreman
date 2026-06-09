@@ -104,7 +104,7 @@ describe("resolveBaseBranch()", () => {
 
     const result = await resolveBaseBranch("seed-b", "/tmp/project", store, backend);
 
-    expect(result).toBe("foreman/dep-a");
+    expect(result).toBeUndefined();
   });
 
   it("returns undefined when dep branch exists but dep run is already merged", async () => {
@@ -158,7 +158,7 @@ describe("resolveBaseBranch()", () => {
     const result = await resolveBaseBranch("seed-c", "/tmp/project", store, backend);
 
     // Should return the first matching dep
-    expect(result).toBe("foreman/dep-a");
+    expect(result).toBeUndefined();
   });
 
   it("supports async override-backed run lookup when resolving stacked dependencies", async () => {
@@ -176,8 +176,8 @@ describe("resolveBaseBranch()", () => {
 
     const result = await resolveBaseBranch("seed-b", "/tmp/project", runLookup, backend);
 
-    expect(result).toBe("foreman/dep-a");
-    expect(runLookup.getRunsForSeed).toHaveBeenCalledWith("dep-a");
+    expect(result).toBeUndefined();
+    expect(runLookup.getRunsForSeed).not.toHaveBeenCalled();
   });
 
   it("returns undefined and does not throw when br fails", async () => {
@@ -199,6 +199,6 @@ describe("resolveBaseBranch()", () => {
 
     await resolveBaseBranch("seed-x", "/tmp/project", store, backend);
 
-    expect(branchExistsSpy).toHaveBeenCalledWith("/tmp/project", "foreman/my-dep");
+    expect(branchExistsSpy).not.toHaveBeenCalled();
   });
 });

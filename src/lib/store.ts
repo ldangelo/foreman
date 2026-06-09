@@ -47,6 +47,30 @@ function normalizeProjectPath(path: string): string {
   }
 }
 
+function parseTaskLabels(labels: unknown): string[] | null {
+  if (labels === null || labels === undefined || labels === "") return null;
+  if (Array.isArray(labels)) return labels.filter((label): label is string => typeof label === "string");
+  if (typeof labels !== "string") return null;
+  try {
+    const parsed = JSON.parse(labels) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((label): label is string => typeof label === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeNativeTask(row: NativeTask | undefined): NativeTask | null {
+  if (!row) return null;
+  return {
+    ...row,
+    labels: parseTaskLabels(row.labels),
+  };
+}
+
+function normalizeNativeTasks(rows: NativeTask[]): NativeTask[] {
+  return rows.map((row) => normalizeNativeTask(row)).filter((row): row is NativeTask => row !== null);
+}
+
 // ── Interfaces ──────────────────────────────────────────────────────────
 
 export interface Project {
@@ -218,6 +242,8 @@ export interface NativeTask {
   branch: string | null;
   external_id: string | null;
   labels?: string[] | null;
+  parent?: string | null;
+  parentId?: string | null;
   created_at: string;
   updated_at: string;
   approved_at: string | null;
@@ -278,6 +304,9 @@ export interface NativeTask {
   run_id: string | null;
   branch: string | null;
   external_id: string | null;
+  labels?: string[] | null;
+  parent?: string | null;
+  parentId?: string | null;
   created_at: string;
   updated_at: string;
   approved_at: string | null;
@@ -945,13 +974,14 @@ export class ForemanStore {
     if (statuses.length === 0) return [];
     try {
       const placeholders = statuses.map(() => "?").join(", ");
-      return this.db
+      const rows = this.db
         .prepare(
           `SELECT * FROM tasks WHERE status IN (${placeholders})
            ORDER BY priority ASC, updated_at ASC
            LIMIT ?`
         )
         .all(...statuses, limit) as NativeTask[];
+      return normalizeNativeTasks(rows);
     } catch {
       // tasks table may not exist on older project databases
       return [];
@@ -2030,10 +2060,10 @@ export class ForemanStore {
    */
   getTaskById(id: string): NativeTask | null {
     try {
-      return (
-        (this.db
+      return normalizeNativeTask(
+        this.db
           .prepare("SELECT * FROM tasks WHERE id = ? LIMIT 1")
-          .get(id) as NativeTask | undefined) ?? null
+          .get(id) as NativeTask | undefined,
       );
     } catch {
       return null;
@@ -2048,10 +2078,10 @@ export class ForemanStore {
    */
   getTaskByExternalId(externalId: string): NativeTask | null {
     try {
-      return (
-        (this.db
+      return normalizeNativeTask(
+        this.db
           .prepare("SELECT * FROM tasks WHERE external_id = ? LIMIT 1")
-          .get(externalId) as NativeTask | undefined) ?? null
+          .get(externalId) as NativeTask | undefined,
       );
     } catch {
       return null;
@@ -2065,13 +2095,14 @@ export class ForemanStore {
    * ORDER BY priority ASC, created_at ASC".
    */
   getReadyTasks(): NativeTask[] {
-    return this.db
+    const rows = this.db
       .prepare(
         `SELECT * FROM tasks
          WHERE status = 'ready'
          ORDER BY priority ASC, created_at ASC`,
       )
       .all() as NativeTask[];
+    return normalizeNativeTasks(rows);
   }
 
   /**

@@ -130,7 +130,7 @@ export function nativeTaskToIssue(task: NativeTask): Issue {
     priority: `P${task.priority}`,
     status: task.status,
     assignee: null,
-    parent: null,
+    parent: task.parent ?? task.parentId ?? null,
     created_at: task.created_at,
     updated_at: task.updated_at,
     description: task.description ?? undefined,
@@ -1238,7 +1238,7 @@ export class Dispatcher {
 
       // Mark seed as in_progress before spawning resumed agent
       // Native-only: use updateNativeTaskStatus which routes through nativeTaskOps
-      await this.updateNativeTaskStatus(run.seed_id, "in_progress");
+      await this.updateNativeTaskStatus(run.seed_id, "in-progress");
 
       // Spawn the resumed agent
       const { sessionKey } = await this.resumeAgent(
@@ -1680,8 +1680,7 @@ export class Dispatcher {
           if (task) {
             taskStatus = task.status;
           }
-        } else {
-          // Fallback to store (not beads) for non-native mode
+        } else if (typeof this.store.getTaskByExternalId === "function" && typeof this.store.getTaskById === "function") {
           const task = this.store.getTaskByExternalId(run.seed_id)
             ?? this.store.getTaskById(run.seed_id);
           if (task) {
@@ -1698,9 +1697,8 @@ export class Dispatcher {
           stopped++;
         }
       } catch (err: unknown) {
-        // Error fetching task — treat as terminal and stop the run
-        await this.cancelRun(run, "issue_terminal");
-        stopped++;
+        const message = err instanceof Error ? err.message : String(err);
+        log(`[reconcile] Could not fetch native task for run ${run.id} (${run.seed_id}); leaving active for retry: ${message.slice(0, 200)}`);
       }
     }
 

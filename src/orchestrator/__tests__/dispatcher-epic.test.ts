@@ -137,6 +137,18 @@ function makeIssue(id: string, type: string, priority = "P2"): Issue {
   };
 }
 
+
+let currentReadyIssues: Issue[] = [];
+
+function nativeTaskFromIssue(issue: Issue) {
+  return {
+    id: issue.id, title: issue.title, description: issue.description ?? null, type: issue.type,
+    priority: Number(String(issue.priority ?? "2").replace(/^P/, "")) || 2, status: "ready",
+    run_id: null, branch: null, external_id: null, labels: issue.labels ?? [], parent: issue.parent ?? null,
+    created_at: issue.created_at, updated_at: issue.updated_at, approved_at: new Date().toISOString(), closed_at: null,
+  };
+}
+
 function makeStore(): ForemanStore {
   return {
     getActiveRuns: vi.fn().mockReturnValue([]),
@@ -145,8 +157,11 @@ function makeStore(): ForemanStore {
     getRunsByStatusesSince: vi.fn().mockReturnValue([]),
     getRunsForSeed: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-    hasNativeTasks: vi.fn().mockReturnValue(false),
-    getReadyTasks: vi.fn().mockReturnValue([]),
+    hasNativeTasks: vi.fn().mockReturnValue(true),
+    getReadyTasks: vi.fn(() => currentReadyIssues.map(nativeTaskFromIssue)),
+    getTaskByExternalId: vi.fn().mockReturnValue(null),
+    getTaskById: vi.fn((id: string) => currentReadyIssues.map(nativeTaskFromIssue).find((task) => task.id === id) ?? null),
+    claimTask: vi.fn().mockReturnValue(true),
     hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     createRun: vi.fn().mockReturnValue({ id: "run-1" }),
     updateRun: vi.fn(),
@@ -157,6 +172,11 @@ function makeStore(): ForemanStore {
 }
 
 function makeSeedsClient(overrides: Partial<ITaskClient> = {}): ITaskClient {
+  const ready = overrides.ready as unknown as { getMockImplementation?: () => (() => Promise<Issue[]>) | undefined } | undefined;
+  const impl = ready?.getMockImplementation?.();
+  if (impl) {
+    void impl().then((issues) => { currentReadyIssues = issues; });
+  }
   return {
     ready: vi.fn().mockResolvedValue([]),
     show: vi.fn().mockResolvedValue({ status: "open" }),

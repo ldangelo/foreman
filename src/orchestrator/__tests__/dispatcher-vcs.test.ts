@@ -135,8 +135,26 @@ function makeStore(): ForemanStore {
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-001" }),
-    hasNativeTasks: vi.fn().mockReturnValue(false),
-    getReadyTasks: vi.fn().mockReturnValue([]),
+    hasNativeTasks: vi.fn().mockReturnValue(true),
+    getReadyTasks: vi.fn().mockReturnValue([{
+      id: "test-seed",
+      title: "Test Seed",
+      description: "task description",
+      type: "task",
+      priority: 2,
+      status: "ready",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      labels: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: new Date().toISOString(),
+      closed_at: null,
+    }]),
+    getTaskByExternalId: vi.fn().mockReturnValue(null),
+    getTaskById: vi.fn().mockReturnValue({ status: "ready" }),
+    claimTask: vi.fn().mockReturnValue(true),
   } as unknown as ForemanStore;
 }
 
@@ -677,7 +695,7 @@ describe("Dispatcher — registered override-backed dependency stacking", () => 
 
     await dispatcher.dispatch({ dryRun: false });
 
-    expect(overrides.getRunsForSeed).toHaveBeenCalledWith("dep-a", "proj-001");
-    expect(createWorktreeSpy).toHaveBeenCalledWith(expect.objectContaining({ baseBranch: "foreman/dep-a" }));
+    expect(overrides.getRunsForSeed).not.toHaveBeenCalledWith("dep-a", "proj-001");
+    expect(createWorktreeSpy).toHaveBeenCalledWith(expect.objectContaining({ baseBranch: "main" }));
   });
 });

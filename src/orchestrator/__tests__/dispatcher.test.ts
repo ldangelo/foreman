@@ -1087,7 +1087,7 @@ describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
 
     expect(result.resumed).toHaveLength(1);
     // Native-only: uses store.updateTaskStatus(), not seeds.update()
-    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-1", "in_progress");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-1", "in-progress");
     expect(seeds.update).not.toHaveBeenCalled();
   });
 
@@ -1103,7 +1103,7 @@ describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
 
     await dispatcher.resumeRuns({ maxAgents: 5 });
 
-    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-xyz", "in_progress");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-xyz", "in-progress");
     expect(seeds.update).not.toHaveBeenCalled();
   });
 
@@ -1134,8 +1134,8 @@ describe("Dispatcher.resumeRuns — seed in_progress marking", () => {
     const result = await dispatcher.resumeRuns({ maxAgents: 5 });
 
     expect(result.resumed).toHaveLength(2);
-    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-1", "in_progress");
-    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-2", "in_progress");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-1", "in-progress");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-2", "in-progress");
     expect(store.updateTaskStatus).toHaveBeenCalledTimes(2);
     expect(seeds.update).not.toHaveBeenCalled();
   });
@@ -1994,23 +1994,22 @@ describe("Dispatcher.reconcileRunningIssues", () => {
       updateRun,
       logEvent,
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
+      getTaskByExternalId: vi.fn(() => { throw new Error("native lookup failed"); }),
+      getTaskById: vi.fn(() => { throw new Error("native lookup failed"); }),
     } as unknown as ForemanStore;
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
 
-    expect(stopped).toBe(1);
-    expect(updateRun).toHaveBeenCalledWith("run-001", {
-      status: "stuck",
-      completed_at: expect.any(String),
-    });
+    expect(stopped).toBe(0);
+    expect(updateRun).not.toHaveBeenCalled();
  });
 
   it("does NOT stop a run when issue status is 'in_progress'", async () => {
     // Native-only: uses store.getTaskByExternalId/getTaskById instead of seeds.show()
     const run = makeRun();
-    const seedsClient = makeSeedsClient("in_progress");
-    const store = makeStoreWithTask(run, "in_progress");
+    const seedsClient = makeSeedsClient("in-progress");
+    const store = makeStoreWithTask(run, "in-progress");
 
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp");
     const stopped = await (dispatcher as any).reconcileRunningIssues("proj-1");
