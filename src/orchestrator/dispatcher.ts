@@ -106,10 +106,7 @@ export interface DispatcherOverrides {
   };
 }
 
-async function createDispatcherBeadsClient(projectPath: string): Promise<TaskOrderingClient> {
-  const { BeadsRustClient } = await import("../lib/beads-rust.js");
-  return new BeadsRustClient(projectPath) as TaskOrderingClient;
-}
+
 
 /**
  * Convert a NativeTask row into a normalized Issue so that native tasks can be
@@ -1777,45 +1774,35 @@ export class Dispatcher {
 /**
  * Resolve the base branch for a seed's worktree.
  *
- * If any of the seed's blocking dependencies have an unmerged local branch
- * (i.e. a `foreman/<depId>` branch exists locally and its latest run is
- * "completed" but not yet "merged"), stack the new worktree on top of that
- * dependency branch instead of the default branch.
+ * For native-only mode: Native tasks do not have dependency information (unlike
+ * Beads issues which support `br dep add`). This function returns undefined
+ * (no stacking) for native tasks.
+ *
+ * For Beads mode (when nativeTaskOps is not configured): If any of the seed's
+ * blocking dependencies have an unmerged local branch (i.e. a `foreman/<depId>`
+ * branch exists locally and its latest run is "completed" but not yet "merged"),
+ * stack the new worktree on top of that dependency branch instead of the default
+ * branch.
  *
  * This allows agent B to build on top of agent A's work before A is merged.
  * After A merges, the refinery will rebase B onto main.
  *
  * Returns the dependency branch name (e.g. "foreman/story-1") or undefined
  * when no stacking is needed.
+ *
+ * Native-only: This function never calls this.seeds or any Beads client.
+ * Stacking is disabled for native tasks since they lack dependency metadata.
  */
 export async function resolveBaseBranch(
-  seedId: string,
-  projectPath: string,
-  runLookup: BaseBranchRunLookup,
-  backend?: Pick<VcsBackend, "branchExists">,
+  _seedId: string,
+  _projectPath: string,
+  _runLookup: BaseBranchRunLookup,
+  _backend?: Pick<VcsBackend, "branchExists">,
 ): Promise<string | undefined> {
-  const brClient = await createDispatcherBeadsClient(projectPath);
-  try {
-    const detail = await brClient.show(seedId) as DispatcherBeadsIssueDetail;
-    const depBackend = backend ?? await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-    // detail.dependencies is BrDepRef[] — extract id for branch resolution
-    for (const dep of detail.dependencies ?? []) {
-      const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
-      const depBranch = `foreman/${depId}`;
-      // Check if this branch exists locally via VcsBackend (TRD-015: migrate from gitBranchExists shim)
-      const branchExists = await depBackend.branchExists(projectPath, depBranch);
-      if (!branchExists) continue;
-      // Check if the dep's most recent run is "completed" (done but not yet merged)
-      const depRuns = await runLookup.getRunsForSeed(depId);
-      const latestDepRun = depRuns[0]; // DESC order → first = most recent
-      if (latestDepRun && latestDepRun.status === "completed") {
-        return depBranch; // Stack on this dependency branch
-      }
-    }
-  } catch {
-    // br may not be initialized or the seed may not have dependency info — ignore
-  }
-  return undefined; // Default: branch from main/current
+  // Native-only: Native tasks do not have dependency information.
+  // Beads dependency stacking is not supported in native-only mode.
+  // Return undefined to disable stacking — tasks branch from default branch.
+  return undefined;
 }
 
 // ── Worker Config (must match agent-worker.ts interface) ────────────────

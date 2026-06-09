@@ -1601,6 +1601,7 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
 
     const seedsClient: ITaskClient = {
       ready: vi.fn().mockResolvedValue([issue]),
+      show: vi.fn().mockResolvedValue(showResult),
       comments: vi.fn().mockRejectedValue(new Error("comments fetch failed")),
       update: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
