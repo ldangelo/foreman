@@ -151,6 +151,11 @@ export interface RenderState {
  * - "updated" (default): most recently updated first (descending updated_at)
  * - "priority": P0 first (ascending priority), then by updated_at
  */
+function parseTaskUpdatedAt(task: BoardTask): number {
+  const timestamp = Date.parse(task.updated_at);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
 export function sortBoardTasks(tasks: BoardTask[], sortMode: SortMode): BoardTask[] {
   const sorted = [...tasks];
   if (sortMode === "priority") {
@@ -159,11 +164,11 @@ export function sortBoardTasks(tasks: BoardTask[], sortMode: SortMode): BoardTas
       if (a.priority !== b.priority) {
         return a.priority - b.priority;
       }
-      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+      return parseTaskUpdatedAt(b) - parseTaskUpdatedAt(a);
     });
   } else {
     // Default: sort by updated_at descending (most recently updated first)
-    sorted.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    sorted.sort((a, b) => parseTaskUpdatedAt(b) - parseTaskUpdatedAt(a));
   }
   return sorted;
 }
@@ -709,7 +714,7 @@ function renderBoardFrame(
       h(
         Text,
         { dimColor: true },
-        `${totalTasks} task${totalTasks === 1 ? "" : "s"}`,
+        `${totalTasks} task${totalTasks === 1 ? "" : "s"} · Sort: ${SORT_MODE_LABELS[state.sortMode]}`,
       ),
     ),
     h(

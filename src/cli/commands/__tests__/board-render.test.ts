@@ -224,6 +224,16 @@ describe("BoardRendering", () => {
       expect(getVisibleTaskCapacity(24, 20, 4)).toBe(4);
     });
 
+    it("should render active sort mode in the header", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { sortMode: "priority" }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("Sort: Priority");
+    });
+
     it("should render five column jump labels without a merged column", () => {
       const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 150));
 

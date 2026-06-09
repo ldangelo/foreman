@@ -73,6 +73,17 @@ describe("sortBoardTasks", () => {
       expect(sorted[0].id).toBe("task-1");
     });
 
+    it("should treat invalid updated_at values as oldest", () => {
+      const tasks: BoardTask[] = [
+        createTask("task-invalid", 2, "not-a-date"),
+        createTask("task-valid", 2, "2026-04-20T10:00:00Z"),
+      ];
+
+      const sorted = sortBoardTasks(tasks, "updated");
+
+      expect(sorted.map((t) => t.id)).toEqual(["task-valid", "task-invalid"]);
+    });
+
     it("should maintain relative order for same updated_at", () => {
       const sameTime = "2026-04-19T10:00:00Z";
       const tasks: BoardTask[] = [
@@ -101,6 +112,17 @@ describe("sortBoardTasks", () => {
       expect(sorted[0].id).toBe("task-2"); // P0
       expect(sorted[1].id).toBe("task-3"); // P1
       expect(sorted[2].id).toBe("task-1"); // P2
+    });
+
+    it("should sort invalid updated_at values last within same priority", () => {
+      const tasks: BoardTask[] = [
+        createTask("task-invalid", 2, "not-a-date"),
+        createTask("task-valid", 2, "2026-04-20T10:00:00Z"),
+      ];
+
+      const sorted = sortBoardTasks(tasks, "priority");
+
+      expect(sorted.map((t) => t.id)).toEqual(["task-valid", "task-invalid"]);
     });
 
     it("should sort by updated_at descending within same priority", () => {
