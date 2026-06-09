@@ -13,7 +13,6 @@ import type {
   RunProgress,
   Message,
   NativeTask,
-  BeadWriteEntry,
   MergeAgentConfigRow,
   SentinelConfigRow,
   SentinelRunRow,
@@ -27,7 +26,6 @@ export type {
   RunProgress,
   Message,
   NativeTask,
-  BeadWriteEntry,
   MergeAgentConfigRow,
   SentinelConfigRow,
   SentinelRunRow,
@@ -491,34 +489,13 @@ export class PostgresStore implements IStore {
     return await this.adapter.getAllMessagesGlobal(this.projectId, limit) as unknown as Message[];
   }
 
-  // ── Bead Write Queue ────────────────────────────────────────────────
-
-  async getPendingBeadWrites(): Promise<BeadWriteEntry[]> {
-    const rows = await query<BeadWriteEntry>(
-      `SELECT id, project_id, sender, operation, payload, created_at, processed_at
-         FROM bead_write_queue
-        WHERE project_id = $1 AND processed_at IS NULL
-        ORDER BY created_at ASC`,
-      [this.projectId],
-    );
-    return rows;
-  }
-
-  async enqueueBeadWrite(sender: string, operation: string, payload: unknown): Promise<void> {
-    await this.adapter.enqueueBeadWrite(this.projectId, sender, operation, payload);
-  }
-
-  async markBeadWriteProcessed(id: string): Promise<boolean> {
-    return this.adapter.markBeadWriteProcessed(this.projectId, id);
-  }
-
   // ── Merge Queue ─────────────────────────────────────────────────────
 
   async enqueueMerge(_runId: string, _mergeData: Record<string, unknown>): Promise<void> {
     // Not implemented
   }
 
-  async getMergeQueue(): Promise<BeadWriteEntry[]> {
+  async getMergeQueue(): Promise<unknown[]> {
     return [];
   }
 

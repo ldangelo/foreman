@@ -201,28 +201,6 @@ export interface Message {
   deleted_at: string | null;
 }
 
-/**
- * Represents a pending bead write operation in the serialized write queue.
- *
- * Operations are inserted by agent-workers, refinery, pipeline-executor, and
- * auto-merge, then drained and executed sequentially by the dispatcher.
- * This eliminates concurrent br CLI invocations that cause Postgres contention.
- */
-export interface BeadWriteEntry {
-  /** Unique entry ID (UUID). */
-  id: string;
-  /** Source of the write (e.g. "agent-worker", "refinery", "pipeline-executor"). */
-  sender: string;
-  /** Operation type: "close-seed" | "reset-seed" | "mark-failed" | "add-notes" | "add-labels". */
-  operation: string;
-  /** JSON-encoded payload specific to the operation. */
-  payload: string;
-  /** ISO timestamp when the entry was inserted. */
-  created_at: string;
-  /** ISO timestamp when the entry was processed (null = pending). */
-  processed_at: string | null;
-}
-
 // ── Native Task interfaces ───────────────────────────────────────────────
 
 /**
@@ -432,24 +410,6 @@ CREATE TABLE IF NOT EXISTS merge_costs (
 CREATE INDEX IF NOT EXISTS idx_merge_costs_session ON merge_costs (session_id);
 CREATE INDEX IF NOT EXISTS idx_merge_costs_date ON merge_costs (recorded_at);
 
-`;
-
-// Bead write queue DDL — project-scoped serialized write queue for br operations.
-// Agent-workers, refinery, pipeline-executor, and auto-merge enqueue writes here.
-// The dispatcher drains this table sequentially, executing br CLI commands one at a
-// time, eliminating concurrent backend lock contention on .beads/beads.jsonl.
-const BEAD_WRITE_QUEUE_SCHEMA = `
-CREATE TABLE IF NOT EXISTS bead_write_queue (
-  id TEXT PRIMARY KEY,
-  sender TEXT NOT NULL,
-  operation TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  processed_at TEXT DEFAULT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_bead_write_queue_pending
-  ON bead_write_queue (processed_at, created_at);
 `;
 
 // Messages table DDL — kept separate so it can be applied after pre-flight migrations
@@ -835,16 +795,6 @@ export type CostMetricsStore = Pick<ForemanStore,
 >;
 
 /**
- * Narrow interface for the bead write queue.
- * Covers sequential write operations for br CLI invocations.
- */
-export type BeadWriteQueueStore = Pick<ForemanStore,
-  | "enqueueBeadWrite"
-  | "getPendingBeadWrites"
-  | "markBeadWriteProcessed"
->;
-
-/**
  * Narrow interface for dashboard read operations.
  * Covers all read-only methods needed by pollDashboard() and readProjectRegistry().
  * The CLI uses this interface so pure read functions don't need the full store type.
@@ -952,10 +902,6 @@ export class ForemanStore {
     // Apply messaging schema after migrations so any legacy messages table has
     // been dropped first, allowing a clean re-creation.
     this.db.exec(MESSAGES_SCHEMA);
-
-    // Apply bead write queue schema. Uses CREATE TABLE IF NOT EXISTS so it is
-    // safe to apply on every startup for both new and existing databases.
-    this.db.exec(BEAD_WRITE_QUEUE_SCHEMA);
 
     // Apply native task management schemas (PRD-2026-006 REQ-003, REQ-004).
     // Both use CREATE TABLE IF NOT EXISTS — safe to run on every startup.
@@ -1805,61 +1751,6 @@ export class ForemanStore {
       (this.db.prepare("SELECT * FROM messages WHERE id = ?").get(messageId) as Message | undefined) ??
       null
     );
-  }
-
-  // ── Bead Write Queue ─────────────────────────────────────────────────
-
-  /**
-   * Enqueue a bead write operation for sequential processing by the dispatcher.
-   *
-   * Called by agent-workers, refinery, pipeline-executor, and auto-merge
-   * instead of invoking the br CLI directly. The dispatcher drains this queue
-   * and executes br commands one at a time, eliminating backend lock contention.
-   *
-   * @param sender - Human-readable source identifier (e.g. "agent-worker", "refinery")
-   * @param operation - Operation type: "close-seed" | "reset-seed" | "mark-failed" | "add-notes" | "add-labels"
-   * @param payload - Operation-specific data (will be JSON-stringified)
-   */
-  enqueueBeadWrite(sender: string, operation: string, payload: unknown): void {
-    const entry: BeadWriteEntry = {
-      id: randomUUID(),
-      sender,
-      operation,
-      payload: JSON.stringify(payload),
-      created_at: new Date().toISOString(),
-      processed_at: null,
-    };
-    this.db
-      .prepare(
-        `INSERT INTO bead_write_queue (id, sender, operation, payload, created_at, processed_at)
-         VALUES (@id, @sender, @operation, @payload, @created_at, @processed_at)`
-      )
-      .run(entry);
-  }
-
-  /**
-   * Retrieve all pending (unprocessed) bead write entries in insertion order.
-   * Returns entries where processed_at IS NULL, ordered by created_at ASC.
-   */
-  getPendingBeadWrites(): BeadWriteEntry[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM bead_write_queue
-         WHERE processed_at IS NULL
-         ORDER BY created_at ASC, rowid ASC`
-      )
-      .all() as BeadWriteEntry[];
-  }
-
-  /**
-   * Mark a bead write entry as processed by setting its processed_at timestamp.
-   * @returns true if the entry was found and updated, false otherwise.
-   */
-  markBeadWriteProcessed(id: string): boolean {
-    const result = this.db
-      .prepare("UPDATE bead_write_queue SET processed_at = ? WHERE id = ?")
-      .run(new Date().toISOString(), id);
-    return result.changes > 0;
   }
 
   // ── Sentinel ─────────────────────────────────────────────────────────

@@ -894,38 +894,6 @@ describe("PostgresAdapter message operations", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bead write queue
-// ---------------------------------------------------------------------------
-
-describe("PostgresAdapter bead write queue operations", () => {
-  it("enqueueBeadWrite inserts a queued write", async () => {
-    let capturedParams: unknown[] = [];
-    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO bead_write_queue/, rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
-      capturedParams = params ?? [];
-      return { rows: [], rowCount: 1 };
-    });
-    await initPool({ poolOverride: mockPool });
-    try {
-      await adapter.enqueueBeadWrite(PROJECT_ID, "sentinel", "upsert", { id: "1" });
-      expect(capturedParams).toEqual([PROJECT_ID, "sentinel", "upsert", JSON.stringify({ id: "1" })]);
-    } finally {
-      await destroyPool();
-    }
-  });
-
-  it("markBeadWriteProcessed timestamps a queued write", async () => {
-    const mockPool = makeMockPool([{ sqlPattern: /UPDATE bead_write_queue/, rowCount: 1 }]);
-    await initPool({ poolOverride: mockPool });
-    try {
-      await expect(adapter.markBeadWriteProcessed(PROJECT_ID, "bw-1")).resolves.toBe(true);
-    } finally {
-      await destroyPool();
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Sentinel operations
 // ---------------------------------------------------------------------------
 
