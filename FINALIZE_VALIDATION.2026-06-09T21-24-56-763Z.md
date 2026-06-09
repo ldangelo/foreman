@@ -1,8 +1,8 @@
-# Finalize Validation: Board-created tasks use UUID IDs instead of compact project IDs
+# Fix: Board-created tasks now use compact project-prefixed allocation instead of UUIDs
 
 ## Seed: foreman-70661
 ## Run: 26ef2948-e3cd-498d-92b2-1b75e4082d27
-## Timestamp: 2026-06-09T12:00:00.000Z
+## Timestamp: 2026-06-09T00:00:00.000Z
 
 ## Target Integration
 - Status: SKIPPED
