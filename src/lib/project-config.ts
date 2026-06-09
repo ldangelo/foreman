@@ -192,6 +192,62 @@ export interface IssueTrackerConfig {
 }
 
 /**
+ * Container sandbox configuration for untrusted workflows.
+ *
+ * When configured, agent execution runs inside an isolated Docker/Podman container
+ * instead of directly on the host. Useful for security-sensitive or untrusted code.
+ *
+ * @example
+ * ```yaml
+ * sandbox:
+ *   backend: docker          # 'docker' | 'podman' | 'auto' (default)
+ *   image: ubuntu:22.04      # Container image (default: ubuntu:22.04)
+ *   limits:
+ *     cpu: "1"               # CPU limit
+ *     memory: "2g"           # Memory limit
+ *   network: false           # Disable networking (default: false)
+ *   cleanup: remove           # 'remove' | 'keep' (default: 'remove')
+ * ```
+ */
+export interface SandboxConfig {
+  /**
+   * Which sandbox backend to use.
+   * - 'docker'  — always use Docker
+   * - 'podman'  — always use Podman
+   * - 'auto'    — detect from environment (default: 'auto')
+   */
+  backend?: "docker" | "podman" | "auto";
+  /**
+   * Container image to use for sandboxes.
+   * Default: 'ubuntu:22.04'.
+   */
+  image?: string;
+  /**
+   * Resource limits for sandbox containers.
+   */
+  limits?: {
+    /** Maximum CPU units (e.g., "1" for 1 CPU, "0.5" for half). */
+    cpu?: string;
+    /** Memory limit (e.g., "2g" for 2GB, "512m" for 512MB). */
+    memory?: string;
+    /** Specific CPUs to allow (e.g., "0-1" for cores 0-1). */
+    cpuset?: string;
+    /** Maximum swap memory (e.g., "1g"). */
+    memorySwap?: string;
+  };
+  /**
+   * Enable networking in sandbox. Default: false (network disabled).
+   */
+  network?: boolean;
+  /**
+   * Cleanup policy when sandbox container exits.
+   * - 'remove'  — remove container after destroy (default)
+   * - 'keep'    — leave container stopped for debugging
+   */
+  cleanup?: "remove" | "keep";
+}
+
+/**
  * Workspace lifecycle hooks for pre/post-run customization.
  * Loaded from project config and/or workflow YAML.
  * @deprecated Use WorkspaceHooks from orchestrator/types instead
@@ -251,6 +307,8 @@ export interface ProjectConfig {
   concurrency?: ConcurrencyConfig;
   /** Issue tracker configuration (e.g., Jira) for monitoring status transitions. */
   issueTracker?: IssueTrackerConfig;
+  /** Container sandbox configuration for untrusted workflows (Backlog-011). */
+  sandbox?: SandboxConfig;
   /** Workspace lifecycle hooks for pre/post-run customization. */
   hooks?: ProjectHooksConfig;
   /**
@@ -725,6 +783,75 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
     config.taskTypeWorkflowMap = validatedMap;
   }
 
+  // Optional sandbox sub-config (Backlog-011: Container Sandboxing)
+  if ("sandbox" in raw) {
+    const sandboxRaw = raw["sandbox"];
+    if (!isRecord(sandboxRaw)) {
+      throw new ProjectConfigError(filePath, "'sandbox' must be an object");
+    }
+    const sandboxConfig: SandboxConfig = {};
+
+    if ("backend" in sandboxRaw) {
+      const backend = sandboxRaw["backend"];
+      if (backend !== undefined && backend !== "docker" && backend !== "podman" && backend !== "auto") {
+        throw new ProjectConfigError(
+          filePath,
+          "'sandbox.backend' must be 'docker', 'podman', or 'auto'",
+        );
+      }
+      sandboxConfig.backend = backend as "docker" | "podman" | "auto" | undefined;
+    }
+
+    if ("image" in sandboxRaw) {
+      if (typeof sandboxRaw["image"] !== "string" || !sandboxRaw["image"].trim()) {
+        throw new ProjectConfigError(filePath, "'sandbox.image' must be a non-empty string");
+      }
+      sandboxConfig.image = sandboxRaw["image"] as string;
+    }
+
+    if ("limits" in sandboxRaw) {
+      const limitsRaw = sandboxRaw["limits"];
+      if (!isRecord(limitsRaw)) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits' must be an object");
+      }
+      sandboxConfig.limits = {};
+      if ("cpu" in limitsRaw && (typeof limitsRaw["cpu"] !== "string" || !limitsRaw["cpu"].trim())) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits.cpu' must be a non-empty string");
+      }
+      sandboxConfig.limits.cpu = limitsRaw["cpu"] as string | undefined;
+      if ("memory" in limitsRaw && (typeof limitsRaw["memory"] !== "string" || !limitsRaw["memory"].trim())) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits.memory' must be a non-empty string");
+      }
+      sandboxConfig.limits.memory = limitsRaw["memory"] as string | undefined;
+      if ("cpuset" in limitsRaw && (typeof limitsRaw["cpuset"] !== "string" || !limitsRaw["cpuset"].trim())) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits.cpuset' must be a non-empty string");
+      }
+      sandboxConfig.limits.cpuset = limitsRaw["cpuset"] as string | undefined;
+      if ("memorySwap" in limitsRaw && (typeof limitsRaw["memorySwap"] !== "string" || !limitsRaw["memorySwap"].trim())) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits.memorySwap' must be a non-empty string");
+      }
+      sandboxConfig.limits.memorySwap = limitsRaw["memorySwap"] as string | undefined;
+    }
+
+    if ("network" in sandboxRaw && typeof sandboxRaw["network"] !== "boolean") {
+      throw new ProjectConfigError(filePath, "'sandbox.network' must be a boolean");
+    }
+    sandboxConfig.network = sandboxRaw["network"] as boolean | undefined;
+
+    if ("cleanup" in sandboxRaw) {
+      const cleanup = sandboxRaw["cleanup"];
+      if (cleanup !== undefined && cleanup !== "remove" && cleanup !== "keep") {
+        throw new ProjectConfigError(
+          filePath,
+          "'sandbox.cleanup' must be 'remove' or 'keep'",
+        );
+      }
+      sandboxConfig.cleanup = cleanup as "remove" | "keep" | undefined;
+    }
+
+    config.sandbox = sandboxConfig;
+  }
+
   return config;
 }
 
@@ -841,6 +968,64 @@ export function resolveVcsConfig(
   };
   if (Object.keys(mergedJj).length > 0) {
     resolved.jujutsu = mergedJj;
+  }
+
+  return resolved;
+}
+
+/**
+ * Resolve the final `SandboxConfig` by merging workflow-level and project-level settings.
+ *
+ * Resolution order (highest priority wins):
+ *   1. `workflowSandbox` (if present)
+ *   2. `projectSandbox` (if present)
+ *   3. undefined (no sandbox — host execution)
+ *
+ * Sub-options (image, limits, network, cleanup) are merged with workflow
+ * settings taking precedence over project settings.
+ *
+ * @param workflowSandbox - Sandbox config from the workflow YAML `sandbox:` block (optional).
+ * @param projectSandbox  - Sandbox config from `~/.foreman/config.yaml` `sandbox:` block (optional).
+ * @returns Resolved `SandboxConfig` ready for `SandboxProviderFactory.create()`.
+ */
+export function resolveSandboxConfig(
+  workflowSandbox?: SandboxConfig,
+  projectSandbox?: SandboxConfig,
+): SandboxConfig | undefined {
+  // If neither has sandbox config, return undefined
+  if (!workflowSandbox && !projectSandbox) {
+    return undefined;
+  }
+
+  // Start with project config as base
+  const resolved: SandboxConfig = {
+    backend: projectSandbox?.backend,
+    image: projectSandbox?.image,
+    limits: projectSandbox?.limits ? { ...projectSandbox.limits } : undefined,
+    network: projectSandbox?.network,
+    cleanup: projectSandbox?.cleanup,
+  };
+
+  // Override with workflow config (workflow takes precedence)
+  if (workflowSandbox) {
+    if (workflowSandbox.backend !== undefined) {
+      resolved.backend = workflowSandbox.backend;
+    }
+    if (workflowSandbox.image !== undefined) {
+      resolved.image = workflowSandbox.image;
+    }
+    if (workflowSandbox.limits !== undefined) {
+      resolved.limits = {
+        ...(resolved.limits ?? {}),
+        ...workflowSandbox.limits,
+      };
+    }
+    if (workflowSandbox.network !== undefined) {
+      resolved.network = workflowSandbox.network;
+    }
+    if (workflowSandbox.cleanup !== undefined) {
+      resolved.cleanup = workflowSandbox.cleanup;
+    }
   }
 
   return resolved;

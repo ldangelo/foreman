@@ -13,7 +13,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execFile, execSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
 import { join, basename } from "node:path";
-import type { WorkflowConfig, WorkflowPhaseConfig } from "../lib/workflow-loader.js";
+import type { WorkflowConfig, WorkflowPhaseConfig, WorkflowSandboxConfig } from "../lib/workflow-loader.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type { ProjectHooksConfig } from "../lib/project-config.js";
 import { interpolateTaskPlaceholders } from "../lib/interpolate.js";
@@ -41,6 +41,9 @@ import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncre
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
+import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig } from "../lib/project-config.js";
+import { SandboxProviderFactory } from "../lib/sandbox-providers/index.js";
+import type { SandboxProviderConfig } from "../lib/sandbox-provider.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -408,6 +411,29 @@ function isGeneratedWorkflowArtifact(filePath: string): boolean {
 
 const BASH_PHASE_TIMEOUT_MS = 120_000; // 120 seconds
 
+function toSandboxProviderConfig(config: WorkflowSandboxConfig): SandboxProviderConfig {
+  return {
+    backend: config.backend ?? "auto",
+    image: config.image,
+    limits: config.limits,
+    network: config.network,
+    cleanup: config.cleanup,
+  };
+}
+
+export function applyEffectiveSandboxConfig(ctx: PipelineContext): void {
+  const projectSandbox = ctx.config.projectPath ? loadProjectConfig(ctx.config.projectPath)?.sandbox : undefined;
+  const effectiveSandbox = resolveProjectSandboxConfig(ctx.workflowConfig.sandbox, projectSandbox);
+  if (!effectiveSandbox) return;
+
+  const hostPhases = ctx.workflowConfig.phases.filter((phase) => !phase.bash).map((phase) => phase.name);
+  if (hostPhases.length > 0) {
+    throw new Error(`Sandbox is only supported for bash phases; host-executed phases are not isolated: ${hostPhases.join(", ")}`);
+  }
+
+  ctx.workflowConfig.sandbox = effectiveSandbox;
+}
+
 /**
  * Result of a bash phase execution.
  * Mirrors PhaseResult but includes stdout/stderr for artifact writing.
@@ -432,6 +458,7 @@ export async function runBashPhase(
   cwd: string,
   artifactFile?: string,
   timeoutMs = BASH_PHASE_TIMEOUT_MS,
+  sandboxConfig?: WorkflowSandboxConfig,
 ): Promise<BashPhaseResult> {
   // Interpolate placeholders
   const interpolated = taskMeta
@@ -449,14 +476,40 @@ export async function runBashPhase(
   let timedOut = false;
 
   try {
-    const result = await execFilePromise('/bin/sh', ['-c', interpolated], {
-      cwd,
-      timeout: timeoutMs,
-      maxBuffer: 10 * 1024 * 1024, // 10 MB
-    });
-    stdout = result.stdout ?? '';
-    stderr = result.stderr ?? '';
-    exitCode = result.status ?? 0;
+    if (sandboxConfig) {
+      const providerConfig = toSandboxProviderConfig(sandboxConfig);
+      const provider = await SandboxProviderFactory.create(providerConfig);
+      const sandbox = await provider.createSandbox(cwd, providerConfig.image ?? "ubuntu:22.04", {
+        limits: providerConfig.limits,
+        mounts: providerConfig.mounts,
+        ports: providerConfig.ports,
+        network: providerConfig.network,
+        user: providerConfig.user,
+        cleanup: providerConfig.cleanup,
+      });
+      try {
+        const result = await provider.runInSandbox(sandbox.id, ['/bin/sh', '-c', interpolated], {
+          cwd: sandbox.workdir,
+          timeoutMs,
+        });
+        stdout = result.stdout ?? '';
+        stderr = result.stderr ?? '';
+        exitCode = result.exitCode;
+      } finally {
+        if (providerConfig.cleanup !== "keep") {
+          await provider.destroySandbox(sandbox.id);
+        }
+      }
+    } else {
+      const result = await execFilePromise('/bin/sh', ['-c', interpolated], {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: 10 * 1024 * 1024, // 10 MB
+      });
+      stdout = result.stdout ?? '';
+      stderr = result.stderr ?? '';
+      exitCode = result.status ?? 0;
+    }
   } catch (err: unknown) {
     timedOut = err instanceof Error && err.message.includes('timed out');
     if (timedOut) {
@@ -567,6 +620,7 @@ function execFilePromise(
 export async function executePipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig } = ctx;
   const epicTasks = ctx.epicTasks;
+  applyEffectiveSandboxConfig(ctx);
   const isEpicMode = epicTasks && epicTasks.length > 0 && workflowConfig.taskPhases;
 
   if (isEpicMode) {
@@ -1347,6 +1401,7 @@ async function runPhaseSequence(
         worktreePath,
         phase.artifact,
         phase.timeoutSecs !== undefined ? phase.timeoutSecs * 1000 : undefined,
+        ctx.workflowConfig.sandbox,
       );
       // TRD-004: record phase result (same structure as ctx.runPhase result)
       const result: PhaseResult = {
