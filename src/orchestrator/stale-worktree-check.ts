@@ -9,10 +9,20 @@
  * @module src/orchestrator/stale-worktree-check
  */
 
-import type { ProgressEventStore } from "../lib/store.js";
+import type { EventType } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
+
+/** Minimal event logger used by stale worktree checks. */
+export interface StaleWorktreeEventStore {
+  logEvent(
+    projectId: string,
+    eventType: EventType,
+    details: Record<string, unknown> | string,
+    runId?: string,
+  ): Promise<void> | void;
+}
 
 /**
  * Result of a stale worktree check.
@@ -57,7 +67,7 @@ export interface StaleDetectionResult {
 // ── Main function ─────────────────────────────────────────────────────────
 
 async function logStaleWorktreeEvent(
-  store: ProgressEventStore,
+  store: StaleWorktreeEventStore,
   projectId: string,
   runId: string,
   eventType: "worktree-rebased" | "worktree-rebase-failed",
@@ -108,7 +118,7 @@ export async function checkAndRebaseStaleWorktree(
   vcs: VcsBackend,
   worktreePath: string,
   targetBranch: string,
-  store: ProgressEventStore,
+  store: StaleWorktreeEventStore,
   projectId: string,
   runId: string,
   seedId: string,

@@ -11,11 +11,17 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import type { BvClient } from "../lib/bv.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
-import type { NativeTask } from "../lib/store.js";
+import type { NativeTask, Run, EventType } from "../lib/store.js";
 import type { RunStoreReadModel } from "./read-models.js";
 import type { RunCommands, RunFactory } from "./write-models.js";
 import type { ModelSelection, RuntimeSelection } from "./types.js";
 import type { RuntimeMode } from "../cli/commands/run.js";
+import type { Project } from "../lib/store.js";
+
+// ── Awaitable helper ──────────────────────────────────────────────────────
+
+/** Type that can be sync or async. */
+export type Awaitable<T> = T | Promise<T>;
 
 // ── Task store interface ───────────────────────────────────────────────────
 
@@ -36,6 +42,106 @@ export interface TaskStoreOps {
   claimTask(taskId: string, runId: string): Promise<boolean>;
   /** Update a task's status. */
   updateTaskStatus?(taskId: string, status: string): Promise<void>;
+}
+
+// ── Dispatcher store deps (narrow interface) ──────────────────────────────
+
+/**
+ * Narrow interface capturing only the store methods the Dispatcher uses.
+ * Replaces the full ForemanStore dependency to reduce coupling.
+ *
+ * Task operations (native-only path):
+ * - getReadyTasks, getTaskByExternalId, getTaskById, claimTask, updateTaskLabels
+ *
+ * Run operations:
+ * - createRun, getRun, updateRun, getActiveRuns, getRunsByStatus,
+ *   getRunsForSeed, getRunsByStatusesSince
+ *
+ * Event/mail operations:
+ * - logEvent, sendMessage
+ *
+ * Project operations:
+ * - getProjectByPath
+ *
+ * Query operations:
+ * - hasActiveOrPendingRun
+ */
+export interface DispatcherStoreDeps {
+  // Task operations (native-only path)
+  /** Get all tasks in a ready state. */
+  getReadyTasks(): Awaitable<NativeTask[]>;
+  /** Get a task by its external ID. */
+  getTaskByExternalId(externalId: string): Awaitable<NativeTask | null>;
+  /** Get a task by its ID. */
+  getTaskById(id: string): Awaitable<NativeTask | null>;
+  /** Claim a task for a run (returns true if claimed successfully). */
+  claimTask(taskId: string, runId: string): Awaitable<boolean>;
+  /** Update task labels. */
+  updateTaskLabels?(taskId: string, labels: string[]): Awaitable<void>;
+
+  // Run operations
+  /** Create a new run record. */
+  createRun(
+    projectId: string,
+    seedId: string,
+    agentType: string,
+    worktreePath?: string | null | undefined,
+    opts?: {
+      baseBranch?: string | null;
+      mergeStrategy?: string | null;
+      sessionKey?: string | null;
+    },
+  ): Awaitable<Run>;
+  /** Get a run by ID. */
+  getRun(runId: string): Awaitable<Run | null>;
+  /** Update a run record. */
+  updateRun(
+    runId: string,
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
+  ): Awaitable<void>;
+  /** Get all active runs (pending or running). */
+  getActiveRuns(projectId?: string): Awaitable<Run[]>;
+  /** Get runs by status. */
+  getRunsByStatus(status: Run["status"], projectId?: string): Awaitable<Run[]>;
+  /** Get runs for a seed. */
+  getRunsForSeed(seedId: string, projectId?: string): Awaitable<Run[]>;
+  /** Get runs matching any of the given statuses created on or after `since`. */
+  getRunsByStatusesSince(
+    statuses: Run["status"][],
+    since: string,
+    projectId?: string,
+  ): Awaitable<Run[]>;
+
+  // Event/mail operations
+  /** Log an event. */
+  logEvent(
+    projectId: string,
+    eventType: EventType,
+    details: Record<string, unknown> | string,
+    runId?: string
+  ): Awaitable<void>;
+  /** Send a message. */
+  sendMessage(
+    runId: string,
+    senderAgentType: string,
+    recipientAgentType: string,
+    subject: string,
+    body: string,
+  ): Awaitable<unknown>;
+  /** Update run progress. */
+  updateRunProgress(runId: string, progress: unknown): Awaitable<void>;
+  /** Get run progress. */
+  getRunProgress(runId: string): Awaitable<unknown>;
+  /** Get events for a run. */
+  getEvents(runId: string): Awaitable<unknown[]>;
+
+  // Project operations
+  /** Get project by path. */
+  getProjectByPath(path: string): Awaitable<Project | null>;
+
+  // Query operations
+  /** Check if a seed has an active or pending run. */
+  hasActiveOrPendingRun(seedId: string, projectId?: string): Awaitable<boolean>;
 }
 
 // ── Run operations interface ───────────────────────────────────────────────

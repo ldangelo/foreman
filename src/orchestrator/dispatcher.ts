@@ -8,8 +8,9 @@ import { randomUUID } from "node:crypto";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
-import type { EventType, ForemanStore, NativeTask, Run } from "../lib/store.js";
+import type { NativeTask, Run, EventType } from "../lib/store.js";
 import type { RunStatus } from "./read-models.js";
+import type { DispatcherStoreDeps } from "./dispatcher-dependencies.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
@@ -146,7 +147,7 @@ export class Dispatcher {
 
   constructor(
     private seeds: ITaskClient,
-    private store: ForemanStore,
+    private store: DispatcherStoreDeps,
     private projectPath: string,
     private bvClient?: BvClient | null,
     private overrides?: DispatcherOverrides,
@@ -276,13 +277,13 @@ export class Dispatcher {
     }
 
     const currentRun = "getRun" in this.store
-      ? this.store.getRun(runId)
+      ? await this.store.getRun(runId)
       : null;
     if (shouldPreserveTerminalSuccess(currentRun?.status, updates.status)) {
       return;
     }
 
-    this.store.updateRun(runId, updates);
+    await this.store.updateRun(runId, updates);
   }
 
   private async updateNativeTaskStatus(taskId: string, status: string): Promise<void> {
@@ -291,7 +292,7 @@ export class Dispatcher {
       return;
     }
 
-    const storeWithNativeUpdate = this.store as ForemanStore & {
+    const storeWithNativeUpdate = this.store as DispatcherStoreDeps & {
       updateTaskStatus?: (taskId: string, status: string) => void | Promise<void>;
       getDb?: () => { prepare: (sql: string) => { run: (params: Record<string, unknown>) => unknown } };
     };
@@ -321,7 +322,7 @@ export class Dispatcher {
       return;
     }
 
-    this.store.sendMessage(runId, senderAgentType, recipientAgentType, subject, body);
+    await this.store.sendMessage(runId, senderAgentType, recipientAgentType, subject, body);
   }
 
   private async logEventRecord(
@@ -336,7 +337,7 @@ export class Dispatcher {
       return;
     }
 
-    this.store.logEvent(projectId, eventType, payload, runId);
+    await this.store.logEvent(projectId, eventType, payload, runId);
   }
 
   private async getActiveRunsRecord(projectId: string): Promise<Run[]> {
@@ -396,7 +397,7 @@ export class Dispatcher {
     staggerMs?: number;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
-    const projectId = opts?.projectId ?? this.resolveProjectId();
+    const projectId = opts?.projectId ?? await this.resolveProjectId();
 
     if (!opts?.dryRun && this.overrides?.externalProjectId) {
       this.validateRegisteredRunOps(["createRun", "updateRun", "logEvent", "sendMessage"]);
@@ -439,7 +440,7 @@ export class Dispatcher {
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const failedCount = this.overrides?.getRecentFailureCount
           ? await this.overrides.getRecentFailureCount(projectId, since)
-          : this.store.getRunsByStatusesSince(["test-failed", "failed", "stuck", "conflict"], since, projectId).length;
+          : (await this.store.getRunsByStatusesSince(["test-failed", "failed", "stuck", "conflict"], since, projectId)).length;
         if (failedCount > 0) {
           log(`[dispatch] onError=stop — ${failedCount} failed run(s) detected. Refusing to dispatch until resolved. Use 'foreman reset' to clear.`);
           return {
@@ -486,8 +487,8 @@ export class Dispatcher {
             const task = this.overrides?.nativeTaskOps
               ? await this.overrides.nativeTaskOps.getTaskByExternalId(run.seed_id)
                 ?? await this.overrides.nativeTaskOps.getTaskById(run.seed_id)
-              : this.store.getTaskByExternalId(run.seed_id)
-                ?? this.store.getTaskById(run.seed_id);
+              : await this.store.getTaskByExternalId(run.seed_id)
+                ?? await this.store.getTaskById(run.seed_id);
             if (task) {
               const state = task.status;
               activeRunsByState.set(state, (activeRunsByState.get(state) ?? 0) + 1);
@@ -506,7 +507,7 @@ export class Dispatcher {
     // Load ready tasks from the native store exclusively.
     const nativeTasks = this.overrides?.nativeTaskOps
       ? await this.overrides.nativeTaskOps.getReadyTasks()
-      : this.store.getReadyTasks();
+      : await this.store.getReadyTasks();
     let readySeeds: Issue[] = nativeTasks.map(nativeTaskToIssue);
 
     // Sort ready seeds using bv triage scores when available, falling back to priority sort.
@@ -569,12 +570,12 @@ export class Dispatcher {
         // Try external_id first (for tasks that have it set)
         let nativeMatch = this.overrides?.nativeTaskOps
           ? await this.overrides.nativeTaskOps.getTaskByExternalId(opts.seedId)
-          : this.store.getTaskByExternalId(opts.seedId);
+          : await this.store.getTaskByExternalId(opts.seedId);
         // Fall back to id lookup when external_id is not set (common for native tasks)
         if (!nativeMatch) {
           nativeMatch = this.overrides?.nativeTaskOps
             ? await this.overrides.nativeTaskOps.getTaskById(opts.seedId)
-            : this.store.getTaskById(opts.seedId);
+            : await this.store.getTaskById(opts.seedId);
         }
         if (nativeMatch) {
           if (nativeMatch.status === "ready") {
@@ -738,7 +739,7 @@ export class Dispatcher {
           }
         } else {
           // Non-native mode: use store.getTaskById() as primary, not this.seeds
-          const storeTask = this.store.getTaskById(seed.id);
+          const storeTask = await this.store.getTaskById(seed.id);
           if (storeTask) {
             seedDetail = {
               description: storeTask.description,
@@ -783,8 +784,8 @@ export class Dispatcher {
               const parentTask = this.overrides?.nativeTaskOps
                 ? await this.overrides.nativeTaskOps.getTaskByExternalId(seed.parent)
                   ?? await this.overrides.nativeTaskOps.getTaskById(seed.parent)
-                : this.store.getTaskByExternalId(seed.parent)
-                  ?? this.store.getTaskById(seed.parent);
+                : await this.store.getTaskByExternalId(seed.parent)
+                  ?? await this.store.getTaskById(seed.parent);
               if (parentTask) {
                 const parentBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(parentTask.labels ?? []));
                 if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
@@ -802,8 +803,8 @@ export class Dispatcher {
               // Update labels via native store
               if (this.overrides?.nativeTaskOps?.updateTaskLabels) {
                 await this.overrides.nativeTaskOps.updateTaskLabels(seed.id, updatedLabels);
-              } else {
-                this.store.updateTaskLabels(seed.id, updatedLabels);
+              } else if (this.store.updateTaskLabels) {
+                await this.store.updateTaskLabels(seed.id, updatedLabels);
               }
               log(`[foreman] Auto-labeled ${seed.id} with branch:${labelBranch}`);
               // Update seedDetail.labels so seedToInfo() sees the updated labels
@@ -1154,7 +1155,7 @@ export class Dispatcher {
     runtimeMode?: RuntimeMode;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
-    const projectId = this.resolveProjectId();
+    const projectId = await this.resolveProjectId();
     const statuses = opts?.statuses ?? ["stuck"];
 
     if (this.overrides?.externalProjectId) {
@@ -1456,7 +1457,7 @@ export class Dispatcher {
     log(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
 
     const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
-    const projectId = this.resolveProjectId();
+    const projectId = await this.resolveProjectId();
     const staleWorktreeEventWriter = this.overrides?.externalProjectId
       ? async (eventType: "worktree-rebased" | "worktree-rebase-failed", payload: Record<string, unknown>) => {
           await this.logEventRecord(projectId, eventType as EventType, payload, runId);
@@ -1486,7 +1487,7 @@ export class Dispatcher {
 
       const { pid } = await spawnWorkerProcess({
         runId,
-        projectId: this.overrides?.externalProjectId ?? this.resolveProjectId(),
+        projectId: this.overrides?.externalProjectId ?? projectId,
         seedId: seed.id,
         seedTitle: seed.title,
         seedDescription: seed.description,
@@ -1514,7 +1515,7 @@ export class Dispatcher {
           description: seed.description ?? '',
           type: seed.type ?? '',
           priority: typeof seed.priority === 'number' ? seed.priority : 2,
-          projectReportsDir: getRunReportsDir(this.overrides?.externalProjectId ?? this.resolveProjectId(), seed.id, runId),
+          projectReportsDir: getRunReportsDir(this.overrides?.externalProjectId ?? projectId, seed.id, runId),
         },
         githubIssueNumber: seed.githubIssueNumber,
         // FR-1: Directory guardrail — verify agent cwd matches expected worktree
@@ -1552,9 +1553,10 @@ export class Dispatcher {
     const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, undefined, runtimeMode);
     log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
 
+    const projectId = await this.resolveProjectId();
     const { pid } = await spawnWorkerProcess({
       runId,
-      projectId: this.overrides?.externalProjectId ?? this.resolveProjectId(),
+      projectId: this.overrides?.externalProjectId ?? projectId,
       seedId: seed.id,
       seedTitle: seed.title,
       model,
@@ -1681,8 +1683,8 @@ export class Dispatcher {
             taskStatus = task.status;
           }
         } else if (typeof this.store.getTaskByExternalId === "function" && typeof this.store.getTaskById === "function") {
-          const task = this.store.getTaskByExternalId(run.seed_id)
-            ?? this.store.getTaskById(run.seed_id);
+          const task = await this.store.getTaskByExternalId(run.seed_id)
+            ?? await this.store.getTaskById(run.seed_id);
           if (task) {
             taskStatus = task.status;
           }
@@ -1753,11 +1755,11 @@ export class Dispatcher {
     return false;
   }
 
-  private resolveProjectId(): string {
+  private async resolveProjectId(): Promise<string> {
     if (this.overrides?.externalProjectId) {
       return this.overrides.externalProjectId;
     }
-    const project = this.store.getProjectByPath(this.projectPath);
+    const project = await this.store.getProjectByPath(this.projectPath);
     if (!project) {
       throw new Error(
         `No project registered for path ${this.projectPath}. Run 'foreman init' first.`,
