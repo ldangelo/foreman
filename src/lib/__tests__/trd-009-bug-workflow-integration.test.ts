@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 // TRD-009: End-to-end integration test for bug.yaml workflow
 // 1. workflow-scoped fix prompt (fix-issue.md)
-// 2. bash: phase (TRD-004)
+// 2. QA validation phase with developer remediation on failure
 // 3. merge: auto (TRD-002, TRD-007)
 // Also verifies type-based dispatch selects bug.yaml for bead type "bug" (TRD-006)
 
@@ -66,35 +66,31 @@ describe('TRD-009 bug.yaml workflow integration', () => {
     });
   });
 
-  describe('TRD-004: bash: phase (test phase)', () => {
-    const testPhase = bugWorkflow.phases.find((p) => p.name === 'test');
+  describe('QA validation phase', () => {
+    const qaPhase = bugWorkflow.phases.find((p) => p.name === 'qa');
 
-    it('test phase exists', () => {
-      expect(testPhase).toBeDefined();
+    it('qa phase exists', () => {
+      expect(qaPhase).toBeDefined();
     });
 
-    it('test phase has bash: field', () => {
-      expect(testPhase?.bash).toBeDefined();
+    it('qa phase uses qa prompt', () => {
+      expect(qaPhase?.prompt).toBe('qa.md');
     });
 
-    it('test phase bash command is npm run test:unit', () => {
-      expect(testPhase?.bash).toBe('npm run test:unit');
+    it('qa phase has artifact: QA_REPORT.md', () => {
+      expect(qaPhase?.artifact).toBe('{task.projectReportsDir}/QA_REPORT.md');
     });
 
-    it('test phase has artifact: TEST_RESULTS.md', () => {
-      expect(testPhase?.artifact).toBe('TEST_RESULTS.md');
+    it('qa phase has verdict: true', () => {
+      expect(qaPhase?.verdict).toBe(true);
     });
 
-    it('test phase has verdict: true', () => {
-      expect(testPhase?.verdict).toBe(true);
+    it('qa phase retries through generic developer remediation', () => {
+      expect(qaPhase?.retryWith).toBe('developer');
     });
 
-    it('test phase retries through generic developer remediation', () => {
-      expect(testPhase?.retryWith).toBe('developer');
-    });
-
-    it('test phase has retryOnFail: 2', () => {
-      expect(testPhase?.retryOnFail).toBe(2);
+    it('qa phase has retryOnFail: 2', () => {
+      expect(qaPhase?.retryOnFail).toBe(2);
     });
   });
 

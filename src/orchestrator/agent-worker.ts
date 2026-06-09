@@ -1033,13 +1033,10 @@ function workerReportDir(config: WorkerConfig): string {
   return config.taskMeta?.projectReportsDir || getRunReportsDir(config.projectId, config.seedId, config.runId);
 }
 
-async function gitCommitsAhead(cwd: string, baseBranch: string, branchName: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["log", `${baseBranch}..${branchName}`, "--oneline"], {
-    cwd,
-    maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
-    env: { ...process.env, GIT_EDITOR: "true" },
-  });
-  return stdout.trim();
+async function hasChangesAgainstBase(vcsBackend: VcsBackend | undefined, repoPath: string, baseBranch: string, branchName: string): Promise<boolean> {
+  if (!vcsBackend) return true;
+  const changedFiles = await vcsBackend.getChangedFiles(repoPath, baseBranch, branchName);
+  return changedFiles.length > 0;
 }
 
 async function runCreatePrBuiltinPhase(args: {
@@ -1064,28 +1061,28 @@ async function runCreatePrBuiltinPhase(args: {
   );
   const baseBranch = config.targetBranch ?? await vcsBackend?.detectDefaultBranch(pipelineProjectPath).catch(() => "main") ?? "main";
   const branchName = `foreman/${config.seedId}`;
-  const commitsAhead = await gitCommitsAhead(pipelineProjectPath, baseBranch, branchName).catch(() => "");
-  if (!commitsAhead.trim()) {
+  const branchHasChanges = await hasChangesAgainstBase(vcsBackend, pipelineProjectPath, baseBranch, branchName).catch(() => true);
+  if (!branchHasChanges) {
     const metadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
     await mkdir(dirname(metadataPath), { recursive: true });
     await writeFile(metadataPath, JSON.stringify({
       skipped: true,
-      reason: "no_commits_ahead",
+      reason: "no_changes_against_base",
       branchName,
       baseBranch,
     }, null, 2) + "\n", "utf8");
-    await runtimeTaskClient.close(config.seedId, "No commits ahead of target branch; acceptance already satisfied.").catch((err: unknown) => {
-      log(`[CREATE-PR] no-commit task close failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    await runtimeTaskClient.close(config.seedId, "No changes against target branch; acceptance already satisfied.").catch((err: unknown) => {
+      log(`[CREATE-PR] no-change task close failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     });
-    log(`[CREATE-PR] No commits between ${baseBranch} and ${branchName}; skipping PR and closing task.`);
+    log(`[CREATE-PR] No changes between ${baseBranch} and ${branchName}; skipping PR and closing task.`);
     sendMail(agentMailClient, "foreman", "phase-complete", {
       seedId: config.seedId,
       runId: config.runId,
       phase: "create-pr",
       status: "skipped",
-      reason: "no_commits_ahead",
+      reason: "no_changes_against_base",
     });
-    return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: "no_commits_ahead", stopPipelineSuccess: true };
+    return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: "no_changes_against_base", stopPipelineSuccess: true };
   }
   const pr = await refinery.ensurePullRequestForRun({
     runId: config.runId,
