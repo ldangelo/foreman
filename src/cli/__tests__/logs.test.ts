@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { extractPhaseEvents, extractRecentToolEvents } from "../commands/logs.js";
+import { extractPhaseEvents, extractRecentToolEvents, tailFileLines } from "../commands/logs.js";
 
 describe("logs command helpers", () => {
   it("extracts relevant phase events from err logs", () => {
@@ -13,6 +16,18 @@ describe("logs command helpers", () => {
       "[FIX] Completed (3 turns, $0.01)",
       "[DEVELOPER] Skipping — retryOnly phase not activated by retryWith",
     ]);
+  });
+
+  it("tails files with a bounded read", () => {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-logs-test-"));
+    try {
+      const path = join(dir, "large.log");
+      writeFileSync(path, `${"x".repeat(2048)}\nfirst\nsecond\nthird`);
+
+      expect(tailFileLines(path, 2, 32)).toEqual(["second", "third"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("extracts recent tool execution events from raw JSON logs", () => {

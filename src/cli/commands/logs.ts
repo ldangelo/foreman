@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import chalk from "chalk";
@@ -49,9 +49,27 @@ function parseTailCount(value: string | undefined): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 80;
 }
 
-function tailLines(content: string, count: number): string[] {
+export function tailLines(content: string, count: number): string[] {
   const lines = content.split("\n");
   return lines.slice(Math.max(0, lines.length - count));
+}
+
+export function tailFileLines(path: string, count: number, maxBytes = 4 * 1024 * 1024): string[] {
+  const stat = statSync(path);
+  if (stat.size === 0) return [];
+
+  const bytesToRead = Math.min(stat.size, maxBytes);
+  const start = stat.size - bytesToRead;
+  const buffer = Buffer.allocUnsafe(bytesToRead);
+  const fd = openSync(path, "r");
+  try {
+    const bytesRead = readSync(fd, buffer, 0, bytesToRead, start);
+    const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
+    if (start > 0) lines.shift(); // Drop likely partial first line from bounded tail read.
+    return lines.slice(Math.max(0, lines.length - count));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function tryJson(line: string): Record<string, unknown> | null {
@@ -154,7 +172,7 @@ function renderSummary(runId: string, tailCount: number): void {
   renderFileStats(runId);
 
   if (existsSync(errPath)) {
-    const phases = extractPhaseEvents(readFileSync(errPath, "utf8"));
+    const phases = extractPhaseEvents(tailFileLines(errPath, 5000).join("\n"));
     console.log(chalk.bold("\n  Phase/events:"));
     if (phases.length === 0) {
       console.log(chalk.dim("    (none found)"));
@@ -167,7 +185,7 @@ function renderSummary(runId: string, tailCount: number): void {
   }
 
   if (existsSync(jsonLogPath)) {
-    const content = readFileSync(jsonLogPath, "utf8");
+    const content = tailFileLines(jsonLogPath, 5000).join("\n");
     const tools = extractRecentToolEvents(content, 20);
     console.log(chalk.bold("\n  Recent tool activity:"));
     if (tools.length === 0) {
@@ -309,7 +327,7 @@ export const logsCommand = new Command("logs")
     }
 
     if (opts.raw) {
-      for (const line of tailLines(readFileSync(rawPath, "utf8"), tailCount)) {
+      for (const line of tailFileLines(rawPath, tailCount)) {
         if (line.trim()) console.log(line);
       }
     } else {
