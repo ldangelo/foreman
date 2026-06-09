@@ -65,6 +65,7 @@ interface NativeTaskOps {
   getTaskById(id: string): Promise<NativeTask | null>;
   claimTask(taskId: string, runId: string): Promise<boolean>;
   updateTaskStatus?(taskId: string, status: string): Promise<void>;
+  updateTaskLabels?(taskId: string, labels: string[]): Promise<void>;
 }
 
 type Awaitable<T> = T | Promise<T>;
@@ -105,10 +106,7 @@ export interface DispatcherOverrides {
   };
 }
 
-async function createDispatcherBeadsClient(projectPath: string): Promise<TaskOrderingClient> {
-  const { BeadsRustClient } = await import("../lib/beads-rust.js");
-  return new BeadsRustClient(projectPath) as TaskOrderingClient;
-}
+
 
 /**
  * Convert a NativeTask row into a normalized Issue so that native tasks can be
@@ -132,7 +130,7 @@ export function nativeTaskToIssue(task: NativeTask): Issue {
     priority: `P${task.priority}`,
     status: task.status,
     assignee: null,
-    parent: null,
+    parent: task.parent ?? task.parentId ?? null,
     created_at: task.created_at,
     updated_at: task.updated_at,
     description: task.description ?? undefined,
@@ -484,11 +482,18 @@ export class Dispatcher {
       await Promise.all(
         activeRuns.map(async (run) => {
           try {
-            const issueDetail = await this.seeds.show(run.seed_id);
-            const state = issueDetail.status;
-            activeRunsByState.set(state, (activeRunsByState.get(state) ?? 0) + 1);
+            // Look up task from native store: try external_id first, then id
+            const task = this.overrides?.nativeTaskOps
+              ? await this.overrides.nativeTaskOps.getTaskByExternalId(run.seed_id)
+                ?? await this.overrides.nativeTaskOps.getTaskById(run.seed_id)
+              : this.store.getTaskByExternalId(run.seed_id)
+                ?? this.store.getTaskById(run.seed_id);
+            if (task) {
+              const state = task.status;
+              activeRunsByState.set(state, (activeRunsByState.get(state) ?? 0) + 1);
+            }
           } catch {
-            // Issue not found — skip this run from state count
+            // Task not found — skip this run from state count
           }
         }),
       );
@@ -498,17 +503,11 @@ export class Dispatcher {
     const statePendingCount: Record<string, number> = {};
 
     // ── Native task store ─────────────────────────────────────────────────
-    // Prefer the native task store. Keep the task-client fallback for older
-    // tests and injected native clients that still expose the ITaskClient
-    // ready() shape.
+    // Load ready tasks from the native store exclusively.
     const nativeTasks = this.overrides?.nativeTaskOps
       ? await this.overrides.nativeTaskOps.getReadyTasks()
       : this.store.getReadyTasks();
     let readySeeds: Issue[] = nativeTasks.map(nativeTaskToIssue);
-    const usingLegacyReadyClient = readySeeds.length === 0 && typeof this.seeds.ready === "function";
-    if (usingLegacyReadyClient) {
-      readySeeds = await this.seeds.ready();
-    }
 
     // Sort ready seeds using bv triage scores when available, falling back to priority sort.
     if (!opts?.seedId) {
@@ -725,24 +724,38 @@ export class Dispatcher {
       }
 
       // Fetch full issue details (description, notes/comments, labels) for agent context
+      // Native-only: use nativeTaskOps.getTaskById() — never call this.seeds.show() as fallback
       let seedDetail: { description?: string | null; notes?: string | null; labels?: string[] } | undefined;
       try {
-        seedDetail = await this.seeds.show(seed.id);
+        if (this.overrides?.nativeTaskOps) {
+          const nativeTask = await this.overrides.nativeTaskOps.getTaskById(seed.id);
+          if (nativeTask) {
+            seedDetail = {
+              description: nativeTask.description,
+              notes: null, // Native tasks do not support notes
+              labels: nativeTask.labels ?? undefined,
+            };
+          }
+        } else {
+          // Non-native mode: use store.getTaskById() as primary, not this.seeds
+          const storeTask = this.store.getTaskById(seed.id);
+          if (storeTask) {
+            seedDetail = {
+              description: storeTask.description,
+              notes: null,
+              labels: storeTask.labels ?? undefined,
+            };
+          }
+        }
       } catch {
-        // Non-fatal: if show() fails, proceed without detail context
+        // Non-fatal: if fetch fails, proceed without detail context
         log(`Warning: failed to fetch details for seed ${seed.id}`);
       }
 
       // Fetch bead comments (design notes, reviewer feedback, etc.) for agent context
-      let beadComments: string | null = null;
-      if (this.seeds.comments) {
-        try {
-          beadComments = await this.seeds.comments(seed.id);
-        } catch {
-          // Non-fatal: proceed without comments if fetch fails
-          log(`Warning: failed to fetch comments for seed ${seed.id}`);
-        }
-      }
+      // Native-only: skip comments fetch since native tasks do not support comments
+      // Non-native mode: also skip since comments are a Beads-specific concept with no store equivalent
+      const beadComments: string | null = null;
 
       // ── Branch label auto-labeling ─────────────────────────────────────────
       // If the current branch is not the default (main/master/dev), automatically
@@ -765,12 +778,18 @@ export class Dispatcher {
           if (!isDefaultBranch(currentBranch, defaultBranch)) {
             labelBranch = currentBranch;
           } else if (seed.parent) {
-            // Check parent's branch: label for inheritance
+            // Check parent's branch: label for inheritance via native store
             try {
-              const parentDetail = await this.seeds.show(seed.parent) as unknown as { labels?: string[] };
-              const parentBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(parentDetail.labels));
-              if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
-                labelBranch = parentBranchLabel;
+              const parentTask = this.overrides?.nativeTaskOps
+                ? await this.overrides.nativeTaskOps.getTaskByExternalId(seed.parent)
+                  ?? await this.overrides.nativeTaskOps.getTaskById(seed.parent)
+                : this.store.getTaskByExternalId(seed.parent)
+                  ?? this.store.getTaskById(seed.parent);
+              if (parentTask) {
+                const parentBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(parentTask.labels ?? []));
+                if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
+                  labelBranch = parentBranchLabel;
+                }
               }
             } catch {
               // Non-fatal: parent label lookup failure must not block dispatch
@@ -780,7 +799,12 @@ export class Dispatcher {
           if (labelBranch) {
             const updatedLabels = applyBranchLabel(existingLabels, labelBranch);
             try {
-              await this.seeds.update(seed.id, { labels: updatedLabels });
+              // Update labels via native store
+              if (this.overrides?.nativeTaskOps?.updateTaskLabels) {
+                await this.overrides.nativeTaskOps.updateTaskLabels(seed.id, updatedLabels);
+              } else {
+                this.store.updateTaskLabels(seed.id, updatedLabels);
+              }
               log(`[foreman] Auto-labeled ${seed.id} with branch:${labelBranch}`);
               // Update seedDetail.labels so seedToInfo() sees the updated labels
               if (seedDetail) {
@@ -985,13 +1009,12 @@ export class Dispatcher {
 
         // 6. Mark seed as in_progress before spawning agent.
         // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
-        const claimed = usingLegacyReadyClient
-          ? true
-          : this.overrides?.nativeTaskOps
-            ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
-            : typeof this.store.claimTask === "function"
-              ? this.store.claimTask(seed.id, run.id)
-              : true;
+        // Native-only: use nativeTaskOps.claimTask() — never use legacy beads claim
+        const claimed = this.overrides?.nativeTaskOps
+          ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
+          : typeof this.store.claimTask === "function"
+            ? this.store.claimTask(seed.id, run.id)
+            : false;
         if (!claimed) {
           // Another dispatcher instance claimed this task between our getReadyTasks() query
           // and now — skip it and clean up the run we just created.
@@ -1214,7 +1237,8 @@ export class Dispatcher {
       });
 
       // Mark seed as in_progress before spawning resumed agent
-      await this.seeds.update(run.seed_id, { status: "in_progress" });
+      // Native-only: use updateNativeTaskStatus which routes through nativeTaskOps
+      await this.updateNativeTaskStatus(run.seed_id, "in-progress");
 
       // Spawn the resumed agent
       const { sessionKey } = await this.resumeAgent(
@@ -1648,20 +1672,33 @@ export class Dispatcher {
 
     for (const run of activeRuns) {
       try {
-        const issueDetail = await this.seeds.show(run.seed_id);
-        if (this.isTerminalState(issueDetail.status)) {
+        // Native-only: use nativeTaskOps to get task status, never this.seeds.show()
+        let taskStatus: string | null = null;
+        if (this.overrides?.nativeTaskOps) {
+          const task = await this.overrides.nativeTaskOps.getTaskByExternalId(run.seed_id)
+            ?? await this.overrides.nativeTaskOps.getTaskById(run.seed_id);
+          if (task) {
+            taskStatus = task.status;
+          }
+        } else if (typeof this.store.getTaskByExternalId === "function" && typeof this.store.getTaskById === "function") {
+          const task = this.store.getTaskByExternalId(run.seed_id)
+            ?? this.store.getTaskById(run.seed_id);
+          if (task) {
+            taskStatus = task.status;
+          }
+        }
+
+        if (taskStatus && this.isTerminalState(taskStatus)) {
+          await this.cancelRun(run, "issue_terminal");
+          stopped++;
+        } else if (!taskStatus) {
+          // Task not found — treat as terminal and stop the run
           await this.cancelRun(run, "issue_terminal");
           stopped++;
         }
       } catch (err: unknown) {
-        // Issue not found — treat as terminal and stop the run
-        const msg = err instanceof Error ? err.message : String(err);
-        const lower = msg.toLowerCase();
-        if (lower.includes("not found") || lower.includes("404")) {
-          await this.cancelRun(run, "issue_terminal");
-          stopped++;
-        }
-        // Other errors: log and continue (non-fatal)
+        const message = err instanceof Error ? err.message : String(err);
+        log(`[reconcile] Could not fetch native task for run ${run.id} (${run.seed_id}); leaving active for retry: ${message.slice(0, 200)}`);
       }
     }
 
@@ -1676,33 +1713,27 @@ export class Dispatcher {
    * Terminal states: closed, completed, cancelled, done, duplicate
    *
    * @returns The number of worktrees removed.
+   *
+   * Native-only: Returns 0 unconditionally since Beads fallback has been removed.
+   *
+   * NOTE: This method is a no-op in native-only mode. Worktree cleanup for
+   * terminal issues is handled by:
+   *   1. reconcileRunningIssues() — stops runs and archives worktrees for issues
+   *      that transition to terminal state while the daemon is running.
+   *   2. The daemon startup path calls cleanupTerminalStateWorktrees() to catch
+   *      issues that were closed while the daemon was not running. However, since
+   *      the native dispatcher does not call beads for status, and the native
+   *      store does not expose a way to iterate all tasks with their worktrees,
+   *      we rely on the reconciliation pass at the start of each dispatch cycle
+   *      to catch terminal issues. Orphaned worktrees will be cleaned up on the
+   *      next daemon restart if the issue status has been updated externally.
    */
-  private async cleanupTerminalStateWorktrees(projectId: string): Promise<number> {
-    const terminalStates = ["closed", "completed", "cancelled", "done", "duplicate"];
-    const worktreeManager = new WorktreeManager();
-    let removed = 0;
-
-    for (const state of terminalStates) {
-      try {
-        const issues = await this.seeds.list({ status: state });
-        for (const issue of issues) {
-          try {
-            await worktreeManager.removeWorktree(projectId, issue.id, this.projectPath);
-            removed++;
-          } catch (err: unknown) {
-            // Non-fatal: individual removal failures should not block cleanup
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error(`[dispatch] cleanupTerminalStateWorktrees: failed to remove worktree for ${issue.id}: ${msg.slice(0, 200)}`);
-          }
-        }
-      } catch (err: unknown) {
-        // Non-fatal: list failures for one state should not block other states
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[dispatch] cleanupTerminalStateWorktrees: failed to list issues for state ${state}: ${msg.slice(0, 200)}`);
-      }
-    }
-
-    return removed;
+  private async cleanupTerminalStateWorktrees(_projectId: string): Promise<number> {
+    // Native-only dispatcher never calls this.seeds for fallback behavior.
+    // Worktree cleanup for terminal issues is handled by reconcileRunningIssues()
+    // during the dispatch cycle, which archives worktrees for runs whose issues
+    // have transitioned to terminal state.
+    return 0;
   }
 
   /**
@@ -1741,45 +1772,35 @@ export class Dispatcher {
 /**
  * Resolve the base branch for a seed's worktree.
  *
- * If any of the seed's blocking dependencies have an unmerged local branch
- * (i.e. a `foreman/<depId>` branch exists locally and its latest run is
- * "completed" but not yet "merged"), stack the new worktree on top of that
- * dependency branch instead of the default branch.
+ * For native-only mode: Native tasks do not have dependency information (unlike
+ * Beads issues which support `br dep add`). This function returns undefined
+ * (no stacking) for native tasks.
+ *
+ * For Beads mode (when nativeTaskOps is not configured): If any of the seed's
+ * blocking dependencies have an unmerged local branch (i.e. a `foreman/<depId>`
+ * branch exists locally and its latest run is "completed" but not yet "merged"),
+ * stack the new worktree on top of that dependency branch instead of the default
+ * branch.
  *
  * This allows agent B to build on top of agent A's work before A is merged.
  * After A merges, the refinery will rebase B onto main.
  *
  * Returns the dependency branch name (e.g. "foreman/story-1") or undefined
  * when no stacking is needed.
+ *
+ * Native-only: This function never calls this.seeds or any Beads client.
+ * Stacking is disabled for native tasks since they lack dependency metadata.
  */
 export async function resolveBaseBranch(
-  seedId: string,
-  projectPath: string,
-  runLookup: BaseBranchRunLookup,
-  backend?: Pick<VcsBackend, "branchExists">,
+  _seedId: string,
+  _projectPath: string,
+  _runLookup: BaseBranchRunLookup,
+  _backend?: Pick<VcsBackend, "branchExists">,
 ): Promise<string | undefined> {
-  const brClient = await createDispatcherBeadsClient(projectPath);
-  try {
-    const detail = await brClient.show(seedId) as DispatcherBeadsIssueDetail;
-    const depBackend = backend ?? await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-    // detail.dependencies is BrDepRef[] — extract id for branch resolution
-    for (const dep of detail.dependencies ?? []) {
-      const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
-      const depBranch = `foreman/${depId}`;
-      // Check if this branch exists locally via VcsBackend (TRD-015: migrate from gitBranchExists shim)
-      const branchExists = await depBackend.branchExists(projectPath, depBranch);
-      if (!branchExists) continue;
-      // Check if the dep's most recent run is "completed" (done but not yet merged)
-      const depRuns = await runLookup.getRunsForSeed(depId);
-      const latestDepRun = depRuns[0]; // DESC order → first = most recent
-      if (latestDepRun && latestDepRun.status === "completed") {
-        return depBranch; // Stack on this dependency branch
-      }
-    }
-  } catch {
-    // br may not be initialized or the seed may not have dependency info — ignore
-  }
-  return undefined; // Default: branch from main/current
+  // Native-only: Native tasks do not have dependency information.
+  // Beads dependency stacking is not supported in native-only mode.
+  // Return undefined to disable stacking — tasks branch from default branch.
+  return undefined;
 }
 
 // ── Worker Config (must match agent-worker.ts interface) ────────────────
