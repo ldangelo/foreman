@@ -102,11 +102,17 @@ export class PostgresStore implements IStore {
   }
 
   async updateTaskStatus(taskId: string, newStatus: string): Promise<void> {
-    await this.adapter.updateTask(this.projectId, taskId, { status: newStatus });
+    // Normalize legacy 'in_progress' (underscore) to native 'in-progress' (hyphen)
+    // before writing to the database CHECK constraint.
+    const normalizedStatus = newStatus === "in_progress" ? "in-progress" : newStatus;
+    await this.adapter.updateTask(this.projectId, taskId, { status: normalizedStatus });
   }
 
   async updateTaskStatusForRun(runId: string, newStatus: string): Promise<void> {
-    await this.adapter.updateTaskStatusForRun(this.projectId, runId, newStatus);
+    // Normalize legacy 'in_progress' (underscore) to native 'in-progress' (hyphen)
+    // before writing to the database CHECK constraint.
+    const normalizedStatus = newStatus === "in_progress" ? "in-progress" : newStatus;
+    await this.adapter.updateTaskStatusForRun(this.projectId, runId, normalizedStatus);
   }
 
   async getTaskById(id: string): Promise<NativeTask | null> {

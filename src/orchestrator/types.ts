@@ -154,6 +154,35 @@ export type WorkerNotification = WorkerStatusNotification | WorkerProgressNotifi
 // ── Sling types ─────────────────────────────────────────────────────────
 
 export type TrdTaskStatus = "open" | "in_progress" | "completed";
+
+/**
+ * Native task statuses matching the TASKS_SCHEMA CHECK constraint.
+ * Use this type for compile-time status coverage when operating on
+ * native task records in the Postgres store.
+ *
+ * Valid values: 'backlog' | 'ready' | 'in-progress' | 'review' |
+ *   'explorer' | 'developer' | 'qa' | 'reviewer' | 'finalize' |
+ *   'merged' | 'closed' | 'conflict' | 'failed' | 'stuck' | 'blocked'
+ *
+ * NOTE: 'in-progress' uses hyphen, not underscore. The legacy 'in_progress'
+ * form (underscore) is normalized by normalizeLegacyTaskStatus() in store.ts.
+ */
+export type NativeTaskStatus =
+  | "backlog"
+  | "ready"
+  | "in-progress"
+  | "review"
+  | "explorer"
+  | "developer"
+  | "qa"
+  | "reviewer"
+  | "finalize"
+  | "merged"
+  | "closed"
+  | "conflict"
+  | "failed"
+  | "stuck"
+  | "blocked";
 export type RiskLevel = "high" | "medium";
 
 export interface TrdTask {

@@ -61,6 +61,28 @@ function boardStatusToStoreStatus(status: BoardStatus): string {
   return status;
 }
 
+/**
+ * Convert a store status (hyphenated) to a board status (underscored).
+ * Returns the board status or null if not a valid board status.
+ */
+function storeStatusToBoardStatus(status: string): BoardStatus | null {
+  const normalized = status.replace(/-/g, "_");
+  return BOARD_STATUSES.includes(normalized as BoardStatus) ? normalized as BoardStatus : null;
+}
+
+/**
+ * Convert a user-entered status (underscore or hyphen variants) to a store-valid status.
+ * Handles in_progress → in-progress and needs_attention → blocked conversions.
+ */
+function normalizeStatusForStore(status: string): string {
+  const boardStatus = storeStatusToBoardStatus(status);
+  if (boardStatus) {
+    return boardStatusToStoreStatus(boardStatus);
+  }
+  // If not a valid board status, return as-is and let the API reject it
+  return status;
+}
+
 const STATUS_LABELS: Record<BoardStatus, string> = {
   backlog: "Backlog",
   ready: "Ready",

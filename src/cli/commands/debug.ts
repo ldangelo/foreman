@@ -196,9 +196,9 @@ function buildDiagnosticPrompt(
 // ── Command ─────────────────────────────────────────────────────────────────
 
 export const debugCommand = new Command("debug")
-  .description("AI-powered analysis of a bead's pipeline execution")
-  .argument("<bead-id>", "The bead/seed ID to analyze")
-  .option("--run <id>", "Specific run ID (default: latest run for this seed)")
+  .description("AI-powered analysis of a task's pipeline execution")
+  .argument("<task-id>", "The task ID to analyze (alias: bead-id for backward compatibility)")
+  .option("--run <id>", "Specific run ID (default: latest run for this task)")
   .option("--model <model>", "Model to use for analysis")
   .option("--raw", "Print collected artifacts without AI analysis")
   .action(async (beadId: string, opts: { run?: string; model?: string; raw?: boolean }) => {

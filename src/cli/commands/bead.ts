@@ -95,13 +95,13 @@ export function createBeadClient(
 // ── Command ──────────────────────────────────────────────────────────────
 
 export const beadCommand = new Command("bead")
-  .description("Create beads from natural-language description")
+  .description("Create tasks from natural-language description")
   .argument("<description>", "Natural language description (or path to a file)")
   .option("--type <type>", "Force issue type (task|bug|feature|epic|chore|decision)")
   .option("--priority <priority>", "Force priority (P0-P4)")
-  .option("--parent <id>", "Parent bead ID")
-  .option("--dry-run", "Show what would be created without creating beads")
-  .option("--no-llm", "Skip LLM parsing — create a single bead with the text as title")
+  .option("--parent <id>", "Parent task ID")
+  .option("--dry-run", "Show what would be created without creating tasks")
+  .option("--no-llm", "Skip LLM parsing — create a single task with the text as title")
   .option("--model <model>", "Claude model to use for parsing")
   .action(
     async (
@@ -141,7 +141,7 @@ export const beadCommand = new Command("bead")
 
       if (!(await beads.isInitialized())) {
         console.error(
-          chalk.red(`Beads not initialized in this directory. Run 'foreman init' first.`),
+          chalk.red(`Tasks not initialized in this directory. Run 'foreman init' first.`),
         );
         process.exitCode = 1;
         return;

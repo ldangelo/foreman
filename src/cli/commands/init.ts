@@ -13,9 +13,10 @@ import { PostgresStore } from "../../lib/postgres-store.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
-import { installBundledWorkflows } from "../../lib/workflow-loader.js";
+import { installBundledWorkflows, BUNDLED_WORKFLOW_NAMES } from "../../lib/workflow-loader.js";
 import { DatabaseConfigError, DatabaseError } from "../../lib/db/pool-manager.js";
 import { ensureCliPostgresPool } from "./project-task-support.js";
+import { encrypt } from "../../lib/encryption.js";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -110,9 +111,19 @@ export async function initProjectStore(
 
 // ── Init wizard ─────────────────────────────────────────────────────────────
 
+export interface JiraWizardConfig {
+  apiUrl: string;
+  email: string;
+  apiToken: string;
+  projectKey: string;
+  startStatus: string[];
+}
+
 export interface InitWizardAnswers {
   vcsBackend: "git" | "jujutsu" | "auto";
   workflowTemplate: string;
+  issueTracker: "beads" | "jira";
+  jira?: JiraWizardConfig;
 }
 
 export function buildInitWizardConfig(answers: InitWizardAnswers): string {
@@ -127,6 +138,12 @@ export function buildInitWizardConfig(answers: InitWizardAnswers): string {
     `  default: ${answers.workflowTemplate}`,
     "",
   ];
+
+  // Add issue tracker configuration if jira is selected
+  if (answers.issueTracker === "jira" && answers.jira) {
+    lines.push("issueTracker:", "  backend: jira", "  jira:", `    apiUrl: ${answers.jira.apiUrl}`, `    email: ${answers.jira.email}`, `    apiToken: ${answers.jira.apiToken}`, "    projects:", "      - key: " + answers.jira.projectKey.toUpperCase(), "        startStatus:", ...answers.jira.startStatus.map((s) => "          - " + s), "        issueTypeWorkflowMap:", "          bug: bug", "          task: task", "          feature: feature");
+  }
+
   return lines.join("\n");
 }
 
@@ -135,13 +152,58 @@ async function promptChoice<T extends string>(rl: ReturnType<typeof createInterf
   return choices.includes(answer as T) ? (answer as T) : fallback;
 }
 
+async function promptText(rl: ReturnType<typeof createInterface>, label: string, fallback: string): Promise<string> {
+  const answer = (await rl.question(`${label} [${fallback}]: `)).trim();
+  return answer || fallback;
+}
+
+async function promptJiraAuth(rl: ReturnType<typeof createInterface>): Promise<JiraWizardConfig> {
+  const apiUrl = await promptText(rl, "  Jira API URL (e.g. https://your-domain.atlassian.net)", "https://your-domain.atlassian.net");
+  const email = await promptText(rl, "  Jira account email", "");
+  const apiToken = await rl.question("  Jira API token (will be encrypted): ");
+  const projectKey = await promptText(rl, "  Jira project key (e.g. PROJ)", "");
+  const startStatusStr = await promptText(rl, "  Start status (comma-separated, e.g. In Progress,To Do)", "In Progress");
+  const startStatus = startStatusStr.split(",").map((s) => s.trim()).filter((s) => s);
+
+  return { apiUrl, email, apiToken, projectKey, startStatus };
+}
+
 async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
   const rl = createInterface({ input, output });
   try {
+    const vcsBackend = await promptChoice(rl, "VCS backend", ["git", "jujutsu", "auto"] as const, "auto");
+
+    // Get all available workflow templates from BUNDLED_WORKFLOW_NAMES
+    const workflowChoices = [...BUNDLED_WORKFLOW_NAMES] as const;
+    const workflowTemplate = await promptChoice(rl, "Workflow template", workflowChoices, "default");
+
+    const issueTracker = await promptChoice(rl, "Issue tracker", ["beads", "jira"] as const, "beads");
+
+    let jira: JiraWizardConfig | undefined;
+    if (issueTracker === "jira") {
+      console.log(chalk.dim("\n  Jira configuration:"));
+      jira = await promptJiraAuth(rl);
+      // Encrypt the API token before storing
+      // Fail fast if FOREMAN_MASTER_KEY is not set — do not store plaintext jira.apiToken
+      try {
+        jira.apiToken = await encrypt(jira.apiToken);
+      } catch (err) {
+        const msg =
+          err instanceof Error && err.message.includes("FOREMAN_MASTER_KEY")
+            ? err.message
+            : `Failed to encrypt jira.apiToken via encrypt(). ` +
+              `Set FOREMAN_MASTER_KEY environment variable and re-run init. ` +
+              `Generate a key with: openssl rand -base64 32`;
+        console.error(chalk.red(`\n  Error: ${msg}`));
+        process.exit(1);
+      }
+    }
+
     const answers: InitWizardAnswers = {
-      vcsBackend: await promptChoice(rl, "VCS backend", ["git", "jujutsu", "auto"] as const, "auto"),
-      // Only offer bundled workflows that are actually installed by foreman init
-      workflowTemplate: await promptChoice(rl, "Workflow template", ["default", "smoke", "epic"] as const, "default"),
+      vcsBackend,
+      workflowTemplate,
+      issueTracker,
+      jira,
     };
 
     mkdirSync(join(projectDir, ".foreman"), { recursive: true });
@@ -206,6 +268,11 @@ export const initCommand = new Command("init")
       const answers = await runInitWizard(projectDir);
       console.log(chalk.dim(`  VCS: ${answers.vcsBackend}`));
       console.log(chalk.dim(`  Workflow: ${answers.workflowTemplate}`));
+      console.log(chalk.dim(`  Issue tracker: ${answers.issueTracker}`));
+      if (answers.issueTracker === "jira" && answers.jira) {
+        console.log(chalk.dim(`  Jira: ${answers.jira.email}@${answers.jira.apiUrl}`));
+        console.log(chalk.dim(`  Jira project: ${answers.jira.projectKey}`));
+      }
     }
 
     // Initialize the task-tracking backend
