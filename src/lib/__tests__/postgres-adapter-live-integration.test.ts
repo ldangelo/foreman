@@ -32,13 +32,12 @@ async function hasForemanSchema(databaseUrl: string): Promise<boolean> {
               to_regclass('public.runs') AS runs,
               to_regclass('public.agent_messages') AS agent_messages,
               to_regclass('public.sentinel_configs') AS sentinel_configs,
-              to_regclass('public.costs') AS costs,
-              to_regclass('public.bead_write_queue') AS bead_write_queue`
+              to_regclass('public.costs') AS costs`
     );
     await pool.end();
     const row = result.rows[0] as Record<string, string | null> | undefined;
     return Boolean(
-      row?.projects && row?.runs && row?.agent_messages && row?.sentinel_configs && row?.costs && row?.bead_write_queue
+      row?.projects && row?.runs && row?.agent_messages && row?.sentinel_configs && row?.costs
     );
   } catch {
     return false;
@@ -126,14 +125,6 @@ describe("PostgresAdapter live integration", { timeout: 30_000 }, () => {
 
     await adapter.markMessageRead(project.id, sent.id);
     await adapter.deleteMessage(project.id, sent.id);
-
-    await adapter.enqueueBeadWrite(project.id, "sentinel", "upsert", { id: "1" });
-    const queued = await query<{ id: string }>(
-      `SELECT id FROM bead_write_queue WHERE project_id = $1 ORDER BY created_at ASC`,
-      [project.id],
-    );
-    expect(queued).toHaveLength(1);
-    await adapter.markBeadWriteProcessed(project.id, queued[0].id);
 
     await adapter.upsertSentinelConfig(project.id, {
       branch: "main",

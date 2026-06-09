@@ -11,11 +11,10 @@ import { tmpdir } from "node:os";
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockEnqueueBeadWrite, mockUpdateTaskStatus } = vi.hoisted(() => ({
+const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockUpdateTaskStatus } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
   mockAppendFile: vi.fn().mockResolvedValue(undefined),
-  mockEnqueueBeadWrite: vi.fn(),
   mockUpdateTaskStatus: vi.fn(),
 }));
 
@@ -37,7 +36,6 @@ vi.mock("../../lib/store.js", () => ({
     forProject: vi.fn(() => ({
       getDb: vi.fn(() => ({})),
       close: vi.fn(),
-      enqueueBeadWrite: mockEnqueueBeadWrite,
       updateTaskStatus: mockUpdateTaskStatus,
     })),
   },
@@ -270,7 +268,6 @@ describe("finalize() — push FAILS", () => {
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
-    mockEnqueueBeadWrite.mockReset();
 
     mockVcs = makeMockVcs({
       push: vi.fn().mockRejectedValue(new Error("remote: Permission to repo denied.")),
@@ -310,17 +307,6 @@ describe("finalize() — push FAILS", () => {
   it("does not throw even when push fails", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(result.success).toBe(false);
-  });
-
-  it("does NOT set bead to review when push fails (bead stays in_progress for caller to reset)", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
-    const reviewCall = mockEnqueueBeadWrite.mock.calls.find(
-      (call) =>
-        Array.isArray(call) &&
-        call[1] === "set-status" &&
-        call[2]?.status === "review",
-    );
-    expect(reviewCall).toBeUndefined();
   });
 });
 

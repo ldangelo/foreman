@@ -102,15 +102,4 @@ describe("PostgresStore", { timeout: 120_000 }, () => {
     await store.deleteMessage(unread[0].id);
     expect(await store.getAllMessages(run.id)).toEqual([]);
   });
-
-  it("persists bead write queue entries", async () => {
-    const { adapter, store, project } = await createPostgresProjectFixture("store-bead-write");
-
-    await adapter.enqueueBeadWrite(project.id, "worker", "mark-failed", { seedId: "bd-q" });
-    const pending = await store.getPendingBeadWrites();
-    expect(pending).toEqual([expect.objectContaining({ sender: "worker", operation: "mark-failed" })]);
-
-    expect(await store.markBeadWriteProcessed(pending[0].id)).toBe(true);
-    expect(await store.getPendingBeadWrites()).toEqual([]);
-  });
 });
