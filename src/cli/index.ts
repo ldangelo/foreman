@@ -65,6 +65,7 @@ import { taskCommand } from "./commands/task.js";
 import { recoverCommand } from "./commands/recover.js";
 import { daemonCommand } from "./commands/daemon.js";
 import { jiraCommand } from "./commands/jira.js";
+import { logsCommand } from "./commands/logs.js";
 function isCliEntrypoint(): boolean {
   try {
     const invokedPath = process.argv[1];
@@ -115,6 +116,7 @@ program.addCommand(taskCommand);
 program.addCommand(recoverCommand);
 program.addCommand(daemonCommand);
 program.addCommand(jiraCommand);
+program.addCommand(logsCommand);
 if (isCliEntrypoint()) {
   program.parse();
 }

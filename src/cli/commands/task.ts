@@ -1047,7 +1047,7 @@ const showCommand = new Command("show")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { verbose?: boolean; project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId, projectPath } = await resolveTaskProjectContext(opts);
+      const { client, projectId, projectName, projectPath } = await resolveTaskProjectContext(opts);
       const rows = await listAllTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
       const task = await client.tasks.get({ projectId, taskId: resolvedId }) as TaskRow | null;
@@ -1080,6 +1080,12 @@ const showCommand = new Command("show")
       }
       if (task.closed_at) {
         console.log(`  Closed:      ${new Date(task.closed_at).toLocaleString()}`);
+      }
+      if (task.run_id) {
+        console.log(chalk.bold("\n  Logs:"));
+        console.log(`    Summary:    foreman logs ${task.id} --project ${projectName}`);
+        console.log(`    Follow:     foreman logs ${task.id} --project ${projectName} --follow`);
+        console.log(chalk.dim(`    Raw:        ~/.foreman/logs/${task.run_id}.log`));
       }
 
       // ── Live Run Activity Section ─────────────────────────────────────────
