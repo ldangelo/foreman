@@ -844,6 +844,24 @@ export type BeadWriteQueueStore = Pick<ForemanStore,
   | "markBeadWriteProcessed"
 >;
 
+/**
+ * Narrow interface for dashboard read operations.
+ * Covers all read-only methods needed by pollDashboard() and readProjectRegistry().
+ * The CLI uses this interface so pure read functions don't need the full store type.
+ */
+export type DashboardReadStore = Pick<ForemanStore,
+  | "listProjects"
+  | "getProject"
+  | "getActiveRuns"
+  | "getRunsByStatus"
+  | "getRunProgress"
+  | "getMetrics"
+  | "getEvents"
+  | "getSuccessRate"
+  | "listTasksByStatus"
+  | "close"
+>;
+
 export class ForemanStore {
   private db: LocalStoreDatabase;
 
@@ -856,6 +874,20 @@ export class ForemanStore {
    */
   static forProject(projectPath: string): ForemanStore {
     return new ForemanStore(join(projectPath, ".foreman", "foreman.db"));
+  }
+
+  /**
+   * Create a DashboardReadStore for a project.
+   *
+   * Returns a disabled local-store compatibility handle typed as DashboardReadStore.
+   * Use this factory when you only need read-only dashboard operations
+   * (pollDashboard, readProjectRegistry) and don't need write access.
+   *
+   * @param projectPath - Absolute path to the project root directory.
+   * @returns A DashboardReadStore instance for the project.
+   */
+  static forDashboard(projectPath: string): DashboardReadStore {
+    return new ForemanStore(join(projectPath, ".foreman", "foreman.db")) as DashboardReadStore;
   }
 
   /**

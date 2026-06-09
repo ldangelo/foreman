@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ForemanStore } from "../../lib/store.js";
+import { ForemanStore, type DashboardReadStore } from "../../lib/store.js";
 import type { Run, RunProgress, Project, Metrics, Event, NativeTask } from "../../lib/store.js";
 import * as projectConfig from "../../lib/project-config.js";
 import * as projectTaskSupport from "../commands/project-task-support.js";
@@ -125,12 +125,11 @@ function makeMockStore(opts: {
   progresses?: Record<string, RunProgress | null>;
   metrics?: Record<string, Metrics>;
   events?: Record<string, Event[]>;
-}) {
+}): DashboardReadStore {
   const projectsById = Object.fromEntries((opts.projects ?? []).map((p) => [p.id, p]));
   return {
     listProjects: vi.fn(() => opts.projects ?? []),
     getProject: vi.fn((id: string) => projectsById[id] ?? null),
-    getProjectByPath: vi.fn(() => opts.projects?.[0] ?? null),
     getActiveRuns: vi.fn((projectId: string) => opts.activeRuns?.[projectId] ?? []),
     getRunsByStatus: vi.fn((status: string, projectId: string) =>
       opts.runsByStatus?.[status]?.[projectId] ?? [],
@@ -146,6 +145,8 @@ function makeMockStore(opts: {
     ),
     getEvents: vi.fn((projectId: string) => opts.events?.[projectId] ?? []),
     getSuccessRate: vi.fn(() => ({ rate: null, merged: 0, failed: 0 } as { rate: number | null; merged: number; failed: number })),
+    listTasksByStatus: vi.fn(() => []),
+    close: vi.fn(),
   };
 }
 
@@ -367,14 +368,14 @@ describe("pollDashboard", () => {
   it("returns projects from store", () => {
     const project = makeProject();
     const store = makeMockStore({ projects: [project] });
-    const state = pollDashboard(store as any);
+    const state = pollDashboard(store);
     expect(state.projects).toHaveLength(1);
     expect(state.projects[0].id).toBe("proj-1");
   });
 
   it("returns empty state when no projects", () => {
     const store = makeMockStore({ projects: [] });
-    const state = pollDashboard(store as any);
+    const state = pollDashboard(store);
     expect(state.projects).toHaveLength(0);
     expect(state.activeRuns.size).toBe(0);
   });
@@ -386,7 +387,7 @@ describe("pollDashboard", () => {
       projects: [project],
       activeRuns: { "proj-1": [run] },
     });
-    const state = pollDashboard(store as any);
+    const state = pollDashboard(store);
     expect(state.activeRuns.get("proj-1")).toHaveLength(1);
   });
 
@@ -399,7 +400,7 @@ describe("pollDashboard", () => {
       activeRuns: { "proj-1": [run] },
       progresses: { "run-001": progress },
     });
-    const state = pollDashboard(store as any);
+    const state = pollDashboard(store);
     expect(state.progresses.get("run-001")).toEqual(progress);
   });
 
@@ -410,7 +411,7 @@ describe("pollDashboard", () => {
       projects: [project],
       metrics: { "proj-1": metrics },
     });
-    const state = pollDashboard(store as any);
+    const state = pollDashboard(store);
     expect(state.metrics.get("proj-1")?.totalCost).toBe(5.00);
   });
 
@@ -421,7 +422,7 @@ describe("pollDashboard", () => {
       projects: [project],
       events: { "proj-1": [event] },
     });
-    const state = pollDashboard(store as any);
+    const state = pollDashboard(store);
     expect(state.events.get("proj-1")).toHaveLength(1);
   });
 
@@ -430,7 +431,7 @@ describe("pollDashboard", () => {
     const proj2 = makeProject({ id: "proj-2", name: "second" });
     const store = makeMockStore({ projects: [proj1, proj2] });
 
-    const state = pollDashboard(store as any, "proj-2");
+    const state = pollDashboard(store, "proj-2");
     expect(state.projects).toHaveLength(1);
     expect(state.projects[0].id).toBe("proj-2");
     // Should call getProject, not listProjects
@@ -442,14 +443,14 @@ describe("pollDashboard", () => {
     const project = makeProject({ id: "proj-1" });
     const store = makeMockStore({ projects: [project] });
 
-    const state = pollDashboard(store as any, "nonexistent-id");
+    const state = pollDashboard(store, "nonexistent-id");
     expect(state.projects).toHaveLength(0);
   });
 
   it("sets lastUpdated to a recent timestamp", () => {
     const store = makeMockStore({ projects: [] });
     const before = Date.now();
-    const state = pollDashboard(store as any);
+    const state = pollDashboard(store);
     const after = Date.now();
     expect(state.lastUpdated.getTime()).toBeGreaterThanOrEqual(before);
     expect(state.lastUpdated.getTime()).toBeLessThanOrEqual(after);
@@ -458,9 +459,10 @@ describe("pollDashboard", () => {
   it("carries deduped success-rate stats through to dashboard state", () => {
     const project = makeProject();
     const store = makeMockStore({ projects: [project] });
-    store.getSuccessRate.mockReturnValue({ rate: 2 / 3, merged: 2, failed: 1 } as { rate: number | null; merged: number; failed: number });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (store.getSuccessRate as any).mockReturnValue({ rate: 2 / 3, merged: 2, failed: 1 });
 
-    const state = pollDashboard(store as any);
+    const state = pollDashboard(store);
 
     expect(state.successRates?.get(project.id)).toEqual({ rate: 2 / 3, merged: 2, failed: 1 });
   });

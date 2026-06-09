@@ -507,7 +507,7 @@ export const statusCommand = new Command("status")
 
           const daemonDashboard = await fetchDaemonDashboardState(projectPath);
           const dashState = daemonDashboard ?? (() => {
-            const store = ForemanStore.forProject(projectPath);
+            const store = ForemanStore.forDashboard(projectPath);
             try {
               return pollDashboard(store, undefined, 8);
             } finally {
