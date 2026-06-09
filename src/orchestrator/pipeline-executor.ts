@@ -41,6 +41,7 @@ import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncre
 import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
+import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig } from "../lib/project-config.js";
 import { SandboxProviderFactory } from "../lib/sandbox-providers/index.js";
 import type { SandboxProviderConfig } from "../lib/sandbox-provider.js";
 
@@ -420,6 +421,19 @@ function toSandboxProviderConfig(config: WorkflowSandboxConfig): SandboxProvider
   };
 }
 
+export function applyEffectiveSandboxConfig(ctx: PipelineContext): void {
+  const projectSandbox = ctx.config.projectPath ? loadProjectConfig(ctx.config.projectPath)?.sandbox : undefined;
+  const effectiveSandbox = resolveProjectSandboxConfig(ctx.workflowConfig.sandbox, projectSandbox);
+  if (!effectiveSandbox) return;
+
+  const hostPhases = ctx.workflowConfig.phases.filter((phase) => !phase.bash).map((phase) => phase.name);
+  if (hostPhases.length > 0) {
+    throw new Error(`Sandbox is only supported for bash phases; host-executed phases are not isolated: ${hostPhases.join(", ")}`);
+  }
+
+  ctx.workflowConfig.sandbox = effectiveSandbox;
+}
+
 /**
  * Result of a bash phase execution.
  * Mirrors PhaseResult but includes stdout/stderr for artifact writing.
@@ -606,6 +620,7 @@ function execFilePromise(
 export async function executePipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig } = ctx;
   const epicTasks = ctx.epicTasks;
+  applyEffectiveSandboxConfig(ctx);
   const isEpicMode = epicTasks && epicTasks.length > 0 && workflowConfig.taskPhases;
 
   if (isEpicMode) {

@@ -164,6 +164,24 @@ describe('runBashPhase sandbox execution', () => {
     mockProvider.destroySandbox.mockClear();
   });
 
+  it('rejects inherited project sandbox for host-executed phases', async () => {
+    const { applyEffectiveSandboxConfig } = await import('../pipeline-executor.js');
+    const tmpDir = mkdtempSync(join(tmpdir(), 'sandbox-project-config-'));
+    const prevForemanHome = process.env.FOREMAN_HOME;
+    process.env.FOREMAN_HOME = tmpDir;
+    writeFileSync(join(tmpDir, 'config.yaml'), 'sandbox:\n  backend: docker\n', 'utf8');
+    try {
+      expect(() => applyEffectiveSandboxConfig({
+        config: { projectPath: tmpDir },
+        workflowConfig: { name: 'prompted', phases: [{ name: 'developer', prompt: 'developer.md' }] },
+      } as never)).toThrow(/Sandbox is only supported for bash phases/);
+    } finally {
+      if (prevForemanHome === undefined) delete process.env.FOREMAN_HOME;
+      else process.env.FOREMAN_HOME = prevForemanHome;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('runs bash command inside sandbox when sandbox config is provided', async () => {
     const { runBashPhase } = await import('../pipeline-executor.js');
 

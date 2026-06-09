@@ -803,8 +803,8 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
     }
 
     if ("image" in sandboxRaw) {
-      if (typeof sandboxRaw["image"] !== "string") {
-        throw new ProjectConfigError(filePath, "'sandbox.image' must be a string");
+      if (typeof sandboxRaw["image"] !== "string" || !sandboxRaw["image"].trim()) {
+        throw new ProjectConfigError(filePath, "'sandbox.image' must be a non-empty string");
       }
       sandboxConfig.image = sandboxRaw["image"] as string;
     }
@@ -815,20 +815,20 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
         throw new ProjectConfigError(filePath, "'sandbox.limits' must be an object");
       }
       sandboxConfig.limits = {};
-      if ("cpu" in limitsRaw && typeof limitsRaw["cpu"] !== "string") {
-        throw new ProjectConfigError(filePath, "'sandbox.limits.cpu' must be a string");
+      if ("cpu" in limitsRaw && (typeof limitsRaw["cpu"] !== "string" || !limitsRaw["cpu"].trim())) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits.cpu' must be a non-empty string");
       }
       sandboxConfig.limits.cpu = limitsRaw["cpu"] as string | undefined;
-      if ("memory" in limitsRaw && typeof limitsRaw["memory"] !== "string") {
-        throw new ProjectConfigError(filePath, "'sandbox.limits.memory' must be a string");
+      if ("memory" in limitsRaw && (typeof limitsRaw["memory"] !== "string" || !limitsRaw["memory"].trim())) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits.memory' must be a non-empty string");
       }
       sandboxConfig.limits.memory = limitsRaw["memory"] as string | undefined;
-      if ("cpuset" in limitsRaw && typeof limitsRaw["cpuset"] !== "string") {
-        throw new ProjectConfigError(filePath, "'sandbox.limits.cpuset' must be a string");
+      if ("cpuset" in limitsRaw && (typeof limitsRaw["cpuset"] !== "string" || !limitsRaw["cpuset"].trim())) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits.cpuset' must be a non-empty string");
       }
       sandboxConfig.limits.cpuset = limitsRaw["cpuset"] as string | undefined;
-      if ("memorySwap" in limitsRaw && typeof limitsRaw["memorySwap"] !== "string") {
-        throw new ProjectConfigError(filePath, "'sandbox.limits.memorySwap' must be a string");
+      if ("memorySwap" in limitsRaw && (typeof limitsRaw["memorySwap"] !== "string" || !limitsRaw["memorySwap"].trim())) {
+        throw new ProjectConfigError(filePath, "'sandbox.limits.memorySwap' must be a non-empty string");
       }
       sandboxConfig.limits.memorySwap = limitsRaw["memorySwap"] as string | undefined;
     }

@@ -65,6 +65,61 @@ describe("DockerSandboxProvider", () => {
     expect(args).not.toContain("--network");
   });
 
+  it("passes mounts, ports, user, cleanup, and resource limits to docker run", async () => {
+    const provider = new DockerSandboxProvider();
+    await provider.createSandbox("/tmp/worktree", "ubuntu:22.04", {
+      mounts: [{ source: "/cache", destination: "/cache", readOnly: true }],
+      ports: [{ host: 8080, container: 80, protocol: "tcp" }],
+      user: "1000:1000",
+      cleanup: "keep",
+      limits: { cpu: "1", memory: "512m", cpuset: "0", memorySwap: "1g", capabilities: ["SYS_PTRACE"] },
+    });
+
+    const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
+    expect(args).toEqual(expect.arrayContaining([
+      "--cpus", "1",
+      "--memory", "512m",
+      "--cpuset-cpus", "0",
+      "--memory-swap", "1g",
+      "--cap-add", "SYS_PTRACE",
+      "-v", "/cache:/cache:ro",
+      "-p", "8080:80/tcp",
+      "--user", "1000:1000",
+    ]));
+    expect(args).not.toContain("--rm");
+  });
+
+  it("passes cwd, env, and timeout to docker exec", async () => {
+    const provider = new DockerSandboxProvider();
+    const result = await provider.runInSandbox("sandbox-1", ["npm", "test"], {
+      cwd: "/workspace/app",
+      env: { NODE_ENV: "test" },
+      timeoutMs: 12_000,
+    });
+
+    const [, args, options] = promisifiedExecFileMock().mock.calls[0] as [string, string[], { timeout?: number }];
+    expect(args).toEqual(expect.arrayContaining(["exec", "-w", "/workspace/app", "-e", "NODE_ENV=test", "sandbox-1", "npm", "test"]));
+    expect(options.timeout).toBe(12_000);
+    expect(result.stdout).toBe("ok");
+  });
+
+  it("removes docker sandbox on destroy", async () => {
+    const provider = new DockerSandboxProvider();
+    await provider.destroySandbox("sandbox-1");
+
+    expect(promisifiedExecFileMock()).toHaveBeenCalledWith("docker", ["rm", "-f", "sandbox-1"], expect.any(Object));
+  });
+
+  it("reads docker sandbox info and lists sandboxes", async () => {
+    promisifiedExecFileMock()
+      .mockResolvedValueOnce({ stdout: "abc|running|2026-01-01|ubuntu:22.04", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "abc\ndef\n", stderr: "" });
+    const provider = new DockerSandboxProvider();
+
+    await expect(provider.getSandboxInfo("sandbox-1")).resolves.toEqual({ id: "abc", status: "running", created: "2026-01-01", image: "ubuntu:22.04" });
+    await expect(provider.listSandboxes()).resolves.toEqual(["abc", "def"]);
+  });
+
   it("propagates docker exec numeric exit codes", async () => {
     promisifiedExecFileMock().mockRejectedValueOnce({ code: 42, stdout: "", stderr: "failed" });
     const provider = new DockerSandboxProvider();
@@ -93,6 +148,45 @@ describe("PodmanSandboxProvider", () => {
     const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
     expect(args).toContain("--network");
     expect(args).toContain("none");
+  });
+
+  it("allows networking only when explicitly enabled", async () => {
+    const provider = new PodmanSandboxProvider();
+    await provider.createSandbox("/tmp/worktree", "ubuntu:22.04", { network: true });
+
+    const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
+    expect(args).not.toContain("--network");
+    expect(args).not.toContain("none");
+  });
+
+  it("passes mounts, ports, user, cleanup, and resource limits to podman run", async () => {
+    const provider = new PodmanSandboxProvider();
+    await provider.createSandbox("/tmp/worktree", "ubuntu:22.04", {
+      mounts: [{ source: "/cache", destination: "/cache", readOnly: true }],
+      ports: [{ host: 8080, container: 80, protocol: "tcp" }],
+      user: "1000:1000",
+      cleanup: "keep",
+      limits: { cpu: "1", memory: "512m", cpuset: "0", memorySwap: "1g", capabilities: ["SYS_PTRACE"] },
+    });
+
+    const args = promisifiedExecFileMock().mock.calls[0]?.[1] as string[];
+    expect(args).toEqual(expect.arrayContaining([
+      "--cpus", "1",
+      "--memory", "512m",
+      "--cpuset-cpus", "0",
+      "--memory-swap", "1g",
+      "--cap-add", "SYS_PTRACE",
+      "-v", "/cache:/cache:ro",
+      "-p", "8080:80/tcp",
+      "--user", "1000:1000",
+    ]));
+    expect(args).not.toContain("--rm");
+  });
+
+  it("reports podman availability", async () => {
+    const provider = new PodmanSandboxProvider();
+    await expect(provider.isAvailable()).resolves.toBe(true);
+    expect(promisifiedExecFileMock()).toHaveBeenCalledWith("podman", ["version"], expect.any(Object));
   });
 
   it("propagates podman exec numeric string exit codes", async () => {
@@ -128,6 +222,11 @@ describe("SandboxProviderFactory", () => {
     it("returns podman when backend is explicitly podman", () => {
       const result = SandboxProviderFactory.resolveBackend({ backend: "podman" });
       expect(result).toBe("podman");
+    });
+
+    it("detects provider availability", async () => {
+      const result = await SandboxProviderFactory.detectAvailable();
+      expect(result).toEqual({ docker: true, podman: true });
     });
 
     it("probes container CLIs with a timeout when backend is auto", () => {

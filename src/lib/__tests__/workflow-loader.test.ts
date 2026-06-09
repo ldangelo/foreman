@@ -846,6 +846,18 @@ describe("validateWorkflowConfig — sandbox block", () => {
     );
   });
 
+  it("throws when sandbox.image is empty", () => {
+    expect(() => validateWorkflowConfig({ ...bashConfig, sandbox: { image: "" } }, "sandboxed")).toThrow(
+      /'sandbox.image' must be a non-empty string/,
+    );
+  });
+
+  it("throws when sandbox.limits.memory is empty", () => {
+    expect(() => validateWorkflowConfig({ ...bashConfig, sandbox: { limits: { memory: "" } } }, "sandboxed")).toThrow(
+      /'sandbox.limits.memory' must be a non-empty string/,
+    );
+  });
+
   it("rejects sandboxed workflows with host-executed prompt phases", () => {
     expect(() => validateWorkflowConfig(
       { name: "sandboxed", phases: [{ name: "developer", prompt: "developer.md" }], sandbox: { backend: "docker" } },
