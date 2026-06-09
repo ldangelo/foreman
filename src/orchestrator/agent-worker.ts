@@ -9,6 +9,8 @@
  * Usage: tsx agent-worker.ts <config-file>
  */
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, basename } from "node:path";
@@ -23,7 +25,7 @@ import { PostgresStore } from "../lib/postgres-store.js";
 import type { RunProgressSummary } from "./read-models.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { initPool } from "../lib/db/pool-manager.js";
-import { PIPELINE_TIMEOUTS } from "../lib/config.js";
+import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
   getDisallowedTools,
@@ -55,6 +57,8 @@ import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { runWorkspaceHook } from "../lib/setup.js";
 import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
+
+const execFileAsync = promisify(execFile);
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -1029,6 +1033,15 @@ function workerReportDir(config: WorkerConfig): string {
   return config.taskMeta?.projectReportsDir || getRunReportsDir(config.projectId, config.seedId, config.runId);
 }
 
+async function gitCommitsAhead(cwd: string, baseBranch: string, branchName: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["log", `${baseBranch}..${branchName}`, "--oneline"], {
+    cwd,
+    maxBuffer: PIPELINE_BUFFERS.maxBufferBytes,
+    env: { ...process.env, GIT_EDITOR: "true" },
+  });
+  return stdout.trim();
+}
+
 async function runCreatePrBuiltinPhase(args: {
   config: WorkerConfig;
   store: ForemanStore;
@@ -1049,9 +1062,34 @@ async function runCreatePrBuiltinPhase(args: {
     vcsBackend,
     registeredProjectId && registeredReadStore ? { registeredProjectId, runLookup: registeredReadStore } : undefined,
   );
+  const baseBranch = config.targetBranch ?? await vcsBackend?.detectDefaultBranch(pipelineProjectPath).catch(() => "main") ?? "main";
+  const branchName = `foreman/${config.seedId}`;
+  const commitsAhead = await gitCommitsAhead(pipelineProjectPath, baseBranch, branchName).catch(() => "");
+  if (!commitsAhead.trim()) {
+    const metadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
+    await mkdir(dirname(metadataPath), { recursive: true });
+    await writeFile(metadataPath, JSON.stringify({
+      skipped: true,
+      reason: "no_commits_ahead",
+      branchName,
+      baseBranch,
+    }, null, 2) + "\n", "utf8");
+    await runtimeTaskClient.close(config.seedId, "No commits ahead of target branch; acceptance already satisfied.").catch((err: unknown) => {
+      log(`[CREATE-PR] no-commit task close failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+    log(`[CREATE-PR] No commits between ${baseBranch} and ${branchName}; skipping PR and closing task.`);
+    sendMail(agentMailClient, "foreman", "phase-complete", {
+      seedId: config.seedId,
+      runId: config.runId,
+      phase: "create-pr",
+      status: "skipped",
+      reason: "no_commits_ahead",
+    });
+    return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: "no_commits_ahead", stopPipelineSuccess: true };
+  }
   const pr = await refinery.ensurePullRequestForRun({
     runId: config.runId,
-    baseBranch: config.targetBranch,
+    baseBranch,
     updateRunStatus: false,
     bodyNote: workflowConfig.merge === "auto"
       ? "Automatically published before PR review and refinery merge."
@@ -1066,7 +1104,7 @@ async function runCreatePrBuiltinPhase(args: {
     prNumber,
     branchName: pr.branchName,
     headSha,
-    baseBranch: config.targetBranch,
+    baseBranch,
   }, null, 2) + "\n", "utf8");
   log(`[CREATE-PR] PR ready: ${pr.prUrl}`);
   sendMail(agentMailClient, "foreman", "pr-created", {

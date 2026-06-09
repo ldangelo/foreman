@@ -77,6 +77,8 @@ export interface PhaseResult {
   traceWarnings?: string[];
   commandHonored?: boolean;
   filesChanged?: string[];
+  /** Stop remaining phases and treat the pipeline as successful. Used by builtins that complete work without a PR. */
+  stopPipelineSuccess?: boolean;
 }
 
 export interface PhaseObservabilityInput {
@@ -1399,6 +1401,10 @@ async function runPhaseSequence(
         artifactPresent,
       });
       await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
+      if (result.stopPipelineSuccess) {
+        ctx.log(`[${phaseName.toUpperCase()}] Completed and requested successful pipeline stop`);
+        return { success: true, phaseRecords, retryCounts, qaVerdictForLog, progress };
+      }
       i++;
       continue;
     }
