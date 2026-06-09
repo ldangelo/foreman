@@ -99,6 +99,7 @@ describe("BoardRendering", () => {
       detailTask: null,
       detailNotesStatus: "idle",
       detailNotesError: null,
+      sortMode: "updated",
       ...overrides,
     };
   };
@@ -221,6 +222,16 @@ describe("BoardRendering", () => {
     it("should derive visible task capacity from terminal height when no limit is provided", () => {
       expect(getVisibleTaskCapacity(24, 20)).toBeGreaterThan(5);
       expect(getVisibleTaskCapacity(24, 20, 4)).toBe(4);
+    });
+
+    it("should render active sort mode in the header", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { sortMode: "priority" }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("Sort: Priority");
     });
 
     it("should render five column jump labels without a merged column", () => {
