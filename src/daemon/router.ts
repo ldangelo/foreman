@@ -168,7 +168,7 @@ const tasksRouter = t.router({
     )
     .mutation(async ({ input, ctx }) => {
       return ctx.adapter.createTask(input.projectId, {
-        id: input.id,
+        ...(input.id !== undefined && { id: input.id }),
         title: input.title ?? input.id,
         description: input.description,
         type: input.type ?? "task",

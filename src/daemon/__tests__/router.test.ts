@@ -458,10 +458,9 @@ describe("tasks.create procedure", () => {
     });
 
     // id should not be passed to adapter, allowing it to allocate
-    expect(mockAdapter.createTask).toHaveBeenCalledWith(
-      "proj-123",
-      expect.not.objectContaining({ id: expect.anything() })
-    );
+    const createTaskCalls = mockAdapter.createTask.mock.calls;
+    const createTaskPayload = createTaskCalls[createTaskCalls.length - 1][1];
+    expect(createTaskPayload).not.toHaveProperty('id');
     expect(result.id).toBe(allocatedId);
   });
 });
