@@ -30,8 +30,10 @@ describe("agent-worker runtime task client threading", () => {
     expect(source).toContain("const { taskClient: runtimeTaskClient, backendType: runtimeTaskBackend } = await createTaskClient(");
     expect(source).toContain("async onTaskPhaseChange(taskId, phaseName)");
     expect(source).toContain('if (runtimeTaskBackend !== "native" || !taskId) return;');
+    expect(source).toContain("const nativeStatus = nativeTaskStatusForPhase(phaseName);");
+    expect(source).toContain("if (!nativeStatus) return;");
     expect(source).toContain("try {");
-    expect(source).toContain("await runtimeTaskClient.update(taskId, { status: phaseName });");
+    expect(source).toContain("await runtimeTaskClient.update(taskId, { status: nativeStatus });");
     expect(source).toContain("native status update failed (non-fatal)");
   });
 

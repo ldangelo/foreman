@@ -54,6 +54,7 @@ import type { TaskMeta } from "../lib/interpolate.js";
 import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { runWorkspaceHook } from "../lib/setup.js";
 import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
+import { nativeTaskStatusForPhase } from "./task-phase-status.js";
 
 // ── Notification Client ───────────────────────────────────────────────────
 
@@ -1436,8 +1437,10 @@ async function runPipeline(
       observabilityWriter: registeredObservabilityWriter,
       async onTaskPhaseChange(taskId, phaseName) {
         if (runtimeTaskBackend !== "native" || !taskId) return;
+        const nativeStatus = nativeTaskStatusForPhase(phaseName);
+        if (!nativeStatus) return;
         try {
-          await runtimeTaskClient.update(taskId, { status: phaseName });
+          await runtimeTaskClient.update(taskId, { status: nativeStatus });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`[task-phase] native status update failed (non-fatal): ${msg}`);
