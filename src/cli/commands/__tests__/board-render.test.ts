@@ -10,6 +10,7 @@ import {
   getVisibleTaskWindow,
   renderBoard,
   renderTaskDetail,
+  boardColumnForTaskStatus,
   type BoardStatus,
   type BoardTask,
   type RenderState,
@@ -418,6 +419,21 @@ describe("BoardRendering", () => {
     });
   });
 
+  describe("boardColumnForTaskStatus", () => {
+    it("maps native workflow phase statuses to in_progress", () => {
+      for (const status of ["explorer", "developer", "qa", "reviewer", "finalize"]) {
+        expect(boardColumnForTaskStatus(status)).toBe("in_progress");
+      }
+    });
+
+    it("maps terminal/problem statuses to needs_attention or closed", () => {
+      expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("blocked")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("closed")).toBe("closed");
+      expect(boardColumnForTaskStatus("unknown")).toBe("closed");
+    });
+  });
+
   describe("Task Detail Panel", () => {
     it("should render notes loading state", () => {
       const task = createTask("bd-1234");
@@ -468,6 +484,11 @@ describe("BoardRendering", () => {
       expect(task.priority).toBe(1);
       expect(task.status).toBe("in_progress");
       expect(task.external_id).toBe("EXT-123");
+
+      const output = stripTerminalFormatting(renderTaskDetail(task, 100, "idle", null));
+      expect(output).toContain("TASK DETAIL — in_progress");
+      expect(output).toContain("Status:");
+      expect(output).toContain("in_progress");
     });
 
     it("should handle null optional fields", () => {

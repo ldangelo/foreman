@@ -50,9 +50,20 @@ export const BOARD_STATUSES = [
 ] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
 
-function normalizeStatusForBoard(status: string): BoardStatus | null {
+export function normalizeStatusForBoard(status: string): BoardStatus | null {
   const normalized = status.replace(/-/g, "_");
   return BOARD_STATUSES.includes(normalized as BoardStatus) ? normalized as BoardStatus : null;
+}
+
+export function boardColumnForTaskStatus(status: string): BoardStatus {
+  const normalized = status.replace(/-/g, "_");
+  if (["explorer", "developer", "qa", "reviewer", "finalize"].includes(normalized)) {
+    return "in_progress";
+  }
+  if (["failed", "stuck", "conflict", "blocked", "review"].includes(normalized)) {
+    return "needs_attention";
+  }
+  return normalizeStatusForBoard(status) ?? "closed";
 }
 
 function boardStatusToStoreStatus(status: BoardStatus): string {
@@ -237,19 +248,8 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
     map.set(status, []);
   }
 
-  // Statuses that route to needs_attention column per migration comment:
-// "conflict/failed/stuck/blocked/review=needs-attention"
-  const NEEDS_ATTENTION_STATUSES = new Set(["failed", "stuck", "conflict", "blocked", "review"]);
-  const isBoardStatus = (value: string): value is BoardStatus =>
-    BOARD_STATUSES.includes(value as BoardStatus);
   for (const row of rows) {
-    const normalizedStatus = row.status.replace(/-/g, "_");
-    let status: BoardStatus;
-    if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
-      status = "needs_attention";
-    } else {
-      status = normalizeStatusForBoard(row.status) ?? "closed";
-    }
+    const status = boardColumnForTaskStatus(row.status);
     const tasks = map.get(status)!;
     tasks.push({
       id: row.id,
@@ -600,7 +600,7 @@ function renderTaskDetailView(
   ];
 
   const children: Array<ReturnType<typeof h>> = [
-    h(Text, { key: "detail-title", color: "blue", bold: true }, "TASK DETAIL"),
+    h(Text, { key: "detail-title", color: "blue", bold: true }, `TASK DETAIL — ${task.status}`),
   ];
 
   if (task.description) {
