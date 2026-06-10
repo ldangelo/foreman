@@ -582,11 +582,14 @@ function renderTaskDetailView(
   width: number,
   notesStatus: RenderState["detailNotesStatus"],
   notesError: string | null,
+  terminalHeight?: number,
 ): ReturnType<typeof h> {
-  // Use substantially more terminal real estate - wider panel with flexible width
-  // Clamp to never exceed available width and fall back to smaller minimum on narrow screens
-  const panelWidth = Math.max(24, Math.min(40, width - 4));
-  const fieldWidth = Math.max(8, Math.min(14, Math.floor(panelWidth * 0.28)));
+  // Use substantially more terminal real estate while never exceeding available width.
+  const availableWidth = Math.max(8, width - 4);
+  const preferredWidth = Math.max(50, Math.floor(width * 0.9));
+  const panelWidth = Math.min(preferredWidth, availableWidth);
+  const panelHeight = terminalHeight ? Math.max(8, terminalHeight - 2) : undefined;
+  const fieldWidth = Math.max(8, Math.min(16, Math.floor(panelWidth * 0.2)));
 
   const rows: Array<[string, string | null]> = [
     ["ID:", task.id],
@@ -624,7 +627,7 @@ function renderTaskDetailView(
       ),
     );
 
-    // Show all description lines with wrapping (no4-line limit)
+    // Show all description lines with wrapping (no line limit)
     for (const [index, line] of rest.entries()) {
       children.push(
         h(
@@ -679,7 +682,7 @@ function renderTaskDetailView(
       children.push(h(Text, { key: "notes-empty", dimColor: true }, "Notes: none yet"));
     } else {
       children.push(h(Text, { key: "notes-title", bold: true }, "Notes:"));
-      // Show all notes with wrapping (no5-item limit)
+      // Show all notes with wrapping (no item limit)
       for (const [noteIndex, note] of task.notes.entries()) {
         const when = new Date(note.created_at).toLocaleString();
         const phase = note.phase ? `${note.phase} ` : "";
@@ -704,12 +707,19 @@ function renderTaskDetailView(
     }
   }
 
-  children.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
+  const contentLimit = panelHeight ? Math.max(1, panelHeight - 3) : undefined;
+  const hasHiddenContent = contentLimit !== undefined && children.length > contentLimit;
+  const visibleChildren = hasHiddenContent ? children.slice(0, contentLimit) : children;
+
+  if (hasHiddenContent) {
+    visibleChildren.push(h(Text, { key: "detail-more", dimColor: true }, "↓ more content"));
+  }
+  visibleChildren.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
 
   return h(
     Box,
-    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth },
-    ...children,
+    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth, height: panelHeight },
+    ...visibleChildren,
   );
 }
 
@@ -834,6 +844,7 @@ export function renderBoard(
       terminalWidth,
       state.detailNotesStatus,
       state.detailNotesError,
+      terminalHeight,
     )}`;
   }
   return `${CLEAR_SCREEN}${renderBoardFrame(state, projectName, terminalWidth, terminalHeight, userVisibleLimit)}`;
@@ -854,8 +865,9 @@ export function renderTaskDetail(
   width: number,
   notesStatus: RenderState["detailNotesStatus"] = "idle",
   notesError: string | null = null,
+  terminalHeight?: number,
 ): string {
-  return renderToString(renderTaskDetailView(task, width, notesStatus, notesError), { columns: width });
+  return renderToString(renderTaskDetailView(task, width, notesStatus, notesError, terminalHeight), { columns: width });
 }
 
 // ── Editor integration ───────────────────────────────────────────────────────

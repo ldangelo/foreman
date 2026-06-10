@@ -576,20 +576,31 @@ describe("BoardRendering", () => {
     it("should use substantial panel width for wide terminals", () => {
       const task = createTask("bd-1234");
       const output = stripTerminalFormatting(renderTaskDetail(task, 120, "idle", null));
-      // Panel width should be Math.max(24, Math.min(40, 120 - 4)) = Math.max(24, 40) = 40
-      // The panel is capped at 40 to ensure it fits within available width
-      // The output should contain the full task detail
       expect(output).toContain("TASK DETAIL");
       expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeGreaterThanOrEqual(50);
     });
 
     it("should clamp panel width on narrow terminals", () => {
       const task = createTask("bd-1234");
       const output = stripTerminalFormatting(renderTaskDetail(task, 30, "idle", null));
-      // Panel width should be Math.max(24, Math.min(40, 30 - 4)) = Math.max(24, 26) = 26
-      // The panel should still render without exceeding terminal width
       expect(output).toContain("TASK DETAIL");
       expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeLessThanOrEqual(30);
+    });
+
+    it("should prevent panel overflow on very narrow terminals", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 20, "idle", null));
+      expect(output).toContain("TASK DETAIL");
+      expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeLessThanOrEqual(20);
     });
   });
 
