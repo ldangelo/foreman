@@ -494,9 +494,10 @@ export class GhCli {
     params.set("per_page", "100");
 
     const query = params.toString() ? `?${params.toString()}` : "";
-    return this.api<GitHubIssue[]>(
+    const issues = await this.api<GitHubIssue[]>(
       `/repos/${owner}/${repo}/issues${query}`,
     );
+    return issues.filter((issue) => issue.pull_request === undefined);
   }
 
   /**
@@ -771,6 +772,8 @@ export interface GitHubIssue {
   closed_at: string | null;
   url: string;
   html_url: string;
+  /** Present for pull requests returned by GitHub's issues API; filtered by listIssues(). */
+  pull_request?: unknown;
   /** Present on single-issue GET responses (not on list responses). */
   repository_url?: string;
 }

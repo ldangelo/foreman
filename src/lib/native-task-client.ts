@@ -115,7 +115,7 @@ export class NativeTaskClient implements ITaskClient {
       developer: 3,
       qa: 3,
       reviewer: 3,
-      finalize: 4,
+      finalize: 3,
       merged: 5,
       closed: 5,
       conflict: -1,

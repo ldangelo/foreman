@@ -232,6 +232,23 @@ describe("GhCli constructor", () => {
   });
 });
 
+describe("GhCli.listIssues", () => {
+  it("filters pull requests returned by GitHub's issues API", async () => {
+    class TestGhCli extends GhCli {
+      override async api<T>(_endpoint: string, _options?: unknown): Promise<T> {
+        return [
+          { id: 1, number: 1, title: "real issue", body: null, state: "open", user: { login: "u", id: 1 }, labels: [], assignees: [], milestone: null, created_at: "", updated_at: "", closed_at: null, url: "", html_url: "" },
+          { id: 2, number: 2, title: "pull request", body: null, state: "open", user: { login: "u", id: 1 }, labels: [], assignees: [], milestone: null, created_at: "", updated_at: "", closed_at: null, url: "", html_url: "", pull_request: { url: "https://api.github.com/pr/2" } },
+        ] as T;
+      }
+    }
+
+    const issues = await new TestGhCli().listIssues("owner", "repo");
+
+    expect(issues.map((issue) => issue.number)).toEqual([1]);
+  });
+});
+
 describe("GhCli.ensureLabels", () => {
   it("creates missing labels, updates changed labels, and leaves matching labels unchanged", async () => {
     const labels: GitHubLabelDefinition[] = [
