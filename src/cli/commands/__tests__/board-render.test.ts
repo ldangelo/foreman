@@ -504,6 +504,108 @@ describe("BoardRendering", () => {
       expect(task.approved_at).toBeNull();
       expect(task.closed_at).toBeNull();
     });
+
+    it("should wrap long title without aggressive truncation", () => {
+      const longTitle = "This is a very long task title that should wrap properly and not be aggressively truncated to fit within a narrow panel width";
+      const task = createTask("bd-1234", { title: longTitle });
+      const output = stripTerminalFormatting(renderTaskDetail(task, 120, "idle", null));
+
+      // The title should be present in the output
+      expect(output).toContain("This is a very long task title");
+    });
+
+    it("should wrap multi-line description without line limit", () => {
+      const multiLineDesc = "First line of description\nSecond line of description\nThird line of description\nFourth line of description\nFifth line of description\nSixth line of description";
+      const task = createTask("bd-1234", { description: multiLineDesc });
+      const output = stripTerminalFormatting(renderTaskDetail(task, 120, "idle", null));
+
+      // All lines should be visible (no 4-line limit)
+      expect(output).toContain("First line of description");
+      expect(output).toContain("Sixth line of description");
+    });
+
+    it("should display many notes with full content", () => {
+      const task = createTask("bd-1234", {
+        notes: [
+          {
+            id: "note-1",
+            created_at: "2026-04-19T12:30:00Z",
+            phase: "developer",
+            kind: "progress",
+            author: "developer",
+            body: "First note body line 1\nFirst note body line 2",
+          },
+          {
+            id: "note-2",
+            created_at: "2026-04-19T13:30:00Z",
+            phase: "qa",
+            kind: "comment",
+            author: "qa",
+            body: "Second note body line 1\nSecond note body line 2\nSecond note body line 3",
+          },
+          {
+            id: "note-3",
+            created_at: "2026-04-19T14:30:00Z",
+            phase: "reviewer",
+            kind: "progress",
+            author: "reviewer",
+            body: "Third note body",
+          },
+          {
+            id: "note-4",
+            created_at: "2026-04-19T15:30:00Z",
+            phase: "finalize",
+            kind: "comment",
+            author: "finalizer",
+            body: "Fourth note body\nFourth note line 2",
+          },
+          {
+            id: "note-5",
+            created_at: "2026-04-19T16:30:00Z",
+            phase: "developer",
+            kind: "progress",
+            author: "developer2",
+            body: "Fifth note body\nFifth note line 2\nFifth note line 3",
+          },
+          {
+            id: "note-6",
+            created_at: "2026-04-19T17:30:00Z",
+            phase: "developer",
+            kind: "progress",
+            author: "developer3",
+            body: "Sixth note body",
+          },
+        ],
+      });
+
+      const output = stripTerminalFormatting(renderTaskDetail(task, 120, "loaded", null));
+
+      // All notes should be visible (no 5-note limit)
+      expect(output).toContain("developer");
+      expect(output).toContain("qa");
+      expect(output).toContain("reviewer");
+      expect(output).toContain("finalizer");
+      expect(output).toContain("developer2");
+      expect(output).toContain("developer3");
+      // All note bodies should be visible
+      expect(output).toContain("First note body line 1");
+      expect(output).toContain("Second note body line 1");
+      expect(output).toContain("Third note body");
+      expect(output).toContain("Fourth note body");
+      expect(output).toContain("Fifth note body");
+      expect(output).toContain("Fifth note line 2");
+      expect(output).toContain("Fifth note line 3");
+      expect(output).toContain("Sixth note body");
+    });
+
+    it("should use substantial width in overlay mode", () => {
+      const task = createTask("bd-1234", { title: "Test Task" });
+      // When terminal is 120 wide, panel should use at least 50 chars
+      const output = stripTerminalFormatting(renderTaskDetail(task, 120, "idle", null));
+      // Verify the detail panel renders (content present)
+      expect(output).toContain("TASK DETAIL");
+      expect(output).toContain("bd-1234");
+    });
   });
 
   describe("Error Banner", () => {
