@@ -1,4 +1,4 @@
-# Finalize Validation: Board-created tasks use UUID IDs instead of compact project IDs
+# Finalize Validation: Board-created tasks now use compact project-prefixed IDs instead of UUIDs
 
 ## Seed: foreman-70661
 ## Run: 26ef2948-e3cd-498d-92b2-1b75e4082d27
