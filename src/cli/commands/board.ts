@@ -582,9 +582,14 @@ function renderTaskDetailView(
   width: number,
   notesStatus: RenderState["detailNotesStatus"],
   notesError: string | null,
+  terminalHeight?: number,
 ): ReturnType<typeof h> {
-  const panelWidth = Math.max(24, Math.min(64, width));
-  const fieldWidth = Math.max(8, Math.min(14, Math.floor(panelWidth * 0.28)));
+  // Use substantially more terminal real estate while never exceeding available width.
+  const availableWidth = Math.max(8, width - 4);
+  const preferredWidth = Math.max(50, Math.floor(width * 0.9));
+  const panelWidth = Math.min(preferredWidth, availableWidth);
+  const panelHeight = terminalHeight ? Math.max(8, terminalHeight - 2) : undefined;
+  const fieldWidth = Math.max(8, Math.min(16, Math.floor(panelWidth * 0.2)));
 
   const rows: Array<[string, string | null]> = [
     ["ID:", task.id],
@@ -612,17 +617,18 @@ function renderTaskDetailView(
         h(
           Box,
           { width: fieldWidth, minWidth: 0 },
-          h(Text, { bold: true, wrap: "truncate-end" }, "Description:"),
+          h(Text, { bold: true, wrap: "wrap" }, "Description:"),
         ),
         h(
           Box,
           { flexGrow: 1, minWidth: 0 },
-          h(Text, { wrap: "truncate-end" }, firstLine ?? ""),
+          h(Text, { wrap: "wrap" }, firstLine ?? ""),
         ),
       ),
     );
 
-    for (const [index, line] of rest.slice(0, 4).entries()) {
+    // Show all description lines with wrapping (no line limit)
+    for (const [index, line] of rest.entries()) {
       children.push(
         h(
           Box,
@@ -631,7 +637,7 @@ function renderTaskDetailView(
           h(
             Box,
             { flexGrow: 1, minWidth: 0 },
-            h(Text, { dimColor: true, wrap: "truncate-end" }, line),
+            h(Text, { dimColor: true, wrap: "wrap" }, line),
           ),
         ),
       );
@@ -650,12 +656,12 @@ function renderTaskDetailView(
         h(
           Box,
           { width: fieldWidth, minWidth: 0 },
-          h(Text, { bold: true, wrap: "truncate-end" }, label),
+          h(Text, { bold: true, wrap: "wrap" }, label),
         ),
         h(
           Box,
           { flexGrow: 1, minWidth: 0 },
-          h(Text, { wrap: "truncate-end" }, value),
+          h(Text, { wrap: "wrap" }, value),
         ),
       ),
     );
@@ -676,21 +682,23 @@ function renderTaskDetailView(
       children.push(h(Text, { key: "notes-empty", dimColor: true }, "Notes: none yet"));
     } else {
       children.push(h(Text, { key: "notes-title", bold: true }, "Notes:"));
-      for (const [noteIndex, note] of task.notes.slice(0, 5).entries()) {
+      // Show all notes with wrapping (no item limit)
+      for (const [noteIndex, note] of task.notes.entries()) {
         const when = new Date(note.created_at).toLocaleString();
         const phase = note.phase ? `${note.phase} ` : "";
         children.push(
           h(
             Text,
-            { key: `note:${note.id}:meta`, dimColor: true, wrap: "truncate-end" },
+            { key: `note:${note.id}:meta`, dimColor: true, wrap: "wrap" },
             `[${when} ${phase}${note.kind}] ${note.author}`,
           ),
         );
-        for (const [lineIndex, line] of note.body.split("\n").slice(0, noteIndex === 0 ? 2 : 1).entries()) {
+        // Show all lines of note body with wrapping
+        for (const [lineIndex, line] of note.body.split("\n").entries()) {
           children.push(
             h(
               Text,
-              { key: `note:${note.id}:body:${lineIndex}`, wrap: "truncate-end" },
+              { key: `note:${note.id}:body:${lineIndex}`, wrap: "wrap" },
               line,
             ),
           );
@@ -699,12 +707,19 @@ function renderTaskDetailView(
     }
   }
 
-  children.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
+  const contentLimit = panelHeight ? Math.max(1, panelHeight - 3) : undefined;
+  const hasHiddenContent = contentLimit !== undefined && children.length > contentLimit;
+  const visibleChildren = hasHiddenContent ? children.slice(0, contentLimit) : children;
+
+  if (hasHiddenContent) {
+    visibleChildren.push(h(Text, { key: "detail-more", dimColor: true }, "↓ more content"));
+  }
+  visibleChildren.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
 
   return h(
     Box,
-    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth },
-    ...children,
+    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth, height: panelHeight },
+    ...visibleChildren,
   );
 }
 
@@ -718,16 +733,13 @@ function renderBoardFrame(
   const totalTasks = state.totalTasks;
   const visibleStatuses = getVisibleStatuses(terminalWidth, state.nav.colIndex);
   const columnWidth = getColumnWidth(terminalWidth, visibleStatuses.length);
-  const reservedRows =
-    5
-    + (state.errorMessage ? 2 : 0)
-    + (state.showHelp ? 16 : 0)
-    + (state.showDetail && state.detailTask ? 14 : 0);
+
+  // Help overlay uses 16 rows; board footer uses 5 rows
+  const reservedRows = 5 + (state.errorMessage ? 2 : 0) + (state.showHelp ? 16 : 0);
   const columnHeight = Math.max(8, terminalHeight - reservedRows);
 
-  const tree = h(
-    Box,
-    { flexDirection: "column", width: terminalWidth },
+  // Build the board content (header + columns + footer)
+  const boardContent: Array<ReturnType<typeof h>> = [
     h(
       Box,
       { width: "100%", marginBottom: 1 },
@@ -772,20 +784,35 @@ function renderBoardFrame(
       }),
     ),
     h(Text, { dimColor: true }, "j/k up/down  h/l left/right  o sort  s/S cycle status  R mark ready  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
-    state.errorMessage
-      ? h(
+  ];
+
+  // Add error message if present
+  if (state.errorMessage) {
+    boardContent.push(
+      h(
         Box,
         { marginTop: 1 },
         h(Text, { color: "red", bold: true }, "ERROR "),
         h(Text, { color: "red", wrap: "truncate-end" }, state.errorMessage),
-      )
-      : null,
-    state.showHelp
-      ? h(Box, { marginTop: 1 }, renderHelpOverlayView(Math.max(24, terminalWidth - 2)))
-      : null,
-    state.showDetail && state.detailTask
-      ? h(Box, { marginTop: 1 }, renderTaskDetailView(state.detailTask, Math.max(24, terminalWidth - 2), state.detailNotesStatus, state.detailNotesError))
-      : null,
+      ),
+    );
+  }
+
+  // When help is shown, render help overlay at bottom (existing behavior)
+  if (state.showHelp) {
+    const tree = h(
+      Box,
+      { flexDirection: "column", width: terminalWidth },
+      ...boardContent,
+      h(Box, { marginTop: 1 }, renderHelpOverlayView(Math.max(24, terminalWidth - 2))),
+    );
+    return renderToString(tree, { columns: terminalWidth });
+  }
+
+  const tree = h(
+    Box,
+    { flexDirection: "column", width: terminalWidth },
+    ...boardContent,
   );
 
   return renderToString(tree, { columns: terminalWidth });
@@ -809,6 +836,17 @@ export function renderBoard(
   userVisibleLimit?: number,
   terminalHeight = getTerminalHeight(),
 ): string {
+  // When detail is shown, render it as a true overlay (full screen) on top of the board
+  // This gives the detail panel substantially more real estate than inline rendering
+  if (state.showDetail && state.detailTask) {
+    return `${CLEAR_SCREEN}${renderTaskDetail(
+      state.detailTask,
+      terminalWidth,
+      state.detailNotesStatus,
+      state.detailNotesError,
+      terminalHeight,
+    )}`;
+  }
   return `${CLEAR_SCREEN}${renderBoardFrame(state, projectName, terminalWidth, terminalHeight, userVisibleLimit)}`;
 }
 
@@ -827,8 +865,9 @@ export function renderTaskDetail(
   width: number,
   notesStatus: RenderState["detailNotesStatus"] = "idle",
   notesError: string | null = null,
+  terminalHeight?: number,
 ): string {
-  return renderToString(renderTaskDetailView(task, width, notesStatus, notesError), { columns: width });
+  return renderToString(renderTaskDetailView(task, width, notesStatus, notesError, terminalHeight), { columns: width });
 }
 
 // ── Editor integration ───────────────────────────────────────────────────────

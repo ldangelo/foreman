@@ -458,7 +458,9 @@ describe("BoardRendering", () => {
       const output = stripTerminalFormatting(renderTaskDetail(task, 100, "loaded", null));
 
       expect(output).toContain("Notes:");
-      expect(output).toContain("developer progress");
+      // Note content is wrapped, so check for the parts that appear in the output
+      expect(output).toContain("developer");
+      expect(output).toContain("progress");
       expect(output).toContain("foreman");
       expect(output).toContain("Implemented status normalization");
     });
@@ -503,6 +505,102 @@ describe("BoardRendering", () => {
       expect(task.external_id).toBeNull();
       expect(task.approved_at).toBeNull();
       expect(task.closed_at).toBeNull();
+    });
+
+    it("should render long title with wrapping", () => {
+      const longTitle = "This is a very long task title that exceeds typical width constraints and should wrap properly when rendered";
+      const task = createTask("bd-1234", { title: longTitle });
+      const output = stripTerminalFormatting(renderTaskDetail(task, 80, "idle", null));
+      // Title content should be present (wrapped across multiple lines)
+      // Check for segments that appear in the wrapped output
+      expect(output).toContain("This is a very long task");
+      expect(output).toContain("title that exceeds typical");
+      expect(output).toContain("constraints and should");
+      expect(output).toContain("wrap properly when rendered");
+    });
+
+    it("should render multi-line description with all lines", () => {
+      const multiLineDesc = "Line 1 of description\nLine 2 of description\nLine 3 of description\nLine 4 of description\nLine 5 of description";
+      const task = createTask("bd-1234", { description: multiLineDesc });
+      const output = stripTerminalFormatting(renderTaskDetail(task, 80, "idle", null));
+      expect(output).toContain("Line 1 of description");
+      expect(output).toContain("Line 2 of description");
+      expect(output).toContain("Line 3 of description");
+      expect(output).toContain("Line 4 of description");
+      expect(output).toContain("Line 5 of description");
+    });
+
+    it("should render multiple notes with all content", () => {
+      const task = createTask("bd-1234", {
+        notes: [
+          {
+            id: "note-1",
+            created_at: "2026-04-19T12:30:00Z",
+            phase: "developer",
+            kind: "progress",
+            author: "dev1",
+            body: "First note body line 1\nFirst note body line 2",
+          },
+          {
+            id: "note-2",
+            created_at: "2026-04-19T13:30:00Z",
+            phase: "qa",
+            kind: "comment",
+            author: "qa1",
+            body: "Second note body line 1\nSecond note body line 2\nSecond note body line 3",
+          },
+          {
+            id: "note-3",
+            created_at: "2026-04-19T14:30:00Z",
+            phase: "reviewer",
+            kind: "approval",
+            author: "reviewer1",
+            body: "Third note single line",
+          },
+        ],
+      });
+      const output = stripTerminalFormatting(renderTaskDetail(task, 80, "loaded", null));
+      // All notes should be present
+      expect(output).toContain("dev1");
+      expect(output).toContain("qa1");
+      expect(output).toContain("reviewer1");
+      // All note body content should be present
+      expect(output).toContain("First note body line 1");
+      expect(output).toContain("First note body line 2");
+      expect(output).toContain("Second note body line 1");
+      expect(output).toContain("Second note body line 2");
+      expect(output).toContain("Second note body line 3");
+      expect(output).toContain("Third note single line");
+    });
+
+    it("should use substantial panel width for wide terminals", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 120, "idle", null));
+      expect(output).toContain("TASK DETAIL");
+      expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeGreaterThanOrEqual(50);
+    });
+
+    it("should clamp panel width on narrow terminals", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 30, "idle", null));
+      expect(output).toContain("TASK DETAIL");
+      expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeLessThanOrEqual(30);
+    });
+
+    it("should prevent panel overflow on very narrow terminals", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 20, "idle", null));
+      expect(output).toContain("TASK DETAIL");
+      expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeLessThanOrEqual(20);
     });
   });
 
