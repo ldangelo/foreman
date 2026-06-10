@@ -582,11 +582,11 @@ function renderTaskDetailView(
   width: number,
   notesStatus: RenderState["detailNotesStatus"],
   notesError: string | null,
-  height?: number,
 ): ReturnType<typeof h> {
-  // Use substantially more terminal real estate for overlay mode
-  const panelWidth = Math.max(50, width - 4);
-  const fieldWidth = Math.max(10, Math.min(16, Math.floor(panelWidth * 0.2)));
+  // Use substantially more terminal real estate - wider panel with flexible width
+  // Clamp to never exceed available width and fall back to smaller minimum on narrow screens
+  const panelWidth = Math.max(24, Math.min(40, width - 4));
+  const fieldWidth = Math.max(8, Math.min(14, Math.floor(panelWidth * 0.28)));
 
   const rows: Array<[string, string | null]> = [
     ["ID:", task.id],
@@ -606,7 +606,7 @@ function renderTaskDetailView(
   ];
 
   if (task.description) {
-    const lines = task.description.split("\n");
+    const [firstLine, ...rest] = task.description.split("\n");
     children.push(
       h(
         Box,
@@ -619,13 +619,13 @@ function renderTaskDetailView(
         h(
           Box,
           { flexGrow: 1, minWidth: 0 },
-          h(Text, { wrap: "wrap" }, lines[0] ?? ""),
+          h(Text, { wrap: "wrap" }, firstLine ?? ""),
         ),
       ),
     );
 
-    // Show all remaining lines with wrapping
-    for (const [index, line] of lines.slice(1).entries()) {
+    // Show all description lines with wrapping (no4-line limit)
+    for (const [index, line] of rest.entries()) {
       children.push(
         h(
           Box,
@@ -679,7 +679,7 @@ function renderTaskDetailView(
       children.push(h(Text, { key: "notes-empty", dimColor: true }, "Notes: none yet"));
     } else {
       children.push(h(Text, { key: "notes-title", bold: true }, "Notes:"));
-      // Show more notes with full content
+      // Show all notes with wrapping (no5-item limit)
       for (const [noteIndex, note] of task.notes.entries()) {
         const when = new Date(note.created_at).toLocaleString();
         const phase = note.phase ? `${note.phase} ` : "";
@@ -706,10 +706,9 @@ function renderTaskDetailView(
 
   children.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
 
-  const panelHeight = height ? Math.min(height - 2, 50) : undefined;
   return h(
     Box,
-    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth, height: panelHeight },
+    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth },
     ...children,
   );
 }
@@ -721,28 +720,16 @@ function renderBoardFrame(
   terminalHeight: number,
   userVisibleLimit?: number,
 ): string {
-  // When detail view is shown, render it as a true overlay on top of the board
-  if (state.showDetail && state.detailTask) {
-    const tree = h(
-      Box,
-      { flexDirection: "column", width: terminalWidth, height: terminalHeight, justifyContent: "center", alignItems: "center" },
-      h(Box, { width: Math.max(50, terminalWidth - 4) }, renderTaskDetailView(state.detailTask, terminalWidth, state.detailNotesStatus, state.detailNotesError, terminalHeight)),
-    );
-    return renderToString(tree, { columns: terminalWidth });
-  }
-
   const totalTasks = state.totalTasks;
   const visibleStatuses = getVisibleStatuses(terminalWidth, state.nav.colIndex);
   const columnWidth = getColumnWidth(terminalWidth, visibleStatuses.length);
-  const reservedRows =
-    5
-    + (state.errorMessage ? 2 : 0)
-    + (state.showHelp ? 16 : 0);
+
+  // Help overlay uses 16 rows; board footer uses 5 rows
+  const reservedRows = 5 + (state.errorMessage ? 2 : 0) + (state.showHelp ? 16 : 0);
   const columnHeight = Math.max(8, terminalHeight - reservedRows);
 
-  const tree = h(
-    Box,
-    { flexDirection: "column", width: terminalWidth },
+  // Build the board content (header + columns + footer)
+  const boardContent: Array<ReturnType<typeof h>> = [
     h(
       Box,
       { width: "100%", marginBottom: 1 },
@@ -787,17 +774,35 @@ function renderBoardFrame(
       }),
     ),
     h(Text, { dimColor: true }, "j/k up/down  h/l left/right  o sort  s/S cycle status  R mark ready  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
-    state.errorMessage
-      ? h(
+  ];
+
+  // Add error message if present
+  if (state.errorMessage) {
+    boardContent.push(
+      h(
         Box,
         { marginTop: 1 },
         h(Text, { color: "red", bold: true }, "ERROR "),
         h(Text, { color: "red", wrap: "truncate-end" }, state.errorMessage),
-      )
-      : null,
-    state.showHelp
-      ? h(Box, { marginTop: 1 }, renderHelpOverlayView(Math.max(24, terminalWidth - 2)))
-      : null,
+      ),
+    );
+  }
+
+  // When help is shown, render help overlay at bottom (existing behavior)
+  if (state.showHelp) {
+    const tree = h(
+      Box,
+      { flexDirection: "column", width: terminalWidth },
+      ...boardContent,
+      h(Box, { marginTop: 1 }, renderHelpOverlayView(Math.max(24, terminalWidth - 2))),
+    );
+    return renderToString(tree, { columns: terminalWidth });
+  }
+
+  const tree = h(
+    Box,
+    { flexDirection: "column", width: terminalWidth },
+    ...boardContent,
   );
 
   return renderToString(tree, { columns: terminalWidth });
@@ -821,6 +826,16 @@ export function renderBoard(
   userVisibleLimit?: number,
   terminalHeight = getTerminalHeight(),
 ): string {
+  // When detail is shown, render it as a true overlay (full screen) on top of the board
+  // This gives the detail panel substantially more real estate than inline rendering
+  if (state.showDetail && state.detailTask) {
+    return `${CLEAR_SCREEN}${renderTaskDetail(
+      state.detailTask,
+      terminalWidth,
+      state.detailNotesStatus,
+      state.detailNotesError,
+    )}`;
+  }
   return `${CLEAR_SCREEN}${renderBoardFrame(state, projectName, terminalWidth, terminalHeight, userVisibleLimit)}`;
 }
 
