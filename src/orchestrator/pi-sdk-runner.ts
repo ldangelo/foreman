@@ -42,8 +42,21 @@ import {
 } from "./pi-observability-extension.js";
 import type { PhaseTraceLiveEvent, PhaseTraceMetadata } from "./pi-observability-types.js";
 import { writePhaseTrace } from "./pi-observability-writer.js";
+import { z } from "zod";
 
 // ── Public interface (compatible with pi-runner.ts) ─────────────────────
+
+/**
+ * Options for extracting structured JSON output from agent text.
+ * When provided, the runner will look for content inside <tag>...</tag> markers,
+ * parse it as JSON, and validate it against the Zod schema.
+ */
+export interface StructuredOutputOptions {
+  /** Tag name to extract (e.g. "result" for <result>...</result>). */
+  tag: string;
+  /** Zod schema to validate the extracted JSON content. */
+  schema: z.ZodType;
+}
 
 export interface PiRunResult {
   success: boolean;
@@ -56,6 +69,10 @@ export interface PiRunResult {
   errorMessage?: string;
   /** Captured assistant text output (concatenated from all text deltas). */
   outputText?: string;
+  /** Structured output extracted from outputText, validated against schema. Present when output option is specified. */
+  output?: unknown;
+  /** Error message if structured output extraction or validation failed. Does not indicate phase failure. */
+  outputError?: string;
   /** Relative path to the JSON phase trace, when observability is enabled. */
   traceFile?: string;
   /** Relative path to the markdown phase trace, when observability is enabled. */
@@ -104,6 +121,8 @@ export interface PiRunOptions {
   observability?: PhaseTraceMetadata;
   /** Live observability callback fired from Pi extension hooks. */
   onTraceEvent?: (event: PhaseTraceLiveEvent) => void;
+  /** Optional structured output extraction. When provided, the runner will extract and validate JSON from outputText. */
+  output?: StructuredOutputOptions;
 }
 
 // ── Tool name → factory mapping ─────────────────────────────────────────
@@ -253,6 +272,62 @@ export function getPiSdkEventError(event: AgentSessionEvent): string | undefined
     return eventRecord.errorMessage;
   }
   return undefined;
+}
+
+/**
+ * Extract and validate structured output from agent text.
+ * Looks for content between <tag>...</tag> markers, parses as JSON,
+ * and validates against the provided Zod schema.
+ *
+ * Returns an object with either `output` (validated data) or `error` (failure message).
+ * Does not throw — all errors are captured in the return value.
+ */
+export function extractStructuredOutput(
+  outputText: string | undefined,
+  options: StructuredOutputOptions,
+): { output?: unknown; error?: string } {
+  if (!outputText) {
+    return { error: `No output text to extract from` };
+  }
+
+  // Build regex to find content between <tag>...</tag>
+  // The DOTALL flag (s) makes . match newlines
+  // tagEscaped is already properly escaped, use it directly without re-escaping
+  const tagEscaped = options.tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const openTag = `<${tagEscaped}>`;
+  const closeTag = `</${tagEscaped}>`;
+  const regex = new RegExp(
+    `${openTag}([\\s\\S]*?)${closeTag}`,
+    "i",
+  );
+
+  const match = outputText.match(regex);
+  if (!match) {
+    return { error: `Tag <${options.tag}> not found in output` };
+  }
+
+  const jsonContent = match[1].trim();
+  if (!jsonContent) {
+    return { error: `Empty content inside <${options.tag}> tag` };
+  }
+
+  // Parse JSON
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonContent);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Invalid JSON inside <${options.tag}>: ${message}` };
+  }
+
+  // Validate against schema
+  try {
+    const validated = options.schema.parse(parsed);
+    return { output: validated };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Schema validation failed for <${options.tag}>: ${message}` };
+  }
 }
 
 export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
@@ -496,6 +571,17 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       tokensOut,
       errorMessage: success ? undefined : errorMessage,
       outputText: textChunks.length > 0 ? textChunks.join("") : undefined,
+      ...(() => {
+        if (!opts.output) return {};
+        const extracted = extractStructuredOutput(
+          textChunks.length > 0 ? textChunks.join("") : undefined,
+          opts.output,
+        );
+        return {
+          output: extracted.output,
+          outputError: extracted.error,
+        };
+      })(),
       traceFile: tracePaths?.relativeJsonPath,
       traceMarkdownFile: tracePaths?.relativeMarkdownPath,
       traceWarnings: phaseTrace?.warnings,
@@ -531,6 +617,17 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       tokensIn: 0,
       tokensOut: 0,
       errorMessage: reason,
+      ...(() => {
+        if (!opts.output) return {};
+        const extracted = extractStructuredOutput(
+          textChunks.length > 0 ? textChunks.join("") : undefined,
+          opts.output,
+        );
+        return {
+          output: extracted.output,
+          outputError: extracted.error,
+        };
+      })(),
       traceFile: tracePaths?.relativeJsonPath,
       traceMarkdownFile: tracePaths?.relativeMarkdownPath,
       traceWarnings: phaseTrace?.warnings,
