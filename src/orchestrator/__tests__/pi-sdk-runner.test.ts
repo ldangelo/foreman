@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getPiSdkEventError, getSandboxedPiResourcePaths, shouldSandboxPiExtensions, type StreamEvent } from "../pi-sdk-runner.js";
+import { z } from "zod";
+import { extractStructuredOutput, getPiSdkEventError, getSandboxedPiResourcePaths, shouldSandboxPiExtensions, type StreamEvent } from "../pi-sdk-runner.js";
 
 const tmpDirs: string[] = [];
 
@@ -137,5 +138,134 @@ describe("StreamEvent type", () => {
     };
     expect(event.type).toBe("agentEnd");
     expect(event.success).toBe(false);
+  });
+});
+
+describe("extractStructuredOutput", () => {
+  const schema = z.object({
+    summary: z.string(),
+    score: z.number(),
+  });
+
+  it("extracts valid JSON from tag and validates against schema", () => {
+    const outputText = "Some text before <result>{\"summary\":\"Test\",\"score\":42}</result> some text after";
+    const result = extractStructuredOutput(outputText, { tag: "result", schema });
+    expect(result.output).toEqual({ summary: "Test", score: 42 });
+    expect(result.error).toBeUndefined();
+  });
+
+  it("handles nested objects in JSON", () => {
+    const outputText = "<data>{\"name\":\"test\",\"metadata\":{\"tags\":[\"a\",\"b\"]}}</data>";
+    const nestedSchema = z.object({
+      name: z.string(),
+      metadata: z.object({
+        tags: z.array(z.string()),
+      }),
+    });
+    const result = extractStructuredOutput(outputText, { tag: "data", schema: nestedSchema });
+    expect(result.output).toEqual({ name: "test", metadata: { tags: ["a", "b"] } });
+  });
+
+  it("returns error when tag is not found", () => {
+    const outputText = "No result tag here";
+    const result = extractStructuredOutput(outputText, { tag: "result", schema });
+    expect(result.output).toBeUndefined();
+    expect(result.error).toBe("Tag <result> not found in output");
+  });
+
+  it("returns error when content inside tag is empty", () => {
+    const outputText = "<result></result>";
+    const result = extractStructuredOutput(outputText, { tag: "result", schema });
+    expect(result.output).toBeUndefined();
+    expect(result.error).toBe("Empty content inside <result> tag");
+  });
+
+  it("returns error when content is not valid JSON", () => {
+    const outputText = "<result>not valid json</result>";
+    const result = extractStructuredOutput(outputText, { tag: "result", schema });
+    expect(result.output).toBeUndefined();
+    expect(result.error).toContain("Invalid JSON inside <result>");
+  });
+
+  it("returns error when JSON fails schema validation", () => {
+    const outputText = "<result>{\"summary\":\"test\",\"score\":\"not a number\"}</result>";
+    const result = extractStructuredOutput(outputText, { tag: "result", schema });
+    expect(result.output).toBeUndefined();
+    expect(result.error).toContain("Schema validation failed for <result>");
+  });
+
+  it("handles multiline JSON content", () => {
+    const outputText = `<result>{
+  "summary": "Multiline",
+  "score": 100
+}</result>`;
+    const result = extractStructuredOutput(outputText, { tag: "result", schema });
+    expect(result.output).toEqual({ summary: "Multiline", score: 100 });
+  });
+
+  it("handles whitespace around JSON content", () => {
+    const outputText = "<result>   {\"summary\":\"trimmed\",\"score\":5}   </result>";
+    const result = extractStructuredOutput(outputText, { tag: "result", schema });
+    expect(result.output).toEqual({ summary: "trimmed", score: 5 });
+  });
+
+  it("returns error when outputText is undefined", () => {
+    const result = extractStructuredOutput(undefined, { tag: "result", schema });
+    expect(result.output).toBeUndefined();
+    expect(result.error).toBe("No output text to extract from");
+  });
+
+  it("returns error when outputText is empty string", () => {
+    const result = extractStructuredOutput("", { tag: "result", schema });
+    expect(result.output).toBeUndefined();
+    expect(result.error).toBe("No output text to extract from");
+  });
+
+  it("is case-insensitive for tag matching", () => {
+    const outputText = "<RESULT>{\"summary\":\"Case test\",\"score\":1}</RESULT>";
+    const result = extractStructuredOutput(outputText, { tag: "result", schema });
+    expect(result.output).toEqual({ summary: "Case test", score: 1 });
+  });
+
+  it("handles special characters in tag name (escaped properly)", () => {
+    const outputText = "<custom-tag>{\"summary\":\"special\",\"score\":9}</custom-tag>";
+    const result = extractStructuredOutput(outputText, { tag: "custom-tag", schema });
+    expect(result.output).toEqual({ summary: "special", score: 9 });
+  });
+
+  it("handles tag with dot (regex metacharacter)", () => {
+    const outputText = "<result.data>{\"summary\":\"dot test\",\"score\":1}</result.data>";
+    const result = extractStructuredOutput(outputText, { tag: "result.data", schema });
+    expect(result.output).toEqual({ summary: "dot test", score: 1 });
+  });
+
+  it("handles tag with plus (regex metacharacter)", () => {
+    const outputText = "<tag+name>{\"summary\":\"plus test\",\"score\":2}</tag+name>";
+    const result = extractStructuredOutput(outputText, { tag: "tag+name", schema });
+    expect(result.output).toEqual({ summary: "plus test", score: 2 });
+  });
+
+  it("handles tag with question mark (regex metacharacter)", () => {
+    const outputText = "<tag?name>{\"summary\":\"question test\",\"score\":3}</tag?name>";
+    const result = extractStructuredOutput(outputText, { tag: "tag?name", schema });
+    expect(result.output).toEqual({ summary: "question test", score: 3 });
+  });
+
+  it("handles tag with caret (regex metacharacter)", () => {
+    const outputText = "<tag^name>{\"summary\":\"caret test\",\"score\":4}</tag^name>";
+    const result = extractStructuredOutput(outputText, { tag: "tag^name", schema });
+    expect(result.output).toEqual({ summary: "caret test", score: 4 });
+  });
+
+  it("handles tag with dollar sign (regex metacharacter)", () => {
+    const outputText = "<tag$name>{\"summary\":\"dollar test\",\"score\":5}</tag$name>";
+    const result = extractStructuredOutput(outputText, { tag: "tag$name", schema });
+    expect(result.output).toEqual({ summary: "dollar test", score: 5 });
+  });
+
+  it("handles tag with asterisk (regex metacharacter)", () => {
+    const outputText = "<tag*name>{\"summary\":\"asterisk test\",\"score\":6}</tag*name>";
+    const result = extractStructuredOutput(outputText, { tag: "tag*name", schema });
+    expect(result.output).toEqual({ summary: "asterisk test", score: 6 });
   });
 });
