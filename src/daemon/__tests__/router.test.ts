@@ -430,6 +430,39 @@ describe("tasks.create procedure", () => {
       caller.tasks.create({ id: "task-x", title: "Test" })
     ).rejects.toThrow();
   });
+
+  it("allows omitting id so adapter allocates compact project-prefixed ID", async () => {
+    const allocatedId = "foreman-abc12";
+    const mockTask = {
+      id: allocatedId,
+      project_id: "proj-123",
+      title: "Auto-allocated task",
+      description: null,
+      type: "task",
+      priority: 2,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    mockAdapter.createTask.mockResolvedValueOnce(mockTask);
+
+    const caller = appRouter.createCaller(mockCtx);
+    const result = await caller.tasks.create({
+      projectId: "proj-123",
+      title: "Auto-allocated task",
+    });
+
+    // id should not be passed to adapter, allowing it to allocate
+    const createTaskCalls = mockAdapter.createTask.mock.calls;
+    const createTaskPayload = createTaskCalls[createTaskCalls.length - 1][1];
+    expect(createTaskPayload).not.toHaveProperty('id');
+    expect(result.id).toBe(allocatedId);
+  });
 });
 
 describe("tasks.approve procedure", () => {

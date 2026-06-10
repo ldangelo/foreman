@@ -152,7 +152,7 @@ const tasksRouter = t.router({
     .input(
       z.object({
         projectId: PROJECT_ID_SCHEMA,
-        id: TASK_ID_SCHEMA,
+        id: TASK_ID_SCHEMA.optional(),
         title: z.string().min(1).max(1000).optional(),
         description: z.string().optional(),
         type: TASK_TYPE_SCHEMA,
@@ -168,7 +168,7 @@ const tasksRouter = t.router({
     )
     .mutation(async ({ input, ctx }) => {
       return ctx.adapter.createTask(input.projectId, {
-        id: input.id,
+        ...(input.id !== undefined && { id: input.id }),
         title: input.title ?? input.id,
         description: input.description,
         type: input.type ?? "task",

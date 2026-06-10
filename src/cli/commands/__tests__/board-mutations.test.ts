@@ -575,6 +575,54 @@ describe("BoardMutations", () => {
       const finalId = providedId.trim().length > 0 ? providedId.trim() : parsedId;
       expect(finalId).toBe(parsedId);
     });
+
+    it("blank id should result in undefined (not UUID) so server allocates compact ID", async () => {
+      // Track what createTaskAsync receives
+      let capturedTaskData: { id?: string; title: string } = { title: "" };
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
+        id: undefined, // blank id from YAML
+        title: "New Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      });
+      vi.spyOn(boardApi, "createTaskAsync").mockImplementation(async (_path, taskData) => {
+        capturedTaskData = taskData;
+        return { taskId: "foreman-abc12" };
+      });
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({ backlog: [] });
+
+      await handleKey("n", state, "/tmp/project");
+
+      // id should be undefined so the server allocates a compact project-prefixed ID
+      expect(capturedTaskData.id).toBeUndefined();
+    });
+
+    it("provided id should be passed through to createTaskAsync", async () => {
+      let capturedTaskData: { id?: string; title: string } = { title: "" };
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
+        id: "bd-custom-id",
+        title: "Custom Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      });
+      vi.spyOn(boardApi, "createTaskAsync").mockImplementation(async (_path, taskData) => {
+        capturedTaskData = taskData;
+        return { taskId: "bd-custom-id" };
+      });
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({ backlog: [] });
+
+      await handleKey("n", state, "/tmp/project");
+
+      expect(capturedTaskData.id).toBe("bd-custom-id");
+    });
   });
 
   describe("Editor Resolution", () => {
