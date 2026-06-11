@@ -665,10 +665,17 @@ export class Dispatcher {
         log(`Warning: failed to fetch details for seed ${seed.id}`);
       }
 
-      // Fetch bead comments (design notes, reviewer feedback, etc.) for agent context
-      // Native-only: skip comments fetch since native tasks do not support comments
-      // Non-native mode: also skip since comments are a Beads-specific concept with no store equivalent
-      const beadComments: string | null = null;
+      // Fetch task comments (design notes, reviewer feedback, etc.) for agent context.
+      // NativeTaskClient implements comments() via task_notes table when using postgres backend.
+      // Non-native/legacy mode may return null if the backend doesn't support comments.
+      // This is non-fatal — dispatch proceeds even if comment fetch fails.
+      let beadComments: string | null = null;
+      try {
+        beadComments = await this.seeds.comments?.(seed.id) ?? null;
+      } catch (commentErr: unknown) {
+        const msg = commentErr instanceof Error ? commentErr.message : String(commentErr);
+        log(`Warning: failed to fetch comments for ${seed.id}: ${msg}`);
+      }
 
       // ── Branch label auto-labeling ─────────────────────────────────────────
       // If the current branch is not the default (main/master/dev), automatically
