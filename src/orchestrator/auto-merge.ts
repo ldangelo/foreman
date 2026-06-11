@@ -127,10 +127,19 @@ export interface AutoMergeOpts {
 }
 
 /** Result summary returned by autoMerge(). */
+export interface AutoMergeScopedResult {
+  runId: string;
+  merged: number;
+  conflicts: number;
+  failed: number;
+}
+
 export interface AutoMergeResult {
   merged: number;
   conflicts: number;
   failed: number;
+  /** Outcome for opts.runId only. Present only when opts.runId was provided. */
+  target?: AutoMergeScopedResult;
 }
 
 interface MergeQueueLike {
@@ -216,6 +225,9 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   let mergedCount = 0;
   let conflictCount = 0;
   let failedCount = 0;
+  const target = optsRunId
+    ? { runId: optsRunId, merged: 0, conflicts: 0, failed: 0 }
+    : undefined;
 
   let entry = await mq.dequeue();
   while (entry) {
@@ -241,6 +253,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       await mq.updateStatus(currentEntry.id, 'merged', { completedAt: new Date().toISOString() });
       store.updateRun(currentEntry.run_id, { status: 'completed' });
       mergedCount += 1;
+      if (target && currentEntry.run_id === target.runId) target.merged += 1;
       mergeSucceeded = true;
       entry = await mq.dequeue();
       continue;
@@ -271,6 +284,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
           prCreated: true,
         });
         conflictCount += 1;
+        if (target && currentEntry.run_id === target.runId) target.conflicts += 1;
         entry = await mq.dequeue();
         continue;
       } catch (err: unknown) {
@@ -278,6 +292,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         mergeFailureReason = `Failed to create PR: ${message}`;
         await mq.updateStatus(currentEntry.id, 'failed', { error: message });
         failedCount += 1;
+        if (target && currentEntry.run_id === target.runId) target.failed += 1;
         entry = await mq.dequeue();
         continue;
       }
@@ -308,6 +323,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       if (report.merged.length > 0) {
         await mq.updateStatus(currentEntry.id, "merged", { completedAt: new Date().toISOString() });
         mergedCount += report.merged.length;
+        if (target && currentEntry.run_id === target.runId) target.merged += report.merged.length;
         mergeSucceeded = true;
 
         // Send merge-complete mail for each successfully merged run
@@ -320,7 +336,9 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         }
       } else if (report.conflicts.length > 0 || report.prsCreated.length > 0) {
         await mq.updateStatus(currentEntry.id, "conflict", { error: "Code conflicts" });
-        conflictCount += report.conflicts.length + report.prsCreated.length;
+        const conflictsForEntry = report.conflicts.length + report.prsCreated.length;
+        conflictCount += conflictsForEntry;
+        if (target && currentEntry.run_id === target.runId) target.conflicts += conflictsForEntry;
 
         // Build failure reason for the bead note
         if (report.conflicts.length > 0) {
@@ -347,6 +365,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       } else if (report.testFailures.length > 0) {
         await mq.updateStatus(currentEntry.id, "failed", { error: "Test failures" });
         failedCount += report.testFailures.length;
+        if (target && currentEntry.run_id === target.runId) target.failed += report.testFailures.length;
 
         // Count repeated post-merge test failures for diagnostics. Retries are
         // now explicit/human-driven rather than automatic reopen-to-open.
@@ -394,9 +413,11 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         mergeFailureReason = `PR merge failed: ${firstError.error.slice(0, 400)}`;
         await mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
         failedCount += 1;
+        if (target && currentEntry.run_id === target.runId) target.failed += 1;
       } else {
         await mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
         failedCount++;
+        if (target && currentEntry.run_id === target.runId) target.failed += 1;
         mergeFailureReason = `Merge failed: no mergeable run found for seed ${currentEntry.seed_id}. The run may have been deleted or not yet finalized.`;
 
         // Send merge-failed mail when no completed run was found in the queue
@@ -410,6 +431,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       mergeFailureReason = `PR merge error: ${message.slice(0, 800)}`;
       await mq.updateStatus(currentEntry.id, 'failed', { error: mergeFailureReason });
       failedCount += 1;
+      if (target && currentEntry.run_id === target.runId) target.failed += 1;
 
       sendMail(store, currentEntry.run_id, 'merge-failed', {
         seedId: currentEntry.seed_id,
@@ -443,5 +465,10 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     entry = await mq.dequeue();
   }
 
-  return { merged: mergedCount, conflicts: conflictCount, failed: failedCount };
+  return {
+    merged: mergedCount,
+    conflicts: conflictCount,
+    failed: failedCount,
+    ...(target ? { target } : {}),
+  };
 }

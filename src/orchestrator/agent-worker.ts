@@ -1354,8 +1354,14 @@ async function runMergeBuiltinPhase(args: {
     ...(currentRun ? { overrideRun: currentRun } : {}),
   });
 
-  const details = `Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`;
-  const success = mergeResult.merged > 0 && mergeResult.conflicts === 0 && mergeResult.failed === 0;
+  const targetMergeResult = mergeResult.target;
+  const details = `Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`
+    + (targetMergeResult
+      ? `; target=${targetMergeResult.runId} merged=${targetMergeResult.merged}, conflicts=${targetMergeResult.conflicts}, failed=${targetMergeResult.failed}`
+      : "");
+  const success = targetMergeResult
+    ? targetMergeResult.merged > 0 && targetMergeResult.conflicts === 0 && targetMergeResult.failed === 0
+    : mergeResult.merged > 0 && mergeResult.conflicts === 0 && mergeResult.failed === 0;
   await writeMergeReport({
     config,
     status: success ? "SUCCESS" : "FAIL",

@@ -433,6 +433,38 @@ describe("autoMerge() — merge outcomes", () => {
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "merged", expect.any(Object));
   });
 
+  it("returns target outcome separately from stale queue failures", async () => {
+    const targetEntry = makeEntry(1);
+    const staleEntry = makeEntry(2);
+    mockMergeQueueDequeue
+      .mockReturnValueOnce(targetEntry)
+      .mockReturnValueOnce(staleEntry)
+      .mockReturnValue(null);
+    mockRefineryMergeCompleted
+      .mockResolvedValueOnce({
+        merged: [{ seedId: targetEntry.seed_id }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      })
+      .mockResolvedValueOnce({
+        merged: [],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [{ seedId: staleEntry.seed_id, error: "stale PR create failure" }],
+        prsCreated: [],
+      });
+
+    const result = await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+      runId: targetEntry.run_id,
+    }));
+
+    expect(result).toMatchObject({ merged: 1, conflicts: 0, failed: 1 });
+    expect(result.target).toEqual({ runId: targetEntry.run_id, merged: 1, conflicts: 0, failed: 0 });
+  });
+
   it("increments conflictCount when report.conflicts is non-empty", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
