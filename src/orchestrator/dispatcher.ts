@@ -38,6 +38,7 @@ import type {
   RuntimeSelection,
   ModelSelection,
   PlanStepDispatched,
+  NativeTaskStatus,
 } from "./types.js";
 import type { RuntimeMode } from "../cli/commands/run.js";
 import { RunLifecycleService, type RunOpsOverrides, type MailSendStore } from "./run-lifecycle-service.js";
@@ -62,7 +63,7 @@ interface NativeTaskOps {
   getTaskByExternalId(externalId: string): Promise<NativeTask | null>;
   getTaskById(id: string): Promise<NativeTask | null>;
   claimTask(taskId: string, runId: string): Promise<boolean>;
-  updateTaskStatus?(taskId: string, status: string): Promise<void>;
+  updateTaskStatus?(taskId: string, status: NativeTaskStatus): Promise<void>;
   updateTaskLabels?(taskId: string, labels: string[]): Promise<void>;
   /** Get child task IDs for a given parent task (inverse of Beads' children field). */
   getChildren?(taskId: string): Promise<string[]>;
@@ -209,14 +210,14 @@ export class Dispatcher {
     return this.runLifecycleService.updateRunRecord(runId, updates);
   }
 
-  private async updateNativeTaskStatus(taskId: string, status: string): Promise<void> {
+  private async updateNativeTaskStatus(taskId: string, status: NativeTaskStatus): Promise<void> {
     if (this.overrides?.nativeTaskOps?.updateTaskStatus) {
       await this.overrides.nativeTaskOps.updateTaskStatus(taskId, status);
       return;
     }
 
     const storeWithNativeUpdate = this.store as DispatcherStoreDeps & {
-      updateTaskStatus?: (taskId: string, status: string) => void | Promise<void>;
+      updateTaskStatus?: (taskId: string, status: NativeTaskStatus) => void | Promise<void>;
       getDb?: () => { prepare: (sql: string) => { run: (params: Record<string, unknown>) => unknown } };
     };
 

@@ -2,6 +2,7 @@ import { mkdirSync, existsSync, realpathSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
+import type { NativeTaskStatus } from "../orchestrator/types.js";
 
 type LocalStoreRunResult = { changes: number; lastInsertRowid?: number | bigint };
 
@@ -237,7 +238,7 @@ export interface NativeTask {
   description: string | null;
   type: string;
   priority: number;
-  status: string;
+  status: NativeTaskStatus;
   run_id: string | null;
   branch: string | null;
   external_id: string | null;
@@ -300,7 +301,7 @@ export interface NativeTask {
   description: string | null;
   type: string;
   priority: number;   // 0=P0 (critical) … 4=P4 (backlog)
-  status: string;
+  status: NativeTaskStatus;
   run_id: string | null;
   branch: string | null;
   external_id: string | null;

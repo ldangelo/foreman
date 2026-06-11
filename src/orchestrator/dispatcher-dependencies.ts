@@ -14,7 +14,7 @@ import type { VcsBackend } from "../lib/vcs/index.js";
 import type { NativeTask, Run, EventType } from "../lib/store.js";
 import type { RunStoreReadModel } from "./read-models.js";
 import type { RunCommands, RunFactory } from "./write-models.js";
-import type { ModelSelection, RuntimeSelection } from "./types.js";
+import type { ModelSelection, RuntimeSelection, NativeTaskStatus } from "./types.js";
 import type { RuntimeMode } from "../cli/commands/run.js";
 import type { Project } from "../lib/store.js";
 
@@ -41,7 +41,7 @@ export interface TaskStoreOps {
   /** Claim a task for a run. */
   claimTask(taskId: string, runId: string): Promise<boolean>;
   /** Update a task's status. */
-  updateTaskStatus?(taskId: string, status: string): Promise<void>;
+  updateTaskStatus?(taskId: string, status: NativeTaskStatus): Promise<void>;
 }
 
 // ── Dispatcher store deps (narrow interface) ──────────────────────────────
