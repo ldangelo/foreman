@@ -181,15 +181,44 @@ export interface JiraConfig {
   projects: JiraProjectConfig[];
 }
 /**
- * Issue tracker configuration (extensible for future backends).
- * Currently supports: jira.
+ * GitHub instance configuration for issue tracking.
  */
-export interface IssueTrackerConfig {
-  /** Issue tracker backend type. */
-  backend: "jira";
-  /** Jira configuration (required when backend is 'jira'). */
-  jira: JiraConfig;
+export interface GitHubConfig {
+  /** GitHub API URL (e.g., https://api.github.com for GitHub Cloud, or https://github.myenterprise.com/api/v3 for GitHub Enterprise). */
+  apiUrl: string;
+  /** Encrypted GitHub personal access token (AES-256-GCM). Decrypt with FOREMAN_MASTER_KEY at runtime. */
+  token: string;
+  /** Repositories to monitor (owner/repo format). */
+  repositories: GitHubRepositoryConfig[];
+  /** Poll interval in seconds. Default: 60. Minimum: 30. */
+  pollIntervalSeconds?: number;
+  /** Enable webhook-based real-time triggers. Default: false. */
+  webhookEnabled?: boolean;
+  /** Environment variable name containing the webhook secret. */
+  webhookSecretEnvVar?: string;
 }
+
+/**
+ * Per-repository GitHub issue monitoring configuration.
+ */
+export interface GitHubRepositoryConfig {
+  /** Repository owner (user or organization). */
+  owner: string;
+  /** Repository name. */
+  repo: string;
+  /** Labels that trigger workflow execution. Default: ["foreman"] */
+  triggerLabels?: string[];
+  /** Issue types to monitor (e.g., "issue", "pull_request"). Default: ["issue"]. */
+  issueTypes?: string[];
+}
+
+/**
+ * Issue tracker configuration (extensible for future backends).
+ * Currently supports: jira, github.
+ */
+export type IssueTrackerConfig =
+  | { backend: "jira"; jira: JiraConfig }
+  | { backend: "github"; github: GitHubConfig };
 
 /**
  * Container sandbox configuration for untrusted workflows.
@@ -609,119 +638,199 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       throw new ProjectConfigError(filePath, "'issueTracker' must be an object");
     }
     const backend = itRaw["backend"];
-    if (backend !== "jira") {
-      throw new ProjectConfigError(filePath, "'issueTracker.backend' must be 'jira'");
-    }
-    const jiraRaw = itRaw["jira"];
-    if (!isRecord(jiraRaw)) {
-      throw new ProjectConfigError(filePath, "'issueTracker.jira' must be an object");
-    }
-    const jiraConfig: JiraConfig = {
-      apiUrl: "",
-      email: "",
-      apiToken: "",
-      projects: [],
-    };
-    if ("apiUrl" in jiraRaw) {
-      if (typeof jiraRaw["apiUrl"] !== "string") {
-        throw new ProjectConfigError(filePath, "'issueTracker.jira.apiUrl' must be a string");
+    if (backend === "jira") {
+      const jiraRaw = itRaw["jira"];
+      if (!isRecord(jiraRaw)) {
+        throw new ProjectConfigError(filePath, "'issueTracker.jira' must be an object");
       }
-      jiraConfig.apiUrl = jiraRaw["apiUrl"] as string;
-    }
-    if ("email" in jiraRaw) {
-      if (typeof jiraRaw["email"] !== "string") {
-        throw new ProjectConfigError(filePath, "'issueTracker.jira.email' must be a string");
-      }
-      jiraConfig.email = jiraRaw["email"] as string;
-    }
-    if ("apiToken" in jiraRaw) {
-      if (typeof jiraRaw["apiToken"] !== "string") {
-        throw new ProjectConfigError(filePath, "'issueTracker.jira.apiToken' must be a string");
-      }
-      jiraConfig.apiToken = jiraRaw["apiToken"] as string;
-    }
-    if ("pollIntervalSeconds" in jiraRaw) {
-      const interval = jiraRaw["pollIntervalSeconds"];
-      if (typeof interval !== "number" || !Number.isFinite(interval) || interval < 30) {
-        throw new ProjectConfigError(
-          filePath,
-          "'issueTracker.jira.pollIntervalSeconds' must be a number >= 30",
-        );
-      }
-      jiraConfig.pollIntervalSeconds = interval as number;
-    }
-    if ("webhookEnabled" in jiraRaw && typeof jiraRaw["webhookEnabled"] !== "boolean") {
-      throw new ProjectConfigError(filePath, "'issueTracker.jira.webhookEnabled' must be a boolean");
-    }
-    jiraConfig.webhookEnabled = (jiraRaw["webhookEnabled"] as boolean | undefined) ?? false;
-    if ("webhookSecretEnvVar" in jiraRaw) {
-      if (typeof jiraRaw["webhookSecretEnvVar"] !== "string") {
-        throw new ProjectConfigError(filePath, "'issueTracker.jira.webhookSecretEnvVar' must be a string");
-      }
-      jiraConfig.webhookSecretEnvVar = jiraRaw["webhookSecretEnvVar"] as string;
-    }
-    // Validate projects
-    if (!("projects" in jiraRaw)) {
-      throw new ProjectConfigError(filePath, "'issueTracker.jira.projects' is required");
-    }
-    const projectsRaw = jiraRaw["projects"];
-    if (!Array.isArray(projectsRaw)) {
-      throw new ProjectConfigError(filePath, "'issueTracker.jira.projects' must be an array");
-    }
-    if (projectsRaw.length === 0) {
-      throw new ProjectConfigError(filePath, "'issueTracker.jira.projects' must have at least one project");
-    }
-    jiraConfig.projects = [];
-    for (let i = 0; i < projectsRaw.length; i++) {
-      const projRaw = projectsRaw[i];
-      if (!isRecord(projRaw)) {
-        throw new ProjectConfigError(filePath, `'issueTracker.jira.projects[${i}]' must be an object`);
-      }
-      const proj: JiraProjectConfig = {
-        key: "",
-        startStatus: [],
-        issueTypeWorkflowMap: {},
+      const jiraConfig: JiraConfig = {
+        apiUrl: "",
+        email: "",
+        apiToken: "",
+        projects: [],
       };
-      if ("key" in projRaw) {
-        if (typeof projRaw["key"] !== "string") {
-          throw new ProjectConfigError(filePath, `'issueTracker.jira.projects[${i}].key' must be a string`);
+      if ("apiUrl" in jiraRaw) {
+        if (typeof jiraRaw["apiUrl"] !== "string") {
+          throw new ProjectConfigError(filePath, "'issueTracker.jira.apiUrl' must be a string");
         }
-        proj.key = (projRaw["key"] as string).toUpperCase();
+        jiraConfig.apiUrl = jiraRaw["apiUrl"] as string;
       }
-      if ("startStatus" in projRaw) {
-        if (!Array.isArray(projRaw["startStatus"])) {
-          throw new ProjectConfigError(filePath, `'issueTracker.jira.projects[${i}].startStatus' must be an array`);
+      if ("email" in jiraRaw) {
+        if (typeof jiraRaw["email"] !== "string") {
+          throw new ProjectConfigError(filePath, "'issueTracker.jira.email' must be a string");
         }
-        proj.startStatus = projRaw["startStatus"] as string[];
+        jiraConfig.email = jiraRaw["email"] as string;
       }
-      if ("endStatus" in projRaw && Array.isArray(projRaw["endStatus"])) {
-        proj.endStatus = projRaw["endStatus"] as string[];
+      if ("apiToken" in jiraRaw) {
+        if (typeof jiraRaw["apiToken"] !== "string") {
+          throw new ProjectConfigError(filePath, "'issueTracker.jira.apiToken' must be a string");
+        }
+        jiraConfig.apiToken = jiraRaw["apiToken"] as string;
       }
-      if ("issueTypeWorkflowMap" in projRaw) {
-        if (!isRecord(projRaw["issueTypeWorkflowMap"])) {
+      if ("pollIntervalSeconds" in jiraRaw) {
+        const interval = jiraRaw["pollIntervalSeconds"];
+        if (typeof interval !== "number" || !Number.isFinite(interval) || interval < 30) {
           throw new ProjectConfigError(
             filePath,
-            `'issueTracker.jira.projects[${i}].issueTypeWorkflowMap' must be an object`,
+            "'issueTracker.jira.pollIntervalSeconds' must be a number >= 30",
           );
         }
-        proj.issueTypeWorkflowMap = projRaw["issueTypeWorkflowMap"] as Record<string, string>;
+        jiraConfig.pollIntervalSeconds = interval as number;
       }
-      if ("debounceWindowSeconds" in projRaw) {
-        const window = projRaw["debounceWindowSeconds"];
-        if (typeof window !== "number" || !Number.isFinite(window) || window < 0) {
+      if ("webhookEnabled" in jiraRaw && typeof jiraRaw["webhookEnabled"] !== "boolean") {
+        throw new ProjectConfigError(filePath, "'issueTracker.jira.webhookEnabled' must be a boolean");
+      }
+      jiraConfig.webhookEnabled = (jiraRaw["webhookEnabled"] as boolean | undefined) ?? false;
+      if ("webhookSecretEnvVar" in jiraRaw) {
+        if (typeof jiraRaw["webhookSecretEnvVar"] !== "string") {
+          throw new ProjectConfigError(filePath, "'issueTracker.jira.webhookSecretEnvVar' must be a string");
+        }
+        jiraConfig.webhookSecretEnvVar = jiraRaw["webhookSecretEnvVar"] as string;
+      }
+      // Validate projects
+      if (!("projects" in jiraRaw)) {
+        throw new ProjectConfigError(filePath, "'issueTracker.jira.projects' is required");
+      }
+      const projectsRaw = jiraRaw["projects"];
+      if (!Array.isArray(projectsRaw)) {
+        throw new ProjectConfigError(filePath, "'issueTracker.jira.projects' must be an array");
+      }
+      if (projectsRaw.length === 0) {
+        throw new ProjectConfigError(filePath, "'issueTracker.jira.projects' must have at least one project");
+      }
+      jiraConfig.projects = [];
+      for (let i = 0; i < projectsRaw.length; i++) {
+        const projRaw = projectsRaw[i];
+        if (!isRecord(projRaw)) {
+          throw new ProjectConfigError(filePath, `'issueTracker.jira.projects[${i}]' must be an object`);
+        }
+        const proj: JiraProjectConfig = {
+          key: "",
+          startStatus: [],
+          issueTypeWorkflowMap: {},
+        };
+        if ("key" in projRaw) {
+          if (typeof projRaw["key"] !== "string") {
+            throw new ProjectConfigError(filePath, `'issueTracker.jira.projects[${i}].key' must be a string`);
+          }
+          proj.key = (projRaw["key"] as string).toUpperCase();
+        }
+        if ("startStatus" in projRaw) {
+          if (!Array.isArray(projRaw["startStatus"])) {
+            throw new ProjectConfigError(filePath, `'issueTracker.jira.projects[${i}].startStatus' must be an array`);
+          }
+          proj.startStatus = projRaw["startStatus"] as string[];
+        }
+        if ("endStatus" in projRaw && Array.isArray(projRaw["endStatus"])) {
+          proj.endStatus = projRaw["endStatus"] as string[];
+        }
+        if ("issueTypeWorkflowMap" in projRaw) {
+          if (!isRecord(projRaw["issueTypeWorkflowMap"])) {
+            throw new ProjectConfigError(
+              filePath,
+              `'issueTracker.jira.projects[${i}].issueTypeWorkflowMap' must be an object`,
+            );
+          }
+          proj.issueTypeWorkflowMap = projRaw["issueTypeWorkflowMap"] as Record<string, string>;
+        }
+        if ("debounceWindowSeconds" in projRaw) {
+          const window = projRaw["debounceWindowSeconds"];
+          if (typeof window !== "number" || !Number.isFinite(window) || window < 0) {
+            throw new ProjectConfigError(
+              filePath,
+              `'issueTracker.jira.projects[${i}].debounceWindowSeconds' must be a non-negative number`,
+            );
+          }
+          proj.debounceWindowSeconds = window as number;
+        }
+        jiraConfig.projects.push(proj);
+      }
+      config.issueTracker = {
+        backend: "jira",
+        jira: jiraConfig,
+      };
+    } else if (backend === "github") {
+      const githubRaw = itRaw["github"];
+      if (!isRecord(githubRaw)) {
+        throw new ProjectConfigError(filePath, "'issueTracker.github' must be an object");
+      }
+      const githubConfig: GitHubConfig = {
+        apiUrl: "",
+        token: "",
+        repositories: [],
+      };
+      if (typeof githubRaw["apiUrl"] !== "string" || githubRaw["apiUrl"].trim().length === 0) {
+        throw new ProjectConfigError(filePath, "'issueTracker.github.apiUrl' is required and must be a non-empty string");
+      }
+      githubConfig.apiUrl = githubRaw["apiUrl"];
+      if (typeof githubRaw["token"] !== "string" || githubRaw["token"].trim().length === 0) {
+        throw new ProjectConfigError(filePath, "'issueTracker.github.token' is required and must be a non-empty string");
+      }
+      githubConfig.token = githubRaw["token"];
+      if ("pollIntervalSeconds" in githubRaw) {
+        const interval = githubRaw["pollIntervalSeconds"];
+        if (typeof interval !== "number" || !Number.isFinite(interval) || interval < 30) {
           throw new ProjectConfigError(
             filePath,
-            `'issueTracker.jira.projects[${i}].debounceWindowSeconds' must be a non-negative number`,
+            "'issueTracker.github.pollIntervalSeconds' must be a number >= 30",
           );
         }
-        proj.debounceWindowSeconds = window as number;
+        githubConfig.pollIntervalSeconds = interval as number;
       }
-      jiraConfig.projects.push(proj);
+      if ("webhookEnabled" in githubRaw && typeof githubRaw["webhookEnabled"] !== "boolean") {
+        throw new ProjectConfigError(filePath, "'issueTracker.github.webhookEnabled' must be a boolean");
+      }
+      githubConfig.webhookEnabled = (githubRaw["webhookEnabled"] as boolean | undefined) ?? false;
+      if ("webhookSecretEnvVar" in githubRaw) {
+        if (typeof githubRaw["webhookSecretEnvVar"] !== "string") {
+          throw new ProjectConfigError(filePath, "'issueTracker.github.webhookSecretEnvVar' must be a string");
+        }
+        githubConfig.webhookSecretEnvVar = githubRaw["webhookSecretEnvVar"] as string;
+      }
+      // Validate repositories
+      if (!("repositories" in githubRaw)) {
+        throw new ProjectConfigError(filePath, "'issueTracker.github.repositories' is required");
+      }
+      const reposRaw = githubRaw["repositories"];
+      if (!Array.isArray(reposRaw)) {
+        throw new ProjectConfigError(filePath, "'issueTracker.github.repositories' must be an array");
+      }
+      if (reposRaw.length === 0) {
+        throw new ProjectConfigError(filePath, "'issueTracker.github.repositories' must have at least one repository");
+      }
+      githubConfig.repositories = [];
+      for (let i = 0; i < reposRaw.length; i++) {
+        const repoRaw = reposRaw[i];
+        if (!isRecord(repoRaw)) {
+          throw new ProjectConfigError(filePath, `'issueTracker.github.repositories[${i}]' must be an object`);
+        }
+        const repo: GitHubRepositoryConfig = {
+          owner: "",
+          repo: "",
+        };
+        if (typeof repoRaw["owner"] !== "string" || repoRaw["owner"].trim().length === 0) {
+          throw new ProjectConfigError(filePath, `'issueTracker.github.repositories[${i}].owner' is required and must be a non-empty string`);
+        }
+        repo.owner = repoRaw["owner"];
+        if (typeof repoRaw["repo"] !== "string" || repoRaw["repo"].trim().length === 0) {
+          throw new ProjectConfigError(filePath, `'issueTracker.github.repositories[${i}].repo' is required and must be a non-empty string`);
+        }
+        repo.repo = repoRaw["repo"];
+        if ("triggerLabels" in repoRaw && Array.isArray(repoRaw["triggerLabels"])) {
+          repo.triggerLabels = repoRaw["triggerLabels"] as string[];
+        }
+        if ("issueTypes" in repoRaw && Array.isArray(repoRaw["issueTypes"])) {
+          repo.issueTypes = repoRaw["issueTypes"] as string[];
+        }
+        githubConfig.repositories.push(repo);
+      }
+      config.issueTracker = {
+        backend: "github",
+        github: githubConfig,
+      };
+    } else {
+      throw new ProjectConfigError(filePath, "'issueTracker.backend' must be 'jira' or 'github'");
     }
-    config.issueTracker = {
-      backend: "jira",
-      jira: jiraConfig,
-    };
   }
 
   // Optional hooks sub-config (workspace lifecycle hooks)

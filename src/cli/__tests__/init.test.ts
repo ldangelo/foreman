@@ -68,6 +68,30 @@ describe("init wizard config", () => {
     expect(config).toContain("- In Progress");
   });
 
+  it("renders github issue tracker config when github is selected", () => {
+    const config = buildInitWizardConfig({
+      vcsBackend: "git",
+      workflowTemplate: "default",
+      issueTracker: "github",
+      github: {
+        apiUrl: "https://api.github.com",
+        token: "encrypted-token",
+        owner: "myorg",
+        repo: "myrepo",
+        triggerLabels: ["foreman", "fixme"],
+      },
+    });
+    expect(config).toContain("issueTracker:");
+    expect(config).toContain("backend: github");
+    expect(config).toContain("apiUrl: https://api.github.com");
+    expect(config).toContain("token: encrypted-token");
+    expect(config).toContain("owner: myorg");
+    expect(config).toContain("repo: myrepo");
+    expect(config).toContain("triggerLabels:");
+    expect(config).toContain("- foreman");
+    expect(config).toContain("- fixme");
+  });
+
   it("does not render issueTracker block when beads is selected", () => {
     const config = buildInitWizardConfig({
       vcsBackend: "auto",

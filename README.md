@@ -458,9 +458,11 @@ For common problems and solutions, see **[Troubleshooting Guide](docs/troublesho
 
 ### `foreman init`
 Initialize Foreman in a project directory. Registers the project and sets up `.foreman/`.
+Use `--wizard` for interactive setup that writes `.foreman/config.yaml` with VCS, workflow, and issue-tracker settings.
 
 ```bash
 foreman init --name "my-project"
+foreman init --wizard
 ```
 
 ### `foreman run`

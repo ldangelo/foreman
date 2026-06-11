@@ -24,12 +24,14 @@ Initialize Foreman in a project. Creates `.foreman/` directory, installs default
 foreman init                      # Initialize with auto-detected name
 foreman init -n my-project        # Initialize with explicit name
 foreman init --force              # Overwrite existing prompt files
+foreman init --wizard             # Interactive setup wizard that writes .foreman/config.yaml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-n, --name <name>` | Project name (default: directory name) |
 | `--force` | Overwrite existing prompt and workflow files |
+| `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`beads`, `jira`, or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
 ---
 
