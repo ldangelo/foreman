@@ -235,6 +235,26 @@ describe("BoardRendering", () => {
       expect(output).toContain("Sort: Priority");
     });
 
+    it("should render refresh spinner while the board is reloading", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { refreshIndicator: { refreshing: true, frame: 0, lastCompletedAt: null } }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("refreshing…");
+    });
+
+    it("should render refresh completion after reload finishes", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { refreshIndicator: { refreshing: false, frame: 0, lastCompletedAt: "9:41:00 PM" } }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("refreshed 9:41:00 PM");
+    });
+
     it("should render five column jump labels without a merged column", () => {
       const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 150));
 

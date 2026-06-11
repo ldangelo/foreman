@@ -163,6 +163,14 @@ export const SORT_MODE_LABELS: Record<SortMode, string> = {
   priority: "Priority",
 };
 
+const REFRESH_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+
+export interface RefreshIndicatorState {
+  refreshing: boolean;
+  frame: number;
+  lastCompletedAt: string | null;
+}
+
 export interface RenderState {
   tasks: Map<BoardStatus, BoardTask[]>;
   nav: NavigationState;
@@ -175,6 +183,7 @@ export interface RenderState {
   detailNotesStatus: "idle" | "loading" | "loaded" | "error";
   detailNotesError: string | null;
   sortMode: SortMode;
+  refreshIndicator?: RefreshIndicatorState;
 }
 
 // ── Board data loading ───────────────────────────────────────────────────────
@@ -738,6 +747,13 @@ function renderBoardFrame(
   const reservedRows = 5 + (state.errorMessage ? 2 : 0) + (state.showHelp ? 16 : 0);
   const columnHeight = Math.max(8, terminalHeight - reservedRows);
 
+  const refreshIndicator = state.refreshIndicator;
+  const refreshStatus = refreshIndicator?.refreshing
+    ? `${REFRESH_SPINNER_FRAMES[refreshIndicator.frame % REFRESH_SPINNER_FRAMES.length]} refreshing…`
+    : refreshIndicator?.lastCompletedAt
+      ? `refreshed ${refreshIndicator.lastCompletedAt}`
+      : null;
+
   // Build the board content (header + columns + footer)
   const boardContent: Array<ReturnType<typeof h>> = [
     h(
@@ -748,7 +764,7 @@ function renderBoardFrame(
       h(
         Text,
         { dimColor: true },
-        `${totalTasks} task${totalTasks === 1 ? "" : "s"} · Sort: ${SORT_MODE_LABELS[state.sortMode]}`,
+        `${totalTasks} task${totalTasks === 1 ? "" : "s"} · Sort: ${SORT_MODE_LABELS[state.sortMode]}${refreshStatus ? ` · ${refreshStatus}` : ""}`,
       ),
     ),
     h(
@@ -1570,6 +1586,8 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let detailNotesTaskId: string | null = null;
   let errorMessage: string | null = null;
   let flashTaskId: string | null = null;
+  let refreshIndicator: RefreshIndicatorState = { refreshing: false, frame: 0, lastCompletedAt: null };
+  let refreshTimer: ReturnType<typeof setInterval> | null = null;
   let quit = false;
   let stdinRawMode = false;
 
@@ -1593,6 +1611,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       detailNotesStatus,
       detailNotesError,
       sortMode,
+      refreshIndicator,
     };
 
     process.stdout.write(renderBoard(currentState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
@@ -1669,6 +1688,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       detailNotesStatus,
       detailNotesError,
       sortMode,
+      refreshIndicator,
     };
 
     const result = await handleKey(normalizedKey, currentState, projectPath);
@@ -1717,14 +1737,33 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       detailNotesTaskId = detailTask.id;
     }
 
-    // Refresh tasks if requested
+    // Refresh tasks if requested. Render and animate immediately so operators
+    // can tell the refresh started and when it completed.
     if (result.needsRefresh) {
+      refreshIndicator = { ...refreshIndicator, refreshing: true, frame: 0 };
+      renderCurrentBoard();
+      refreshTimer = setInterval(() => {
+        refreshIndicator = { ...refreshIndicator, frame: refreshIndicator.frame + 1 };
+        renderCurrentBoard();
+      }, 120);
+
       try {
         tasks = await loadBoardTasks(projectPath);
         tasks = sortBoardColumns(tasks, sortMode);
         normalizeNavRowIndex(nav, tasks);
+        refreshIndicator = {
+          refreshing: false,
+          frame: refreshIndicator.frame,
+          lastCompletedAt: new Date().toLocaleTimeString(),
+        };
       } catch (err) {
         errorMessage = `Failed to refresh: ${err instanceof Error ? err.message : String(err)}`;
+        refreshIndicator = { ...refreshIndicator, refreshing: false };
+      } finally {
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
       }
       flashTaskId = null;
     }
@@ -1737,6 +1776,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     renderCurrentBoard();
 
     if (quit) {
+      if (refreshTimer) clearInterval(refreshTimer);
       process.stdout.write(SHOW_CURSOR + "\n");
       detachRawMode();
       process.exit(0);
@@ -1747,6 +1787,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
 
   // Handle SIGINT gracefully
   const onSigint = () => {
+    if (refreshTimer) clearInterval(refreshTimer);
     process.stdout.write(SHOW_CURSOR + "\n");
     detachRawMode();
     process.exit(0);

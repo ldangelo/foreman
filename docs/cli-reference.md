@@ -164,7 +164,7 @@ foreman board --limit 20
 | `--limit <n>` | terminal height | Maximum tasks per column |
 | `--filter <status>` | — | Filter by status, e.g. `backlog`, `ready`, `in_progress` |
 
-Common keys: `h`/`l` move columns, `j`/`k` move rows, `Enter` opens detail, `r` refreshes, `R` marks ready, `s`/`S` cycles status, `c`/`C` closes, `e`/`E` edits, `n` creates, `?` shows help, and `q` quits.
+Common keys: `h`/`l` move columns, `j`/`k` move rows, `Enter` opens detail, `r` refreshes, `R` marks ready, `s`/`S` cycles status, `c`/`C` closes, `e`/`E` edits, `n` creates, `?` shows help, and `q` quits. During refresh, the header shows an animated `refreshing…` indicator and then `refreshed <time>` when reload completes.
 
 ### `foreman sentinel`
 

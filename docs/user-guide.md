@@ -191,7 +191,7 @@ Common keys:
 | `?` | Help |
 | `q` | Quit |
 
-If refresh results are unclear, press `r` and watch for updated task status/counts. For exact options and keybindings, see [CLI Reference](./cli-reference.md#foreman-board).
+Press `r` to refresh the board. The header shows an animated `refreshing…` indicator while reload is in progress, then a `refreshed <time>` marker when the latest reload finishes. For exact options and keybindings, see [CLI Reference](./cli-reference.md#foreman-board).
 
 ## Retry and Reset Guidance
 
