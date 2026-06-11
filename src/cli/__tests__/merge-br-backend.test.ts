@@ -1,9 +1,13 @@
 /**
- * Tests for TRD-017: Update merge.ts to use ITaskClient pattern.
+ * Tests for TRD-017: createMergeTaskClient is a thin wrapper around createTaskClient.
  *
  * Verifies:
- * - When FOREMAN_TASK_STORE='beads': createMergeTaskClient returns BeadsRustClient
- * - When FOREMAN_TASK_STORE='beads' and binary missing: throws with friendly error
+ * - createMergeTaskClient forwards to createTaskClient with the correct project path
+ * - createMergeTaskClient forwards the registered project id when provided
+ *
+ * Note: The FOREMAN_TASK_STORE env var is no longer used for backend selection.
+ * The native task store is the only supported backend (TRD-024). The env var
+ * stub in these tests is a no-op that documents the historical interface.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -123,9 +127,9 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── br backend ────────────────────────────────────────────────────────────
+  // ── createMergeTaskClient forwards to createTaskClient ──────────────────
 
-  describe("when FOREMAN_TASK_STORE='beads'", () => {
+  describe("createMergeTaskClient forwards to createTaskClient", () => {
     it("returns the task client from createTaskClient", async () => {
       const result = await createMergeTaskClient(PROJECT_PATH);
 
@@ -142,7 +146,6 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
         registeredProjectId: "proj-1",
       });
     });
-
   });
 
 });

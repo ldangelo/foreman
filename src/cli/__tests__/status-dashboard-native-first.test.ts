@@ -107,7 +107,7 @@ describe("native-first task count regression targets", () => {
     expect(mockBrReady).not.toHaveBeenCalled();
   });
 
-  it("status auto mode returns zero native counts when no native tasks exist", async () => {
+  it("returns zero counts when native task store reports no tasks", async () => {
     vi.stubEnv("FOREMAN_TASK_STORE", "auto");
     mockHasNativeTasks.mockReturnValue(false);
 
