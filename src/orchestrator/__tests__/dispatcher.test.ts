@@ -1560,9 +1560,9 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
     };
   }
 
-  // Native-only mode: dispatcher never calls seeds.comments() for bead comments.
-  // beadComments is always null since native tasks don't support comments.
-  // Tests that expect seeds.comments() to be called are removed.
+  // The dispatcher now calls seeds.comments() for all backends (including NativeTaskClient
+  // via postgres task_notes). Comments are fetched with error handling so failures are non-fatal.
+  // Tests below verify seedInfo.comments integration and error handling.
 
   it("includes bead comments in agent instructions via seedInfo.comments", async () => {
     const dispatcher = makeDispatcher();
