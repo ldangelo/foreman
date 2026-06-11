@@ -32,9 +32,18 @@ export function normalizeBranchLabel(branch: string | undefined): string | undef
 export function isValidBranchLabel(branch: string | undefined): branch is string {
   const trimmed = normalizeBranchLabel(branch);
   if (!trimmed) return false;
-  // Detached HEAD is not a real merge target and should never be persisted
-  // as a branch: label or used by refinery as a target branch.
-  if (trimmed === "HEAD") return false;
+  // Detached HEAD / Git pseudo-refs are not real merge targets and should
+  // never be persisted as branch: labels or used as checkout targets.
+  const pseudoRefs = new Set([
+    "HEAD",
+    "FETCH_HEAD",
+    "ORIG_HEAD",
+    "MERGE_HEAD",
+    "REBASE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "AUTO_MERGE",
+  ]);
+  if (pseudoRefs.has(trimmed)) return false;
   return true;
 }
 

@@ -29,6 +29,23 @@ import type { VcsBackend } from "./interface.js";
 
 const execFileAsync = promisify(execFile);
 
+const DETACHED_OR_PSEUDO_REFS = new Set([
+  "HEAD",
+  "FETCH_HEAD",
+  "ORIG_HEAD",
+  "MERGE_HEAD",
+  "REBASE_HEAD",
+  "CHERRY_PICK_HEAD",
+  "AUTO_MERGE",
+]);
+
+function assertNamedBranch(branchName: string): void {
+  const trimmed = branchName.trim();
+  if (!trimmed || DETACHED_OR_PSEUDO_REFS.has(trimmed)) {
+    throw new Error(`Ref '${branchName}' is not a named branch`);
+  }
+}
+
 /**
  * GitBackend encapsulates git-specific VCS operations for a given project path.
  *
@@ -185,6 +202,7 @@ export class GitBackend implements VcsBackend {
    * Checkout a branch by name.
    */
   async checkoutBranch(repoPath: string, branchName: string): Promise<void> {
+    assertNamedBranch(branchName);
     await this.git(["checkout", branchName], repoPath);
   }
 

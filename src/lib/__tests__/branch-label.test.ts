@@ -77,6 +77,11 @@ describe("extractBranchLabel", () => {
     expect(extractBranchLabel(["branch:HEAD"])).toBeUndefined();
   });
 
+  it("returns undefined for Git pseudo-ref branch labels", () => {
+    expect(extractBranchLabel(["branch:FETCH_HEAD"])).toBeUndefined();
+    expect(extractBranchLabel(["branch:ORIG_HEAD"])).toBeUndefined();
+  });
+
   it("normalizes decorated jujutsu branch labels", () => {
     expect(extractBranchLabel(["branch:dev*"])).toBe("dev");
   });

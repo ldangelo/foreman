@@ -342,6 +342,18 @@ describe("GitBackend.checkoutBranch", () => {
     const current = await backend.getCurrentBranch(repo);
     expect(current).toBe("feature/nested/branch");
   });
+
+  it("rejects pseudo-refs that would detach HEAD", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    await expect(backend.checkoutBranch(repo, "FETCH_HEAD")).rejects.toThrow("not a named branch");
+    await expect(backend.checkoutBranch(repo, "HEAD")).rejects.toThrow("not a named branch");
+
+    const current = await backend.getCurrentBranch(repo);
+    expect(current).toBe("main");
+  });
 });
 
 // ── GitBackend.branchExists ────────────────────────────────────────────────────
