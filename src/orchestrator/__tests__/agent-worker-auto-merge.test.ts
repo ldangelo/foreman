@@ -43,6 +43,13 @@ describe("agent-worker.ts — merge queue handoff", () => {
     expect(source).toContain("readLookup: registeredAutoMergeReadStore");
   });
 
+  it("judges merge builtin by this run's target outcome, not aggregate queue failures", () => {
+    expect(source).toContain("mergeResult.target");
+    expect(source).toContain("mergeResult.target.runId === config.runId");
+    expect(source).toContain('mergeResult.target.status === "merged"');
+    expect(source).toContain('target=${mergeResult.target.seedId}:${mergeResult.target.status}');
+  });
+
   it("enqueues merge intent with an explicit operation", () => {
     expect(source).toContain("operation: \"auto_merge\"");
     expect(source).toContain("const pr = await refinery.ensurePullRequestForRun");
@@ -83,6 +90,13 @@ describe("auto-merge.ts — module invariants", () => {
 
   it("exports AutoMergeResult interface", () => {
     expect(source).toContain("export interface AutoMergeResult");
+  });
+
+  it("tracks the requested run outcome separately from aggregate queue counts", () => {
+    expect(source).toContain("export interface AutoMergeTargetOutcome");
+    expect(source).toContain("target?: AutoMergeTargetOutcome");
+    expect(source).toContain("recordTargetOutcome(currentEntry");
+    expect(source).toContain("target: targetOutcome");
   });
 
   it("uses Refinery for mergePullRequest calls", () => {
