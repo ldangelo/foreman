@@ -1,3 +1,14 @@
+/**
+ * Tests for runtime mode resolution.
+ *
+ * Verifies:
+ * - resolveRuntimeMode correctly resolves explicit values and env var
+ * - createTaskClients always uses native backend (beads fallback removed)
+ *
+ * Note: The FOREMAN_TASK_STORE env var is not read by createTaskClients.
+ * The native task store is the only supported backend — this is intentional
+ * and verified by the tests below (no env stubs needed).
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const {
@@ -22,7 +33,7 @@ const {
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.hasNativeTasks = mockHasNativeTasks;
     this.close = vi.fn();
-  }) as ReturnType<typeof vi.fn> & { forProject: ReturnType<typeof vi.fn> };
+  }) as ReturnType<typeof vi.fn>& { forProject: ReturnType<typeof vi.fn> };
   MockForemanStore.forProject = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
 
   const MockPostgresAdapter = vi.fn(function (this: Record<string, unknown>) {
@@ -92,11 +103,10 @@ describe("run runtime mode", () => {
     expect(resolveRuntimeMode()).toBe("test");
   });
 
-  it("keeps the native backend in test runtime when task store is native", async () => {
+  it("uses native backend in test runtime", async () => {
     mockHasNativeTasks.mockReturnValue(true);
     mockRegistryList.mockResolvedValue([{ id: "proj-1", name: "foreman", path: projectPath }]);
 
-    vi.stubEnv("FOREMAN_TASK_STORE", "native");
     const result = await createTaskClients(projectPath, "test", "proj-1");
 
     expect(result.backendType).toBe("native");
@@ -106,18 +116,7 @@ describe("run runtime mode", () => {
     expect(MockForemanStore.forProject).not.toHaveBeenCalled();
   });
 
-  it("keeps the native backend in test runtime when task store is auto", async () => {
-    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
-
-    const result = await createTaskClients(projectPath, "test");
-
-    expect(result.backendType).toBe("native");
-    expect(result.bvClient).toBeNull();
-    expect(MockBeadsRustClient).not.toHaveBeenCalled();
-  });
-
-  it("ignores legacy br task store selection in normal runtime", async () => {
-    vi.stubEnv("FOREMAN_TASK_STORE", "beads");
+  it("uses native backend in normal runtime", async () => {
     const result = await createTaskClients(projectPath, "normal");
 
     expect(result.backendType).toBe("native");

@@ -490,9 +490,9 @@ describe("resetSeedToOpen", () => {
   });
 });
 
-// ── resetCommand uses br backend when FOREMAN_TASK_BACKEND=br ────────────
+// ── resetCommand uses native backend (only supported) ───────────────────
 
-describe("reset command — backend selection via getTaskBackend()", () => {
+describe("reset command — TRD-024: native task store is the only supported backend", () => {
   let originalEnv: string | undefined;
 
   beforeEach(() => {
@@ -507,17 +507,16 @@ describe("reset command — backend selection via getTaskBackend()", () => {
     }
   });
 
-  it("getTaskBackend() returns 'br' when FOREMAN_TASK_BACKEND=br", async () => {
+  it("getTaskBackend() returns 'native' (the only supported backend)", async () => {
     process.env.FOREMAN_TASK_BACKEND = "br";
     const { getTaskBackend } = await import("../../lib/feature-flags.js");
-    expect(getTaskBackend()).toBe("br");
+    expect(getTaskBackend()).toBe("native");
   });
 
-  // TRD-023: default changed from 'sd' to 'br'
-  it("getTaskBackend() returns 'br' when FOREMAN_TASK_BACKEND is unset", async () => {
+  it("getTaskBackend() returns 'native' regardless of FOREMAN_TASK_BACKEND setting", async () => {
     delete process.env.FOREMAN_TASK_BACKEND;
     const { getTaskBackend } = await import("../../lib/feature-flags.js");
-    expect(getTaskBackend()).toBe("br");
+    expect(getTaskBackend()).toBe("native");
   });
 
 });

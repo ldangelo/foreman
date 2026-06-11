@@ -1,9 +1,10 @@
 /**
  * Unit tests for Dispatcher — native task store path and atomic claim transaction.
  *
- * Verifies TRD-007 / REQ-017.
+ * Verifies TRD-007 / REQ-017. The dispatcher exclusively uses the native
+ * Postgres task store; beads fallback has been removed.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   Dispatcher,
   nativeTaskToIssue,
@@ -168,8 +169,6 @@ function makeMockStore(opts: {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
-    getBeadWriteQueue: vi.fn().mockReturnValue([]),
-    markBeadWriteProcessed: vi.fn(),
   } as unknown as ForemanStore;
 }
 
@@ -223,15 +222,14 @@ describe("nativeTaskToIssue()", () => {
   });
 });
 
-// ── Dispatcher — Native task store coexistence (AC-014.1) ────────────────
+// ── Dispatcher — Native task store (AC-014.1) ────────────────────────────
 
-describe("Dispatcher — Native task store coexistence (AC-014.1)", () => {
+describe("Dispatcher — Native task store (AC-014.1)", () => {
   afterEach(() => {
-    delete process.env.FOREMAN_TASK_STORE;
     vi.restoreAllMocks();
   });
 
-  it("uses native store when hasNativeTasks() returns true (auto mode)", async () => {
+  it("uses native store when hasNativeTasks() returns true", async () => {
     const nativeTasks = [makeNativeTask("n-001"), makeNativeTask("n-002")];
     const store = makeMockStore({ hasNativeTasks: true, nativeTasks });
     const beadsClient = makeMockBeadsClient([makeBeadsIssue("b-001")]);
@@ -252,7 +250,7 @@ describe("Dispatcher — Native task store coexistence (AC-014.1)", () => {
     expect(beadsClient.ready).not.toHaveBeenCalled();
   });
 
-  it("falls back to beads for explicit bead dispatch when native tasks exist but no external_id matches", async () => {
+  it("skips explicit bead dispatch when no native task matches external_id", async () => {
     const beadsIssue = makeBeadsIssue("bd-explicit");
     const beadsClient = makeMockBeadsClient([]);
     beadsClient.show = vi.fn().mockResolvedValue({ ...beadsIssue, status: "open" });
@@ -270,7 +268,7 @@ describe("Dispatcher — Native task store coexistence (AC-014.1)", () => {
 
     const result = await dispatcher.dispatch({ dryRun: false, seedId: "bd-explicit" });
 
-    // Task not found since no native task matches and beads are not used
+    // Task not found since no native task matches
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.reason).toContain("not found");
 
@@ -282,7 +280,6 @@ describe("Dispatcher — Native task store coexistence (AC-014.1)", () => {
 
 describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
   afterEach(() => {
-    delete process.env.FOREMAN_TASK_STORE;
     vi.restoreAllMocks();
   });
 
@@ -315,13 +312,10 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
     } as unknown as ForemanStore;
   }
 
   it("calls claimTask() with taskId and runId on successful dispatch", async () => {
-    process.env.FOREMAN_TASK_STORE = "native";
     const task = makeNativeTask("t-claim-001");
     const store = makeStoreForClaim({ nativeTasks: [task], claimResult: true });
     const beadsClient = makeMockBeadsClient([]);
@@ -342,8 +336,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
   });
 
   it("claimTask() called with correct taskId and runId in real dispatch (AC-017.2)", async () => {
-    process.env.FOREMAN_TASK_STORE = "native";
-
     const task = makeNativeTask("t-atomic-001");
     const createdRun = {
       id: "run-xyz-123",
@@ -368,8 +360,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
     } as unknown as ForemanStore;
 
     const beadsClient = makeMockBeadsClient([]);
@@ -400,8 +390,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
   });
 
   it("skips task and cleans up run when claimTask() returns false (double-dispatch prevention)", async () => {
-    process.env.FOREMAN_TASK_STORE = "native";
-
     const task = makeNativeTask("t-race-001");
     const createdRun = {
       id: "run-race-abc",
@@ -427,8 +415,6 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
     } as unknown as ForemanStore;
 
     const beadsClient = makeMockBeadsClient([]);
@@ -498,12 +484,10 @@ describe("ForemanStore native task methods (unit — via mock)", () => {
 
 describe("Dispatcher — Native task priority ordering", () => {
   afterEach(() => {
-    delete process.env.FOREMAN_TASK_STORE;
     vi.restoreAllMocks();
   });
 
   it("dispatches native tasks in priority order (P0 before P2)", async () => {
-    process.env.FOREMAN_TASK_STORE = "native";
     const tasks = [
       makeNativeTask("low-prio", 3),
       makeNativeTask("high-prio", 0),

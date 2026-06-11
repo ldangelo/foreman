@@ -2,14 +2,13 @@
  * Tests for status task counts after native-first migration.
  *
  * Verifies:
- * - getStatusBackend still reflects the feature-flag selection
+ * - getStatusBackend returns 'native' (the only supported backend)
  * - fetchStatusCounts no longer instantiates the legacy br client
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 const {
-  mockGetTaskBackend,
   mockBrList,
   mockBrReady,
   MockBeadsRustClient,
@@ -17,7 +16,6 @@ const {
   mockHasNativeTasks,
   mockListTasksByStatus,
 } = vi.hoisted(() => {
-  const mockGetTaskBackend = vi.fn().mockReturnValue("br");
   const mockBrList = vi.fn().mockResolvedValue([]);
   const mockBrReady = vi.fn().mockResolvedValue([]);
   const mockHasNativeTasks = vi.fn().mockReturnValue(false);
@@ -28,7 +26,6 @@ const {
   });
   const mockExecFileSync = vi.fn().mockReturnValue(JSON.stringify([]));
   return {
-    mockGetTaskBackend,
     mockBrList,
     mockBrReady,
     MockBeadsRustClient,
@@ -39,7 +36,7 @@ const {
 });
 
 vi.mock("../../lib/feature-flags.js", () => ({
-  getTaskBackend: () => mockGetTaskBackend(),
+  getTaskBackend: () => "native" as const,
 }));
 
 vi.mock("../../lib/beads-rust.js", () => ({
@@ -70,7 +67,7 @@ import { getStatusBackend } from "../commands/status.js";
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe("TRD-019: status.ts backend selection via FOREMAN_TASK_BACKEND", () => {
+describe("TRD-024: status.ts native task store is the only supported backend", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Restore BeadsRustClient constructor implementation
@@ -90,27 +87,21 @@ describe("TRD-019: status.ts backend selection via FOREMAN_TASK_BACKEND", () => 
     vi.unstubAllEnvs();
   });
 
-  // ── br backend ────────────────────────────────────────────────────────────
+  // ── native backend ─────────────────────────────────────────────────────────
 
-  describe("when FOREMAN_TASK_BACKEND='br'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("br");
-    });
-
-    it("returns 'br' from getStatusBackend()", () => {
+  describe("when using native task store (only supported backend)", () => {
+    it("returns 'native' from getStatusBackend()", () => {
       const backend = getStatusBackend();
-      expect(backend).toBe("br");
+      expect(backend).toBe("native");
     });
-
   });
-
 });
 
 // ── fetchStatusCounts tests ────────────────────────────────────────────────
 
 import { fetchStatusCounts } from "../commands/status.js";
 
-describe("TRD-019: fetchStatusCounts uses correct backend", () => {
+describe("TRD-024: fetchStatusCounts uses native task store", () => {
   const PROJECT_PATH = "/mock/project";
 
   beforeEach(() => {
@@ -130,11 +121,7 @@ describe("TRD-019: fetchStatusCounts uses correct backend", () => {
     vi.unstubAllEnvs();
   });
 
-  describe("when legacy FOREMAN_TASK_BACKEND='br'", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("br");
-    });
-
+  describe("when using native task store (only supported backend)", () => {
     it("does not instantiate BeadsRustClient", async () => {
       await fetchStatusCounts(PROJECT_PATH);
       expect(MockBeadsRustClient).not.toHaveBeenCalled();
@@ -158,7 +145,7 @@ describe("TRD-019: fetchStatusCounts uses correct backend", () => {
       expect(counts.completed).toBe(0);
     });
 
-    it("does not call execFileSync (sd binary) for legacy backend selection", async () => {
+    it("does not call execFileSync (sd binary) for backend selection", async () => {
       await fetchStatusCounts(PROJECT_PATH);
       expect(mockExecFileSync).not.toHaveBeenCalled();
     });

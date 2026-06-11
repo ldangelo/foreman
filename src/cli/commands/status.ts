@@ -61,10 +61,10 @@ export async function getLastPiActivity(runId: string): Promise<string | null> {
 
 /**
  * Returns the active task backend. Exported for testing.
- * TRD-024: Always returns 'br'; sd backend removed.
+ * TRD-024: Native Postgres task store is the only supported backend.
  */
 export function getStatusBackend(): TaskBackend {
-  return 'br';
+  return 'native';
 }
 
 /**
@@ -375,7 +375,7 @@ function sleepOrDetach(ms: number, detach: { wait: () => Promise<void> }): Promi
 }
 
 export const statusCommand = new Command("status")
-  .description("Show project status from native tasks or beads_rust (br) for legacy compatibility")
+  .description("Show project status from the native Postgres task store")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
   .option("--live", "Enable full dashboard TUI with event stream (implies --watch; use instead of 'foreman dashboard')")
   .option("--json", "Output status as JSON")

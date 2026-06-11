@@ -46,12 +46,13 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
 
 /**
  * Result returned by createTaskClients.
- * Contains the task client to pass to Dispatcher and an optional BvClient.
+ * Contains the task client to pass to Dispatcher.
+ * The native Postgres task store is the only supported backend (TRD-024).
  */
 export interface TaskClientResult {
   taskClient: ITaskClient;
-  bvClient: BvClient | null;
-  backendType: "beads" | "native";
+  bvClient: null;  // Always null — BvClient was for beads backend which is removed
+  backendType: "native";
 }
 
 interface SentinelStartupTaskClient extends ITaskClient {
@@ -625,15 +626,13 @@ export const runCommand = new Command("run")
       }
 
       let taskClient: ITaskClient;
-      let bvClient: BvClient | null = null;
-      let backendType: "beads" | "native" = "beads";
+      let backendType: "native" = "native";
       if (registered) {
         ensureCliPostgresPool(projectPath);
       }
       try {
         const clients = await createTaskClients(projectPath, runtimeMode, registered?.id);
         taskClient = clients.taskClient;
-        bvClient = clients.bvClient;
         backendType = clients.backendType;
       } catch (clientErr: unknown) {
         const message = clientErr instanceof Error ? clientErr.message : String(clientErr);
@@ -651,7 +650,7 @@ export const runCommand = new Command("run")
         taskClient,
         store,
         projectPath,
-        bvClient,
+        null,  // BvClient removed — native task store only
         registered && daemonStore ? createRegisteredDispatcherOverrides(registered.id, daemonStore) : undefined,
       );
 

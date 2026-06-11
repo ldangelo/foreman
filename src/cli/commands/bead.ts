@@ -25,9 +25,11 @@ interface ParsedIssuesResponse {
 // ── Client factory (TRD-015) ──────────────────────────────────────────────
 
 /**
- * Instantiate the br task-tracking client.
+ * Instantiate the br task-tracking client for the `foreman bead` command.
  *
- * TRD-024: sd backend removed. Always returns a beads-compatible client.
+ * Note: Foreman's task management uses the native Postgres store exclusively.
+ * The `foreman bead` command provides direct access to the beads_rust CLI
+ * for operators who wish to manage beads outside of Foreman's workflow.
  *
  * Exported for unit testing.
  */
