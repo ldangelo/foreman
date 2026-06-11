@@ -83,6 +83,52 @@ export function resetSeedToOpen(store: TaskStatusStore, seedId: string, sender: 
 }
 
 /**
+ * Mark a task as in cooldown state after a retryable failure.
+ *
+ * When a phase fails with a retryable error (e.g. rate limit) and retryAfterCooldown
+ * is enabled in the workflow YAML, the task is placed in cooldown state instead of
+ * being marked failed/stuck. The dispatcher will not re-dispatch until the cooldown
+ * period expires.
+ *
+ * @param store - ForemanStore for the project.
+ * @param seedId - The task ID to mark as in cooldown.
+ * @param cooldownUntil - ISO timestamp when the cooldown period ends.
+ * @param sender - Human-readable source label.
+ */
+export function markTaskInCooldown(
+  store: TaskStatusStore,
+  seedId: string,
+  cooldownUntil: string,
+  sender: string,
+): void {
+  try {
+    store.updateTaskStatus(seedId, "cooldown");
+    console.error(`[task-backend-ops] Marked task ${seedId} in cooldown until ${cooldownUntil} (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to mark task ${seedId} in cooldown: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Reset a task from cooldown state back to ready status.
+ * Called when the cooldown period has expired and the task is ready to be retried.
+ *
+ * @param store - ForemanStore for the project.
+ * @param seedId - The task ID to reset.
+ * @param sender - Human-readable source label.
+ */
+export function resetCooldownTaskToReady(store: TaskStatusStore, seedId: string, sender: string): void {
+  try {
+    store.updateTaskStatus(seedId, "ready");
+    console.error(`[task-backend-ops] Reset task ${seedId} from cooldown to ready (sender: ${sender})`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[task-backend-ops] Warning: Failed to reset task ${seedId} from cooldown: ${msg.slice(0, 200)}`);
+  }
+}
+
+/**
  * Mark a task as failed in the native task store.
  *
  * @param store - ForemanStore for the project.
@@ -156,7 +202,7 @@ export async function syncTaskStatusOnStartup(
   const dryRun = opts?.dryRun ?? false;
 
   // All terminal statuses
-  const terminalStatuses: Array<"completed" | "merged" | "pr-created" | "conflict" | "test-failed" | "failed" | "stuck"> = [
+  const terminalStatuses: Array<"completed" | "merged" | "pr-created" | "conflict" | "test-failed" | "failed" | "stuck" | "cooldown"> = [
     "completed",
     "merged",
     "pr-created",
@@ -164,6 +210,7 @@ export async function syncTaskStatusOnStartup(
     "test-failed",
     "failed",
     "stuck",
+    "cooldown",
   ];
 
   const terminalRuns = await Promise.resolve(store.getRunsByStatuses(terminalStatuses, projectId));
@@ -239,7 +286,7 @@ export async function syncBeadStatusOnStartup(
   opts?: { dryRun?: boolean; projectPath?: string },
 ): Promise<SyncResult> {
   const dryRun = opts?.dryRun ?? false;
-  const terminalStatuses: Array<"completed" | "merged" | "pr-created" | "conflict" | "test-failed" | "failed" | "stuck"> = [
+  const terminalStatuses: Array<"completed" | "merged" | "pr-created" | "conflict" | "test-failed" | "failed" | "stuck" | "cooldown"> = [
     "completed",
     "merged",
     "pr-created",
@@ -247,6 +294,7 @@ export async function syncBeadStatusOnStartup(
     "test-failed",
     "failed",
     "stuck",
+    "cooldown",
   ];
 
   const terminalRuns = await Promise.resolve(store.getRunsByStatuses(terminalStatuses, projectId));

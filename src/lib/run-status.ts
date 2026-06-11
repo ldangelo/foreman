@@ -44,6 +44,7 @@ export interface StateMismatch {
  *   conflict / test-failed         → blocked (merge failed, needs intervention)
  *   failed                         → failed  (unexpected merge exception)
  *   stuck                          → open    (agent pipeline stuck, safe to retry)
+ *   cooldown                       → open    (task in cooldown, waiting to be retried)
  *   reset                          → open    (safe default: makes task visible again)
  */
 export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
@@ -59,6 +60,9 @@ export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
       return "review";
     // Agent pipeline stuck — safe to retry, put back in open queue
     case "stuck":
+      return "open";
+    // Cooldown — task is waiting for cooldown period to expire before retry
+    case "cooldown":
       return "open";
     // Successfully merged/PR-created — bead is done
     case "merged":
@@ -90,6 +94,7 @@ export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
  *   conflict / test-failed         → blocked
  *   failed                         → failed
  *   stuck                          → ready (agent pipeline stuck, safe to retry)
+ *   cooldown                       → cooldown (task waiting for cooldown period)
  *   reset                          → ready  (safe default: makes task visible again)
  *
  * NOTE: "open" is NOT a valid NativeTaskStatus — it exists only in the legacy br
@@ -105,6 +110,8 @@ export function mapRunStatusToNativeTaskStatus(runStatus: RunStatus): NativeTask
       return "review";
     case "stuck":
       return "ready";
+    case "cooldown":
+      return "cooldown";
     case "merged":
     case "pr-created":
       return "closed";

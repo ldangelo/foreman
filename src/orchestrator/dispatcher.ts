@@ -592,6 +592,20 @@ export class Dispatcher {
         // (developer → qa → finalize) run as a single worktree.
       }
 
+      // Skip seeds that are in cooldown state after a retryable failure.
+      // Cooldown is checked BEFORE stuck backoff because a task in cooldown
+      // should not be subject to stuck backoff — it has a specific wait period
+      // defined by the cooldown_until timestamp on the run record.
+      const cooldownResult = await this.checkCooldownState(seed.id, projectId);
+      if (cooldownResult.inCooldown) {
+        skipped.push({
+          seedId: seed.id,
+          title: seed.title,
+          reason: cooldownResult.reason ?? "In cooldown period after retryable failure",
+        });
+        continue;
+      }
+
       // Skip seeds that are in exponential backoff after recent stuck runs
       const backoffResult = await this.checkStuckBackoff(seed.id, projectId);
       if (backoffResult.inBackoff) {
@@ -1497,12 +1511,24 @@ export class Dispatcher {
   /**
    * Return recent stuck runs for a seed within the configured time window.
    * Ordered by created_at DESC (most recent first).
+   *
+   * Note: Runs that have a `cooldown_until` timestamp (either expired or in the
+   * future) are excluded because they are in cooldown state, not truly stuck.
+   * The cooldown state is handled separately by checkCooldownState, which
+   * takes precedence over stuck backoff.
    */
   private async getRecentStuckRuns(seedId: string, projectId: string): Promise<Run[]> {
     const cutoff = new Date(Date.now() - STUCK_RETRY_CONFIG.windowMs).toISOString();
+    const now = Date.now();
     const allRuns = await this.getRunsForSeedRecord(seedId, projectId);
     return allRuns.filter(
-      (r) => r.status === "stuck" && r.created_at >= cutoff,
+      (r) => {
+        if (r.status !== "stuck" || r.created_at < cutoff) return false;
+        // Skip runs with cooldown_until — they are in cooldown, not stuck
+        // Both expired and future cooldown_until mean the run is in cooldown state
+        if (r.cooldown_until) return false;
+        return true;
+      },
     );
   }
 
@@ -1546,6 +1572,91 @@ export class Dispatcher {
     }
 
     return { inBackoff: false };
+  }
+
+  /**
+   * Check whether a seed is currently in cooldown state after a retryable failure
+   * with retryAfterCooldown enabled. Returns `{ inCooldown: false }` if the seed
+   * may be dispatched, or `{ inCooldown: true, reason }` if it must be skipped
+   * until the cooldown period expires.
+   */
+  private async checkCooldownState(
+    seedId: string,
+    projectId: string,
+  ): Promise<{ inCooldown: boolean; reason?: string }> {
+    // Get the task to check if it's in cooldown state
+    let task: { id: string; status: string } | null = null;
+    try {
+      if (this.overrides?.nativeTaskOps) {
+        task = await this.overrides.nativeTaskOps.getTaskByExternalId(seedId)
+          ?? await this.overrides.nativeTaskOps.getTaskById(seedId);
+      } else if (typeof this.store.getTaskByExternalId === "function" && typeof this.store.getTaskById === "function") {
+        task = await this.store.getTaskByExternalId(seedId)
+          ?? await this.store.getTaskById(seedId);
+      }
+    } catch {
+      // Task not found — not in cooldown
+      return { inCooldown: false };
+    }
+
+    // Check if task is in cooldown state
+    if (!task || task.status !== "cooldown") {
+      return { inCooldown: false };
+    }
+
+    // Get the most recent run for this seed to check cooldown_until
+    const runs = await this.getRunsForSeedRecord(seedId, projectId);
+    if (runs.length === 0) {
+      // No runs found — clear cooldown state
+      return { inCooldown: false };
+    }
+
+    // Sort by created_at DESC to get the most recent run first
+    runs.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const mostRecentRun = runs[0];
+
+    // Check if cooldown_until is set and if it has expired
+    const cooldownUntil = mostRecentRun.cooldown_until;
+    if (!cooldownUntil) {
+      // No cooldown_until set — task should not be in cooldown state, clear it
+      try {
+        if (this.overrides?.nativeTaskOps?.updateTaskStatus) {
+          await this.overrides.nativeTaskOps.updateTaskStatus(seedId, "ready");
+        } else if (typeof this.store.updateTaskStatus === "function") {
+          this.store.updateTaskStatus(seedId, "ready");
+        }
+        log(`[dispatch] Cleared cooldown state for ${seedId} (no cooldown_until)`);
+      } catch {
+        // Non-fatal
+      }
+      return { inCooldown: false };
+    }
+
+    // Check if cooldown period has expired
+    const cooldownExpiry = new Date(cooldownUntil).getTime();
+    const now = Date.now();
+
+    if (now >= cooldownExpiry) {
+      // Cooldown period has expired — reset task to ready and allow dispatch
+      try {
+        if (this.overrides?.nativeTaskOps?.updateTaskStatus) {
+          await this.overrides.nativeTaskOps.updateTaskStatus(seedId, "ready");
+        } else if (typeof this.store.updateTaskStatus === "function") {
+          this.store.updateTaskStatus(seedId, "ready");
+        }
+        log(`[dispatch] Cooldown expired for ${seedId} — resetting to ready`);
+      } catch {
+        // Non-fatal
+      }
+      return { inCooldown: false };
+    }
+
+    // Cooldown period has not expired — skip this dispatch cycle
+    const remainingSec = Math.ceil((cooldownExpiry - now) / 1000);
+    return {
+      inCooldown: true,
+      reason: `In cooldown period — retry in ${remainingSec}s (expires at ${cooldownUntil})`,
+    };
   }
 
   /**

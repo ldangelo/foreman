@@ -207,6 +207,23 @@ export const RATE_LIMIT_BACKOFF_CONFIG = {
 };
 
 /**
+ * Cooldown retry configuration for when a phase fails with a transient error
+ * and retryAfterCooldown is enabled in the workflow YAML.
+ *
+ * When a phase fails with a retryable error (e.g. rate limit) and the phase
+ * has retryAfterCooldown: true, the task is placed in "cooldown" status instead
+ * of being marked failed/stuck. The dispatcher will not re-dispatch until the
+ * cooldown period expires.
+ *
+ * Default cooldown is 300 seconds (5 minutes) unless overridden by
+ * cooldownSeconds in the workflow YAML phase config.
+ */
+export const COOLDOWN_RETRY_CONFIG = {
+  /** Default cooldown duration in seconds when retryAfterCooldown is enabled */
+  defaultCooldownSeconds: envInt("FOREMAN_COOLDOWN_DEFAULT_SECONDS", 300),
+};
+
+/**
  * Calculate the rate limit backoff delay based on retry count.
  * Uses progressive delays: 30s, 60s, 120s (configurable via env vars).
  */

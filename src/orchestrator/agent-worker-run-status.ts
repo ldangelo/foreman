@@ -22,7 +22,7 @@ export async function updateTerminalRunStatus(opts: {
   runId: string;
   projectId?: string;
   projectPath: string;
-  updates: Partial<Pick<Run, "status" | "completed_at">>;
+  updates: Partial<Pick<Run, "status" | "completed_at" | "cooldown_until">>;
 }): Promise<void> {
   if (opts.projectId) {
     const pgStore = PostgresStore.forProject(opts.projectId);

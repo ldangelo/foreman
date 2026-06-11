@@ -182,7 +182,8 @@ export type NativeTaskStatus =
   | "conflict"
   | "failed"
   | "stuck"
-  | "blocked";
+  | "blocked"
+  | "cooldown";
 export type RiskLevel = "high" | "medium";
 
 export interface TrdTask {

@@ -78,6 +78,8 @@ export interface DispatcherStoreDeps {
   claimTask(taskId: string, runId: string): Awaitable<boolean>;
   /** Update task labels. */
   updateTaskLabels?(taskId: string, labels: string[]): Awaitable<void>;
+  /** Update task status. */
+  updateTaskStatus?(taskId: string, status: string): Awaitable<void>;
 
   // Run operations
   /** Create a new run record. */
