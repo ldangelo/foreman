@@ -39,7 +39,7 @@ phases:
   - name: test
     bash: "npm run test:unit"
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
+      allowed: [Bash, Glob, Grep, Read, Write]
     artifact: TEST_RESULTS.md
     verdict: true
     retryWith: fix

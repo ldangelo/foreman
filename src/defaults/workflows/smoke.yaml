@@ -42,7 +42,7 @@ phases:
   - name: qa
     prompt: qa.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: haiku
     maxTurns: 5

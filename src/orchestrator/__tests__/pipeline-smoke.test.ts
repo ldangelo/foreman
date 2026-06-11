@@ -62,6 +62,60 @@ describe("default/finalize.md: worktree cwd fix", () => {
   });
 });
 
+describe("default/qa.md: bounded verification", () => {
+  const DEFAULT_QA = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "qa.md");
+  const WORKFLOW_DIR = join(PROJECT_ROOT, "src", "defaults", "workflows");
+
+  it("forbids baseline git mutation/debug loops", () => {
+    const content = readFileSync(DEFAULT_QA, "utf-8");
+    expect(content).toContain("≤10 tool calls");
+    expect(content).toContain("Do not spend QA turns proving failures are pre-existing");
+    expect(content).toContain("git stash");
+    expect(content).toContain("git checkout");
+    expect(content).toContain("FAIL fast");
+  });
+
+  it("QA prompt requires targeted verification instead of broad default test runs", () => {
+    const content = readFileSync(DEFAULT_QA, "utf-8");
+    expect(content).toContain("Run at most **one targeted verification command**");
+    expect(content).toContain("Do **not** run broad/full test suites unless the task explicitly asks for them");
+    expect(content).toContain("Prefer a single targeted `npx vitest run <changed/related test files>` command");
+  });
+
+  it("QA workflow phases cannot edit source or use todo loops", () => {
+    const workflowNames = ["bug", "default", "epic", "feature", "smoke", "task"];
+    for (const name of workflowNames) {
+      const content = readFileSync(join(WORKFLOW_DIR, `${name}.yaml`), "utf-8");
+      const qaStart = content.indexOf("  - name: qa");
+      expect(qaStart, `${name}.yaml must have a qa phase`).toBeGreaterThan(-1);
+      const nextPhase = content.indexOf("\n  - name:", qaStart + 1);
+      const qaBlock = content.slice(qaStart, nextPhase === -1 ? undefined : nextPhase);
+      expect(qaBlock).toContain("allowed: [Bash, Glob, Grep, Read, Write]");
+      expect(qaBlock).not.toContain("Edit");
+      expect(qaBlock).not.toContain("TodoWrite");
+    }
+  });
+});
+
+describe("default/reviewer.md: bounded review", () => {
+  const DEFAULT_REVIEWER = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "reviewer.md");
+
+  it("forbids broad debugging and git mutation loops", () => {
+    const content = readFileSync(DEFAULT_REVIEWER, "utf-8");
+    expect(content).toContain("≤12 tool calls");
+    expect(content).toContain("Do **not** run tests");
+    expect(content).toContain("Do **not** perform broad repo archaeology");
+    expect(content).toContain("git stash");
+    expect(content).toContain("git checkout");
+  });
+
+  it("instructs reviewer to fail boundedly instead of exceeding turn budget", () => {
+    const content = readFileSync(DEFAULT_REVIEWER, "utf-8");
+    expect(content).toContain("If scope is too large to review confidently within the budget, write **FAIL**");
+    expect(content).toContain("Prefer a bounded FAIL with evidence over exceeding turn budget");
+  });
+});
+
 describe("smoke workflow: structural invariants", () => {
   const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
   const SMOKE_PROMPTS_DIR = join(PROJECT_ROOT, "src", "defaults", "prompts", "smoke");
