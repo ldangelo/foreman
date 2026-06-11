@@ -759,18 +759,14 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
         token: "",
         repositories: [],
       };
-      if ("apiUrl" in githubRaw) {
-        if (typeof githubRaw["apiUrl"] !== "string") {
-          throw new ProjectConfigError(filePath, "'issueTracker.github.apiUrl' must be a string");
-        }
-        githubConfig.apiUrl = githubRaw["apiUrl"] as string;
+      if (typeof githubRaw["apiUrl"] !== "string" || githubRaw["apiUrl"].trim().length === 0) {
+        throw new ProjectConfigError(filePath, "'issueTracker.github.apiUrl' is required and must be a non-empty string");
       }
-      if ("token" in githubRaw) {
-        if (typeof githubRaw["token"] !== "string") {
-          throw new ProjectConfigError(filePath, "'issueTracker.github.token' must be a string");
-        }
-        githubConfig.token = githubRaw["token"] as string;
+      githubConfig.apiUrl = githubRaw["apiUrl"];
+      if (typeof githubRaw["token"] !== "string" || githubRaw["token"].trim().length === 0) {
+        throw new ProjectConfigError(filePath, "'issueTracker.github.token' is required and must be a non-empty string");
       }
+      githubConfig.token = githubRaw["token"];
       if ("pollIntervalSeconds" in githubRaw) {
         const interval = githubRaw["pollIntervalSeconds"];
         if (typeof interval !== "number" || !Number.isFinite(interval) || interval < 30) {
@@ -812,18 +808,14 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
           owner: "",
           repo: "",
         };
-        if ("owner" in repoRaw) {
-          if (typeof repoRaw["owner"] !== "string") {
-            throw new ProjectConfigError(filePath, `'issueTracker.github.repositories[${i}].owner' must be a string`);
-          }
-          repo.owner = repoRaw["owner"] as string;
+        if (typeof repoRaw["owner"] !== "string" || repoRaw["owner"].trim().length === 0) {
+          throw new ProjectConfigError(filePath, `'issueTracker.github.repositories[${i}].owner' is required and must be a non-empty string`);
         }
-        if ("repo" in repoRaw) {
-          if (typeof repoRaw["repo"] !== "string") {
-            throw new ProjectConfigError(filePath, `'issueTracker.github.repositories[${i}].repo' must be a string`);
-          }
-          repo.repo = repoRaw["repo"] as string;
+        repo.owner = repoRaw["owner"];
+        if (typeof repoRaw["repo"] !== "string" || repoRaw["repo"].trim().length === 0) {
+          throw new ProjectConfigError(filePath, `'issueTracker.github.repositories[${i}].repo' is required and must be a non-empty string`);
         }
+        repo.repo = repoRaw["repo"];
         if ("triggerLabels" in repoRaw && Array.isArray(repoRaw["triggerLabels"])) {
           repo.triggerLabels = repoRaw["triggerLabels"] as string[];
         }

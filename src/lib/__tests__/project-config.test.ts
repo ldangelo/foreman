@@ -135,6 +135,26 @@ describe("loadProjectConfig", () => {
     });
   });
 
+  it("requires non-empty GitHub API URL and token", () => {
+    writeForemanConfig(
+      tmpDir,
+      "issueTracker:\n  backend: github\n  github:\n    apiUrl: ''\n    token: ''\n    repositories:\n      - owner: owner\n        repo: repo",
+    );
+
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/issueTracker\.github\.apiUrl/);
+  });
+
+  it("requires non-empty GitHub repository owner and repo", () => {
+    writeForemanConfig(
+      tmpDir,
+      "issueTracker:\n  backend: github\n  github:\n    apiUrl: https://api.github.com\n    token: encrypted-token\n    repositories:\n      - owner: ''\n        repo: ''",
+    );
+
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/repositories\[0\]\.owner/);
+  });
+
   // JSON fallback
   it("falls back to ~/.foreman/config.json when config.yaml is absent", () => {
     writeForemanConfig(
