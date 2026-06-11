@@ -183,8 +183,15 @@ export class GitBackend implements VcsBackend {
 
   /**
    * Checkout a branch by name.
+   * Rejects Git pseudo-refs (HEAD, refs/stash, etc.) to prevent detached HEAD.
    */
   async checkoutBranch(repoPath: string, branchName: string): Promise<void> {
+    const pseudoRefPatterns = [/^HEAD$/, /^refs\//, /^stash$/, /^\./];
+    for (const pattern of pseudoRefPatterns) {
+      if (pattern.test(branchName)) {
+        throw new Error(`Cannot checkout pseudo-ref "${branchName}" — use a real branch name`);
+      }
+    }
     await this.git(["checkout", branchName], repoPath);
   }
 

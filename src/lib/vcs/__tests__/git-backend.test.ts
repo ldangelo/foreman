@@ -342,6 +342,19 @@ describe("GitBackend.checkoutBranch", () => {
     const current = await backend.getCurrentBranch(repo);
     expect(current).toBe("feature/nested/branch");
   });
+
+  it("rejects pseudo-refs that would detach HEAD", async () => {
+    const repo = makeTempRepo("main");
+    tempDirs.push(repo);
+    const backend = new GitBackend(repo);
+
+    for (const pseudoRef of ["HEAD", "refs/stash", "stash", ".git"] as const) {
+      await expect(backend.checkoutBranch(repo, pseudoRef)).rejects.toThrow(/Cannot checkout pseudo-ref/);
+    }
+
+    const current = await backend.getCurrentBranch(repo);
+    expect(current).toBe("main");
+  });
 });
 
 // ── GitBackend.branchExists ────────────────────────────────────────────────────

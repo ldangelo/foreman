@@ -216,7 +216,7 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       maxBudgetUsd: getQaBudget(),
       permissionMode: "acceptEdits",
       reportFile: "QA_REPORT.md",
-      allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+      allowedTools: ["Bash", "Glob", "Grep", "Read", "TodoWrite", "Write"],
     },
     reviewer: {
       role: "reviewer",
@@ -341,7 +341,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         maxBudgetUsd: 3.00,
         permissionMode: "acceptEdits",
         reportFile: "QA_REPORT.md",
-        allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+        allowedTools: ["Bash", "Glob", "Grep", "Read", "TodoWrite", "Write"],
       },
       reviewer: {
         role: "reviewer",
