@@ -65,7 +65,8 @@ describe("agent-worker finalize mail status handling", () => {
   });
 
   it("threads registered project context into Refinery during finalize PR creation", () => {
-    expect(source).toContain('const registeredRefineryOptions = registeredProjectId && registeredReadStore');
+    expect(source).toContain('const registeredRefineryProjectId = registeredProjectId ?? fallbackRegisteredProjectId');
+    expect(source).toContain('const registeredRefineryRunLookup = registeredReadStore ?? fallbackRegisteredReadStore');
     expect(source).toContain('new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);');
   });
 

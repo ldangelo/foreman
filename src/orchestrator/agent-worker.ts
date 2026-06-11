@@ -1824,8 +1824,16 @@ async function runPipeline(
       }
 
       const now = new Date().toISOString();
-      const registeredRefineryOptions = registeredProjectId && registeredReadStore
-        ? { registeredProjectId, runLookup: registeredReadStore }
+      const fallbackRegisteredProjectId = !registeredProjectId && resolveProjectDatabaseUrl(pipelineProjectPath)
+        ? config.projectId
+        : undefined;
+      const registeredRefineryProjectId = registeredProjectId ?? fallbackRegisteredProjectId;
+      const fallbackRegisteredReadStore = !registeredReadStore && fallbackRegisteredProjectId
+        ? PostgresStore.forProject(fallbackRegisteredProjectId)
+        : undefined;
+      const registeredRefineryRunLookup = registeredReadStore ?? fallbackRegisteredReadStore;
+      const registeredRefineryOptions = registeredRefineryProjectId && registeredRefineryRunLookup
+        ? { registeredProjectId: registeredRefineryProjectId, runLookup: registeredRefineryRunLookup }
         : undefined;
       if (finalizeSucceeded) {
 
