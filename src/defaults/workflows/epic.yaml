@@ -111,6 +111,20 @@ phases:
       onComplete: true
 
   # ── Phase 5: QA ──────────────────────────────────────────────────────────
+  - name: documentation
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: DOCUMENTATION_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
   - name: qa
     prompt: qa.md
     tools:

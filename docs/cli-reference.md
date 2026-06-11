@@ -41,6 +41,8 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, monitors agents, and auto-merges completed work.
 
+Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
+
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
 foreman run --project my-project   # Dispatch against a registered project without cd

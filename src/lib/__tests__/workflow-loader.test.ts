@@ -427,6 +427,22 @@ phases:
     }
   });
 
+  it("bundled workflows run documentation before finalization", () => {
+    for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const phaseNames = config.phases.map((phase) => phase.name);
+      const documentationIdx = phaseNames.indexOf("documentation");
+      const finalizeIdx = phaseNames.indexOf("finalize");
+      expect(documentationIdx, workflowName).toBeGreaterThanOrEqual(0);
+      expect(finalizeIdx, workflowName).toBeGreaterThanOrEqual(0);
+      expect(documentationIdx, workflowName).toBeLessThan(finalizeIdx);
+      const documentationPhase = config.phases[documentationIdx];
+      expect(documentationPhase?.prompt, workflowName).toBe("documentation.md");
+      expect(documentationPhase?.artifact, workflowName).toBe("DOCUMENTATION_REPORT.md");
+      expect(documentationPhase?.tools?.allowed, workflowName).toContain("Edit");
+    }
+  });
+
   it("does not use Anthropic Haiku for bundled finalize phases", () => {
     for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
       const config = loadWorkflowConfig(workflowName, tmpDir);

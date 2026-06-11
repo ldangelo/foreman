@@ -88,6 +88,13 @@ describe("prompt loader", () => {
     expect(getBundledPromptPath("chore", "fix-issue")).toContain(join("chore", "fix-issue.md"));
   });
 
+  it("requires and bundles the shared documentation prompt", () => {
+    expect(REQUIRED_PHASES.default).toContain("documentation");
+    expect(REQUIRED_PHASES.smoke).toContain("documentation");
+    expect(getBundledPromptPath("default", "documentation")).toContain(join("default", "documentation.md"));
+    expect(getBundledPromptContent("default", "documentation")).toContain("DOCUMENTATION_REPORT.md");
+  });
+
   it("fix-issue prompts invoke ensemble and preserve the developer artifact contract", () => {
     for (const workflow of ["task", "bug", "chore"] as const) {
       const content = getBundledPromptContent(workflow, "fix-issue");
