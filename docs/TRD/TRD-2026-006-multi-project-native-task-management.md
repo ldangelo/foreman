@@ -50,9 +50,8 @@ CLI Layer:
 
 Dispatcher Flow (native mode):
   getReadyTasks()
-    |-- hasNativeTasks()? --yes--> SELECT * FROM tasks WHERE status='ready'
-    |                              ORDER BY priority ASC, created_at ASC
-    |-- no --> BeadsRustClient.ready() (fallback)
+    --> SELECT * FROM tasks WHERE status='ready'
+          ORDER BY priority ASC, created_at ASC
 
 Pipeline Integration:
   pipeline-executor.ts  --phase transition-->  taskStore.updatePhase(taskId, phase)
@@ -190,7 +189,7 @@ Pipeline Integration:
 - Validates PRD ACs: AC-005.1, AC-017.1
 - Implementation ACs:
   - Given tasks in various statuses, when `ready()` is called, then it returns only tasks with `status = 'ready'` and `run_id IS NULL`, ordered by priority ASC then created_at ASC
-  - Given the `FOREMAN_TASK_STORE=native` env var, when `ready()` returns an empty array, then the dispatcher does not fall back to beads
+  - Given the native task store is empty, when `ready()` is called, then it returns an empty array (no beads fallback)
 
 #### TRD-005-TEST: Unit tests for ready() query
 **1h** | [verifies TRD-005] [satisfies REQ-017, REQ-020] [depends: TRD-005]
@@ -208,7 +207,7 @@ Pipeline Integration:
 
 #### TRD-006-TEST: Backward compatibility regression tests
 **1h** | [verifies TRD-006] [satisfies REQ-020] [depends: TRD-006]
-- Test: empty `tasks` table does not affect dispatcher fallback to beads
+- Test: empty `tasks` table returns empty array from `ready()` query (no beads fallback)
 - Test: existing `foreman status` output unchanged when no native tasks
 - Test: `foreman init` on existing DB adds tables without data loss
 
@@ -276,31 +275,26 @@ Pipeline Integration:
 **3h** | [satisfies REQ-017] [depends: TRD-005]
 - Validates PRD ACs: AC-017.1, AC-017.2, AC-017.3
 - Implementation ACs:
-  - Given the native task store is active (`hasNativeTasks()` returns true), when `dispatcher.getReadyTasks()` runs, then it calls `NativeTaskStore.ready()` directly (no shell exec, no `br` invocation)
+  - Given the dispatcher calls `getReadyTasks()`, then it calls `NativeTaskStore.ready()` directly (no shell exec, no `br` invocation)
   - Given the dispatcher claims a task, when `claim(taskId, runId)` is called, then the status update and run_id assignment happen in the same Postgres transaction (already implemented in `NativeTaskStore.claim()`)
-  - Given `FOREMAN_TASK_STORE=native`, when the tasks table is empty, then the dispatcher returns an empty array (does not fall back to beads)
-  - Given `FOREMAN_TASK_STORE=beads`, when called, then the dispatcher uses `BeadsRustClient` regardless of native task table contents
+  - Given the tasks table is empty, when `getReadyTasks()` is called, then the dispatcher returns an empty array (native-only, no beads fallback)
 
 #### TRD-010-TEST: Integration tests for dispatcher native task store path
 **2h** | [verifies TRD-010] [satisfies REQ-017] [depends: TRD-010]
-- Test: dispatcher uses native store when hasNativeTasks() is true
-- Test: dispatcher falls back to beads when tasks table empty
-- Test: `FOREMAN_TASK_STORE=native` env var forces native path
-- Test: `FOREMAN_TASK_STORE=beads` env var forces beads path
+- Test: dispatcher uses native store exclusively
+- Test: dispatcher returns empty array when tasks table is empty
 - Test: claim() is atomic (no double-dispatch)
 
 #### TRD-011: Update refinery to close native tasks post-merge
 **2h** | [satisfies REQ-018] [depends: TRD-005]
 - Validates PRD ACs: AC-018.1, AC-018.2
 - Implementation ACs:
-  - Given a successful merge, when the refinery processes it and the native task store is active, then `taskStore.updateStatus(taskId, 'merged')` is called with `closed_at` set to now
-  - Given the task store is in beads fallback mode, when a merge completes, then `syncBeadStatusAfterMerge()` is called instead (existing behavior)
+  - Given a successful merge, when the refinery processes it, then `taskStore.updateStatus(taskId, 'merged')` is called with `closed_at` set to now
   - Given the run has no associated task ID (pre-migration run), when refinery attempts to close, then a debug-level warning is logged and no error is thrown
 
 #### TRD-011-TEST: Unit tests for refinery native task closure
 **1h** | [verifies TRD-011] [satisfies REQ-018] [depends: TRD-011]
 - Test: successful merge sets task status to `merged` with `closed_at`
-- Test: beads fallback mode calls `syncBeadStatusAfterMerge()`
 - Test: missing task ID logs warning, does not throw
 
 #### TRD-012: Update sling to create native tasks instead of beads
@@ -325,7 +319,7 @@ Pipeline Integration:
 - Validates PRD ACs: AC-012.1, AC-012.2
 - Implementation ACs:
   - Given a pipeline running with a native task, when the executor transitions from `developer` to `qa`, then `taskStore.updatePhase(taskId, 'qa')` is called and the task's status column reads `'qa'`
-  - Given `taskId` is null (beads fallback), when `updatePhase()` is called, then it is a no-op (already implemented)
+  - Given `taskId` is null, when `updatePhase()` is called, then it is a no-op
 
 #### TRD-013-TEST: Unit tests for pipeline phase visibility
 **1h** | [verifies TRD-013] [satisfies REQ-012] [depends: TRD-013]
@@ -408,22 +402,18 @@ Pipeline Integration:
 - Test: duplicate detection by external_id skips existing
 - Test: import summary message format matches AC-013.1
 
-#### TRD-018: Implement coexistence fallback logic with env var override
+#### TRD-018: Native task store is mandatory -- no beads fallback
 **2h** | [satisfies REQ-014] [depends: TRD-010]
 - Validates PRD ACs: AC-014.1, AC-014.2, AC-014.3
 - Implementation ACs:
-  - Given `FOREMAN_TASK_STORE` is not set, when the dispatcher calls `getReadyTasks()`, then `hasNativeTasks()` determines the path and a debug-level log records which path was taken
-  - Given `FOREMAN_TASK_STORE=native`, when the tasks table is empty, then native store is used (returns empty, no beads fallback)
-  - Given `FOREMAN_TASK_STORE=beads`, when called, then beads client is used regardless of native task table contents
-  - Given `foreman doctor`, when the native task store has rows, then output includes `"Task store: native (N tasks)"`; when empty, `"Task store: beads (fallback)"`; when both exist, a warning is emitted per AC-014.3
+  - Given the dispatcher calls `getReadyTasks()`, then native task store is always used (no beads fallback)
+  - Given `foreman doctor`, when the native task store has rows, then output includes `"Task store: native (N tasks)"`; when empty, `"Task store: native (empty)"`
 
-#### TRD-018-TEST: Unit tests for coexistence fallback
+#### TRD-018-TEST: Unit tests for native-only task store
 **1h** | [verifies TRD-018] [satisfies REQ-014] [depends: TRD-018]
-- Test: no env var -- hasNativeTasks() determines path
-- Test: `FOREMAN_TASK_STORE=native` forces native
-- Test: `FOREMAN_TASK_STORE=beads` forces beads
-- Test: doctor reports correct mode
-- Test: doctor warns when both native and beads data exist
+- Test: dispatcher uses native store exclusively (no fallback)
+- Test: doctor reports native task store mode
+- Test: empty task store reports "native (empty)"
 
 #### TRD-019: Deprecate BeadsRustClient and update doctor checks
 **2h** | [satisfies REQ-015] [depends: TRD-018]
@@ -486,8 +476,8 @@ Pipeline Integration:
 ### Sprint 5: Migration and Deprecation (~12h)
 - [ ] **TRD-017** (4h): Beads import command [depends: TRD-003, TRD-004]
 - [ ] **TRD-017-TEST** (2h): Tests for beads import [depends: TRD-017]
-- [ ] **TRD-018** (2h): Coexistence fallback logic [depends: TRD-010]
-- [ ] **TRD-018-TEST** (1h): Tests for coexistence [depends: TRD-018]
+- [ ] **TRD-018** (2h): Native task store mandatory [depends: TRD-010]
+- [ ] **TRD-018-TEST** (1h): Tests for native-only task store [depends: TRD-018]
 - [ ] **TRD-019** (2h): BeadsRustClient deprecation [depends: TRD-018]
 - [ ] **TRD-019-TEST** (1h): Tests for deprecation [depends: TRD-019]
 
@@ -512,7 +502,7 @@ Pipeline Integration:
 | REQ-011 | "Needs Human" Panel | TRD-015 | TRD-015-TEST |
 | REQ-012 | Pipeline Phase Visibility | TRD-013 | TRD-013-TEST |
 | REQ-013 | Beads Import Command | TRD-017 | TRD-017-TEST |
-| REQ-014 | Coexistence -- Fallback to Beads | TRD-018 | TRD-018-TEST |
+| REQ-014 | Native task store is mandatory | TRD-018 | TRD-018-TEST |
 | REQ-015 | Beads Deprecation Path | TRD-019 | TRD-019-TEST |
 | REQ-016 | `--project` Flag on Dispatch Commands | TRD-009, TRD-016 | TRD-009-TEST, TRD-016-TEST |
 | REQ-017 | Dispatcher Reads Native Task Store | TRD-005, TRD-010 | TRD-005-TEST, TRD-010-TEST |
