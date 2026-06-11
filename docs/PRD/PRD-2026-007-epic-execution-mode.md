@@ -163,7 +163,7 @@ When QA detects a test failure, a bug bead is created for traceability before lo
 
 After each task passes QA, changes are committed to the shared worktree branch. Commits use the task title and bead ID as the commit message. No push until the epic completes.
 
-- AC-007-1: Given task N passes QA, when the commit runs, then a git commit is created with message `<task title> (<bead-id>)`.
+- AC-007-1: Given task N passes QA, when the commit runs, then a git commit is created with message `<task title> (<task-id>)`.
 - AC-007-2: Given 10 tasks complete, when inspecting the worktree branch, then there are exactly 10 commits (no empty commits, no extra jj working revisions).
 
 ### REQ-008: Session continuity across tasks

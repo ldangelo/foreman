@@ -12,9 +12,12 @@ Before diving into specific issues, run these commands to understand the current
 foreman status                    # Overview: tasks, agents, costs
 foreman doctor                    # Health checks (br, DB, prompts)
 foreman inbox --all --watch       # Live mail stream across all runs
-foreman debug <task-or-bead-id>           # AI-powered deep-dive on a specific task
-foreman debug <task-or-bead-id> --raw     # Raw artifacts without AI analysis
+foreman debug <task-id>           # AI-powered deep-dive on a specific task
+foreman debug <task-id> --raw     # Raw artifacts without AI analysis
 ```
+
+> **Note:** `<task-id>` is the primary identifier. `--bead` is accepted as a
+> backward-compatible alias throughout the CLI.
 
 ---
 
@@ -27,8 +30,8 @@ foreman debug <task-or-bead-id> --raw     # Raw artifacts without AI analysis
 **Diagnosis:**
 ```bash
 foreman status                    # Check turns and lastActivity timestamp
-foreman attach <bead-id> --follow # Tail the agent log
-foreman inbox --bead <bead-id>    # Check for error mail
+foreman attach <task-id> --follow # Tail the agent log
+foreman inbox --bead <task-id>    # Check for error mail (--bead is alias for <task-id>)
 ```
 
 **Common causes and fixes:**
@@ -36,21 +39,21 @@ foreman inbox --bead <bead-id>    # Check for error mail
 1. **Rate limited** — The AI provider or CodeRabbit CLI throttled requests. Foreman retries CodeRabbit CLI rate limits with short backoff and then marks the run retryable instead of looping back through developer/QA.
    ```bash
    # Wait for rate limit to reset, or stop and retry later
-   foreman stop <bead-id>
-   foreman retry <bead-id> --dispatch
+   foreman stop <task-id>
+   foreman retry <task-id> --dispatch
    ```
 
 2. **Agent in a loop** — The agent is retrying a failing operation.
    ```bash
-   foreman attach <bead-id> --follow  # Check what it's doing
-   foreman stop <bead-id>             # Kill it
-   foreman reset --bead <bead-id>     # Reset to open
+   foreman attach <task-id> --follow  # Check what it's doing
+   foreman stop <task-id>             # Kill it
+   foreman reset --bead <task-id>     # Reset to open (--bead is alias)
    ```
 
 3. **Pi SDK session hung** — The in-process agent session stopped responding.
    ```bash
-   foreman stop <bead-id> --force     # Force kill
-   foreman reset --bead <bead-id>
+   foreman stop <task-id> --force     # Force kill
+   foreman reset --bead <task-id>
    ```
 
 ### Agent crashes immediately on startup
@@ -68,12 +71,12 @@ cat ~/.foreman/logs/<runId>.err | grep "SyntaxError\|Error\|Cannot find"
 
 **Common causes:**
 
-1. **Missing export in TypeScript** — A merged bead broke an import.
+1. **Missing export in TypeScript** — A merged task broke an import.
    ```bash
    npx tsc --noEmit                # Find the error
    # Fix the TypeScript error, then:
    npm run build
-   foreman retry <bead-id> --dispatch
+   foreman retry <task-id> --dispatch
    ```
 
 2. **Pi SDK auth failure** — API key not found.
@@ -95,7 +98,7 @@ cat ~/.foreman/logs/<runId>.err | grep "SyntaxError\|Error\|Cannot find"
 
 **Diagnosis:**
 ```bash
-cd ../.foreman-worktrees/<repo-name>/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<task-id>
 git status                        # Check for uncommitted files
 git diff --stat                   # See what changed but wasn't committed
 ```
@@ -105,11 +108,11 @@ git diff --stat                   # See what changed but wasn't committed
 **Fix:** This was addressed by adding `cd {{worktreePath}}` to the finalize prompt. If you're on an older version:
 ```bash
 # Manually commit from the worktree
-cd ../.foreman-worktrees/<repo-name>/<bead-id>
+cd ../.foreman-worktrees/<repo-name>/<task-id>
 git add -A
-git commit -m "Manual commit for <bead-id>"
-git push -u origin foreman/<bead-id>
-foreman merge --bead <bead-id>
+git commit -m "Manual commit for <task-id>"
+git push -u origin foreman/<task-id>
+foreman merge --bead <task-id>    # --bead is backward-compatible alias
 ```
 
 ---
@@ -126,7 +129,7 @@ foreman merge --bead <bead-id>
 grep "autoMerge\|merge.*fail\|conflict" ~/.foreman/logs/<runId>.err
 
 # Try the merge manually to see the error
-git merge foreman/<bead-id> --no-commit --no-ff
+git merge foreman/<task-id> --no-commit --no-ff
 git merge --abort                 # Clean up
 ```
 
@@ -142,27 +145,27 @@ git merge --abort                 # Clean up
    echo "RUN_LOG.md" >> .gitignore
 
    # Force merge, dropping the conflicting files
-   git merge foreman/<bead-id> --no-edit
+   git merge foreman/<task-id> --no-edit
    # If conflict: git rm SESSION_LOG.md && git commit --no-edit
    ```
 
 2. **Branch diverged from target** — Other tasks merged to dev while this one was running.
    ```bash
    # Rebase the branch onto latest dev
-   cd ../.foreman-worktrees/<repo-name>/<bead-id>
+   cd ../.foreman-worktrees/<repo-name>/<task-id>
    git fetch origin
    git rebase origin/dev
-   git push -f origin foreman/<bead-id>
+   git push -f origin foreman/<task-id>
 
    # Then merge
    cd ../..
-   foreman merge --bead <bead-id>
+   foreman merge --bead <task-id>  # --bead is backward-compatible alias
    ```
 
 3. **Test failures during merge** — The refinery runs tests and they fail.
    ```bash
    # Check which tests fail on the merge result
-   git merge foreman/<bead-id> --no-commit --no-ff
+   git merge foreman/<task-id> --no-commit --no-ff
    npm test
    # Fix failures, then:
    git commit --no-edit
@@ -192,7 +195,7 @@ foreman merge                     # Trigger manual merge
 **Diagnosis:**
 ```bash
 # Count runs for the task
-foreman debug <bead-id> --raw | grep "Run ID"
+foreman debug <task-id> --raw | grep "Run ID"
 
 # Check why merge fails
 grep "merge.*fail\|test.*fail" ~/.foreman/logs/<latest-runId>.err
@@ -203,11 +206,11 @@ grep "merge.*fail\|test.*fail" ~/.foreman/logs/<latest-runId>.err
 **Fix:**
 ```bash
 # Stop the loop
-foreman stop <bead-id>
-br close <bead-id> --force --reason "Stopping retry loop"
+foreman stop <task-id>
+br close <task-id> --force --reason "Stopping retry loop"
 
 # Manually merge if the fix is good
-git merge foreman/<bead-id> --no-edit
+git merge foreman/<task-id> --no-edit
 npm test                          # Verify
 git push
 ```
@@ -230,11 +233,11 @@ git status
 **Fix:**
 ```bash
 # Use Foreman commands instead of manual rm -rf
-foreman stop <bead-id>
+foreman stop <task-id>
 foreman worktree clean --dry-run  # Preview what will be removed
 foreman worktree clean            # Remove the worktree and prune stale refs
-foreman reset --bead <bead-id>
-foreman run --bead <bead-id>      # Fresh dispatch
+foreman reset --bead <task-id>    # --bead is backward-compatible alias
+foreman run --bead <task-id>      # Fresh dispatch (--bead is alias)
 ```
 
 ### "index.lock: File exists" error
@@ -291,23 +294,23 @@ br sync --force
 br doctor
 ```
 
-### Bead stuck in wrong status (IN_PROGRESS but actually merged)
+### Task stuck in wrong status (IN_PROGRESS but actually merged)
 
-**Symptoms:** `br list` shows beads as IN_PROGRESS but they're already on dev.
+**Symptoms:** `br list` shows tasks as IN_PROGRESS but they're already on dev.
 
 **Diagnosis:**
 ```bash
-# Check if the bead's work is on dev
-git log --oneline dev | grep <bead-id>
+# Check if the task's work is on dev
+git log --oneline dev | grep <task-id>
 
 # Check br status
-br show <bead-id>
+br show <task-id>
 ```
 
 **Fix:**
 ```bash
 # Close tasks that are already merged in the legacy beads store
-br close <bead-id> --force --reason "Already merged to dev"
+br close <task-id> --force --reason "Already merged to dev"
 
 # Or run doctor to reconcile
 foreman doctor --fix
@@ -335,15 +338,15 @@ br doctor                         # Verify
 **Diagnosis:**
 ```bash
 foreman status                    # Check cost and turns per phase
-foreman attach <bead-id> --follow # Watch what the agent is doing
+foreman attach <task-id> --follow # Watch what the agent is doing
 ```
 
 **Common causes:**
 
 1. **Agent in fix-test-fix loop** — Developer keeps fixing, QA keeps failing.
    ```bash
-   foreman stop <bead-id>
-   foreman debug <bead-id>         # Analyze what went wrong
+   foreman stop <task-id>
+   foreman debug <task-id>         # Analyze what went wrong
    ```
 
 2. **Agent exploring too broadly** — Explorer reading too many files.
@@ -386,7 +389,7 @@ phases:
 foreman inbox --all --limit 100
 
 # Check specific task
-foreman inbox --bead <bead-id>
+foreman inbox --bead <task-id>   # --bead is backward-compatible alias
 
 # Check if the mail client initialized
 grep "agent-mail" ~/.foreman/logs/<runId>.err
@@ -396,7 +399,7 @@ grep "agent-mail" ~/.foreman/logs/<runId>.err
 
 1. **Wrong run ID** — The inbox defaults to the latest run, which might not be the one you expect.
    ```bash
-   foreman inbox --bead <bead-id>  # Use task/bead ID instead of run ID
+   foreman inbox --bead <task-id>  # Use task ID (--bead is alias)
    ```
 
 2. **Agent Mail client failed to initialize** — Check logs for errors.
@@ -448,8 +451,8 @@ md5 package-lock.json             # Compare with cache dir names
 ```bash
 # Clear the cache and let it rebuild
 rm -rf .foreman/setup-cache/
-foreman reset --bead <bead-id>
-foreman run --bead <bead-id>
+foreman reset --bead <task-id>   # --bead is backward-compatible alias
+foreman run --bead <task-id>     # Fresh dispatch (--bead is alias)
 ```
 
 ---
@@ -459,8 +462,8 @@ foreman run --bead <bead-id>
 ```bash
 foreman doctor                    # Automated health checks
 foreman doctor --fix              # Auto-fix common issues
-foreman debug <bead-id>           # AI analysis of what went wrong
-foreman debug <bead-id> --raw     # All artifacts without AI cost
+foreman debug <task-id>           # AI analysis of what went wrong
+foreman debug <task-id> --raw     # All artifacts without AI cost
 
 # Report issues
 # https://github.com/ldangelo/foreman/issues
