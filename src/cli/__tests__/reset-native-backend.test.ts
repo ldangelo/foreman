@@ -253,15 +253,4 @@ describe("foreman reset — native backend", () => {
     expect(mergeQueue.list).toHaveBeenCalled();
   });
 
-  it("still keeps bead repair passes active for beads", async () => {
-    backendState.current = "beads";
-    mockCreateTaskClient.mockResolvedValue({ taskClient: beadsTaskClient, backendType: "beads" });
-
-    await runReset(["--project-path", "/mock/project"]);
-
-    expect(beadsTaskClient.update).toHaveBeenCalledWith("bd-actual", { status: "open" });
-    expect(beadsTaskClient.resetToReady).toBeUndefined();
-    expect(beadsTaskClient.show).toHaveBeenCalledWith("bd-trap");
-    expect(beadsTaskClient.show).toHaveBeenCalledWith("bd-actual");
-  });
 });

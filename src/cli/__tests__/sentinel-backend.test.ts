@@ -14,7 +14,7 @@ const {
   };
 
   const mockCreateTaskClient = vi.fn().mockResolvedValue({
-    backendType: "beads",
+    backendType: "native",
     taskClient: sentinelTaskClient,
   });
 
@@ -34,7 +34,7 @@ describe("createSentinelTaskClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateTaskClient.mockResolvedValue({
-      backendType: "beads",
+      backendType: "native",
       taskClient: sentinelTaskClient,
     });
   });
