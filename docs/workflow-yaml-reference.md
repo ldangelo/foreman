@@ -264,6 +264,16 @@ The `phases` array defines the ordered sequence of pipeline phases. Each phase r
 | `files` | object | — | File reservation configuration (see below) |
 | `builtin` | boolean | `false` | Phase implemented in TypeScript, not as agent prompt |
 
+### Documentation Phase
+
+Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
+
+```yaml
+  - name: documentation
+    prompt: documentation.md
+    artifact: DOCUMENTATION_REPORT.md
+```
+
 ### Models
 
 The `models` map supports priority-based model selection. Keys are `"default"` (required) or `"P0"` through `"P4"` (optional overrides). The bead's priority determines which model is used.
