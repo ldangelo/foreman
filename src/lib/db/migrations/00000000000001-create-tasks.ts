@@ -133,7 +133,7 @@ export const up = (pgm: MigrationBuilder) => {
     COMMENT ON COLUMN tasks.priority IS
       'P0=critical, P1=high, P2=medium (default), P3=low, P4=backlog.';
     COMMENT ON COLUMN tasks.status IS
-      'backlog=unstarted, ready=dispatchable, in-progress=executing, explorer/developer/qa/reviewer/finalize=running phases, merged/closed=terminal, conflict/failed/stuck/blocked=needs-attention.';
+      'backlog=unstarted, ready=dispatchable, in-progress=executing, review=awaiting PR/merge review, explorer/developer/qa/reviewer/finalize=running phases, merged/closed=terminal, conflict/failed/stuck/blocked=needs-attention.';
     COMMENT ON COLUMN tasks.run_id IS
       'NULL when not claimed by any run. Set to NULL when the owning run is deleted.';
     COMMENT ON COLUMN tasks.external_id IS

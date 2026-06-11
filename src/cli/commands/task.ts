@@ -224,6 +224,7 @@ const TASK_STATUS_ORDER: Record<string, number> = {
   blocked: 0,
   ready: 1,
   "in-progress": 2,
+  review: 2,
   explorer: 3,
   developer: 3,
   qa: 3,

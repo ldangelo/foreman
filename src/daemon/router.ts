@@ -77,7 +77,7 @@ const STATUS_FILTER_SCHEMA = z
 // Task schemas
 const TASK_ID_SCHEMA = z.string().min(1);
 const TASK_STATUS_VALUES = [
-  "backlog", "ready", "in-progress",
+  "backlog", "ready", "in-progress", "review",
   "explorer", "developer", "qa", "reviewer", "finalize",
   "merged", "closed", "conflict", "failed", "stuck", "blocked",
 ] as const;
