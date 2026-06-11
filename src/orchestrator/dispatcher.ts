@@ -64,6 +64,8 @@ interface NativeTaskOps {
   claimTask(taskId: string, runId: string): Promise<boolean>;
   updateTaskStatus?(taskId: string, status: string): Promise<void>;
   updateTaskLabels?(taskId: string, labels: string[]): Promise<void>;
+  /** Get child task IDs for a given parent task (inverse of Beads' children field). */
+  getChildren?(taskId: string): Promise<string[]>;
 }
 
 type Awaitable<T> = T | Promise<T>;
@@ -633,8 +635,8 @@ export class Dispatcher {
         statePendingCount[seed.status] = (statePendingCount[seed.status] ?? 0) + 1;
       }
 
-      // Fetch full issue details (description, notes/comments, labels) for agent context
-      // Native-only: use nativeTaskOps.getTaskById() — never call this.seeds.show() as fallback
+      // Fetch full issue details (description, labels) for agent context
+      // Native-only: uses nativeTaskOps.getTaskById() or store.getTaskById()
       let seedDetail: { description?: string | null; notes?: string | null; labels?: string[] } | undefined;
       try {
         if (this.overrides?.nativeTaskOps) {
@@ -1583,7 +1585,7 @@ export class Dispatcher {
 
     for (const run of activeRuns) {
       try {
-        // Native-only: use nativeTaskOps to get task status, never this.seeds.show()
+        // Native-only: uses nativeTaskOps or store methods to get task status
         let taskStatus: string | null = null;
         if (this.overrides?.nativeTaskOps) {
           const task = await this.overrides.nativeTaskOps.getTaskByExternalId(run.seed_id)
@@ -1625,7 +1627,8 @@ export class Dispatcher {
    *
    * @returns The number of worktrees removed.
    *
-   * Native-only: Returns 0 unconditionally since Beads fallback has been removed.
+   * Native-only: Returns 0 unconditionally. Worktree cleanup for terminal
+   * issues is handled by reconcileRunningIssues() during the dispatch cycle.
    *
    * NOTE: This method is a no-op in native-only mode. Worktree cleanup for
    * terminal issues is handled by:
@@ -1640,7 +1643,7 @@ export class Dispatcher {
    *      next daemon restart if the issue status has been updated externally.
    */
   private async cleanupTerminalStateWorktrees(_projectId: string): Promise<number> {
-    // Native-only dispatcher never calls this.seeds for fallback behavior.
+    // Native-only dispatcher: no Beads calls
     // Worktree cleanup for terminal issues is handled by reconcileRunningIssues()
     // during the dispatch cycle, which archives worktrees for runs whose issues
     // have transitioned to terminal state.
@@ -1699,7 +1702,7 @@ export class Dispatcher {
  * Returns the dependency branch name (e.g. "foreman/story-1") or undefined
  * when no stacking is needed.
  *
- * Native-only: This function never calls this.seeds or any Beads client.
+ * Native-only: This function does not call Beads client.
  * Stacking is disabled for native tasks since they lack dependency metadata.
  */
 export async function resolveBaseBranch(
