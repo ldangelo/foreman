@@ -14,6 +14,9 @@
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+import type { RunStatus } from "../orchestrator/read-models.js";
+import type { NativeTaskStatus } from "../orchestrator/types.js";
+
 /**
  * Describes a detected mismatch between a run's terminal status in Postgres and
  * the corresponding seed's status in the br backend.
@@ -21,7 +24,7 @@
 export interface StateMismatch {
   seedId: string;
   runId: string;
-  runStatus: string;
+  runStatus: RunStatus;
   actualSeedStatus: string;
   expectedSeedStatus: string;
 }
@@ -41,9 +44,9 @@ export interface StateMismatch {
  *   conflict / test-failed         → blocked (merge failed, needs intervention)
  *   failed                         → failed  (unexpected merge exception)
  *   stuck                          → open    (agent pipeline stuck, safe to retry)
- *   (unknown)                      → open    (safe default: makes task visible again)
+ *   reset                          → open    (safe default: makes task visible again)
  */
-export function mapRunStatusToSeedStatus(runStatus: string): string {
+export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
   switch (runStatus) {
     // Active pipeline: agent is still running
     case "pending":
@@ -68,7 +71,45 @@ export function mapRunStatusToSeedStatus(runStatus: string): string {
     // Unexpected exception during merge — mark as failed
     case "failed":
       return "failed";
-    default:
+    // Reset — put back in open queue for retry
+    case "reset":
       return "open";
+  }
+}
+
+/**
+ * Map a Postgres run status to the expected native task status.
+ *
+ * Similar to mapRunStatusToSeedStatus but returns NativeTaskStatus values
+ * (with hyphen, e.g. "in-progress") suitable for native task store updates.
+ *
+ * Mapping:
+ *   pending / running              → in-progress
+ *   completed                      → review
+ *   merged / pr-created            → closed
+ *   conflict / test-failed         → blocked
+ *   failed                         → failed
+ *   stuck                          → open
+ *   reset                          → open
+ */
+export function mapRunStatusToNativeTaskStatus(runStatus: RunStatus): NativeTaskStatus {
+  switch (runStatus) {
+    case "pending":
+    case "running":
+      return "in-progress";
+    case "completed":
+      return "review";
+    case "stuck":
+      return "open" as NativeTaskStatus;
+    case "merged":
+    case "pr-created":
+      return "closed";
+    case "conflict":
+    case "test-failed":
+      return "blocked";
+    case "failed":
+      return "failed";
+    case "reset":
+      return "open" as NativeTaskStatus;
   }
 }

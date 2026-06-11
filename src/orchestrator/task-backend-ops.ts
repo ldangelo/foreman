@@ -15,8 +15,10 @@
 
 import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
-import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
+import { mapRunStatusToSeedStatus, mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
+import type { NativeTaskStatus } from "./types.js";
+import type { RunStatus } from "./read-models.js";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -28,7 +30,7 @@ type StartupTaskStatusStore = {
     projectId?: string,
   ): Awaitable<Awaited<ReturnType<ForemanStore["getRunsByStatuses"]>>>;
   getTaskById?(id: string): Awaitable<ReturnType<ForemanStore["getTaskById"]>>;
-  updateTaskStatus?(taskId: string, newStatus: string): Awaitable<void>;
+  updateTaskStatus?(taskId: string, newStatus: NativeTaskStatus): Awaitable<void>;
 };
 
 type LegacyTaskClient = {
@@ -167,7 +169,7 @@ export async function syncTaskStatusOnStartup(
   const terminalRuns = await Promise.resolve(store.getRunsByStatuses(terminalStatuses, projectId));
 
   // Deduplicate by seed_id: keep the most recently created run per seed
-  type RunLike = { id: string; seed_id: string; status: string; created_at: string };
+  type RunLike = { id: string; seed_id: string; status: RunStatus; created_at: string };
   const latestBySeed = new Map<string, RunLike>();
   for (const run of terminalRuns) {
     const existing = latestBySeed.get(run.seed_id);
@@ -181,7 +183,7 @@ export async function syncTaskStatusOnStartup(
   let synced = 0;
 
   for (const run of latestBySeed.values()) {
-    const expectedTaskStatus = mapRunStatusToSeedStatus(run.status);
+    const expectedTaskStatus = mapRunStatusToNativeTaskStatus(run.status);
     try {
       const task = await store.getTaskById?.(run.seed_id);
       if (!task) {
@@ -248,7 +250,7 @@ export async function syncBeadStatusOnStartup(
   ];
 
   const terminalRuns = await Promise.resolve(store.getRunsByStatuses(terminalStatuses, projectId));
-  type RunLike = { id: string; seed_id: string; status: string; created_at: string };
+  type RunLike = { id: string; seed_id: string; status: RunStatus; created_at: string };
   const latestBySeed = new Map<string, RunLike>();
   for (const run of terminalRuns) {
     const existing = latestBySeed.get(run.seed_id);

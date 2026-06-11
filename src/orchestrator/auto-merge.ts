@@ -18,7 +18,7 @@ import type { VcsBackend } from "../lib/vcs/interface.js";
 import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { PostgresMergeQueue } from "./postgres-merge-queue.js";
 import { Refinery } from "./refinery.js";
-import { mapRunStatusToSeedStatus } from "../lib/run-status.js";
+import { mapRunStatusToSeedStatus, mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
 import { enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
 
 type Awaitable<T> = T | Promise<T>;
@@ -80,7 +80,7 @@ export async function syncBeadStatusAfterMerge(
   const run = await Promise.resolve(readLookup.getRun(runId));
   if (!run) return;
 
-  const expectedStatus = mapRunStatusToSeedStatus(run.status);
+  const expectedStatus = mapRunStatusToNativeTaskStatus(run.status);
   const existingTask = await Promise.resolve(store.getTaskById?.(seedId));
   if (expectedStatus === "review" && (existingTask?.status === "closed" || existingTask?.status === "merged")) {
     return;

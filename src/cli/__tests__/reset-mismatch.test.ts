@@ -74,8 +74,8 @@ describe("mapRunStatusToSeedStatus", () => {
     expect(mapRunStatusToSeedStatus("test-failed")).toBe("blocked");
   });
 
-  it("maps unknown status to open", () => {
-    expect(mapRunStatusToSeedStatus("unknown-status")).toBe("open");
+  it("maps reset to open — safe to retry", () => {
+    expect(mapRunStatusToSeedStatus("reset")).toBe("open");
   });
 });
 

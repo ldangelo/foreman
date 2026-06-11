@@ -11,6 +11,7 @@ import {
   parsePriority,
 } from "./task-store.js";
 import type { CreateOptions, ITaskClient, Issue, UpdateOptions } from "./task-client.js";
+import type { NativeTaskStatus } from "../orchestrator/types.js";
 
 const COMPACT_TASK_ID_SUFFIX_HEX_LENGTH = 5;
 
@@ -260,7 +261,7 @@ export class NativeTaskClient implements ITaskClient {
           ? "in-progress"
           : opts.status === "in_progress"
             ? "in-progress"
-            : opts.status;
+            : (opts.status as NativeTaskStatus | undefined);
 
       taskStore.update(id, {
         ...(opts.title !== undefined ? { title: opts.title } : {}),
