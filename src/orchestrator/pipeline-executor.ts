@@ -1072,6 +1072,7 @@ async function runPhaseSequence(
 
     progress.currentPhase = phaseName;
     await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
+    await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
 
     // 1. Skip if artifact already exists (resume from crash)
     // Interpolate {task.*} placeholders so skipIfArtifact can use

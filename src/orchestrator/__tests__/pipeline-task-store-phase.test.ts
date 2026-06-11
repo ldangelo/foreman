@@ -3,8 +3,8 @@
  * at each phase transition.
  *
  * Verifies:
- *  1. ctx.onTaskPhaseChange?.(config.taskId, phaseName) is called after
- *     each successful phase completion.
+ *  1. ctx.onTaskPhaseChange?.(config.taskId, phaseName) is called at phase
+ *     start so native task rows show the active phase immediately.
  *  2. When ctx.onTaskPhaseChange is absent, no errors are thrown (no-op).
  *  3. When config.taskId is null, the callback still remains non-fatal.
  *  4. WorkerConfig includes optional taskId field.
@@ -155,7 +155,7 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
     delete process.env["FOREMAN_HOME"];
   });
 
-  it("calls onTaskPhaseChange for each successfully completed phase", async () => {
+  it("calls onTaskPhaseChange at phase start and successful completion", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
 
     const onTaskPhaseChange = vi.fn();
@@ -215,9 +215,11 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       promptOpts: { projectRoot: tmpDir, workflow: "default" },
     });
 
-    expect(onTaskPhaseChange).toHaveBeenCalledTimes(2);
-    expect(onTaskPhaseChange).toHaveBeenCalledWith("task-native-001", "explorer");
-    expect(onTaskPhaseChange).toHaveBeenCalledWith("task-native-001", "developer");
+    expect(onTaskPhaseChange).toHaveBeenCalledTimes(4);
+    expect(onTaskPhaseChange).toHaveBeenNthCalledWith(1, "task-native-001", "explorer");
+    expect(onTaskPhaseChange).toHaveBeenNthCalledWith(2, "task-native-001", "explorer");
+    expect(onTaskPhaseChange).toHaveBeenNthCalledWith(3, "task-native-001", "developer");
+    expect(onTaskPhaseChange).toHaveBeenNthCalledWith(4, "task-native-001", "developer");
   });
 
   it("keeps successful phase completion non-fatal when the native task update callback swallows its own failure", async () => {
@@ -1101,7 +1103,7 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
     ).resolves.not.toThrow();
   });
 
-  it("does NOT call onTaskPhaseChange for a failed phase (only successful phases)", async () => {
+  it("calls onTaskPhaseChange for a failed phase start but not completion", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
 
     const onTaskPhaseChange = vi.fn();
@@ -1153,7 +1155,8 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       promptOpts: { projectRoot: tmpDir, workflow: "default" },
     });
 
-    expect(onTaskPhaseChange).not.toHaveBeenCalled();
+    expect(onTaskPhaseChange).toHaveBeenCalledTimes(1);
+    expect(onTaskPhaseChange).toHaveBeenCalledWith("task-abc", "developer");
   });
 
   it("passes projectPath before notifyClient when marking a phase stuck", async () => {
