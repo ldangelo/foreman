@@ -53,7 +53,6 @@ describe("full-run test runtime e2e", () => {
   afterEach(() => {
     process.chdir(originalCwd);
     delete process.env.FOREMAN_RUNTIME_MODE;
-    delete process.env.FOREMAN_TASK_STORE;
     delete process.env.FOREMAN_PHASE_RUNNER_MODULE;
     delete process.env.FOREMAN_REGISTRY_BASE_DIR;
     if (tempHome) {
@@ -71,7 +70,6 @@ describe("full-run test runtime e2e", () => {
     const harness = await createTempProjectHarness();
     try {
       process.env.FOREMAN_RUNTIME_MODE = "test";
-      process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
       const taskId = await harness.seedTask({

@@ -5,9 +5,9 @@
  * - createMergeTaskClient forwards to createTaskClient with the correct project path
  * - createMergeTaskClient forwards the registered project id when provided
  *
- * Note: The FOREMAN_TASK_STORE env var is no longer used for backend selection.
- * The native task store is the only supported backend (TRD-024). The env var
- * stub in these tests is a no-op that documents the historical interface.
+ * Note: The FOREMAN_TASK_STORE env var is not read by createTaskClient.
+ * The native task store is the only supported backend (TRD-024) — this is
+ * verified by the tests below without needing env stubs.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -103,14 +103,13 @@ vi.mock("../../orchestrator/merge-cost-tracker.js", () => ({
 // ── Module under test ──────────────────────────────────────────────────────
 import { createMergeTaskClient } from "../commands/merge.js";
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
 
 const PROJECT_PATH = "/mock/project";
 
-describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
+describe("TRD-017: createMergeTaskClient forwards to createTaskClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("FOREMAN_TASK_STORE", "beads");
     mockHasNativeTasks.mockReturnValue(false);
     MockForemanStore.mockImplementation(function MockForemanStoreImpl(this: Record<string, unknown>) {
       this.hasNativeTasks = mockHasNativeTasks;
@@ -147,5 +146,4 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
       });
     });
   });
-
 });

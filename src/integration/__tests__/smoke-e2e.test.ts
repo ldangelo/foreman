@@ -69,7 +69,6 @@ describe("deterministic smoke e2e", () => {
   afterEach(() => {
     process.chdir(originalCwd);
     delete process.env.FOREMAN_RUNTIME_MODE;
-    delete process.env.FOREMAN_TASK_STORE;
     delete process.env.FOREMAN_PHASE_RUNNER_MODULE;
     delete process.env.FOREMAN_REGISTRY_BASE_DIR;
     if (tempHome) {
@@ -87,7 +86,6 @@ describe("deterministic smoke e2e", () => {
     const harness = await createTempProjectHarness();
     try {
       process.env.FOREMAN_RUNTIME_MODE = "test";
-      process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
       const taskId = await harness.seedTask({
@@ -125,7 +123,6 @@ describe("deterministic smoke e2e", () => {
     const harness = await createTempProjectHarness();
     try {
       process.env.FOREMAN_RUNTIME_MODE = "test";
-      process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
       const taskA = await harness.seedTask({

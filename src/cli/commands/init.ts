@@ -45,16 +45,17 @@ export interface InitBackendOpts {
 /**
  * Initialize the task-tracking backend for the given project directory.
  *
- * TRD-024: sd backend removed. Always uses the br (beads_rust) backend.
- *   - Skips sd installation check and sd init entirely.
- *   - Runs `br init` if .beads/ does not already exist.
+ * TRD-024: Native Postgres task store is the only supported backend.
+ * Foreman no longer uses beads (br) for task tracking — it writes directly
+ * to the native Postgres store. The .beads/ directory is initialized here for
+ * backwards compatibility (operators may still use br directly outside foreman).
  *
  * Exported for unit testing.
  */
 export async function initBackend(opts: InitBackendOpts): Promise<void> {
   const { projectDir, execSync = execFileSync, checkExists = existsSync } = opts;
 
-  // br backend: initialize .beads if needed
+  // Initialize .beads/ for backwards compatibility (br may be used outside foreman)
   const brPath = join(homedir(), ".local", "bin", "br");
 
   if (!checkExists(join(projectDir, ".beads"))) {

@@ -295,7 +295,7 @@ sentinelCommand
           console.log(chalk.yellow("  Warning: Jira configured but could not connect. Falling back to task backend."));
         }
       } else {
-        console.log(chalk.dim("  Issue tracker: task backend (beads/github)"));
+        console.log(chalk.dim("  Issue tracker: native task store / Jira"));
       }
       const intervalMinutes = parseInt(opts.interval as string, 10);
       const failureThreshold = parseInt(opts.failureThreshold as string, 10);

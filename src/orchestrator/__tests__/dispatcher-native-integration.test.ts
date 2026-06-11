@@ -157,8 +157,6 @@ function makeMockStore(opts: {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
-    getBeadWriteQueue: vi.fn().mockReturnValue([]),
-    markBeadWriteProcessed: vi.fn(),
   } as unknown as ForemanStore;
 }
 
@@ -274,7 +272,7 @@ describe("Dispatcher — native task store is the sole seed source (characteriza
   });
 });
 
-// ── Characterization: atomic claim transaction ───────────────────────────
+// ── Characterization: atomic claim transaction ────────────────────────────
 
 /**
  * Characterization: the dispatcher uses an atomic claim transaction against the
@@ -313,8 +311,6 @@ describe("Dispatcher — atomic claim against native task store (characterizatio
       updateRun: vi.fn(),
       logEvent: vi.fn(),
       sendMessage: vi.fn(),
-      getBeadWriteQueue: vi.fn().mockReturnValue([]),
-      markBeadWriteProcessed: vi.fn(),
     } as unknown as ForemanStore;
   }
 
