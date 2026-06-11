@@ -684,7 +684,8 @@ async function main(): Promise<void> {
     await waitForProgressFlush();
     await writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log);
     const reason = err instanceof Error ? err.message : String(err);
-    const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+    const reasonLower = reason.toLowerCase();
+    const isRateLimit = reasonLower.includes("hit your limit") || reasonLower.includes("rate limit");
 
     const now = new Date().toISOString();
     const catchStatus = isRateLimit ? "stuck" : "failed";
@@ -900,7 +901,8 @@ async function runPhase(
     }
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
-    const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+    const reasonLower = reason.toLowerCase();
+    const isRateLimit = reasonLower.includes("hit your limit") || reasonLower.includes("rate limit");
     log(`[${role.toUpperCase()}] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
     await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] ERROR: ${reason}\n`);
     return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: reason };
@@ -2140,7 +2142,8 @@ async function markStuck(
   notifyClient?: NotificationClient,
   registeredReadStore?: PostgresStore,
 ): Promise<void> {
-  const isRateLimit = reason.includes("hit your limit") || reason.includes("rate limit");
+  const reasonLower = reason.toLowerCase();
+  const isRateLimit = reasonLower.includes("hit your limit") || reasonLower.includes("rate limit");
   const now = new Date().toISOString();
   const stuckStatus = isRateLimit ? "stuck" : "failed";
   await writeMarkStuckProgress(localStore, registeredReadStore, runId, progress, log);

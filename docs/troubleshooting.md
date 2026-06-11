@@ -33,7 +33,7 @@ foreman inbox --bead <bead-id>    # Check for error mail
 
 **Common causes and fixes:**
 
-1. **Rate limited** — The AI provider throttled requests.
+1. **Rate limited** — The AI provider or CodeRabbit CLI throttled requests. Foreman retries CodeRabbit CLI rate limits with short backoff and then marks the run retryable instead of looping back through developer/QA.
    ```bash
    # Wait for rate limit to reset, or stop and retry later
    foreman stop <bead-id>

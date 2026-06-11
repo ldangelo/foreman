@@ -92,6 +92,41 @@ describe("runCodeRabbitCliReview", () => {
     expect(readFileSync(result.reportPath, "utf8")).toContain("src/bar.ts [major]");
   });
 
+  it("retries CodeRabbit CLI rate limits before passing", async () => {
+    let reviewAttempts = 0;
+    const log = vi.fn();
+    setExecFileHandler((_file, args) => {
+      if (args[0] === "--version") return { stdout: "1.2.3\n" };
+      reviewAttempts += 1;
+      if (reviewAttempts === 1) {
+        const error = new Error("Rate limit exceeded");
+        return {
+          error,
+          stdout: JSON.stringify({ type: "error", message: "Rate limit exceeded" }) + "\n",
+        };
+      }
+      return {
+        stdout: [
+          JSON.stringify({ type: "complete", status: "review_complete" }),
+          "",
+        ].join("\n"),
+      };
+    });
+
+    const result = await runCodeRabbitCliReview({
+      worktreePath,
+      baseBranch: "main",
+      reportDir: "reports/task-rate-limit",
+      log,
+      rateLimitRetries: 1,
+      rateLimitRetryDelaysMs: [0],
+    });
+
+    expect(result.status).toBe("passed");
+    expect(reviewAttempts).toBe(2);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("CodeRabbit rate limited"));
+  });
+
   it("skips cleanly when the binary is unavailable", async () => {
     setExecFileHandler((_file, args) => {
       if (args[0] === "--version") {

@@ -100,6 +100,18 @@ function findLastEvent(events: CodeRabbitCliEvent[], type: string): CodeRabbitCl
   return undefined;
 }
 
+function isRateLimitText(text: string | undefined): boolean {
+  if (!text) return false;
+  const normalized = text.toLowerCase();
+  return normalized.includes("rate limit")
+    || normalized.includes("too many requests")
+    || normalized.includes("rate_limit_exceeded")
+    || normalized.includes("429");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function classifyFindings(events: CodeRabbitCliEvent[]): { blocking: CodeRabbitCliFinding[]; nonBlocking: CodeRabbitCliFinding[] } {
   const blocking: CodeRabbitCliFinding[] = [];
@@ -216,6 +228,10 @@ export async function runCodeRabbitCliReview(args: {
   baseBranch: string;
   reportDir: string;
   log: (msg: string) => void;
+  /** Number of CodeRabbit review retries for transient rate limits. Defaults to 3. */
+  rateLimitRetries?: number;
+  /** Backoff delays between rate-limit retries. Defaults to 30s, 60s, 120s. */
+  rateLimitRetryDelaysMs?: number[];
 }): Promise<CodeRabbitCliResult> {
   const reviewArgs = ["review", "--agent", "--type", "uncommitted", "--base", args.baseBranch, "--dir", args.worktreePath];
   const command = `coderabbit ${reviewArgs.join(" ")}`;
@@ -241,20 +257,31 @@ export async function runCodeRabbitCliReview(args: {
   }
 
   if (!eventError) {
-    try {
-      const result = await execFileText("coderabbit", reviewArgs, {
-        cwd: args.worktreePath,
-        encoding: "utf8",
-        maxBuffer: MAX_BUFFER,
-      });
-      rawOutput = result.stdout;
-      stderr = result.stderr;
-    } catch (error: unknown) {
-      rawOutput = typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : "";
-      stderr = typeof (error as { stderr?: unknown }).stderr === "string" ? (error as { stderr: string }).stderr : "";
-      const text = [rawOutput, stderr, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n");
-      eventError = error instanceof Error ? error.message : String(error);
-      status = isAuthenticationIssue(text) ? "skipped" : "failed";
+    const maxRateLimitRetries = args.rateLimitRetries ?? 3;
+    const rateLimitRetryDelaysMs = args.rateLimitRetryDelaysMs ?? [30_000, 60_000, 120_000];
+    for (let attempt = 0; attempt <= maxRateLimitRetries; attempt++) {
+      try {
+        const result = await execFileText("coderabbit", reviewArgs, {
+          cwd: args.worktreePath,
+          encoding: "utf8",
+          maxBuffer: MAX_BUFFER,
+        });
+        rawOutput = result.stdout;
+        stderr = result.stderr;
+        eventError = undefined;
+        status = "passed";
+        break;
+      } catch (error: unknown) {
+        rawOutput = typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : "";
+        stderr = typeof (error as { stderr?: unknown }).stderr === "string" ? (error as { stderr: string }).stderr : "";
+        const text = [rawOutput, stderr, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n");
+        eventError = error instanceof Error ? error.message : String(error);
+        status = isAuthenticationIssue(text) ? "skipped" : "failed";
+        if (status === "skipped" || !isRateLimitText(text) || attempt >= maxRateLimitRetries) break;
+        const delayMs = rateLimitRetryDelaysMs[Math.min(attempt, rateLimitRetryDelaysMs.length - 1)] ?? 30_000;
+        args.log(`[CLI-REVIEW] CodeRabbit rate limited; retrying in ${Math.round(delayMs / 1000)}s (retry ${attempt + 1}/${maxRateLimitRetries})`);
+        await sleep(delayMs);
+      }
     }
   }
 

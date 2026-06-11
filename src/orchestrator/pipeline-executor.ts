@@ -1349,6 +1349,15 @@ async function runPhaseSequence(
         ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
         await appendFile(logFile, `\n[PIPELINE] ${phaseName} FAIL: ${errorMsg}\n`);
 
+        if (isRateLimitError(errorMsg)) {
+          ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+            seedId, phase: phaseName, error: errorMsg, retryable: true,
+          });
+          await writeTaskPhaseNote(phaseName, "failure", `${phaseName} rate limited: ${errorMsg}`, { retryable: true });
+          await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        }
+
         if (phase.retryWith) {
           const retryTarget = phase.retryWith;
           const maxRetries = phase.retryOnFail ?? 0;
@@ -1449,6 +1458,15 @@ async function runPhaseSequence(
         const errorMsg = result.error ?? `${phaseName} failed`;
         ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
         await appendFile(logFile, `\n[PIPELINE] ${phaseName} FAIL: ${errorMsg}\n`);
+
+        if (isRateLimitError(errorMsg)) {
+          ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+            seedId, phase: phaseName, error: errorMsg, retryable: true,
+          });
+          await writeTaskPhaseNote(phaseName, "failure", `${phaseName} rate limited: ${errorMsg}`, { retryable: true });
+          await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        }
 
         if (phase.retryWith) {
           const retryTarget = phase.retryWith;
