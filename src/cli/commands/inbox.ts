@@ -779,12 +779,13 @@ export async function resolveDaemonInboxContext(projectPath: string, projectSele
 async function resolveDaemonRunId(
   client: ReturnType<typeof createTrpcClient>,
   projectId: string,
-  options: { run?: string; bead?: string },
+  options: { run?: string; task?: string; bead?: string },
 ): Promise<string | null> {
   if (options.run) return options.run;
   const runs = await client.runs.list({ projectId, limit: 100 }) as DaemonRunRow[];
-  if (options.bead) {
-    const match = runs.find((run) => run.bead_id === options.bead);
+  const taskFilter = options.task ?? options.bead;
+  if (taskFilter) {
+    const match = runs.find((run) => run.bead_id === taskFilter);
     return match?.id ?? null;
   }
   return runs[0]?.id ?? null;
@@ -890,8 +891,9 @@ export const inboxCommand = new Command("inbox")
   .description("View the Postgres message inbox for agents in a pipeline run")
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
   .option("--run <id>", "Filter to a specific run ID (default: latest run)")
-  .option("--bead <id>", "Resolve run by bead ID (uses most recent run for that bead)")
-  .option("--all", "Watch messages across all runs (ignores --run and --bead)")
+  .option("--task <id>", "Resolve run by task ID (uses most recent run for that task)")
+  .option("--bead <id>", "Alias for --task (backward compatibility)")
+  .option("--all", "Watch messages across all runs (ignores --run and --task)")
   .option("--watch", "Poll every 2s for new messages (shows only new ones)")
   .option("--unread", "Show only unread messages")
   .option("--limit <n>", "Max messages to show", "50")
@@ -904,6 +906,7 @@ export const inboxCommand = new Command("inbox")
   .action(async (options: {
     agent?: string;
     run?: string;
+    task?: string;
     bead?: string;
     all?: boolean;
     watch?: boolean;
@@ -920,6 +923,7 @@ export const inboxCommand = new Command("inbox")
     const limit = parseInt(options.limit ?? "50", 10);
     const eventsLimit = parseInt(options["events-limit"] ?? "50", 10);
     const showEvents = options.events ?? false;
+    const taskFilter = options.task ?? options.bead;
 
     // Require --project or --all in multi-project mode
     await requireProjectOrAllInMultiMode(options.project, options.all ?? false);
@@ -1069,9 +1073,9 @@ export const inboxCommand = new Command("inbox")
       }
 
       const runId = daemon
-        ? await resolveDaemonRunId(daemon.client, daemon.projectId, { run: options.run, bead: options.bead })
+        ? await resolveDaemonRunId(daemon.client, daemon.projectId, { run: options.run, task: options.task, bead: options.bead })
         : options.run
-          ?? (options.bead ? resolveRunIdBySeed(store!, options.bead) : null)
+          ?? (taskFilter ? resolveRunIdBySeed(store!, taskFilter) : null)
           ?? resolveLatestRunId(store!);
       if (!runId) {
         console.error("No runs found. Start a pipeline first with `foreman run`.");

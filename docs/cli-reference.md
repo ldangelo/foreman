@@ -42,7 +42,7 @@ Dispatch ready tasks to AI agents. Runs in a continuous loop by default — disp
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
 foreman run --project my-project   # Dispatch against a registered project without cd
-foreman run --bead bd-abc1        # Dispatch a specific task/bead ID
+foreman run --task bd-abc1        # Dispatch a specific task by ID
 foreman run --dry-run             # Preview what would be dispatched
 foreman run --max-agents 3        # Limit concurrent agents to 3
 foreman run --resume              # Resume stuck/rate-limited runs
@@ -56,7 +56,8 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--bead <id>` | — | Dispatch only this specific task/bead ID (must be ready) |
+| `--task <id>` | — | Dispatch only this specific task ID (must be ready) |
+| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--max-agents <n>` | `5` | Maximum concurrent agents |
 | `--model <model>` | — | Force a specific model for all phases |
 | `--dry-run` | — | Show what would be dispatched without doing it |
@@ -223,7 +224,7 @@ foreman board --limit 10
 
 ### `foreman debug`
 
-AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress) for a bead and sends them to an AI model for deep-dive diagnostics.
+AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress) for a task and sends them to an AI model for deep-dive diagnostics.
 
 ```bash
 foreman debug bd-abc1             # Full AI analysis with Opus
@@ -269,7 +270,7 @@ Reset failed or stuck runs. Cleans up worktrees, deletes branches, and resets ta
 ```bash
 foreman reset                     # Reset all failed/stuck runs
 foreman reset --project my-project # Reset runs in a registered project without cd
-foreman reset --bead bd-abc1      # Reset a specific task/bead
+foreman reset --task bd-abc1      # Reset a specific task by ID
 foreman reset --all               # Reset ALL active runs (nuclear option)
 foreman reset --detect-stuck      # Find and reset stuck agents
 foreman reset --dry-run           # Preview what would be reset
@@ -277,7 +278,8 @@ foreman reset --dry-run           # Preview what would be reset
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--bead <id>` | — | Reset a specific task/bead's runs |
+| `--task <id>` | — | Reset a specific task's runs |
+| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--all` | — | Reset ALL active runs |
 | `--detect-stuck` | — | Run stuck detection first |
 | `--timeout <minutes>` | `15` | Stuck detection timeout |
@@ -286,10 +288,10 @@ foreman reset --dry-run           # Preview what would be reset
 
 ### `foreman retry`
 
-Reset a bead and optionally re-dispatch it immediately.
+Reset a task and optionally re-dispatch it immediately.
 
 ```bash
-foreman retry bd-abc1             # Reset bead to open
+foreman retry bd-abc1             # Reset task to ready
 foreman retry bd-abc1 --project my-project  # Retry inside a registered project without cd
 foreman retry bd-abc1 --dispatch  # Reset and dispatch immediately
 foreman retry bd-abc1 --model anthropic/claude-opus-4-6  # Override model
@@ -309,7 +311,7 @@ Gracefully stop running agents.
 
 ```bash
 foreman stop                      # Stop all running agents
-foreman stop bd-abc1              # Stop a specific task/bead's agent
+foreman stop bd-abc1              # Stop a specific task's agent
 foreman stop --list               # List active runs
 foreman stop --force              # Force kill with SIGKILL
 foreman stop --dry-run            # Preview
@@ -331,7 +333,7 @@ Merge completed agent work into the target branch via the refinery.
 
 ```bash
 foreman merge                     # Process merge queue
-foreman merge --bead bd-abc1      # Merge a specific task/bead
+foreman merge --task bd-abc1      # Merge a specific task by ID
 foreman merge --list              # List tasks ready to merge
 foreman merge --dry-run           # Preview merge operations
 foreman merge --target-branch dev # Merge into dev instead of main
@@ -345,7 +347,8 @@ foreman merge --stats weekly      # Weekly cost breakdown
 | `--target-branch <branch>` | auto-detected | Branch to merge into |
 | `--no-tests` | — | Skip running tests during merge |
 | `--test-command <cmd>` | `npm test` | Test command to run |
-| `--bead <id>` | — | Merge a single task/bead |
+| `--task <id>` | — | Merge a single task by ID |
+| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--list` | — | List tasks ready to merge |
 | `--dry-run` | — | Preview merge operations |
 | `--resolve <runId>` | — | Resolve a merge conflict |
@@ -379,7 +382,7 @@ View the Agent Mail inbox — messages sent between pipeline phases and the fore
 
 ```bash
 foreman inbox                     # Show latest run's messages
-foreman inbox --bead bd-abc1      # Messages for a specific task/bead
+foreman inbox --task bd-abc1      # Messages for a specific task by ID
 foreman inbox --all --watch       # Live stream ALL messages across all runs
 foreman inbox --watch             # Live stream latest run's messages
 foreman inbox --unread            # Show only unread messages
@@ -391,7 +394,8 @@ foreman inbox --ack               # Mark shown messages as read
 |--------|---------|-------------|
 | `--agent <name>` | all | Filter to specific agent/role |
 | `--run <id>` | latest | Filter to specific run ID |
-| `--bead <id>` | — | Resolve run by task/bead ID |
+| `--task <id>` | — | Resolve run by task ID |
+| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--all` | — | Show/watch messages across all runs |
 | `--watch` | — | Poll every 2 seconds for new messages |
 | `--unread` | — | Show only unread messages |
@@ -479,7 +483,7 @@ Create compatibility beads from natural language descriptions using AI parsing.
 foreman bead "Fix the login timeout bug"
 foreman bead "Add dark mode support" --type feature --priority P1
 foreman bead docs/issue.md        # From a file
-foreman bead "..." --parent bd-abc1  # Set parent task/bead
+foreman bead "..." --parent bd-abc1  # Set parent task ID
 foreman bead "..." --dry-run      # Preview
 foreman bead "..." --no-llm       # Skip AI parsing (manual fields required)
 ```
@@ -488,7 +492,7 @@ foreman bead "..." --no-llm       # Skip AI parsing (manual fields required)
 |--------|---------|-------------|
 | `--type <type>` | auto-detected | Force type: `task`, `bug`, `feature`, `epic`, `chore`, `decision` |
 | `--priority <priority>` | auto-detected | Force priority: `P0`–`P4` |
-| `--parent <id>` | — | Parent task/bead ID |
+| `--parent <id>` | — | Parent task ID |
 | `--dry-run` | — | Preview without creating |
 | `--no-llm` | — | Skip LLM parsing |
 | `--model <model>` | — | Claude model for AI parsing |
@@ -503,7 +507,7 @@ Attach to a running or completed agent session to inspect its state.
 
 ```bash
 foreman attach                    # Attach to latest session
-foreman attach bd-abc1            # Attach to a specific task/bead
+foreman attach bd-abc1            # Attach to a specific task by ID
 foreman attach --list             # List attachable sessions
 foreman attach --follow           # Tail the agent log file
 foreman attach --stream           # Stream Agent Mail messages
@@ -556,7 +560,7 @@ foreman worktree clean --dry-run  # Preview removal
 
 ### `foreman purge-zombie-runs`
 
-Remove failed run records for tasks/beads that are already closed or no longer exist. Reduces database clutter.
+Remove failed run records for tasks that are already closed or no longer exist. Reduces database clutter.
 
 ```bash
 foreman purge-zombie-runs         # Clean up zombie records

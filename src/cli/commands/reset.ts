@@ -668,7 +668,8 @@ export async function resetSeedToOpen(
 
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, and reset tasks to a retryable status")
-  .option("--bead <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
+  .option("--task <id>", "Reset a specific task by ID (clears all runs for that task, including stale pending ones)")
+  .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
   .option(
@@ -683,7 +684,7 @@ export const resetCommand = new Command("reset")
     const dryRun = opts.dryRun as boolean | undefined;
     const all = opts.all as boolean | undefined;
     const detectStuck = opts.detectStuck as boolean | undefined;
-    const beadFilter = opts.bead as string | undefined;
+    const beadFilter = (opts.task ?? opts.bead) as string | undefined;
     const timeoutMinutes = parseInt(opts.timeout as string, 10);
 
     if (isNaN(timeoutMinutes)) {

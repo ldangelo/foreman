@@ -63,7 +63,7 @@ export interface RunFactory {
   createRun(args: {
     runId: string;
     projectId: string;
-    seedId: string;
+    taskId: string;
     agentType: string;
     branchName: string;
     worktreePath: string | null;
@@ -109,7 +109,7 @@ export interface RunWriteModel extends RunCommands, ProgressCommands, MessagingC
   createRun(args: {
     runId: string;
     projectId: string;
-    seedId: string;
+    taskId: string;
     agentType: string;
     branchName: string;
     worktreePath: string | null;
