@@ -89,8 +89,12 @@ export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
  *   merged / pr-created            → closed
  *   conflict / test-failed         → blocked
  *   failed                         → failed
- *   stuck                          → open
- *   reset                          → open
+ *   stuck                          → ready (agent pipeline stuck, safe to retry)
+ *   reset                          → ready  (safe default: makes task visible again)
+ *
+ * NOTE: "open" is NOT a valid NativeTaskStatus — it exists only in the legacy br
+ * seed backend. For native tasks, "ready" is the correct status for tasks that
+ * should be picked up for retry.
  */
 export function mapRunStatusToNativeTaskStatus(runStatus: RunStatus): NativeTaskStatus {
   switch (runStatus) {
@@ -100,7 +104,7 @@ export function mapRunStatusToNativeTaskStatus(runStatus: RunStatus): NativeTask
     case "completed":
       return "review";
     case "stuck":
-      return "open" as NativeTaskStatus;
+      return "ready";
     case "merged":
     case "pr-created":
       return "closed";
@@ -110,6 +114,6 @@ export function mapRunStatusToNativeTaskStatus(runStatus: RunStatus): NativeTask
     case "failed":
       return "failed";
     case "reset":
-      return "open" as NativeTaskStatus;
+      return "ready";
   }
 }

@@ -59,8 +59,8 @@ describe("mapRunStatusToNativeTaskStatus", () => {
   it("maps failed to failed", () => {
     expect(mapRunStatusToNativeTaskStatus("failed")).toBe("failed");
   });
-  it("maps stuck to open", () => {
-    expect(mapRunStatusToNativeTaskStatus("stuck")).toBe("open");
+  it("maps stuck to ready — agent pipeline stuck, safe to retry", () => {
+    expect(mapRunStatusToNativeTaskStatus("stuck")).toBe("ready");
   });
   it("maps conflict to blocked", () => {
     expect(mapRunStatusToNativeTaskStatus("conflict")).toBe("blocked");
@@ -68,8 +68,8 @@ describe("mapRunStatusToNativeTaskStatus", () => {
   it("maps test-failed to blocked", () => {
     expect(mapRunStatusToNativeTaskStatus("test-failed")).toBe("blocked");
   });
-  it("maps reset to open", () => {
-    expect(mapRunStatusToNativeTaskStatus("reset")).toBe("open");
+  it("maps reset to ready — safe to retry", () => {
+    expect(mapRunStatusToNativeTaskStatus("reset")).toBe("ready");
   });
   it("pending does NOT map to in_progress (underscore) — native tasks use hyphen", () => {
     expect(mapRunStatusToNativeTaskStatus("pending")).not.toBe("in_progress");

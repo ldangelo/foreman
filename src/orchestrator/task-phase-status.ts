@@ -1,4 +1,6 @@
-const DIRECT_NATIVE_PHASE_STATUSES = new Set([
+import type { NativeTaskStatus } from "./types.js";
+
+const DIRECT_NATIVE_PHASE_STATUSES = new Set<NativeTaskStatus>([
   "explorer",
   "developer",
   "qa",
@@ -14,8 +16,8 @@ const DIRECT_NATIVE_PHASE_STATUSES = new Set([
  * null means the task status should be left unchanged; task notes/run progress
  * still provide phase-level detail.
  */
-export function nativeTaskStatusForPhase(phaseName: string): string | null {
-  if (DIRECT_NATIVE_PHASE_STATUSES.has(phaseName)) return phaseName;
+export function nativeTaskStatusForPhase(phaseName: string): NativeTaskStatus | null {
+  if (DIRECT_NATIVE_PHASE_STATUSES.has(phaseName as NativeTaskStatus)) return phaseName as NativeTaskStatus;
 
   switch (phaseName) {
     case "fix":
