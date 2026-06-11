@@ -279,7 +279,7 @@ sentinelCommand
       let seeds = await createSentinelTaskClient(projectPath);
       const { loadProjectConfig } = await import("../../lib/project-config.js");
       const projectConfig = loadProjectConfig(projectPath);
-      if (projectConfig?.issueTracker?.jira) {
+      if (projectConfig?.issueTracker?.backend === "jira") {
         const jiraConfig = projectConfig.issueTracker.jira;
         const { createJiraTaskClientFromConfig, JiraTaskClient } = await import("../../daemon/jira-task-client.js");
         const jiraClient = await createJiraTaskClientFromConfig({
@@ -294,8 +294,10 @@ sentinelCommand
         } else {
           console.log(chalk.yellow("  Warning: Jira configured but could not connect. Falling back to task backend."));
         }
+      } else if (projectConfig?.issueTracker?.backend === "github") {
+        console.log(chalk.dim("  Issue tracker: GitHub (issue sync enabled)"));
       } else {
-        console.log(chalk.dim("  Issue tracker: native task store / Jira"));
+        console.log(chalk.dim("  Issue tracker: native task store / beads"));
       }
       const intervalMinutes = parseInt(opts.interval as string, 10);
       const failureThreshold = parseInt(opts.failureThreshold as string, 10);

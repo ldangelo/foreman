@@ -38,6 +38,8 @@ interface InitProjectStore {
 export interface InitBackendOpts {
   /** Directory containing the project (.seeds / .beads live here). */
   projectDir: string;
+  /** The issue tracker selected in the wizard (beads/jira/github). */
+  issueTracker: "beads" | "jira" | "github";
   execSync?: typeof execFileSync;
   checkExists?: (path: string) => boolean;
 }
@@ -50,12 +52,21 @@ export interface InitBackendOpts {
  * to the native Postgres store. The .beads/ directory is initialized here for
  * backwards compatibility (operators may still use br directly outside foreman).
  *
+ * br init is only run when the user selected "beads" as their issue tracker.
+ * For jira/github, beads is not used and initialization is skipped.
+ *
  * Exported for unit testing.
  */
 export async function initBackend(opts: InitBackendOpts): Promise<void> {
-  const { projectDir, execSync = execFileSync, checkExists = existsSync } = opts;
+  const { projectDir, issueTracker, execSync = execFileSync, checkExists = existsSync } = opts;
 
-  // Initialize .beads/ for backwards compatibility (br may be used outside foreman)
+  // Initialize .beads/ for backwards compatibility only when beads is the issue tracker
+  // For jira/github, foreman writes directly to Postgres — no beads needed
+  if (issueTracker !== "beads") {
+    console.log(chalk.dim(`Skipping beads init (${issueTracker} tracker selected)`));
+    return;
+  }
+
   const brPath = join(homedir(), ".local", "bin", "br");
 
   if (!checkExists(join(projectDir, ".beads"))) {
@@ -120,11 +131,20 @@ export interface JiraWizardConfig {
   startStatus: string[];
 }
 
+export interface GitHubWizardConfig {
+  apiUrl: string;
+  token: string;
+  owner: string;
+  repo: string;
+  triggerLabels: string[];
+}
+
 export interface InitWizardAnswers {
   vcsBackend: "git" | "jujutsu" | "auto";
   workflowTemplate: string;
-  issueTracker: "beads" | "jira";
+  issueTracker: "beads" | "jira" | "github";
   jira?: JiraWizardConfig;
+  github?: GitHubWizardConfig;
 }
 
 export function buildInitWizardConfig(answers: InitWizardAnswers): string {
@@ -143,6 +163,11 @@ export function buildInitWizardConfig(answers: InitWizardAnswers): string {
   // Add issue tracker configuration if jira is selected
   if (answers.issueTracker === "jira" && answers.jira) {
     lines.push("issueTracker:", "  backend: jira", "  jira:", `    apiUrl: ${answers.jira.apiUrl}`, `    email: ${answers.jira.email}`, `    apiToken: ${answers.jira.apiToken}`, "    projects:", "      - key: " + answers.jira.projectKey.toUpperCase(), "        startStatus:", ...answers.jira.startStatus.map((s) => "          - " + s), "        issueTypeWorkflowMap:", "          bug: bug", "          task: task", "          feature: feature");
+  }
+
+  // Add issue tracker configuration if github is selected
+  if (answers.issueTracker === "github" && answers.github) {
+    lines.push("issueTracker:", "  backend: github", "  github:", `    apiUrl: ${answers.github.apiUrl}`, `    token: ${answers.github.token}`, "    repositories:", "      - owner: " + answers.github.owner, "        repo: " + answers.github.repo, "        triggerLabels:", ...answers.github.triggerLabels.map((l) => "          - " + l));
   }
 
   return lines.join("\n");
@@ -169,6 +194,17 @@ async function promptJiraAuth(rl: ReturnType<typeof createInterface>): Promise<J
   return { apiUrl, email, apiToken, projectKey, startStatus };
 }
 
+async function promptGitHubAuth(rl: ReturnType<typeof createInterface>): Promise<GitHubWizardConfig> {
+  const apiUrl = await promptText(rl, "  GitHub API URL (e.g. https://api.github.com for GitHub.com)", "https://api.github.com");
+  const token = await rl.question("  GitHub personal access token (will be encrypted): ");
+  const owner = await promptText(rl, "  Repository owner (user or org)", "");
+  const repo = await promptText(rl, "  Repository name", "");
+  const triggerLabelsStr = await promptText(rl, "  Trigger labels (comma-separated, e.g. foreman,fixme)", "foreman");
+  const triggerLabels = triggerLabelsStr.split(",").map((s) => s.trim()).filter((s) => s);
+
+  return { apiUrl, token, owner, repo, triggerLabels };
+}
+
 async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
   const rl = createInterface({ input, output });
   try {
@@ -178,7 +214,7 @@ async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
     const workflowChoices = [...BUNDLED_WORKFLOW_NAMES] as const;
     const workflowTemplate = await promptChoice(rl, "Workflow template", workflowChoices, "default");
 
-    const issueTracker = await promptChoice(rl, "Issue tracker", ["beads", "jira"] as const, "beads");
+    const issueTracker = await promptChoice(rl, "Issue tracker", ["beads", "jira", "github"] as const, "beads");
 
     let jira: JiraWizardConfig | undefined;
     if (issueTracker === "jira") {
@@ -200,11 +236,32 @@ async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
       }
     }
 
+    let github: GitHubWizardConfig | undefined;
+    if (issueTracker === "github") {
+      console.log(chalk.dim("\n  GitHub configuration:"));
+      github = await promptGitHubAuth(rl);
+      // Encrypt the token before storing
+      // Fail fast if FOREMAN_MASTER_KEY is not set — do not store plaintext github.token
+      try {
+        github.token = await encrypt(github.token);
+      } catch (err) {
+        const msg =
+          err instanceof Error && err.message.includes("FOREMAN_MASTER_KEY")
+            ? err.message
+            : `Failed to encrypt github.token via encrypt(). ` +
+              `Set FOREMAN_MASTER_KEY environment variable and re-run init. ` +
+              `Generate a key with: openssl rand -base64 32`;
+        console.error(chalk.red(`\n  Error: ${msg}`));
+        process.exit(1);
+      }
+    }
+
     const answers: InitWizardAnswers = {
       vcsBackend,
       workflowTemplate,
       issueTracker,
       jira,
+      github,
     };
 
     mkdirSync(join(projectDir, ".foreman"), { recursive: true });
@@ -265,6 +322,8 @@ export const initCommand = new Command("init")
       chalk.bold(`Initializing foreman project: ${chalk.cyan(projectName)}`),
     );
 
+    let issueTracker: "beads" | "jira" | "github" = "beads";
+
     if (wizard) {
       const answers = await runInitWizard(projectDir);
       console.log(chalk.dim(`  VCS: ${answers.vcsBackend}`));
@@ -274,10 +333,12 @@ export const initCommand = new Command("init")
         console.log(chalk.dim(`  Jira: ${answers.jira.email}@${answers.jira.apiUrl}`));
         console.log(chalk.dim(`  Jira project: ${answers.jira.projectKey}`));
       }
+      issueTracker = answers.issueTracker;
     }
 
     // Initialize the task-tracking backend
-    await initBackend({ projectDir });
+    // issueTracker comes from wizard answers (or defaults to "beads" if wizard skipped)
+    await initBackend({ projectDir, issueTracker });
 
     let store: PostgresStore | null = null;
     try {
