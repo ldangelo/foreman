@@ -23,6 +23,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { Issue } from "./task-client.js";
+import type { NativeTaskStatus } from "../orchestrator/types.js";
 
 type Database = {
   prepare: (sql: string) => {
@@ -140,7 +141,7 @@ export interface TaskRow {
   description: string | null;
   type: string;
   priority: number;
-  status: string;
+  status: NativeTaskStatus;
   run_id: string | null;
   branch: string | null;
   external_id: string | null;
@@ -172,7 +173,7 @@ export interface UpdateTaskOptions {
   title?: string;
   description?: string | null;
   priority?: number;
-  status?: string;
+  status?: NativeTaskStatus;
   force?: boolean;
 }
 
