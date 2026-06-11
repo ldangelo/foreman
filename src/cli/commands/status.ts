@@ -61,10 +61,10 @@ export async function getLastPiActivity(runId: string): Promise<string | null> {
 
 /**
  * Returns the active task backend. Exported for testing.
- * TRD-024: Always returns 'br'; sd backend removed.
+ * TRD-024: Native Postgres task store is the only supported backend.
  */
 export function getStatusBackend(): TaskBackend {
-  return 'br';
+  return 'native';
 }
 
 /**
