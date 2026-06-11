@@ -98,6 +98,12 @@ phases:
     verdict: true
     retryWith: developer
     retryOnFail: 2
+    # Enable cooldown retry: when cli-review fails with a rate limit (e.g. CodeRabbit CLI
+    # "Rate limit exceeded"), the task is placed in cooldown state instead of being marked
+    # failed. The dispatcher will not re-dispatch until the cooldown period (5 minutes) expires.
+    retryAfterCooldown: true
+    # Optional: customize cooldown duration (default is 300 seconds if not specified)
+    # cooldownSeconds: 600
     mail:
       onStart: true
       onComplete: true

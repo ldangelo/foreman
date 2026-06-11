@@ -202,7 +202,7 @@ describe("Doctor.checkBeadStatusSync()", () => {
     expect(localStore.getRunsByStatuses).not.toHaveBeenCalled();
     expect(registeredStore.getProjectByPath).toHaveBeenCalledWith(tmp);
     expect(registeredStore.getRunsByStatuses).toHaveBeenCalledWith(
-      ["completed", "merged", "pr-created", "conflict", "test-failed", "failed", "stuck"],
+      ["completed", "merged", "pr-created", "conflict", "test-failed", "failed", "stuck", "cooldown"],
       "proj-1",
     );
   });

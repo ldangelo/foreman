@@ -29,6 +29,7 @@ import {
   qaReportHasTestEvidence,
 } from "./roles.js";
 import { rotateReport } from "./agent-worker-finalize.js";
+import { updateTerminalRunStatus } from "./agent-worker-run-status.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentMailClient } from "../lib/agent-mail-client.js";
@@ -38,7 +39,7 @@ import type { RunProgressSummary } from "./read-models.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";
 import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncrementalPipelineReport, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
-import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs } from "../lib/config.js";
+import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs, COOLDOWN_RETRY_CONFIG } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig } from "../lib/project-config.js";
@@ -305,7 +306,7 @@ function sendTraceMail(
  * Detect if an error is a rate limit (429) error.
  * Returns true if the error indicates a rate limit, false otherwise.
  */
-function isRateLimitError(error: string | undefined): boolean {
+export function isRateLimitError(error: string | undefined): boolean {
   if (!error) return false;
   const errorLower = error.toLowerCase();
   return (
@@ -315,6 +316,11 @@ function isRateLimitError(error: string | undefined): boolean {
     errorLower.includes("too many requests") ||
     errorLower.includes("rate_limit_exceeded")
   );
+}
+
+/** Return true when a failed phase should enter cooldown retry instead of terminal failure. */
+export function shouldUseCooldownRetry(error: string | undefined, phase: Pick<WorkflowPhaseConfig, "retryAfterCooldown">): boolean {
+  return Boolean(phase.retryAfterCooldown && isRateLimitError(error));
 }
 
 /**
@@ -390,6 +396,8 @@ interface PhaseSequenceResult {
   progress: RunProgress;
   /** Set when a verdict-FAIL exhausted retries (task failed, not stuck). */
   retriesExhausted?: boolean;
+  /** Set when a retryable failure was handled via cooldown retry (task in cooldown state). */
+  cooldownUntil?: string;
 }
 
 function isGeneratedWorkflowArtifact(filePath: string): boolean {
@@ -1818,6 +1826,54 @@ async function runPhaseSequence(
 
         // Max retries exceeded - treat as permanent failure
         ctx.log(`[${phaseName.toUpperCase()}] RATE LIMIT — max retries (${RATE_LIMIT_BACKOFF_CONFIG.maxRetries}) exceeded`);
+
+        // Cooldown retry: when retryAfterCooldown is enabled for this phase,
+        // place the task in cooldown state instead of marking it as failed/stuck.
+        // The dispatcher will not re-dispatch until the cooldown period expires.
+        if (shouldUseCooldownRetry(errorMsg, phase)) {
+          const cooldownSeconds = phase.cooldownSeconds ?? COOLDOWN_RETRY_CONFIG.defaultCooldownSeconds;
+          const cooldownUntil = new Date(Date.now() + cooldownSeconds * 1000).toISOString();
+          const now = new Date().toISOString();
+
+          ctx.log(`[${phaseName.toUpperCase()}] COOLDOWN RETRY — placing task in cooldown until ${cooldownUntil} (${cooldownSeconds}s)`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} cooldown retry: cooldown until ${cooldownUntil}\n`);
+
+          // Update run status and set cooldown_until timestamp
+          // Using "cooldown" run status (not "stuck") to properly distinguish cooldown state
+          const effectiveProjectPath = config.projectPath ?? worktreePath;
+          await updateTerminalRunStatus({
+            runId,
+            projectId,
+            projectPath: effectiveProjectPath,
+            updates: { status: "cooldown", completed_at: now, cooldown_until: cooldownUntil },
+          });
+
+          // Mark task as in cooldown state so dispatcher skips it
+          try {
+            store.updateTaskStatus(seedId, "cooldown");
+            ctx.log(`[${phaseName.toUpperCase()}] Task ${seedId} marked as cooldown until ${cooldownUntil}`);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            ctx.log(`[${phaseName.toUpperCase()}] Warning: Failed to mark task ${seedId} as cooldown: ${msg.slice(0, 200)}`);
+          }
+
+          // Log the cooldown event for tracking
+          store.logEvent(projectId, "cooldown", {
+            seedId,
+            phase: phaseName,
+            cooldownUntil,
+            cooldownSeconds,
+            reason: errorMsg,
+          }, runId);
+
+          // Notify the operator
+          ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+            seedId, phase: phaseName, error: errorMsg, retryable: true,
+            cooldownUntil, cooldownSeconds,
+          });
+          await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg} — cooldown until ${cooldownUntil}`, { retryable: true, cooldownUntil });
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, cooldownUntil };
+        }
       }
 
       ctx.sendMail(agentMailClient, "foreman", "agent-error", {

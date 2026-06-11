@@ -90,7 +90,7 @@ export interface Run {
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
-  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed" | "pr-created" | "reset";
+  status: "pending" | "running" | "completed" | "failed" | "stuck" | "cooldown" | "merged" | "conflict" | "test-failed" | "pr-created" | "reset";
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -122,6 +122,12 @@ export interface Run {
    * Used to detect head mismatch (AC-2): PR must be recreated when SHA changes.
    */
   pr_head_sha?: string | null;
+  /**
+   * ISO timestamp when the task's cooldown period ends.
+   * Set when a phase fails with a retryable error and retryAfterCooldown is enabled.
+   * The dispatcher skips this task until the cooldown period expires.
+   */
+  cooldown_until?: string | null;
 }
 
 export interface Cost {
@@ -161,7 +167,8 @@ export type EventType =
   | "worktree-rebased"
   | "worktree-rebase-failed"
   | "phase-start"
-  | "phase-complete";
+  | "phase-complete"
+  | "cooldown";
 
 export interface Event {
   id: string;
@@ -488,7 +495,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   CHECK (status IN (
     'backlog', 'ready', 'in-progress', 'review',
     'explorer', 'developer', 'qa', 'reviewer', 'finalize',
-    'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked'
+    'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked', 'cooldown'
   ))
 );
 
@@ -603,6 +610,8 @@ const MIGRATIONS = [
     ON rate_limit_events (project_id, recorded_at DESC)`,
   // Task labels column for branch label auto-labeling (TRD-015)
   `ALTER TABLE tasks ADD COLUMN labels TEXT DEFAULT NULL`,
+  // Cooldown retry column for retryAfterCooldown workflow phase option
+  `ALTER TABLE runs ADD COLUMN cooldown_until TEXT DEFAULT NULL`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -1122,7 +1131,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy" | "commit_sha" | "pr_url" | "pr_state" | "pr_head_sha">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy" | "commit_sha" | "pr_url" | "pr_state" | "pr_head_sha" | "cooldown_until">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };

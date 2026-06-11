@@ -59,6 +59,33 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[3].builtin).toBe(true);
   });
 
+  it("parses retryAfterCooldown and cooldownSeconds from phase config", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        { name: "cli-review", builtin: true, retryAfterCooldown: true, cooldownSeconds: 600 },
+        { name: "developer", prompt: "developer.md" },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+    expect(config.phases[0].retryAfterCooldown).toBe(true);
+    expect(config.phases[0].cooldownSeconds).toBe(600);
+    expect(config.phases[1].retryAfterCooldown).toBeUndefined();
+    expect(config.phases[1].cooldownSeconds).toBeUndefined();
+  });
+
+  it("treats retryAfterCooldown as optional (defaults to undefined when not set)", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        { name: "cli-review", builtin: true },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+    expect(config.phases[0].retryAfterCooldown).toBeUndefined();
+    expect(config.phases[0].cooldownSeconds).toBeUndefined();
+  });
+
   it("uses workflowName as fallback when name is missing", () => {
     const raw = { phases: [{ name: "finalize", builtin: true }] };
     const config = validateWorkflowConfig(raw, "my-workflow");

@@ -18,6 +18,7 @@ export type RunStatus =
   | "completed"
   | "failed"
   | "stuck"
+  | "cooldown"
   | "merged"
   | "conflict"
   | "test-failed"
