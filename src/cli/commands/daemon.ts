@@ -12,7 +12,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import {
   DaemonManager,
   DaemonAlreadyRunningError,
@@ -40,9 +40,23 @@ function formatStatus(status: DaemonStatus): void {
   console.log();
 }
 
-function readDaemonLogExcerpt(path: string): string | null {
+export function readDaemonLogExcerpt(path: string): string | null {
   if (!existsSync(path)) return null;
-  const content = readFileSync(path, "utf-8").trim();
+  const stat = statSync(path);
+  if (stat.size === 0) return null;
+
+  const maxBytes = 64 * 1024;
+  const bytesToRead = Math.min(stat.size, maxBytes);
+  const start = Math.max(0, stat.size - bytesToRead);
+  const buffer = Buffer.alloc(bytesToRead);
+  const fd = openSync(path, "r");
+  try {
+    readSync(fd, buffer, 0, bytesToRead, start);
+  } finally {
+    closeSync(fd);
+  }
+
+  const content = buffer.toString("utf8").trim();
   if (!content) return null;
   return content.split("\n").slice(-5).join("\n");
 }

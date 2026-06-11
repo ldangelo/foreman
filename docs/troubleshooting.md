@@ -18,6 +18,32 @@ foreman debug <task-or-bead-id> --raw     # Raw artifacts without AI analysis
 
 ---
 
+## Daemon Issues
+
+### `foreman daemon start` reports string-size or huge-log errors
+
+**Symptoms:** startup fails with an error such as `Cannot create a string longer than 0x1fffffe8 characters`.
+
+**Cause:** previous daemon logs in `~/.foreman/daemon.out` or `~/.foreman/daemon.err` grew very large. Foreman now tails only a bounded excerpt when reporting startup failures, but older builds may try to read the entire log.
+
+**Fix:**
+```bash
+# Keep a small tail for diagnosis, then truncate oversized startup logs
+mkdir -p ~/.foreman/log-archive
+for f in ~/.foreman/daemon.out ~/.foreman/daemon.err; do
+  [ -f "$f" ] || continue
+  tail -c 65536 "$f" > ~/.foreman/log-archive/$(basename "$f").$(date +%Y%m%dT%H%M%S).tail
+  : > "$f"
+done
+
+npm run build
+foreman daemon start
+```
+
+If the next error is `connect ECONNREFUSED 127.0.0.1:5432`, start Postgres first (for this repo, `docker compose up -d postgres`) and retry.
+
+---
+
 ## Agent Issues
 
 ### Agent stuck — no progress for 10+ minutes
