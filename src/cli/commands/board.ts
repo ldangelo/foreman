@@ -9,6 +9,7 @@
  * - Mark as ready: R
  * - Close task: c / C (with reason)
  * - Edit in $EDITOR: e / E (full schema)
+ * - Copy selected task ID: y
  * - Task detail view: Enter
  * - Help overlay: ?
  * - Refresh: r
@@ -543,13 +544,14 @@ function renderHelpOverlayView(width: number): ReturnType<typeof h> {
     ["j / k", "Move up / down in column"],
     ["h / l", "Move left / right between columns"],
     ["g / G", "Jump to first / last task"],
-    ["[1]…[6]", "Jump to column by number"],
+    ["[1]…[5]", "Jump to column by number"],
     ["s / S", "Cycle status forward / backward"],
     ["o", "Toggle sort: updated / priority"],
     ["R", "Mark task as ready"],
     ["c", "Close task"],
     ["C", "Close task with reason"],
     ["e / E", "Edit task in editor"],
+    ["y", "Copy selected task ID"],
     ["n", "Create new task"],
     ["Enter", "Show task detail"],
     ["Esc", "Dismiss help / detail"],
@@ -800,7 +802,7 @@ function renderBoardFrame(
         );
       }),
     ),
-    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  o sort  s/S cycle status  R mark ready  c/C close  e/E edit  n new  Enter detail  ? help  r refresh  q quit"),
+    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  o sort  s/S cycle status  R mark ready  c/C close  e/E edit  y copy id  n new  Enter detail  ? help  r refresh  q quit"),
   ];
 
   // Add error message if present
@@ -1059,6 +1061,39 @@ export async function saveEditedTaskAsync(projectPath: string, originalId: strin
   }
 }
 
+/** Copy text to the system clipboard using the platform clipboard command. */
+export function copyToClipboard(text: string): string | null {
+  const candidates = process.platform === "darwin"
+    ? [{ command: "pbcopy", args: [] }]
+    : process.platform === "win32"
+      ? [{ command: "clip", args: [] }]
+      : [
+          { command: "wl-copy", args: [] },
+          { command: "xclip", args: ["-selection", "clipboard"] },
+          { command: "xsel", args: ["--clipboard", "--input"] },
+        ];
+
+  const errors: string[] = [];
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate.command, candidate.args, {
+      input: text,
+      encoding: "utf8",
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+
+    if (!result.error && result.status === 0) {
+      return null;
+    }
+
+    const message = result.error instanceof Error
+      ? result.error.message
+      : result.stderr?.trim() || `exit ${result.status ?? "unknown"}`;
+    errors.push(`${candidate.command}: ${message}`);
+  }
+
+  return `Failed to copy task ID to clipboard (${errors.join("; ")})`;
+}
+
 // ── Navigation ────────────────────────────────────────────────────────────────
 
 /**
@@ -1101,6 +1136,7 @@ const KEY_o = "o";
 const KEY_q = "q";
 const KEY_QUESTION = "?";
 const KEY_n = "n";
+const KEY_y = "y";
 
 // ── New task editor template ────────────────────────────────────────────────
 
@@ -1226,6 +1262,7 @@ export const boardApi = {
   createTaskAsync,
   applyStatusChangeAsync,
   loadTaskNotesAsync: loadBoardTaskNotes,
+  copyToClipboard,
 };
 
 function suspendRawMode(): void {
@@ -1359,7 +1396,7 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
         result.nav.rowIndex = Math.max(0, currentTasks.length - 1);
         break;
       }
-      case "1": case "2": case "3": case "4": case "5": case "6": {
+      case "1": case "2": case "3": case "4": case "5": {
         const colIdx = parseInt(key, 10) - 1;
         if (colIdx >= 0 && colIdx < BOARD_STATUSES.length) {
           result.nav.colIndex = colIdx;
@@ -1455,6 +1492,20 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
             result.flashTaskId = task.id;
             result.needsRefresh = true;
           }
+        }
+        break;
+      }
+
+      // ── Copy selected task ID ────────────────────────────────────────────────
+      case KEY_y: {
+        const task = getHighlightedTask(result.nav, state.tasks);
+        if (!task) break;
+
+        const err = boardApi.copyToClipboard(task.id);
+        if (err) {
+          result.errorMessage = err;
+        } else {
+          result.flashTaskId = task.id;
         }
         break;
       }

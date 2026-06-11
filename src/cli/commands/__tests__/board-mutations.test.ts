@@ -65,6 +65,52 @@ describe("BoardMutations", () => {
     };
   };
 
+  describe("Copy selected task ID (y key)", () => {
+    it("y should copy the selected task id to the clipboard", async () => {
+      const spy = vi.spyOn(boardApi, "copyToClipboard").mockReturnValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "ready" });
+      const state = createState({
+        ready: [task],
+      }, { nav: { colIndex: 1, rowIndex: 0 } });
+
+      const result = await handleKey("y", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("bd-1234");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.errorMessage).toBeNull();
+      expect(result.needsRefresh).toBe(false);
+    });
+
+    it("y should return early when no task is selected", async () => {
+      const spy = vi.spyOn(boardApi, "copyToClipboard").mockReturnValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        ready: [],
+      }, { nav: { colIndex: 1, rowIndex: 0 } });
+
+      const result = await handleKey("y", state, "/tmp/project");
+
+      expect(spy).not.toHaveBeenCalled();
+      expect(result.flashTaskId).toBeNull();
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("y should surface clipboard errors", async () => {
+      vi.spyOn(boardApi, "copyToClipboard").mockReturnValue("clipboard unavailable");
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "ready" });
+      const state = createState({
+        ready: [task],
+      }, { nav: { colIndex: 1, rowIndex: 0 } });
+
+      const result = await handleKey("y", state, "/tmp/project");
+
+      expect(result.errorMessage).toBe("clipboard unavailable");
+      expect(result.flashTaskId).toBeNull();
+    });
+  });
+
   describe("Mark task as ready (R key)", () => {
     it("R should return early when no task is selected", async () => {
       const handleKey = createKeyHandler("/tmp/project");

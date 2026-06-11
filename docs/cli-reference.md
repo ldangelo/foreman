@@ -204,7 +204,7 @@ foreman sentinel stop --force
 
 ### `foreman board`
 
-Open the terminal kanban board for native tasks. Press `r` to refresh; the header shows a `refreshing…` spinner during reload and `refreshed <time>` after the task list updates.
+Open the terminal kanban board for native tasks. Press `y` to copy the selected task ID. Press `r` to refresh; the header shows a `refreshing…` spinner during reload and `refreshed <time>` after the task list updates.
 
 ```bash
 foreman board

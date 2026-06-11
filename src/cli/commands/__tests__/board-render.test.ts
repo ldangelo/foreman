@@ -418,19 +418,26 @@ describe("BoardRendering", () => {
         ["j / k", "Move up / down in column"],
         ["h / l", "Move left / right between columns"],
         ["g / G", "Jump to first / last task in column"],
-        ["[1]…[6]", "Jump to column by number"],
+        ["[1]…[5]", "Jump to column by number"],
         ["s / S", "Cycle status forward / backward"],
         ["c", "Close task (status → closed)"],
         ["C", "Close task with reason prompt"],
         ["e", "Edit task in $EDITOR (basic YAML)"],
         ["E", "Edit task in $EDITOR (full schema)"],
+        ["y", "Copy selected task ID"],
         ["Enter", "Show task detail panel"],
         ["Esc", "Dismiss detail / help overlay"],
         ["r", "Refresh board from store"],
         ["q", "Quit board"],
       ];
 
-      expect(rows).toHaveLength(13);
+      expect(rows).toHaveLength(14);
+    });
+
+    it("should render copy shortcut in the footer", () => {
+      const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 150));
+
+      expect(output).toContain("y copy id");
     });
 
     it("should have panel width constraint", () => {
