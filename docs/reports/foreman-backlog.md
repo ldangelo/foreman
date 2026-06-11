@@ -314,19 +314,35 @@ Standardize logging with consistent context fields.
 
 ### Backlog-011: Container Sandboxing (Optional)
 **Source:** Sandcastle Docker/Podman providers
-**Status:** Not Started
+**Status:** Implemented (foreman-4b44b)
 
 **Description:**
 Optional container isolation for untrusted workflows.
 
+**Implementation:**
+- Docker and Podman sandbox providers (`src/lib/sandbox-providers/`)
+- Workflow-level sandbox configuration via `sandbox:` block in workflow YAML
+- Project-level sandbox configuration via `~/.foreman/config.yaml`
+- `resolveSandboxConfig()` for merging workflow/project configs
+- `applyEffectiveSandboxConfig()` for pipeline integration
+
 **Considerations:**
 - Adds complexity
 - Different use case than current worktree model
-- Could integrate with Sandcastle as provider
+- Could integrate with Sandcastle as provider (future enhancement)
 - Not needed for trusted environments
 
 **Effort:** High
 **Dependencies:** Significant design work
+
+**Files Changed:**
+- `src/lib/sandbox-provider.ts` — Interface definition
+- `src/lib/sandbox-providers/docker.ts` — Docker provider
+- `src/lib/sandbox-providers/podman.ts` — Podman provider
+- `src/lib/sandbox-providers/index.ts` — Factory
+- `src/lib/project-config.ts` — Project-level config
+- `src/lib/workflow-loader.ts` — Workflow-level config
+- `src/orchestrator/pipeline-executor.ts` — Pipeline integration
 
 ---
 
