@@ -912,7 +912,7 @@ export class Doctor {
     return {
       name: "task store",
       status: "pass",
-      message: `Native task store active (${nativeTaskCount} tasks). Beads fallback has been removed — the native Postgres store is the only supported task store.`,
+      message: `Native task store active (${nativeTaskCount} tasks). The native Postgres store is the only supported task store — beads fallback has been removed.`,
     };
   }
 

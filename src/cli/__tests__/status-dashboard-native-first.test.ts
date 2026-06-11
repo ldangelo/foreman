@@ -1,10 +1,3 @@
-/**
- * Characterization tests for native task store counts in status and dashboard.
- *
- * These tests document that status and dashboard commands read task counts
- * exclusively from the native Postgres task store. Beads fallback has been
- * removed; the native store is the only supported source.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -61,7 +54,7 @@ vi.mock("../../lib/store.js", () => ({
 import { fetchDashboardTaskCounts } from "../commands/dashboard.js";
 import { fetchStatusCounts } from "../commands/status.js";
 
-describe("native task store counts (characterization)", () => {
+describe("native-first task count regression targets", () => {
   const projectPath = "/mock/project";
 
   beforeEach(() => {
@@ -76,7 +69,8 @@ describe("native task store counts (characterization)", () => {
     vi.unstubAllEnvs();
   });
 
-  it("status reads counts from the native task store without calling br", async () => {
+  it("status native mode reads counts from the native task store without calling br", async () => {
+    vi.stubEnv("FOREMAN_TASK_STORE", "native");
     mockHasNativeTasks.mockReturnValue(true);
     mockListTasksByStatus.mockImplementation((statuses: string[]) => {
       if (
@@ -113,7 +107,12 @@ describe("native task store counts (characterization)", () => {
     expect(mockBrReady).not.toHaveBeenCalled();
   });
 
-  it("returns zero counts when native task store reports no tasks", async () => {
+  /**
+   * Characterization test: FOREMAN_TASK_STORE=auto is accepted for backward
+   * compatibility but has no effect — native is the only supported store.
+   */
+  it("FOREMAN_TASK_STORE=auto is accepted but returns zero counts when no native tasks exist (native-only)", async () => {
+    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
     mockHasNativeTasks.mockReturnValue(false);
 
     const counts = await fetchStatusCounts(projectPath);
@@ -128,7 +127,8 @@ describe("native task store counts (characterization)", () => {
     expect(mockBrList).not.toHaveBeenCalled();
   });
 
-  it("dashboard reads compact counts from the native task store", async () => {
+  it("dashboard native mode reads compact counts from the native task store before br fallback", async () => {
+    vi.stubEnv("FOREMAN_TASK_STORE", "native");
     mockHasNativeTasks.mockReturnValue(true);
     mockListTasksByStatus.mockImplementation((statuses: string[]) => {
       if (

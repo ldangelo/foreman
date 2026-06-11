@@ -1,13 +1,8 @@
 /**
- * Tests for TRD-017: createMergeTaskClient is a thin wrapper around createTaskClient.
+ * Tests for TRD-017: createMergeTaskClient uses native task client.
  *
- * Verifies:
- * - createMergeTaskClient forwards to createTaskClient with the correct project path
- * - createMergeTaskClient forwards the registered project id when provided
- *
- * Note: The FOREMAN_TASK_STORE env var is not read by createTaskClient.
- * The native task store is the only supported backend (TRD-024) — this is
- * verified by the tests below without needing env stubs.
+ * The FOREMAN_TASK_STORE env var is accepted for backward compatibility
+ * but has no effect — native is the only supported task store.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -103,13 +98,14 @@ vi.mock("../../orchestrator/merge-cost-tracker.js", () => ({
 // ── Module under test ──────────────────────────────────────────────────────
 import { createMergeTaskClient } from "../commands/merge.js";
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 const PROJECT_PATH = "/mock/project";
 
-describe("TRD-017: createMergeTaskClient forwards to createTaskClient", () => {
+describe("TRD-017: createMergeTaskClient uses native task client", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("FOREMAN_TASK_STORE", "beads");
     mockHasNativeTasks.mockReturnValue(false);
     MockForemanStore.mockImplementation(function MockForemanStoreImpl(this: Record<string, unknown>) {
       this.hasNativeTasks = mockHasNativeTasks;
@@ -126,10 +122,12 @@ describe("TRD-017: createMergeTaskClient forwards to createTaskClient", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── createMergeTaskClient forwards to createTaskClient ──────────────────
-
-  describe("createMergeTaskClient forwards to createTaskClient", () => {
-    it("returns the task client from createTaskClient", async () => {
+  /**
+   * Characterization test: FOREMAN_TASK_STORE is accepted for backward
+   * compatibility but has no effect — native is the only supported store.
+   */
+  describe("FOREMAN_TASK_STORE=beads is accepted but does not change behavior", () => {
+    it("returns the task client from createTaskClient (native path)", async () => {
       const result = await createMergeTaskClient(PROJECT_PATH);
 
       expect(result).toBeDefined();

@@ -1,14 +1,3 @@
-/**
- * Tests for runtime mode resolution.
- *
- * Verifies:
- * - resolveRuntimeMode correctly resolves explicit values and env var
- * - createTaskClients always uses native backend (beads fallback removed)
- *
- * Note: The FOREMAN_TASK_STORE env var is not read by createTaskClients.
- * The native task store is the only supported backend — this is intentional
- * and verified by the tests below (no env stubs needed).
- */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const {
@@ -33,7 +22,7 @@ const {
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.hasNativeTasks = mockHasNativeTasks;
     this.close = vi.fn();
-  }) as ReturnType<typeof vi.fn>& { forProject: ReturnType<typeof vi.fn> };
+  }) as ReturnType<typeof vi.fn> & { forProject: ReturnType<typeof vi.fn> };
   MockForemanStore.forProject = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
 
   const MockPostgresAdapter = vi.fn(function (this: Record<string, unknown>) {
@@ -103,10 +92,11 @@ describe("run runtime mode", () => {
     expect(resolveRuntimeMode()).toBe("test");
   });
 
-  it("uses native backend in test runtime", async () => {
+  it("keeps the native backend in test runtime when task store is native", async () => {
     mockHasNativeTasks.mockReturnValue(true);
     mockRegistryList.mockResolvedValue([{ id: "proj-1", name: "foreman", path: projectPath }]);
 
+    vi.stubEnv("FOREMAN_TASK_STORE", "native");
     const result = await createTaskClients(projectPath, "test", "proj-1");
 
     expect(result.backendType).toBe("native");
@@ -116,13 +106,27 @@ describe("run runtime mode", () => {
     expect(MockForemanStore.forProject).not.toHaveBeenCalled();
   });
 
-  it("uses native backend in normal runtime", async () => {
+  it("ignores FOREMAN_TASK_STORE env var in normal runtime (native-only)", async () => {
+    vi.stubEnv("FOREMAN_TASK_STORE", "beads");
     const result = await createTaskClients(projectPath, "normal");
 
     expect(result.backendType).toBe("native");
     expect(MockBeadsRustClient).not.toHaveBeenCalled();
     expect(mockEnsureBrInstalled).not.toHaveBeenCalled();
     expect(MockBvClient).not.toHaveBeenCalled();
+    expect(result.bvClient).toBeNull();
+  });
+
+  /**
+   * Characterization test: FOREMAN_TASK_STORE is accepted for backward
+   * compatibility but has no effect — native is the only supported store.
+   */
+  it("FOREMAN_TASK_STORE=auto is accepted but does not change behavior (native-only)", async () => {
+    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
+    const result = await createTaskClients(projectPath, "normal");
+
+    expect(result.backendType).toBe("native");
+    expect(MockBeadsRustClient).not.toHaveBeenCalled();
     expect(result.bvClient).toBeNull();
   });
 });
