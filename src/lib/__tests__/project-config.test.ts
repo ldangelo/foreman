@@ -135,14 +135,24 @@ describe("loadProjectConfig", () => {
     });
   });
 
-  it("requires non-empty GitHub API URL and token", () => {
+  it("requires non-empty GitHub API URL", () => {
     writeForemanConfig(
       tmpDir,
-      "issueTracker:\n  backend: github\n  github:\n    apiUrl: ''\n    token: ''\n    repositories:\n      - owner: owner\n        repo: repo",
+      "issueTracker:\n  backend: github\n  github:\n    apiUrl: ''\n    token: encrypted-token\n    repositories:\n      - owner: owner\n        repo: repo",
     );
 
     expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
     expect(() => loadProjectConfig(tmpDir)).toThrow(/issueTracker\.github\.apiUrl/);
+  });
+
+  it("requires non-empty GitHub token", () => {
+    writeForemanConfig(
+      tmpDir,
+      "issueTracker:\n  backend: github\n  github:\n    apiUrl: https://api.github.com\n    token: ''\n    repositories:\n      - owner: owner\n        repo: repo",
+    );
+
+    expect(() => loadProjectConfig(tmpDir)).toThrow(ProjectConfigError);
+    expect(() => loadProjectConfig(tmpDir)).toThrow(/issueTracker\.github\.token/);
   });
 
   it("requires non-empty GitHub repository owner and repo", () => {
