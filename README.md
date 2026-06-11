@@ -454,7 +454,7 @@ Use `foreman debug <task-id> --raw` to inspect all trace artifacts for a task.
 
 ## Commands
 
-For the complete CLI reference with all options and examples, see **[CLI Reference](docs/cli-reference.md)**.
+For daily operating guidance, see the **[Foreman User Guide](docs/user-guide.md)**. For the complete CLI reference with all options and examples, see **[CLI Reference](docs/cli-reference.md)**.
 
 For common problems and solutions, see **[Troubleshooting Guide](docs/troubleshooting.md)**.
 

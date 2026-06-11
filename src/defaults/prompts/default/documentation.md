@@ -13,7 +13,8 @@ Document the implementation for: **{{seedId}} — {{title}}**
    - `CLAUDE.md` — update agent/developer operating rules, commands, architecture, or workflow contracts.
    - `AGENTS.md` — update project instructions that future agents must follow.
    - `README.md` — update user-facing overview, setup, features, or common workflows.
-   - Foreman User Guide (`docs/cli-reference.md`) — update user-facing command/workflow behavior.
+   - Foreman User Guide (`docs/user-guide.md`) — keep day-to-day operating guidance, lifecycle explanations, retry/reset guidance, board usage, and documentation expectations current.
+   - CLI Reference (`docs/cli-reference.md`) — update exact command syntax, flags, and examples.
 5. If workflow YAML, prompts, or phase behavior changed, also update `docs/workflow-yaml-reference.md` when the configuration contract changed.
 6. If no documentation change is warranted, do not edit docs just to create churn. Explain why in `DOCUMENTATION_REPORT.md`.
 7. Write `DOCUMENTATION_REPORT.md` in the worktree root.

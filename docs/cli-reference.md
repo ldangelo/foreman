@@ -2,6 +2,8 @@
 
 Complete reference for all `foreman` commands, options, and usage examples.
 
+For task lifecycle, operating guidance, board usage, retry/reset practices, and documentation expectations, start with the [Foreman User Guide](./user-guide.md).
+
 Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths are accepted directly for one-off targeting.
 
 ## Global Usage
@@ -39,7 +41,7 @@ foreman init --force              # Overwrite existing prompt files
 
 Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, monitors agents, and auto-merges completed work.
 
-Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
+Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, the Foreman User Guide, and this CLI reference) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
@@ -141,6 +143,28 @@ foreman dashboard --interval 5000 # Poll every 5 seconds
 | `--no-watch` | — | Single snapshot, then exit |
 | `--events <n>` | `8` | Recent events to show per project |
 | `--simple` | — | Compact single-project view |
+
+### `foreman board`
+
+Terminal kanban board for managing Foreman tasks across backlog, ready, in-progress, needs-attention, and closed columns.
+
+```bash
+foreman board                    # Open board for current project
+foreman board --project my-project
+foreman board --all              # Aggregate registered projects
+foreman board --filter ready
+foreman board --limit 20
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Show board for a registered project |
+| `--project-path <absolute-path>` | — | Advanced/script project path override |
+| `--all` | — | Show board across all registered projects |
+| `--limit <n>` | terminal height | Maximum tasks per column |
+| `--filter <status>` | — | Filter by status, e.g. `backlog`, `ready`, `in_progress` |
+
+Common keys: `h`/`l` move columns, `j`/`k` move rows, `Enter` opens detail, `r` refreshes, `R` marks ready, `s`/`S` cycles status, `c`/`C` closes, `e`/`E` edits, `n` creates, `?` shows help, and `q` quits.
 
 ### `foreman sentinel`
 
