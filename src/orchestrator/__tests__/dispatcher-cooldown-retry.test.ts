@@ -72,7 +72,7 @@ function makeRun(overrides?: Partial<Run>): Run {
 function makeCooldownRun(cooldownUntil: string, seedId: string = "seed-1"): Run {
   return makeRun({
     id: "run-cooldown",
-    status: "stuck",
+    status: "cooldown",
     seed_id: seedId,
     cooldown_until: cooldownUntil,
   });

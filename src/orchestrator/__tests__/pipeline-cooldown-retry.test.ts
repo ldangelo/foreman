@@ -6,32 +6,13 @@
  * The dispatcher will not re-dispatch until the cooldown period expires.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { WorkflowPhaseConfig } from "../../lib/workflow-loader.js";
+import { isRateLimitError, shouldUseCooldownRetry } from "../pipeline-executor.js";
 
 // ── isRateLimitError unit tests ───────────────────────────────────────────
 
-/**
- * Extract the isRateLimitError function from pipeline-executor for unit testing.
- * We test it in isolation to verify it correctly classifies rate limit errors.
- */
-function createIsRateLimitError() {
-  return function isRateLimitError(error: string | undefined): boolean {
-    if (!error) return false;
-    const errorLower = error.toLowerCase();
-    return (
-      errorLower.includes("rate limit") ||
-      errorLower.includes("429") ||
-      errorLower.includes("hit your limit") ||
-      errorLower.includes("too many requests") ||
-      errorLower.includes("rate_limit_exceeded")
-    );
-  };
-}
-
 describe("isRateLimitError", () => {
-  const isRateLimitError = createIsRateLimitError();
-
   it("returns true for 'Rate limit exceeded' (CodeRabbit CLI error)", () => {
     expect(isRateLimitError("Rate limit exceeded")).toBe(true);
   });
@@ -146,10 +127,20 @@ describe("COOLDOWN_RETRY_CONFIG", () => {
   });
 
   it("default cooldown is configurable via env var", async () => {
-    // This test documents that the config can be overridden via FOREMAN_COOLDOWN_DEFAULT_SECONDS
-    const { COOLDOWN_RETRY_CONFIG } = await import("../../lib/config.js");
-    // Default is 300 seconds, but can be overridden
-    expect(COOLDOWN_RETRY_CONFIG.defaultCooldownSeconds).toBeGreaterThanOrEqual(60);
+    const previous = process.env.FOREMAN_COOLDOWN_DEFAULT_SECONDS;
+    process.env.FOREMAN_COOLDOWN_DEFAULT_SECONDS = "42";
+    vi.resetModules();
+    try {
+      const { COOLDOWN_RETRY_CONFIG } = await import("../../lib/config.js");
+      expect(COOLDOWN_RETRY_CONFIG.defaultCooldownSeconds).toBe(42);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.FOREMAN_COOLDOWN_DEFAULT_SECONDS;
+      } else {
+        process.env.FOREMAN_COOLDOWN_DEFAULT_SECONDS = previous;
+      }
+      vi.resetModules();
+    }
   });
 });
 
@@ -194,23 +185,9 @@ describe("cooldown retry integration", () => {
 // ── Non-rate-limit error terminal path tests ─────────────────────────────
 
 describe("non-rate-limit error terminal behavior", () => {
-  const isRateLimitError = createIsRateLimitError();
-
-  /**
-   * Simulates the cooldown retry decision logic from pipeline-executor.
-   * Returns 'cooldown' if rate-limit error AND retryAfterCooldown enabled,
-   * 'stuck' if non-rate-limit error (terminal failure), 'unknown' otherwise.
-   */
   function determineErrorOutcome(errorMsg: string | undefined, phase: WorkflowPhaseConfig): string {
-    const isRateLimit = isRateLimitError(errorMsg);
-    if (isRateLimit && phase.retryAfterCooldown) {
-      return "cooldown";
-    }
-    if (!isRateLimit && phase.retryAfterCooldown) {
-      // Non-rate-limit error with retryAfterCooldown should still be terminal
-      // because retryAfterCooldown only applies to rate-limit errors
-      return "stuck";
-    }
+    if (shouldUseCooldownRetry(errorMsg, phase)) return "cooldown";
+    if (phase.retryAfterCooldown) return "stuck";
     return "unknown";
   }
 
@@ -262,7 +239,7 @@ describe("non-rate-limit error terminal behavior", () => {
     }
   });
 
-  it("non-rate-limit errors without retryAfterCooldown remain stuck", () => {
+  it("non-rate-limit errors without retryAfterCooldown do not enter cooldown", () => {
     const phase: WorkflowPhaseConfig = {
       name: "cli-review",
       builtin: true,

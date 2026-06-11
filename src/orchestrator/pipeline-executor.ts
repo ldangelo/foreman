@@ -306,7 +306,7 @@ function sendTraceMail(
  * Detect if an error is a rate limit (429) error.
  * Returns true if the error indicates a rate limit, false otherwise.
  */
-function isRateLimitError(error: string | undefined): boolean {
+export function isRateLimitError(error: string | undefined): boolean {
   if (!error) return false;
   const errorLower = error.toLowerCase();
   return (
@@ -316,6 +316,11 @@ function isRateLimitError(error: string | undefined): boolean {
     errorLower.includes("too many requests") ||
     errorLower.includes("rate_limit_exceeded")
   );
+}
+
+/** Return true when a failed phase should enter cooldown retry instead of terminal failure. */
+export function shouldUseCooldownRetry(error: string | undefined, phase: Pick<WorkflowPhaseConfig, "retryAfterCooldown">): boolean {
+  return Boolean(phase.retryAfterCooldown && isRateLimitError(error));
 }
 
 /**
@@ -1825,7 +1830,7 @@ async function runPhaseSequence(
         // Cooldown retry: when retryAfterCooldown is enabled for this phase,
         // place the task in cooldown state instead of marking it as failed/stuck.
         // The dispatcher will not re-dispatch until the cooldown period expires.
-        if (isRateLimit && phase.retryAfterCooldown) {
+        if (shouldUseCooldownRetry(errorMsg, phase)) {
           const cooldownSeconds = phase.cooldownSeconds ?? COOLDOWN_RETRY_CONFIG.defaultCooldownSeconds;
           const cooldownUntil = new Date(Date.now() + cooldownSeconds * 1000).toISOString();
           const now = new Date().toISOString();
