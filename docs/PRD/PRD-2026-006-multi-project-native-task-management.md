@@ -741,10 +741,10 @@ src/lib/
 | REQ-017 | Dispatcher Reads Native Task Store | 3 | P0 | Must |
 | REQ-018 | Refinery Closes Native Tasks Post-Merge | 2 | P1 | Must |
 | REQ-019 | Dashboard Refresh Performance | 2 | P1 | Must |
-| REQ-020 | Backward Compatibility | 2 | P0 | Must |
+| REQ-020 | Backward Compatibility | 3 | P0 | Must |
 | REQ-021 | TypeScript Strict Mode and Test Coverage | 3 | P1 | Must |
 | REQ-022 | Stale Project Handling | 3 | P2 | Should |
-| **Total** | | **62** | | |
+| **Total** | | **63** | | |
 
 ---
 
