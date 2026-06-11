@@ -638,12 +638,12 @@ describe("tool enforcement guards", () => {
     expect(allowedTools).toContain("TaskStop");
   });
 
-  it("qa can run tests (Bash) and edit test files", () => {
+  it("qa can run tests and write reports without edit access", () => {
     const { allowedTools } = ROLE_CONFIGS.qa;
     expect(allowedTools).toContain("Bash");
     expect(allowedTools).toContain("Read");
     expect(allowedTools).toContain("Write");
-    expect(allowedTools).toContain("Edit");
+    expect(allowedTools).not.toContain("Edit");
   });
 
   it("qa cannot spawn agents", () => {
