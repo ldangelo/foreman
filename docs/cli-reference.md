@@ -197,6 +197,28 @@ foreman sentinel stop --force
 
 ---
 
+## Interactive Board
+
+### `foreman board`
+
+Open the terminal kanban board for native tasks. Press `r` to refresh; the header shows a `refreshing…` spinner during reload and `refreshed <time>` after the task list updates.
+
+```bash
+foreman board
+foreman board --project my-project
+foreman board --limit 10
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project <name>` | Registered project name |
+| `--project-path <absolute-path>` | Absolute project path for scripts/advanced usage |
+| `--all` | Render boards for all registered projects |
+| `--limit <n>` | Maximum tasks per column |
+| `--filter <status>` | Filter by status |
+
+---
+
 ## Debugging & Recovery
 
 ### `foreman debug`

@@ -175,6 +175,9 @@ export interface RenderState {
   detailNotesStatus: "idle" | "loading" | "loaded" | "error";
   detailNotesError: string | null;
   sortMode: SortMode;
+  refreshStatus?: "idle" | "refreshing" | "refreshed";
+  refreshSpinnerFrame?: number;
+  refreshedAt?: string | null;
 }
 
 // ── Board data loading ───────────────────────────────────────────────────────
@@ -723,6 +726,20 @@ function renderTaskDetailView(
   );
 }
 
+const REFRESH_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function renderBoardStatusText(state: RenderState, totalTasks: number): string {
+  const base = `${totalTasks} task${totalTasks === 1 ? "" : "s"} · Sort: ${SORT_MODE_LABELS[state.sortMode]}`;
+  if (state.refreshStatus === "refreshing") {
+    const frame = REFRESH_SPINNER_FRAMES[(state.refreshSpinnerFrame ?? 0) % REFRESH_SPINNER_FRAMES.length];
+    return `${frame} refreshing… · ${base}`;
+  }
+  if (state.refreshStatus === "refreshed" && state.refreshedAt) {
+    return `✓ refreshed ${state.refreshedAt} · ${base}`;
+  }
+  return base;
+}
+
 function renderBoardFrame(
   state: RenderState,
   projectName: string,
@@ -747,8 +764,8 @@ function renderBoardFrame(
       h(Spacer, null),
       h(
         Text,
-        { dimColor: true },
-        `${totalTasks} task${totalTasks === 1 ? "" : "s"} · Sort: ${SORT_MODE_LABELS[state.sortMode]}`,
+        { dimColor: state.refreshStatus !== "refreshing", color: state.refreshStatus === "refreshing" ? "cyan" : undefined },
+        renderBoardStatusText(state, totalTasks),
       ),
     ),
     h(
@@ -1570,6 +1587,10 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let detailNotesTaskId: string | null = null;
   let errorMessage: string | null = null;
   let flashTaskId: string | null = null;
+  let refreshStatus: RenderState["refreshStatus"] = "idle";
+  let refreshSpinnerFrame = 0;
+  let refreshedAt: string | null = null;
+  let refreshSpinnerTimer: NodeJS.Timeout | null = null;
   let quit = false;
   let stdinRawMode = false;
 
@@ -1593,9 +1614,31 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       detailNotesStatus,
       detailNotesError,
       sortMode,
+      refreshStatus,
+      refreshSpinnerFrame,
+      refreshedAt,
     };
 
     process.stdout.write(renderBoard(currentState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
+  };
+
+  const stopRefreshSpinner = () => {
+    if (refreshSpinnerTimer) {
+      clearInterval(refreshSpinnerTimer);
+      refreshSpinnerTimer = null;
+    }
+  };
+
+  const startRefreshSpinner = () => {
+    stopRefreshSpinner();
+    refreshStatus = "refreshing";
+    refreshedAt = null;
+    refreshSpinnerFrame = 0;
+    renderCurrentBoard();
+    refreshSpinnerTimer = setInterval(() => {
+      refreshSpinnerFrame += 1;
+      renderCurrentBoard();
+    }, 120);
   };
 
   const handleKey = createKeyHandler(projectPath, {
@@ -1669,6 +1712,9 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       detailNotesStatus,
       detailNotesError,
       sortMode,
+      refreshStatus,
+      refreshSpinnerFrame,
+      refreshedAt,
     };
 
     const result = await handleKey(normalizedKey, currentState, projectPath);
@@ -1719,12 +1765,19 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
 
     // Refresh tasks if requested
     if (result.needsRefresh) {
+      startRefreshSpinner();
       try {
         tasks = await loadBoardTasks(projectPath);
         tasks = sortBoardColumns(tasks, sortMode);
         normalizeNavRowIndex(nav, tasks);
+        refreshStatus = "refreshed";
+        refreshedAt = new Date().toLocaleTimeString();
       } catch (err) {
         errorMessage = `Failed to refresh: ${err instanceof Error ? err.message : String(err)}`;
+        refreshStatus = "idle";
+        refreshedAt = null;
+      } finally {
+        stopRefreshSpinner();
       }
       flashTaskId = null;
     }
@@ -1738,6 +1791,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
 
     if (quit) {
       process.stdout.write(SHOW_CURSOR + "\n");
+      stopRefreshSpinner();
       detachRawMode();
       process.exit(0);
     }
@@ -1748,6 +1802,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   // Handle SIGINT gracefully
   const onSigint = () => {
     process.stdout.write(SHOW_CURSOR + "\n");
+    stopRefreshSpinner();
     detachRawMode();
     process.exit(0);
   };

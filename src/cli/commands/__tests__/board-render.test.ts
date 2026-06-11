@@ -351,6 +351,27 @@ describe("BoardRendering", () => {
       expect(state.totalTasks).toBe(4);
     });
 
+    it("should show refresh spinner text while reloading", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { refreshStatus: "refreshing", refreshSpinnerFrame: 1 }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("refreshing…");
+      expect(output).toContain("Sort: Updated");
+    });
+
+    it("should show refreshed timestamp after reload", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { refreshStatus: "refreshed", refreshedAt: "11:45:00 AM" }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("refreshed 11:45:00 AM");
+    });
+
     it("should pluralize task count correctly", () => {
       const singular = "1 task";
       const plural = `${2} tasks`;

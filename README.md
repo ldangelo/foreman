@@ -493,7 +493,7 @@ foreman status --live                    # Full dashboard TUI with event stream
 ```
 
 ### `foreman board`
-Terminal UI kanban board for managing Foreman tasks. Six status columns with vim-style navigation.
+Terminal UI kanban board for managing Foreman tasks. Six status columns with vim-style navigation. Pressing `r` shows a `refreshing…` spinner while tasks reload and a brief `refreshed <time>` confirmation after reload.
 
 ```bash
 foreman board                             # Launch interactive kanban board
