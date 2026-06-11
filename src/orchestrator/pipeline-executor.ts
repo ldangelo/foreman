@@ -636,18 +636,18 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
 
 /**
  * Parse `git log --oneline` output from an epic worktree and extract
- * the bead/seed IDs of tasks that have already been committed.
+ * the task IDs of tasks that have already been committed.
  *
- * Commit messages follow the format: `<title> (<beadId>)`
+ * Commit messages follow the format: `<title> (<taskId>)`
  * For example: `Add user auth (task-7)` → extracts `task-7`.
  *
- * @returns A Set of completed task seed IDs found in the git history.
+ * @returns A Set of completed task IDs found in the git history.
  */
 export function parseCompletedTaskIds(gitLogOutput: string): Set<string> {
   const completed = new Set<string>();
-  // Match the trailing parenthesized bead ID in each commit line.
+  // Match the trailing parenthesized task ID in each commit line.
   // git log --oneline format: "<hash> <message>"
-  // We look for the pattern "(<beadId>)" at the end of each line.
+  // We look for the pattern "(<taskId>)" at the end of each line.
   const regex = /\(([^)]+)\)\s*$/;
   for (const line of gitLogOutput.split("\n")) {
     const trimmed = line.trim();

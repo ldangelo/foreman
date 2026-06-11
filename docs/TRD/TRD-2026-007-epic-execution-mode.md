@@ -123,7 +123,7 @@ Dispatcher
 - Validates PRD ACs: AC-004-1, AC-004-3, AC-005-1, AC-005-2, AC-005-3, AC-007-1, AC-007-2
 - Implementation ACs:
   - Given `ctx.epicTasks` is set (epic mode), when `executePipeline()` runs, then it iterates tasks and for each runs only `taskPhases` from the workflow config
-  - Given a task passes QA (verdict PASS), when the task completes, then `vcs.commit(worktreePath, "<title> (<beadId>)")` is called and the next task starts
+  - Given a task passes QA (verdict PASS), when the task completes, then `vcs.commit(worktreePath, "<title> (<taskId>)")` is called and the next task starts
   - Given a task fails QA with retries remaining, when the retry fires, then the developer phase re-runs with QA feedback context (existing retry logic)
   - Given `ctx.epicTasks` is NOT set (single-task mode), when `executePipeline()` runs, then behavior is identical to current (no regression)
   - Given all tasks complete, when the task loop ends, then `finalPhases` execute once
@@ -231,7 +231,7 @@ Dispatcher
 **2h** | [satisfies REQ-012, REQ-013] [depends: TRD-005]
 - Validates PRD ACs: AC-012-1, AC-013-1
 - Implementation ACs:
-  - Given an active epic run, when `foreman status` displays it, then output includes `[EPIC] N/M tasks, current: <beadId>, elapsed: Xm, cost: $Y`
+  - Given an active epic run, when `foreman status` displays it, then output includes `[EPIC] N/M tasks, current: <taskId>, elapsed: Xm, cost: $Y`
   - Given per-task cost tracking in RunProgress, when status is displayed, then a per-task breakdown is available
 
 #### TRD-012-TEST: Tests for epic status display

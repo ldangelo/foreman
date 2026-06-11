@@ -75,7 +75,7 @@
 | Feature | Foreman | Flywheel |
 |---------|---------|----------|
 | Isolation | Git worktrees per task | File leases via Agent Mail |
-| Branch management | Auto-creates `foreman/<bead-id>` branches | Standard git workflow |
+| Branch management | Auto-creates `foreman/<task-id>` branches | Standard git workflow |
 | Merge | `foreman merge` command | Manual / RU for multi-repo sync |
 | Multi-repo | Not supported | RU — sync hundreds of repos at once |
 | Deployment | Local CLI tool | Flywheel Setup — zero-to-configured VPS in 30 min |

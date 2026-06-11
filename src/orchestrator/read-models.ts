@@ -38,7 +38,7 @@ export type PrState = "none" | "draft" | "open" | "merged" | "closed";
  */
 export interface RunSummary {
   id: string;
-  seedId: string;
+  taskId: string;
   agentType: string;
   status: RunStatus;
   worktreePath: string | null;
@@ -95,8 +95,8 @@ export interface RunStoreReadModel {
   /** Fetch a single run by ID. Returns null if not found. */
   getRun(runId: string): Promise<RunSummary | null>;
 
-  /** Fetch all runs for a given seed. */
-  getRunsForSeed(seedId: string, projectId?: string): Promise<RunSummary[]>;
+  /** Fetch all runs for a given task. */
+  getRunsForSeed(taskId: string, projectId?: string): Promise<RunSummary[]>;
 
   /** Fetch all active runs (pending or running). */
   getActiveRuns(projectId?: string): Promise<RunSummary[]>;
@@ -110,8 +110,8 @@ export interface RunStoreReadModel {
   /** Fetch runs matching any of the given statuses created on or after `since`. */
   getRunsByStatusesSince(statuses: RunStatus[], since: string, projectId?: string): Promise<RunSummary[]>;
 
-  /** Check whether a seed has a non-terminal run. */
-  hasActiveOrPendingRun(seedId: string, projectId?: string): Promise<boolean>;
+  /** Check whether a task has a non-terminal run. */
+  hasActiveOrPendingRun(taskId: string, projectId?: string): Promise<boolean>;
 
   /** Get run progress for a run. Returns null if not set. */
   getRunProgress(runId: string): Promise<RunProgressSummary | null>;

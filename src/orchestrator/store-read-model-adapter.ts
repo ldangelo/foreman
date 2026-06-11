@@ -20,7 +20,7 @@ import type {
 function mapRunToSummary(run: Run): RunSummary {
   return {
     id: run.id,
-    seedId: run.seed_id,
+    taskId: run.seed_id,  // Database column is seed_id, maps to taskId in read model
     agentType: run.agent_type,
     status: run.status as RunStatus,
     worktreePath: run.worktree_path,
@@ -79,8 +79,8 @@ export class ForemanStoreReadModelAdapter implements RunStoreReadModel {
     return run ? mapRunToSummary(run) : null;
   }
 
-  async getRunsForSeed(seedId: string, projectId?: string): Promise<RunSummary[]> {
-    const runs = this.store.getRunsForSeed(seedId, projectId);
+  async getRunsForSeed(taskId: string, projectId?: string): Promise<RunSummary[]> {
+    const runs = this.store.getRunsForSeed(taskId, projectId);
     return runs.map(mapRunToSummary);
   }
 
@@ -112,8 +112,8 @@ export class ForemanStoreReadModelAdapter implements RunStoreReadModel {
     return runs.map(mapRunToSummary);
   }
 
-  async hasActiveOrPendingRun(seedId: string, projectId?: string): Promise<boolean> {
-    return this.store.hasActiveOrPendingRun(seedId, projectId);
+  async hasActiveOrPendingRun(taskId: string, projectId?: string): Promise<boolean> {
+    return this.store.hasActiveOrPendingRun(taskId, projectId);
   }
 
   async getRunProgress(runId: string): Promise<RunProgressSummary | null> {
