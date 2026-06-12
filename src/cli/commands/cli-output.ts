@@ -12,6 +12,17 @@ export function printDryRunNotice(dryRun: boolean | undefined): void {
   }
 }
 
+/**
+ * Print the standard one-line deprecation notice for a renamed CLI spelling.
+ *
+ * Written to stderr (so scripted stdout parsing of the delegated command is
+ * unaffected) in yellow, e.g.:
+ *   'foreman purge-logs' is deprecated — use 'foreman purge logs' instead.
+ */
+export function printDeprecationNotice(oldSpelling: string, newSpelling: string): void {
+  console.error(chalk.yellow(`'${oldSpelling}' is deprecated — use '${newSpelling}' instead.`));
+}
+
 export interface PurgeSummaryOptions {
   dryRun: boolean;
   /** Subject noun phrase, e.g. "log group(s)" or "zombie run(s)". */

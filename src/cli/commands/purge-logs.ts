@@ -1,4 +1,3 @@
-import { Command } from "commander";
 import chalk from "chalk";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -305,21 +304,6 @@ export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void>
   }
 }
 
-// ── CLI Command ──────────────────────────────────────────────────────
-
-export const purgeLogsCommand = new Command("purge-logs")
-  .description(
-    "Remove old agent log files from ~/.foreman/logs/ based on a retention policy",
-  )
-  .option(
-    "--days <n>",
-    "Delete logs from runs older than N days (default: 7)",
-    (v) => {
-      const n = parseInt(v, 10);
-      if (isNaN(n) || n < 0) throw new Error("--days must be a non-negative integer");
-      return n;
-    },
-  )
-  .option("--dry-run", "Show what would be deleted without making any changes")
-  .option("--all", "Delete all terminal-status logs regardless of age (use with caution)")
-  .action(purgeLogsCommandAction);
+// The CLI command surface lives in purge.ts:
+//   foreman purge logs        (canonical)
+//   foreman purge-logs        (hidden, deprecated alias)

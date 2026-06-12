@@ -41,14 +41,33 @@ describe("CLI smoke tests", () => {
     tempDirs.length = 0;
   });
 
-  it("--help exits 0 and shows all commands including dashboard and bead", async () => {
+  it("--help exits 0 and shows the consolidated command surface", async () => {
     const tmp = makeTempDir();
     const result = await run(["--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "monitor", "dashboard", "bead", "logs"]) {
+    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "watch", "purge", "task", "logs"]) {
       expect(output).toContain(cmd);
+    }
+
+    // 'foreman dashboard' survives only as an alias of watch
+    expect(output).toContain("watch|dashboard");
+    expect(output).not.toMatch(/^\s+dashboard[\s|]/m);
+
+    // Deprecated spellings are hidden from help but still parse
+    expect(output).not.toMatch(/^\s+bead[\s|]/m);
+    expect(output).not.toMatch(/^\s+purge-logs[\s|]/m);
+    expect(output).not.toMatch(/^\s+purge-zombie-runs[\s|]/m);
+  }, 30_000);
+
+  it("hidden deprecated spellings still parse (bead, purge-logs, purge-zombie-runs, dashboard)", async () => {
+    const tmp = makeTempDir();
+
+    // --help on hidden commands exits 0, proving they remain registered
+    for (const args of [["bead", "--help"], ["purge-logs", "--help"], ["purge-zombie-runs", "--help"], ["dashboard", "--help"], ["purge", "--help"]]) {
+      const result = await run(args, tmp);
+      expect(result.exitCode).toBe(0);
     }
   }, 30_000);
 

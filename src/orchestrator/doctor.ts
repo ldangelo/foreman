@@ -781,7 +781,7 @@ export class Doctor {
   /**
    * Check for stale agent log files in ~/.foreman/logs/.
    * Warns when there are many log groups older than 7 days,
-   * encouraging the user to run `foreman purge-logs` or `foreman doctor --clean-logs`.
+   * encouraging the user to run `foreman purge logs` or `foreman doctor --clean-logs`.
    */
   async checkOldLogs(thresholdDays = 7, warnThreshold = 10): Promise<CheckResult> {
     const logsDir = join(homedir(), ".foreman", "logs");
@@ -849,7 +849,7 @@ export class Doctor {
       return {
         name: "old agent log files",
         status: "pass",
-        message: `${oldRunIds.size} log group(s) older than ${thresholdDays} days (${totalRunIds.size} total) — run 'foreman purge-logs' to clean up`,
+        message: `${oldRunIds.size} log group(s) older than ${thresholdDays} days (${totalRunIds.size} total) — run 'foreman purge logs' to clean up`,
       };
     }
 
@@ -857,7 +857,7 @@ export class Doctor {
       name: "old agent log files",
       status: "warn",
       message: `${oldRunIds.size} log group(s) older than ${thresholdDays} days (${totalRunIds.size} total)`,
-      details: "Run 'foreman purge-logs' or 'foreman doctor --clean-logs' to reclaim disk space",
+      details: "Run 'foreman purge logs' or 'foreman doctor --clean-logs' to reclaim disk space",
     };
   }
 

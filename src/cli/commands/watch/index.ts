@@ -43,8 +43,21 @@ import {
 } from "./WatchState.js";
 import { renderWatch } from "./render.js";
 import { approveTask, retryTask } from "./actions.js";
+import { printDeprecationNotice } from "../cli-output.js";
+
+/**
+ * `foreman dashboard` is a deprecated alias of `foreman watch`. When the
+ * command was invoked via the alias (detected from argv), print a one-line
+ * deprecation notice. Exported for testing.
+ */
+export function maybePrintDashboardAliasNotice(argv: readonly string[] = process.argv): void {
+  if (argv.includes("dashboard")) {
+    printDeprecationNotice("foreman dashboard", "foreman watch");
+  }
+}
 
 export const watchCommand = new Command("watch")
+  .alias("dashboard")
   .description("Single-pane unified dashboard: agents, board, inbox, and pipeline events")
   .option("--refresh <ms>", "Refresh interval in milliseconds (default: 5000; min: 1000)", "")
   .option("--inbox-limit <n>", "Max inbox messages shown (default: 5)", "")
@@ -66,6 +79,8 @@ export const watchCommand = new Command("watch")
     events: boolean;
     project?: string;
   }) => {
+    maybePrintDashboardAliasNotice();
+
     const projectPath = await resolveRepoRootProjectPath({ project: opts.project });
 
     // Load config

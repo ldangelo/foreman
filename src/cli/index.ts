@@ -44,7 +44,6 @@ import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { boardCommand } from "./commands/board.js";
-import { dashboardCommand } from "./commands/dashboard.js";
 import { watchCommand } from "./commands/watch/index.js";
 import { beadCommand } from "./commands/bead.js";
 import { worktreeCommand } from "./commands/worktree.js";
@@ -52,8 +51,7 @@ import { slingCommand } from "./commands/sling.js";
 import { stopCommand } from "./commands/stop.js";
 import { sentinelCommand } from "./commands/sentinel.js";
 import { retryCommand } from "./commands/retry.js";
-import { purgeZombieRunsCommand } from "./commands/purge-zombie-runs.js";
-import { purgeLogsCommand } from "./commands/purge-logs.js";
+import { purgeCommand, purgeLogsCommand, purgeZombieRunsCommand } from "./commands/purge.js";
 import { inboxCommand } from "./commands/inbox.js";
 import { debugCommand } from "./commands/debug.js";
 import { importCommand } from "./commands/import.js";
@@ -93,16 +91,16 @@ program.addCommand(resetCommand);
 program.addCommand(attachCommand);
 program.addCommand(doctorCommand);
 program.addCommand(boardCommand);
-program.addCommand(dashboardCommand);
-program.addCommand(watchCommand);
-program.addCommand(beadCommand);
+program.addCommand(watchCommand); // also handles the deprecated 'dashboard' alias
+program.addCommand(beadCommand, { hidden: true }); // deprecated: 'foreman task create --from-text'
 program.addCommand(worktreeCommand);
 program.addCommand(slingCommand);
 program.addCommand(stopCommand);
 program.addCommand(sentinelCommand);
 program.addCommand(retryCommand);
-program.addCommand(purgeZombieRunsCommand);
-program.addCommand(purgeLogsCommand);
+program.addCommand(purgeCommand);
+program.addCommand(purgeZombieRunsCommand, { hidden: true }); // deprecated: 'foreman purge runs'
+program.addCommand(purgeLogsCommand, { hidden: true }); // deprecated: 'foreman purge logs'
 program.addCommand(inboxCommand);
 program.addCommand(debugCommand);
 program.addCommand(importCommand, { hidden: true });

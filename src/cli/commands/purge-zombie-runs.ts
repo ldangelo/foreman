@@ -1,4 +1,3 @@
-import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
@@ -171,13 +170,6 @@ export async function purgeZombieRunsCommandAction(opts: PurgeZombieRunsOpts): P
   }
 }
 
-// ── CLI Command ─────────────────────────────────────────────────────────
-
-export const purgeZombieRunsCommand = new Command("purge-zombie-runs")
-  .description(
-    "Remove failed run records whose beads are already closed or no longer exist",
-  )
-  .option("--dry-run", "Show what would be purged without making any changes")
-  .action(async (opts: PurgeZombieRunsOpts) => {
-    process.exit(await purgeZombieRunsCommandAction(opts));
-  });
+// The CLI command surface lives in purge.ts:
+//   foreman purge runs           (canonical)
+//   foreman purge-zombie-runs    (hidden, deprecated alias)

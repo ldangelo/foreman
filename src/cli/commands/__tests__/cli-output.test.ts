@@ -1,6 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import chalk from "chalk";
-import { printDryRunNotice, printPurgeSummary } from "../cli-output.js";
+import { printDeprecationNotice, printDryRunNotice, printPurgeSummary } from "../cli-output.js";
+
+describe("printDeprecationNotice", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("prints a single yellow one-line notice to stderr", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    printDeprecationNotice("foreman purge-logs", "foreman purge logs");
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalledWith(
+      chalk.yellow("'foreman purge-logs' is deprecated — use 'foreman purge logs' instead."),
+    );
+  });
+});
 
 describe("printDryRunNotice", () => {
   afterEach(() => {

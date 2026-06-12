@@ -29,7 +29,7 @@ vi.mock("../../../../lib/trpc-client.js", () => ({
   }),
 }));
 
-vi.mock("../../dashboard.js", () => ({
+vi.mock("../../../dashboard-state.js", () => ({
   fetchDaemonDashboardState: mockFetchDaemonDashboardState,
 }));
 
@@ -44,7 +44,7 @@ import {
   pollWatchData,
   type WatchState,
 } from "../WatchState.js";
-import type { DashboardState } from "../../dashboard.js";
+import type { DashboardState } from "../../../dashboard-state.js";
 import type { Run, RunProgress } from "../../../../lib/store.js";
 
 describe("WatchState", () => {

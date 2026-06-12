@@ -1,13 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { ForemanStore, type DashboardReadStore } from "../../lib/store.js";
+import { describe, it, expect, vi } from "vitest";
+import { type DashboardReadStore } from "../../lib/store.js";
 import type { Run, RunProgress, Project, Metrics, Event, NativeTask } from "../../lib/store.js";
-import * as projectConfig from "../../lib/project-config.js";
 import * as projectTaskSupport from "../commands/project-task-support.js";
 import * as trpcClientModule from "../../lib/trpc-client.js";
-import * as dashboardModule from "../commands/dashboard.js";
 import {
   renderEventLine,
   renderProjectHeader,
@@ -25,7 +20,7 @@ import {
   type DashboardState,
   type ProjectSnapshot,
   type RegisteredProject,
-} from "../commands/dashboard.js";
+} from "../dashboard-state.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -650,41 +645,6 @@ describe("renderNeedsHumanPanel", () => {
     expect(output).toContain("First task");
     expect(output).toContain("Second task");
     expect(output).not.toContain("more");
-  });
-});
-
-describe("dashboard command bootstrap", () => {
-  let tempDir: string;
-  let originalCwd: string;
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "foreman-dashboard-command-"));
-    originalCwd = process.cwd();
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    process.chdir(originalCwd);
-    rmSync(tempDir, { recursive: true, force: true });
-    vi.restoreAllMocks();
-  });
-
-  it("resolves a registered dashboard run from a non-canonical worktree before daemon lookup", async () => {
-    const canonicalPath = join(tempDir, "canonical-project");
-    const worktreePath = join(tempDir, "worktree-clone");
-    mkdirSync(canonicalPath, { recursive: true });
-    mkdirSync(worktreePath, { recursive: true });
-    process.chdir(worktreePath);
-
-    const resolveSpy = vi.spyOn(projectTaskSupport, "resolveRepoRootProjectPath").mockResolvedValue(canonicalPath);
-    const configSpy = vi.spyOn(projectConfig, "loadDashboardConfig").mockReturnValue({ refreshInterval: 5000 });
-
-    await expect(
-      dashboardModule.dashboardCommand.parseAsync(["--no-watch", "--project", "registered-project"], { from: "user" }),
-    ).rejects.toThrow("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
-
-    expect(resolveSpy).toHaveBeenCalledWith({ project: "registered-project" });
-    expect(configSpy).toHaveBeenCalledWith(canonicalPath);
   });
 });
 

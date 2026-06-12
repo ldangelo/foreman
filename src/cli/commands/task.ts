@@ -4,6 +4,8 @@
  * Sub-commands:
  *   foreman task create --title <text> [--description <text>] [--type <type>]
  *                        [--priority <level>]
+ *   foreman task create --from-text "<description>" [--type <type>] [--priority <level>]
+ *                        [--parent <id>] [--dry-run] [--no-llm] [--model <model>]
  *   foreman task list [--status <status>] [--all]
  *   foreman task show <id>
  *   foreman task update <id> [--title <text>] [--description <text>]
@@ -31,6 +33,7 @@ import type { PrState } from "../../lib/pr-state.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { RunProgress } from "../../lib/store.js";
 import { elapsed } from "../watch-ui.js";
+import { createTasksFromText } from "./create-from-text.js";
 
 // ── Run Activity Helpers ──────────────────────────────────────────────────────
 
@@ -831,46 +834,110 @@ export async function performBeadsImport(
 // ── foreman task create ───────────────────────────────────────────────────────
 
 const createCommand = new Command("create")
-  .description("Create a new task in backlog status")
-  .requiredOption("--title <text>", "Task title")
+  .description("Create a new task in backlog status, or generate task(s) from natural language with --from-text")
+  .option("--title <text>", "Task title (required unless --from-text is used)")
   .option("--description <text>", "Optional task description")
   .option(
     "--type <type>",
     "Task type: task, bug, feature, epic, chore, docs, question (default: task)",
-    "task",
   )
   .option(
     "--priority <level>",
     "Priority: 0-4 or critical/high/medium/low/backlog (default: medium)",
-    "medium",
   )
+  .option(
+    "--from-text <description>",
+    "Create task(s) from a natural-language description (or file path) using an LLM — replaces 'foreman bead'",
+  )
+  .option("--parent <id>", "Parent task ID (only with --from-text)")
+  .option("--dry-run", "Show what would be created without creating tasks (only with --from-text)")
+  .option("--no-llm", "Skip LLM parsing — create a single task with the text as title (only with --from-text)")
+  .option("--model <model>", "Claude model to use for parsing (only with --from-text)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     async (opts: {
-      title: string;
+      title?: string;
       description?: string;
-      type: string;
-      priority: string;
+      type?: string;
+      priority?: string;
+      fromText?: string;
+      parent?: string;
+      dryRun?: boolean;
+      llm: boolean; // false when --no-llm is passed
+      model?: string;
       project?: string;
       projectPath?: string;
     }) => {
+      // ── Natural-language path (--from-text), shared with 'foreman bead' ──
+      if (opts.fromText !== undefined) {
+        const incompatible: string[] = [];
+        if (opts.title !== undefined) incompatible.push("--title");
+        if (opts.description !== undefined) incompatible.push("--description");
+        if (opts.project !== undefined) incompatible.push("--project");
+        if (incompatible.length > 0) {
+          console.error(
+            chalk.red(
+              `Error: --from-text cannot be combined with ${incompatible.join(", ")} — the description text drives title/description, and the LLM path runs against a project directory (use --project-path).`,
+            ),
+          );
+          process.exit(1);
+        }
+
+        await createTasksFromText(
+          opts.fromText,
+          {
+            type: opts.type,
+            priority: opts.priority,
+            parent: opts.parent,
+            dryRun: opts.dryRun,
+            llm: opts.llm,
+            model: opts.model,
+          },
+          opts.projectPath ? resolve(opts.projectPath) : undefined,
+        );
+        return;
+      }
+
+      // ── Structured path ───────────────────────────────────────────────
+      const fromTextOnly: string[] = [];
+      if (opts.parent !== undefined) fromTextOnly.push("--parent");
+      if (opts.dryRun) fromTextOnly.push("--dry-run");
+      if (opts.model !== undefined) fromTextOnly.push("--model");
+      if (opts.llm === false) fromTextOnly.push("--no-llm");
+      if (fromTextOnly.length > 0) {
+        console.error(
+          chalk.red(`Error: ${fromTextOnly.join(", ")} require(s) --from-text.`),
+        );
+        process.exit(1);
+      }
+
+      if (opts.title === undefined) {
+        console.error(
+          chalk.red(`Error: --title is required (or use --from-text "<description>" for natural-language creation).`),
+        );
+        process.exit(1);
+      }
+      const title: string = opts.title;
+      const typeInput = opts.type ?? "task";
+      const priorityInput = opts.priority ?? "medium";
+
       let priority: number;
       try {
-        priority = parsePriority(opts.priority);
+        priority = parsePriority(priorityInput);
       } catch {
         console.error(
           chalk.red(
-            `Error: Invalid priority '${opts.priority}'. Use 0-4 or: critical, high, medium, low, backlog`,
+            `Error: Invalid priority '${priorityInput}'. Use 0-4 or: critical, high, medium, low, backlog`,
           ),
         );
         process.exit(1);
       }
 
-      if (!VALID_TASK_TYPES.includes(opts.type)) {
+      if (!VALID_TASK_TYPES.includes(typeInput)) {
         console.error(
           chalk.red(
-            `Error: Invalid type '${opts.type}'. Valid types: ${VALID_TASK_TYPES.join(", ")}`,
+            `Error: Invalid type '${typeInput}'. Valid types: ${VALID_TASK_TYPES.join(", ")}`,
           ),
         );
         process.exit(1);
@@ -883,9 +950,9 @@ const createCommand = new Command("create")
         const task = await client.tasks.create({
           projectId,
           id: taskId,
-          title: opts.title,
+          title,
           description: opts.description,
-          type: opts.type,
+          type: typeInput,
           priority,
         });
         const createdTask = task as TaskRow;
