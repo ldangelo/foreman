@@ -38,6 +38,7 @@ import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 export { autoMerge } from "../../orchestrator/auto-merge.js";
 export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-merge.js";
+import { runTaskCommand } from "./run-task.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RunLookup } from "../../orchestrator/refinery-agent.js";
 import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
@@ -1105,3 +1106,6 @@ export const runCommand = new Command("run")
       await notifyServer.stop().catch(() => { /* ignore cleanup errors */ });
     }
   });
+
+// Add task subcommand for direct workflow execution
+runCommand.addCommand(runTaskCommand);

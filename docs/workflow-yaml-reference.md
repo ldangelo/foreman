@@ -9,15 +9,19 @@ Workflow YAML files define the complete pipeline configuration for Foreman: whic
 | `~/.foreman/workflows/{name}.yaml` | Global overrides (highest priority) |
 | `src/defaults/workflows/{name}.yaml` | Bundled defaults (installed by `foreman init`) |
 
-Foreman ships with two bundled workflows:
-- **`default`** — Standard 5-phase pipeline (Explorer → Developer ⇄ QA → Reviewer → Finalize)
+Foreman ships with bundled workflows for common task types:
+- **`default`** — Standard pipeline with implementation, validation, PR creation, PR wait/review, and merge gates
+- **`task` / `feature` / `bug`** — Type-specific workflows with post-finalize PR phases (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`)
+- **`epic`** — Planning + implementation workflow (`prd → trd → implement → developer → qa → finalize`) followed by the same PR wait/review/merge gates
 - **`smoke`** — Lightweight fast-validation pipeline using cheaper models
 
 ## Workflow Selection
 
-Workflows are resolved per-bead:
-1. First `workflow:<name>` label on the bead (e.g. `workflow:smoke`)
-2. Bead type: `"smoke"` → smoke workflow, everything else → default workflow
+Workflows are resolved per task:
+1. First `workflow:<name>` label on the task (e.g. `workflow:smoke`)
+2. `taskTypeWorkflowMap[task.type]` in project config
+3. `taskTypeWorkflowMap.default`
+4. File-existence fallback (`~/.foreman/workflows/<type>.yaml` or bundled defaults)
 
 ```bash
 # Dispatch with default workflow
@@ -25,9 +29,11 @@ br create --title="Add user auth" --type=feature
 foreman run
 
 # Dispatch with smoke workflow
-br create --title="Smoke test" --type=task
-br update <id> --set-labels "workflow:smoke"
+foreman task create --title "Smoke test" --type task --label workflow:smoke
 foreman run
+
+# Directly run a workflow for a task regardless of current task state
+foreman run task <task-id> task --project <name> --no-watch
 ```
 
 ---
@@ -263,6 +269,16 @@ The `phases` array defines the ordered sequence of pipeline phases. Each phase r
 | `mail` | object | — | Mail hook configuration (see below) |
 | `files` | object | — | File reservation configuration (see below) |
 | `builtin` | boolean | `false` | Phase implemented in TypeScript, not as agent prompt |
+
+### Documentation Phase
+
+Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
+
+```yaml
+  - name: documentation
+    prompt: documentation.md
+    artifact: DOCUMENTATION_REPORT.md
+```
 
 ### Models
 

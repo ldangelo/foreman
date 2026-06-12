@@ -5,7 +5,7 @@
 #
 # When epic has no children (native mode): runs skill phases directly as a
 # single-agent pipeline:
-#   prd → trd → implement → developer → qa → finalize
+#   prd → trd → implement → developer → qa → finalize → create-pr → pr-wait → prepare-pr-review → pr-review → merge
 #
 # Skill invocation: `command:` sends /ensemble:<skill-name> as the agent prompt.
 # The Pi SDK agent recognizes skill invocations and loads the SKILL.md.
@@ -19,6 +19,7 @@
 name: epic
 onError: stop
 taskTimeout: 300
+merge: auto
 
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -110,6 +111,20 @@ phases:
       onComplete: true
 
   # ── Phase 5: QA ──────────────────────────────────────────────────────────
+  - name: documentation
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: DOCUMENTATION_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
   - name: qa
     prompt: qa.md
     tools:
@@ -139,6 +154,56 @@ phases:
     verdict: true
     retryWith: developer
     retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: create-pr
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    timeoutSecs: 1200
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: prepare-pr-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-review
+    prompt: pr-review.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
+    models:
+      default: MiniMax
+    maxTurns: 40
+    artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    verdict: true
+    retryWith: developer
+    retryOnFail: 3
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+      forwardArtifactTo: foreman
+
+  - name: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
     mail:
       onStart: true
       onComplete: true

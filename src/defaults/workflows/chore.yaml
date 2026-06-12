@@ -36,6 +36,20 @@ phases:
 
   # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
   # Runs the project's unit test suite to validate the chore quickly.
+  - name: documentation
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: DOCUMENTATION_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
   - name: test
     bash: "npm run test:unit"
     tools:

@@ -1019,6 +1019,7 @@ export class Dispatcher {
             pipeline: opts?.pipeline,
             skipExplore: opts?.skipExplore,
             skipReview: opts?.skipReview,
+            workflowName: resolvedWorkflow,
           },
           opts?.notifyUrl,
           vcsBackend,
@@ -1371,6 +1372,7 @@ export class Dispatcher {
       pipeline?: boolean;
       skipExplore?: boolean;
       skipReview?: boolean;
+      workflowName?: string;
     },
     notifyUrl?: string,
     vcsBackend?: VcsBackend,
@@ -1434,6 +1436,7 @@ export class Dispatcher {
         skipExplore: pipelineOpts?.skipExplore,
         skipReview: pipelineOpts?.skipReview,
         dbPath: join(this.projectPath, ".foreman", "foreman.db"),
+        workflowName: pipelineOpts?.workflowName,
         seedType,
         seedLabels: seed.labels,
         seedPriority: seed.priority,
@@ -1857,6 +1860,9 @@ export interface WorkerConfig {
   skipReview?: boolean;
   /** Legacy local-store path retained for compatibility only. */
   dbPath?: string;
+  /** Explicit workflow name/path for direct task execution. Overrides seed labels/type. */
+  workflowName?: string;
+  workflowPath?: string;
   /**
    * Resolved workflow type (e.g. "smoke", "feature", "bug").
    * Derived from label-based override or bead type field.

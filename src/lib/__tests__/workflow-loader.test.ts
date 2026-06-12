@@ -307,6 +307,21 @@ phases:
     expect(config.phases[1].builtin).toBe(true);
   });
 
+  it("loads an explicit project-relative workflow YAML path", () => {
+    mkdirSync(join(tmpDir, "custom"), { recursive: true });
+    writeFileSync(join(tmpDir, "custom", "manual.yaml"), `
+name: manual
+phases:
+  - name: qa
+    prompt: qa.md
+`);
+
+    const config = loadWorkflowConfig("custom/manual.yaml", tmpDir);
+    expect(config.name).toBe("manual");
+    expect(config.sourcePath).toBe(join(tmpDir, "custom", "manual.yaml"));
+    expect(config.phases.map((p) => p.name)).toEqual(["qa"]);
+  });
+
   it("falls back to bundled defaults when no global workflow file exists", () => {
     // tmpDir has no workflows/ — should fall through to bundled defaults
     const config = loadWorkflowConfig("default", tmpDir);
@@ -409,6 +424,22 @@ phases:
       expect(phaseNames, workflowName).toContain("merge");
       expect(config.phases.find((phase) => phase.name === "cli-review")?.builtin, workflowName).toBe(true);
       expect(config.phases.find((phase) => phase.name === "merge")?.builtin, workflowName).toBe(true);
+    }
+  });
+
+  it("bundled workflows run documentation before finalization", () => {
+    for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const phaseNames = config.phases.map((phase) => phase.name);
+      const documentationIdx = phaseNames.indexOf("documentation");
+      const finalizeIdx = phaseNames.indexOf("finalize");
+      expect(documentationIdx, workflowName).toBeGreaterThanOrEqual(0);
+      expect(finalizeIdx, workflowName).toBeGreaterThanOrEqual(0);
+      expect(documentationIdx, workflowName).toBeLessThan(finalizeIdx);
+      const documentationPhase = config.phases[documentationIdx];
+      expect(documentationPhase?.prompt, workflowName).toBe("documentation.md");
+      expect(documentationPhase?.artifact, workflowName).toBe("DOCUMENTATION_REPORT.md");
+      expect(documentationPhase?.tools?.allowed, workflowName).toContain("Edit");
     }
   });
 

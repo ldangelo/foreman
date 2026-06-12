@@ -2,8 +2,9 @@
  * Workflow configuration loader.
  *
  * Loads and validates workflow YAML files from:
- *   1. ~/.foreman/workflows/{name}.yaml              (global override)
- *   2. Bundled defaults in src/defaults/workflows/{name}.yaml
+ *   1. Explicit absolute or project-relative YAML path
+ *   2. ~/.foreman/workflows/{name}.yaml              (global override)
+ *   3. Bundled defaults in src/defaults/workflows/{name}.yaml
  *
  * Workflow files define the ordered phase sequence for a pipeline run,
  * along with per-phase configuration (model, maxTurns, retryOnFail, etc.).
@@ -42,7 +43,7 @@ import {
   copyFileSync,
   readdirSync,
 } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as yamlLoad } from "js-yaml";
 import { getForemanHomePath } from "./foreman-paths.js";
@@ -814,6 +815,20 @@ export function loadWorkflowConfig(
   workflowName: string,
   projectRoot: string,
 ): WorkflowConfig {
+  const directPath = workflowName.endsWith(".yaml") || workflowName.endsWith(".yml")
+    ? isAbsolute(workflowName) ? workflowName : join(projectRoot, workflowName)
+    : null;
+  if (directPath && existsSync(directPath)) {
+    try {
+      const raw = yamlLoad(readFileSync(directPath, "utf-8"));
+      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: directPath };
+    } catch (err) {
+      if (err instanceof WorkflowConfigError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new WorkflowConfigError(workflowName, `failed to parse ${directPath}: ${msg}`);
+    }
+  }
+
   // Tier 1: global override
   const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
   if (existsSync(globalPath)) {

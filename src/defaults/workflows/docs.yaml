@@ -32,6 +32,20 @@ phases:
       leaseSecs: 300
 
   # ── Phase 2: cli-review ──────────────────────────────────────────────────
+  - name: documentation
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: DOCUMENTATION_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
   - name: cli-review
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"

@@ -41,6 +41,8 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, monitors agents, and auto-merges completed work.
 
+Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
+
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
 foreman run --project my-project   # Dispatch against a registered project without cd
@@ -72,6 +74,26 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 | `--no-auto-dispatch` | — | Disable auto-dispatch when capacity is available |
 | `--telemetry` | — | Enable OpenTelemetry tracing (requires OTEL_* env vars) |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
+
+### `foreman run task`
+
+Run a specific task through an explicit workflow, bypassing scheduler state gates. This is intended for debugging, recovery, and manual reruns where the task may be `failed`, `closed`, `in-progress`, or otherwise not `ready`. Worktree/run locking still applies.
+
+```bash
+foreman run task foreman-12345 task --project foreman --no-watch
+foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--model <model>` | workflow default | Override the model used by spawned worker phases |
+| `--skip-explore` | — | Skip explorer phases when supported by the workflow |
+| `--skip-review` | — | Skip reviewer phases when supported by the workflow |
+| `--dry-run` | — | Resolve task, workflow, and worktree without creating a run |
+| `--no-watch` | — | Spawn the worker and return immediately |
+| `--target-branch <branch>` | detected default | Override base/target branch for finalization and merge |
+| `--project <name>` | current project | Registered project name |
+| `--project-path <absolute-path>` | current project | Absolute project path for advanced/scripted use |
 
 ---
 

@@ -20,6 +20,7 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations; PostgreSQL or Postgres-backed depending on daemon mode
 - **Native task storage** — PostgreSQL-backed tasks for daemon and standalone workflows
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
+- **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
 - **Progress tracking** — every task, agent, and phase tracked in PostgreSQL
 
 > **Note:** Foreman uses PostgreSQL when the daemon is running (for multi-project aggregation) and for standalone development. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
@@ -68,9 +69,10 @@ Foreman CLI / Dispatcher
 2. **Developer** (Sonnet, 80 turns, read+write) — implementation + tests
 3. **QA** (Sonnet, 30 turns, read+bash) — test verification → `QA_REPORT.md`
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
-5. **Finalize** — git add/commit/push, native task merge/close update
+5. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
+6. **Finalize** — git add/commit/push, native task merge/close update
 
-Dev ↔ QA retries up to 2x before proceeding to Review.
+Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs before finalization so fixes/features do not merge without an explicit documentation decision.
 
 ## Dispatch Flow
 
@@ -815,7 +817,8 @@ Workflows define:
 - **Setup cache** — symlink dependency directories from a shared cache
 - **Phase sequence** — which agents run in what order
 - **Model selection** — per-phase models with priority-based overrides
-- **Retry loops** — QA/Reviewer failure → Developer retry with feedback
+- **Retry loops** — QA/Reviewer/PR-review failure → Developer retry with feedback
+- **PR gates** — create-pr, pr-wait, prepare-pr-review, pr-review, and merge phases for review-aware workflows
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 ```yaml
@@ -840,6 +843,14 @@ phases:
     retryWith: developer
     retryOnFail: 2
 ```
+
+Direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks:
+
+```bash
+foreman run task <task-id> <workflow-name-or-path> --project <name> --no-watch
+```
+
+The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.
 
 ### Environment variables
 
