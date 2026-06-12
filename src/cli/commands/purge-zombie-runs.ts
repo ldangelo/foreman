@@ -5,11 +5,10 @@ import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore, type Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
-import {
-  ensureCliPostgresPool,
-  listRegisteredProjects,
-  resolveRepoRootProjectPath,
-} from "./project-task-support.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
+import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice, printPurgeSummary } from "./cli-output.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -28,14 +27,6 @@ interface PurgeZombieStore {
   getProjectByPath(path: string): Promise<{ id: string; path: string } | null>;
   getRunsByStatus(status: Run["status"], projectId: string): Promise<Run[]>;
   deleteRun(runId: string): Promise<boolean>;
-}
-
-function wrapLocalPurgeZombieStore(store: ForemanStore): PurgeZombieStore {
-  return {
-    getProjectByPath: async (path) => store.getProjectByPath(path),
-    getRunsByStatus: async (status, projectId) => store.getRunsByStatus(status, projectId),
-    deleteRun: async (runId) => store.deleteRun(runId),
-  };
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -74,9 +65,7 @@ export async function purgeZombieRunsAction(
 ): Promise<PurgeZombieRunsResult> {
   const dryRun = opts.dryRun ?? false;
 
-  if (dryRun) {
-    console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-  }
+  printDryRunNotice(dryRun);
 
   // 1. Validate project exists
   const project = await store.getProjectByPath(projectPath);
@@ -140,20 +129,14 @@ export async function purgeZombieRunsAction(
   }
 
   // 4. Summary
-  console.log();
-  if (dryRun) {
-    console.log(
-      chalk.yellow(
-        `Dry run complete — ${result.purged} zombie run(s) would be purged, ${result.skipped} skipped, ${result.errors} error(s).`,
-      ),
-    );
-  } else {
-    console.log(
-      chalk.green(
-        `Done — ${result.purged} zombie run(s) purged, ${result.skipped} skipped, ${result.errors} error(s).`,
-      ),
-    );
-  }
+  printPurgeSummary({
+    dryRun,
+    subject: "zombie run(s)",
+    verb: "purged",
+    count: result.purged,
+    skipped: result.skipped,
+    errors: result.errors,
+  });
 
   return result;
 }
@@ -168,29 +151,22 @@ export async function purgeZombieRunsCommandAction(opts: PurgeZombieRunsOpts): P
   }
 
   const localStore = ForemanStore.forProject(projectPath);
-  const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
-  if (registered) {
-    ensureCliPostgresPool(projectPath);
-  }
+  const registered = await findRegisteredProjectByPath(projectPath);
   const store: PurgeZombieStore = registered
     ? PostgresStore.forProject(registered.id)
-    : wrapLocalPurgeZombieStore(localStore);
+    : wrapLocalRunStore(localStore);
   const { taskClient } = await createTaskClient(projectPath);
 
   try {
     const result = await purgeZombieRunsAction(opts, taskClient, store, projectPath);
     localStore.close();
-    if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
-      (store as { close: () => void }).close();
-    }
+    closeStoreIfPossible(store);
     return result.errors > 0 ? 1 : 0;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(chalk.red(msg));
     localStore.close();
-    if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
-      (store as { close: () => void }).close();
-    }
+    closeStoreIfPossible(store);
     return 1;
   }
 }

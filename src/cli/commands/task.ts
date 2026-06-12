@@ -25,7 +25,8 @@ import chalk from "chalk";
 import type { TaskDependencyRow as DependencyRow, TaskNoteRow, TaskRow } from "../../lib/db/postgres-adapter.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
 import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
-import { listRegisteredProjects, type RegisteredProjectSummary } from "./project-task-support.js";
+import type { RegisteredProjectSummary } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
 import type { PrState } from "../../lib/pr-state.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { RunProgress } from "../../lib/store.js";
@@ -317,8 +318,10 @@ async function resolveTaskProjectContext(
   opts: { project?: string; projectPath?: string },
 ): Promise<TaskProjectContext> {
   const projectPath = resolve(await resolveProjectPathFromOptions(opts));
-  const projects = await listRegisteredProjects();
-  const record = projects.find((project) => resolve(project.path) === projectPath);
+  const record = await findRegisteredProjectByPath(projectPath, {
+    normalizePaths: true,
+    initPool: false,
+  });
   if (!record) {
     throw new Error(
       `Project at '${projectPath}' is not registered with the daemon. Run 'foreman project list' to see registered projects.`,

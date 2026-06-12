@@ -16,6 +16,7 @@
 
 import type { RunStatus } from "../orchestrator/read-models.js";
 import type { NativeTaskStatus } from "../orchestrator/types.js";
+import type { TaskClientBackend } from "./task-client-factory.js";
 
 /**
  * Describes a detected mismatch between a run's terminal status in Postgres and
@@ -101,6 +102,93 @@ export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
  * seed backend. For native tasks, "ready" is the correct status for tasks that
  * should be picked up for retry.
  */
+// ── Seed retry/reset target status ───────────────────────────────────────────
+
+/**
+ * Seed statuses that indicate an interrupted or failed pipeline and should be
+ * reset to "ready" so the task can be re-dispatched.
+ *
+ * Shared by `foreman reset` and `foreman retry` (previously duplicated as
+ * RETRY_READY_STATUSES in reset.ts and RETRYABLE_NATIVE_STATUSES in retry.ts).
+ */
+const RETRYABLE_PIPELINE_SEED_STATUSES: ReadonlySet<string> = new Set([
+  "backlog",
+  "ready",
+  "in-progress",
+  "blocked",
+  "conflict",
+  "failed",
+  "stuck",
+  "explorer",
+  "developer",
+  "qa",
+  "reviewer",
+  "finalize",
+]);
+
+/** Mode selector for {@link getSeedRetryTargetStatus}. */
+export type SeedRetryTargetOptions =
+  | { command: "reset" }
+  | { command: "retry"; backendType: TaskClientBackend };
+
+/**
+ * Map a seed's current status to the status it should be reset to so the task
+ * becomes retryable, or `null` if it must be left unchanged (terminal).
+ *
+ * Two modes preserve the historical per-command semantics:
+ *
+ * - `{ command: "reset" }` (foreman reset): backend-agnostic. Unknown statuses
+ *   fall back to "open" (the br-style retryable status).
+ * - `{ command: "retry", backendType }` (foreman retry): for the "native"
+ *   backend unknown statuses fall back to `null`; for br-style backends only
+ *   "open"/"in_progress"/"blocked" are retryable (→ "open").
+ */
+export function getSeedRetryTargetStatus(
+  currentStatus: string,
+  options: SeedRetryTargetOptions,
+): "open" | "ready" | null {
+  const isTerminal =
+    currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged";
+
+  if (options.command === "reset") {
+    if (currentStatus === "open" || currentStatus === "ready") {
+      return currentStatus === "ready" ? "ready" : "open";
+    }
+    if (isTerminal) {
+      return null;
+    }
+    if (RETRYABLE_PIPELINE_SEED_STATUSES.has(currentStatus)) {
+      return "ready";
+    }
+    return "open";
+  }
+
+  if (options.backendType === "native") {
+    if (isTerminal) {
+      return null;
+    }
+    if (currentStatus === "ready") {
+      return "ready";
+    }
+    if (RETRYABLE_PIPELINE_SEED_STATUSES.has(currentStatus)) {
+      return "ready";
+    }
+    return null;
+  }
+
+  // br-style backends (kept for behavioral parity with the original retry.ts)
+  if (currentStatus === "open") {
+    return "open";
+  }
+  if (isTerminal) {
+    return null;
+  }
+  if (currentStatus === "in_progress" || currentStatus === "blocked") {
+    return "open";
+  }
+  return null;
+}
+
 export function mapRunStatusToNativeTaskStatus(runStatus: RunStatus): NativeTaskStatus {
   switch (runStatus) {
     case "pending":

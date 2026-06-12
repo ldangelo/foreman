@@ -1,12 +1,15 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import { resolve } from "node:path";
 
 import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-factory.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
-import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, listRegisteredProjects, ensureCliPostgresPool } from "./project-task-support.js";
+import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
+import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice } from "./cli-output.js";
+import { getSeedRetryTargetStatus } from "../../lib/run-status.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -25,15 +28,6 @@ interface RetryStore {
   getRunsForSeed(seedId: string, projectId: string): Promise<import("../../lib/store.js").Run[]>;
   updateRun(runId: string, updates: Partial<Pick<import("../../lib/store.js").Run, "status" | "completed_at">>): Promise<void>;
   logEvent(projectId: string, eventType: "restart", data: Record<string, unknown>, runId?: string): Promise<void>;
-}
-
-function wrapLocalRetryStore(store: ForemanStore): RetryStore {
-  return {
-    getProjectByPath: async (path) => store.getProjectByPath(path),
-    getRunsForSeed: async (seedId, projectId) => store.getRunsForSeed(seedId, projectId),
-    updateRun: async (runId, updates) => store.updateRun(runId, updates),
-    logEvent: async (projectId, eventType, data, runId) => store.logEvent(projectId, eventType, data, runId),
-  };
 }
 
 function createDaemonTaskClient(client: ReturnType<typeof createTrpcClient>, projectId: string): ITaskClient {
@@ -63,56 +57,6 @@ function createDaemonTaskClient(client: ReturnType<typeof createTrpcClient>, pro
   } as ITaskClient;
 }
 
-const RETRYABLE_NATIVE_STATUSES = new Set([
-  "backlog",
-  "ready",
-  "in-progress",
-  "blocked",
-  "conflict",
-  "failed",
-  "stuck",
-  "explorer",
-  "developer",
-  "qa",
-  "reviewer",
-  "finalize",
-]);
-
-function getRetryTargetStatus(
-  currentStatus: string,
-  backendType: TaskClientBackend,
-): "open" | "ready" | null {
-  if (backendType === "native") {
-    if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
-      return null;
-    }
-
-    if (currentStatus === "ready") {
-      return "ready";
-    }
-
-    if (RETRYABLE_NATIVE_STATUSES.has(currentStatus)) {
-      return "ready";
-    }
-
-    return null;
-  }
-
-  if (currentStatus === "open") {
-    return "open";
-  }
-
-  if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
-    return null;
-  }
-
-  if (currentStatus === "in_progress" || currentStatus === "blocked") {
-    return "open";
-  }
-
-  return null;
-}
-
 // ── Core action (exported for testing) ───────────────────────────────
 
 /**
@@ -130,9 +74,7 @@ export async function retryAction(
 ): Promise<number> {
   const dryRun = opts.dryRun ?? false;
 
-  if (dryRun) {
-    console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-  }
+  printDryRunNotice(dryRun);
 
   // 1. Validate project exists
   const project = await store.getProjectByPath(projectPath);
@@ -177,7 +119,7 @@ export async function retryAction(
   }
 
   // 4. Determine what needs to be reset
-  const beadResetTarget = getRetryTargetStatus(bead.status, backendType);
+  const beadResetTarget = getSeedRetryTargetStatus(bead.status, { command: "retry", backendType });
   const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== bead.status;
   const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === bead.status;
 
@@ -367,11 +309,8 @@ export const retryCommand = new Command("retry")
     }
 
     const localStore = ForemanStore.forProject(projectPath);
-    const registered = (await listRegisteredProjects()).find((project) => resolve(project.path) === resolve(projectPath));
-    if (registered) {
-      ensureCliPostgresPool(projectPath);
-    }
-    const store: RetryStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRetryStore(localStore);
+    const registered = await findRegisteredProjectByPath(projectPath, { normalizePaths: true });
+    const store: RetryStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(localStore);
     const { taskClient, backendType } = registered
       ? { taskClient: createDaemonTaskClient(createTrpcClient(), registered.id), backendType: "native" as const }
       : await createTaskClient(projectPath);
@@ -491,17 +430,13 @@ export const retryCommand = new Command("retry")
         backendType,
       );
       localStore.close();
-      if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
-        (store as { close: () => void }).close();
-      }
+      closeStoreIfPossible(store);
       process.exit(exitCode);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Unexpected error: ${msg}`));
       localStore.close();
-      if ("close" in store && typeof (store as { close?: () => void }).close === "function") {
-        (store as { close: () => void }).close();
-      }
+      closeStoreIfPossible(store);
       process.exit(1);
     }
   });

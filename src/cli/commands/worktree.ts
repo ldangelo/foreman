@@ -7,7 +7,7 @@ import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { Workspace } from "../../lib/vcs/types.js";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
-import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
+import { resolveProjectContext } from "./project-context.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -154,11 +154,7 @@ function closeWorktreeStores(
 
 export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise<void> {
   try {
-    const projectPath = await resolveRepoRootProjectPath({});
-    const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
-    if (registered) {
-      ensureCliPostgresPool(projectPath);
-    }
+    const { projectPath, registered } = await resolveProjectContext();
     const localStore = ForemanStore.forProject(projectPath);
     const store = registered ? PostgresStore.forProject(registered.id) : localStore;
 
@@ -201,11 +197,7 @@ export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise
 
 export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promise<void> {
   try {
-    const projectPath = await resolveRepoRootProjectPath({});
-    const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
-    if (registered) {
-      ensureCliPostgresPool(projectPath);
-    }
+    const { projectPath, registered } = await resolveProjectContext();
     const localStore = ForemanStore.forProject(projectPath);
     const store = registered ? PostgresStore.forProject(registered.id) : localStore;
     const dryRun = opts.dryRun ?? false;

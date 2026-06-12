@@ -16,7 +16,8 @@ import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchest
 import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
 import { PostgresMergeCostTracker } from "../../orchestrator/postgres-merge-cost-tracker.js";
 import { syncBeadStatusAfterMerge } from "../../orchestrator/auto-merge.js";
-import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
 
 // ── Backend Client Factory (TRD-017) ──────────────────────────────────
 
@@ -97,10 +98,7 @@ export const mergeCommand = new Command("merge")
       const projectPath = await resolveRepoRootProjectPath({});
       const projectCfg = loadProjectConfig(projectPath);
       const vcs = await createMergeVcsBackend(projectPath);
-      const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
-      if (registered) {
-        ensureCliPostgresPool(projectPath);
-      }
+      const registered = await findRegisteredProjectByPath(projectPath);
 
       // Resolve the target branch: use the explicit --target-branch flag if provided,
       // otherwise auto-detect the repository's default branch.
