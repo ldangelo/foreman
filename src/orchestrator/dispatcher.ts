@@ -349,8 +349,14 @@ export class Dispatcher {
     // ── onError=stop guard ─────────────────────────────────────────────────
     // When the workflow's onError is "stop", refuse to dispatch if any recent
     // runs ended in a terminal failure state.
+    //
+    // Gate on the workflow actually selected for this dispatch: the explicit
+    // `--workflow <name>` override when given, otherwise "default". Per-task
+    // resolution (workflow:<name> labels, taskTypeWorkflowMap) happens later
+    // in the dispatch loop and is not available at this pre-dispatch gate.
     try {
-      const wfConfig = loadWorkflowConfig("default", this.projectPath);
+      const gateWorkflow = opts?.workflow?.trim() || "default";
+      const wfConfig = loadWorkflowConfig(gateWorkflow, this.projectPath);
       if (wfConfig.onError === "stop") {
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const failedCount = this.overrides?.getRecentFailureCount

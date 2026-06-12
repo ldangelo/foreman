@@ -64,12 +64,23 @@ describe("skipFlagsDeprecationWarning", () => {
     expect(skipFlagsDeprecationWarning({ skipExplore: false, skipReview: false })).toBeNull();
   });
 
-  it("warns that the flags have no effect and suggests --workflow quick", () => {
+  it("warns that the flags have no effect and suggests --workflow quick for `foreman run`", () => {
     const warning = skipFlagsDeprecationWarning({ skipExplore: true });
     expect(warning).toBeTruthy();
     expect(warning).toContain("--skip-explore");
     expect(warning).toContain("no effect");
     expect(warning).toContain("--workflow quick");
+  });
+
+  it("suggests passing `quick` as the workflow argument for `foreman run task`", () => {
+    // `foreman run task <task-id> <workflow>` takes the workflow as a
+    // positional argument — there is no --workflow flag on that subcommand.
+    const warning = skipFlagsDeprecationWarning({ skipExplore: true }, "task");
+    expect(warning).toBeTruthy();
+    expect(warning).toContain("--skip-explore");
+    expect(warning).toContain("no effect");
+    expect(warning).not.toContain("--workflow quick");
+    expect(warning).toContain("workflow argument");
   });
 
   it("mentions both flags when both are set", () => {

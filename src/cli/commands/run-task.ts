@@ -55,19 +55,30 @@ import { notificationBus } from "../../orchestrator/notification-bus.js";
  * shape is defined entirely by the workflow YAML. They are kept as hidden
  * no-ops for backwards compatibility.
  *
+ * The suggested replacement is context-aware: `foreman run` selects workflows
+ * via the `--workflow <name>` flag, while `foreman run task` takes the
+ * workflow as a positional argument.
+ *
+ * @param context - Which command emitted the warning: "run" (default) or "task".
  * @returns The one-line warning text, or null when neither flag is set.
  */
-export function skipFlagsDeprecationWarning(opts: {
-  skipExplore?: boolean;
-  skipReview?: boolean;
-}): string | null {
+export function skipFlagsDeprecationWarning(
+  opts: {
+    skipExplore?: boolean;
+    skipReview?: boolean;
+  },
+  context: "run" | "task" = "run",
+): string | null {
   const flags: string[] = [];
   if (opts.skipExplore) flags.push("--skip-explore");
   if (opts.skipReview) flags.push("--skip-review");
   if (flags.length === 0) return null;
+  const suggestion = context === "task"
+    ? "pass `quick` (or a custom workflow YAML) as the workflow argument instead."
+    : "use --workflow quick (or a custom workflow YAML) instead.";
   return (
     `${flags.join(" and ")} ${flags.length > 1 ? "are" : "is"} deprecated and ` +
-    `has no effect on the pipeline — use --workflow quick (or a custom workflow YAML) instead.`
+    `${flags.length > 1 ? "have" : "has"} no effect on the pipeline — ${suggestion}`
   );
 }
 
@@ -146,7 +157,7 @@ export async function runTaskAction(
   } = opts;
 
   // ── Deprecated flag warning ───────────────────────────────────────────
-  const deprecationWarning = skipFlagsDeprecationWarning(opts);
+  const deprecationWarning = skipFlagsDeprecationWarning(opts, "task");
   if (deprecationWarning) {
     console.warn(chalk.yellow(`[foreman] ${deprecationWarning}`));
   }

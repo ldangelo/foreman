@@ -286,9 +286,17 @@ phases:
         });
 
         expect(exitCode).toBe(0);
+        // `foreman run task` takes the workflow as a positional argument, so the
+        // warning suggests passing `quick` as the workflow argument (not a flag).
+        expect(
+          warnSpy.mock.calls.some((call) =>
+            String(call[0]).includes("pass `quick`") &&
+            String(call[0]).includes("workflow argument"),
+          ),
+        ).toBe(true);
         expect(
           warnSpy.mock.calls.some((call) => String(call[0]).includes("--workflow quick")),
-        ).toBe(true);
+        ).toBe(false);
 
         const spawnArg = mockSpawnWorkerProcess.mock.calls[0][0] as Record<string, unknown>;
         expect("skipExplore" in spawnArg).toBe(false);
