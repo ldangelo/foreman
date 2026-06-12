@@ -815,7 +815,8 @@ Workflows define:
 - **Setup cache** — symlink dependency directories from a shared cache
 - **Phase sequence** — which agents run in what order
 - **Model selection** — per-phase models with priority-based overrides
-- **Retry loops** — QA/Reviewer failure → Developer retry with feedback
+- **Retry loops** — QA/Reviewer/PR-review failure → Developer retry with feedback
+- **PR gates** — create-pr, pr-wait, prepare-pr-review, pr-review, and merge phases for review-aware workflows
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 ```yaml
@@ -840,6 +841,14 @@ phases:
     retryWith: developer
     retryOnFail: 2
 ```
+
+Direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks:
+
+```bash
+foreman run task <task-id> <workflow-name-or-path> --project <name> --no-watch
+```
+
+The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.
 
 ### Environment variables
 

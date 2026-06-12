@@ -15,9 +15,7 @@
  */
 
 import { Command } from "commander";
-import { join, basename, dirname } from "node:path";
 import chalk from "chalk";
-import { existsSync, readFileSync } from "node:fs";
 
 import { resolveRepoRootProjectPath, listRegisteredProjects } from "./project-task-support.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
@@ -30,13 +28,11 @@ import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
-import { getWorkspacePath } from "../../lib/workspace-paths.js";
 import { WorktreeManager } from "../../lib/worktree-manager.js";
 import { installDependencies, runSetupWithCache } from "../../lib/setup.js";
 import { runWorkspaceHook } from "../../lib/setup.js";
 import { loadWorkflowConfig } from "../../lib/workflow-loader.js";
 import type { WorkflowConfig } from "../../lib/workflow-loader.js";
-import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { buildWorkerEnv, spawnWorkerProcess } from "../../orchestrator/dispatcher.js";
 import { getRunReportsDir } from "../../lib/report-paths.js";
@@ -49,14 +45,6 @@ import { notificationBus } from "../../orchestrator/notification-bus.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-interface TaskRunResult {
-  success: boolean;
-  runId: string;
-  worktreePath: string;
-  branchName: string;
-  error?: string;
-}
-
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
@@ -67,7 +55,7 @@ function issueToSeedInfo(seed: Issue): SeedInfo {
     id: seed.id,
     title: seed.title,
     description: seed.description ?? undefined,
-    priority: typeof seed.priority === "number" ? `P${seed.priority}` : seed.priority,
+    priority: seed.priority,
     type: seed.type,
     labels: seed.labels,
   };
@@ -90,15 +78,11 @@ async function checkWorktreeLock(
   taskId: string,
   projectId: string,
 ): Promise<string | null> {
-  try {
-    const runs = await store.getRunsForSeed(taskId, projectId);
-    const activeRun = runs.find(
-      (r) => r.status === "running" || r.status === "pending",
-    );
-    return activeRun ? activeRun.id : null;
-  } catch {
-    return null;
-  }
+  const runs = await store.getRunsForSeed(taskId, projectId);
+  const activeRun = runs.find(
+    (r) => r.status === "running" || r.status === "pending",
+  );
+  return activeRun ? activeRun.id : null;
 }
 
 // ── Run Task Command ───────────────────────────────────────────────────────
@@ -156,6 +140,10 @@ export async function runTaskAction(
     console.error(chalk.red(`Task '${taskId}' not found`));
     return 1;
   }
+  if (!task) {
+    console.error(chalk.red(`Task '${taskId}' not found`));
+    return 1;
+  }
 
   console.log(chalk.bold(`Running task: ${chalk.cyan(taskId)}`));
   console.log(`  Title:   ${chalk.green(task.title)}`);
@@ -186,7 +174,15 @@ export async function runTaskAction(
   const projectId = registered?.id ?? projectRecord.id;
 
   // ── Check worktree lock ───────────────────────────────────────────────
-  const lockRunId = await checkWorktreeLock(daemonStore ?? store, taskId, projectId);
+  let lockRunId: string | null;
+  try {
+    lockRunId = await checkWorktreeLock(daemonStore ?? store, taskId, projectId);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(`Failed to check worktree lock: ${msg}`));
+    store.close();
+    return 1;
+  }
   if (lockRunId) {
     console.error(chalk.red(`Worktree is locked by active run: ${lockRunId}`));
     console.error(chalk.dim("  Use 'foreman stop' to stop the active run, or 'foreman reset --bead <id>' to reset it"));
@@ -298,7 +294,7 @@ export async function runTaskAction(
   }
 
   // ── Create run record ────────────────────────────────────────────────
-  const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  let runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const attemptNumber = 1;
 
   try {
@@ -320,10 +316,11 @@ export async function runTaskAction(
         mergeStrategy: workflowConfig.merge ?? "auto",
       });
     } else {
-      store.createRun(projectId, taskId, "developer", worktreePath, {
+      const localRun = store.createRun(projectId, taskId, "developer", worktreePath, {
         baseBranch: baseBranch ?? undefined,
         mergeStrategy: (workflowConfig.merge ?? "auto") as Run["merge_strategy"],
       });
+      runId = localRun.id;
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -336,9 +333,9 @@ export async function runTaskAction(
   try {
     if (daemonStore && registered) {
       const pg = new PostgresAdapter();
-      await pg.updateTask(projectId, taskId, { status: "in_progress" });
+      await pg.updateTask(projectId, taskId, { status: "in-progress" });
     } else if (typeof taskClient.update === "function") {
-      await taskClient.update(taskId, { status: "in_progress" });
+      await taskClient.update(taskId, { status: "in-progress" });
     }
   } catch {
     // Non-fatal: status update failure
@@ -374,6 +371,8 @@ export async function runTaskAction(
       prompt: `Execute workflow '${workflowConfig.name}' for task ${taskId}.`,
       env,
       pipeline: true,
+      workflowName: workflowConfig.name,
+      workflowPath,
       skipExplore: skipExplore ?? false,
       skipReview: skipReview ?? false,
       seedType: task.type ?? "task",

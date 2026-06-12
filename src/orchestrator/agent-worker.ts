@@ -312,6 +312,9 @@ interface WorkerConfig {
   pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
   skipExplore?: boolean;
   skipReview?: boolean;
+  /** Explicit workflow name/path for direct task execution. Overrides seed labels/type. */
+  workflowName?: string;
+  workflowPath?: string;
   /**
    * Bead type field (e.g. "feature", "bug", "task", "smoke").
    * Used to resolve the workflow name when no `workflow:<name>` label is set.
@@ -1403,15 +1406,16 @@ async function runPipeline(
   const projectCfg = loadProjectConfig(pipelineProjectPath);
   const projectTaskTypeWorkflowMap = projectCfg?.taskTypeWorkflowMap;
 
-  const resolvedWorkflow = resolveWorkflowName(
+  const resolvedWorkflow = config.workflowName ?? resolveWorkflowName(
     config.seedType ?? "feature",
     config.seedLabels,
     projectTaskTypeWorkflowMap,
   );
+  const workflowLookup = config.workflowPath ?? resolvedWorkflow;
   // Load the workflow config (phase sequence + per-phase overrides).
   let workflowConfig: WorkflowConfig;
   try {
-    workflowConfig = loadWorkflowConfig(resolvedWorkflow, pipelineProjectPath);
+    workflowConfig = loadWorkflowConfig(workflowLookup, pipelineProjectPath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[PIPELINE] Failed to load workflow config '${resolvedWorkflow}': ${msg}`);

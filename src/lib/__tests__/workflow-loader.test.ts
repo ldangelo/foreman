@@ -307,6 +307,21 @@ phases:
     expect(config.phases[1].builtin).toBe(true);
   });
 
+  it("loads an explicit project-relative workflow YAML path", () => {
+    mkdirSync(join(tmpDir, "custom"), { recursive: true });
+    writeFileSync(join(tmpDir, "custom", "manual.yaml"), `
+name: manual
+phases:
+  - name: qa
+    prompt: qa.md
+`);
+
+    const config = loadWorkflowConfig("custom/manual.yaml", tmpDir);
+    expect(config.name).toBe("manual");
+    expect(config.sourcePath).toBe(join(tmpDir, "custom", "manual.yaml"));
+    expect(config.phases.map((p) => p.name)).toEqual(["qa"]);
+  });
+
   it("falls back to bundled defaults when no global workflow file exists", () => {
     // tmpDir has no workflows/ — should fall through to bundled defaults
     const config = loadWorkflowConfig("default", tmpDir);

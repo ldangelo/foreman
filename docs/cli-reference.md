@@ -73,6 +73,26 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 | `--telemetry` | — | Enable OpenTelemetry tracing (requires OTEL_* env vars) |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
+### `foreman run task`
+
+Run a specific task through an explicit workflow, bypassing scheduler state gates. This is intended for debugging, recovery, and manual reruns where the task may be `failed`, `closed`, `in-progress`, or otherwise not `ready`. Worktree/run locking still applies.
+
+```bash
+foreman run task foreman-12345 task --project foreman --no-watch
+foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--model <model>` | workflow default | Override the model used by spawned worker phases |
+| `--skip-explore` | — | Skip explorer phases when supported by the workflow |
+| `--skip-review` | — | Skip reviewer phases when supported by the workflow |
+| `--dry-run` | — | Resolve task, workflow, and worktree without creating a run |
+| `--no-watch` | — | Spawn the worker and return immediately |
+| `--target-branch <branch>` | detected default | Override base/target branch for finalization and merge |
+| `--project <name>` | current project | Registered project name |
+| `--project-path <absolute-path>` | current project | Absolute project path for advanced/scripted use |
+
 ---
 
 ## Monitoring

@@ -12,6 +12,14 @@ describe("dispatcher task note wiring", () => {
     expect(source).toContain("taskMeta: {");
   });
 
+  it("passes the dispatcher-resolved workflow into spawned workers", () => {
+    const sourcePath = fileURLToPath(new URL("../dispatcher.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf8");
+
+    expect(source).toContain("workflowName: resolvedWorkflow,");
+    expect(source).toContain("workflowName: pipelineOpts?.workflowName,");
+  });
+
   it("keeps resume workers wired to the same native taskId", () => {
     const sourcePath = fileURLToPath(new URL("../dispatcher.ts", import.meta.url));
     const source = readFileSync(sourcePath, "utf8");

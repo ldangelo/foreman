@@ -7,7 +7,7 @@
 **Goal:** Refactor Foreman so executing a task workflow is a standalone command, and orchestration dispatch uses that command instead of owning the run loop directly.
 
 **CLI Interface:**
-```
+```bash
 foreman run task <task-id> <workflow-path> [options]
 ```
 
