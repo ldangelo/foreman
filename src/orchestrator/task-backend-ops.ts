@@ -238,6 +238,10 @@ export async function syncTaskStatusOnStartup(
         continue;
       }
 
+      if (task.status === "closed") {
+        continue;
+      }
+
       if (task.status !== expectedTaskStatus) {
         mismatches.push({
           seedId: run.seed_id,

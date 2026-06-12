@@ -25,7 +25,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, execFileSync: mockExecFileSync };
 });
 
-import { syncBeadStatusOnStartup } from "../task-backend-ops.js";
+import { syncBeadStatusOnStartup, syncTaskStatusOnStartup } from "../task-backend-ops.js";
 import type { SyncResult } from "../task-backend-ops.js";
 
 // ── Test helpers ────────────────────────────────────────────────────────────
@@ -438,5 +438,22 @@ describe("syncBeadStatusOnStartup", () => {
     // seed-a error should be recorded
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain("seed-a");
+  });
+});
+
+describe("syncTaskStatusOnStartup", () => {
+  it("does not reopen closed native tasks from stale failed runs", async () => {
+    const run = makeRun({ status: "failed" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+      getTaskById: vi.fn(async () => ({ id: "seed-abc", status: "closed" })),
+      updateTaskStatus: vi.fn(async () => {}),
+    };
+
+    const result = await syncTaskStatusOnStartup(store as any, "proj-1");
+
+    expect(result.synced).toBe(0);
+    expect(result.mismatches).toHaveLength(0);
+    expect(store.updateTaskStatus).not.toHaveBeenCalled();
   });
 });
