@@ -11,6 +11,7 @@ Workflow YAML files define the complete pipeline configuration for Foreman: whic
 
 Foreman ships with bundled workflows for common task types:
 - **`default`** — Standard pipeline with implementation, validation, PR creation, PR wait/review, and merge gates
+- **`quick`** — Fast variant of `default` without the explorer and reviewer phases (`developer ⇄ qa → finalize → PR gates → merge`). YAML-first replacement for the retired `--skip-explore`/`--skip-review` flags
 - **`task` / `feature` / `bug`** — Type-specific workflows with post-finalize PR phases (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`)
 - **`epic`** — Planning + implementation workflow (`prd → trd → implement → developer → qa → finalize`) followed by the same PR wait/review/merge gates
 - **`smoke`** — Lightweight fast-validation pipeline using cheaper models
@@ -18,15 +19,19 @@ Foreman ships with bundled workflows for common task types:
 ## Workflow Selection
 
 Workflows are resolved per task:
-1. First `workflow:<name>` label on the task (e.g. `workflow:smoke`)
-2. `taskTypeWorkflowMap[task.type]` in project config
-3. `taskTypeWorkflowMap.default`
-4. File-existence fallback (`~/.foreman/workflows/<type>.yaml` or bundled defaults)
+1. `foreman run --workflow <name>` CLI override (applies to every task in that dispatch; fails fast if the workflow cannot be loaded)
+2. First `workflow:<name>` label on the task (e.g. `workflow:smoke`)
+3. `taskTypeWorkflowMap[task.type]` in project config
+4. `taskTypeWorkflowMap.default`
+5. File-existence fallback (`~/.foreman/workflows/<type>.yaml` or bundled defaults)
 
 ```bash
 # Dispatch with default workflow
 br create --title="Add user auth" --type=feature
 foreman run
+
+# Dispatch everything with the quick workflow (no explorer/reviewer phases)
+foreman run --workflow quick
 
 # Dispatch with smoke workflow
 foreman task create --title "Smoke test" --type task --label workflow:smoke

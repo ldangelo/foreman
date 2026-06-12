@@ -129,6 +129,7 @@ foreman run --bead <task-id>      # Dispatch one task
 foreman run --max-agents 2        # Limit concurrency
 foreman run --dry-run             # Preview dispatch
 foreman run --no-watch            # Dispatch and exit
+foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
 ```
 
 ### 5. Monitor Progress

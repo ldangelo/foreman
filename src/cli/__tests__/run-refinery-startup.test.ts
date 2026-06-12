@@ -176,6 +176,9 @@ vi.mock("../../lib/prompt-loader.js", () => ({
 vi.mock("../../lib/workflow-loader.js", () => ({
   findMissingWorkflows: () => [],
   findStaleWorkflows: () => [],
+  ensureBundledWorkflowsInstalled: () => [],
+  listAvailableWorkflows: () => ["default", "quick"],
+  loadWorkflowConfig: () => ({ name: "default", phases: [] }),
 }));
 vi.mock("../commands/project-task-support.js", () => ({
   listRegisteredProjects: () => mockProjectsList(),

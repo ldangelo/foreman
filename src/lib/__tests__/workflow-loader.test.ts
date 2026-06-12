@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   mkdirSync,
   writeFileSync,
+  readFileSync,
   rmSync,
   existsSync,
 } from "node:fs";
@@ -17,6 +18,8 @@ import {
   findMissingWorkflows,
   resolveWorkflowName,
   resolvePhaseModel,
+  listAvailableWorkflows,
+  ensureBundledWorkflowsInstalled,
   WorkflowConfigError,
   BUNDLED_WORKFLOW_NAMES,
   type WorkflowSetupStep,
@@ -412,7 +415,7 @@ phases:
   });
 
   it("bundled auto-merge workflows expose cli-review, PR review, and merge phases", () => {
-    const workflows = ["default", "feature", "bug", "chore", "docs", "task"];
+    const workflows = ["default", "feature", "bug", "chore", "docs", "task", "quick"];
     for (const workflowName of workflows) {
       const config = loadWorkflowConfig(workflowName, tmpDir);
       const phaseNames = config.phases.map((phase) => phase.name);
@@ -1015,5 +1018,156 @@ describe("validateWorkflowConfig — epic mode", () => {
     expect(BUNDLED_WORKFLOW_NAMES).toContain("default");
     expect(BUNDLED_WORKFLOW_NAMES).toContain("smoke");
     expect(BUNDLED_WORKFLOW_NAMES).toContain("epic");
+  });
+});
+
+// ── quick workflow (YAML-first replacement for --skip-explore/--skip-review) ──
+
+describe("quick bundled workflow", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("is registered as a bundled workflow", () => {
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("quick");
+  });
+
+  it("loads from bundled defaults and omits explorer and reviewer phases", () => {
+    const config = loadWorkflowConfig("quick", tmpDir);
+    expect(config.name).toBe("quick");
+    const phaseNames = config.phases.map((p) => p.name);
+    expect(phaseNames).not.toContain("explorer");
+    expect(phaseNames).not.toContain("reviewer");
+    expect(phaseNames).toContain("developer");
+    expect(phaseNames).toContain("qa");
+    expect(phaseNames).toContain("documentation");
+    expect(phaseNames).toContain("finalize");
+  });
+
+  it("keeps QA verdict/retry wiring like the default workflow", () => {
+    const config = loadWorkflowConfig("quick", tmpDir);
+    const qaPhase = config.phases.find((p) => p.name === "qa");
+    expect(qaPhase?.verdict).toBe(true);
+    expect(qaPhase?.retryWith).toBe("developer");
+    expect(typeof qaPhase?.retryOnFail).toBe("number");
+  });
+});
+
+// ── resolveWorkflowName explicit override ────────────────────────────────────
+
+describe("resolveWorkflowName explicit override", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("explicit override takes priority over workflow:<name> labels", () => {
+    expect(resolveWorkflowName("feature", ["workflow:smoke"], undefined, "quick")).toBe("quick");
+  });
+
+  it("explicit override takes priority over taskTypeWorkflowMap", () => {
+    expect(
+      resolveWorkflowName("bug", undefined, { bug: "bug", default: "default" }, "quick"),
+    ).toBe("quick");
+  });
+
+  it("falls back to label resolution when override is undefined", () => {
+    expect(resolveWorkflowName("feature", ["workflow:smoke"], undefined, undefined)).toBe("smoke");
+  });
+
+  it("ignores empty/whitespace overrides", () => {
+    expect(resolveWorkflowName("feature", ["workflow:smoke"], undefined, "  ")).toBe("smoke");
+  });
+});
+
+// ── listAvailableWorkflows ───────────────────────────────────────────────────
+
+describe("listAvailableWorkflows", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("includes all bundled workflow names", () => {
+    const available = listAvailableWorkflows();
+    for (const name of BUNDLED_WORKFLOW_NAMES) {
+      expect(available).toContain(name);
+    }
+  });
+
+  it("includes custom workflows installed in ~/.foreman/workflows/", () => {
+    writeWorkflowFile(tmpDir, "my-custom", "name: my-custom\nphases:\n  - name: finalize\n    builtin: true\n");
+    const available = listAvailableWorkflows();
+    expect(available).toContain("my-custom");
+  });
+
+  it("deduplicates names present in both global and bundled locations", () => {
+    writeWorkflowFile(tmpDir, "default", "name: default\nphases:\n  - name: finalize\n    builtin: true\n");
+    const available = listAvailableWorkflows();
+    expect(available.filter((n) => n === "default")).toHaveLength(1);
+  });
+});
+
+// ── ensureBundledWorkflowsInstalled ──────────────────────────────────────────
+
+describe("ensureBundledWorkflowsInstalled", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("auto-installs missing bundled workflows and returns an empty missing list", () => {
+    const stillMissing = ensureBundledWorkflowsInstalled(tmpDir);
+    expect(stillMissing).toHaveLength(0);
+    for (const name of BUNDLED_WORKFLOW_NAMES) {
+      expect(existsSync(join(tmpDir, "workflows", `${name}.yaml`))).toBe(true);
+    }
+  });
+
+  it("does not overwrite existing installed workflows", () => {
+    const customContent = "name: default\nphases:\n  - name: finalize\n    builtin: true\n";
+    writeWorkflowFile(tmpDir, "default", customContent);
+    ensureBundledWorkflowsInstalled(tmpDir);
+    const after = readFileSync(join(tmpDir, "workflows", "default.yaml"), "utf-8");
+    expect(after).toBe(customContent);
+  });
+
+  it("installs newly added bundled workflows (e.g. quick) into existing installs", () => {
+    // Simulate an existing install that predates quick.yaml: install everything,
+    // then delete quick.yaml.
+    installBundledWorkflows(tmpDir);
+    rmSync(join(tmpDir, "workflows", "quick.yaml"), { force: true });
+    const stillMissing = ensureBundledWorkflowsInstalled(tmpDir);
+    expect(stillMissing).toHaveLength(0);
+    expect(existsSync(join(tmpDir, "workflows", "quick.yaml"))).toBe(true);
   });
 });

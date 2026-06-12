@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -22,7 +22,12 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { findMissingPrompts, findStalePrompts } from "../../lib/prompt-loader.js";
-import { findMissingWorkflows, findStaleWorkflows } from "../../lib/workflow-loader.js";
+import {
+  ensureBundledWorkflowsInstalled,
+  findStaleWorkflows,
+  listAvailableWorkflows,
+  loadWorkflowConfig,
+} from "../../lib/workflow-loader.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { DispatcherOverrides } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
@@ -38,7 +43,7 @@ import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 export { autoMerge } from "../../orchestrator/auto-merge.js";
 export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-merge.js";
-import { runTaskCommand } from "./run-task.js";
+import { runTaskCommand, skipFlagsDeprecationWarning } from "./run-task.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RunLookup } from "../../orchestrator/refinery-agent.js";
 import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
@@ -411,7 +416,11 @@ export function collectRuntimeAssetIssues(
 
   const missingPrompts = findMissingPrompts(projectPath);
   const stalePrompts = findStalePrompts(projectPath);
-  const missingWorkflows = findMissingWorkflows(projectPath);
+  // Auto-install any missing bundled workflows (e.g. newly added bundled
+  // workflows like quick.yaml on existing installs) instead of blocking
+  // dispatch. Only workflows still missing after the install attempt are
+  // reported as preflight issues.
+  const missingWorkflows = ensureBundledWorkflowsInstalled(projectPath);
   const staleWorkflows = findStaleWorkflows(projectPath);
 
   if (missingPrompts.length > 0) {
@@ -511,6 +520,34 @@ export async function checkBranchMismatch(
   return false;
 }
 
+// ── Workflow Override Validation ─────────────────────────────────────
+
+/**
+ * Validate a `--workflow <name>` override before dispatch.
+ *
+ * Fails fast when the named workflow cannot be loaded (not bundled, not in
+ * ~/.foreman/workflows/, not a valid YAML path), returning an error message
+ * that lists the available workflow names.
+ */
+export function validateWorkflowOverride(
+  workflowName: string,
+  projectPath: string,
+): { ok: true } | { ok: false; message: string } {
+  try {
+    loadWorkflowConfig(workflowName, projectPath);
+    return { ok: true };
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const available = listAvailableWorkflows();
+    return {
+      ok: false,
+      message:
+        `Cannot load workflow '${workflowName}': ${reason}\n` +
+        `Available workflows: ${available.join(", ")}`,
+    };
+  }
+}
+
 // ── Run Command ──────────────────────────────────────────────────────
 
 export const runCommand = new Command("run")
@@ -523,8 +560,9 @@ export const runCommand = new Command("run")
   .option("--resume", "Resume stuck/rate-limited runs from a previous dispatch")
   .option("--resume-failed", "Also resume failed runs (not just stuck/rate-limited)")
   .option("--no-pipeline", "Skip the explorer/qa/reviewer pipeline — run as single worker agent")
-  .option("--skip-explore", "Skip the explorer phase in the pipeline")
-  .option("--skip-review", "Skip the reviewer phase in the pipeline")
+  .option("--workflow <name>", "Run all dispatched tasks with this workflow (overrides workflow:<name> labels and task-type mapping)")
+  .addOption(new Option("--skip-explore", "(deprecated) No effect — use --workflow quick or a custom workflow").hideHelp())
+  .addOption(new Option("--skip-review", "(deprecated) No effect — use --workflow quick or a custom workflow").hideHelp())
   .option("--task <id>", "Dispatch only this specific task by ID (must be ready)")
   .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
@@ -541,9 +579,17 @@ export const runCommand = new Command("run")
     const watch = opts.watch as boolean;
     const telemetry = opts.telemetry as boolean | undefined;
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
-    const skipExplore = opts.skipExplore as boolean | undefined;
-    const skipReview = opts.skipReview as boolean | undefined;
+    const workflowOverride = (opts.workflow as string | undefined)?.trim() || undefined;
     const beadFilter = (opts.bead ?? opts.task) as string | undefined;
+
+    // Deprecated no-op flags retained for backwards compatibility
+    const deprecationWarning = skipFlagsDeprecationWarning({
+      skipExplore: opts.skipExplore as boolean | undefined,
+      skipReview: opts.skipReview as boolean | undefined,
+    });
+    if (deprecationWarning) {
+      console.warn(chalk.yellow(`[foreman] ${deprecationWarning}`));
+    }
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
     const runtimeMode = resolveRuntimeMode(opts.runtimeMode as string | undefined);
 
@@ -596,6 +642,18 @@ export const runCommand = new Command("run")
         }
       }
       const projectCfg = loadProjectConfig(projectPath);
+
+      // ── Workflow override validation ────────────────────────────────────
+      // Fail fast when --workflow names a workflow that cannot be loaded.
+      if (workflowOverride) {
+        const validation = validateWorkflowOverride(workflowOverride, projectPath);
+        if (!validation.ok) {
+          console.error(chalk.red(`\nError: ${validation.message}\n`));
+          process.exit(1);
+        }
+        console.log(chalk.dim(`[foreman] Workflow override: ${workflowOverride}`));
+      }
+
       if (!dryRun && !resume && !resumeFailed) {
         const assetIssues = collectRuntimeAssetIssues(projectPath, projectCfg);
         if (assetIssues.length > 0) {
@@ -854,12 +912,11 @@ export const runCommand = new Command("run")
             const newResult = await dispatcher.dispatch({
               maxAgents,
               model,
-            dryRun,
-            telemetry,
-            pipeline,
-            runtimeMode,
-            skipExplore,
-            skipReview,
+              dryRun,
+              telemetry,
+              pipeline,
+              runtimeMode,
+              workflow: workflowOverride,
               seedId: beadFilter,
               notifyUrl,
               targetBranch,
@@ -969,8 +1026,7 @@ export const runCommand = new Command("run")
           telemetry,
           pipeline,
           runtimeMode,
-          skipExplore,
-          skipReview,
+          workflow: workflowOverride,
           seedId: beadFilter,
           notifyUrl,
           targetBranch,

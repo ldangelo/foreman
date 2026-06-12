@@ -88,6 +88,9 @@ vi.mock("../../lib/prompt-loader.js", () => ({
 vi.mock("../../lib/workflow-loader.js", () => ({
   findMissingWorkflows: () => [],
   findStaleWorkflows: () => [],
+  ensureBundledWorkflowsInstalled: () => [],
+  listAvailableWorkflows: () => ["default", "quick"],
+  loadWorkflowConfig: () => ({ name: "default", phases: [] }),
 }));
 // Mock access() used by legacy beads checks, but preserve other fs/promises
 // exports that ProjectRegistry now uses during native client setup.

@@ -365,6 +365,7 @@ const BUNDLED_WORKFLOWS_DIR = join(
 /** Known workflow names with bundled defaults. */
 export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = [
   "default",
+  "quick",
   "smoke",
   "epic",
   "bug",
@@ -922,6 +923,57 @@ export function installBundledWorkflows(
 }
 
 /**
+ * List all workflow names available to the loader: bundled defaults plus any
+ * YAML files installed in ~/.foreman/workflows/. Sorted and deduplicated.
+ */
+export function listAvailableWorkflows(): string[] {
+  const names = new Set<string>();
+
+  try {
+    for (const file of readdirSync(BUNDLED_WORKFLOWS_DIR)) {
+      if (file.endsWith(".yaml") || file.endsWith(".yml")) {
+        names.add(file.replace(/\.ya?ml$/, ""));
+      }
+    }
+  } catch {
+    // Bundled workflows directory missing (e.g. partial install) — non-fatal
+  }
+
+  try {
+    for (const file of readdirSync(getForemanHomePath("workflows"))) {
+      if (file.endsWith(".yaml") || file.endsWith(".yml")) {
+        names.add(file.replace(/\.ya?ml$/, ""));
+      }
+    }
+  } catch {
+    // ~/.foreman/workflows/ not created yet — non-fatal
+  }
+
+  return [...names].sort();
+}
+
+/**
+ * Ensure all bundled workflows are installed in ~/.foreman/workflows/.
+ *
+ * Installs any missing bundled workflow YAML (never overwrites existing
+ * files), then returns the names that are still missing (e.g. when the
+ * bundled defaults directory is unavailable). Used by the `foreman run`
+ * preflight so that newly added bundled workflows (e.g. quick.yaml) are
+ * installed on the fly instead of blocking dispatch for existing installs.
+ *
+ * @param projectRoot - Absolute path to the project root.
+ * @returns Array of workflow names still missing after the install attempt.
+ */
+export function ensureBundledWorkflowsInstalled(projectRoot: string): string[] {
+  try {
+    installBundledWorkflows(projectRoot, false);
+  } catch {
+    // Install failure (e.g. read-only home) — fall through to report missing
+  }
+  return findMissingWorkflows(projectRoot);
+}
+
+/**
  * Find missing workflow config files for a project.
  *
  * @param projectRoot - Absolute path to the project root.
@@ -1027,21 +1079,32 @@ export function findStaleWorkflows(_projectRoot: string): string[] {
  * Resolve the workflow name for a seed/bead.
  *
  * Resolution order:
- *  1. `workflow:<name>` label — explicit override (highest priority)
- *  2. `taskTypeWorkflowMap[seedType]` — explicit config mapping
- *  3. `taskTypeWorkflowMap["default"]` — fallback for unknown types
- *  4. `{seedType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
- *  5. "default" (hard fallback)
+ *  1. `workflowOverride` — explicit override (e.g. `foreman run --workflow <name>`)
+ *  2. `workflow:<name>` label on the task
+ *  3. `taskTypeWorkflowMap[seedType]` — explicit config mapping
+ *  4. `taskTypeWorkflowMap["default"]` — fallback for unknown types
+ *  5. `{seedType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
+ *  6. "default" (hard fallback)
  *
- * When `taskTypeWorkflowMap` is not provided (undefined), steps 2–3 are skipped
+ * When `taskTypeWorkflowMap` is not provided (undefined), steps 3–4 are skipped
  * and the resolution falls back to the file-existence check (backward compatible).
+ *
+ * The explicit override is trusted as-is — callers (the CLI) validate it
+ * against loadable workflows before dispatch.
  */
 export function resolveWorkflowName(
   seedType: string,
   labels?: string[],
   taskTypeWorkflowMap?: Record<string, string>,
+  workflowOverride?: string,
 ): string {
-  // 1. workflow:<name> label override (highest priority)
+  // 0. Explicit override (e.g. `foreman run --workflow quick`) — top priority
+  const override = workflowOverride?.trim();
+  if (override) {
+    return override;
+  }
+
+  // 1. workflow:<name> label override
   if (labels) {
     for (const label of labels) {
       if (label.startsWith("workflow:")) {

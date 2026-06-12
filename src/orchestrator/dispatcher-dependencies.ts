@@ -253,8 +253,8 @@ export interface DispatchOptions {
   telemetry?: boolean;
   projectId?: string;
   pipeline?: boolean;
-  skipExplore?: boolean;
-  skipReview?: boolean;
+  /** Explicit workflow name override (from `foreman run --workflow <name>`). */
+  workflow?: string;
   seedId?: string;
   notifyUrl?: string;
   targetBranch?: string;

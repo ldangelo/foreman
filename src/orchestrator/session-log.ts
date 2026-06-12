@@ -25,7 +25,7 @@ export interface PhaseRecord {
   name: string;
   /** Execution surface used for this phase. */
   phaseType?: "prompt" | "command" | "bash" | "builtin";
-  /** True if this phase was skipped (e.g., --skip-explore or artifact already exists) */
+  /** True if this phase was skipped (e.g., skipIfArtifact matched an existing artifact) */
   skipped: boolean;
   /** Whether the phase succeeded (undefined if skipped) */
   success?: boolean;

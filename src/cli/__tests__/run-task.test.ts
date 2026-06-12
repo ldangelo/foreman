@@ -275,6 +275,29 @@ phases:
       expect(mockSpawnWorkerProcess).not.toHaveBeenCalled();
     });
 
+    it("warns about deprecated skip flags and does not forward them to the worker", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        const exitCode = await runTaskAction("task-123", "default", {
+          projectPath: testProjectPath,
+          watch: false,
+          skipExplore: true,
+          skipReview: true,
+        });
+
+        expect(exitCode).toBe(0);
+        expect(
+          warnSpy.mock.calls.some((call) => String(call[0]).includes("--workflow quick")),
+        ).toBe(true);
+
+        const spawnArg = mockSpawnWorkerProcess.mock.calls[0][0] as Record<string, unknown>;
+        expect("skipExplore" in spawnArg).toBe(false);
+        expect("skipReview" in spawnArg).toBe(false);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
     it("blocks when an active run already owns the task worktree", async () => {
       (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
         getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
