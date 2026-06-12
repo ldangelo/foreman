@@ -1856,7 +1856,9 @@ async function runPipeline(
           log(`[PIPELINE] PR creation handled by create-pr phase`);
         } else {
           try {
-            const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
+            // Use the outer runtimeTaskClient/runtimeTaskBackend pair so the
+            // backend-type check and the status update below use the same client
+            // instance (consistent with onTaskPhaseChange).
             const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);
             const pr = await refinery.ensurePullRequestForRun({
               runId,
@@ -1868,6 +1870,34 @@ async function runPipeline(
             });
             prCreated = true;
             log(`[FINALIZE] PR ready: ${pr.prUrl}`);
+
+            // Write PR metadata for consistency with explicit create-pr phase.
+            // This enables reconciliation to detect merged PRs and close stale tasks.
+            const prNumber = parsePrNumber(pr.prUrl);
+            const headSha = vcsBackend ? await vcsBackend.getHeadId(worktreePath).catch(() => undefined) : undefined;
+            const metadataPath = resolveArtifactPath(worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
+            await mkdir(dirname(metadataPath), { recursive: true });
+            await writeFile(metadataPath, JSON.stringify({
+              prUrl: pr.prUrl,
+              prNumber,
+              branchName: pr.branchName,
+              headSha,
+              baseBranch: config.targetBranch,
+            }, null, 2) + "\n", "utf8");
+
+            // Update task status to review after successful PR creation.
+            // This ensures the board reflects real state (PR created, awaiting merge).
+            // Guard with the same backend/type check used in onTaskPhaseChange.
+            if (runtimeTaskBackend === "native" && config.taskId) {
+              try {
+                await runtimeTaskClient.update(config.taskId, { status: "review" });
+                log(`[FINALIZE] Task ${config.taskId} status updated to review (PR created)`);
+              } catch (updateErr: unknown) {
+                const updateMsg = updateErr instanceof Error ? updateErr.message : String(updateErr);
+                log(`[FINALIZE] Task status update to review failed (non-fatal): ${updateMsg}`);
+              }
+            }
+
             sendMail(agentMailClient, "foreman", "pr-created", {
               seedId,
               runId,

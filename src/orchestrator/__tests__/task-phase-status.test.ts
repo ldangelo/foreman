@@ -17,10 +17,15 @@ describe("nativeTaskStatusForPhase", () => {
 
   it("skips builtin PR and review helper phases that are not native task statuses", () => {
     expect(nativeTaskStatusForPhase("cli-review")).toBeNull();
-    expect(nativeTaskStatusForPhase("create-pr")).toBeNull();
     expect(nativeTaskStatusForPhase("pr-wait")).toBeNull();
     expect(nativeTaskStatusForPhase("prepare-pr-review")).toBeNull();
     expect(nativeTaskStatusForPhase("pr-review")).toBeNull();
     expect(nativeTaskStatusForPhase("merge")).toBeNull();
+  });
+
+  it("updates task status to review after create-pr phase completes", () => {
+    // create-pr: PR has been created, task is now in review/awaiting-merge state.
+    // This ensures native task status is updated after PR creation.
+    expect(nativeTaskStatusForPhase("create-pr")).toBe("review");
   });
 });

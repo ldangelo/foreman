@@ -25,12 +25,16 @@ export function nativeTaskStatusForPhase(phaseName: string): NativeTaskStatus | 
     case "test":
       return "in-progress";
     case "cli-review":
-    case "create-pr":
     case "pr-wait":
     case "prepare-pr-review":
     case "pr-review":
     case "merge":
       return null;
+    // create-pr: PR has been created, task is now in review/awaiting-merge state.
+    // This ensures native task status is updated after PR creation (both explicit
+    // create-pr phase and finalize fallback path use onTaskPhaseChange callback).
+    case "create-pr":
+      return "review";
     default:
       return null;
   }

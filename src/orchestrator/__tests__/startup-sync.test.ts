@@ -456,4 +456,115 @@ describe("syncTaskStatusOnStartup", () => {
     expect(result.mismatches).toHaveLength(0);
     expect(store.updateTaskStatus).not.toHaveBeenCalled();
   });
+
+  it("updates stale finalize task to review when run is completed", async () => {
+    // Task stuck at finalize with a completed run should be updated to review
+    const run = makeRun({ status: "completed" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+      getTaskById: vi.fn(async () => ({ id: "seed-abc", status: "finalize" })),
+      updateTaskStatus: vi.fn(async () => {}),
+    };
+
+    const result = await syncTaskStatusOnStartup(store as any, "proj-1");
+
+    expect(result.synced).toBe(1);
+    expect(result.mismatches).toHaveLength(1);
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-abc", "review");
+  });
+
+  it("closes stale finalize task when run is merged", async () => {
+    // Task stuck at finalize with a merged run should be closed
+    const run = makeRun({ status: "merged" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+      getTaskById: vi.fn(async () => ({ id: "seed-abc", status: "finalize" })),
+      updateTaskStatus: vi.fn(async () => {}),
+    };
+
+    const result = await syncTaskStatusOnStartup(store as any, "proj-1");
+
+    expect(result.synced).toBe(1);
+    expect(result.mismatches).toHaveLength(1);
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-abc", "closed");
+  });
+
+  it("closes stale review task when run is merged", async () => {
+    // Task at review with a merged run should be closed
+    const run = makeRun({ status: "merged" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+      getTaskById: vi.fn(async () => ({ id: "seed-abc", status: "review" })),
+      updateTaskStatus: vi.fn(async () => {}),
+    };
+
+    const result = await syncTaskStatusOnStartup(store as any, "proj-1");
+
+    expect(result.synced).toBe(1);
+    expect(result.mismatches).toHaveLength(1);
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-abc", "closed");
+  });
+
+  it("does not reopen closed task even when run status suggests different status", async () => {
+    // Task already closed should stay closed regardless of run status
+    const run = makeRun({ status: "completed" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+      getTaskById: vi.fn(async () => ({ id: "seed-abc", status: "closed" })),
+      updateTaskStatus: vi.fn(async () => {}),
+    };
+
+    const result = await syncTaskStatusOnStartup(store as any, "proj-1");
+
+    // Should not update closed tasks — they are terminal
+    expect(result.synced).toBe(0);
+    expect(result.mismatches).toHaveLength(0);
+    expect(store.updateTaskStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not update task that is already at correct status", async () => {
+    // Task at review with completed run — no mismatch, no update needed
+    const run = makeRun({ status: "completed" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+      getTaskById: vi.fn(async () => ({ id: "seed-abc", status: "review" })),
+      updateTaskStatus: vi.fn(async () => {}),
+    };
+
+    const result = await syncTaskStatusOnStartup(store as any, "proj-1");
+
+    expect(result.synced).toBe(0);
+    expect(result.mismatches).toHaveLength(0);
+    expect(store.updateTaskStatus).not.toHaveBeenCalled();
+  });
+
+  it("handles pr-created run status by closing the task", async () => {
+    // PR-created (manual merge strategy) should close the task
+    const run = makeRun({ status: "pr-created" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+      getTaskById: vi.fn(async () => ({ id: "seed-abc", status: "review" })),
+      updateTaskStatus: vi.fn(async () => {}),
+    };
+
+    const result = await syncTaskStatusOnStartup(store as any, "proj-1");
+
+    expect(result.synced).toBe(1);
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-abc", "closed");
+  });
+
+  it("updates task to review when create-pr phase set finalize status but run is completed", async () => {
+    // After fix: create-pr updates task to review, but old runs may still have finalize status
+    const run = makeRun({ status: "completed" });
+    const store = {
+      getRunsByStatuses: vi.fn(async () => [run]),
+      getTaskById: vi.fn(async () => ({ id: "seed-abc", status: "finalize" })),
+      updateTaskStatus: vi.fn(async () => {}),
+    };
+
+    const result = await syncTaskStatusOnStartup(store as any, "proj-1");
+
+    expect(result.synced).toBe(1);
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("seed-abc", "review");
+  });
 });

@@ -600,7 +600,9 @@ describe("Refinery.mergeCompleted()", () => {
     await refinery.mergeCompleted({ runId: run.id, runTests: false, projectId: "proj-1", seedId: run.seed_id });
 
     expect(mockPostgresListTasks).toHaveBeenCalledWith("proj-1", { runId: "run-pg-task", limit: 1 });
-    expect(mockPostgresUpdateTask).toHaveBeenCalledWith("proj-1", "task-1", { status: "merged" });
+    // Use "closed" as the terminal status for merged runs — this matches
+    // mapRunStatusToNativeTaskStatus and ensures reconciliation consistency.
+    expect(mockPostgresUpdateTask).toHaveBeenCalledWith("proj-1", "task-1", { status: "closed" });
     expect(mockDb.prepare).not.toHaveBeenCalled();
   });
 
@@ -1407,7 +1409,7 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
   }
 
   describe("mergeCompleted()", () => {
-    it("calls taskStore.updateStatus with 'merged' when a native task exists for the run", async () => {
+    it("calls taskStore.updateStatus with 'closed' when a native task exists for the run", async () => {
       const { store, refinery } = makeMocksWithTask("run-task-1", "task-abc");
       const run = makeRun({ id: "run-task-1", seed_id: "seed-task-1" });
       store.getRunsByStatus.mockReturnValue([run]);
@@ -1419,7 +1421,9 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
       await refinery.mergeCompleted({ runTests: false });
 
       expect(updateStatusSpy).toHaveBeenCalledTimes(1);
-      expect(updateStatusSpy).toHaveBeenCalledWith("task-abc", "merged");
+      // Use "closed" as the terminal status for merged runs — this matches
+      // mapRunStatusToNativeTaskStatus and ensures reconciliation consistency.
+      expect(updateStatusSpy).toHaveBeenCalledWith("task-abc", "closed");
     });
 
     it("does NOT throw when taskStore.updateStatus fails (non-fatal)", async () => {
@@ -1457,7 +1461,7 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
   });
 
   describe("resolveConflict()", () => {
-    it("calls taskStore.updateStatus with 'merged' when a native task exists for the run", async () => {
+    it("calls taskStore.updateStatus with 'closed' when a native task exists for the run", async () => {
       const { store, refinery } = makeMocksWithTask("run-conflict-task", "task-xyz");
       const run = makeRun({ id: "run-conflict-task", seed_id: "seed-conflict-task", status: "conflict" });
       store.getRun.mockReturnValue(run);
@@ -1476,7 +1480,9 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
 
       expect(result).toBe(true);
       expect(updateStatusSpy).toHaveBeenCalledTimes(1);
-      expect(updateStatusSpy).toHaveBeenCalledWith("task-xyz", "merged");
+      // Use "closed" as the terminal status for merged runs — this matches
+      // mapRunStatusToNativeTaskStatus and ensures reconciliation consistency.
+      expect(updateStatusSpy).toHaveBeenCalledWith("task-xyz", "closed");
     });
 
     it("does NOT throw when taskStore.updateStatus fails in resolveConflict (non-fatal)", async () => {

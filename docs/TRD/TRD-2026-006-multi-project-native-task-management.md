@@ -94,7 +94,7 @@ Pipeline Integration:
    -> Pipeline executor runs phases, calls updatePhase() at each transition
 
 4. Refinery merges completed work:
-   -> refinery calls taskStore.updateStatus(taskId, 'merged', {closedAt: now()})
+   -> refinery calls taskStore.updateStatus(taskId, 'closed', {closedAt: now()})
    -> Cascade: re-evaluate blocked dependents -> unblock if all blockers resolved
 
 5. Dashboard aggregates across projects:
@@ -289,12 +289,12 @@ Pipeline Integration:
 **2h** | [satisfies REQ-018] [depends: TRD-005]
 - Validates PRD ACs: AC-018.1, AC-018.2
 - Implementation ACs:
-  - Given a successful merge, when the refinery processes it, then `taskStore.updateStatus(taskId, 'merged')` is called with `closed_at` set to now
+  - Given a successful merge, when the refinery processes it, then `taskStore.updateStatus(taskId, 'closed')` is called with `closed_at` set to now
   - Given the run has no associated task ID (pre-migration run), when refinery attempts to close, then a debug-level warning is logged and no error is thrown
 
 #### TRD-011-TEST: Unit tests for refinery native task closure
 **1h** | [verifies TRD-011] [satisfies REQ-018] [depends: TRD-011]
-- Test: successful merge sets task status to `merged` with `closed_at`
+- Test: successful merge sets task status to `closed` with `closed_at`
 - Test: missing task ID logs warning, does not throw
 
 #### TRD-012: Update sling to create native tasks instead of beads

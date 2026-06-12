@@ -170,7 +170,7 @@ Operator                  beads (br)               Foreman
 |------------------|----------|-------------|
 | `BeadsRustClient` | `src/lib/beads-rust.ts` | `NativeTaskStore` in `src/lib/task-store.ts` |
 | `br ready` query in dispatcher | `src/orchestrator/dispatcher.ts` | Query `tasks` table WHERE `status = 'ready'` |
-| `syncBeadStatusAfterMerge()` in refinery | `src/orchestrator/refinery.ts` | `taskStore.updateStatus(id, 'merged')` |
+| `syncBeadStatusAfterMerge()` in refinery | `src/orchestrator/refinery.ts` | `taskStore.updateStatus(id, 'closed')` |
 | `br create` in sling | `src/cli/commands/sling.ts` | `taskStore.create(...)` |
 | `bv` dashboard view | external binary | `foreman dashboard` cross-project view |
 | Per-project `foreman status` | `src/cli/commands/status.ts` | `foreman status --all` aggregation |
@@ -564,12 +564,12 @@ The dispatcher queries the local project's Postgres `tasks` table for ready task
 **Priority:** P1 (high)
 **MoSCoW:** Must
 
-The refinery closes native tasks by updating their status to `merged` after a successful merge.
+The refinery closes native tasks by updating their status to `closed` after a successful merge. The `closed` status is the terminal native task state for all merged runs, matching `mapRunStatusToNativeTaskStatus` expectations and ensuring reconciliation consistency.
 
 **Acceptance Criteria:**
 
-- AC-018.1: After a successful merge in `refinery.ts`, the refinery calls `taskStore.updateStatus(taskId, 'merged', { closedAt: new Date() })` for the task associated with the completed run.
-- AC-018.2: If the task ID cannot be resolved from the run (e.g., the run was created before native task tracking was active), the refinery logs a debug warning and proceeds without error. Eventual consistency is acceptable -- a manual `foreman task update <id> --status merged` is the operator recovery path.
+- AC-018.1: After a successful merge in `refinery.ts`, the refinery calls `taskStore.updateStatus(taskId, 'closed', { closedAt: new Date() })` for the task associated with the completed run.
+- AC-018.2: If the task ID cannot be resolved from the run (e.g., the run was created before native task tracking was active), the refinery logs a debug warning and proceeds without error. Eventual consistency is acceptable -- a manual `foreman task update <id> --status closed` is the operator recovery path.
 
 ---
 
@@ -776,7 +776,7 @@ src/lib/
 **Sprint 3 complete when:**
 - Dispatcher uses native task store for a complete end-to-end pipeline run
 - Pipeline phase status updates visible in `foreman task show`
-- Refinery marks tasks `merged` post-merge
+- Refinery marks tasks `closed` post-merge
 - Sling creates native tasks
 
 **Sprint 4 complete when:**

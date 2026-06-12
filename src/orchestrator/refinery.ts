@@ -801,7 +801,11 @@ export class Refinery {
           limit: 1,
         });
         if (task) {
-          await this.postgresAdapter.updateTask(this.registeredProjectId, task.id, { status: "merged" });
+          // Use "closed" as the terminal status — this matches the expected
+          // NativeTaskStatus for "merged" run status in mapRunStatusToNativeTaskStatus.
+          // The "merged" status was historically used but is now normalized to "closed"
+          // for consistency with reconciliation (syncTaskStatusOnStartup).
+          await this.postgresAdapter.updateTask(this.registeredProjectId, task.id, { status: "closed" });
           // Auto-close the linked GitHub issue (TRD-032)
           await closeLinkedGithubIssue(this.postgresAdapter, new (await import("../lib/gh-cli.js")).GhCli(), this.registeredProjectId, task.id);
           return;
@@ -812,7 +816,7 @@ export class Refinery {
           .get(runId) as { id: string } | undefined;
 
         if (row && this.taskStore) {
-          this.taskStore.updateStatus(row.id, "merged");
+          this.taskStore.updateStatus(row.id, "closed");
           return;
         }
       }
