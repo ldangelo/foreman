@@ -1137,7 +1137,7 @@ export const dashboardCommand = new Command("dashboard")
       process.stdout.write("\x1b[?25h\n"); // restore cursor
       console.log(chalk.dim("  Detached — agents continue in background."));
       console.log(chalk.dim("  Check status: foreman status"));
-      console.log(chalk.dim("  Monitor runs: foreman monitor\n"));
+      console.log(chalk.dim("  Detect stuck: foreman reset --detect-stuck\n"));
       process.exit(0);
     };
 

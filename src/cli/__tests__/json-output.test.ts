@@ -1,5 +1,5 @@
 /**
- * Tests for --json output flag on status, monitor, and merge --list commands.
+ * Tests for --json output flag on status and merge --list commands.
  *
  * Verifies:
  * - JSON output is valid and parseable when --json flag is passed
@@ -30,8 +30,6 @@ const {
   mockGetRunsForSeed,
   MockForemanStore,
   MockPostgresStore,
-  mockCheckAll,
-  MockMonitor,
   mockReconcile,
   mockList,
   MockMergeQueue,
@@ -89,13 +87,6 @@ const {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
-  // Monitor mocks
-  const mockCheckAll = vi.fn().mockResolvedValue({ active: [], completed: [], stuck: [], failed: [] });
-  const MockMonitor = vi.fn(function MockMonitorImpl(this: Record<string, unknown>) {
-    this.checkAll = mockCheckAll;
-    this.recoverStuck = vi.fn().mockResolvedValue(true);
-  });
-
   // MergeQueue mocks
   const mockReconcile = vi.fn().mockResolvedValue({ enqueued: 0 });
   const mockList = vi.fn().mockReturnValue([]);
@@ -127,8 +118,6 @@ const {
     mockGetRunsForSeed,
     MockForemanStore,
     MockPostgresStore,
-    mockCheckAll,
-    MockMonitor,
     mockReconcile,
     mockList,
     MockMergeQueue,
@@ -160,10 +149,6 @@ vi.mock("../../lib/store.js", () => ({
 
 vi.mock("../../lib/postgres-store.js", () => ({
   PostgresStore: MockPostgresStore,
-}));
-
-vi.mock("../../orchestrator/monitor.js", () => ({
-  Monitor: MockMonitor,
 }));
 
 vi.mock("../../orchestrator/merge-queue.js", () => ({
@@ -225,7 +210,6 @@ afterEach(() => {
 
 // ── Imports ─────────────────────────────────────────────────────────────────
 import { statusCommand } from "../commands/status.js";
-import { monitorCommand } from "../commands/monitor.js";
 import { mergeCommand } from "../commands/merge.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -410,97 +394,6 @@ describe("foreman status --json", () => {
 
     expect(tasks.failed).toBe(2);
     expect(tasks.stuck).toBe(1);
-  });
-});
-
-// ── Tests: foreman monitor --json ─────────────────────────────────────────────
-
-describe("foreman monitor --json", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCreateVcsBackend.mockResolvedValue({
-      name: "git",
-      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
-      getCurrentBranch: vi.fn().mockResolvedValue("main"),
-      checkoutBranch: vi.fn().mockResolvedValue(undefined),
-      getRemoteUrl: vi.fn().mockResolvedValue(null),
-      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
-    });
-    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
-      this.list = mockBrList;
-      this.ready = mockBrReady;
-      this.ensureBrInstalled = mockEnsureBrInstalled;
-    });
-    MockMonitor.mockImplementation(function MockMonitorImpl(this: Record<string, unknown>) {
-      this.checkAll = mockCheckAll;
-      this.recoverStuck = vi.fn().mockResolvedValue(true);
-    });
-    mockCheckAll.mockResolvedValue({ active: [], completed: [], stuck: [], failed: [] });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
-  });
-
-  it("outputs valid JSON when --json flag is passed", async () => {
-    const { stdout } = await runCommand(monitorCommand, ["--json"]);
-    expect(() => JSON.parse(stdout)).not.toThrow();
-  });
-
-  it("output contains active, completed, stuck, and failed arrays", async () => {
-    const { stdout } = await runCommand(monitorCommand, ["--json"]);
-    const data = JSON.parse(stdout);
-    expect(Array.isArray(data.active)).toBe(true);
-    expect(Array.isArray(data.completed)).toBe(true);
-    expect(Array.isArray(data.stuck)).toBe(true);
-    expect(Array.isArray(data.failed)).toBe(true);
-  });
-
-  it("reflects run data from monitor.checkAll()", async () => {
-    const mockRun = {
-      id: "run-1", project_id: "proj-1", seed_id: "bd-abc", agent_type: "claude-sonnet-4-6",
-      session_key: null, worktree_path: null, status: "running", started_at: "2026-03-17T10:00:00Z",
-      completed_at: null, created_at: "2026-03-17T10:00:00Z", progress: null,    };
-    mockCheckAll.mockResolvedValue({
-      active: [mockRun],
-      completed: [],
-      stuck: [],
-      failed: [],
-    });
-
-    const { stdout } = await runCommand(monitorCommand, ["--json"]);
-    const data = JSON.parse(stdout);
-
-    expect(data.active).toHaveLength(1);
-    expect(data.active[0].seed_id).toBe("bd-abc");
-    expect(data.completed).toHaveLength(0);
-    expect(data.stuck).toHaveLength(0);
-    expect(data.failed).toHaveLength(0);
-  });
-
-  it("does not output deprecation warning when --json flag is passed", async () => {
-    const { stderr } = await runCommand(monitorCommand, ["--json"]);
-    expect(stderr).not.toContain("deprecated");
-  });
-
-  it("does not output formatted header text when --json flag is passed", async () => {
-    const { stdout } = await runCommand(monitorCommand, ["--json"]);
-    expect(stdout).not.toContain("Checking agent status");
-    expect(stdout).not.toContain("Active (");
-  });
-
-  it("sanity: outputs human-readable text (not JSON) when --json is omitted", async () => {
-    const { stdout } = await runCommand(monitorCommand, []);
-    // Formatted path should contain status header text, not a JSON object
-    expect(stdout).toContain("Checking agent status");
-    expect(() => JSON.parse(stdout)).toThrow();
-  });
-
-  it("emits a stderr warning (not silently skip) when --json and --recover are both passed", async () => {
-    mockCheckAll.mockResolvedValue({ active: [], completed: [], stuck: [
-      { id: "run-1", seed_id: "bd-stuck", agent_type: "claude-sonnet-4-6", started_at: null, status: "stuck" },
-    ], failed: [] });
-
-    const { stderr } = await runCommand(monitorCommand, ["--json", "--recover"]);
-    expect(stderr).toContain("--recover is ignored when --json is used");
   });
 });
 

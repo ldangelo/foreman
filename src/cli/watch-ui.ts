@@ -457,7 +457,7 @@ export async function watchRunsInk(
     detached = true;
     process.stdout.write("\n");
     console.log("  Detached — agents continue in background (detached workers).");
-    console.log("  Check status:  foreman monitor");
+    console.log("  Check status:  foreman status");
     console.log("  Attach to run: foreman attach <run-id>\n");
     // Wake up the sleep immediately so the loop exits
     if (sleepResolve) sleepResolve();
