@@ -145,7 +145,7 @@ vcs:
 - **Input validation at boundaries only**
 - **TDD** use test driven development for all modifications, when adding features create a test first, prove it fails and then make the tests work, afterwards refine/simplify the tests and code for maintainability.
 - **TDD** use test driven development for all modifications, when fixing bugs write a test first that exposes the bug, prove it fails and then make the tests work, afterwards refine/simplify the tests and code for maintainability.
-- **Documentation gate** — every fix/feature must consider updates to `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide (`docs/cli-reference.md`) before finalization. Update only docs affected by real behavior, workflow, command, setup, troubleshooting, or operator-expectation changes.
+- **Documentation gate** — every fix/feature must consider updates to `CLAUDE.md`, `AGENTS.md`, `README.md`, the Foreman User Guide (`docs/user-guide.md`), and the CLI Reference (`docs/cli-reference.md`) before finalization. Update only docs affected by real behavior, workflow, command, setup, troubleshooting, or operator-expectation changes.
 
 ## Workflow YAML Configuration
 
