@@ -265,6 +265,14 @@ foreman worktree clean --all      # Remove ALL (including active)
 foreman worktree clean --dry-run  # Preview first
 ```
 
+### Daemon logs "skipped checkout sync" for a registered project
+
+**Symptoms:** Daemon log shows a one-time warning that checkout sync was skipped because the project is on a non-default branch or has uncommitted changes.
+
+**Cause:** This is intentional. The daemon refreshes registered project checkouts on its dispatch loop, but it never switches branches out from under you or mutates a dirty working tree. While you are on a feature branch it only fetches (and fast-forwards the local default-branch ref); normal sync resumes when the checkout returns to the default branch.
+
+**Fix:** Nothing to fix — finish your work and switch back to the default branch, or ignore the warning. Worktree-based agent dispatch is unaffected (worktrees are created from `origin/<default-branch>`, not your checkout).
+
 ---
 
 ## Database Issues

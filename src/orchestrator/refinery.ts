@@ -1110,6 +1110,17 @@ export class Refinery {
 
     const completedRuns = await this.orderByDependencies(rawRuns);
 
+    // Capture the originally checked-out branch of the project root. The
+    // fallback (non-integration-worktree) merge path checks out the target
+    // branch directly in the project root; a developer's checkout must be
+    // restored afterward, never silently left on the merge target.
+    let originalProjectBranch: string | undefined;
+    try {
+      originalProjectBranch = (await this.vcsBackend.getCurrentBranch(this.projectPath))?.trim() || undefined;
+    } catch {
+      originalProjectBranch = undefined; // detached HEAD or VCS error — nothing to restore
+    }
+
     const merged: MergedRun[] = [];
     const conflicts: ConflictRun[] = [];
     const testFailures: FailedRun[] = [];
@@ -1119,423 +1130,457 @@ export class Refinery {
     const unexpectedErrors: FailedRun[] = [];
     const prsCreated: import("./types.js").CreatedPr[] = [];
 
-    for (const run of completedRuns) {
-      const branchName = `foreman/${run.seed_id}`;
+    try {
+      for (const run of completedRuns) {
+        const branchName = `foreman/${run.seed_id}`;
 
-      // Resolve per-seed target branch: prefer branch: label on the bead,
-      // fall back to the caller-supplied or auto-detected default.
-      let targetBranch = defaultTargetBranch;
-      try {
-        const seedDetail = await this.seeds.show(run.seed_id);
-        const branchLabel = normalizeBranchLabel(extractBranchLabel(seedDetail.labels));
-        if (branchLabel) {
-          targetBranch = branchLabel;
-        }
-      } catch {
-        // Non-fatal — if label lookup fails, use default target
-      }
-
-      try {
-        const useIntegrationWorktree = this.vcsBackend.name === "git" && existsSync(join(this.projectPath, ".git"));
-        const mergeWorkspacePath = useIntegrationWorktree
-          ? await ensureIntegrationWorktree(this.projectPath, opts?.projectId ?? run.project_id, targetBranch)
-          : this.projectPath;
-        const mergeTargetRef = useIntegrationWorktree
-          ? await gitSpecial(["rev-parse", "--verify", `origin/${targetBranch}`], mergeWorkspacePath).then(() => `origin/${targetBranch}`).catch(() => targetBranch)
-          : targetBranch;
-
-        // Early guard: if the branch has no unique commits vs target, the agent committed
-        // nothing. Creating a PR would fail ("no commits between ..."). Don't reset to open
-        // (that would cause infinite redispatch to the same broken worktree). Mark as a
-        // conflict so the user can investigate.
-        const branchCommits = await gitSpecial(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
-        if (!branchCommits.trim()) {
-          console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
-          await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
-            await this.persistRunUpdate(run, { status: "conflict" });
-          this.sendMail(run.id, "merge-failed", {
-            seedId: run.seed_id,
-            branchName,
-            reason: "no-commits",
-            detail: `Branch ${branchName} has no unique commits beyond ${targetBranch}`,
-          });
-          conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
-          continue;
-        }
-
-        // Scan for conflict markers in COMMITTED branch content (not working tree).
-        // Working-tree conflict markers (e.g. leftover from a failed agent rebase) are
-        // intentionally ignored — they don't exist in the commits that will be merged.
-        {
-          const markedFiles = await this.scanForConflictMarkers(branchName, targetBranch);
-          if (markedFiles.length > 0) {
-            this.sendMail(run.id, "merge-failed", {
-              seedId: run.seed_id,
-              branchName,
-              reason: "conflict-markers",
-              conflictFiles: markedFiles,
-            });
-            const pr = await this.createPrForConflict(
-              run,
-              branchName,
-              targetBranch,
-              `Unresolved conflict markers in: ${markedFiles.join(", ")}`,
-            );
-            if (pr) {
-              prsCreated.push(pr);
-            } else {
-              await this.addFailureNote(run.seed_id, `Merge skipped: unresolved conflict markers in ${markedFiles.join(", ")}. PR creation also failed — manual intervention required.`);
-              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: markedFiles });
-            }
-            continue;
-          }
-        }
-
-        // Commit any dirty state files (.seeds/, .foreman/) before merge
-        await this.autoCommitStateFiles(mergeWorkspacePath);
-
-        // Remove report files so they can't cause merge conflicts
-        await this.removeReportFiles(mergeWorkspacePath);
-
-        // Ensure branch is in local refs — sentinel/remote branches may only exist
-        // on origin and not be fetched yet. Silently skip if the fetch fails (the
-        // reconcile step already validates the branch exists).
+        // Resolve per-seed target branch: prefer branch: label on the bead,
+        // fall back to the caller-supplied or auto-detected default.
+        let targetBranch = defaultTargetBranch;
         try {
-          await this.vcsBackend.fetch(this.projectPath);
+          const seedDetail = await this.seeds.show(run.seed_id);
+          const branchLabel = normalizeBranchLabel(extractBranchLabel(seedDetail.labels));
+          if (branchLabel) {
+            targetBranch = branchLabel;
+          }
         } catch {
-          // Fetch failure is non-fatal: branch may already be local, or the remote
-          // may be unreachable. The subsequent rebase/merge will surface any real error.
+          // Non-fatal — if label lookup fails, use default target
         }
 
-        // Rebase branch onto current target so it picks up all prior merges.
-        // For git backends, refinery rebases the branch from the main repo.
-        // For jujutsu backends, rebase the branch inside its own workspace so
-        // we don't fall back to raw git rebase semantics in colocated jj repos.
-        {
-          let rebaseOk = true;
-          const rebaseWorkspacePath = this.vcsBackend.name === "jujutsu"
-            ? (run.worktree_path ?? this.projectPath)
-            : mergeWorkspacePath;
-          let stashedBeforeRebase = false;
+        try {
+          const useIntegrationWorktree = this.vcsBackend.name === "git" && existsSync(join(this.projectPath, ".git"));
+          const mergeWorkspacePath = useIntegrationWorktree
+            ? await ensureIntegrationWorktree(this.projectPath, opts?.projectId ?? run.project_id, targetBranch)
+            : this.projectPath;
+          const mergeTargetRef = useIntegrationWorktree
+            ? await gitSpecial(["rev-parse", "--verify", `origin/${targetBranch}`], mergeWorkspacePath).then(() => `origin/${targetBranch}`).catch(() => targetBranch)
+            : targetBranch;
 
-          try {
-            if (this.vcsBackend.name === "jujutsu") {
-              // Finalize should have committed all task changes already. Clean any
-              // leftover uncommitted artifacts in the agent workspace before rebasing.
-              try {
-                const dirty = await this.vcsBackend.status(rebaseWorkspacePath);
-                if (dirty.trim()) {
-                  await this.vcsBackend.cleanWorkingTree(rebaseWorkspacePath);
-                }
-              } catch {
-                // best effort — rebase will surface a real error if workspace is still dirty
-              }
-
-              const rebaseResult = await this.vcsBackend.rebase(rebaseWorkspacePath, targetBranch);
-              rebaseOk = rebaseResult.success;
-            } else {
-              // Ensure working directory is clean before rebase — a previous partial rebase
-              // may have left patches applied but not committed. Save any uncommitted changes
-              // so git rebase doesn't refuse to run.
-              try {
-                const dirty = await this.vcsBackend.status(mergeWorkspacePath);
-                if (dirty.trim()) {
-                  stashedBeforeRebase = await this.vcsBackend.saveWorktreeState(mergeWorkspacePath);
-                }
-              } catch {
-                // save failure is non-fatal — rebase will fail with a clear message if still dirty
-              }
-
-              try {
-                const rebaseResult = await this.vcsBackend.rebaseBranch(mergeWorkspacePath, branchName, targetBranch);
-                if (!rebaseResult.success) {
-                  throw new Error(
-                    rebaseResult.conflictingFiles?.length
-                      ? `rebase conflicts: ${rebaseResult.conflictingFiles.join(", ")}`
-                      : "rebase failed",
-                  );
-                }
-              } catch (err: unknown) {
-                const errMsg = err instanceof Error ? err.message : String(err);
-                if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
-                  // Branch is checked out in an active worktree — git refuses to rebase it from
-                  // the main repo. Skip rebase and fall back to direct merge.
-                  console.warn(`[Refinery] Skipping rebase for ${branchName} (active worktree) — falling back to direct merge`);
-                  rebaseOk = true;
-                } else {
-                  // Rebase hit conflicts — try to auto-resolve report files and continue
-                  rebaseOk = await this.autoResolveRebaseConflicts(targetBranch, mergeWorkspacePath);
-                }
-              }
-            }
-          } finally {
-            // Return to target branch regardless
-            if (!useIntegrationWorktree) {
-              try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
-            } else {
-              try { await gitSpecial(["checkout", "--detach", mergeTargetRef], mergeWorkspacePath); } catch { /* best effort */ }
-              try { await this.vcsBackend.resetHard(mergeWorkspacePath, mergeTargetRef); } catch { /* best effort */ }
-            }
-
-            if (stashedBeforeRebase) {
-              try { await this.vcsBackend.restoreWorktreeState(mergeWorkspacePath); } catch { /* best effort — may be empty */ }
-            }
-          }
-
-          if (!rebaseOk) {
-            await this.addFailureNote(
-              run.seed_id,
-              `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — manual retry required. Rebase conflicts detected.`,
-            );
+          // Early guard: if the branch has no unique commits vs target, the agent committed
+          // nothing. Creating a PR would fail ("no commits between ..."). Don't reset to open
+          // (that would cause infinite redispatch to the same broken worktree). Mark as a
+          // conflict so the user can investigate.
+          const branchCommits = await gitSpecial(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
+          if (!branchCommits.trim()) {
+            console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
+            await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
+              await this.persistRunUpdate(run, { status: "conflict" });
             this.sendMail(run.id, "merge-failed", {
               seedId: run.seed_id,
               branchName,
-              reason: "rebase-conflict",
+              reason: "no-commits",
+              detail: `Branch ${branchName} has no unique commits beyond ${targetBranch}`,
             });
-            const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
-            if (pr) {
-              prsCreated.push(pr);
-            } else {
-              conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
-            }
+            conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
             continue;
           }
-        }
 
-        // Save pre-merge HEAD so we can revert merge + archive if tests fail
-        const preMergeHead = await this.vcsBackend.getHeadId(mergeWorkspacePath);
-
-        // Use squash merge so each feature branch becomes a single commit on
-        // the target branch, regardless of how many commits the branch contains.
-        // This prevents empty or noisy intermediate commits from polluting dev.
-        const squashMergeOk = true;
-        try {
-          if (!useIntegrationWorktree) {
-            await this.vcsBackend.checkoutBranch(mergeWorkspacePath, targetBranch);
+          // Scan for conflict markers in COMMITTED branch content (not working tree).
+          // Working-tree conflict markers (e.g. leftover from a failed agent rebase) are
+          // intentionally ignored — they don't exist in the commits that will be merged.
+          {
+            const markedFiles = await this.scanForConflictMarkers(branchName, targetBranch);
+            if (markedFiles.length > 0) {
+              this.sendMail(run.id, "merge-failed", {
+                seedId: run.seed_id,
+                branchName,
+                reason: "conflict-markers",
+                conflictFiles: markedFiles,
+              });
+              const pr = await this.createPrForConflict(
+                run,
+                branchName,
+                targetBranch,
+                `Unresolved conflict markers in: ${markedFiles.join(", ")}`,
+              );
+              if (pr) {
+                prsCreated.push(pr);
+              } else {
+                await this.addFailureNote(run.seed_id, `Merge skipped: unresolved conflict markers in ${markedFiles.join(", ")}. PR creation also failed — manual intervention required.`);
+                conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: markedFiles });
+              }
+              continue;
+            }
           }
-          const mergeResult = useIntegrationWorktree
-            ? await gitSpecial(["merge", branchName, "--no-commit", "--no-ff"], mergeWorkspacePath).then(() => ({ success: true as const })).catch(async (err: unknown) => {
-                const message = err instanceof Error ? err.message : String(err);
-                if (message.includes("CONFLICT") || message.includes("Merge conflict") || message.includes("Automatic merge failed")) {
-                  const conflicts = await gitSpecial(["diff", "--name-only", "--diff-filter=U"], mergeWorkspacePath).catch(() => "");
-                  return { success: false as const, conflicts: conflicts.split("\n").map((f) => f.trim()).filter(Boolean) };
-                }
-                throw err;
-              })
-            : await this.vcsBackend.mergeWithoutCommit(mergeWorkspacePath, branchName, targetBranch);
-          if (!mergeResult.success) {
-            const conflictSummary = mergeResult.conflicts?.join(", ") || "merge conflict";
-            throw new Error(`Merge conflict: ${conflictSummary}`);
-          }
-        } catch (mergeErr: unknown) {
-          const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
 
-          // Check for conflicts
-          let conflictingFiles: string[] = [];
+          // Commit any dirty state files (.seeds/, .foreman/) before merge
+          await this.autoCommitStateFiles(mergeWorkspacePath);
+
+          // Remove report files so they can't cause merge conflicts
+          await this.removeReportFiles(mergeWorkspacePath);
+
+          // Ensure branch is in local refs — sentinel/remote branches may only exist
+          // on origin and not be fetched yet. Silently skip if the fetch fails (the
+          // reconcile step already validates the branch exists).
           try {
-            conflictingFiles = await this.vcsBackend.getConflictingFiles(this.projectPath);
+            await this.vcsBackend.fetch(this.projectPath);
           } catch {
-            // best effort
+            // Fetch failure is non-fatal: branch may already be local, or the remote
+            // may be unreachable. The subsequent rebase/merge will surface any real error.
           }
 
-          if (mergeMsg.includes("CONFLICT") || mergeMsg.includes("Merge conflict") || conflictingFiles.length > 0) {
-            const allConflicts = conflictingFiles;
-            const reportConflicts = allConflicts.filter((f) => this.isReportFile(f));
-            const codeConflicts = allConflicts.filter((f) => !this.isReportFile(f));
+          // Rebase branch onto current target so it picks up all prior merges.
+          // For git backends, refinery rebases the branch from the main repo.
+          // For jujutsu backends, rebase the branch inside its own workspace so
+          // we don't fall back to raw git rebase semantics in colocated jj repos.
+          {
+            let rebaseOk = true;
+            const rebaseWorkspacePath = this.vcsBackend.name === "jujutsu"
+              ? (run.worktree_path ?? this.projectPath)
+              : mergeWorkspacePath;
+            let stashedBeforeRebase = false;
 
-            if (codeConflicts.length > 0) {
-              // Real code conflicts — abort merge and create PR instead
-              try {
-                await this.vcsBackend.abortMerge(mergeWorkspacePath);
-              } catch {
-                // abortMerge may fail if already clean; reset as fallback
-                try { await this.vcsBackend.resetHard(mergeWorkspacePath, "HEAD"); } catch { /* best effort */ }
+            try {
+              if (this.vcsBackend.name === "jujutsu") {
+                // Finalize should have committed all task changes already. Clean any
+                // leftover uncommitted artifacts in the agent workspace before rebasing.
+                try {
+                  const dirty = await this.vcsBackend.status(rebaseWorkspacePath);
+                  if (dirty.trim()) {
+                    await this.vcsBackend.cleanWorkingTree(rebaseWorkspacePath);
+                  }
+                } catch {
+                  // best effort — rebase will surface a real error if workspace is still dirty
+                }
+
+                const rebaseResult = await this.vcsBackend.rebase(rebaseWorkspacePath, targetBranch);
+                rebaseOk = rebaseResult.success;
+              } else {
+                // Ensure working directory is clean before rebase — a previous partial rebase
+                // may have left patches applied but not committed. Save any uncommitted changes
+                // so git rebase doesn't refuse to run.
+                try {
+                  const dirty = await this.vcsBackend.status(mergeWorkspacePath);
+                  if (dirty.trim()) {
+                    stashedBeforeRebase = await this.vcsBackend.saveWorktreeState(mergeWorkspacePath);
+                  }
+                } catch {
+                  // save failure is non-fatal — rebase will fail with a clear message if still dirty
+                }
+
+                try {
+                  const rebaseResult = await this.vcsBackend.rebaseBranch(mergeWorkspacePath, branchName, targetBranch);
+                  if (!rebaseResult.success) {
+                    throw new Error(
+                      rebaseResult.conflictingFiles?.length
+                        ? `rebase conflicts: ${rebaseResult.conflictingFiles.join(", ")}`
+                        : "rebase failed",
+                    );
+                  }
+                } catch (err: unknown) {
+                  const errMsg = err instanceof Error ? err.message : String(err);
+                  if (errMsg.includes("already used by worktree") || errMsg.includes("is already checked out")) {
+                    // Branch is checked out in an active worktree — git refuses to rebase it from
+                    // the main repo. Skip rebase and fall back to direct merge.
+                    console.warn(`[Refinery] Skipping rebase for ${branchName} (active worktree) — falling back to direct merge`);
+                    rebaseOk = true;
+                  } else {
+                    // Rebase hit conflicts — try to auto-resolve report files and continue
+                    rebaseOk = await this.autoResolveRebaseConflicts(targetBranch, mergeWorkspacePath);
+                  }
+                }
+              }
+            } finally {
+              // Return to target branch regardless
+              if (!useIntegrationWorktree) {
+                try { await this.vcsBackend.checkoutBranch(this.projectPath, targetBranch); } catch { /* best effort */ }
+              } else {
+                try { await gitSpecial(["checkout", "--detach", mergeTargetRef], mergeWorkspacePath); } catch { /* best effort */ }
+                try { await this.vcsBackend.resetHard(mergeWorkspacePath, mergeTargetRef); } catch { /* best effort */ }
               }
 
+              if (stashedBeforeRebase) {
+                try { await this.vcsBackend.restoreWorktreeState(mergeWorkspacePath); } catch { /* best effort — may be empty */ }
+              }
+            }
+
+            if (!rebaseOk) {
               await this.addFailureNote(
                 run.seed_id,
-                `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — manual retry required. Conflicting files: ${codeConflicts.join(", ")}`,
+                `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — manual retry required. Rebase conflicts detected.`,
               );
               this.sendMail(run.id, "merge-failed", {
                 seedId: run.seed_id,
                 branchName,
-                reason: "merge-conflict",
-                conflictFiles: codeConflicts,
+                reason: "rebase-conflict",
               });
-
-              const pr = await this.createPrForConflict(run, branchName, targetBranch,
-                `Conflicts in: ${codeConflicts.join(", ")}`);
+              const pr = await this.createPrForConflict(run, branchName, targetBranch, "Rebase conflicts");
               if (pr) {
                 prsCreated.push(pr);
               } else {
-                conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
+                conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
               }
               continue;
             }
+          }
 
-            // Only report-file conflicts — auto-resolve by accepting the branch version
-            for (const f of reportConflicts) {
-              await this.vcsBackend.checkoutFile(mergeWorkspacePath, "--theirs", f);
-              await this.vcsBackend.stageFile(mergeWorkspacePath, f);
+          // Save pre-merge HEAD so we can revert merge + archive if tests fail
+          const preMergeHead = await this.vcsBackend.getHeadId(mergeWorkspacePath);
+
+          // Use squash merge so each feature branch becomes a single commit on
+          // the target branch, regardless of how many commits the branch contains.
+          // This prevents empty or noisy intermediate commits from polluting dev.
+          const squashMergeOk = true;
+          try {
+            if (!useIntegrationWorktree) {
+              await this.vcsBackend.checkoutBranch(mergeWorkspacePath, targetBranch);
             }
-          } else {
-            // Non-conflict error — rethrow
-            throw mergeErr;
-          }
-        }
-
-        // Commit the squash merge (git merge --squash stages but does not commit)
-        if (squashMergeOk) {
-          // Build a concise squash commit message with seed info
-          let squashMsg = `${branchName}: squash merge`;
-          try {
-            const seedDetail = await this.seeds.show(run.seed_id);
-            if (seedDetail?.title) {
-              squashMsg = `${seedDetail.title} (${run.seed_id})`;
+            const mergeResult = useIntegrationWorktree
+              ? await gitSpecial(["merge", branchName, "--no-commit", "--no-ff"], mergeWorkspacePath).then(() => ({ success: true as const })).catch(async (err: unknown) => {
+                  const message = err instanceof Error ? err.message : String(err);
+                  if (message.includes("CONFLICT") || message.includes("Merge conflict") || message.includes("Automatic merge failed")) {
+                    const conflicts = await gitSpecial(["diff", "--name-only", "--diff-filter=U"], mergeWorkspacePath).catch(() => "");
+                    return { success: false as const, conflicts: conflicts.split("\n").map((f) => f.trim()).filter(Boolean) };
+                  }
+                  throw err;
+                })
+              : await this.vcsBackend.mergeWithoutCommit(mergeWorkspacePath, branchName, targetBranch);
+            if (!mergeResult.success) {
+              const conflictSummary = mergeResult.conflicts?.join(", ") || "merge conflict";
+              throw new Error(`Merge conflict: ${conflictSummary}`);
             }
-          } catch {
-            // Non-fatal — use default message
-          }
-          try {
-            await this.vcsBackend.commit(mergeWorkspacePath, squashMsg);
-          } catch (commitErr: unknown) {
-            // commit may fail if there's nothing to commit (empty squash)
-            const commitMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
-            if (!commitMsg.includes("nothing to commit")) {
-              throw commitErr;
+          } catch (mergeErr: unknown) {
+            const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+
+            // Check for conflicts
+            let conflictingFiles: string[] = [];
+            try {
+              conflictingFiles = await this.vcsBackend.getConflictingFiles(this.projectPath);
+            } catch {
+              // best effort
+            }
+
+            if (mergeMsg.includes("CONFLICT") || mergeMsg.includes("Merge conflict") || conflictingFiles.length > 0) {
+              const allConflicts = conflictingFiles;
+              const reportConflicts = allConflicts.filter((f) => this.isReportFile(f));
+              const codeConflicts = allConflicts.filter((f) => !this.isReportFile(f));
+
+              if (codeConflicts.length > 0) {
+                // Real code conflicts — abort merge and create PR instead
+                try {
+                  await this.vcsBackend.abortMerge(mergeWorkspacePath);
+                } catch {
+                  // abortMerge may fail if already clean; reset as fallback
+                  try { await this.vcsBackend.resetHard(mergeWorkspacePath, "HEAD"); } catch { /* best effort */ }
+                }
+
+                await this.addFailureNote(
+                  run.seed_id,
+                  `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — manual retry required. Conflicting files: ${codeConflicts.join(", ")}`,
+                );
+                this.sendMail(run.id, "merge-failed", {
+                  seedId: run.seed_id,
+                  branchName,
+                  reason: "merge-conflict",
+                  conflictFiles: codeConflicts,
+                });
+
+                const pr = await this.createPrForConflict(run, branchName, targetBranch,
+                  `Conflicts in: ${codeConflicts.join(", ")}`);
+                if (pr) {
+                  prsCreated.push(pr);
+                } else {
+                  conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
+                }
+                continue;
+              }
+
+              // Only report-file conflicts — auto-resolve by accepting the branch version
+              for (const f of reportConflicts) {
+                await this.vcsBackend.checkoutFile(mergeWorkspacePath, "--theirs", f);
+                await this.vcsBackend.stageFile(mergeWorkspacePath, f);
+              }
+            } else {
+              // Non-conflict error — rethrow
+              throw mergeErr;
             }
           }
-        }
 
-        // Merge succeeded — archive report files so they don't conflict with next merge
-        await this.archiveReportsPostMerge(run.seed_id, mergeWorkspacePath);
-
-        // Optionally run tests
-        if (runTests) {
-          const testResult = await runTestCommand(testCommand, mergeWorkspacePath);
-
-          if (!testResult.ok) {
-            // Revert the merge + archive commits
-            await this.vcsBackend.resetHard(mergeWorkspacePath, preMergeHead);
-
-            // Add failure note before resetting so the bead records why it was reset
-            await this.addFailureNote(
-              run.seed_id,
-              `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — manual retry required. ${testResult.output.slice(0, 300)}`,
-            );
-
-            await this.persistRunUpdate(run, { status: "test-failed" });
-            await this.persistRunEvent(
-              run,
-              "test-fail",
-              { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
-            );
-            this.sendMail(run.id, "merge-failed", {
-              seedId: run.seed_id,
-              branchName,
-              reason: "test-failure",
-              output: testResult.output.slice(0, 500),
-            });
-            testFailures.push({
-              runId: run.id,
-              seedId: run.seed_id,
-              branchName,
-              error: testResult.output.slice(0, 500),
-            });
-            continue;
-          }
-        }
-
-        if (useIntegrationWorktree) {
-          await gitSpecial(["push", "origin", `HEAD:${targetBranch}`], mergeWorkspacePath);
-        }
-
-        // All good — clean up worktree and mark as merged
-        if (run.worktree_path) {
-          try {
-            await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
-          } catch {
-            // Archive is best-effort — don't block worktree removal
+          // Commit the squash merge (git merge --squash stages but does not commit)
+          if (squashMergeOk) {
+            // Build a concise squash commit message with seed info
+            let squashMsg = `${branchName}: squash merge`;
+            try {
+              const seedDetail = await this.seeds.show(run.seed_id);
+              if (seedDetail?.title) {
+                squashMsg = `${seedDetail.title} (${run.seed_id})`;
+              }
+            } catch {
+              // Non-fatal — use default message
+            }
+            try {
+              await this.vcsBackend.commit(mergeWorkspacePath, squashMsg);
+            } catch (commitErr: unknown) {
+              // commit may fail if there's nothing to commit (empty squash)
+              const commitMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
+              if (!commitMsg.includes("nothing to commit")) {
+                throw commitErr;
+              }
+            }
           }
 
-          // Run beforeRemove hook (non-fatal — failures are logged but ignored)
-          await this.runBeforeRemoveHook(run.worktree_path, run.seed_id);
+          // Merge succeeded — archive report files so they don't conflict with next merge
+          await this.archiveReportsPostMerge(run.seed_id, mergeWorkspacePath);
 
-          try {
-            await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
-          } catch {
-            // Non-fatal — worktree may already be gone
+          // Optionally run tests
+          if (runTests) {
+            const testResult = await runTestCommand(testCommand, mergeWorkspacePath);
+
+            if (!testResult.ok) {
+              // Revert the merge + archive commits
+              await this.vcsBackend.resetHard(mergeWorkspacePath, preMergeHead);
+
+              // Add failure note before resetting so the bead records why it was reset
+              await this.addFailureNote(
+                run.seed_id,
+                `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — manual retry required. ${testResult.output.slice(0, 300)}`,
+              );
+
+              await this.persistRunUpdate(run, { status: "test-failed" });
+              await this.persistRunEvent(
+                run,
+                "test-fail",
+                { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
+              );
+              this.sendMail(run.id, "merge-failed", {
+                seedId: run.seed_id,
+                branchName,
+                reason: "test-failure",
+                output: testResult.output.slice(0, 500),
+              });
+              testFailures.push({
+                runId: run.id,
+                seedId: run.seed_id,
+                branchName,
+                error: testResult.output.slice(0, 500),
+              });
+              continue;
+            }
           }
+
+          if (useIntegrationWorktree) {
+            await gitSpecial(["push", "origin", `HEAD:${targetBranch}`], mergeWorkspacePath);
+          }
+
+          // All good — clean up worktree and mark as merged
+          if (run.worktree_path) {
+            try {
+              await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+            } catch {
+              // Archive is best-effort — don't block worktree removal
+            }
+
+            // Run beforeRemove hook (non-fatal — failures are logged but ignored)
+            await this.runBeforeRemoveHook(run.worktree_path, run.seed_id);
+
+            try {
+              await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
+            } catch {
+              // Non-fatal — worktree may already be gone
+            }
+          }
+
+          await this.persistRunUpdate(run, {
+            status: "merged",
+            completed_at: new Date().toISOString(),
+          });
+          await this.persistRunEvent(
+            run,
+            "merge",
+            { seedId: run.seed_id, branchName, targetBranch },
+          );
+
+          // Send merge-complete mail so inbox shows a successful merge event
+          this.sendMail(run.id, "merge-complete", {
+            seedId: run.seed_id,
+            branchName,
+            targetBranch,
+          });
+
+          // Close the bead NOW — after the code has actually landed in main.
+          // projectPath (repo root) is where .beads/ lives; not the worktree dir.
+          enqueueCloseSeed(this.store, run.seed_id, "refinery");
+
+          // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
+          await this.closeNativeTaskPostMerge(run.id, run.seed_id);
+
+          // Send bead-closed mail so inbox shows bead lifecycle completion
+          this.sendMail(run.id, "bead-closed", {
+            seedId: run.seed_id,
+            branchName,
+            targetBranch,
+          });
+
+          // Rebase any stacked branches (seeds that branched from this one) onto target.
+          await this.rebaseStackedBranches(branchName, targetBranch);
+
+          merged.push({
+            runId: run.id,
+            seedId: run.seed_id,
+            branchName,
+          });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          // Update run status to "failed" so subsequent bead status sync has a
+          // terminal status to map from (fixes the exception gap).
+          await this.persistRunUpdate(run, { status: "failed" });
+          await this.persistRunEvent(
+            run,
+            "fail",
+            { seedId: run.seed_id, branchName, error: message },
+          );
+          this.sendMail(run.id, "merge-failed", {
+            seedId: run.seed_id,
+            branchName,
+            reason: "unexpected-error",
+            error: message.slice(0, 400),
+          });
+          await this.addFailureNote(run.seed_id, `Merge failed: ${message.slice(0, 400)}`);
+          // Push to unexpectedErrors (not testFailures) so auto-merge reports
+          // reason "unexpected-error" instead of "test-failure" (Fix 3).
+          unexpectedErrors.push({
+            runId: run.id,
+            seedId: run.seed_id,
+            branchName,
+            error: message,
+          });
         }
-
-        await this.persistRunUpdate(run, {
-          status: "merged",
-          completed_at: new Date().toISOString(),
-        });
-        await this.persistRunEvent(
-          run,
-          "merge",
-          { seedId: run.seed_id, branchName, targetBranch },
-        );
-
-        // Send merge-complete mail so inbox shows a successful merge event
-        this.sendMail(run.id, "merge-complete", {
-          seedId: run.seed_id,
-          branchName,
-          targetBranch,
-        });
-
-        // Close the bead NOW — after the code has actually landed in main.
-        // projectPath (repo root) is where .beads/ lives; not the worktree dir.
-        enqueueCloseSeed(this.store, run.seed_id, "refinery");
-
-        // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
-        await this.closeNativeTaskPostMerge(run.id, run.seed_id);
-
-        // Send bead-closed mail so inbox shows bead lifecycle completion
-        this.sendMail(run.id, "bead-closed", {
-          seedId: run.seed_id,
-          branchName,
-          targetBranch,
-        });
-
-        // Rebase any stacked branches (seeds that branched from this one) onto target.
-        await this.rebaseStackedBranches(branchName, targetBranch);
-
-        merged.push({
-          runId: run.id,
-          seedId: run.seed_id,
-          branchName,
-        });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        // Update run status to "failed" so subsequent bead status sync has a
-        // terminal status to map from (fixes the exception gap).
-        await this.persistRunUpdate(run, { status: "failed" });
-        await this.persistRunEvent(
-          run,
-          "fail",
-          { seedId: run.seed_id, branchName, error: message },
-        );
-        this.sendMail(run.id, "merge-failed", {
-          seedId: run.seed_id,
-          branchName,
-          reason: "unexpected-error",
-          error: message.slice(0, 400),
-        });
-        await this.addFailureNote(run.seed_id, `Merge failed: ${message.slice(0, 400)}`);
-        // Push to unexpectedErrors (not testFailures) so auto-merge reports
-        // reason "unexpected-error" instead of "test-failure" (Fix 3).
-        unexpectedErrors.push({
-          runId: run.id,
-          seedId: run.seed_id,
-          branchName,
-          error: message,
-        });
       }
+    } finally {
+      // Restore the developer's original checkout — the fallback merge path
+      // may have switched the project root to the merge target branch.
+      await this.#restoreOriginalProjectBranch(originalProjectBranch);
     }
 
     return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
+  }
+
+  /**
+   * Restore the project root to the branch that was checked out before
+   * mergeCompleted() ran (same save/restore pattern as `foreman reset`).
+   *
+   * - No-op when nothing was captured (detached HEAD) or the checkout is
+   *   already on the original branch.
+   * - Skipped (with a warning) when the original branch no longer exists.
+   * - Never throws — restore is strictly best-effort.
+   */
+  async #restoreOriginalProjectBranch(originalBranch: string | undefined): Promise<void> {
+    if (!originalBranch) return;
+    try {
+      const currentBranch = (await this.vcsBackend.getCurrentBranch(this.projectPath))?.trim();
+      if (currentBranch === originalBranch) return;
+
+      const exists = await this.vcsBackend.branchExists(this.projectPath, originalBranch).catch(() => false);
+      if (!exists) {
+        console.warn(`[Refinery] Not restoring original branch '${originalBranch}' — it no longer exists`);
+        return;
+      }
+
+      await this.vcsBackend.checkoutBranch(this.projectPath, originalBranch);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Refinery] Could not restore original branch '${originalBranch}': ${message}. Run: git checkout ${originalBranch}`);
+    }
   }
 
   /**
