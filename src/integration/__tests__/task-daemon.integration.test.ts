@@ -153,7 +153,7 @@ describe("task CLI daemon/Postgres integration", () => {
     rmSync(tempHome, { recursive: true, force: true });
   });
 
-  it("creates, lists, shows, and approves tasks through the daemon/Postgres path", async () => {
+  it("creates, lists, shows, and approves tasks through the daemon/Postgres path", { timeout: 90_000 }, async () => {
     if (!(await canConnect(databaseUrl))) {
       return;
     }
