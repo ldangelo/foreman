@@ -12,7 +12,7 @@ import type { TaskBackend } from "../../lib/feature-flags.js";
 import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { listRegisteredProjects } from "./project-task-support.js";
-import { fetchDaemonDashboardState, pollDashboard, renderDashboard } from "./dashboard.js";
+import { fetchDaemonDashboardState, pollDashboard, renderDashboard } from "../dashboard-state.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
 
@@ -377,7 +377,7 @@ function sleepOrDetach(ms: number, detach: { wait: () => Promise<void> }): Promi
 export const statusCommand = new Command("status")
   .description("Show project status from the native Postgres task store")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
-  .option("--live", "Enable full dashboard TUI with event stream (implies --watch; use instead of 'foreman dashboard')")
+  .option("--live", "Enable full dashboard TUI with event stream (implies --watch; see also 'foreman watch')")
   .option("--json", "Output status as JSON")
   .option("--all", "Show status across all registered projects")
   .option("--project <name>", "Registered project name (default: current directory)")

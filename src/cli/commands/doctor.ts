@@ -7,8 +7,11 @@ import { createTaskClient } from "../../lib/task-client-factory.js";
 import { Doctor } from "../../orchestrator/doctor.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
-import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
-import { purgeLogsAction, wrapLocalPurgeStore } from "./purge-logs.js";
+import { ensureCliPostgresPool, resolveRepoRootProjectPath } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
+import { wrapLocalRunStore } from "./local-store-adapter.js";
+import { parseNonNegativeIntOption } from "./cli-output.js";
+import { purgeLogsAction } from "./purge-logs.js";
 import type { CheckResult, CheckStatus } from "../../orchestrator/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -68,11 +71,11 @@ export const doctorCommand = new Command("doctor")
   .option("--dry-run", "Show what --fix would do without making changes")
   .option("--json", "Output results as JSON")
   .option("--clean-logs", "Remove old agent log files after health checks (default: keep last 7 days)")
-  .option("--log-days <n>", "Retention window for --clean-logs in days (default: 7)", (v) => {
-    const n = parseInt(v, 10);
-    if (isNaN(n) || n < 0) throw new Error("--log-days must be a non-negative integer");
-    return n;
-  })
+  .option(
+    "--log-days <n>",
+    "Retention window for --clean-logs in days (default: 7)",
+    parseNonNegativeIntOption("--log-days"),
+  )
   .action(async (opts) => {
     const fix = (opts.fix as boolean | undefined) ?? false;
     const dryRun = (opts.dryRun as boolean | undefined) ?? false;
@@ -114,7 +117,9 @@ export const doctorCommand = new Command("doctor")
     let exitCode = 0;
     try {
       store = ForemanStore.forProject(projectPath);
-      const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+      // initPool: false — doctor records whether the pool was already
+      // initialised before ensuring it, so it can destroy it on exit.
+      const registered = await findRegisteredProjectByPath(projectPath, { initPool: false });
       const mq = new MergeQueue(store.getDb());
       if (registered) {
         shouldDestroyCliPool = !isPoolInitialised();
@@ -179,7 +184,7 @@ export const doctorCommand = new Command("doctor")
       } else {
         const localPurgeStore = ForemanStore.forProject(projectPath);
         try {
-          await purgeLogsAction({ days: logDays, dryRun }, wrapLocalPurgeStore(localPurgeStore));
+          await purgeLogsAction({ days: logDays, dryRun }, wrapLocalRunStore(localPurgeStore));
         } finally {
           localPurgeStore.close();
         }

@@ -6,7 +6,8 @@ import { PostgresStore } from "../../lib/postgres-store.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
-import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
+import { ensureCliPostgresPool, listRegisteredProjects } from "./project-task-support.js";
+import { findRegisteredProjectByFlagOrCwd } from "./project-context.js";
 
 export const sentinelCommand = new Command("sentinel")
   .description("QA sentinel: continuous testing agent for main/master branch");
@@ -64,17 +65,7 @@ export function wrapPostgresSentinelStore(store: PostgresStore, projectId: strin
 async function resolveProject(
   opts: { project?: string },
 ): Promise<{ id: string; name: string; path: string } | null> {
-  if (opts.project) {
-    const projects = await listRegisteredProjects();
-    const match = projects.find(
-      (p) => p.id === opts.project || p.name === opts.project,
-    );
-    return match ?? null;
-  }
-  // Fall back to current directory
-  const projectPath = await resolveRepoRootProjectPath({});
-  const projects = await listRegisteredProjects();
-  return projects.find((p) => p.path === projectPath) ?? null;
+  return findRegisteredProjectByFlagOrCwd(opts.project);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,9 +1,9 @@
 /**
- * Characterization tests for native task store counts in status and dashboard.
+ * Characterization tests for native task store counts in status.
  *
- * These tests document that status and dashboard commands read task counts
- * exclusively from the native Postgres task store. Beads fallback has been
- * removed; the native store is the only supported source.
+ * These tests document that the status command reads task counts exclusively
+ * from the native Postgres task store. Beads fallback has been removed; the
+ * native store is the only supported source.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -58,7 +58,6 @@ vi.mock("../../lib/store.js", () => ({
   },
 }));
 
-import { fetchDashboardTaskCounts } from "../commands/dashboard.js";
 import { fetchStatusCounts } from "../commands/status.js";
 
 describe("native task store counts (characterization)", () => {
@@ -128,40 +127,4 @@ describe("native task store counts (characterization)", () => {
     expect(mockBrList).not.toHaveBeenCalled();
   });
 
-  it("dashboard reads compact counts from the native task store", async () => {
-    mockHasNativeTasks.mockReturnValue(true);
-    mockListTasksByStatus.mockImplementation((statuses: string[]) => {
-      if (
-        statuses.includes("ready")
-        && statuses.includes("in-progress")
-        && statuses.includes("closed")
-        && statuses.includes("blocked")
-      ) {
-        return [
-          { id: "t-ready", status: "ready" },
-          { id: "t-ready-2", status: "ready" },
-          { id: "t-running", status: "in-progress" },
-          { id: "t-done", status: "closed" },
-          { id: "t-blocked", status: "blocked" },
-        ];
-      }
-      if (statuses.includes("ready")) return [{ id: "t-ready" }, { id: "t-ready-2" }];
-      if (statuses.includes("in-progress")) return [{ id: "t-running" }];
-      if (statuses.includes("closed") || statuses.includes("merged")) return [{ id: "t-done" }];
-      if (statuses.includes("blocked") || statuses.includes("backlog")) return [{ id: "t-blocked" }];
-      return [];
-    });
-
-    const counts = await fetchDashboardTaskCounts(projectPath);
-
-    expect(counts).toEqual({
-      total: 5,
-      ready: 2,
-      inProgress: 1,
-      completed: 1,
-      blocked: 1,
-    });
-    expect(mockBrList).not.toHaveBeenCalled();
-    expect(mockBrReady).not.toHaveBeenCalled();
-  });
 });

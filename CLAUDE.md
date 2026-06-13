@@ -19,10 +19,10 @@ foreman init           # Initialize project + beads
 foreman run            # Dispatch ready tasks to agents
 foreman run --bead X   # Dispatch specific task
 foreman status         # Show tasks + active agents
-foreman dashboard      # Live dashboard UI
-foreman monitor        # Check agent health
+foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
 foreman reset          # Clean up failed/stuck runs
+foreman reset --detect-stuck  # Detect + reset stuck runs (replaces 'foreman monitor')
 foreman retry <seed>   # Re-run a failed pipeline phase
 foreman stop           # Gracefully stop all agents
 foreman doctor         # Health checks (br, Pi, DB integrity)
@@ -33,7 +33,11 @@ foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
+foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead')
+foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
+foreman purge runs     # Remove stale failed run records
 foreman inbox          # Agent mail inbox viewer
+foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
 
 # br (beads_rust) task tracking
@@ -62,7 +66,7 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 
 **Key modules:**
 
-- `src/cli/commands/` — 21 CLI commands (including `debug` for AI-powered analysis)
+- `src/cli/commands/` — 26 CLI commands (including `debug` for AI-powered analysis)
 - `src/orchestrator/pipeline-executor.ts` — generic workflow YAML-driven phase executor
 - `src/orchestrator/pi-sdk-runner.ts` — Pi SDK wrapper (`createAgentSession` + `session.prompt()`)
 - `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (native `send_mail` tool)
@@ -225,6 +229,8 @@ foreman retry <seed>   # Re-run a specific pipeline phase
 # Agent logs (streamed during run)
 ls ~/.foreman/logs/    # One .log file per runId
 cat ~/.foreman/logs/<runId>.log
+foreman purge logs     # Remove old log files (retention policy)
+foreman purge runs     # Remove stale failed run records
 
 # Mail inspection
 foreman inbox --all --watch  # Live stream all mail across all runs

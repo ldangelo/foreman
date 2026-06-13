@@ -5,10 +5,10 @@
  * - approveTask: backlog → ready
  * - retryTask: failed/stuck/conflict → backlog
  *
- * Reuses logic from dashboard.ts (which now implements these actions
+ * Reuses logic from dashboard-state.ts (which implements these actions
  * via daemon-backed task APIs).
  */
-import { approveTask as approveDashboard, retryTask as retryDashboard } from "../dashboard.js";
+import { approveTask as approveDashboard, retryTask as retryDashboard } from "../../dashboard-state.js";
 
 /**
  * Approve a backlog task, moving it to ready status.

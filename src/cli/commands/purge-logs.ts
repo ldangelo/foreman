@@ -1,4 +1,3 @@
-import { Command } from "commander";
 import chalk from "chalk";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -6,8 +5,10 @@ import { homedir } from "node:os";
 
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
-import { ensureCliPostgresPool, listRegisteredProjects } from "./project-task-support.js";
-import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import type { RegisteredProjectSummary } from "./project-task-support.js";
+import { resolveProjectContext } from "./project-context.js";
+import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice, printPurgeSummary } from "./cli-output.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -29,7 +30,7 @@ interface PurgeStore {
   getRun(id: string): Promise<import("../../lib/store.js").Run | null>;
 }
 
-type RegisteredProject = Awaited<ReturnType<typeof listRegisteredProjects>>[number];
+type RegisteredProject = RegisteredProjectSummary;
 
 export interface PurgeLogsCommandContext {
   projectPath: string;
@@ -38,24 +39,13 @@ export interface PurgeLogsCommandContext {
   store: PurgeStore;
 }
 
-export function wrapLocalPurgeStore(store: ForemanStore): PurgeStore {
-  return {
-    getRun: async (id) => store.getRun(id),
-  };
-}
-
 export async function resolvePurgeLogsCommandContext(): Promise<PurgeLogsCommandContext> {
-  const projectPath = await resolveRepoRootProjectPath({});
+  const { projectPath, registered } = await resolveProjectContext();
   const localStore = ForemanStore.forProject(projectPath);
-  const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
-
-  if (registered) {
-    ensureCliPostgresPool(projectPath);
-  }
 
   const store: PurgeStore = registered
     ? PostgresStore.forProject(registered.id)
-    : wrapLocalPurgeStore(localStore);
+    : wrapLocalRunStore(localStore);
 
   return { projectPath, localStore, registered, store };
 }
@@ -122,9 +112,7 @@ export async function purgeLogsAction(
   const days = opts.days ?? 7;
   const dir = logsDir ?? LOGS_DIR;
 
-  if (dryRun) {
-    console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-  }
+  printDryRunNotice(dryRun);
 
   // Cutoff: files/runs older than this timestamp are candidates
   const cutoffMs = deleteAll ? Infinity : Date.now() - days * 24 * 60 * 60 * 1000;
@@ -271,24 +259,17 @@ export async function purgeLogsAction(
   }
 
   // 4. Summary
-  console.log();
-  const freedStr = humanBytes(result.freedBytes);
-
-  if (dryRun) {
-    console.log(
-      chalk.yellow(
-        `Dry run complete — ${result.deleted} log group(s) would be deleted (${freedStr}), ${result.skipped} skipped, ${result.errors} error(s).`,
-      ),
-    );
-    console.log(chalk.dim("Run without --dry-run to apply changes."));
-  } else {
-    const color = result.errors > 0 ? chalk.yellow : chalk.green;
-    console.log(
-      color(
-        `Done — ${result.deleted} log group(s) deleted (${freedStr}), ${result.skipped} skipped, ${result.errors} error(s).`,
-      ),
-    );
-  }
+  printPurgeSummary({
+    dryRun,
+    subject: "log group(s)",
+    verb: "deleted",
+    count: result.deleted,
+    skipped: result.skipped,
+    errors: result.errors,
+    detail: humanBytes(result.freedBytes),
+    dryRunHint: "Run without --dry-run to apply changes.",
+    warnOnErrors: true,
+  });
 
   return result;
 }
@@ -312,36 +293,17 @@ export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void>
       context.store,
     );
     context.localStore.close();
-    if ("close" in context.store && typeof (context.store as { close?: () => void }).close === "function") {
-      (context.store as { close: () => void }).close();
-    }
+    closeStoreIfPossible(context.store);
     process.exit(result.errors > 0 ? 1 : 0);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(chalk.red(msg));
     context.localStore.close();
-    if ("close" in context.store && typeof (context.store as { close?: () => void }).close === "function") {
-      (context.store as { close: () => void }).close();
-    }
+    closeStoreIfPossible(context.store);
     process.exit(1);
   }
 }
 
-// ── CLI Command ──────────────────────────────────────────────────────
-
-export const purgeLogsCommand = new Command("purge-logs")
-  .description(
-    "Remove old agent log files from ~/.foreman/logs/ based on a retention policy",
-  )
-  .option(
-    "--days <n>",
-    "Delete logs from runs older than N days (default: 7)",
-    (v) => {
-      const n = parseInt(v, 10);
-      if (isNaN(n) || n < 0) throw new Error("--days must be a non-negative integer");
-      return n;
-    },
-  )
-  .option("--dry-run", "Show what would be deleted without making any changes")
-  .option("--all", "Delete all terminal-status logs regardless of age (use with caution)")
-  .action(purgeLogsCommandAction);
+// The CLI command surface lives in purge.ts:
+//   foreman purge logs        (canonical)
+//   foreman purge-logs        (hidden, deprecated alias)

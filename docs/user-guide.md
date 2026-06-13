@@ -100,6 +100,13 @@ foreman task create \
   --description "When CodeRabbit reports a transient rate limit, schedule retry after cooldown instead of terminal failure."
 ```
 
+You can also generate task(s) from a natural-language description (or a file path) with LLM parsing:
+
+```bash
+foreman task create --from-text "Fix the login timeout bug"
+foreman task create --from-text docs/issue.md --dry-run
+```
+
 Good task descriptions include:
 
 - Problem statement
@@ -136,12 +143,12 @@ foreman run --no-watch            # Dispatch and exit
 ```bash
 foreman status
 foreman board
-foreman monitor
+foreman watch
 foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman status` or `foreman monitor` when you need execution health and active run state.
+Use `foreman board` for kanban-style task triage. Use `foreman status` or `foreman watch` when you need execution health and active run state. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
 
 ### 6. Triage Failures
 

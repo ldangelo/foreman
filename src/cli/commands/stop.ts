@@ -4,7 +4,10 @@ import chalk from "chalk";
 
 import { ForemanStore, type Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
-import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
+import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice } from "./cli-output.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -27,17 +30,6 @@ interface StopStore {
   getRunsForSeed(seedId: string, projectId: string): Promise<Run[]>;
   updateRun(runId: string, updates: Partial<Pick<Run, "status" | "completed_at">>): Promise<void>;
   logEvent(projectId: string, eventType: "stuck", data: Record<string, unknown>, runId?: string): Promise<void>;
-}
-
-export function wrapLocalStopStore(store: ForemanStore): StopStore {
-  return {
-    getProjectByPath: async (path) => store.getProjectByPath(path),
-    getActiveRuns: async (projectId) => store.getActiveRuns(projectId),
-    getRun: async (id) => store.getRun(id),
-    getRunsForSeed: async (seedId, projectId) => store.getRunsForSeed(seedId, projectId),
-    updateRun: async (runId, updates) => store.updateRun(runId, updates),
-    logEvent: async (projectId, eventType, data, runId) => store.logEvent(projectId, eventType, data, runId),
-  };
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -72,9 +64,7 @@ export async function stopAction(
     return 1;
   }
 
-  if (dryRun) {
-    console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-  }
+  printDryRunNotice(dryRun);
 
   // ── Single run by ID or seed ID ────────────────────────────────────
   if (id) {
@@ -262,19 +252,13 @@ export async function stopCommandAction(id: string | undefined, opts: StopOpts):
     isGitRepo = false;
   }
 
-  const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+  const registered = await findRegisteredProjectByPath(projectPath);
   const localStore = ForemanStore.forProject(projectPath);
-  if (registered) {
-    ensureCliPostgresPool(projectPath);
-  }
-  const store: StopStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalStopStore(localStore);
+  const store: StopStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(localStore);
 
   const closeStores = () => {
     localStore.close();
-    const maybeCloseStore = store as { close?: () => void };
-    if (typeof maybeCloseStore.close === "function") {
-      maybeCloseStore.close();
-    }
+    closeStoreIfPossible(store);
   };
 
   if (opts.list) {

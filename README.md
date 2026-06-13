@@ -504,13 +504,14 @@ foreman board                             # Launch interactive kanban board
 foreman board --project my-project        # Board for a specific project
 ```
 
-### `foreman dashboard`
-Multi-project dashboard with run progress, metrics, and human-attention tasks.
+### `foreman watch`
+Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
 
 ```bash
-foreman dashboard                         # Multi-project overview
-foreman dashboard --simple                # Compact single-project view with task counts
-foreman dashboard --project my-project    # Single project deep dive
+foreman watch                             # Live unified dashboard
+foreman watch --no-watch                  # One-shot snapshot, no polling
+foreman watch --project <id>              # Filter to a specific project
+foreman status --watch                    # Compact refreshing status view
 ```
 
 Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths still work for direct one-off targeting.
@@ -578,6 +579,7 @@ foreman inbox                            # Latest run's messages
 foreman inbox --task task-abc           # Messages for a specific task
 foreman inbox --all                     # All runs
 foreman inbox --all --watch             # Live stream across all runs
+foreman inbox send --from qa --to developer --subject fix-needed  # Send a message (--run-id or FOREMAN_RUN_ID)
 ```
 
 ### `foreman worktree`

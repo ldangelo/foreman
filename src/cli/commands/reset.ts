@@ -2,7 +2,10 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
-import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, listRegisteredProjects, ensureCliPostgresPool } from "./project-task-support.js";
+import { requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { resolveProjectContext } from "./project-context.js";
+import { wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice } from "./cli-output.js";
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import type { Run } from "../../lib/store.js";
@@ -11,7 +14,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
-import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
+import { getSeedRetryTargetStatus, mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
@@ -37,16 +40,6 @@ interface ResetRunStore {
   getRunsForSeed(seedId: string, projectId: string): Promise<Run[]>;
   updateRun(runId: string, updates: Partial<Pick<Run, "status" | "completed_at">>): Promise<void>;
   logEvent(projectId: string, eventType: "stuck", data: Record<string, unknown>, runId?: string): Promise<void>;
-}
-
-function wrapLocalResetRunStore(store: ForemanStore): ResetRunStore {
-  return {
-    getRunsByStatus: async (status, projectId) => store.getRunsByStatus(status, projectId),
-    getActiveRuns: async (projectId) => store.getActiveRuns(projectId),
-    getRunsForSeed: async (seedId, projectId) => store.getRunsForSeed(seedId, projectId),
-    updateRun: async (runId, updates) => store.updateRun(runId, updates),
-    logEvent: async (projectId, eventType, data, runId) => store.logEvent(projectId, eventType, data, runId),
-  };
 }
 
 interface ResetMergeQueue {
@@ -589,37 +582,6 @@ export interface ResetSeedResult {
   error?: string;
 }
 
-const RETRY_READY_STATUSES = new Set([
-  "backlog",
-  "ready",
-  "in-progress",
-  "blocked",
-  "conflict",
-  "failed",
-  "stuck",
-  "explorer",
-  "developer",
-  "qa",
-  "reviewer",
-  "finalize",
-]);
-
-function getResetTargetStatus(currentStatus: string): "open" | "ready" | null {
-  if (currentStatus === "open" || currentStatus === "ready") {
-    return currentStatus === "ready" ? "ready" : "open";
-  }
-
-  if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
-    return null;
-  }
-
-  if (RETRY_READY_STATUSES.has(currentStatus)) {
-    return "ready";
-  }
-
-  return "open";
-}
-
 /**
  * Reset a single seed back to a retryable status.
  *
@@ -639,7 +601,7 @@ export async function resetSeedToOpen(
   const dryRun = opts?.dryRun ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
-    const targetStatus = getResetTargetStatus(seedDetail.status);
+    const targetStatus = getSeedRetryTargetStatus(seedDetail.status, { command: "reset" });
 
     if (targetStatus == null) {
       return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
@@ -702,25 +664,21 @@ export const resetCommand = new Command("reset")
     try {
       // Require --project in multi-project mode
       await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
-      const projectPath = await resolveRepoRootProjectPath(opts);
+      const { projectPath, registered } = await resolveProjectContext(opts, {
+        matchProjectFlagByIdOrName: true,
+      });
       const vcs = await VcsBackendFactory.create({ backend: 'auto' }, projectPath);
       // Save current branch so we can restore it after worktree/branch cleanup,
       // which can change HEAD as a side effect of git worktree remove / branch -D.
       let originalBranch: string | undefined;
       try { originalBranch = await vcs.getCurrentBranch(projectPath); } catch { /* ignore */ }
 
-      const registered = opts.project
-        ? (await listRegisteredProjects()).find((record) => record.id === opts.project || record.name === opts.project)
-        : (await listRegisteredProjects()).find((record) => record.path === projectPath);
-      if (registered) {
-        ensureCliPostgresPool(projectPath);
-      }
       const { taskClient, backendType } = await createTaskClient(projectPath, {
         registeredProjectId: registered?.id,
       });
       const seeds: IShowUpdateClient = taskClient;
       const store = ForemanStore.forProject(projectPath);
-      const helperStore: ResetRunStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalResetRunStore(store);
+      const helperStore: ResetRunStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(store);
       const project = store.getProjectByPath(projectPath);
       const runtimeProjectId = registered?.id ?? project?.id;
 
@@ -782,9 +740,7 @@ export const resetCommand = new Command("reset")
           runs = (await Promise.all(statuses.map((s) => helperStore.getRunsByStatus(s, runtimeProjectId!)))).flat();
       }
 
-      if (dryRun) {
-        console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-      }
+      printDryRunNotice(dryRun);
 
       if (!beadFilter && runs.length === 0) {
         console.log(chalk.yellow("No active runs to reset.\n"));

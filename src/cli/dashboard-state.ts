@@ -1,8 +1,17 @@
-import { Command } from "commander";
+/**
+ * Dashboard data + rendering layer (shared library).
+ *
+ * Extracted from the retired `foreman dashboard` command. `foreman watch` is
+ * now the canonical live TUI; this module provides the daemon-backed state
+ * polling, READONLY multi-project snapshots, and the full-dashboard renderer
+ * still used by:
+ *   - `foreman status --live`            (status.ts)
+ *   - `foreman watch` state + actions    (commands/watch/)
+ */
 import chalk from "chalk";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createTrpcClient } from "../../lib/trpc-client.js";
+import { createTrpcClient } from "../lib/trpc-client.js";
 import {
   ForemanStore,
   type DashboardReadStore,
@@ -12,24 +21,11 @@ import {
   type Metrics,
   type Event,
   type NativeTask,
-} from "../../lib/store.js";
-import { elapsed, renderAgentCard, formatSuccessRate } from "../watch-ui.js";
-import { fetchTaskCounts } from "../../lib/task-client-factory.js";
-import { loadDashboardConfig } from "../../lib/project-config.js";
-import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
+} from "../lib/store.js";
+import { elapsed, renderAgentCard, formatSuccessRate } from "./watch-ui.js";
+import { listRegisteredProjects } from "./commands/project-task-support.js";
 
-// ── Task count helpers (for --simple mode) ───────────────────────────────
-
-/**
- * Task counts fetched from the br backend for display in dashboard --simple.
- */
-export interface DashboardTaskCounts {
-  total: number;
-  ready: number;
-  inProgress: number;
-  completed: number;
-  blocked: number;
-}
+// ── Daemon-backed state ───────────────────────────────────────────────────
 
 interface DaemonDashboardStats {
   tasks: {
@@ -61,69 +57,6 @@ interface DaemonProjectRecord {
   id: string;
   name: string;
   path: string;
-}
-
-async function fetchDaemonDashboardSimpleSnapshot(projectPath: string, projectSelector?: string): Promise<{
-  counts: DashboardTaskCounts;
-  state: DashboardState;
-} | null> {
-  try {
-    const projects = await listRegisteredProjects();
-    const project = await resolveDashboardProjectRecord(projects, projectPath, projectSelector);
-    if (!project) return null;
-
-    const client = createTrpcClient();
-    const [stats, activeRuns] = await Promise.all([
-      client.projects.stats({ projectId: project.id }) as Promise<DaemonDashboardStats>,
-      client.runs.listActive({ projectId: project.id }) as Promise<DaemonRunSummary[]>,
-    ]);
-
-    const projectRow: Project = {
-      id: project.id,
-      name: project.name,
-      path: project.path,
-      status: "active",
-      created_at: "",
-      updated_at: "",
-    };
-
-    const mappedRuns: Run[] = activeRuns.map((run) => ({
-      id: run.id,
-      project_id: project.id,
-      seed_id: run.bead_id,
-      agent_type: "daemon",
-      session_key: null,
-      worktree_path: null,
-      status: run.status,
-      started_at: run.started_at,
-      completed_at: null,
-      created_at: run.created_at,
-      progress: null,
-      base_branch: null,
-    }));
-
-    return {
-      counts: {
-        total: stats.tasks.total,
-        ready: stats.tasks.ready,
-        inProgress: stats.tasks.inProgress,
-        completed: stats.tasks.merged + stats.tasks.closed,
-        blocked: stats.tasks.backlog,
-      },
-      state: {
-        projects: [projectRow],
-        activeRuns: new Map([[project.id, mappedRuns]]),
-        completedRuns: new Map([[project.id, []]]),
-        progresses: new Map(),
-        metrics: new Map([[project.id, { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] }]]),
-        events: new Map([[project.id, []]]),
-        lastUpdated: new Date(),
-        successRates: new Map([[project.id, { rate: null, merged: 0, failed: 0 }]]),
-      },
-    };
-  } catch {
-    return null;
-  }
 }
 
 async function resolveDashboardProjectRecord(
@@ -226,17 +159,6 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
   } catch {
     return null;
   }
-}
-
-/**
- * Fetch task counts for the compact status view (used by --simple mode).
- */
-export async function fetchDashboardTaskCounts(projectPath: string): Promise<DashboardTaskCounts> {
-  const daemon = await fetchDaemonDashboardSimpleSnapshot(projectPath);
-  if (daemon) {
-    return daemon.counts;
-  }
-  return fetchTaskCounts(projectPath);
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -849,7 +771,7 @@ export function renderDashboard(state: DashboardState): string {
 
 /**
  * Collect dashboard data from the store.
- * Used for single-project (legacy / --simple) mode.
+ * Used for single-project (local fallback) mode.
  */
 export function pollDashboard(store: DashboardReadStore, projectId?: string, eventsLimit = 8): DashboardState {
   const projects = projectId
@@ -907,104 +829,6 @@ export function pollDashboard(store: DashboardReadStore, projectId?: string, eve
   };
 }
 
-// ── Simple (compact) dashboard renderer ─────────────────────────────────
-
-/**
- * Render a simplified single-project dashboard view.
- * Used by `dashboard --simple` for a compact status display similar to
- * `foreman status --watch` but using the dashboard's data layer.
- *
- * Shows: task counts (from br), active agents, costs — no event timeline,
- * no recently-completed section, no multi-project header.
- */
-export function renderSimpleDashboard(
-  state: DashboardState,
-  counts: DashboardTaskCounts,
-  projectId?: string,
-): string {
-  const lines: string[] = [];
-
-  // Pick the target project (first, or the filtered one)
-  const project = projectId
-    ? state.projects.find((p) => p.id === projectId)
-    : state.projects[0];
-
-  lines.push(
-    `${chalk.bold("Foreman Status")} ${chalk.dim("— compact view")}  ${chalk.dim("(Ctrl+C to stop)")}`,
-  );
-  lines.push(THICK_RULE);
-  lines.push("");
-
-  // Task counts section
-  lines.push(chalk.bold("Tasks"));
-  lines.push(`  Total:       ${chalk.white(counts.total)}`);
-  lines.push(`  Ready:       ${chalk.green(counts.ready)}`);
-  lines.push(`  In Progress: ${chalk.yellow(counts.inProgress)}`);
-  lines.push(`  Completed:   ${chalk.cyan(counts.completed)}`);
-  if (counts.blocked > 0) {
-    lines.push(`  Blocked:     ${chalk.red(counts.blocked)}`);
-  }
-
-  // Success rate: look up from the first project in state
-  {
-    const proj = projectId
-      ? state.projects.find((p) => p.id === projectId)
-      : state.projects[0];
-    if (proj) {
-      const sr = state.successRates?.get(proj.id);
-      if (sr !== undefined) {
-        const rateStr = formatSuccessRate(sr.rate);
-        const hint = sr.rate === null ? chalk.dim(" (need 3+ runs)") : "";
-        lines.push(`  Success Rate (24h): ${rateStr}${hint}`);
-      }
-    }
-  }
-  lines.push("");
-
-  if (!project) {
-    lines.push(chalk.dim("  No projects registered. Run 'foreman init' to get started."));
-    lines.push("");
-    lines.push(THICK_RULE);
-    lines.push(chalk.dim(`Last updated: ${state.lastUpdated.toLocaleTimeString()}`));
-    return lines.join("\n");
-  }
-
-  const activeRuns = state.activeRuns.get(project.id) ?? [];
-  const projectMetrics = state.metrics.get(project.id) ?? {
-    totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [],
-  };
-
-  // Active agents
-  lines.push(chalk.bold("Active Agents"));
-  if (activeRuns.length === 0) {
-    lines.push(chalk.dim("  (no agents running)"));
-  } else {
-    for (const run of activeRuns) {
-      const progress = state.progresses.get(run.id) ?? null;
-      const card = renderAgentCard(run, progress)
-        .split("\n")
-        .map((l) => "  " + l)
-        .join("\n");
-      lines.push(card);
-    }
-  }
-  lines.push("");
-
-  // Cost summary (only if non-zero)
-  if (projectMetrics.totalCost > 0) {
-    lines.push(chalk.bold("Costs"));
-    lines.push(`  Total: ${chalk.yellow(`$${projectMetrics.totalCost.toFixed(2)}`)}`);
-    lines.push(`  Tokens: ${chalk.dim(`${(projectMetrics.totalTokens / 1000).toFixed(1)}k`)}`);
-    lines.push("");
-  }
-
-  lines.push(THICK_RULE);
-  lines.push(chalk.dim(`Last updated: ${state.lastUpdated.toLocaleTimeString()}`));
-  lines.push(chalk.dim(`Tip: use 'foreman status --live' for a full unified dashboard`));
-
-  return lines.join("\n");
-}
-
 // ── Interactive actions ──────────────────────────────────────────────────
 
 /**
@@ -1042,217 +866,3 @@ export async function retryTask(taskId: string, projectPath: string): Promise<vo
   const client = createTrpcClient();
   await client.tasks.retry({ projectId: project.id, taskId });
 }
-
-// ── Command ───────────────────────────────────────────────────────────────
-
-export const dashboardCommand = new Command("dashboard")
-  .description("Live agent observability dashboard with real-time TUI")
-  .option("--interval <ms>", "Polling interval in milliseconds (deprecated, use --refresh)", "")
-  .option("--refresh <ms>", "Refresh interval in milliseconds (default: 5000; min: 1000)", "")
-  .option("--project <id>", "Filter to specific project ID")
-  .option("--no-watch", "Single snapshot, no polling")
-  .option("--events <n>", "Number of recent events to show per project", "8")
-  .option("--simple", "Compact single-project view with task counts (like 'foreman status --watch')")
-  .action(async (opts: {
-    interval: string;
-    refresh: string;
-    project?: string;
-    watch: boolean;
-    events: string;
-    simple?: boolean;
-  }) => {
-    const projectPath = await resolveRepoRootProjectPath({ project: opts.project });
-
-    // Refresh interval: CLI --refresh > CLI --interval > config.yaml > default 5000ms
-    const configRefresh = loadDashboardConfig(projectPath).refreshInterval;
-    const rawRefresh = opts.refresh || opts.interval;
-    const intervalMs = rawRefresh
-      ? Math.max(1000, parseInt(rawRefresh, 10) || configRefresh)
-      : configRefresh;
-
-    const projectId = opts.project;
-    const watch = opts.watch !== false;
-    const eventsLimit = Math.max(1, parseInt(opts.events, 10) || 8);
-    const simple = opts.simple === true;
-
-    // ── Simple (compact) mode ─────────────────────────────────────────────
-    if (simple) {
-      // Single-shot simple mode
-      if (!watch) {
-        const daemon = await fetchDaemonDashboardSimpleSnapshot(projectPath, projectId);
-        if (!daemon) {
-          throw new Error("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
-        }
-        console.log(renderSimpleDashboard(daemon.state, daemon.counts));
-        return;
-      }
-
-      // Live simple mode
-      let detachedSimple = false;
-      const onSigintSimple = () => {
-        if (detachedSimple) return;
-        detachedSimple = true;
-        process.stdout.write("\x1b[?25h\n");
-        console.log(chalk.dim("  Detached — agents continue in background."));
-        console.log(chalk.dim("  Tip: 'foreman status --live' for a full unified dashboard."));
-        process.exit(0);
-      };
-      process.on("SIGINT", onSigintSimple);
-      process.stdout.write("\x1b[?25l");
-
-      try {
-        while (!detachedSimple) {
-          const daemon = await fetchDaemonDashboardSimpleSnapshot(projectPath, projectId);
-          if (!daemon) {
-            throw new Error("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
-          }
-          const display = renderSimpleDashboard(daemon.state, daemon.counts);
-          process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
-          await new Promise<void>((r) => setTimeout(r, intervalMs));
-        }
-      } finally {
-        process.stdout.write("\x1b[?25h");
-        process.removeListener("SIGINT", onSigintSimple);
-      }
-      return;
-    }
-
-    // ── Multi-project full dashboard mode ─────────────────────────────────
-    // ── Single-shot full mode ─────────────────────────────────────────────
-    if (!watch) {
-      const state = await fetchDaemonDashboardState(projectPath, projectId);
-      if (!state) {
-        throw new Error("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
-      }
-      console.log(renderDashboard(state));
-      return;
-    }
-
-    // ── Live full dashboard mode ──────────────────────────────────────────
-    let detached = false;
-
-    const onSigint = () => {
-      if (detached) return;
-      detached = true;
-      process.stdout.write("\x1b[?25h\n"); // restore cursor
-      console.log(chalk.dim("  Detached — agents continue in background."));
-      console.log(chalk.dim("  Check status: foreman status"));
-      console.log(chalk.dim("  Monitor runs: foreman monitor\n"));
-      process.exit(0);
-    };
-
-    process.on("SIGINT", onSigint);
-    process.stdout.write("\x1b[?25l"); // hide cursor
-
-    let needsHumanTasks: NativeTask[] = [];
-    let selectedTaskIndex = -1;
-    let stdinRawMode = false;
-    let sleepResolve: (() => void) | null = null;
-
-    const wakeAndRender = () => {
-      if (sleepResolve) {
-        sleepResolve();
-        sleepResolve = null;
-      }
-    };
-
-    const handleNeedsHumanKey = (chunk: string | Buffer) => {
-      const key = chunk.toString();
-      const tasks = needsHumanTasks;
-
-      // In raw mode Ctrl+C is delivered as a byte (ETX) instead of SIGINT.
-      // Treat it the same as SIGINT so the live dashboard detaches cleanly.
-      if (key === "\u0003" || key === "q" || key === "Q") {
-        onSigint();
-        return;
-      }
-
-      if (key === "\u001B[A" || key === "k") {
-        if (tasks.length > 0) {
-          selectedTaskIndex = selectedTaskIndex <= 0 ? tasks.length - 1 : selectedTaskIndex - 1;
-          wakeAndRender();
-        }
-      } else if (key === "\u001B[B" || key === "j") {
-        if (tasks.length > 0) {
-          selectedTaskIndex = selectedTaskIndex >= tasks.length - 1 ? 0 : selectedTaskIndex + 1;
-          wakeAndRender();
-        }
-      } else if (key === "a" || key === "A") {
-        if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
-          const task = tasks[selectedTaskIndex];
-          if (task.status === "backlog" && task.projectPath) {
-            void approveTask(task.id, task.projectPath)
-              .then(() => {
-                selectedTaskIndex = -1;
-                wakeAndRender();
-              })
-              .catch(() => undefined);
-          }
-        }
-      } else if (key === "r" || key === "R") {
-        if (selectedTaskIndex >= 0 && selectedTaskIndex < tasks.length) {
-          const task = tasks[selectedTaskIndex];
-          if (
-            (task.status === "failed" || task.status === "stuck" || task.status === "conflict") &&
-            task.projectPath
-          ) {
-            void retryTask(task.id, task.projectPath)
-              .then(() => {
-                selectedTaskIndex = -1;
-                wakeAndRender();
-              })
-              .catch(() => undefined);
-          }
-        }
-      } else if (key === "\r" || key === "\n") {
-        selectedTaskIndex = -1;
-        wakeAndRender();
-      } else if (key.length === 1 && selectedTaskIndex !== -1) {
-        selectedTaskIndex = -1;
-        wakeAndRender();
-      }
-    };
-
-    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
-      try {
-        process.stdin.setRawMode(true);
-        process.stdin.resume();
-        process.stdin.setEncoding("utf8");
-        process.stdin.on("data", handleNeedsHumanKey);
-        stdinRawMode = true;
-      } catch {
-        // Continue without keyboard handling when raw mode is unavailable.
-      }
-    }
-
-      try {
-        while (!detached) {
-          const state = await fetchDaemonDashboardState(projectPath, projectId);
-          if (!state) {
-            throw new Error("Cannot load daemon-backed dashboard data. Make sure the daemon is running and the project is registered.");
-          }
-          needsHumanTasks = state.needsHumanTasks ?? [];
-          if (selectedTaskIndex >= needsHumanTasks.length) {
-            selectedTaskIndex = needsHumanTasks.length > 0 ? needsHumanTasks.length - 1 : -1;
-        }
-        const display = renderDashboard(state);
-        process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
-        await new Promise<void>((resolve) => {
-          sleepResolve = resolve;
-          setTimeout(resolve, intervalMs);
-        });
-        sleepResolve = null;
-      }
-    } finally {
-      process.stdout.write("\x1b[?25h"); // restore cursor on any exit
-      process.removeListener("SIGINT", onSigint);
-      if (stdinRawMode) {
-        process.stdin.off("data", handleNeedsHumanKey);
-        try {
-          process.stdin.setRawMode(false);
-        } catch {
-          // ignore restore failures
-        }
-      }
-    }
-  });

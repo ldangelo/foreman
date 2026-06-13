@@ -146,24 +146,28 @@ Active Agents
   Files      3
 ```
 
-### `foreman dashboard`
+### `foreman watch`
 
-Live observability dashboard with real-time TUI. Shows all projects, agents, recent events, and the top-priority Needs Human panel.
+Single-pane unified live dashboard: agents, board summary, inbox, and pipeline events. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
 
 ```bash
-foreman dashboard                 # Full dashboard
-foreman dashboard --simple        # Compact single-project view
-foreman dashboard --no-watch      # Single snapshot
-foreman dashboard --interval 5000 # Poll every 5 seconds
+foreman watch                     # Live unified dashboard
+foreman watch --no-watch          # One-shot snapshot, no polling
+foreman watch --refresh 5000      # Refresh every 5 seconds
+foreman watch --no-events         # Hide the pipeline events panel
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--interval <ms>` | `3000` | Polling interval in milliseconds |
-| `--project <id>` | — | Filter to a specific registered project in the dashboard view |
-| `--no-watch` | — | Single snapshot, then exit |
-| `--events <n>` | `8` | Recent events to show per project |
-| `--simple` | — | Compact single-project view |
+| `--refresh <ms>` | `5000` | Refresh interval in milliseconds (min: 1000) |
+| `--inbox-limit <n>` | `5` | Max inbox messages shown |
+| `--inbox-poll <ms>` | `2000` | Inbox-only poll interval in milliseconds |
+| `--events-limit <n>` | `5` | Max pipeline events shown |
+| `--no-watch` | — | One-shot snapshot, no polling |
+| `--no-board` | — | Hide board summary panel |
+| `--no-inbox` | — | Hide inbox panel |
+| `--no-events` | — | Hide pipeline events panel |
+| `--project <id>` | — | Filter to a specific project ID |
 
 ### `foreman sentinel`
 
@@ -426,12 +430,12 @@ foreman inbox --ack               # Mark shown messages as read
 | `--limit <n>` | `50` | Maximum messages to show |
 | `--ack` | — | Mark shown messages as read |
 
-### `foreman mail send`
+### `foreman inbox send`
 
-Send an Agent Mail message (used within pipeline runs for inter-agent communication).
+Send an Agent Mail message within a pipeline run (replaces the removed `foreman mail send`).
 
 ```bash
-foreman mail send \
+foreman inbox send \
   --run-id "abc123" \
   --from "developer" \
   --to "foreman" \
@@ -442,10 +446,10 @@ foreman mail send \
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--run-id <id>` | `$FOREMAN_RUN_ID` | Run ID (falls back to env var) |
-| `--from <agent>` | `$FOREMAN_AGENT_ROLE` | Sender role |
-| `--to <agent>` | *required* | Recipient role |
-| `--subject <subject>` | *required* | Message subject |
-| `--body <json>` | `'{}'` | Message body (JSON string) |
+| `--from <agent>` | *required* | Sender agent role (e.g. `explorer`, `developer`) |
+| `--to <agent>` | *required* | Recipient agent role (e.g. `foreman`, `developer`) |
+| `--subject <subject>` | *required* | Message subject (e.g. `phase-started`, `phase-complete`, `agent-error`) |
+| `--body <json>` | `'{}'` | Message body (must be a valid JSON string) |
 
 ---
 
@@ -499,27 +503,32 @@ foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_ru
 | `--no-risks` | Skip risk register items |
 | `--no-quality` | Skip quality requirements |
 
-### `foreman bead`
+### `foreman task create`
 
-Create compatibility beads from natural language descriptions using AI parsing.
+Create a new task in backlog status, or generate task(s) from a natural-language description with `--from-text` (replaces the deprecated `foreman bead`, which remains as a hidden alias).
 
 ```bash
-foreman bead "Fix the login timeout bug"
-foreman bead "Add dark mode support" --type feature --priority P1
-foreman bead docs/issue.md        # From a file
-foreman bead "..." --parent bd-abc1  # Set parent task ID
-foreman bead "..." --dry-run      # Preview
-foreman bead "..." --no-llm       # Skip AI parsing (manual fields required)
+foreman task create --title "Fix login timeout" --type bug --priority 1
+foreman task create --from-text "Fix the login timeout bug"
+foreman task create --from-text docs/issue.md       # From a file
+foreman task create --from-text "..." --parent bd-abc1  # Set parent task ID
+foreman task create --from-text "..." --dry-run     # Preview
+foreman task create --from-text "..." --no-llm      # Skip AI parsing (text becomes the title)
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--type <type>` | auto-detected | Force type: `task`, `bug`, `feature`, `epic`, `chore`, `decision` |
-| `--priority <priority>` | auto-detected | Force priority: `P0`–`P4` |
-| `--parent <id>` | — | Parent task ID |
-| `--dry-run` | — | Preview without creating |
-| `--no-llm` | — | Skip LLM parsing |
-| `--model <model>` | — | Claude model for AI parsing |
+| `--title <text>` | — | Task title (required unless `--from-text` is used) |
+| `--description <text>` | — | Optional task description |
+| `--type <type>` | `task` | Task type: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question` |
+| `--priority <level>` | `medium` | Priority: `0`–`4` or `critical`/`high`/`medium`/`low`/`backlog` |
+| `--from-text <description>` | — | Create task(s) from a natural-language description (or file path) using an LLM |
+| `--parent <id>` | — | Parent task ID (only with `--from-text`) |
+| `--dry-run` | — | Preview without creating (only with `--from-text`) |
+| `--no-llm` | — | Skip LLM parsing — create a single task with the text as title (only with `--from-text`) |
+| `--model <model>` | — | Claude model for AI parsing (only with `--from-text`) |
+| `--project <name>` | current directory | Registered project name |
+| `--project-path <absolute-path>` | — | Absolute project path (advanced/script usage) |
 
 ---
 
@@ -582,24 +591,38 @@ foreman worktree clean --dry-run  # Preview removal
 
 ## Maintenance
 
-### `foreman purge-zombie-runs`
+### `foreman purge`
+
+Purge old agent logs and stale run records. The old `foreman purge-logs` and `foreman purge-zombie-runs` spellings remain as hidden deprecated aliases.
+
+#### `foreman purge logs`
+
+Remove old agent log files from `~/.foreman/logs/` based on a retention policy.
+
+```bash
+foreman purge logs                # Delete logs older than 7 days
+foreman purge logs --days 30      # Custom retention window
+foreman purge logs --dry-run      # Preview
+foreman purge logs --all          # Delete all terminal-status logs regardless of age
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--days <n>` | `7` | Delete logs from runs older than N days |
+| `--dry-run` | — | Preview without making changes |
+| `--all` | — | Delete all terminal-status logs regardless of age (use with caution) |
+
+#### `foreman purge runs`
 
 Remove failed run records for tasks that are already closed or no longer exist. Reduces database clutter.
 
 ```bash
-foreman purge-zombie-runs         # Clean up zombie records
-foreman purge-zombie-runs --dry-run  # Preview
+foreman purge runs                # Clean up stale records
+foreman purge runs --dry-run      # Preview
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Preview without making changes |
 
-### `foreman monitor` (deprecated)
-
-Use `foreman reset --detect-stuck` instead.
-
-```bash
-foreman monitor --recover         # Auto-recover stuck agents
-foreman monitor --timeout 30      # Set stuck timeout to 30 minutes
-```
+> **Removed commands:** `foreman monitor` has been removed — use `foreman reset --detect-stuck` instead. `foreman mail send` has been removed — use `foreman inbox send`.

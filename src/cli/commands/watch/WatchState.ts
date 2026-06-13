@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { ForemanStore } from "../../../lib/store.js";
 import type { Run, RunProgress, Message, EventType } from "../../../lib/store.js";
 import type { BoardTask } from "../board.js";
-import { fetchDaemonDashboardState, type DashboardState } from "../dashboard.js";
+import { fetchDaemonDashboardState, type DashboardState } from "../../dashboard-state.js";
 import { type BoardStatus } from "../board.js";
 import { fetchTaskCounts } from "../../../lib/task-client-factory.js";
 import { createTrpcClient } from "../../../lib/trpc-client.js";
