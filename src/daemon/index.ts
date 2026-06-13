@@ -637,7 +637,12 @@ export class ForemanDaemon {
             },
           },
         });
-        const result = await dispatcher.dispatch({ maxAgents });
+        // Daemon background dispatch always targets the project's default
+        // branch. Without this, dispatched tasks would inherit whatever branch a
+        // developer happens to have checked out in the project root, producing
+        // nondeterministic merge targets driven by unrelated local activity.
+        // (Interactive `foreman run` leaves this unset to keep branch stacking.)
+        const result = await dispatcher.dispatch({ maxAgents, assumeDefaultBranch: true });
 
         if (result.dispatched.length > 0) {
           this.fastify.log.info(
