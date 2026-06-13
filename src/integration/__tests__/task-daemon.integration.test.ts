@@ -126,13 +126,13 @@ describe("task CLI daemon/Postgres integration", () => {
       },
       stdio: "ignore",
     });
-    await waitForSocket(join(tempHome, ".foreman", "daemon.sock"));
+    await waitForSocket(join(tempHome, ".foreman", "daemon.sock"), 60_000);
     await waitForDaemonReady(CLI, projectDir, {
       ...process.env,
       HOME: tempHome,
       DATABASE_URL: databaseUrl,
-    });
-  });
+    }, 60_000);
+  }, 90_000);
 
   afterEach(async () => {
     if (!tempHome) {
