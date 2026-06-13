@@ -1,4 +1,26 @@
 import chalk from "chalk";
+import { InvalidArgumentError } from "commander";
+
+/**
+ * Build a commander option argParser that strictly accepts non-negative
+ * base-10 integers ("0", "7").
+ *
+ * Unlike bare parseInt, it rejects values parseInt would silently truncate
+ * ("1.5" → 1, "7abc" → 7) by throwing commander's InvalidArgumentError, which
+ * commander renders as a friendly `error: option '<flag>' argument ... is
+ * invalid.` message.
+ *
+ * Shared by `purge logs --days` and `doctor --log-days`.
+ */
+export function parseNonNegativeIntOption(flag: string): (value: string) => number {
+  return (value: string): number => {
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      throw new InvalidArgumentError(`${flag} must be a non-negative integer`);
+    }
+    return Number.parseInt(trimmed, 10);
+  };
+}
 
 /**
  * Print the standard CLI dry-run notice when `dryRun` is truthy.

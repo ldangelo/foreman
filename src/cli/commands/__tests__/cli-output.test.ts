@@ -1,6 +1,39 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import chalk from "chalk";
-import { printDeprecationNotice, printDryRunNotice, printPurgeSummary } from "../cli-output.js";
+import { InvalidArgumentError } from "commander";
+import {
+  parseNonNegativeIntOption,
+  printDeprecationNotice,
+  printDryRunNotice,
+  printPurgeSummary,
+} from "../cli-output.js";
+
+describe("parseNonNegativeIntOption", () => {
+  const parse = parseNonNegativeIntOption("--days");
+
+  it("parses valid non-negative integers", () => {
+    expect(parse("0")).toBe(0);
+    expect(parse("7")).toBe(7);
+    expect(parse(" 42 ")).toBe(42);
+  });
+
+  it.each(["1.5", "7abc", "-1", "abc", "", "0x10", "1e3"])(
+    "rejects %j with a clear error",
+    (value) => {
+      expect(() => parse(value)).toThrow("--days must be a non-negative integer");
+    },
+  );
+
+  it("throws commander's InvalidArgumentError so the CLI prints a friendly message", () => {
+    expect(() => parse("1.5")).toThrow(InvalidArgumentError);
+  });
+
+  it("includes the flag name it was built with in the error message", () => {
+    expect(() => parseNonNegativeIntOption("--log-days")("7abc")).toThrow(
+      "--log-days must be a non-negative integer",
+    );
+  });
+});
 
 describe("printDeprecationNotice", () => {
   afterEach(() => {

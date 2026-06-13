@@ -10,6 +10,7 @@ import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { ensureCliPostgresPool, resolveRepoRootProjectPath } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { wrapLocalRunStore } from "./local-store-adapter.js";
+import { parseNonNegativeIntOption } from "./cli-output.js";
 import { purgeLogsAction } from "./purge-logs.js";
 import type { CheckResult, CheckStatus } from "../../orchestrator/types.js";
 
@@ -70,11 +71,11 @@ export const doctorCommand = new Command("doctor")
   .option("--dry-run", "Show what --fix would do without making changes")
   .option("--json", "Output results as JSON")
   .option("--clean-logs", "Remove old agent log files after health checks (default: keep last 7 days)")
-  .option("--log-days <n>", "Retention window for --clean-logs in days (default: 7)", (v) => {
-    const n = parseInt(v, 10);
-    if (isNaN(n) || n < 0) throw new Error("--log-days must be a non-negative integer");
-    return n;
-  })
+  .option(
+    "--log-days <n>",
+    "Retention window for --clean-logs in days (default: 7)",
+    parseNonNegativeIntOption("--log-days"),
+  )
   .action(async (opts) => {
     const fix = (opts.fix as boolean | undefined) ?? false;
     const dryRun = (opts.dryRun as boolean | undefined) ?? false;

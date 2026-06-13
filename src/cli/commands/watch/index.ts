@@ -49,9 +49,15 @@ import { printDeprecationNotice } from "../cli-output.js";
  * `foreman dashboard` is a deprecated alias of `foreman watch`. When the
  * command was invoked via the alias (detected from argv), print a one-line
  * deprecation notice. Exported for testing.
+ *
+ * Only argv[2] — the command token in `node foreman <command> ...` — is
+ * checked, so option values like `foreman watch --project dashboard` never
+ * trigger a false positive. (Commander reports the canonical name, not the
+ * alias, at action time, so argv inspection is required; a global flag placed
+ * before the command would merely skip the notice, which is harmless.)
  */
 export function maybePrintDashboardAliasNotice(argv: readonly string[] = process.argv): void {
-  if (argv.includes("dashboard")) {
+  if (argv[2] === "dashboard") {
     printDeprecationNotice("foreman dashboard", "foreman watch");
   }
 }

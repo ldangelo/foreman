@@ -100,6 +100,26 @@ describe("foreman purge", () => {
     );
   });
 
+  it("'purge logs' rejects non-integer --days values instead of truncating them", async () => {
+    const { purgeCommand } = await freshPurgeModule();
+
+    await expect(
+      purgeCommand.parseAsync(["logs", "--days", "1.5"], { from: "user" }),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(mockPurgeLogsCommandAction).not.toHaveBeenCalled();
+  });
+
+  it("'purge logs' rejects trailing-garbage --days values like '7abc'", async () => {
+    const { purgeCommand } = await freshPurgeModule();
+
+    await expect(
+      purgeCommand.parseAsync(["logs", "--days", "7abc"], { from: "user" }),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(mockPurgeLogsCommandAction).not.toHaveBeenCalled();
+  });
+
   it("deprecated 'purge-logs' prints a notice and runs the same handler", async () => {
     const { purgeLogsCommand } = await freshPurgeModule();
 

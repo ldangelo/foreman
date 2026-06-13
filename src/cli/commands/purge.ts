@@ -12,22 +12,16 @@ import { Command } from "commander";
 
 import { purgeLogsCommandAction, type PurgeLogsOpts } from "./purge-logs.js";
 import { purgeZombieRunsCommandAction, type PurgeZombieRunsOpts } from "./purge-zombie-runs.js";
-import { printDeprecationNotice } from "./cli-output.js";
+import { parseNonNegativeIntOption, printDeprecationNotice } from "./cli-output.js";
 
 // ── Shared option builders (one definition per flag set) ────────────────
-
-function parseDaysOption(value: string): number {
-  const n = parseInt(value, 10);
-  if (isNaN(n) || n < 0) throw new Error("--days must be a non-negative integer");
-  return n;
-}
 
 function withPurgeLogsOptions(command: Command): Command {
   return command
     .option(
       "--days <n>",
       "Delete logs from runs older than N days (default: 7)",
-      parseDaysOption,
+      parseNonNegativeIntOption("--days"),
     )
     .option("--dry-run", "Show what would be deleted without making any changes")
     .option("--all", "Delete all terminal-status logs regardless of age (use with caution)");

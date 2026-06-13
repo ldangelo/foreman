@@ -12,12 +12,7 @@
       "Bash(find:*)",
       "Bash(wc:*)",
       "Skill(commit-commands:commit-push-pr)",
-      "WebFetch(domain:archon.diy)",
-      "Bash(sed -n 1,60p src/cli/__tests__/watch-command-context.test.ts)",
-      "Bash(sed -n 25,60p src/cli/commands/watch/__tests__/WatchState.test.ts)",
-      "Bash(perl -pi -e 's{\"\\\\.\\\\./\\\\.\\\\./dashboard\\\\.js\"}{\"../../../dashboard-state.js\"}g' src/cli/commands/watch/__tests__/WatchState.test.ts)",
-      "Bash(perl -0pi -e 's{// ── Tests: fetchDashboardTaskCounts\\\\\\(\\\\\\).*?// ── Tests: renderProjectHeader\\\\\\(\\\\\\)}{// ── Tests: renderProjectHeader\\(\\)}s' src/cli/__tests__/live-status.test.ts)",
-      "Bash(perl -pi -e 's{errSpy\\\\.mock\\\\.calls\\\\.map\\\\\\(\\\\\\(call\\\\\\) => String\\\\\\(call\\\\[0\\\\]\\\\\\)\\\\\\)}{errSpy.mock.calls.map\\(\\(call: unknown[]\\) => String\\(call[0]\\)\\)}g; s{\\\\.some\\\\\\(\\\\\\(line\\\\\\) =>}{.some\\(\\(line: string\\) =>}g' src/cli/__tests__/purge.test.ts src/cli/__tests__/task-create-from-text.test.ts)"
+      "WebFetch(domain:archon.diy)"
     ]
   },
   "outputStyle": "default"

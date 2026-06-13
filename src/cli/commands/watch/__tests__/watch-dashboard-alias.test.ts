@@ -35,4 +35,20 @@ describe("watch — dashboard alias", () => {
 
     expect(errSpy).not.toHaveBeenCalled();
   });
+
+  it("prints nothing when 'dashboard' appears only as an option value", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    maybePrintDashboardAliasNotice(["node", "foreman", "watch", "--project", "dashboard"]);
+
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it("still prints the notice when the dashboard alias is followed by options", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    maybePrintDashboardAliasNotice(["node", "foreman", "dashboard", "--project", "myproj"]);
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+  });
 });

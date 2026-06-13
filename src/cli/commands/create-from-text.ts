@@ -12,7 +12,7 @@
  */
 import chalk from "chalk";
 import ora from "ora";
-import { readFileSync, existsSync } from "node:fs";
+import { accessSync, constants as fsConstants, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { normalizePriority } from "../../lib/priority.js";
@@ -170,10 +170,11 @@ export async function createTasksFromText(
 
   if (!opts.llm) {
     // --no-llm: create a single bead directly
+    const { title, description } = splitTitleFromText(inputText);
     parsedIssues = [
       {
-        title: inputText.slice(0, 200),
-        description: inputText.length > 200 ? inputText.slice(200) : undefined,
+        title,
+        description,
         type: opts.type,
         priority: opts.priority,
       },
@@ -289,6 +290,46 @@ export async function createTasksFromText(
   }
   console.log();
   console.log(chalk.dim("Next: foreman run  — to dispatch work on ready beads"));
+}
+
+/**
+ * Derive a bead title (and optional description remainder) from free-form
+ * text for the --no-llm path.
+ *
+ * Keeps the historical 200-code-unit title cap, but prefers cutting at the
+ * last word boundary within the cap and never splits a surrogate pair (which
+ * would leave a lone surrogate at the end of the title).
+ *
+ * Exported for testing.
+ */
+export function splitTitleFromText(
+  text: string,
+  maxLength = 200,
+): { title: string; description?: string } {
+  if (text.length <= maxLength) {
+    return { title: text };
+  }
+
+  // Hard-cut position: back up one unit if it would split a surrogate pair
+  // (a high surrogate left dangling at the end of the title).
+  let cut = maxLength;
+  const lastUnit = text.charCodeAt(cut - 1);
+  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) {
+    cut -= 1;
+  }
+
+  // Prefer the last word boundary at or before the cap: the longest prefix of
+  // the (maxLength + 1)-unit window that ends in a non-space followed by
+  // whitespace.
+  const window = text.slice(0, maxLength + 1);
+  const boundaryPrefix = window.match(/^[\s\S]*\S(?=\s)/u)?.[0];
+  if (boundaryPrefix && boundaryPrefix.length <= maxLength) {
+    cut = boundaryPrefix.length;
+  }
+
+  const title = text.slice(0, cut);
+  const description = text.slice(cut).replace(/^\s+/u, "");
+  return { title, description: description.length > 0 ? description : undefined };
 }
 
 // ── Claude integration ────────────────────────────────────────────────────
@@ -437,7 +478,7 @@ function findClaude(): string {
 
   for (const path of candidates) {
     try {
-      execFileSync("test", ["-x", path]);
+      accessSync(path, fsConstants.X_OK);
       return path;
     } catch {
       // not found, try next
