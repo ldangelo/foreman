@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -153,5 +153,18 @@ describe("collectRuntimeAssetIssues", () => {
 
     const issues = collectRuntimeAssetIssues(projectRoot, {});
     expect(issues.some((issue) => issue.includes("stale prompts"))).toBe(true);
+  });
+
+  it("auto-installs missing bundled workflows instead of blocking dispatch", () => {
+    const projectRoot = makeProject();
+
+    const issues = collectRuntimeAssetIssues(projectRoot, {});
+
+    // Missing bundled workflows must not block `foreman run` — they are
+    // installed on the fly so newly added bundled workflows (e.g. quick.yaml)
+    // do not break existing ~/.foreman/workflows/ installs.
+    expect(issues.some((issue) => issue.includes("missing workflows"))).toBe(false);
+    expect(existsSync(join(projectRoot, "workflows", "quick.yaml"))).toBe(true);
+    expect(existsSync(join(projectRoot, "workflows", "default.yaml"))).toBe(true);
   });
 });

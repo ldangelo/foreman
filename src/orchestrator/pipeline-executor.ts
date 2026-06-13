@@ -124,8 +124,6 @@ export interface PipelineRunConfig {
   model: string;
   worktreePath: string;
   projectPath?: string;
-  skipExplore?: boolean;
-  skipReview?: boolean;
   env: Record<string, string | undefined>;
   /** Override target branch for finalize rebase/push and auto-merge. */
   targetBranch?: string;

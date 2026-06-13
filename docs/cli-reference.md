@@ -53,8 +53,7 @@ foreman run --resume              # Resume stuck/rate-limited runs
 foreman run --resume-failed       # Also resume permanently failed runs
 foreman run --no-watch            # Dispatch once and exit (don't monitor)
 foreman run --no-pipeline         # Single agent mode (no explorer/qa/reviewer)
-foreman run --skip-explore        # Skip the explorer phase
-foreman run --skip-review         # Skip the reviewer phase
+foreman run --workflow quick      # Run all dispatched tasks with the quick workflow
 foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 ```
 
@@ -69,11 +68,12 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 | `--resume` | — | Resume stuck/rate-limited runs from previous dispatch |
 | `--resume-failed` | — | Also resume failed runs (not just stuck) |
 | `--no-pipeline` | — | Skip the pipeline — run as single worker agent |
-| `--skip-explore` | — | Skip the explorer phase |
-| `--skip-review` | — | Skip the reviewer phase |
+| `--workflow <name>` | — | Run all dispatched tasks with this workflow (overrides `workflow:<name>` labels and task-type mapping; fails fast with the list of available workflows if it cannot be loaded) |
 | `--no-auto-dispatch` | — | Disable auto-dispatch when capacity is available |
 | `--telemetry` | — | Enable OpenTelemetry tracing (requires OTEL_* env vars) |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
+
+> **Deprecated:** `--skip-explore` and `--skip-review` are still parsed for backwards compatibility but have **no effect** on the pipeline (phase shape is defined entirely by the workflow YAML). They are hidden from `--help` and print a deprecation warning. Use `--workflow quick` (a bundled workflow without explorer/reviewer phases) or a custom workflow instead.
 
 ### `foreman run task`
 
@@ -87,13 +87,13 @@ foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch ma
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--model <model>` | workflow default | Override the model used by spawned worker phases |
-| `--skip-explore` | — | Skip explorer phases when supported by the workflow |
-| `--skip-review` | — | Skip reviewer phases when supported by the workflow |
 | `--dry-run` | — | Resolve task, workflow, and worktree without creating a run |
 | `--no-watch` | — | Spawn the worker and return immediately |
 | `--target-branch <branch>` | detected default | Override base/target branch for finalization and merge |
 | `--project <name>` | current project | Registered project name |
 | `--project-path <absolute-path>` | current project | Absolute project path for advanced/scripted use |
+
+> **Deprecated:** `--skip-explore` and `--skip-review` are hidden no-ops here too — pick a workflow without those phases instead (e.g. `foreman run task <task-id> quick`).
 
 ---
 

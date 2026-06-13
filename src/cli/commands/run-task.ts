@@ -14,7 +14,7 @@
  * @module src/cli/commands/run-task
  */
 
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import chalk from "chalk";
 
 import { resolveRepoRootProjectPath, listRegisteredProjects } from "./project-task-support.js";
@@ -46,6 +46,41 @@ import { notificationBus } from "../../orchestrator/notification-bus.js";
 // ── Types ──────────────────────────────────────────────────────────────────
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Build the deprecation warning for the retired `--skip-explore` /
+ * `--skip-review` flags.
+ *
+ * These flags were never consumed by the workflow YAML-driven pipeline — phase
+ * shape is defined entirely by the workflow YAML. They are kept as hidden
+ * no-ops for backwards compatibility.
+ *
+ * The suggested replacement is context-aware: `foreman run` selects workflows
+ * via the `--workflow <name>` flag, while `foreman run task` takes the
+ * workflow as a positional argument.
+ *
+ * @param context - Which command emitted the warning: "run" (default) or "task".
+ * @returns The one-line warning text, or null when neither flag is set.
+ */
+export function skipFlagsDeprecationWarning(
+  opts: {
+    skipExplore?: boolean;
+    skipReview?: boolean;
+  },
+  context: "run" | "task" = "run",
+): string | null {
+  const flags: string[] = [];
+  if (opts.skipExplore) flags.push("--skip-explore");
+  if (opts.skipReview) flags.push("--skip-review");
+  if (flags.length === 0) return null;
+  const suggestion = context === "task"
+    ? "pass `quick` (or a custom workflow YAML) as the workflow argument instead."
+    : "use --workflow quick (or a custom workflow YAML) instead.";
+  return (
+    `${flags.join(" and ")} ${flags.length > 1 ? "are" : "is"} deprecated and ` +
+    `${flags.length > 1 ? "have" : "has"} no effect on the pipeline — ${suggestion}`
+  );
+}
 
 /**
  * Convert an Issue to SeedInfo format for the worker.
@@ -101,7 +136,9 @@ export async function runTaskAction(
   workflowPath: string,
   opts: {
     model?: string;
+    /** @deprecated No effect — phase shape is defined by the workflow YAML. */
     skipExplore?: boolean;
+    /** @deprecated No effect — phase shape is defined by the workflow YAML. */
     skipReview?: boolean;
     dryRun?: boolean;
     watch?: boolean;
@@ -112,14 +149,18 @@ export async function runTaskAction(
 ): Promise<number> {
   const {
     model,
-    skipExplore,
-    skipReview,
     dryRun = false,
     watch = true,
     targetBranch,
     project,
     projectPath: optsProjectPath,
   } = opts;
+
+  // ── Deprecated flag warning ───────────────────────────────────────────
+  const deprecationWarning = skipFlagsDeprecationWarning(opts, "task");
+  if (deprecationWarning) {
+    console.warn(chalk.yellow(`[foreman] ${deprecationWarning}`));
+  }
 
   // ── Resolve project ───────────────────────────────────────────────────
   const resolvedProjectPath = await resolveRepoRootProjectPath({ project, projectPath: optsProjectPath });
@@ -287,8 +328,6 @@ export async function runTaskAction(
     console.log(`  Worktree:    ${worktreePath}`);
     console.log(`  Branch:      ${branchName}`);
     console.log(`  Model:       ${model ?? "default (from workflow)"}`);
-    console.log(`  Skip Explore: ${skipExplore ?? false}`);
-    console.log(`  Skip Review:  ${skipReview ?? false}`);
     store.close();
     return 0;
   }
@@ -373,8 +412,6 @@ export async function runTaskAction(
       pipeline: true,
       workflowName: workflowConfig.name,
       workflowPath,
-      skipExplore: skipExplore ?? false,
-      skipReview: skipReview ?? false,
       seedType: task.type ?? "task",
       seedLabels: taskLabels,
       seedPriority: task.priority,
@@ -458,8 +495,8 @@ export const runTaskCommand = new Command("task")
   .argument("<task-id>", "Task ID to run the workflow for")
   .argument("<workflow-path>", "Workflow name or path to a workflow YAML file")
   .option("--model <model>", "Model to use (overrides workflow default)")
-  .option("--skip-explore", "Skip the explorer phase")
-  .option("--skip-review", "Skip the reviewer phase")
+  .addOption(new Option("--skip-explore", "(deprecated) No effect — use a workflow without an explorer phase").hideHelp())
+  .addOption(new Option("--skip-review", "(deprecated) No effect — use a workflow without a reviewer phase").hideHelp())
   .option("--dry-run", "Show what would be done without executing")
   .option("--no-watch", "Exit immediately after spawning worker (don't monitor)")
   .option("--target-branch <branch>", "Override target branch for finalize/merge")

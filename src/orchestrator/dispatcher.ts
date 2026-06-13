@@ -298,8 +298,11 @@ export class Dispatcher {
     telemetry?: boolean;
     projectId?: string;
     pipeline?: boolean;
-    skipExplore?: boolean;
-    skipReview?: boolean;
+    /**
+     * Explicit workflow name override (from `foreman run --workflow <name>`).
+     * Takes priority over `workflow:<name>` labels and taskTypeWorkflowMap.
+     */
+    workflow?: string;
     seedId?: string;
     /** URL of the notification server (e.g. "http://127.0.0.1:PORT") */
     notifyUrl?: string;
@@ -346,8 +349,14 @@ export class Dispatcher {
     // ── onError=stop guard ─────────────────────────────────────────────────
     // When the workflow's onError is "stop", refuse to dispatch if any recent
     // runs ended in a terminal failure state.
+    //
+    // Gate on the workflow actually selected for this dispatch: the explicit
+    // `--workflow <name>` override when given, otherwise "default". Per-task
+    // resolution (workflow:<name> labels, taskTypeWorkflowMap) happens later
+    // in the dispatch loop and is not available at this pre-dispatch gate.
     try {
-      const wfConfig = loadWorkflowConfig("default", this.projectPath);
+      const gateWorkflow = opts?.workflow?.trim() || "default";
+      const wfConfig = loadWorkflowConfig(gateWorkflow, this.projectPath);
       if (wfConfig.onError === "stop") {
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const failedCount = this.overrides?.getRecentFailureCount
@@ -826,6 +835,7 @@ export class Dispatcher {
           seedInfo.type ?? "feature",
           seedInfo.labels,
           projectCfg?.taskTypeWorkflowMap,
+          opts?.workflow,
         );
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
@@ -1017,8 +1027,6 @@ export class Dispatcher {
           opts?.telemetry,
           {
             pipeline: opts?.pipeline,
-            skipExplore: opts?.skipExplore,
-            skipReview: opts?.skipReview,
             workflowName: resolvedWorkflow,
           },
           opts?.notifyUrl,
@@ -1370,8 +1378,6 @@ export class Dispatcher {
     telemetry?: boolean,
     pipelineOpts?: {
       pipeline?: boolean;
-      skipExplore?: boolean;
-      skipReview?: boolean;
       workflowName?: string;
     },
     notifyUrl?: string,
@@ -1433,8 +1439,6 @@ export class Dispatcher {
         prompt,
         env,
         pipeline: usePipeline,
-        skipExplore: pipelineOpts?.skipExplore,
-        skipReview: pipelineOpts?.skipReview,
         dbPath: join(this.projectPath, ".foreman", "foreman.db"),
         workflowName: pipelineOpts?.workflowName,
         seedType,
@@ -1856,8 +1860,6 @@ export interface WorkerConfig {
   env: Record<string, string>;
   resume?: string;
   pipeline?: boolean;
-  skipExplore?: boolean;
-  skipReview?: boolean;
   /** Legacy local-store path retained for compatibility only. */
   dbPath?: string;
   /** Explicit workflow name/path for direct task execution. Overrides seed labels/type. */

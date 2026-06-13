@@ -553,6 +553,58 @@ describe("Dispatcher — onError=stop uses registered run failure counts", () =>
     expect(result.dispatched).toHaveLength(0);
     expect(mockShowFn).not.toHaveBeenCalled();
   });
+
+  it("honors the --workflow override when evaluating the onError gate", async () => {
+    const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+    // The selected workflow ("quick") stops on error; "default" would continue.
+    // If the gate ignores the override and loads "default", dispatch proceeds
+    // despite recent failures — that is the bug this test guards against.
+    vi.mocked(loadWorkflowConfig).mockImplementation(((name: string) => ({
+      name,
+      phases: [],
+      onError: name === "quick" ? "stop" : "continue",
+      vcs: { backend: "git" },
+    })) as unknown as typeof loadWorkflowConfig);
+
+    const store = makeStore();
+    const seeds = makeSeeds();
+    const overrides = {
+      getRecentFailureCount: vi.fn().mockResolvedValue(1),
+      getActiveRuns: vi.fn().mockResolvedValue([]),
+    };
+    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ dryRun: false, workflow: "quick" });
+
+    // The gate must consult the actually-selected workflow, not "default"
+    expect(loadWorkflowConfig).toHaveBeenCalledWith("quick", "/tmp/project");
+    expect(result.dispatched).toHaveLength(0);
+  });
+
+  it("gates on the default workflow when no --workflow override is given", async () => {
+    const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+    vi.mocked(loadWorkflowConfig).mockImplementation(((name: string) => ({
+      name,
+      phases: [],
+      onError: name === "default" ? "stop" : "continue",
+      vcs: { backend: "git" },
+    })) as unknown as typeof loadWorkflowConfig);
+
+    const store = makeStore();
+    const seeds = makeSeeds();
+    const overrides = {
+      getRecentFailureCount: vi.fn().mockResolvedValue(1),
+      getActiveRuns: vi.fn().mockResolvedValue([]),
+    };
+    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ dryRun: false });
+
+    expect(loadWorkflowConfig).toHaveBeenCalledWith("default", "/tmp/project");
+    expect(result.dispatched).toHaveLength(0);
+  });
 });
 
 // ── Unit Tests: FOREMAN_VCS_BACKEND env var (AC-T-015-2) ─────────────────────

@@ -310,8 +310,6 @@ interface WorkerConfig {
   env: Record<string, string>;
   resume?: string;  // SDK session ID to resume
   pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
-  skipExplore?: boolean;
-  skipReview?: boolean;
   /** Explicit workflow name/path for direct task execution. Overrides seed labels/type. */
   workflowName?: string;
   workflowPath?: string;
