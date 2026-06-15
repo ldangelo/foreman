@@ -115,6 +115,52 @@ git push -u origin foreman/<task-id>
 foreman merge --bead <task-id>    # --bead is backward-compatible alias
 ```
 
+### Task won't dispatch because it's not in "ready" status
+
+**Symptoms:** `foreman run --task <id>` fails with "task is not ready" or similar message.
+
+**Cause:** The task status doesn't allow normal dispatch. Common reasons:
+- Task was closed after a previous run
+- Task failed and was marked as `failed`
+- Task was manually set to a non-ready status
+
+**Fix:** Use `foreman run task` to bypass state gating:
+
+```bash
+# Run regardless of task status
+foreman run task <task-id> <workflow> --project my-project --no-watch
+
+# Dry run to preview
+foreman run task <task-id> task --dry-run
+
+# Common workflows: task, feature, epic, quick
+foreman run task <task-id> quick --project my-project --no-watch
+```
+
+**Note:** Worktree and run locking still apply — if an active run exists for this task, you'll see a lock error. Use `foreman stop <task-id>` first.
+
+### Testing a new workflow on an existing task
+
+**Symptoms:** You want to test a custom workflow or different phase configuration on a task without changing its status.
+
+**Fix:** Use `foreman run task` with the workflow path:
+
+```bash
+# Test with a custom workflow
+foreman run task <task-id> ~/.foreman/workflows/custom.yaml --project my-project
+
+# Test with quick workflow (no explorer/reviewer phases)
+foreman run task <task-id> quick --project my-project --no-watch
+
+# Debug with a specific model
+foreman run task <task-id> task --model anthropic/claude-opus-4-6 --project my-project
+```
+
+This is useful for:
+- Testing phase configurations before committing to a workflow
+- Running only certain phases (use a custom workflow YAML)
+- Debugging with different models or turn limits
+
 ---
 
 ## Merge Issues
