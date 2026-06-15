@@ -212,6 +212,48 @@ Use retry/reset surgically.
 
 Transient failures include provider rate limits, temporary network failures, and unavailable external CLIs. Implementation failures should route back through developer/remediation phases instead of blind retry.
 
+### Direct Task Execution with `foreman run task`
+
+For debugging, recovery, and manual reruns where the task may be in any state (failed, closed, in-progress, backlog, etc.), use `foreman run task`:
+
+```bash
+foreman run task <task-id> <workflow-path> [options]
+```
+
+**Key behaviors:**
+
+- **Bypasses state gating** — runs regardless of task status (ready, backlog, closed, failed, etc.)
+- **Preserves safety mechanisms** — worktree and run locking still apply
+- **Explicit workflow** — specify the workflow as a positional argument (not via `--workflow` flag)
+- **Suitable for:**
+  - Re-running a completed/closed task with a different workflow
+  - Testing a new workflow against an existing task
+  - Debugging by running a subset of phases
+  - Recovery scenarios where the task state doesn't reflect the desired action
+
+**Common uses:**
+
+```bash
+# Run a closed task with the default task workflow
+foreman run task foreman-12345 task --project my-project --no-watch
+
+# Run with a custom workflow path
+foreman run task foreman-12345 ~/.foreman/workflows/custom.yaml --target-branch main
+
+# Dry run to preview without executing
+foreman run task foreman-12345 task --dry-run
+
+# Run with a specific model override
+foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
+```
+
+**When to use `foreman run task` vs `foreman run --task`:**
+
+| Command | State gating | Workflow selection | Typical use |
+|---------|--------------|--------------------|-------------|
+| `foreman run --task <id>` | Yes (task must be `ready`) | `--workflow` flag | Normal dispatch |
+| `foreman run task <id> <workflow>` | No (any state) | Positional argument | Debug, recovery, testing |
+
 ## Documentation Expectations
 
 Every user-visible change should update docs in the same task. Examples:

@@ -849,7 +849,32 @@ phases:
 Direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks:
 
 ```bash
-foreman run task <task-id> <workflow-name-or-path> --project <name> --no-watch
+foreman run task <task-id> <workflow-path> --project <name> --no-watch
+```
+
+**Key behaviors:**
+
+- **Bypasses state gating** — runs regardless of task status (ready, backlog, closed, failed, etc.)
+- **Preserves safety mechanisms** — worktree and run locking still apply
+- **Explicit workflow** — specify the workflow as a positional argument (e.g., `task`, `quick`, `~/.foreman/workflows/custom.yaml`)
+
+**When to use:**
+- Re-running a completed/closed task with a different workflow
+- Testing a new workflow configuration on an existing task
+- Debugging with specific phases or models
+- Recovery scenarios where normal dispatch isn't available
+
+**Example:**
+
+```bash
+# Run a closed task with the task workflow
+foreman run task foreman-12345 task --project my-project --no-watch
+
+# Run with a custom workflow path
+foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml --target-branch main
+
+# Dry run to preview
+foreman run task foreman-12345 task --dry-run
 ```
 
 The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.
