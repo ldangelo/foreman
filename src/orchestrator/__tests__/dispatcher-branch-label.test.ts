@@ -321,4 +321,61 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
     expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("seed-001", expect.arrayContaining(["workflow:smoke", "branch:installer"]));
   });
+
+  // ── assumeDefaultBranch (daemon background dispatch) ─────────────────────────
+
+  it("does NOT auto-label with the checked-out feature branch when assumeDefaultBranch is set", async () => {
+    // Repo is checked out on a feature branch ("installer"), but the daemon must
+    // treat the project as being on its default branch.
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+
+    const seed = makeIssue("seed-001");
+    const taskClient = makeTaskClient([seed]);
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true, assumeDefaultBranch: true });
+
+    const updateCalls = vi.mocked((store.updateTaskLabels as any)).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, labels]: [string, string[]]) =>
+      labels.some((label: string) => label.startsWith("branch:")),
+    );
+    expect(branchLabelCalls).toHaveLength(0);
+    // Must not even inspect the developer's checked-out branch.
+    expect(mockGetCurrentBranch).not.toHaveBeenCalled();
+  });
+
+  it("interactive default (assumeDefaultBranch unset) still auto-labels on a feature branch", async () => {
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+
+    const seed = makeIssue("seed-001");
+    const taskClient = makeTaskClient([seed]);
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true });
+
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("seed-001", ["branch:installer"]);
+  });
+
+  it("still inherits parent branch label when assumeDefaultBranch is set", async () => {
+    // Even though the daemon ignores the checked-out branch, explicit parent
+    // branch-label inheritance must continue to work.
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+
+    const childSeed = makeIssue("child-001", "parent-001");
+    const taskClient = makeTaskClient([childSeed], {
+      "parent-001": ["branch:feature-x"],
+      "child-001": [],
+    });
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true, assumeDefaultBranch: true });
+
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("child-001", ["branch:feature-x"]);
+  });
 });

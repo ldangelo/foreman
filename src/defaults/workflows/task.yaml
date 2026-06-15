@@ -16,8 +16,6 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
-rebaseAfterPhase: developer
-
 phases:
   # ── Phase 1: fix ────────────────────────────────────────────────────────
   # Uses the workflow-scoped fix-issue prompt so the artifact contract is

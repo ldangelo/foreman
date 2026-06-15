@@ -310,6 +310,20 @@ export class Dispatcher {
     targetBranch?: string;
     /** P1: Stagger delay in milliseconds between dispatches to prevent thundering herd. */
     staggerMs?: number;
+    /**
+     * Treat the project as being on its default branch, skipping current-branch
+     * inspection for `branch:<current>` auto-labeling.
+     *
+     * The daemon's background dispatch loop sets this so that dispatched tasks
+     * always target the default branch — otherwise tasks would inherit whatever
+     * branch a developer happens to have checked out (nondeterministic merge
+     * targets driven by unrelated local activity). Interactive `foreman run`
+     * leaves this unset to preserve the branch-stacking feature.
+     *
+     * Parent-bead branch-label inheritance is unaffected — a child still
+     * inherits an explicit `branch:` label from its parent.
+     */
+    assumeDefaultBranch?: boolean;
   }): Promise<DispatchResult> {
     const maxAgents = opts?.maxAgents ?? 5;
     const projectId = opts?.projectId ?? await this.resolveProjectId();
@@ -546,8 +560,16 @@ export class Dispatcher {
     let branchBackend: VcsBackend | undefined;
     try {
       branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
-      currentBranch = await resolveUsableBranchLabel(await branchBackend.getCurrentBranch(this.projectPath));
       defaultBranch = normalizeBranchLabel(await branchBackend.detectDefaultBranch(this.projectPath));
+      if (opts?.assumeDefaultBranch) {
+        // Daemon background dispatch: ignore the developer's checked-out branch
+        // and treat the project as being on its default branch. This suppresses
+        // `branch:<current>` auto-labeling while leaving parent-bead branch-label
+        // inheritance intact (that path keys off seed.parent, not currentBranch).
+        currentBranch = defaultBranch;
+      } else {
+        currentBranch = await resolveUsableBranchLabel(await branchBackend.getCurrentBranch(this.projectPath));
+      }
     } catch {
       // Non-fatal: branch detection failure must not block dispatch
     }

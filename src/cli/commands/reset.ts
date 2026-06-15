@@ -11,6 +11,7 @@ import { PostgresStore } from "../../lib/postgres-store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { existsSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
@@ -54,6 +55,105 @@ function wrapLocalMergeQueue(queue: MergeQueue): ResetMergeQueue {
     remove: async (id) => queue.remove(id),
     missingFromQueue: async () => queue.missingFromQueue(),
   };
+}
+
+// ── Orphan-worktree sweep ─────────────────────────────────────────────────────
+
+/** Minimal VCS surface used by the orphan-worktree sweep. */
+export interface OrphanSweepVcs {
+  removeWorkspace(repoPath: string, workspacePath: string): Promise<void>;
+  deleteBranch(
+    repoPath: string,
+    branchName: string,
+    options?: { force?: boolean },
+  ): Promise<{ deleted: boolean }>;
+}
+
+export interface OrphanSweepResult {
+  worktreesRemoved: number;
+  branchesDeleted: number;
+}
+
+/**
+ * Remove orphaned worktree directories under the project's workspace root.
+ *
+ * A directory is an orphan when it does NOT belong to a truly active run
+ * (status `pending` or `running`). "failed" and "stuck" are terminal states —
+ * their agents have stopped, so their worktrees are safe to remove.
+ *
+ * IMPORTANT: the active keep-set is read from the SAME store the rest of the
+ * reset flow uses (the async {@link ResetRunStore} — Postgres-backed for
+ * registered projects). Reading the local synchronous store here would make
+ * live Postgres-backed active runs invisible to the keep-set and cause their
+ * worktrees to be destroyed as "orphans".
+ */
+export async function cleanOrphanWorktrees(
+  store: Pick<ResetRunStore, "getRunsByStatus">,
+  vcs: OrphanSweepVcs,
+  projectPath: string,
+  worktreesDir: string,
+  projectId: string,
+  opts?: {
+    readdir?: (dir: string) => string[];
+    logger?: (msg: string) => void;
+  },
+): Promise<OrphanSweepResult> {
+  const log = opts?.logger ?? ((msg: string) => console.log(msg));
+  const readdir =
+    opts?.readdir ??
+    ((dir: string) => {
+      try {
+        return readdirSync(dir);
+      } catch {
+        // Directory may have been removed already
+        return [];
+      }
+    });
+
+  let worktreesRemoved = 0;
+  let branchesDeleted = 0;
+
+  // Paths that still have truly active runs (pending or running) — keep these.
+  // "failed" and "stuck" are terminal states: their agents have stopped, so
+  // their worktrees are safe to remove during cleanup.
+  const activeStatuses = ["pending", "running"] as const;
+  const activeRunGroups = await Promise.all(
+    activeStatuses.map((s) => store.getRunsByStatus(s, projectId)),
+  );
+  const activeRuns = activeRunGroups.flat();
+  const activeWorktreePaths = new Set(
+    activeRuns.map((r) => (r.worktree_path ? resolve(r.worktree_path) : null)).filter(Boolean),
+  );
+
+  for (const entry of readdir(worktreesDir)) {
+    const fullPath = resolve(worktreesDir, entry);
+    // Skip if this worktree belongs to an active run (may still be in use)
+    if (activeWorktreePaths.has(fullPath)) continue;
+
+    log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
+    try {
+      await vcs.removeWorkspace(projectPath, fullPath);
+      worktreesRemoved++;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
+        log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
+      }
+    }
+    // Delete the corresponding branch if it exists
+    const orphanBranch = `foreman/${entry}`;
+    try {
+      const delResult = await vcs.deleteBranch(projectPath, orphanBranch, { force: true });
+      if (delResult.deleted) {
+        branchesDeleted++;
+        log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);
+      }
+    } catch {
+      // Branch may not exist — skip silently
+    }
+  }
+
+  return { worktreesRemoved, branchesDeleted };
 }
 
 // ── GitHub Issue Link unlinking (TRD-043) ─────────────────────────────────────
@@ -964,49 +1064,19 @@ export const resetCommand = new Command("reset")
       if (!dryRun) {
         const worktreesDir = getWorkspaceRoot(projectPath);
         if (existsSync(worktreesDir)) {
-          // Paths that still have truly active runs (pending or running) — keep these.
-          // "failed" and "stuck" are terminal states: their agents have stopped, so
-          // their worktrees are safe to remove during cleanup. Including them in the
-          // "active" set was the bug: it prevented orphaned worktrees from being
-          // cleaned up when a run had no worktree_path recorded in the DB.
-          const activeStatuses = ["pending", "running"] as const;
-           const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, runtimeProjectId!));
-          const activeWorktreePaths = new Set(activeRuns.map((r) => r.worktree_path).filter(Boolean));
-
-          let entries: string[] = [];
-          try {
-            entries = readdirSync(worktreesDir);
-          } catch {
-            // Directory may have been removed already
-          }
-
-          for (const entry of entries) {
-            const fullPath = `${worktreesDir}/${entry}`;
-            // Skip if this worktree belongs to an active run (may still be in use)
-            if (activeWorktreePaths.has(fullPath)) continue;
-
-            console.log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
-            try {
-              await vcs.removeWorkspace(projectPath, fullPath);
-              worktreesRemoved++;
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
-                console.log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
-              }
-            }
-            // Delete the corresponding branch if it exists
-            const orphanBranch = `foreman/${entry}`;
-            try {
-              const delResult = await vcs.deleteBranch(projectPath, orphanBranch, { force: true });
-              if (delResult.deleted) {
-                branchesDeleted++;
-                console.log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);
-              }
-            } catch {
-              // Branch may not exist — skip silently
-            }
-          }
+          // Read the active keep-set from helperStore (the same Postgres-backed
+          // store the rest of the reset flow uses for registered projects). Using
+          // the local `store` here was the bug: live Postgres-backed active runs
+          // were invisible, so their worktrees could be destroyed as "orphans".
+          const sweep = await cleanOrphanWorktrees(
+            helperStore,
+            vcs,
+            projectPath,
+            worktreesDir,
+            runtimeProjectId!,
+          );
+          worktreesRemoved += sweep.worktreesRemoved;
+          branchesDeleted += sweep.branchesDeleted;
         }
       }
 

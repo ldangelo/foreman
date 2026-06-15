@@ -126,13 +126,13 @@ describe("task CLI daemon/Postgres integration", () => {
       },
       stdio: "ignore",
     });
-    await waitForSocket(join(tempHome, ".foreman", "daemon.sock"));
+    await waitForSocket(join(tempHome, ".foreman", "daemon.sock"), 60_000);
     await waitForDaemonReady(CLI, projectDir, {
       ...process.env,
       HOME: tempHome,
       DATABASE_URL: databaseUrl,
-    });
-  });
+    }, 60_000);
+  }, 130_000);
 
   afterEach(async () => {
     if (!tempHome) {
@@ -153,7 +153,7 @@ describe("task CLI daemon/Postgres integration", () => {
     rmSync(tempHome, { recursive: true, force: true });
   });
 
-  it("creates, lists, shows, and approves tasks through the daemon/Postgres path", async () => {
+  it("creates, lists, shows, and approves tasks through the daemon/Postgres path", { timeout: 90_000 }, async () => {
     if (!(await canConnect(databaseUrl))) {
       return;
     }
