@@ -11,6 +11,7 @@ import { PostgresStore } from "../../lib/postgres-store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { existsSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
@@ -121,11 +122,11 @@ export async function cleanOrphanWorktrees(
   );
   const activeRuns = activeRunGroups.flat();
   const activeWorktreePaths = new Set(
-    activeRuns.map((r) => r.worktree_path).filter(Boolean),
+    activeRuns.map((r) => (r.worktree_path ? resolve(r.worktree_path) : null)).filter(Boolean),
   );
 
   for (const entry of readdir(worktreesDir)) {
-    const fullPath = `${worktreesDir}/${entry}`;
+    const fullPath = resolve(worktreesDir, entry);
     // Skip if this worktree belongs to an active run (may still be in use)
     if (activeWorktreePaths.has(fullPath)) continue;
 

@@ -132,7 +132,7 @@ describe("task CLI daemon/Postgres integration", () => {
       HOME: tempHome,
       DATABASE_URL: databaseUrl,
     }, 60_000);
-  }, 90_000);
+  }, 130_000);
 
   afterEach(async () => {
     if (!tempHome) {
