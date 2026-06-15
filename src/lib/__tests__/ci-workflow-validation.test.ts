@@ -158,17 +158,17 @@ describe("CI Workflow: required steps", () => {
     expect(hasTsc).toBe(true);
   });
 
-  it("includes a PR-required unit test execution step", () => {
+  it("includes a PR-required full CI test execution step", () => {
     const steps = getAllSteps();
-    const hasUnitTests = steps.some((s) => s.run?.includes("npm run test:unit"));
-    expect(hasUnitTests).toBe(true);
-    expect(steps.some((s) => s.run?.includes("npm run test:ci"))).toBe(false);
+    const hasCiTests = steps.some((s) => s.run?.includes("npm run test:ci"));
+    expect(hasCiTests).toBe(true);
+    expect(steps.some((s) => s.run?.includes("npm run test:unit"))).toBe(false);
   });
 
   it("type check step comes before test execution step", () => {
     const steps = getAllSteps();
     const tscIdx = steps.findIndex((s) => s.run?.includes("tsc") && s.run?.includes("--noEmit"));
-    const testIdx = steps.findIndex((s) => s.run?.includes("npm run test:unit"));
+    const testIdx = steps.findIndex((s) => s.run?.includes("npm run test:ci"));
     expect(tscIdx).toBeGreaterThanOrEqual(0);
     expect(testIdx).toBeGreaterThanOrEqual(0);
     expect(tscIdx).toBeLessThan(testIdx);

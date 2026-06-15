@@ -80,10 +80,10 @@ describe("testing framework workflows", () => {
     expect(steps.some((step) => step.uses?.startsWith("actions/upload-artifact"))).toBe(false);
   });
 
-  it("ci workflow runs only the unit lane", () => {
+  it("ci workflow runs the full CI suite (unit + integration + e2e)", () => {
     const steps = getAllSteps(CI_WORKFLOW_PATH);
-    expect(steps.some((step) => step.run?.includes("npm run test:unit"))).toBe(true);
-    expect(steps.some((step) => step.run?.includes("npm run test:ci"))).toBe(false);
+    expect(steps.some((step) => step.run?.includes("npm run test:ci"))).toBe(true);
+    expect(steps.some((step) => step.run?.includes("npm run test:unit"))).toBe(false);
     expect(steps.some((step) => step.run?.includes("npm run test:integration"))).toBe(false);
     expect(steps.some((step) => step.run?.includes("npm run test:e2e"))).toBe(false);
   });
