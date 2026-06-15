@@ -4,33 +4,37 @@
 
 ## Documentation Updated
 
-Earlier sessions (04-17, 04-42) already made required documentation updates:
+- `docs/PRD/PRD-2026-006-multi-project-native-task-management.md` — AC-018 section (REQ-018): Updated post-merge task status from `'merged'` to `'closed'` in acceptance criteria and component replacement table. Sprint 3 completion criteria updated to reflect "closed" terminal status.
 
-- `docs/PRD/PRD-2026-006-multi-project-native-task-management.md` — REQ-018 section: updated terminal post-merge task status from `'merged'` to `'closed'` to match implementation. Also updated component replacement table reference and sprint completion criteria.
+- `docs/TRD/TRD-2026-006-multi-project-native-task-management.md` — TRD-011 and TRD-011-TEST sections: Updated implementation ACs and test descriptions to use `'closed'` instead of `'merged'`. Sequence description in section 4 updated.
 
 ## Documentation Not Needed
 
-- `CLAUDE.md` — No references to specific task status names that would conflict with the fix. Internal behavior changes (create-pr returning "review", post-merge using "closed") are consistent with existing documentation. The single "merged" reference (line 246) refers to git branch merge, not native task status.
-- `AGENTS.md` — No references to task status names "merged" or "closed" in operator-facing context. Task lifecycle is described in terms of phase transitions, not specific status values.
-- `README.md` — Describes task statuses in general terms (backlog, ready, in progress, needs attention, closed) without referencing "merged" as a native task status. Native status `review` correctly documented as "branch/PR is awaiting review or merge".
-- `docs/user-guide.md` — Describes task statuses (backlog, ready, in progress, needs attention, closed) without referencing "merged" as a native task status. Board usage and status expectations are correctly documented.
-- `docs/cli-reference.md` — Command documentation uses `foreman task close` for task closure, not `--status merged`. No update required.
+- `CLAUDE.md` — No operator/agent contract changes. Internal implementation details (create-pr returning "review", post-merge using "closed") are consistent with existing documentation. The single "merged" reference (line 246) refers to git branch merge, not native task status.
 
-## Summary
+- `AGENTS.md` — No agent workflow, prompt, or instruction changes. Task lifecycle is described in terms of phase transitions, not specific status values.
 
-The fix corrects internal task status transitions to match already-documented behavior:
+- `README.md` — Already uses "closed" as the terminal task status (see `foreman task close` command examples). The fix aligns implementation with this existing documentation.
 
-| Event | Previously (bug) | Now (fixed) | Already documented |
-|-------|------------------|-------------|---------------------|
-| PR created via create-pr phase | Status unchanged | → "review" | Yes (review = "branch/PR is awaiting review or merge") |
-| PR created via finalize fallback | Status unchanged | → "review" | Yes (same) |
-| PR merged | → "merged" (inconsistent) | → "closed" | Yes (closed = terminal) |
+- `docs/user-guide.md` — Describes task statuses in general terms (backlog, ready, in progress, needs attention, closed) without referencing "merged" as a native task status. Board usage and status expectations are correctly documented.
 
-No new user-facing behavior was introduced. The implementation now matches the documented behavior.
+- `docs/cli-reference.md` — Uses "closed" as the terminal task status in command examples. No update required.
+
+- `docs/workflow-yaml-reference.md` — Document is about workflow configuration (phases, models, retries), not task status lifecycle. No update required.
+
+## Notes
+
+The implementation fix aligns with existing documentation:
+- Task lifecycle (backlog → in-progress → review → closed) was already correctly documented
+- "review" was already the expected status after PR creation
+- "closed" was already the documented terminal status for merged runs
+- Reconciliation behavior (repairing stale tasks) is an internal repair mechanism, not new user-facing behavior
+
+The `src/defaults/prompts/default/finalize-bug.md` changes (target drift detection) are part of the same commit but represent a separate fix from the PR creation/merge status issue.
 
 ## Checks
 
 - Diff reviewed: yes
-- User-facing behavior changed: no (implementation now matches already-documented behavior)
-- Workflow/prompt behavior changed: no
-- PRD/TRD updated by prior session: yes
+- User-facing behavior changed: no — implementation aligned with existing documentation
+- Workflow/prompt behavior changed: no — phase behavior unchanged; task status bookkeeping paths aligned
+- Design doc accuracy restored: yes — PRD and TRD now match implementation

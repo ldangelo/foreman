@@ -1,31 +1,57 @@
 # Developer Report: Fix task status after PR creation and merge
 
-## Approach
-Addressed the single blocking issue identified by CodeRabbit: the finalize fallback PR creation path was using an inconsistent client pair (`runtimeTaskBackend` from outer scope but `runtimeTaskClient` from a locally shadowed variable created by `createRuntimeTaskClient`). The fix removes the local shadowing so both the backend-type check and the status update use the outer scope `runtimeTaskClient`/`runtimeTaskBackend` pair — consistent with how `onTaskPhaseChange` works.
+## Root Cause
 
-The broader feature (PR metadata writing + status update to "review" in finalize fallback, plus startup reconciliation for merged PRs) was already implemented in the worktree's uncommitted changes. My fix ensures the status update uses the correct/consistent client.
+The finalize-bug.md prompt unconditionally wrote SKIPPED for Target Integration without checking if the target branch actually changed after QA. This violated the finalize integration contract:
 
-Verified that all acceptance criteria were already satisfied by existing code:
-1. **PR creation status updates**: Handled by `nativeTaskStatusForPhase("create-pr")` → `"review"` via `onTaskPhaseChange` (explicit create-pr) and inline in finalize fallback
-2. **Merge detection and task closing**: Handled by `syncTaskStatusOnStartup` via `mapRunStatusToNativeTaskStatus("merged")` → `"closed"`
-3. **Consistent bookkeeping**: Finalize fallback and explicit create-pr share the same `PR_METADATA.json` writing
-4. **Startup reconciliation**: Already covers stale finalize/review tasks with merged PRs and leaves closed tasks closed (tests in `startup-sync.test.ts`)
+- When the target branch changed after QA, the prompt should run integration and write SUCCESS
+- When the target branch didn't change, the prompt should write SKIPPED
+- The bug workflow was missing the target drift detection logic that the regular finalize.md prompt had
+
+## Fix
+
+Updated `src/defaults/prompts/default/finalize-bug.md` to:
+
+1. **Added Step 1: Detect target drift and integrate if needed**
+   - Compare `{{qaValidatedTargetRef}}` with `{{currentTargetRef}}`
+   - If refs differ (target changed), run `{{vcsIntegrateTargetCommand}}`
+   - If refs match (target unchanged), skip integration
+
+2. **Updated Step 2: Write FINALIZE_VALIDATION.md with appropriate status**
+   - SUCCESS when integration was run (target changed)
+   - SKIPPED when integration was skipped (target unchanged)
+
+3. **Renumbered subsequent steps** (was 1-6, now 1-7 with new Step 1)
+
+4. **Updated Rules section** to mention integration requirement when drift detected
 
 ## Files Changed
-- `src/orchestrator/agent-worker.ts` — Removed `const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId)` that was shadowing the outer scope variable. The outer scope `runtimeTaskClient` is now used consistently with `runtimeTaskBackend` for the Refinery initialization and the status update check/call.
+
+- `src/defaults/prompts/default/finalize-bug.md` — Added target drift detection and conditional integration logic
 
 ## Tests Added/Modified
-No new tests required. The worktree already contained comprehensive tests in `src/orchestrator/__tests__/startup-sync.test.ts` covering all reconciliation scenarios:
-- `it("updates stale finalize task to review when run is completed")`
-- `it("closes stale finalize task when run is merged")`
-- `it("closes stale review task when run is merged")`
-- `it("does not reopen closed native tasks from stale failed runs")`
-- `it("does not reopen closed task even when run status suggests different status")`
-- `it("does not update task that is already at correct status")`
+
+No new tests were required for this specific fix since the existing test `pipeline-verdict-retry.test.ts` already covers the finalize validation contract:
+- "fails finalize when target drifted but integration was marked skipped"
+
+The existing tests verify the pipeline executor validation logic correctly catches when integration is skipped but target changed.
+
+## Verification
+
+```bash
+# All tests pass
+npx vitest run src/orchestrator/__tests__/  # 1728 tests passed
+
+# TypeScript compiles cleanly
+npx tsc --noEmit  # No errors
+```
 
 ## Decisions & Trade-offs
-- Chose to use the outer scope `runtimeTaskClient` for the Refinery rather than keeping a separate local instance. The Refinery only needs the task client for post-merge `close()` calls; using the outer client is functionally equivalent and avoids a second client instantiation.
-- Did not add board-only masking — the task explicitly forbids this and the existing reconciliation approach handles staleness correctly.
+
+- The fix aligns the bug workflow finalize prompt with the expected validation behavior
+- The regular finalize.md prompt already had proper target drift detection via `shouldRunFinalizeValidation`
+- The bug workflow was the only one missing this logic, causing the specific violation reported
 
 ## Known Limitations
-- The fix is minimal/surgical — the broader "task status after PR creation and merge" behavior was already implemented in prior worktree changes. This fix resolves the client inconsistency that could cause the status update to use the wrong backend client in edge cases.
+
+- None identified - the fix directly addresses the feedback about the integration contract violation
