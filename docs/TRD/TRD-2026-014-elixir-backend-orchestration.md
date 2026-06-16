@@ -658,7 +658,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-019-TEST**: Verify Implement sentinel, Jira, and GitHub command ingestion with idempotency (3h) [verifies TRD-019] [satisfies REQ-016] [depends: TRD-019]
+- [x] **TRD-019-TEST**: Verify Implement sentinel, Jira, and GitHub command ingestion with idempotency (3h) [verifies TRD-019] [satisfies REQ-016] [depends: TRD-019]
 
 **Description:** Add unit/integration tests that verify AC-016-1, AC-016-2, AC-016-3 for TRD-019.
 
