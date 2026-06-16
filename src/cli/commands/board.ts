@@ -141,6 +141,7 @@ export interface BoardTask {
   updated_at: string;
   approved_at: string | null;
   closed_at: string | null;
+  run_id?: string | null;
   notes?: BoardTaskNote[];
 }
 
@@ -243,6 +244,23 @@ async function resolveBoardContext(projectPath: string): Promise<BoardContext> {
  * Tasks with unknown statuses are placed in the rightmost column (closed).
  * Failed, stuck, and conflict statuses route to needs_attention (not closed).
  */
+function boardTaskFromRow(row: TaskRow): BoardTask {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    type: row.type,
+    priority: row.priority,
+    status: row.status,
+    external_id: row.external_id,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    approved_at: row.approved_at,
+    closed_at: row.closed_at,
+    run_id: row.run_id,
+  };
+}
+
 export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStatus, BoardTask[]>> {
   const { client, projectId } = await resolveBoardContext(projectPath);
   const rows = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
@@ -254,23 +272,94 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
 
   for (const row of rows) {
     const status = boardColumnForTaskStatus(row.status);
-    const tasks = map.get(status)!;
-    tasks.push({
-      id: row.id,
-      title: row.title,
-      description: row.description,
-      type: row.type,
-      priority: row.priority,
-      status: row.status,
-      external_id: row.external_id,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      approved_at: row.approved_at,
-      closed_at: row.closed_at,
-    });
+    map.get(status)!.push(boardTaskFromRow(row));
   }
 
   return map;
+}
+
+export async function loadBoardTask(projectPath: string, taskId: string): Promise<BoardTask | null> {
+  const { client, projectId } = await resolveBoardContext(projectPath);
+  const row = await client.tasks.get({ projectId, taskId }) as TaskRow | null;
+  return row ? boardTaskFromRow(row) : null;
+}
+
+interface BoardInboxMessageRow {
+  id: string;
+  run_id: string;
+  created_at: string;
+}
+
+interface BoardRunRow {
+  id: string;
+  seed_id?: string | null;
+  bead_id?: string | null;
+}
+
+export interface BoardInboxUpdateResult {
+  taskIds: string[];
+  newestId: string | null;
+}
+
+export async function pollBoardInboxTaskUpdates(
+  projectPath: string,
+  lastSeenId: string | null,
+  limit = 100,
+): Promise<BoardInboxUpdateResult> {
+  const { client, projectId } = await resolveBoardContext(projectPath);
+  const rows = await client.mail.listGlobal({ projectId, limit }) as BoardInboxMessageRow[];
+  const newestId = rows[rows.length - 1]?.id ?? null;
+
+  if (!lastSeenId) {
+    return { taskIds: [], newestId };
+  }
+
+  const lastSeenIndex = rows.findIndex((row) => row.id === lastSeenId);
+  const newRows = lastSeenIndex >= 0 ? rows.slice(lastSeenIndex + 1) : rows;
+  const runIds = [...new Set(newRows.map((row) => row.run_id).filter(Boolean))];
+  const taskIds = new Set<string>();
+
+  for (const runId of runIds) {
+    const run = await client.runs.get({ runId }) as BoardRunRow | null;
+    const taskId = run?.seed_id ?? run?.bead_id ?? null;
+    if (taskId) taskIds.add(taskId);
+  }
+
+  return { taskIds: [...taskIds], newestId };
+}
+
+export function applyBoardTaskUpdate(
+  taskMap: Map<BoardStatus, BoardTask[]>,
+  task: BoardTask | null,
+  taskId: string,
+  sortMode: SortMode,
+): Map<BoardStatus, BoardTask[]> {
+  const next = new Map<BoardStatus, BoardTask[]>();
+  for (const [status, tasks] of taskMap) {
+    next.set(status, tasks.filter((candidate) => candidate.id !== taskId));
+  }
+
+  if (task) {
+    const status = boardColumnForTaskStatus(task.status);
+    next.get(status)!.push(task);
+    next.set(status, sortBoardTasks(next.get(status)!, sortMode));
+  }
+
+  return next;
+}
+
+export async function refreshBoardTasksById(
+  projectPath: string,
+  taskMap: Map<BoardStatus, BoardTask[]>,
+  taskIds: Iterable<string>,
+  sortMode: SortMode,
+): Promise<Map<BoardStatus, BoardTask[]>> {
+  let next = taskMap;
+  for (const taskId of taskIds) {
+    const task = await loadBoardTask(projectPath, taskId);
+    next = applyBoardTaskUpdate(next, task, taskId, sortMode);
+  }
+  return next;
 }
 
 export async function loadBoardTaskNotes(projectPath: string, taskId: string): Promise<BoardTaskNote[]> {
@@ -1642,6 +1731,9 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let refreshSpinnerFrame = 0;
   let refreshedAt: string | null = null;
   let refreshSpinnerTimer: NodeJS.Timeout | null = null;
+  let inboxMonitorTimer: NodeJS.Timeout | null = null;
+  let boardInboxLastSeenId: string | null = null;
+  let inboxUpdateInFlight = false;
   let quit = false;
   let stdinRawMode = false;
 
@@ -1680,6 +1772,13 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     }
   };
 
+  const stopInboxMonitor = () => {
+    if (inboxMonitorTimer) {
+      clearInterval(inboxMonitorTimer);
+      inboxMonitorTimer = null;
+    }
+  };
+
   const startRefreshSpinner = () => {
     stopRefreshSpinner();
     refreshStatus = "refreshing";
@@ -1714,6 +1813,52 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
 
   process.stdout.write(HIDE_CURSOR);
   renderCurrentBoard();
+
+  try {
+    boardInboxLastSeenId = (await pollBoardInboxTaskUpdates(projectPath, null)).newestId;
+  } catch {
+    boardInboxLastSeenId = null;
+  }
+
+  const processInboxTaskUpdates = async () => {
+    if (quit || inboxUpdateInFlight) return;
+    inboxUpdateInFlight = true;
+    try {
+      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId);
+      if (update.newestId) {
+        boardInboxLastSeenId = update.newestId;
+      }
+      if (update.taskIds.length === 0) return;
+
+      tasks = await refreshBoardTasksById(projectPath, tasks, update.taskIds, sortMode);
+      normalizeNavRowIndex(nav, tasks);
+      flashTaskId = update.taskIds[0] ?? null;
+      refreshedAt = new Date().toLocaleTimeString();
+      refreshStatus = "refreshed";
+
+      if (detailTask && update.taskIds.includes(detailTask.id)) {
+        const refreshedDetail = getHighlightedTask(nav, tasks)?.id === detailTask.id
+          ? getHighlightedTask(nav, tasks)
+          : update.taskIds.includes(detailTask.id)
+            ? await loadBoardTask(projectPath, detailTask.id)
+            : null;
+        if (refreshedDetail) {
+          detailTask = { ...refreshedDetail, notes: detailTask.notes };
+        }
+      }
+
+      renderCurrentBoard();
+    } catch (err) {
+      errorMessage = `Inbox monitor failed: ${err instanceof Error ? err.message : String(err)}`;
+      renderCurrentBoard();
+    } finally {
+      inboxUpdateInFlight = false;
+    }
+  };
+
+  inboxMonitorTimer = setInterval(() => {
+    void processInboxTaskUpdates();
+  }, 2000);
 
   const attachRawMode = () => {
     if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
@@ -1843,6 +1988,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     if (quit) {
       process.stdout.write(SHOW_CURSOR + "\n");
       stopRefreshSpinner();
+      stopInboxMonitor();
       detachRawMode();
       process.exit(0);
     }
@@ -1854,6 +2000,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   const onSigint = () => {
     process.stdout.write(SHOW_CURSOR + "\n");
     stopRefreshSpinner();
+    stopInboxMonitor();
     detachRawMode();
     process.exit(0);
   };

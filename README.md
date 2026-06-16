@@ -497,7 +497,7 @@ foreman status --live                    # Full dashboard TUI with event stream
 ```
 
 ### `foreman board`
-Terminal UI kanban board for managing Foreman tasks. Five status columns with vim-style navigation. Press `y` to copy the selected task ID; pressing `r` shows a `refreshing…` spinner while tasks reload and a brief `refreshed <time>` confirmation after reload.
+Terminal UI kanban board for managing Foreman tasks. Five status columns with vim-style navigation. Press `y` to copy the selected task ID. The board monitors agent inbox messages and updates only task cards tied to changed runs; press `r` for a full manual reload with a `refreshing…` spinner and `refreshed <time>` confirmation.
 
 ```bash
 foreman board                             # Launch interactive kanban board

@@ -17,7 +17,7 @@ vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: mockCreateTrpcClient,
 }));
 
-import { loadBoardTasks } from "../commands/board.js";
+import { applyBoardTaskUpdate, loadBoardTasks, pollBoardInboxTaskUpdates, type BoardTask } from "../commands/board.js";
 
 describe("foreman board command context", () => {
   const tempDirs: string[] = [];
@@ -209,5 +209,104 @@ describe("loadBoardTasks status routing", () => {
     expect(tasks.get("in_progress")).toHaveLength(1);
     // "in-review" normalizes to "in_review" which is NOT a valid BoardStatus -> falls to closed
     expect(tasks.get("closed")).toHaveLength(1);
+  });
+});
+
+describe("board inbox-driven task updates", () => {
+  const tempDirs: string[] = [];
+
+  function makeTempDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-board-inbox-updates-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  function setupProject() {
+    const projectDir = makeTempDir();
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "test-project", path: projectDir },
+    ]);
+    return { projectDir };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListRegisteredProjects.mockReset();
+    mockCreateTrpcClient.mockReset();
+  });
+
+  afterEach(() => {
+    for (const dir of tempDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    tempDirs.length = 0;
+  });
+
+  it("seeds its cursor without returning old inbox messages as task changes", async () => {
+    const { projectDir } = setupProject();
+    mockCreateTrpcClient.mockReturnValue({
+      mail: {
+        listGlobal: vi.fn().mockResolvedValue([
+          { id: "msg-1", run_id: "run-1", created_at: "2026-01-01T00:00:00Z" },
+        ]),
+      },
+      runs: { get: vi.fn() },
+    });
+
+    const result = await pollBoardInboxTaskUpdates(projectDir, null);
+
+    expect(result).toEqual({ taskIds: [], newestId: "msg-1" });
+  });
+
+  it("maps new inbox messages to changed task IDs through their run records", async () => {
+    const { projectDir } = setupProject();
+    const runGet = vi.fn()
+      .mockResolvedValueOnce({ id: "run-2", seed_id: "task-2" })
+      .mockResolvedValueOnce({ id: "run-3", seed_id: "task-3" });
+    mockCreateTrpcClient.mockReturnValue({
+      mail: {
+        listGlobal: vi.fn().mockResolvedValue([
+          { id: "msg-1", run_id: "run-1", created_at: "2026-01-01T00:00:00Z" },
+          { id: "msg-2", run_id: "run-2", created_at: "2026-01-01T00:00:01Z" },
+          { id: "msg-3", run_id: "run-3", created_at: "2026-01-01T00:00:02Z" },
+        ]),
+      },
+      runs: { get: runGet },
+    });
+
+    const result = await pollBoardInboxTaskUpdates(projectDir, "msg-1");
+
+    expect(result).toEqual({ taskIds: ["task-2", "task-3"], newestId: "msg-3" });
+    expect(runGet).toHaveBeenCalledWith({ runId: "run-2" });
+    expect(runGet).toHaveBeenCalledWith({ runId: "run-3" });
+  });
+
+  it("updates only the changed task in the board map", () => {
+    const backlogTask: BoardTask = {
+      id: "task-1",
+      title: "Task",
+      description: null,
+      type: "bug",
+      priority: 2,
+      status: "backlog",
+      external_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      approved_at: null,
+      closed_at: null,
+    };
+    const map = new Map([
+      ["backlog", [backlogTask]],
+      ["ready", []],
+      ["in_progress", []],
+      ["needs_attention", []],
+      ["closed", []],
+    ] as Array<["backlog" | "ready" | "in_progress" | "needs_attention" | "closed", BoardTask[]]>);
+
+    const updated = applyBoardTaskUpdate(map, { ...backlogTask, status: "failed" }, "task-1", "updated");
+
+    expect(updated.get("backlog")).toEqual([]);
+    expect(updated.get("needs_attention")?.map((task) => task.id)).toEqual(["task-1"]);
   });
 });
