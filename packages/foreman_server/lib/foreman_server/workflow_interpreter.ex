@@ -180,14 +180,12 @@ defmodule ForemanServer.WorkflowInterpreter do
             k = key(k)
             value = scalar(v)
 
-            next_phase =
-              if nested do
-                Map.update(phase, nested, %{k => value}, &Map.put(&1, k, value))
-              else
-                Map.put(phase, k, value)
-              end
-
-            {root, section, next_phase, nested}
+            if nested && indent > 4 do
+              next_phase = Map.update(phase, nested, %{k => value}, &Map.put(&1, k, value))
+              {root, section, next_phase, nested}
+            else
+              {root, section, Map.put(phase, k, value), nil}
+            end
 
           true ->
             {root, section, phase, nested}
