@@ -66,4 +66,16 @@ describe("agent-worker runtime task client threading", () => {
     expect(source).not.toContain("store.logRateLimitEvent(config.projectId, model, phase, error, retryAfterSeconds, config.runId);");
     expect(source).toContain("sendMail(agentMailClient, \"foreman\", \"rate-limit-alert\",");
   });
+
+  it("initializes the Postgres pool before resolving the registered project", () => {
+    const sourcePath = fileURLToPath(new URL("../agent-worker.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf8");
+    const helperStart = source.indexOf("async function resolveRegisteredProjectIdForPath");
+    const poolInit = source.indexOf("initPool({ databaseUrl });", helperStart);
+    const pgRegistry = source.indexOf("new ProjectRegistry({ pg: new PostgresAdapter() })", helperStart);
+
+    expect(source).toContain("import { initPool, isPoolInitialised } from \"../lib/db/pool-manager.js\";");
+    expect(poolInit).toBeGreaterThan(helperStart);
+    expect(pgRegistry).toBeGreaterThan(poolInit);
+  });
 });

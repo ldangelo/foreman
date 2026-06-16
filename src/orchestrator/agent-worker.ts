@@ -24,7 +24,7 @@ import type { RunProgress } from "../lib/store.js";
 import { PostgresStore } from "../lib/postgres-store.js";
 import type { RunProgressSummary } from "./read-models.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
-import { initPool } from "../lib/db/pool-manager.js";
+import { initPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
@@ -111,6 +111,14 @@ async function resolveRegisteredProjectIdForPath(
   databaseUrl?: string,
 ): Promise<string | undefined> {
   if (!databaseUrl) return undefined;
+
+  if (!isPoolInitialised()) {
+    try {
+      initPool({ databaseUrl });
+    } catch {
+      // Fall through to the legacy registry source when Postgres is unavailable.
+    }
+  }
 
   const registries = [
     new ProjectRegistry({ pg: new PostgresAdapter() }),
@@ -517,7 +525,7 @@ async function main(): Promise<void> {
   }
 
   // Initialize Postgres pool for dual-write mirrors when DATABASE_URL is available.
-  if (registeredProjectId && databaseUrl) {
+  if (registeredProjectId && databaseUrl && !isPoolInitialised()) {
     try {
       initPool({ databaseUrl });
     } catch {
