@@ -128,6 +128,9 @@ defmodule ForemanServer.ProjectionStore do
       vcs_operations: %{},
       pr_gates: %{},
       merge_failures: %{},
+      inbox_messages: %{},
+      inbox_by_run: %{},
+      inbox_updates: [],
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -454,6 +457,36 @@ defmodule ForemanServer.ProjectionStore do
     |> put_in([:pr_gates, pr_id], Map.put(payload, :state, "failed"))
   end
 
+  defp apply_domain_event(projection, %{
+         type: "InboxMessageAppended",
+         payload: %{message_id: message_id, run_id: run_id} = payload
+       }) do
+    message = Map.put(payload, :event_type, "InboxMessageAppended")
+    notify_inbox_watchers(run_id, message)
+
+    projection
+    |> put_in([:inbox_messages, message_id], message)
+    |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [message_id]) end)
+    |> update_in([:inbox_updates], &((&1 || []) ++ [message]))
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "InboxDeliveryUpdated",
+         payload: %{message_id: message_id, run_id: run_id} = payload
+       }) do
+    existing =
+      get_in(projection, [:inbox_messages, message_id]) ||
+        %{message_id: message_id, run_id: run_id}
+
+    message = existing |> Map.merge(payload) |> Map.put(:event_type, "InboxDeliveryUpdated")
+    notify_inbox_watchers(run_id, message)
+
+    projection
+    |> put_in([:inbox_messages, message_id], message)
+    |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [message_id]) end)
+    |> update_in([:inbox_updates], &((&1 || []) ++ [message]))
+  end
+
   defp apply_domain_event(projection, _event), do: projection
 
   defp update_run_status(projection, run_id, status) do
@@ -541,6 +574,16 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp put_worker_sequence(projection, _payload), do: projection
+
+  defp notify_inbox_watchers(run_id, message) do
+    if Process.whereis(ForemanServer.InboxRegistry) do
+      Registry.dispatch(ForemanServer.InboxRegistry, run_id, fn entries ->
+        for {pid, _value} <- entries do
+          send(pid, {:inbox_update, run_id, message})
+        end
+      end)
+    end
+  end
 
   defp normalize_event(%ForemanServer.Event{} = event) do
     %{type: event.event_type, payload: event.payload}

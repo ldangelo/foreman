@@ -9,6 +9,7 @@ defmodule ForemanServer.Application do
   def start(_type, _args) do
     children =
       [
+        {Registry, keys: :duplicate, name: ForemanServer.InboxRegistry},
         {ProjectionStore, []},
         {EventStore, []},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
