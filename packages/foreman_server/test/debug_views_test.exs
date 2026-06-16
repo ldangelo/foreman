@@ -74,10 +74,12 @@ defmodule ForemanServer.DebugViewsTest do
     assert hd(Enum.reverse(debug.timeline)).artifact_paths == [artifact]
   end
 
-  test "historical summaries remain possible after external log files are purged", %{
-    tmp_dir: tmp_dir
-  } do
+  test "historical summaries remain possible after external log files are purged and server restarts",
+       %{
+         tmp_dir: tmp_dir
+       } do
     log_file = Path.join(tmp_dir, "worker.log")
+    event_log_path = Application.fetch_env!(:foreman_server, :event_log_path)
     File.write!(log_file, "transient raw log")
 
     append_run_event("RunStarted", %{run_id: "run-purge", phase_order: ["developer"]})
@@ -94,14 +96,114 @@ defmodule ForemanServer.DebugViewsTest do
     File.rm!(log_file)
     refute File.exists?(log_file)
 
+    Application.stop(:foreman_server)
+    Application.put_env(:foreman_server, :event_log_path, event_log_path)
+    assert :ok = Application.start(:foreman_server)
+
     assert {:ok, logs} = DebugViews.logs("run-purge", mode: :compact)
 
     assert [%{message: "event-backed stdout survives"}] =
              Enum.filter(logs.entries, &(&1.type == "WorkerStdout"))
 
     assert {:ok, report} = DebugViews.report("run-purge")
+    assert report.status == "in_progress"
     assert report.summary.event_count == 2
     assert log_file in report.artifact_paths
+
+    assert {:ok, debug} = DebugViews.debug_timeline("run-purge")
+    assert debug.summary.event_count == 2
+    assert log_file in debug.artifacts
+  end
+
+  test "debug views redact secrets and truncate large log values" do
+    large_output = String.duplicate("x", 5_000)
+
+    append_worker_event("WorkerStdout", %{
+      run_id: "run-secret",
+      phase_id: "developer",
+      worker_id: "worker-secret",
+      output: large_output <> " token=abc123",
+      details: %{password: "super-secret"},
+      sequence: 1
+    })
+
+    append_worker_event("WorkerStderr", %{
+      run_id: "run-secret",
+      phase_id: "developer",
+      worker_id: "worker-secret",
+      output: "stderr api_key=abc123",
+      sequence: 2
+    })
+
+    append_worker_event("AssistantMessage", %{
+      run_id: "run-secret",
+      phase_id: "developer",
+      worker_id: "worker-secret",
+      message: "assistant password=hunter2",
+      sequence: 3
+    })
+
+    append_worker_event("ToolCallFinished", %{
+      run_id: "run-secret",
+      phase_id: "developer",
+      worker_id: "worker-secret",
+      tool_name: "shell",
+      status: "ok",
+      metadata: %{authorization: "Bearer abc123"},
+      details: %{client_secret: "secret-value", note: "safe"},
+      event_metadata: %{authorization: "Bearer eventtoken"},
+      sequence: 4
+    })
+
+    assert {:ok, compact} = DebugViews.logs("run-secret", mode: :compact)
+    messages = Enum.map(compact.entries, & &1.message)
+    refute Enum.any?(messages, &String.contains?(&1, "abc123"))
+    refute Enum.any?(messages, &String.contains?(&1, "hunter2"))
+    assert Enum.any?(messages, &String.ends_with?(&1, "...[truncated]"))
+
+    assert {:ok, raw} = DebugViews.logs("run-secret", mode: :raw)
+    stdout = Enum.find(raw.entries, &(&1.type == "WorkerStdout"))
+    stderr = Enum.find(raw.entries, &(&1.type == "WorkerStderr"))
+    assistant = Enum.find(raw.entries, &(&1.type == "AssistantMessage"))
+    tool = Enum.find(raw.entries, &(&1.type == "ToolCallFinished"))
+
+    assert String.ends_with?(stdout.payload.output, "...[truncated]")
+    refute stdout.payload.output =~ "abc123"
+    assert stderr.payload.output == "stderr api_key=[REDACTED]"
+    assert assistant.payload.message == "assistant password=[REDACTED]"
+    assert tool.payload.details.client_secret == "[REDACTED]"
+    assert tool.payload.metadata.authorization == "[REDACTED]"
+    assert tool.metadata.authorization == "[REDACTED]"
+
+    assert {:ok, debug} = DebugViews.debug_timeline("run-secret")
+    refute inspect(debug) =~ "hunter2"
+    refute inspect(debug) =~ "abc123"
+  end
+
+  test "assistant_message events sent with message render non-blank" do
+    assert {:ok, _} =
+             WorkerProtocol.start_phase("developer", %{
+               run_id: "run-message",
+               worker_id: "worker-message",
+               adapter: "pi_sdk"
+             })
+
+    assert {:ok, _} =
+             WorkerProtocol.ingest_event(%{
+               run_id: "run-message",
+               phase_id: "developer",
+               worker_id: "worker-message",
+               type: "assistant_message",
+               message: "assistant message body",
+               sequence: 1
+             })
+
+    assert {:ok, logs} = DebugViews.logs("run-message", mode: :compact)
+
+    assert Enum.any?(
+             logs.entries,
+             &(&1.type == "AssistantMessage" and &1.message == "assistant message body")
+           )
   end
 
   defp seed_worker_events do
@@ -167,14 +269,21 @@ defmodule ForemanServer.DebugViewsTest do
   end
 
   defp append_worker_event(event_type, payload) do
+    event_metadata = Map.get(payload, :event_metadata, %{})
+    payload = Map.delete(payload, :event_metadata)
+
     EventStore.append(%{
       stream_id: "worker:#{payload.run_id}:#{payload.worker_id}",
       event_type: event_type,
       payload: payload,
-      metadata: %{
-        correlation_id: payload.run_id,
-        idempotency_key: "#{event_type}:#{System.unique_integer([:positive])}"
-      }
+      metadata:
+        Map.merge(
+          %{
+            correlation_id: payload.run_id,
+            idempotency_key: "#{event_type}:#{System.unique_integer([:positive])}"
+          },
+          event_metadata
+        )
     })
   end
 end

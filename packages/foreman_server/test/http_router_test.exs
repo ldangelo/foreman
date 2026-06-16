@@ -57,6 +57,86 @@ defmodule ForemanServer.Http.RouterTest do
     assert body["correlation_id"] == "corr-http"
   end
 
+  test "run log/report/debug endpoints require bearer token" do
+    seed_debug_http_run()
+
+    for path <- [
+          "/api/v1/runs/run-http-debug/logs",
+          "/api/v1/runs/run-http-debug/report",
+          "/api/v1/runs/run-http-debug/debug"
+        ] do
+      conn =
+        :get
+        |> conn(path)
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+    end
+  end
+
+  test "authorized run log endpoint returns compact and raw views and rejects invalid view" do
+    seed_debug_http_run()
+
+    compact_conn =
+      :get
+      |> conn("/api/v1/runs/run-http-debug/logs")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert compact_conn.status == 200
+    compact = Jason.decode!(compact_conn.resp_body)
+    assert compact["ok"] == true
+    assert compact["logs"]["mode"] == "compact"
+    assert Enum.any?(compact["logs"]["entries"], &(&1["message"] == "http stdout"))
+
+    raw_conn =
+      :get
+      |> conn("/api/v1/runs/run-http-debug/logs?view=raw")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert raw_conn.status == 200
+    raw = Jason.decode!(raw_conn.resp_body)
+    assert raw["logs"]["mode"] == "raw"
+    assert Enum.any?(raw["logs"]["entries"], &(&1["payload"]["output"] == "http stdout"))
+
+    invalid_conn =
+      :get
+      |> conn("/api/v1/runs/run-http-debug/logs?view=verbose")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert invalid_conn.status == 400
+    assert Jason.decode!(invalid_conn.resp_body)["error"]["message"] == "missing or invalid view"
+  end
+
+  test "authorized run report and debug endpoints return event-backed summaries" do
+    seed_debug_http_run()
+
+    report_conn =
+      :get
+      |> conn("/api/v1/runs/run-http-debug/report")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert report_conn.status == 200
+    report = Jason.decode!(report_conn.resp_body)["report"]
+    assert report["summary"]["event_count"] == 2
+    assert report["artifact_paths"] == ["http-artifact.md"]
+
+    debug_conn =
+      :get
+      |> conn("/api/v1/runs/run-http-debug/debug")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert debug_conn.status == 200
+    debug = Jason.decode!(debug_conn.resp_body)["debug"]
+    assert debug["summary"]["event_count"] == 2
+    assert Enum.map(debug["timeline"], & &1["type"]) == ["RunStarted", "WorkerStdout"]
+  end
+
   test "authorized top-level external trigger command creates and dedupes integration task" do
     command = top_level_external_trigger_command()
 
@@ -163,6 +243,43 @@ defmodule ForemanServer.Http.RouterTest do
     body = Jason.decode!(conn.resp_body)
     assert body["ok"] == false
     assert body["error"]["code"] == "VALIDATION_FAILED"
+  end
+
+  defp seed_debug_http_run do
+    append_run_event("RunStarted", %{run_id: "run-http-debug", phase_order: ["developer"]})
+
+    append_worker_event("WorkerStdout", %{
+      run_id: "run-http-debug",
+      phase_id: "developer",
+      worker_id: "worker-http-debug",
+      output: "http stdout",
+      artifact_paths: ["http-artifact.md"],
+      sequence: 1
+    })
+  end
+
+  defp append_run_event(event_type, payload) do
+    ForemanServer.EventStore.append(%{
+      stream_id: "run:#{payload.run_id}",
+      event_type: event_type,
+      payload: payload,
+      metadata: %{
+        correlation_id: payload.run_id,
+        idempotency_key: "#{event_type}:#{System.unique_integer([:positive])}"
+      }
+    })
+  end
+
+  defp append_worker_event(event_type, payload) do
+    ForemanServer.EventStore.append(%{
+      stream_id: "worker:#{payload.run_id}:#{payload.worker_id}",
+      event_type: event_type,
+      payload: payload,
+      metadata: %{
+        correlation_id: payload.run_id,
+        idempotency_key: "#{event_type}:#{System.unique_integer([:positive])}"
+      }
+    })
   end
 
   defp valid_command do

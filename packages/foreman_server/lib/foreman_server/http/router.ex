@@ -65,9 +65,10 @@ defmodule ForemanServer.Http.Router do
   end
 
   get "/api/v1/runs/:run_id/logs" do
-    mode = if conn.query_params["view"] == "raw", do: :raw, else: :compact
+    conn = fetch_query_params(conn)
 
     with :ok <- authorize(conn),
+         {:ok, mode} <- log_view_mode(conn.query_params["view"]),
          {:ok, logs} <- ForemanServer.DebugViews.logs(run_id, mode: mode) do
       send_json(conn, 200, %{ok: true, logs: logs})
     else
@@ -212,6 +213,12 @@ defmodule ForemanServer.Http.Router do
   match _ do
     send_error(conn, 404, "UNSUPPORTED", "route not found", false)
   end
+
+  defp log_view_mode(nil), do: {:ok, :compact}
+  defp log_view_mode(""), do: {:ok, :compact}
+  defp log_view_mode("compact"), do: {:ok, :compact}
+  defp log_view_mode("raw"), do: {:ok, :raw}
+  defp log_view_mode(_view), do: {:error, {:missing_or_invalid, :view}}
 
   defp authorize(conn) do
     expected =

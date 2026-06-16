@@ -71,6 +71,7 @@ defmodule ForemanServer.WorkerProtocol do
         tool_name: Map.get(payload, :tool_name),
         status: Map.get(payload, :status),
         output: Map.get(payload, :output),
+        message: Map.get(payload, :message),
         artifact_paths: Map.get(payload, :artifact_paths, []),
         report_paths: Map.get(payload, :report_paths, []),
         exit_code: Map.get(payload, :exit_code),

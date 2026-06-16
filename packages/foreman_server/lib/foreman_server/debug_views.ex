@@ -3,6 +3,13 @@ defmodule ForemanServer.DebugViews do
 
   alias ForemanServer.{Event, EventStore, ProjectionStore}
 
+  @max_string_length 4_096
+  @redacted "[REDACTED]"
+  @truncated_suffix "...[truncated]"
+  @secret_key_names MapSet.new(~w(
+    access_token api_key apikey authorization auth_token client_secret password secret token
+  ))
+
   @log_event_types MapSet.new([
                      "WorkerStdout",
                      "WorkerStderr",
@@ -122,8 +129,8 @@ defmodule ForemanServer.DebugViews do
       type: event.event_type,
       stream_id: event.stream_id,
       occurred_at: event.occurred_at,
-      payload: event.payload,
-      metadata: event.metadata
+      payload: sanitize_value(event.payload),
+      metadata: sanitize_value(event.metadata)
     }
   end
 
@@ -137,7 +144,7 @@ defmodule ForemanServer.DebugViews do
       phase_id: Map.get(payload, :phase_id),
       worker_id: Map.get(payload, :worker_id),
       stream: stream_name(event.event_type),
-      message: compact_message(event.event_type, payload),
+      message: compact_message(event.event_type, payload) |> sanitize_string(),
       occurred_at: event.occurred_at
     }
   end
@@ -152,9 +159,9 @@ defmodule ForemanServer.DebugViews do
       phase_id: Map.get(payload, :phase_id),
       worker_id: Map.get(payload, :worker_id),
       status: Map.get(payload, :status),
-      artifact_paths: Map.get(payload, :artifact_paths, []),
-      report_paths: Map.get(payload, :report_paths, []),
-      reason: Map.get(payload, :reason, Map.get(payload, :error)),
+      artifact_paths: Map.get(payload, :artifact_paths, []) |> sanitize_value(),
+      report_paths: Map.get(payload, :report_paths, []) |> sanitize_value(),
+      reason: Map.get(payload, :reason, Map.get(payload, :error)) |> sanitize_value(),
       occurred_at: event.occurred_at
     }
   end
@@ -163,7 +170,7 @@ defmodule ForemanServer.DebugViews do
   defp compact_message("WorkerStderr", payload), do: Map.get(payload, :output, "")
 
   defp compact_message("AssistantMessage", payload),
-    do: Map.get(payload, :output, Map.get(payload, :message, ""))
+    do: Map.get(payload, :output) || Map.get(payload, :message, "")
 
   defp compact_message("ToolCallFinished", payload) do
     tool = Map.get(payload, :tool_name, "tool")
@@ -187,6 +194,7 @@ defmodule ForemanServer.DebugViews do
     events
     |> Enum.flat_map(fn event -> List.wrap(Map.get(event.payload, key, [])) end)
     |> Enum.reject(&is_nil/1)
+    |> Enum.map(&sanitize_value/1)
     |> Enum.uniq()
   end
 
@@ -211,7 +219,8 @@ defmodule ForemanServer.DebugViews do
             event.payload,
             :reason,
             Map.get(event.payload, :error, Map.get(event.payload, :details))
-          ),
+          )
+          |> sanitize_value(),
         occurred_at: event.occurred_at
       }
     end)
@@ -228,4 +237,46 @@ defmodule ForemanServer.DebugViews do
 
   defp event_type(nil), do: nil
   defp event_type(%Event{event_type: event_type}), do: event_type
+
+  defp sanitize_value(%DateTime{} = value), do: value
+  defp sanitize_value(%NaiveDateTime{} = value), do: value
+
+  defp sanitize_value(value) when is_map(value) do
+    Map.new(value, fn {key, item} ->
+      if secret_key?(key), do: {key, @redacted}, else: {key, sanitize_value(item)}
+    end)
+  end
+
+  defp sanitize_value(value) when is_list(value), do: Enum.map(value, &sanitize_value/1)
+  defp sanitize_value(value) when is_binary(value), do: sanitize_string(value)
+  defp sanitize_value(value), do: value
+
+  defp sanitize_string(value) do
+    value
+    |> redact_secret_patterns()
+    |> truncate_string()
+  end
+
+  defp redact_secret_patterns(value) do
+    Regex.replace(
+      ~r/\b(authorization|bearer|token|password|secret|api[_-]?key)=?\s*([^\s,&;]+)/i,
+      value,
+      fn _match, key, _secret -> "#{key}=#{@redacted}" end
+    )
+  end
+
+  defp truncate_string(value) when byte_size(value) <= @max_string_length, do: value
+
+  defp truncate_string(value) do
+    keep = @max_string_length - byte_size(@truncated_suffix)
+    binary_part(value, 0, keep) <> @truncated_suffix
+  end
+
+  defp secret_key?(key) do
+    key
+    |> to_string()
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]/, "_")
+    |> then(&MapSet.member?(@secret_key_names, &1))
+  end
 end
