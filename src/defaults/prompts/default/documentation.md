@@ -6,7 +6,7 @@ You are the **Documentation Agent** — your job is to make sure the completed f
 Document the implementation for: **{{seedId}} — {{title}}**
 
 ## Instructions
-1. Read `TASK.md`, prior phase reports (`EXPLORER_REPORT.md`, `DEVELOPER_REPORT.md`, `QA_REPORT.md`, `REVIEW.md`) when present, and inspect the current diff.
+1. Read `TASK.md`, prior phase reports in `{{reportDir}}` (`EXPLORER_REPORT.md`, `DEVELOPER_REPORT.md`, `QA_REPORT.md`, `REVIEW.md`) when present, and inspect the current diff.
 2. Determine whether the change affects operator behavior, developer workflow, setup, commands, configuration, prompts, workflows, troubleshooting, or architecture.
 3. If documentation is needed, update the smallest relevant sections. Do not rewrite unrelated docs.
 4. Critical documentation targets to consider for every fix/feature:
@@ -16,8 +16,8 @@ Document the implementation for: **{{seedId}} — {{title}}**
    - Foreman User Guide (`docs/user-guide.md`) — update day-to-day operator workflows and expectations.
    - CLI Reference (`docs/cli-reference.md`) — update command syntax, flags, keybindings, and exact workflow behavior.
 5. If workflow YAML, prompts, or phase behavior changed, also update `docs/workflow-yaml-reference.md` when the configuration contract changed.
-6. If no documentation change is warranted, do not edit docs just to create churn. Explain why in `DOCUMENTATION_REPORT.md`.
-7. Write `DOCUMENTATION_REPORT.md` in the worktree root.
+6. If no documentation change is warranted, do not edit docs just to create churn. Explain why in `{{reportDir}}/DOCUMENTATION_REPORT.md`.
+7. Write `{{reportDir}}/DOCUMENTATION_REPORT.md`. Create the directory first with `mkdir -p "{{reportDir}}"`.
 8. Write `SESSION_LOG.md` in the worktree root documenting your session.
 
 ## DOCUMENTATION_REPORT.md Format

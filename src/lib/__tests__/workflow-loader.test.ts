@@ -441,7 +441,7 @@ phases:
       expect(documentationIdx, workflowName).toBeLessThan(finalizeIdx);
       const documentationPhase = config.phases[documentationIdx];
       expect(documentationPhase?.prompt, workflowName).toBe("documentation.md");
-      expect(documentationPhase?.artifact, workflowName).toBe("DOCUMENTATION_REPORT.md");
+      expect(documentationPhase?.artifact, workflowName).toBe("{task.projectReportsDir}/DOCUMENTATION_REPORT.md");
       expect(documentationPhase?.tools?.allowed, workflowName).toContain("Edit");
     }
   });

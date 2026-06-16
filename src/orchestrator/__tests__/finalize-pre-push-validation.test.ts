@@ -108,13 +108,13 @@ function makeTestWorkflow(retryOnFail = 1): WorkflowConfig {
 // ── Structural tests: default workflow YAML ───────────────────────────────────
 
 describe("default.yaml: finalize phase pre-push validation config", () => {
-  it("finalize phase has artifact: FINALIZE_VALIDATION.md", () => {
+  it("finalize phase writes validation under projectReportsDir", () => {
     const { load: yamlLoad } = require("js-yaml") as { load: (s: string) => unknown };
     const raw = yamlLoad(readFileSync(DEFAULT_WORKFLOW_YAML, "utf-8"));
     const config = validateWorkflowConfig(raw, "default");
     const finalize = config.phases.find((p) => p.name === "finalize");
     expect(finalize).toBeDefined();
-    expect(finalize?.artifact).toBe("FINALIZE_VALIDATION.md");
+    expect(finalize?.artifact).toBe("{task.projectReportsDir}/FINALIZE_VALIDATION.md");
   });
 
   it("finalize phase has verdict: true", () => {

@@ -42,7 +42,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 180
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -90,7 +90,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
-    artifact: DOCUMENTATION_REPORT.md
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -154,7 +154,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 60
-    artifact: FINALIZE_VALIDATION.md
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true
     retryWith: developer
     retryOnFail: 3
@@ -218,4 +218,4 @@ onFailure:
     default: MiniMax
     P0: MiniMax-highspeed
   maxTurns: 20
-  artifact: TROUBLESHOOT_REPORT.md
+  artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

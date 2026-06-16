@@ -57,7 +57,7 @@ describe('TRD-009 bug.yaml workflow integration', () => {
     it('fix phase has all standard phase config (model, maxTurns, artifact, mail)', () => {
       expect(fixPhase?.models).toBeDefined();
       expect(fixPhase?.maxTurns).toBe(80);
-      expect(fixPhase?.artifact).toBe('DEVELOPER_REPORT.md');
+      expect(fixPhase?.artifact).toBe('{task.projectReportsDir}/DEVELOPER_REPORT.md');
       expect(fixPhase?.mail).toBeDefined();
     });
 

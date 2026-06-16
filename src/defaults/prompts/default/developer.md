@@ -34,6 +34,12 @@ Rules for conflict feedback:
 - Do **not** abort the rebase unless you are truly unable to resolve the conflicts; if you abort, write `BLOCKED.md` and send an `agent-error` explaining the exact conflicted files.
 - This is the one allowed exception to the “do not commit” rule: `GIT_EDITOR=true git rebase --continue` may recreate the existing task commit after conflict resolution. Use the `GIT_EDITOR=true` prefix so detached workers do not hang in an editor. Still do **not** push; finalize handles pushing.
 
+## Fast-Path Triage
+- If retry feedback names a failing phase, report file, command, or exact source path, read that artifact first and fix that cited area before broad investigation.
+- Start with one `git status --short` and one focused diff/list command; avoid repeated broad `ls`, `git log --all`, or directory walks unless they answer a specific question.
+- Do not edit workflow or prompt files unless the task explicitly targets workflow/prompt behavior.
+- Runtime reports belong under `{{reportDir}}`; do not create `DOCUMENTATION_REPORT.md`, `QA_REPORT.md`, `DEVELOPER_REPORT.md`, `FINALIZE_VALIDATION.md`, or `docs/reports/<task>/...` in the repository unless the task explicitly asks to publish docs.
+
 ## External Review Hardening
 Before reporting done, inspect your diff as if CodeRabbit will review it.
 

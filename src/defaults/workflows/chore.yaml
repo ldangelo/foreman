@@ -29,7 +29,7 @@ phases:
       P0: opus
       P4: haiku
     maxTurns: 60
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -44,7 +44,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
-    artifact: DOCUMENTATION_REPORT.md
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -54,7 +54,7 @@ phases:
     bash: "npm run test:unit"
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
-    artifact: TEST_RESULTS.md
+    artifact: "{task.projectReportsDir}/TEST_RESULTS.md"
     verdict: true
     retryWith: fix
     retryOnFail: 2
@@ -84,7 +84,7 @@ phases:
     models:
       default: MiniMax
     maxTurns: 20
-    artifact: FINALIZE_VALIDATION.md
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true
     retryWith: fix
     retryOnFail: 1

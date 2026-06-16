@@ -165,8 +165,8 @@ phases:
       default: haiku
       P0: opus
     maxTurns: 30
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -177,7 +177,7 @@ phases:
     models:
       default: sonnet
       P0: opus
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true            # parse PASS/FAIL from artifact
     retryWith: developer     # on FAIL, loop back to developer
     retryOnFail: 2           # max retry count

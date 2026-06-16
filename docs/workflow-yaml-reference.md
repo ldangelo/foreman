@@ -266,7 +266,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Each phase r
 | `model` | string | — | Single model shorthand or full ID (deprecated, use `models`) |
 | `models` | map | — | Priority-based model overrides (see below) |
 | `maxTurns` | number | — | Maximum agent turns before timeout |
-| `artifact` | string | — | Expected output filename (e.g. `QA_REPORT.md`) |
+| `artifact` | string | — | Expected output path. Bundled workflows write phase reports under `{task.projectReportsDir}` (for example, `{task.projectReportsDir}/QA_REPORT.md`) so runtime reports stay outside repository commits. |
 | `skipIfArtifact` | string | — | Skip phase if this file already exists (resume from crash) |
 | `verdict` | boolean | `false` | Parse PASS/FAIL from artifact content |
 | `retryWith` | string | — | On verdict FAIL, loop back to this phase name |
@@ -277,12 +277,12 @@ The `phases` array defines the ordered sequence of pipeline phases. Each phase r
 
 ### Documentation Phase
 
-Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
+Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `{task.projectReportsDir}/DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
 
 ```yaml
   - name: documentation
     prompt: documentation.md
-    artifact: DOCUMENTATION_REPORT.md
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
 ```
 
 ### Models
@@ -413,8 +413,8 @@ phases:
       default: haiku
       P0: sonnet
     maxTurns: 30
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -426,7 +426,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -440,7 +440,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 30
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -455,7 +455,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 20
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -496,8 +496,8 @@ phases:
       default: haiku
       P0: sonnet
     maxTurns: 30
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -509,7 +509,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -522,7 +522,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 40
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -537,7 +537,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 20
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -577,8 +577,8 @@ phases:
     models:
       default: haiku
     maxTurns: 25
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -590,7 +590,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 60
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -603,7 +603,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 30
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -617,7 +617,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 20
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -654,8 +654,8 @@ phases:
     models:
       default: haiku
     maxTurns: 5
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -666,7 +666,7 @@ phases:
     models:
       default: haiku
     maxTurns: 5
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -676,7 +676,7 @@ phases:
     models:
       default: haiku
     maxTurns: 5
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -690,7 +690,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 5
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -725,7 +725,7 @@ phases:
     models:
       default: opus              # Security review benefits from best model
     maxTurns: 20
-    artifact: SECURITY_REPORT.md
+    artifact: "{task.projectReportsDir}/SECURITY_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -757,7 +757,7 @@ phases:
     models:
       default: haiku
     maxTurns: 20
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
