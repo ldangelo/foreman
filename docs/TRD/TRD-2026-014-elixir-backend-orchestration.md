@@ -483,7 +483,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-010-TEST**: Verify Implement supervised scheduler and capacity enforcement (3h) [verifies TRD-010] [satisfies REQ-011] [depends: TRD-010]
+- [x] **TRD-010-TEST**: Verify Implement supervised scheduler and capacity enforcement (3h) [verifies TRD-010] [satisfies REQ-011] [depends: TRD-010]
 
 **Description:** Add unit/integration tests that verify AC-011-1, AC-011-2, AC-011-3 for TRD-010.
 
