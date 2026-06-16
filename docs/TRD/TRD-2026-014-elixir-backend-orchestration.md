@@ -429,7 +429,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-007-TEST**: Verify Implement domain command grouping and legacy alias warnings (3h) [verifies TRD-007] [satisfies REQ-005] [depends: TRD-007]
+- [x] **TRD-007-TEST**: Verify Implement domain command grouping and legacy alias warnings (3h) [verifies TRD-007] [satisfies REQ-005] [depends: TRD-007]
 
 **Description:** Add unit/integration tests that verify AC-005-1, AC-005-2, AC-005-3 for TRD-007.
 

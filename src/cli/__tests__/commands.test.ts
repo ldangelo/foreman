@@ -55,6 +55,12 @@ describe("CLI smoke tests", () => {
     expect(output).toContain("watch|dashboard");
     expect(output).not.toMatch(/^\s+dashboard[\s|]/m);
 
+    expect(output).toContain("Domain groups:");
+    expect(output).toContain("Setup/health:");
+    expect(output).toContain("Tasks/views:");
+    expect(output).toContain("legacy dashboard -> watch");
+    expect(output).toContain("legacy bead -> task create --from-text");
+
     // Deprecated spellings are hidden from help but still parse
     expect(output).not.toMatch(/^\s+bead[\s|]/m);
     expect(output).not.toMatch(/^\s+purge-logs[\s|]/m);
