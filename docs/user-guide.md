@@ -199,7 +199,7 @@ Common keys:
 | `?` | Help |
 | `q` | Quit |
 
-Press `r` to refresh the board. The header shows an animated `refreshing…` indicator while reload is in progress, then a `refreshed <time>` marker when the latest reload finishes. For exact options and keybindings, see [CLI Reference](./cli-reference.md#foreman-board).
+The board also monitors agent inbox updates. When a new inbox message arrives for a run, the board reloads only the task tied to that run and moves that card if its status changed; it does not refresh the entire board. Press `r` for a full manual refresh. The header shows an animated `refreshing…` indicator while full reload is in progress, then a `refreshed <time>` marker when the latest event-driven or manual update finishes. For exact options and keybindings, see [CLI Reference](./cli-reference.md#foreman-board).
 
 ## Retry and Reset Guidance
 
