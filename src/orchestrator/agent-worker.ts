@@ -1055,12 +1055,29 @@ async function runCreatePrBuiltinPhase(args: {
   agentMailClient: AnyMailClient | null;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
   const { config, store, runtimeTaskClient, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, workflowConfig, log, agentMailClient } = args;
+
+  // Fallback mechanism mirrors onPipelineComplete: use config.projectId when
+  // registeredProjectId is not resolved. This fixes "Run not found" for
+  // registered/native runs where the project registry lookup may fail but
+  // the run exists in the database under config.projectId.
+  const fallbackRegisteredProjectId = !registeredProjectId && resolveProjectDatabaseUrl(pipelineProjectPath)
+    ? config.projectId
+    : undefined;
+  const fallbackRegisteredReadStore = !registeredReadStore && fallbackRegisteredProjectId
+    ? PostgresStore.forProject(fallbackRegisteredProjectId)
+    : undefined;
+  const refineryProjectId = registeredProjectId ?? fallbackRegisteredProjectId;
+  const refineryRunLookup = registeredReadStore ?? fallbackRegisteredReadStore;
+  const refineryOptions = refineryProjectId && refineryRunLookup
+    ? { registeredProjectId: refineryProjectId, runLookup: refineryRunLookup }
+    : undefined;
+
   const refinery = new Refinery(
     store,
     runtimeTaskClient,
     pipelineProjectPath,
     vcsBackend,
-    registeredProjectId && registeredReadStore ? { registeredProjectId, runLookup: registeredReadStore } : undefined,
+    refineryOptions,
   );
   const baseBranch = config.targetBranch ?? await vcsBackend?.detectDefaultBranch(pipelineProjectPath).catch(() => "main") ?? "main";
   const branchName = `foreman/${config.seedId}`;

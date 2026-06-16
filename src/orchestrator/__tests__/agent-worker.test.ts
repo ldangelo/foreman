@@ -221,4 +221,29 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).not.toContain('store.logEvent(projectId, isRateLimit ? "stuck" : "fail"');
   });
 
+  it("runCreatePrBuiltinPhase uses fallback projectId when registeredProjectId is not resolved", () => {
+    // Regression test for foreman-63432: create-pr phase fails with "Run not found"
+    // when registeredProjectId is not resolved but config.projectId is available.
+    // The fallback mechanism mirrors onPipelineComplete.
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    const idx = source.indexOf("async function runCreatePrBuiltinPhase");
+    expect(idx).toBeGreaterThan(-1);
+    const block = source.slice(idx, idx + 4000);
+
+    // Must have the fallback logic using config.projectId
+    expect(block).toContain("fallbackRegisteredProjectId");
+    expect(block).toContain("config.projectId");
+    expect(block).toContain("resolveProjectDatabaseUrl(pipelineProjectPath)");
+
+    // Must create fallback PostgresStore when registeredReadStore is undefined
+    expect(block).toContain("fallbackRegisteredReadStore");
+    expect(block).toContain("PostgresStore.forProject(fallbackRegisteredProjectId)");
+
+    // Must use refineryOptions with the resolved/fallback projectId and runLookup
+    expect(block).toContain("refineryProjectId");
+    expect(block).toContain("refineryRunLookup");
+    expect(block).toContain("refineryOptions");
+    expect(block).toContain("{ registeredProjectId: refineryProjectId, runLookup: refineryRunLookup }");
+  });
+
 });
