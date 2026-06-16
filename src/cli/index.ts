@@ -113,6 +113,24 @@ program.addCommand(daemonCommand);
 program.addCommand(jiraCommand);
 program.addCommand(logsCommand);
 program.addCommand(serverCommand);
+
+program.addHelpText(
+  "after",
+  `
+Domain groups:
+  Setup/health:     init, doctor, daemon, server
+  Planning:         plan, sling
+  Execution:        run, retry, reset, stop, recover
+  Tasks/views:      task, status, board, watch, logs
+  Collaboration:    inbox, attach, debug
+  Delivery/VCS:     worktree, merge, pr
+
+Deprecated aliases print the replacement spelling when used:
+  legacy dashboard -> watch
+  legacy bead -> task create --from-text
+  legacy purge-logs -> purge logs
+  legacy purge-zombie-runs -> purge runs`,
+);
 if (isCliEntrypoint()) {
   program.parse();
 }

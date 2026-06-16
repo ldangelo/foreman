@@ -419,7 +419,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 2: CLI, Projects, Tasks, and Scheduling
 
 **Shippable State:** Users can create/list/show tasks and start eligible runs through the new Node CLI backed by Elixir projections.
-- [ ] **TRD-007**: Implement domain command grouping and legacy alias warnings (5h) [satisfies REQ-005] [depends: TRD-006]
+- [x] **TRD-007**: Implement domain command grouping and legacy alias warnings (5h) [satisfies REQ-005] [depends: TRD-006]
 
 **Description:** Implement domain command grouping and legacy alias warnings with production code, migration-safe boundaries, and operator-visible behavior.
 

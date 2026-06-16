@@ -12,6 +12,26 @@ foreman --help              # Show all commands
 foreman <command> --help    # Show command-specific help
 ```
 
+### Domain Groups and Deprecated Aliases
+
+`foreman --help` groups commands by domain:
+
+- Setup/health: `init`, `doctor`, `daemon`, `server`
+- Planning: `plan`, `sling`
+- Execution: `run`, `retry`, `reset`, `stop`, `recover`
+- Tasks/views: `task`, `status`, `board`, `watch`, `logs`
+- Collaboration: `inbox`, `attach`, `debug`
+- Delivery/VCS: `worktree`, `merge`, `pr`
+
+Deprecated aliases stay hidden from help and print the replacement spelling when used:
+
+| Deprecated | Use instead |
+|------------|-------------|
+| `foreman dashboard` | `foreman watch` |
+| `foreman bead` | `foreman task create --from-text` |
+| `foreman purge-logs` | `foreman purge logs` |
+| `foreman purge-zombie-runs` | `foreman purge runs` |
+
 ---
 
 ## Project Setup
