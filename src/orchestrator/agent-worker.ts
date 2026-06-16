@@ -1055,12 +1055,22 @@ async function runCreatePrBuiltinPhase(args: {
   agentMailClient: AnyMailClient | null;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
   const { config, store, runtimeTaskClient, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, workflowConfig, log, agentMailClient } = args;
+
+  // Fallback: create a PostgresStore if registeredReadStore is not available but
+  // we have a registeredProjectId (mirrors the pattern used in onPipelineComplete finalize).
+  const fallbackRegisteredReadStore = !registeredReadStore && registeredProjectId
+    ? PostgresStore.forProject(registeredProjectId)
+    : undefined;
+  const runLookup = registeredReadStore ?? fallbackRegisteredReadStore;
+  const refineryOptions = registeredProjectId && runLookup
+    ? { registeredProjectId, runLookup }
+    : undefined;
   const refinery = new Refinery(
     store,
     runtimeTaskClient,
     pipelineProjectPath,
     vcsBackend,
-    registeredProjectId && registeredReadStore ? { registeredProjectId, runLookup: registeredReadStore } : undefined,
+    refineryOptions,
   );
   const baseBranch = config.targetBranch ?? await vcsBackend?.detectDefaultBranch(pipelineProjectPath).catch(() => "main") ?? "main";
   const branchName = `foreman/${config.seedId}`;
