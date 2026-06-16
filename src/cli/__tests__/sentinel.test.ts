@@ -113,11 +113,11 @@ describe("sentinel CLI smoke tests", () => {
     ).toBe(true);
   }, TEST_TIMEOUT_MS);
 
-  it("forwards sentinel runId to Postgres event logging", async () => {
+  it("forwards sentinel runId to Postgres sentinel event logging", async () => {
     const store = {
       close: vi.fn(),
       isOpen: vi.fn(() => true),
-      logEvent: vi.fn().mockResolvedValue(undefined),
+      recordSentinelEvent: vi.fn().mockResolvedValue(undefined),
       recordSentinelRun: vi.fn().mockResolvedValue(undefined),
       updateSentinelRun: vi.fn().mockResolvedValue(undefined),
       upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
@@ -132,11 +132,11 @@ describe("sentinel CLI smoke tests", () => {
       status: "passed",
     });
 
-    expect(store.logEvent).toHaveBeenCalledWith(
+    expect(store.recordSentinelEvent).toHaveBeenCalledWith(
       "proj-1",
+      "run-123",
       "sentinel-pass",
       expect.objectContaining({ runId: "run-123", status: "passed" }),
-      "run-123",
     );
   });
 
