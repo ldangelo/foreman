@@ -20,6 +20,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - deterministic orchestration simulation harness: `ForemanServer.SimulationHarness`
 - worker recovery and external-state reconciliation engine: `ForemanServer.RecoveryEngine`
 - event-owned Git/Jujutsu VCS and worktree adapter boundary: `ForemanServer.VcsAdapter`
+- PR gate and merge orchestration state machine: `ForemanServer.PrGate`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`

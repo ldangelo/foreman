@@ -609,7 +609,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-017**: Implement PR gate and merge orchestration state machines (6h) [satisfies REQ-014] [depends: TRD-016]
+- [x] **TRD-017**: Implement PR gate and merge orchestration state machines (6h) [satisfies REQ-014] [depends: TRD-016]
 
 **Description:** Implement PR gate and merge orchestration state machines with production code, migration-safe boundaries, and operator-visible behavior.
 

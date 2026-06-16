@@ -126,6 +126,8 @@ defmodule ForemanServer.ProjectionStore do
       recovery_events: [],
       worktrees: %{},
       vcs_operations: %{},
+      pr_gates: %{},
+      merge_failures: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -426,6 +428,30 @@ defmodule ForemanServer.ProjectionStore do
       [:vcs_operations, payload.operation_id],
       Map.put(payload, :event_type, "VcsMergeRequested")
     )
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "PrGateObserved",
+         payload: %{pr_id: pr_id} = payload
+       }) do
+    put_in(projection, [:pr_gates, pr_id], payload)
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "PrMerged",
+         payload: %{pr_id: pr_id} = payload
+       }) do
+    put_in(projection, [:pr_gates, pr_id], Map.put(payload, :state, "merged"))
+  end
+
+  defp apply_domain_event(projection, %{
+         type: type,
+         payload: %{pr_id: pr_id} = payload
+       })
+       when type in ["MergeFailed", "MergeBlocked"] do
+    projection
+    |> put_in([:merge_failures, pr_id], Map.put(payload, :event_type, type))
+    |> put_in([:pr_gates, pr_id], Map.put(payload, :state, "failed"))
   end
 
   defp apply_domain_event(projection, _event), do: projection
