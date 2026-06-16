@@ -47,7 +47,7 @@ import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "..
 import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { autoMerge } from "./auto-merge.js";
 import { runCodeRabbitCliReview } from "./coderabbit-cli-review.js";
-import { collectPrReviewContext, collectPrWaitSnapshot, summarizePrWaitStatus, writePrReviewFindings, writePrWaitReport } from "./pr-review-context.js";
+import { collectPrReviewContext, collectPrWaitSnapshot, summarizePrWaitStatus, updatePrReadyStability, writePrReviewFindings, writePrWaitReport } from "./pr-review-context.js";
 import { Refinery } from "./refinery.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -1130,6 +1130,17 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function positiveIntEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+const PR_WAIT_POLL_MS = positiveIntEnv("FOREMAN_PR_WAIT_POLL_MS", 60_000);
+const PR_READY_STABILITY_MS = positiveIntEnv("FOREMAN_PR_READY_STABILITY_MS", 60_000);
+const MERGE_GATE_POLL_MS = positiveIntEnv("FOREMAN_MERGE_GATE_POLL_MS", 30_000);
+const MERGE_GATE_TIMEOUT_MS = positiveIntEnv("FOREMAN_MERGE_GATE_TIMEOUT_MS", 10 * 60_000);
+
+
 function readPrNumberFromMetadata(worktreePath: string, reportDir?: string): number {
   const metadataPath = resolveArtifactPath(worktreePath, reportDir ? join(reportDir, "PR_METADATA.json") : "PR_METADATA.json");
   const raw = readFileSync(metadataPath, "utf8");
@@ -1148,20 +1159,26 @@ async function runPrWaitBuiltinPhase(args: {
   const prNumber = readPrNumberFromMetadata(args.config.worktreePath, workerReportDir(args.config));
 
   const timeoutMs = (args.phase.timeoutSecs ?? 600) * 1000;
-  const pollIntervalMs = 60_000;
+  const pollIntervalMs = PR_WAIT_POLL_MS;
+  const stabilityMs = PR_READY_STABILITY_MS;
   const startedAt = Date.now();
+  let readySince: number | undefined;
   let lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   let timedOut = false;
 
   while (true) {
     const status = summarizePrWaitStatus(lastSnapshot);
+    const now = Date.now();
+    const stability = updatePrReadyStability(status, readySince, now, stabilityMs);
+    readySince = stability.readySince;
     if (status.mergeConflict) break;
-    if (status.checksTerminal && status.codeRabbitComplete) break;
+    if (stability.stable) break;
     if (Date.now() - startedAt >= timeoutMs) {
       timedOut = true;
       break;
     }
-    args.log(`[PR-WAIT] Waiting for PR #${prNumber}: checksTerminal=${String(status.checksTerminal)} codeRabbitSeen=${String(status.codeRabbitSeen)} codeRabbitComplete=${String(status.codeRabbitComplete)} mergeConflict=${String(status.mergeConflict)}`);
+    const stableFor = readySince ? Date.now() - readySince : 0;
+    args.log(`[PR-WAIT] Waiting for PR #${prNumber}: checksTerminal=${String(status.checksTerminal)} codeRabbitSeen=${String(status.codeRabbitSeen)} codeRabbitComplete=${String(status.codeRabbitComplete)} mergeConflict=${String(status.mergeConflict)} stableForMs=${stableFor}`);
     await sleep(Math.min(pollIntervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt))));
     lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   }
@@ -1232,8 +1249,28 @@ async function validatePrReviewGate(args: {
   reportDir?: string;
 }): Promise<{ success: boolean; reason?: string }> {
   const prNumber = readPrNumberFromMetadata(args.worktreePath, args.reportDir);
-  const waitSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
-  const waitStatus = summarizePrWaitStatus(waitSnapshot);
+  const startedAt = Date.now();
+  let readySince: number | undefined;
+  let waitSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
+  let waitStatus = summarizePrWaitStatus(waitSnapshot);
+
+  while (true) {
+    const stability = updatePrReadyStability(waitStatus, readySince, Date.now(), PR_READY_STABILITY_MS);
+    readySince = stability.readySince;
+    if (waitStatus.mergeConflict) break;
+    if (stability.stable) break;
+    if (Date.now() - startedAt >= MERGE_GATE_TIMEOUT_MS) break;
+    const stableFor = readySince ? Date.now() - readySince : 0;
+    args.log(
+      `[PR-REVIEW] Final gate waiting for PR #${prNumber}: checksTerminal=${String(waitStatus.checksTerminal)} ` +
+        `codeRabbitSeen=${String(waitStatus.codeRabbitSeen)} codeRabbitComplete=${String(waitStatus.codeRabbitComplete)} mergeConflict=${String(waitStatus.mergeConflict)} ` +
+        `pending=${waitStatus.pendingChecks.join(", ") || "none"} stableForMs=${stableFor}`,
+    );
+    await sleep(Math.min(MERGE_GATE_POLL_MS, Math.max(0, MERGE_GATE_TIMEOUT_MS - (Date.now() - startedAt))));
+    waitSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
+    waitStatus = summarizePrWaitStatus(waitSnapshot);
+  }
+
   const reviewContext = await collectPrReviewContext(args.pipelineProjectPath, prNumber);
 
   args.log(

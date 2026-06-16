@@ -820,7 +820,7 @@ Workflows define:
 - **Phase sequence** — which agents run in what order
 - **Model selection** — per-phase models with priority-based overrides
 - **Retry loops** — QA/Reviewer/PR-review failure → Developer retry with feedback
-- **PR gates** — create-pr, pr-wait, prepare-pr-review, pr-review, and merge phases for review-aware workflows
+- **PR gates** — create-pr, pr-wait, prepare-pr-review, pr-review, and merge phases for review-aware workflows; PR readiness must remain stable briefly and merge re-waits on late pending checks
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 ```yaml

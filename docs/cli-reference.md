@@ -359,7 +359,7 @@ foreman stop --dry-run            # Preview
 
 ### `foreman merge`
 
-Merge completed agent work into the target branch via the refinery.
+Merge completed agent work into the target branch via the refinery. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`.
 
 ```bash
 foreman merge                     # Process merge queue

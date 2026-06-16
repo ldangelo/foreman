@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCodeRabbitFindings, parseFailedChecks, renderPrReviewFindings, renderPrWaitReport, summarizePrWaitStatus } from "../pr-review-context.js";
+import { parseCodeRabbitFindings, parseFailedChecks, renderPrReviewFindings, renderPrWaitReport, summarizePrWaitStatus, updatePrReadyStability } from "../pr-review-context.js";
 
 describe("pr-review-context", () => {
   it("extracts only CodeRabbit critical/high/medium/major findings", () => {
@@ -118,6 +118,26 @@ describe("pr-review-context", () => {
     expect(status.codeRabbitComplete).toBe(false);
     expect(status.mergeConflict).toBe(true);
     expect(status.mergeConflictReason).toBe("mergeable=CONFLICTING mergeStateStatus=DIRTY");
+  });
+
+  it("requires a continuous ready window before PR wait is stable", () => {
+    const pending = summarizePrWaitStatus({
+      prNumber: 197,
+      checks: [{ name: "Test (Node 20)", status: "QUEUED" }],
+      codeRabbitComments: 1,
+      codeRabbitReviews: 1,
+    });
+    const ready = summarizePrWaitStatus({
+      prNumber: 197,
+      checks: [{ name: "Test (Node 20)", status: "COMPLETED", conclusion: "SUCCESS" }],
+      codeRabbitComments: 1,
+      codeRabbitReviews: 1,
+    });
+
+    const firstReady = updatePrReadyStability(ready, undefined, 1_000, 60_000);
+    expect(firstReady).toEqual({ ready: true, readySince: 1_000, stable: false });
+    expect(updatePrReadyStability(ready, firstReady.readySince, 61_000, 60_000)).toEqual({ ready: true, readySince: 1_000, stable: true });
+    expect(updatePrReadyStability(pending, firstReady.readySince, 62_000, 60_000)).toEqual({ ready: false, readySince: undefined, stable: false });
   });
 
   it("renders PR wait report", () => {

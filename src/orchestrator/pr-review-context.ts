@@ -54,6 +54,12 @@ export interface PrWaitStatus {
   mergeConflictReason?: string;
 }
 
+export interface PrReadyStability {
+  ready: boolean;
+  readySince?: number;
+  stable: boolean;
+}
+
 export interface GhComment {
   user?: { login?: string };
   body?: string;
@@ -144,6 +150,21 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
     codeRabbitComplete,
     mergeConflict,
     mergeConflictReason,
+  };
+}
+
+export function isPrWaitStatusReady(status: PrWaitStatus): boolean {
+  return status.checksTerminal && status.codeRabbitComplete && !status.mergeConflict;
+}
+
+export function updatePrReadyStability(status: PrWaitStatus, readySince: number | undefined, now: number, stabilityMs: number): PrReadyStability {
+  const ready = isPrWaitStatusReady(status);
+  if (!ready) return { ready, readySince: undefined, stable: false };
+  const nextReadySince = readySince ?? now;
+  return {
+    ready,
+    readySince: nextReadySince,
+    stable: now - nextReadySince >= stabilityMs,
   };
 }
 

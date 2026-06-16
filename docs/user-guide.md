@@ -174,7 +174,7 @@ Avoid mass retrying unless failures are known transient and the root cause is ex
 
 ### 7. Review and Merge
 
-Auto-merge workflows create PRs, wait for PR checks/review, and merge through the configured merge phase. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
+Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
 
 ```bash
 foreman merge
