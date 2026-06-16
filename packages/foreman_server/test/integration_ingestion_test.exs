@@ -1,7 +1,7 @@
 defmodule ForemanServer.IntegrationIngestionTest do
   use ExUnit.Case
 
-  alias ForemanServer.{EventStore, IntegrationIngestion, ProjectionStore}
+  alias ForemanServer.{CommandRouter, EventStore, IntegrationIngestion, ProjectionStore}
 
   setup do
     tmp_dir =
@@ -38,7 +38,12 @@ defmodule ForemanServer.IntegrationIngestionTest do
                "threshold" => 3
              })
 
-    assert {:ok, %{duplicate: false, task_id: task_id, dedupe_key: dedupe_key}} =
+    assert {:ok,
+            %{
+              duplicate: false,
+              task_id: task_id,
+              dedupe_key: "sentinel:foreman:mix-test:flaky" = dedupe_key
+            }} =
              IntegrationIngestion.ingest(%{
                "source" => "sentinel",
                "external_id" => "mix-test:flaky",
@@ -62,11 +67,11 @@ defmodule ForemanServer.IntegrationIngestionTest do
     assert {:ok, %{task_id: jira_task, dedupe_key: "jira:fortium.atlassian.net:FORE-123:31"}} =
              IntegrationIngestion.ingest(jira)
 
-    assert {:ok,
-            %{task_id: github_task, dedupe_key: "github:github.com/fortium/foreman:17:labeled"}} =
+    assert {:ok, %{task_id: github_task, dedupe_key: "github:fortium/foreman:evt-17"}} =
              IntegrationIngestion.ingest(%{
                "source" => "github",
-               "site" => "github.com/fortium/foreman",
+               "repo" => "fortium/foreman",
+               "event_id" => "evt-17",
                "external_id" => "17",
                "project_id" => "foreman",
                "event_type" => "labeled",
@@ -87,6 +92,44 @@ defmodule ForemanServer.IntegrationIngestionTest do
     assert snapshot.tasks[github_task].source == "github"
   end
 
+  test "external trigger command routes through integration ingestion" do
+    assert {:ok, %{event: event, integration: %{task_id: task_id, duplicate: false}}} =
+             CommandRouter.handle(%{
+               command_id: "cmd-ext-1",
+               command_type: "ExternalTriggerCommand",
+               payload: %{
+                 "source" => "github",
+                 "repo" => "fortium/foreman",
+                 "event_id" => "evt-command",
+                 "external_id" => "18",
+                 "project_id" => "foreman",
+                 "event_type" => "opened",
+                 "url" => "https://github.com/fortium/foreman/issues/18"
+               },
+               metadata: %{"correlation_id" => "corr-ext-1"}
+             })
+
+    assert event.event_type == "IntegrationCommandIngested"
+    assert ProjectionStore.snapshot().tasks[task_id].source == "github"
+
+    assert {:ok, %{integration: %{duplicate: true, existing: existing}}} =
+             CommandRouter.handle(%{
+               command_id: "cmd-ext-2",
+               command_type: "ExternalTriggerCommand",
+               payload: %{
+                 "source" => "github",
+                 "repo" => "fortium/foreman",
+                 "event_id" => "evt-command",
+                 "external_id" => "18",
+                 "project_id" => "foreman",
+                 "event_type" => "opened",
+                 "url" => "https://github.com/fortium/foreman/issues/18"
+               }
+             })
+
+    assert existing.task_id == task_id
+  end
+
   test "duplicate integration input returns existing projection without duplicate tasks or runs" do
     jira = fixture()
 
@@ -102,6 +145,78 @@ defmodule ForemanServer.IntegrationIngestionTest do
     assert EventStore.all() == events_before
     assert map_size(ProjectionStore.snapshot().tasks) == task_count_before
     assert ProjectionStore.snapshot().runs == %{}
+  end
+
+  test "rejects invalid external integration input" do
+    for input <- [
+          %{
+            "source" => "jira",
+            "external_id" => "FORE-999",
+            "project_id" => "foreman",
+            "event_type" => "transitioned",
+            "transition_id" => "99",
+            "site" => "fortium.atlassian.net"
+          },
+          %{
+            "source" => "github",
+            "repo" => "fortium/foreman",
+            "event_id" => "evt-missing-link",
+            "external_id" => "19",
+            "project_id" => "foreman",
+            "event_type" => "opened"
+          }
+        ] do
+      assert {:error, {:missing_or_invalid, :external_link}} = IntegrationIngestion.ingest(input)
+    end
+
+    assert {:error, {:missing_or_invalid, :source}} =
+             IntegrationIngestion.ingest(%{"project_id" => "foreman"})
+
+    assert {:error, {:unsupported_integration_source, "slack"}} =
+             IntegrationIngestion.ingest(%{
+               "source" => "slack",
+               "project_id" => "foreman",
+               "external_id" => "1",
+               "event_type" => "posted"
+             })
+  end
+
+  test "dedupe recorded without task is recovered on retry" do
+    input = fixture()
+    dedupe_key = "jira:fortium.atlassian.net:FORE-123:31"
+
+    task_id =
+      "jira-#{:crypto.hash(:sha256, dedupe_key) |> Base.encode16(case: :lower) |> binary_part(0, 12)}"
+
+    assert {:ok, _event} =
+             EventStore.append(%{
+               stream_id: "integration:#{dedupe_key}",
+               event_type: "IntegrationCommandIngested",
+               payload: %{
+                 source: "jira",
+                 external_id: "FORE-123",
+                 project_id: "foreman",
+                 event_type: "transitioned",
+                 dedupe_key: dedupe_key,
+                 idempotency_key: dedupe_key,
+                 external_link: "https://fortium.atlassian.net/browse/FORE-123",
+                 task_id: task_id,
+                 command_type: "task.create"
+               },
+               metadata: %{
+                 source: "test",
+                 correlation_id: dedupe_key,
+                 idempotency_key: dedupe_key
+               }
+             })
+
+    assert is_nil(ProjectionStore.snapshot().tasks[task_id])
+
+    assert {:ok, %{duplicate: false, recovered: true, task_id: ^task_id}} =
+             IntegrationIngestion.ingest(input)
+
+    assert ProjectionStore.snapshot().tasks[task_id].external_link ==
+             "https://fortium.atlassian.net/browse/FORE-123"
   end
 
   test "ingested integration state rebuilds from durable events", %{

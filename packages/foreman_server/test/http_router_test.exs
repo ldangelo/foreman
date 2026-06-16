@@ -3,6 +3,8 @@ defmodule ForemanServer.Http.RouterTest do
   import Plug.Conn
   import Plug.Test
 
+  alias ForemanServer.ProjectionStore
+
   @opts ForemanServer.Http.Router.init([])
 
   setup do
@@ -55,6 +57,66 @@ defmodule ForemanServer.Http.RouterTest do
     assert body["correlation_id"] == "corr-http"
   end
 
+  test "authorized external trigger command creates and dedupes integration task" do
+    command = external_trigger_command("cmd-ext-http-1")
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 202
+    body = Jason.decode!(conn.resp_body)
+    assert body["ok"] == true
+    assert [_event_id] = body["events"]
+
+    task_id =
+      ProjectionStore.snapshot().integration_dedupe["github:fortium/foreman:evt-http"].task_id
+
+    assert ProjectionStore.snapshot().tasks[task_id].external_link ==
+             "https://github.com/fortium/foreman/issues/20"
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(external_trigger_command("cmd-ext-http-2")))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 202
+
+    assert ProjectionStore.snapshot().integration_dedupe["github:fortium/foreman:evt-http"].task_id ==
+             task_id
+  end
+
+  test "external trigger command validates input through HTTP boundary" do
+    conn =
+      :post
+      |> conn(
+        "/api/v1/commands",
+        Jason.encode!(%{
+          "command_id" => "cmd-ext-bad",
+          "command_type" => "ExternalTriggerCommand",
+          "payload" => %{
+            "source" => "github",
+            "repo" => "fortium/foreman",
+            "event_id" => "evt-bad",
+            "external_id" => "21",
+            "project_id" => "foreman",
+            "event_type" => "opened"
+          }
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 400
+    assert Jason.decode!(conn.resp_body)["error"]["message"] == "missing or invalid external_link"
+  end
+
   test "invalid JSON command returns validation error" do
     conn =
       :post
@@ -76,6 +138,23 @@ defmodule ForemanServer.Http.RouterTest do
       "schema_version" => 1,
       "payload" => %{"task_id" => "task-http"},
       "metadata" => %{"correlation_id" => "corr-http", "idempotency_key" => "cmd-http"}
+    }
+  end
+
+  defp external_trigger_command(command_id) do
+    %{
+      "command_id" => command_id,
+      "command_type" => "ExternalTriggerCommand",
+      "payload" => %{
+        "source" => "github",
+        "repo" => "fortium/foreman",
+        "event_id" => "evt-http",
+        "external_id" => "20",
+        "project_id" => "foreman",
+        "event_type" => "opened",
+        "url" => "https://github.com/fortium/foreman/issues/20"
+      },
+      "metadata" => %{"correlation_id" => "corr-ext-http"}
     }
   end
 end

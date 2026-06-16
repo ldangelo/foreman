@@ -7,28 +7,41 @@ defmodule ForemanServer.IntegrationIngestion do
 
   @spec ingest(map()) :: {:ok, map()} | {:error, term()}
   def ingest(input) when is_map(input) do
-    with {:ok, attrs} <- normalize(input),
-         :ok <- ensure_new(attrs) do
+    with {:ok, attrs} <- normalize(input) do
       task_payload = task_payload(attrs)
 
-      with {:ok, ingested} <- append_ingested(attrs, task_payload),
-           {:ok, command} <- dispatch_task_command(attrs, task_payload) do
-        {:ok,
-         %{
-           duplicate: false,
-           ingestion: ingested,
-           command: command,
-           task_id: task_payload.task_id,
-           dedupe_key: attrs.dedupe_key,
-           projection: ProjectionStore.snapshot()
-         }}
-      end
-    else
-      {:duplicate, existing} ->
-        {:ok, %{duplicate: true, existing: existing, projection: ProjectionStore.snapshot()}}
+      case dedupe_state(attrs, task_payload) do
+        :new ->
+          with {:ok, ingested} <- append_ingested(attrs, task_payload),
+               {:ok, command} <- dispatch_task_command(attrs, task_payload) do
+            {:ok,
+             %{
+               duplicate: false,
+               ingestion: ingested,
+               command: command,
+               task_id: task_payload.task_id,
+               dedupe_key: attrs.dedupe_key,
+               projection: ProjectionStore.snapshot()
+             }}
+          end
 
-      error ->
-        error
+        {:dedupe_without_task, existing} ->
+          with {:ok, command} <- dispatch_task_command(attrs, task_payload) do
+            {:ok,
+             %{
+               duplicate: false,
+               recovered: true,
+               existing: existing,
+               command: command,
+               task_id: task_payload.task_id,
+               dedupe_key: attrs.dedupe_key,
+               projection: ProjectionStore.snapshot()
+             }}
+          end
+
+        {:duplicate, existing} ->
+          {:ok, %{duplicate: true, existing: existing, projection: ProjectionStore.snapshot()}}
+      end
     end
   end
 
@@ -40,6 +53,7 @@ defmodule ForemanServer.IntegrationIngestion do
          {:ok, external_id} <- required_binary(fetch(input, :external_id), :external_id),
          {:ok, event_type} <- required_binary(fetch(input, :event_type), :event_type),
          {:ok, dedupe_key} <- dedupe_key(source, input, external_id, event_type),
+         {:ok, external_link} <- external_link(source, input),
          :ok <- sentinel_threshold(source, input) do
       {:ok,
        %{
@@ -51,7 +65,7 @@ defmodule ForemanServer.IntegrationIngestion do
          payload: fetch(input, :payload) || %{},
          dedupe_key: dedupe_key,
          title: title(source, input, external_id, event_type),
-         external_link: external_link(source, input),
+         external_link: external_link,
          task_type: task_type(source),
          severity: fetch(input, :severity),
          threshold: fetch(input, :threshold),
@@ -60,10 +74,19 @@ defmodule ForemanServer.IntegrationIngestion do
     end
   end
 
-  defp ensure_new(%{dedupe_key: dedupe_key}) do
-    case get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key]) do
-      nil -> :ok
-      existing -> {:duplicate, existing}
+  defp dedupe_state(%{dedupe_key: dedupe_key}, %{task_id: task_id}) do
+    snapshot = ProjectionStore.snapshot()
+
+    case get_in(snapshot, [:integration_dedupe, dedupe_key]) do
+      nil ->
+        :new
+
+      existing ->
+        if Map.has_key?(snapshot.tasks, task_id) do
+          {:duplicate, existing}
+        else
+          {:dedupe_without_task, existing}
+        end
     end
   end
 
@@ -137,9 +160,15 @@ defmodule ForemanServer.IntegrationIngestion do
     fetch(input, :title) || "#{String.capitalize(source)} #{event_type}: #{external_id}"
   end
 
-  defp external_link("jira", input), do: fetch(input, :external_link) || fetch(input, :url)
-  defp external_link("github", input), do: fetch(input, :external_link) || fetch(input, :url)
-  defp external_link(_source, input), do: fetch(input, :external_link) || fetch(input, :url)
+  defp external_link(source, input) when source in ["jira", "github"] do
+    case fetch(input, :external_link) || fetch(input, :url) do
+      link when is_binary(link) and link != "" -> {:ok, link}
+      _ -> {:error, {:missing_or_invalid, :external_link}}
+    end
+  end
+
+  defp external_link(_source, input),
+    do: {:ok, fetch(input, :external_link) || fetch(input, :url)}
 
   defp task_type("sentinel"), do: "bug"
   defp task_type(_source), do: "external"
@@ -152,19 +181,32 @@ defmodule ForemanServer.IntegrationIngestion do
   end
 
   defp source_dedupe_key(input) do
-    case {fetch(input, :source), fetch(input, :site), fetch(input, :external_id),
-          fetch(input, :transition_id), fetch(input, :event_type)} do
-      {"jira", site, issue, transition, _event_type}
+    case {fetch(input, :source), fetch(input, :site), fetch(input, :repo),
+          fetch(input, :project_id), fetch(input, :external_id), fetch(input, :event_id),
+          fetch(input, :fingerprint), fetch(input, :transition_id), fetch(input, :event_type)} do
+      {"jira", site, _repo, _project, issue, _event_id, _fingerprint, transition, _event_type}
       when is_binary(site) and is_binary(issue) and is_binary(transition) ->
         {:ok, "jira:#{site}:#{issue}:#{transition}"}
 
-      {"github", site, external_id, _transition, event_type}
-      when is_binary(site) and is_binary(external_id) and is_binary(event_type) ->
-        {:ok, "github:#{site}:#{external_id}:#{event_type}"}
+      {"github", _site, repo, _project, _external_id, event_id, _fingerprint, _transition,
+       _event_type}
+      when is_binary(repo) and is_binary(event_id) ->
+        {:ok, "github:#{repo}:#{event_id}"}
 
-      {source, _site, external_id, _transition, event_type}
-      when is_binary(source) and is_binary(external_id) and is_binary(event_type) ->
-        {:ok, "#{source}:#{external_id}:#{event_type}"}
+      {"github", site, _repo, _project, _external_id, event_id, _fingerprint, _transition,
+       _event_type}
+      when is_binary(site) and is_binary(event_id) ->
+        {:ok, "github:#{site}:#{event_id}"}
+
+      {"sentinel", _site, _repo, project, _external_id, _event_id, fingerprint, _transition,
+       _event_type}
+      when is_binary(project) and is_binary(fingerprint) ->
+        {:ok, "sentinel:#{project}:#{fingerprint}"}
+
+      {"sentinel", _site, _repo, project, external_id, _event_id, _fingerprint, _transition,
+       _event_type}
+      when is_binary(project) and is_binary(external_id) ->
+        {:ok, "sentinel:#{project}:#{external_id}"}
 
       _ ->
         {:error, {:missing_or_invalid, :idempotency_key}}
@@ -185,6 +227,8 @@ defmodule ForemanServer.IntegrationIngestion do
   defp sentinel_threshold(_source, _input), do: :ok
 
   defp required_source(source) when source in @sources, do: {:ok, source}
+  defp required_source(nil), do: {:error, {:missing_or_invalid, :source}}
+  defp required_source(""), do: {:error, {:missing_or_invalid, :source}}
   defp required_source(source), do: {:error, {:unsupported_integration_source, source}}
 
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}

@@ -1,7 +1,7 @@
 defmodule ForemanServer.CommandRouter do
   @moduledoc "Command boundary for server-side project/task mutations."
 
-  alias ForemanServer.EventStore
+  alias ForemanServer.{EventStore, IntegrationIngestion, ProjectionStore}
 
   @spec handle(map()) :: {:ok, map()} | {:error, term()}
   def handle(%{"command_id" => command_id, "command_type" => command_type} = command) do
@@ -17,23 +17,35 @@ defmodule ForemanServer.CommandRouter do
   def handle(%{command_id: command_id, command_type: command_type} = command)
       when is_binary(command_id) and is_binary(command_type) do
     payload =
-      command |> Map.get(:payload, %{}) |> atomize_keys() |> Map.put_new(:command_id, command_id)
+      command
+      |> Map.get(:payload, %{})
+      |> normalize_payload()
+      |> Map.put_new(:command_id, command_id)
 
     metadata = normalize_metadata(command)
 
-    with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload),
-         {:ok, event} <-
-           EventStore.append(%{
-             stream_id: stream_id,
-             event_type: event_type,
-             payload:
-               event_payload
-               |> Map.put_new(:command_id, command_id)
-               |> Map.put_new(:updated_at, DateTime.utc_now()),
-             metadata: metadata,
-             correlation_id: Map.get(metadata, :correlation_id)
-           }) do
-      {:ok, %{event: event, projection: ForemanServer.ProjectionStore.snapshot()}}
+    case command_type do
+      "ExternalTriggerCommand" ->
+        handle_external_trigger(payload, metadata)
+
+      "external.trigger" ->
+        handle_external_trigger(payload, metadata)
+
+      _ ->
+        with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload),
+             {:ok, event} <-
+               EventStore.append(%{
+                 stream_id: stream_id,
+                 event_type: event_type,
+                 payload:
+                   event_payload
+                   |> Map.put_new(:command_id, command_id)
+                   |> Map.put_new(:updated_at, DateTime.utc_now()),
+                 metadata: metadata,
+                 correlation_id: Map.get(metadata, :correlation_id)
+               }) do
+          {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
+        end
     end
   end
 
@@ -133,10 +145,29 @@ defmodule ForemanServer.CommandRouter do
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
   defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
 
+  defp handle_external_trigger(payload, metadata) do
+    input = Map.put_new(payload, :correlation_id, Map.get(metadata, :correlation_id))
+
+    with {:ok, result} <- IntegrationIngestion.ingest(input),
+         {:ok, event} <- result_event(result) do
+      {:ok, %{event: event, projection: ProjectionStore.snapshot(), integration: result}}
+    end
+  end
+
+  defp result_event(%{ingestion: event}), do: {:ok, event}
+  defp result_event(%{command: %{event: event}}), do: {:ok, event}
+
+  defp result_event(%{existing: %{dedupe_key: dedupe_key}}) do
+    case Enum.find(EventStore.all(), &(&1.stream_id == "integration:#{dedupe_key}")) do
+      nil -> {:error, {:missing_integration_event, dedupe_key}}
+      event -> {:ok, event}
+    end
+  end
+
   defp normalize_metadata(command) do
-    command
-    |> Map.get(:metadata, %{})
-    |> atomize_keys()
+    metadata = normalize_payload(Map.get(command, :metadata, %{}))
+
+    metadata
     |> Map.put_new(
       :correlation_id,
       Map.get(command, :correlation_id, Map.get(command, :command_id))
@@ -145,16 +176,54 @@ defmodule ForemanServer.CommandRouter do
     |> Map.put_new(:idempotency_key, Map.get(command, :command_id))
   end
 
-  defp atomize_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {key, value} when is_binary(key) -> {String.to_atom(key), atomize_value(value)}
-      {key, value} -> {key, atomize_value(value)}
+  defp normalize_payload(map) when is_map(map) do
+    Enum.reduce(known_keys(), %{}, fn key, acc ->
+      case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
+        nil -> acc
+        value -> Map.put(acc, key, value)
+      end
     end)
   end
 
-  defp atomize_keys(_), do: %{}
+  defp normalize_payload(_), do: %{}
 
-  defp atomize_value(value) when is_map(value), do: atomize_keys(value)
-  defp atomize_value(value) when is_list(value), do: Enum.map(value, &atomize_value/1)
-  defp atomize_value(value), do: value
+  defp known_keys do
+    [
+      :author,
+      :body,
+      :command_id,
+      :config,
+      :correlation_id,
+      :count,
+      :dedupe_key,
+      :default_branch,
+      :dependencies,
+      :depends_on,
+      :event_id,
+      :event_type,
+      :external_id,
+      :external_link,
+      :fingerprint,
+      :health,
+      :id,
+      :idempotency_key,
+      :integration_event_type,
+      :metadata,
+      :occurred_at,
+      :path,
+      :payload,
+      :project_id,
+      :repo,
+      :severity,
+      :site,
+      :source,
+      :status,
+      :task_id,
+      :task_type,
+      :threshold,
+      :title,
+      :transition_id,
+      :url
+    ]
+  end
 end
