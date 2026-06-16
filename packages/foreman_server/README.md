@@ -22,6 +22,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - event-owned Git/Jujutsu VCS and worktree adapter boundary: `ForemanServer.VcsAdapter`
 - PR gate and merge orchestration state machine: `ForemanServer.PrGate`
 - event-backed inbox and agent mail projection: `ForemanServer.Inbox`
+- idempotent sentinel/Jira/GitHub command ingestion: `ForemanServer.IntegrationIngestion`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`

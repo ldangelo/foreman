@@ -66,7 +66,13 @@ defmodule ForemanServer.CommandRouter do
          project_id: Map.get(payload, :project_id),
          title: Map.get(payload, :title, task_id),
          status: Map.get(payload, :status, "open"),
-         dependencies: Map.get(payload, :dependencies, [])
+         dependencies: Map.get(payload, :dependencies, []),
+         task_type: Map.get(payload, :task_type),
+         source: Map.get(payload, :source),
+         external_id: Map.get(payload, :external_id),
+         external_link: Map.get(payload, :external_link),
+         dedupe_key: Map.get(payload, :dedupe_key),
+         integration_event_type: Map.get(payload, :integration_event_type)
        }, "task:#{task_id}"}
     else
       command_accepted("task.create", payload)

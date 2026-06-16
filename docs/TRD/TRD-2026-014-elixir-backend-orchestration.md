@@ -648,7 +648,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 5: Integrations, Debug, Attach, Planning, and Migration
 
 **Shippable State:** Users can ingest external triggers, debug timelines, attach to supported sessions, run planning flows, and coexist with legacy TS commands.
-- [ ] **TRD-019**: Implement sentinel, Jira, and GitHub command ingestion with idempotency (5h) [satisfies REQ-016] [depends: TRD-008]
+- [x] **TRD-019**: Implement sentinel, Jira, and GitHub command ingestion with idempotency (5h) [satisfies REQ-016] [depends: TRD-008]
 
 **Description:** Implement sentinel, Jira, and GitHub command ingestion with idempotency with production code, migration-safe boundaries, and operator-visible behavior.
 

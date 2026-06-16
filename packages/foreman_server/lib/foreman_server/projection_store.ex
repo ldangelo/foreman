@@ -131,6 +131,8 @@ defmodule ForemanServer.ProjectionStore do
       inbox_messages: %{},
       inbox_by_run: %{},
       inbox_updates: [],
+      integration_commands: %{},
+      integration_dedupe: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -193,6 +195,12 @@ defmodule ForemanServer.ProjectionStore do
       }
       |> maybe_put(:project_id, Map.get(payload, :project_id))
       |> maybe_put(:dependencies, Map.get(payload, :dependencies))
+      |> maybe_put(:source, Map.get(payload, :source))
+      |> maybe_put(:external_id, Map.get(payload, :external_id))
+      |> maybe_put(:external_link, Map.get(payload, :external_link))
+      |> maybe_put(:dedupe_key, Map.get(payload, :dedupe_key))
+      |> maybe_put(:task_type, Map.get(payload, :task_type))
+      |> maybe_put(:integration_event_type, Map.get(payload, :integration_event_type))
 
     put_in(projection, [:tasks, task_id], task)
   end
@@ -585,6 +593,21 @@ defmodule ForemanServer.ProjectionStore do
     |> put_in([:inbox_messages, message_id], message)
     |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [message_id]) end)
     |> update_in([:inbox_updates], &((&1 || []) ++ [message]))
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "IntegrationCommandIngested",
+           payload: %{dedupe_key: dedupe_key} = payload
+         },
+         _mode
+       ) do
+    record = Map.put(payload, :event_type, "IntegrationCommandIngested")
+
+    projection
+    |> put_in([:integration_commands, dedupe_key], record)
+    |> put_in([:integration_dedupe, dedupe_key], record)
   end
 
   defp apply_domain_event(projection, _event, _mode), do: projection
