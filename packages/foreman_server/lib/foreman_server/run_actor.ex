@@ -3,7 +3,7 @@ defmodule ForemanServer.RunActor do
 
   use GenServer
 
-  alias ForemanServer.{EventStore, PhaseActor}
+  alias ForemanServer.{EventStore, Inbox, PhaseActor}
 
   @terminal [:completed, :failed]
 
@@ -72,7 +72,8 @@ defmodule ForemanServer.RunActor do
       status: :in_progress,
       retry_counts: %{},
       retry_history: [],
-      max_retries: Map.get(spec, :max_retries, 0)
+      max_retries: Map.get(spec, :max_retries, 0),
+      mail_hooks: Map.get(spec, :mail_hooks, %{})
     }
 
     with {:ok, _event} <-
@@ -104,7 +105,9 @@ defmodule ForemanServer.RunActor do
 
     with :ok <- PhaseActor.transition(state.run_id, phase_id, :completed, details),
          {:ok, _event} <-
-           append(state.run_id, "PhaseCompleted", phase_payload(state, phase_id, details)) do
+           append(state.run_id, "PhaseCompleted", phase_payload(state, phase_id, details)),
+         {:ok, _messages} <-
+           append_phase_mail(state, "PhaseCompleted", phase_payload(state, phase_id, details)) do
       advance_after_pass(state)
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -144,7 +147,8 @@ defmodule ForemanServer.RunActor do
 
     with :ok <- PhaseActor.transition(state.run_id, phase_id, failed_status(event_type), details),
          {:ok, _event} <-
-           append(state.run_id, event_type, phase_payload(state, phase_id, details)) do
+           append(state.run_id, event_type, phase_payload(state, phase_id, details)),
+         {:ok, _messages} <- maybe_append_failed_mail(state, event_type, phase_id, details) do
       if retry_count < state.max_retries do
         retry_phase(state, phase_id, retry_count + 1, event_type, details)
       else
@@ -176,6 +180,12 @@ defmodule ForemanServer.RunActor do
          {:ok, _event} <-
            append(
              state.run_id,
+             "PhaseStarted",
+             phase_payload(next, phase_id, %{attempt: attempt})
+           ),
+         {:ok, _messages} <-
+           append_phase_mail(
+             next,
              "PhaseStarted",
              phase_payload(next, phase_id, %{attempt: attempt})
            ) do
@@ -210,9 +220,11 @@ defmodule ForemanServer.RunActor do
   end
 
   defp append_phase_started(state, phase_id) do
-    case append(state.run_id, "PhaseStarted", phase_payload(state, phase_id, %{})) do
-      {:ok, _event} -> :ok
-      {:error, reason} -> {:error, reason}
+    payload = phase_payload(state, phase_id, %{})
+
+    with {:ok, _event} <- append(state.run_id, "PhaseStarted", payload),
+         {:ok, _messages} <- append_phase_mail(state, "PhaseStarted", payload) do
+      :ok
     end
   end
 
@@ -232,6 +244,20 @@ defmodule ForemanServer.RunActor do
       details: details,
       retry_history: state.retry_history
     }
+  end
+
+  defp append_phase_mail(state, event_type, payload) do
+    Inbox.append_phase_mail(event_type, payload, phase_hooks(state, payload.phase_id))
+  end
+
+  defp maybe_append_failed_mail(state, "PhaseFailed", phase_id, details),
+    do: append_phase_mail(state, "PhaseFailed", phase_payload(state, phase_id, details))
+
+  defp maybe_append_failed_mail(_state, _event_type, _phase_id, _details), do: {:ok, []}
+
+  defp phase_hooks(state, phase_id) do
+    state.mail_hooks
+    |> Map.get(phase_id, Map.get(state.mail_hooks, to_string(phase_id), %{}))
   end
 
   defp phase_id(%{id: id}) when is_binary(id), do: id

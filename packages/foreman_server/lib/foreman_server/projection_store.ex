@@ -62,11 +62,11 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def handle_call({:apply_event, event}, _from, projection) do
-    {:reply, :ok, reduce_event(projection, event)}
+    {:reply, :ok, reduce_event(projection, event, :live)}
   end
 
   def handle_call({:rebuild, events}, _from, _projection) do
-    rebuilt = Enum.reduce(events, empty_projection(), &reduce_event(&2, &1))
+    rebuilt = Enum.reduce(events, empty_projection(), &reduce_event(&2, &1, :replay))
     {:reply, {:ok, rebuilt}, rebuilt}
   end
 
@@ -137,24 +137,32 @@ defmodule ForemanServer.ProjectionStore do
     }
   end
 
-  defp reduce_event(projection, event) do
+  defp reduce_event(projection, event, mode) do
     projection
-    |> apply_domain_event(normalize_event(event))
+    |> apply_domain_event(normalize_event(event), mode)
     |> update_checkpoint(event)
     |> recompute_status_counts()
   end
 
-  defp apply_domain_event(projection, %{
-         type: "CommandAccepted",
-         payload: %{command_id: command_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "CommandAccepted",
+           payload: %{command_id: command_id} = payload
+         },
+         _mode
+       ) do
     put_in(projection, [:commands, command_id], payload)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "ProjectRegistered",
-         payload: %{project_id: project_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "ProjectRegistered",
+           payload: %{project_id: project_id} = payload
+         },
+         _mode
+       ) do
     project = %{
       project_id: project_id,
       path: Map.fetch!(payload, :path),
@@ -168,10 +176,14 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:projects, project_id], project)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "TaskCreated",
-         payload: %{task_id: task_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "TaskCreated",
+           payload: %{task_id: task_id} = payload
+         },
+         _mode
+       ) do
     task =
       %{
         task_id: task_id,
@@ -185,20 +197,28 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:tasks, task_id], task)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "TaskUpdated",
-         payload: %{task_id: task_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "TaskUpdated",
+           payload: %{task_id: task_id} = payload
+         },
+         _mode
+       ) do
     existing = empty_task(task_id)
     existing = get_in(projection, [:tasks, task_id]) || existing
 
     put_in(projection, [:tasks, task_id], Map.merge(existing, Map.drop(payload, [:task_id])))
   end
 
-  defp apply_domain_event(projection, %{
-         type: "TaskAnnotated",
-         payload: %{task_id: task_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "TaskAnnotated",
+           payload: %{task_id: task_id} = payload
+         },
+         _mode
+       ) do
     existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
 
     annotation = %{
@@ -215,10 +235,14 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:tasks, task_id], task)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "TaskDependencyAdded",
-         payload: %{task_id: task_id, depends_on: depends_on} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "TaskDependencyAdded",
+           payload: %{task_id: task_id, depends_on: depends_on} = payload
+         },
+         _mode
+       ) do
     existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
 
     task =
@@ -229,7 +253,11 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:tasks, task_id], task)
   end
 
-  defp apply_domain_event(projection, %{type: "RunStarted", payload: %{run_id: run_id} = payload}) do
+  defp apply_domain_event(
+         projection,
+         %{type: "RunStarted", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
     run = %{
       run_id: run_id,
       task_id: Map.get(payload, :task_id),
@@ -244,13 +272,17 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:runs, run_id], run)
   end
 
-  defp apply_domain_event(projection, %{type: "RunCompleted", payload: %{run_id: run_id}}) do
+  defp apply_domain_event(projection, %{type: "RunCompleted", payload: %{run_id: run_id}}, _mode) do
     projection
     |> update_run_status(run_id, "completed")
     |> update_run(run_id, &Map.put(&1, :current_phase, nil))
   end
 
-  defp apply_domain_event(projection, %{type: "RunFailed", payload: %{run_id: run_id} = payload}) do
+  defp apply_domain_event(
+         projection,
+         %{type: "RunFailed", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
     projection
     |> update_run_status(run_id, "failed")
     |> update_run(run_id, fn run ->
@@ -263,14 +295,18 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  defp apply_domain_event(projection, %{type: "RunBlocked", payload: %{run_id: run_id}}) do
+  defp apply_domain_event(projection, %{type: "RunBlocked", payload: %{run_id: run_id}}, _mode) do
     update_run_status(projection, run_id, "blocked")
   end
 
-  defp apply_domain_event(projection, %{
-         type: "PhaseStarted",
-         payload: %{run_id: run_id, phase_id: phase_id}
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "PhaseStarted",
+           payload: %{run_id: run_id, phase_id: phase_id}
+         },
+         _mode
+       ) do
     update_run(projection, run_id, fn run ->
       run
       |> Map.put(:current_phase, phase_id)
@@ -278,10 +314,14 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "PhaseCompleted",
-         payload: %{run_id: run_id, phase_id: phase_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "PhaseCompleted",
+           payload: %{run_id: run_id, phase_id: phase_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->
@@ -295,10 +335,14 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  defp apply_domain_event(projection, %{
-         type: type,
-         payload: %{run_id: run_id, phase_id: phase_id} = payload
-       })
+  defp apply_domain_event(
+         projection,
+         %{
+           type: type,
+           payload: %{run_id: run_id, phase_id: phase_id} = payload
+         },
+         _mode
+       )
        when type in ["PhaseFailed", "PhaseTimedOut"] do
     status = if type == "PhaseTimedOut", do: "timed_out", else: "failed"
 
@@ -312,10 +356,14 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "PhaseRetried",
-         payload: %{run_id: run_id, phase_id: phase_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "PhaseRetried",
+           payload: %{run_id: run_id, phase_id: phase_id} = payload
+         },
+         _mode
+       ) do
     update_run(projection, run_id, fn run ->
       run
       |> Map.put(:current_phase, phase_id)
@@ -327,19 +375,27 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "WorkerStatusChanged",
-         payload: %{run_id: run_id, worker_id: worker_id, status: status}
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "WorkerStatusChanged",
+           payload: %{run_id: run_id, worker_id: worker_id, status: status}
+         },
+         _mode
+       ) do
     update_run(projection, run_id, fn run ->
       update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
     end)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "WorkerStarted",
-         payload: %{run_id: run_id, worker_id: worker_id, phase_id: phase_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "WorkerStarted",
+           payload: %{run_id: run_id, worker_id: worker_id, phase_id: phase_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->
@@ -351,10 +407,14 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "WorkerHeartbeat",
-         payload: %{run_id: run_id, worker_id: worker_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "WorkerHeartbeat",
+           payload: %{run_id: run_id, worker_id: worker_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> put_worker_sequence(payload)
     |> put_in([:worker_heartbeats, "#{run_id}:#{worker_id}"], payload)
@@ -363,10 +423,14 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "ToolCallFinished",
-         payload: %{run_id: run_id, worker_id: worker_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "ToolCallFinished",
+           payload: %{run_id: run_id, worker_id: worker_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->
@@ -375,14 +439,18 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "SchedulerTaskSkipped",
-         payload: %{task_id: task_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "SchedulerTaskSkipped",
+           payload: %{task_id: task_id} = payload
+         },
+         _mode
+       ) do
     put_in(projection, [:scheduler_skips, task_id], payload)
   end
 
-  defp apply_domain_event(projection, %{type: type, payload: payload})
+  defp apply_domain_event(projection, %{type: type, payload: payload}, _mode)
        when type in [
               "WorkerFailureSimulated",
               "WorkerRecoveryRequired",
@@ -398,10 +466,14 @@ defmodule ForemanServer.ProjectionStore do
     )
   end
 
-  defp apply_domain_event(projection, %{
-         type: "WorktreeCreated",
-         payload: %{run_id: run_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "WorktreeCreated",
+           payload: %{run_id: run_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> put_in([:worktrees, run_id], payload)
     |> put_in(
@@ -410,10 +482,14 @@ defmodule ForemanServer.ProjectionStore do
     )
   end
 
-  defp apply_domain_event(projection, %{
-         type: "WorktreeCleaned",
-         payload: %{run_id: run_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "WorktreeCleaned",
+           payload: %{run_id: run_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> update_in([:worktrees], &Map.delete(&1 || %{}, run_id))
     |> put_in(
@@ -422,10 +498,14 @@ defmodule ForemanServer.ProjectionStore do
     )
   end
 
-  defp apply_domain_event(projection, %{
-         type: "VcsMergeRequested",
-         payload: payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "VcsMergeRequested",
+           payload: payload
+         },
+         _mode
+       ) do
     put_in(
       projection,
       [:vcs_operations, payload.operation_id],
@@ -433,36 +513,52 @@ defmodule ForemanServer.ProjectionStore do
     )
   end
 
-  defp apply_domain_event(projection, %{
-         type: "PrGateObserved",
-         payload: %{pr_id: pr_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "PrGateObserved",
+           payload: %{pr_id: pr_id} = payload
+         },
+         _mode
+       ) do
     put_in(projection, [:pr_gates, pr_id], payload)
   end
 
-  defp apply_domain_event(projection, %{
-         type: "PrMerged",
-         payload: %{pr_id: pr_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "PrMerged",
+           payload: %{pr_id: pr_id} = payload
+         },
+         _mode
+       ) do
     put_in(projection, [:pr_gates, pr_id], Map.put(payload, :state, "merged"))
   end
 
-  defp apply_domain_event(projection, %{
-         type: type,
-         payload: %{pr_id: pr_id} = payload
-       })
+  defp apply_domain_event(
+         projection,
+         %{
+           type: type,
+           payload: %{pr_id: pr_id} = payload
+         },
+         _mode
+       )
        when type in ["MergeFailed", "MergeBlocked"] do
     projection
     |> put_in([:merge_failures, pr_id], Map.put(payload, :event_type, type))
     |> put_in([:pr_gates, pr_id], Map.put(payload, :state, "failed"))
   end
 
-  defp apply_domain_event(projection, %{
-         type: "InboxMessageAppended",
-         payload: %{message_id: message_id, run_id: run_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "InboxMessageAppended",
+           payload: %{message_id: message_id, run_id: run_id} = payload
+         },
+         mode
+       ) do
     message = Map.put(payload, :event_type, "InboxMessageAppended")
-    notify_inbox_watchers(run_id, message)
+    maybe_notify_inbox_watchers(mode, run_id, message)
 
     projection
     |> put_in([:inbox_messages, message_id], message)
@@ -470,16 +566,20 @@ defmodule ForemanServer.ProjectionStore do
     |> update_in([:inbox_updates], &((&1 || []) ++ [message]))
   end
 
-  defp apply_domain_event(projection, %{
-         type: "InboxDeliveryUpdated",
-         payload: %{message_id: message_id, run_id: run_id} = payload
-       }) do
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "InboxDeliveryUpdated",
+           payload: %{message_id: message_id, run_id: run_id} = payload
+         },
+         mode
+       ) do
     existing =
       get_in(projection, [:inbox_messages, message_id]) ||
         %{message_id: message_id, run_id: run_id}
 
     message = existing |> Map.merge(payload) |> Map.put(:event_type, "InboxDeliveryUpdated")
-    notify_inbox_watchers(run_id, message)
+    maybe_notify_inbox_watchers(mode, run_id, message)
 
     projection
     |> put_in([:inbox_messages, message_id], message)
@@ -487,7 +587,7 @@ defmodule ForemanServer.ProjectionStore do
     |> update_in([:inbox_updates], &((&1 || []) ++ [message]))
   end
 
-  defp apply_domain_event(projection, _event), do: projection
+  defp apply_domain_event(projection, _event, _mode), do: projection
 
   defp update_run_status(projection, run_id, status) do
     update_run(projection, run_id, &Map.put(&1, :status, status))
@@ -574,6 +674,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp put_worker_sequence(projection, _payload), do: projection
+
+  defp maybe_notify_inbox_watchers(:live, run_id, message),
+    do: notify_inbox_watchers(run_id, message)
+
+  defp maybe_notify_inbox_watchers(:replay, _run_id, _message), do: :ok
 
   defp notify_inbox_watchers(run_id, message) do
     if Process.whereis(ForemanServer.InboxRegistry) do

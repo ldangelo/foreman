@@ -49,7 +49,8 @@ defmodule ForemanServer.WorkflowInterpreter do
       run_id: run_id,
       task_id: Map.get(opts, :task_id),
       phases: workflow.phase_order,
-      max_retries: max_retry(workflow.retry_rules)
+      max_retries: max_retry(workflow.retry_rules),
+      mail_hooks: workflow.mail_hooks
     })
   end
 
@@ -64,50 +65,67 @@ defmodule ForemanServer.WorkflowInterpreter do
       {output, exit_code} = System.cmd("sh", ["-c", command], stderr_to_stdout: true)
       event_type = if exit_code == 0, do: "PhaseCompleted", else: "PhaseFailed"
 
-      append_phase_event(run_id, event_type, %{
-        run_id: run_id,
-        phase_id: phase_id,
-        output: output,
-        exit_code: exit_code,
-        artifact_paths: List.wrap(phase.artifact),
-        report_paths: List.wrap(phase.artifact),
-        kind: "bash"
-      })
+      append_phase_event(
+        run_id,
+        event_type,
+        %{
+          run_id: run_id,
+          phase_id: phase_id,
+          output: output,
+          exit_code: exit_code,
+          artifact_paths: List.wrap(phase.artifact),
+          report_paths: List.wrap(phase.artifact),
+          kind: "bash"
+        },
+        Map.get(phase, :mail, %{})
+      )
     end
   end
 
   def execute_phase(run_id, %{name: phase_id, prompt: prompt} = phase, _context) do
-    append_phase_event(run_id, "PhaseCompleted", %{
-      run_id: run_id,
-      phase_id: phase_id,
-      output: "prompt phase prepared: #{prompt}",
-      exit_code: 0,
-      artifact_paths: List.wrap(phase.artifact),
-      report_paths: List.wrap(phase.artifact),
-      kind: "prompt"
-    })
+    append_phase_event(
+      run_id,
+      "PhaseCompleted",
+      %{
+        run_id: run_id,
+        phase_id: phase_id,
+        output: "prompt phase prepared: #{prompt}",
+        exit_code: 0,
+        artifact_paths: List.wrap(phase.artifact),
+        report_paths: List.wrap(phase.artifact),
+        kind: "prompt"
+      },
+      Map.get(phase, :mail, %{})
+    )
   end
 
   defp complete_builtin(run_id, phase_id, phase, _context) do
-    append_phase_event(run_id, "PhaseCompleted", %{
-      run_id: run_id,
-      phase_id: phase_id,
-      output: "builtin #{phase.command} prepared",
-      exit_code: 0,
-      artifact_paths: List.wrap(phase.artifact),
-      report_paths: List.wrap(phase.artifact),
-      kind: "builtin"
-    })
+    append_phase_event(
+      run_id,
+      "PhaseCompleted",
+      %{
+        run_id: run_id,
+        phase_id: phase_id,
+        output: "builtin #{phase.command} prepared",
+        exit_code: 0,
+        artifact_paths: List.wrap(phase.artifact),
+        report_paths: List.wrap(phase.artifact),
+        kind: "builtin"
+      },
+      Map.get(phase, :mail, %{})
+    )
   end
 
-  defp append_phase_event(run_id, event_type, payload) do
+  defp append_phase_event(run_id, event_type, payload, mail_hooks) do
     with {:ok, event} <-
            EventStore.append(%{
              stream_id: "run:#{run_id}",
              event_type: event_type,
              payload: payload,
              metadata: %{correlation_id: run_id}
-           }) do
+           }),
+         {:ok, _messages} <-
+           ForemanServer.Inbox.append_phase_mail(event_type, payload, mail_hooks) do
       {:ok, %{event: event, payload: payload}}
     end
   end

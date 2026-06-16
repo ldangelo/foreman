@@ -21,20 +21,19 @@ defmodule ForemanServer.Inbox do
 
   @spec list(String.t()) :: [map()]
   def list(run_id) when is_binary(run_id) do
-    ProjectionStore.snapshot()
+    snapshot = ProjectionStore.snapshot()
+
+    snapshot
     |> get_in([:inbox_by_run, run_id])
     |> Kernel.||([])
-    |> Enum.map(&get_in(ProjectionStore.snapshot(), [:inbox_messages, &1]))
+    |> Enum.map(&get_in(snapshot, [:inbox_messages, &1]))
     |> Enum.reject(&is_nil/1)
   end
 
   @spec append_phase_mail(String.t(), map(), map()) :: {:ok, [map()]} | {:error, term()}
   def append_phase_mail(event_type, payload, hooks)
       when is_binary(event_type) and is_map(payload) do
-    payload = atomize_keys(payload)
-    hooks = atomize_keys(hooks || %{})
-
-    case hook_config(event_type, hooks) do
+    case hook_config(event_type, hooks || %{}) do
       [] -> {:ok, []}
       configs -> append_hook_messages(event_type, payload, configs)
     end
@@ -42,20 +41,18 @@ defmodule ForemanServer.Inbox do
 
   @spec send_operator_message(map()) :: {:ok, map()} | {:error, term()}
   def send_operator_message(input) when is_map(input) do
-    input = atomize_keys(input)
-
-    with {:ok, run_id} <- required_binary(Map.get(input, :run_id), :run_id),
-         {:ok, body} <- required_binary(Map.get(input, :body), :body),
+    with {:ok, run_id} <- required_binary(fetch(input, :run_id), :run_id),
+         {:ok, body} <- required_binary(fetch(input, :body), :body),
          :ok <- active_run(run_id) do
-      supports_delivery? = Map.get(input, :worker_supports_receiving, false)
+      supports_delivery? = fetch(input, :worker_supports_receiving, false)
       status = if supports_delivery?, do: "queued", else: "unsupported"
 
       append_message(%{
-        message_id: Map.get(input, :message_id, "msg-#{System.unique_integer([:positive])}"),
+        message_id: fetch(input, :message_id, "msg-#{System.unique_integer([:positive])}"),
         run_id: run_id,
-        phase_id: Map.get(input, :phase_id),
-        from: Map.get(input, :from, "operator"),
-        to: Map.get(input, :to, "worker"),
+        phase_id: fetch(input, :phase_id),
+        from: fetch(input, :from, "operator"),
+        to: fetch(input, :to, "worker"),
         body: body,
         direction: "operator_to_worker",
         delivery_status: status,
@@ -66,52 +63,83 @@ defmodule ForemanServer.Inbox do
 
   @spec update_delivery(map()) :: {:ok, map()} | {:error, term()}
   def update_delivery(input) when is_map(input) do
-    input = atomize_keys(input)
-
-    with {:ok, message_id} <- required_binary(Map.get(input, :message_id), :message_id),
-         {:ok, status} <- required_binary(Map.get(input, :delivery_status), :delivery_status),
+    with {:ok, message_id} <- required_binary(fetch(input, :message_id), :message_id),
+         {:ok, status} <- required_binary(fetch(input, :delivery_status), :delivery_status),
          {:ok, message} <- existing_message(message_id) do
       append_delivery_update(%{
         message_id: message_id,
         run_id: message.run_id,
         delivery_status: status,
-        delivery: Map.get(input, :delivery, %{}),
-        reason: Map.get(input, :reason)
+        delivery: fetch(input, :delivery, %{}),
+        reason: fetch(input, :reason)
       })
     end
   end
 
   defp append_hook_messages(event_type, payload, configs) do
-    results =
+    with {:ok, run_id} <- required_binary(fetch(payload, :run_id), :run_id),
+         {:ok, phase_id} <- required_binary(fetch(payload, :phase_id), :phase_id),
+         {:ok, messages} <- build_hook_messages(event_type, payload, configs, run_id, phase_id) do
+      append_messages(messages, [])
+    end
+  end
+
+  defp build_hook_messages(event_type, payload, configs, run_id, phase_id) do
+    messages =
       Enum.map(configs, fn config ->
-        append_message(%{
+        %{
           message_id:
-            Map.get(
+            fetch(
               config,
               :message_id,
-              "mail-#{payload.run_id}-#{payload.phase_id}-#{event_type}-#{System.unique_integer([:positive])}"
+              "mail-#{run_id}-#{phase_id}-#{event_type}-#{System.unique_integer([:positive])}"
             ),
-          run_id: payload.run_id,
-          phase_id: Map.get(payload, :phase_id),
-          from: Map.get(config, :from, "foreman"),
-          to: Map.get(config, :to, "agent"),
+          run_id: run_id,
+          phase_id: phase_id,
+          from: fetch(config, :from, "foreman"),
+          to: fetch(config, :to, "agent"),
           body: render_body(config, event_type, payload),
           direction: "system_to_agent",
           hook: @phase_events[event_type] || event_type,
-          delivery_status: Map.get(config, :delivery_status, "appended")
-        })
+          delivery_status: fetch(config, :delivery_status, "appended")
+        }
       end)
 
-    case Enum.find(results, &match?({:error, _}, &1)) do
-      nil -> {:ok, Enum.map(results, fn {:ok, result} -> result end)}
-      error -> error
+    cond do
+      Enum.any?(messages, &(not is_binary(&1.message_id) or &1.message_id == "")) ->
+        {:error, {:missing_or_invalid, :message_id}}
+
+      duplicate_ids?(messages) ->
+        {:error, :duplicate_message_id}
+
+      true ->
+        {:ok, messages}
     end
+  end
+
+  defp append_messages([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp append_messages([message | rest], acc) do
+    case append_message(message) do
+      {:ok, result} -> append_messages(rest, [result | acc])
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp duplicate_ids?(messages) do
+    ids = Enum.map(messages, & &1.message_id)
+    length(ids) != length(Enum.uniq(ids))
   end
 
   defp hook_config(event_type, hooks) do
     key = @phase_events[event_type] || event_type
-    hooks |> Map.get(String.to_atom(key), Map.get(hooks, key, [])) |> normalize_configs()
+    hooks |> fetch(phase_atom(key), fetch(hooks, key, [])) |> normalize_configs()
   end
+
+  defp phase_atom("phase_started"), do: :phase_started
+  defp phase_atom("phase_completed"), do: :phase_completed
+  defp phase_atom("phase_failed"), do: :phase_failed
+  defp phase_atom(_key), do: :unknown_phase_hook
 
   defp normalize_configs(false), do: []
   defp normalize_configs(nil), do: []
@@ -121,8 +149,8 @@ defmodule ForemanServer.Inbox do
   defp normalize_configs(_), do: []
 
   defp render_body(config, event_type, payload) do
-    Map.get(config, :body) ||
-      "#{event_type} #{payload.run_id}/#{Map.get(payload, :phase_id, "phase")}"
+    fetch(config, :body) ||
+      "#{event_type} #{fetch(payload, :run_id)}/#{fetch(payload, :phase_id, "phase")}"
   end
 
   defp append_message(message) do
@@ -195,14 +223,12 @@ defmodule ForemanServer.Inbox do
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
   defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
 
-  defp atomize_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {key, value} when is_binary(key) -> {String.to_atom(key), atomize_value(value)}
-      {key, value} -> {key, atomize_value(value)}
-    end)
+  defp fetch(map, key, default \\ nil)
+
+  defp fetch(map, key, default) when is_map(map) and is_atom(key) do
+    Map.get(map, key, Map.get(map, Atom.to_string(key), default))
   end
 
-  defp atomize_value(value) when is_map(value), do: atomize_keys(value)
-  defp atomize_value(value) when is_list(value), do: Enum.map(value, &atomize_value/1)
-  defp atomize_value(value), do: value
+  defp fetch(map, key, default) when is_map(map), do: Map.get(map, key, default)
+  defp fetch(_value, _key, default), do: default
 end

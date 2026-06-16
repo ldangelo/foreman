@@ -1,16 +1,17 @@
 defmodule ForemanServer.InboxTest do
   use ExUnit.Case
 
-  alias ForemanServer.{EventStore, Inbox, ProjectionStore}
+  alias ForemanServer.{EventStore, Inbox, ProjectionStore, RunActor, WorkflowInterpreter}
 
   setup do
     tmp_dir =
       Path.join(System.tmp_dir!(), "foreman-inbox-test-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(tmp_dir)
+    event_log_path = Path.join(tmp_dir, "events.term.log")
 
     Application.stop(:foreman_server)
-    Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+    Application.put_env(:foreman_server, :event_log_path, event_log_path)
     assert :ok = Application.start(:foreman_server)
 
     on_exit(fn ->
@@ -20,7 +21,40 @@ defmodule ForemanServer.InboxTest do
       Application.start(:foreman_server)
     end)
 
-    {:ok, fixture: fixture()}
+    {:ok, fixture: fixture(), event_log_path: event_log_path}
+  end
+
+  test "configured phase mail hooks append from real phase lifecycle", %{fixture: fixture} do
+    workflow = %{
+      phase_order: [fixture["phase_id"], "phase-done"],
+      retry_rules: %{},
+      mail_hooks: %{fixture["phase_id"] => fixture["hooks"], "phase-done" => %{}}
+    }
+
+    assert {:ok, _pid} = WorkflowInterpreter.start_run(fixture["run_id"], workflow)
+    assert [%{body: "Build phase started", hook: "phase_started"}] = Inbox.list(fixture["run_id"])
+
+    assert {:ok, _state} = RunActor.pass(fixture["run_id"], %{ok: true})
+
+    bodies = Inbox.list(fixture["run_id"]) |> Enum.map(& &1.body)
+    assert "Build phase completed" in bodies
+  end
+
+  test "configured failure mail hook appends from real phase failure", %{fixture: fixture} do
+    run_id = "#{fixture["run_id"]}-failed"
+
+    workflow = %{
+      phase_order: [fixture["phase_id"]],
+      retry_rules: %{},
+      mail_hooks: %{fixture["phase_id"] => fixture["hooks"]}
+    }
+
+    assert {:ok, _pid} = WorkflowInterpreter.start_run(run_id, workflow)
+    assert {:ok, _state} = RunActor.fail(run_id, %{reason: "boom"})
+
+    messages = Inbox.list(run_id)
+    assert Enum.any?(messages, &(&1.body == "Build phase started" and &1.hook == "phase_started"))
+    assert Enum.any?(messages, &(&1.body == "Build phase failed" and &1.hook == "phase_failed"))
   end
 
   test "phase mail hooks append durable messages and project to inbox", %{fixture: fixture} do
@@ -42,20 +76,7 @@ defmodule ForemanServer.InboxTest do
   end
 
   test "operator messages to active runs track delivery status" do
-    assert {:ok, _event} =
-             EventStore.append(%{
-               stream_id: "run:run-inbox-2",
-               event_type: "RunStarted",
-               payload: %{
-                 run_id: "run-inbox-2",
-                 phase_order: ["phase-1"],
-                 current_phase: "phase-1"
-               },
-               metadata: %{
-                 correlation_id: "run-inbox-2",
-                 idempotency_key: "run-started:run-inbox-2"
-               }
-             })
+    start_run_event("run-inbox-2")
 
     assert {:ok, %{result: queued}} =
              Inbox.send_operator_message(%{
@@ -79,20 +100,7 @@ defmodule ForemanServer.InboxTest do
   end
 
   test "inbox watch streams new messages without polling full history" do
-    assert {:ok, _event} =
-             EventStore.append(%{
-               stream_id: "run:run-watch-1",
-               event_type: "RunStarted",
-               payload: %{
-                 run_id: "run-watch-1",
-                 phase_order: ["phase-1"],
-                 current_phase: "phase-1"
-               },
-               metadata: %{
-                 correlation_id: "run-watch-1",
-                 idempotency_key: "run-started:run-watch-1"
-               }
-             })
+    start_run_event("run-watch-1")
 
     assert {:ok, 0} = Inbox.subscribe("run-watch-1")
 
@@ -110,11 +118,114 @@ defmodule ForemanServer.InboxTest do
     assert Inbox.list("run-watch-1") |> Enum.map(& &1.message_id) == ["msg-watch-1"]
   end
 
+  test "projection rebuild does not replay historical inbox updates to active watchers" do
+    start_run_event("run-watch-rebuild")
+
+    assert {:ok, 0} = Inbox.subscribe("run-watch-rebuild")
+
+    assert {:ok, _result} =
+             Inbox.send_operator_message(%{
+               message_id: "msg-watch-rebuild-1",
+               run_id: "run-watch-rebuild",
+               body: "live only"
+             })
+
+    assert_receive {:inbox_update, "run-watch-rebuild", _update}, 250
+    refute_receive {:inbox_update, "run-watch-rebuild", _update}, 50
+
+    assert {:ok, _rebuilt} = EventStore.rebuild_projections()
+    refute_receive {:inbox_update, "run-watch-rebuild", _update}, 100
+  end
+
+  test "restart replay preserves inbox messages and delivery status", %{
+    event_log_path: event_log_path
+  } do
+    start_run_event("run-restart-1")
+
+    assert {:ok, _message} =
+             Inbox.send_operator_message(%{
+               message_id: "msg-restart-1",
+               run_id: "run-restart-1",
+               body: "persist me",
+               worker_supports_receiving: true
+             })
+
+    assert {:ok, _delivery} =
+             Inbox.update_delivery(%{message_id: "msg-restart-1", delivery_status: "delivered"})
+
+    Application.stop(:foreman_server)
+    Application.put_env(:foreman_server, :event_log_path, event_log_path)
+    assert :ok = Application.start(:foreman_server)
+
+    assert [%{message_id: "msg-restart-1", body: "persist me", delivery_status: "delivered"}] =
+             Inbox.list("run-restart-1")
+  end
+
   test "operator message rejects inactive or missing runs before side effects" do
     assert {:error, {:run_not_found, "missing-run"}} =
              Inbox.send_operator_message(%{run_id: "missing-run", body: "hello"})
 
     assert Inbox.list("missing-run") == []
+
+    start_run_event("run-terminal-1")
+    complete_run_event("run-terminal-1")
+
+    assert {:error, {:run_not_active, "run-terminal-1"}} =
+             Inbox.send_operator_message(%{run_id: "run-terminal-1", body: "hello"})
+
+    assert Inbox.list("run-terminal-1") == []
+  end
+
+  test "invalid inputs fail cleanly without partial phase hook append", %{fixture: fixture} do
+    assert {:error, {:missing_or_invalid, :body}} =
+             Inbox.send_operator_message(%{"run_id" => "run-input-1"})
+
+    assert {:error, {:missing_or_invalid, :message_id}} =
+             Inbox.update_delivery(%{"delivery_status" => "delivered"})
+
+    duplicate_hooks = %{
+      "phase_started" => [
+        %{"message_id" => "dup-hook", "body" => "one"},
+        %{"message_id" => "dup-hook", "body" => "two"}
+      ]
+    }
+
+    assert {:error, :duplicate_message_id} =
+             Inbox.append_phase_mail(
+               "PhaseStarted",
+               %{"run_id" => fixture["run_id"], "phase_id" => fixture["phase_id"]},
+               duplicate_hooks
+             )
+
+    assert Inbox.list(fixture["run_id"]) == []
+  end
+
+  defp start_run_event(run_id) do
+    EventStore.append(%{
+      stream_id: "run:#{run_id}",
+      event_type: "RunStarted",
+      payload: %{
+        run_id: run_id,
+        phase_order: ["phase-1"],
+        current_phase: "phase-1"
+      },
+      metadata: %{
+        correlation_id: run_id,
+        idempotency_key: "run-started:#{run_id}"
+      }
+    })
+  end
+
+  defp complete_run_event(run_id) do
+    EventStore.append(%{
+      stream_id: "run:#{run_id}",
+      event_type: "RunCompleted",
+      payload: %{run_id: run_id},
+      metadata: %{
+        correlation_id: run_id,
+        idempotency_key: "run-completed:#{run_id}"
+      }
+    })
   end
 
   defp fixture do
