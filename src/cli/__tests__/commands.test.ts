@@ -47,7 +47,7 @@ describe("CLI smoke tests", () => {
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "watch", "purge", "task", "logs"]) {
+    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "watch", "purge", "task", "logs", "server"]) {
       expect(output).toContain(cmd);
     }
 

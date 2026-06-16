@@ -1,0 +1,43 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { ElixirServerManager } from "../elixir-server-manager.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("ElixirServerManager", () => {
+  it("reports stopped status when no pid file exists", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "foreman-elixir-manager-"));
+    try {
+      const manager = new ElixirServerManager({ port: 4901, pidPath: join(tmp, "server.pid") });
+      expect(manager.status()).toMatchObject({ running: false, url: "http://127.0.0.1:4901" });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("checks /api/v1/health on the configured port", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, active_projects: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const manager = new ElixirServerManager({ port: 4902 });
+    await expect(manager.health()).resolves.toEqual({ ok: true, body: { ok: true, active_projects: [] } });
+    const calls = fetchMock.mock.calls as unknown as [[URL]];
+    expect(String(calls[0][0])).toBe("http://127.0.0.1:4902/api/v1/health");
+  });
+
+  it("treats stale pid files as stopped", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "foreman-elixir-manager-"));
+    const pidPath = join(tmp, "server.pid");
+    try {
+      writeFileSync(pidPath, "99999999", "utf8");
+      const manager = new ElixirServerManager({ pidPath });
+      expect(manager.status().running).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
