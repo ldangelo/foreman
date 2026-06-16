@@ -12,6 +12,12 @@ defmodule ForemanServer.DebugViews do
 
   @secret_key_pattern @secret_key_names
                       |> MapSet.to_list()
+                      |> Enum.flat_map(fn key ->
+                        key
+                        |> String.replace("_", "-")
+                        |> then(&[key, &1])
+                      end)
+                      |> Enum.uniq()
                       |> Enum.sort_by(&byte_size/1, :desc)
                       |> Enum.map(&Regex.escape/1)
                       |> Enum.join("|")

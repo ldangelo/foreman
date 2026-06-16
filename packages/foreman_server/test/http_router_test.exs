@@ -119,7 +119,8 @@ defmodule ForemanServer.Http.RouterTest do
       phase_id: "developer",
       worker_id: "worker-http-unicode",
       output:
-        String.duplicate("🔐", 2_000) <>
+        "api-key=http-hyphen access-token=http-hyphen-access auth-token: http-hyphen-auth client-secret=http-hyphen-client " <>
+          String.duplicate("🔐", 2_000) <>
           " token: http-token access_token=http-access auth_token: http-auth client_secret=http-client password: hunter2 Authorization: Bearer bearer-token {\"token\":\"http-json-token\"} {\"client_secret\": \"http-json-client\"}",
       sequence: 1
     })
@@ -139,6 +140,10 @@ defmodule ForemanServer.Http.RouterTest do
     assert String.ends_with?(output, "...[truncated]")
 
     for secret <- [
+          "http-hyphen",
+          "http-hyphen-access",
+          "http-hyphen-auth",
+          "http-hyphen-client",
           "http-token",
           "http-access",
           "http-auth",

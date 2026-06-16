@@ -124,7 +124,7 @@ defmodule ForemanServer.DebugViewsTest do
       worker_id: "worker-secret",
       output:
         large_output <>
-          " token=abc123 token: colon-token access_token=atok auth_token: authv Authorization: Bearer auth-token secret: sss {\"token\":\"jsonsecret\"}",
+          " token=abc123 token: colon-token access_token=atok auth_token: authv Authorization: Bearer auth-bearer-value secret: sss {\"token\":\"jsonsecret\"}",
       details: %{password: "super-secret"},
       sequence: 1
     })
@@ -134,7 +134,7 @@ defmodule ForemanServer.DebugViewsTest do
       phase_id: "developer",
       worker_id: "worker-secret",
       output:
-        "stderr api_key=abc123 api_key: colon-key client_secret=csec password: hunter2 Bearer loose-token {\"client_secret\": \"json-client-secret\"}",
+        "stderr api_key=abc123 api-key=hyphen-value api_key: colon-key client_secret=csec client-secret=hyphen-client-value password: hunter2 Bearer loose-token {\"client_secret\": \"json-client-value\"}",
       sequence: 2
     })
 
@@ -143,7 +143,7 @@ defmodule ForemanServer.DebugViewsTest do
       phase_id: "developer",
       worker_id: "worker-secret",
       message:
-        "assistant password=hunter2 password: colon-password access_token=assistant-access auth_token: assistant-auth {\"token\":\"assistant-json-token\"}",
+        "assistant password=hunter2 password: colon-password access_token=assistant-access access-token=assistant-hyphen-access auth_token: assistant-auth auth-token: assistant-hyphen-auth {\"token\":\"assistant-json-token\"}",
       sequence: 3
     })
 
@@ -163,7 +163,7 @@ defmodule ForemanServer.DebugViewsTest do
       run_id: "run-secret",
       phase_id: "developer",
       reason:
-        "failed with client_secret=debug-client-secret {\"client_secret\": \"debug-json-client\"}",
+        "failed with client_secret=debug-client-secret client-secret=debug-hyphen-client {\"client_secret\": \"debug-json-client\"}",
       status: "failed"
     })
 
@@ -176,14 +176,18 @@ defmodule ForemanServer.DebugViewsTest do
           "colon-token",
           "atok",
           "authv",
-          "auth-token",
+          "auth-bearer-value",
           "colon-key",
+          "hyphen-value",
           "csec",
+          "hyphen-client-value",
           "jsonsecret",
-          "json-client-secret",
+          "json-client-value",
           "colon-password",
           "assistant-access",
+          "assistant-hyphen-access",
           "assistant-auth",
+          "assistant-hyphen-auth",
           "assistant-json-token",
           "loose-token"
         ] do
@@ -204,15 +208,21 @@ defmodule ForemanServer.DebugViewsTest do
     refute stdout.payload.output =~ "authv"
     refute stdout.payload.output =~ "jsonsecret"
     refute stderr.payload.output =~ "colon-key"
+    refute stderr.payload.output =~ "hyphen-value"
     refute stderr.payload.output =~ "csec"
-    refute stderr.payload.output =~ "json-client-secret"
+    refute stderr.payload.output =~ "hyphen-client-value"
+    refute stderr.payload.output =~ "json-client-value"
     refute stderr.payload.output =~ "loose-token"
     assert stderr.payload.output =~ "api_key=[REDACTED]"
+    assert stderr.payload.output =~ "api-key=[REDACTED]"
+    assert stderr.payload.output =~ "client-secret=[REDACTED]"
     assert stderr.payload.output =~ "password=[REDACTED]"
     assert stderr.payload.output =~ "Bearer [REDACTED]"
     refute assistant.payload.message =~ "colon-password"
     refute assistant.payload.message =~ "assistant-access"
+    refute assistant.payload.message =~ "assistant-hyphen-access"
     refute assistant.payload.message =~ "assistant-auth"
+    refute assistant.payload.message =~ "assistant-hyphen-auth"
     refute assistant.payload.message =~ "assistant-json-token"
     assert assistant.payload.message =~ "password=[REDACTED]"
     assert tool.payload.details.client_secret == "[REDACTED]"
@@ -227,16 +237,17 @@ defmodule ForemanServer.DebugViewsTest do
           "colon-token",
           "atok",
           "authv",
-          "auth-token",
+          "auth-bearer-value",
           "colon-key",
           "csec",
           "jsonsecret",
-          "json-client-secret",
+          "json-client-value",
           "colon-password",
           "assistant-access",
           "assistant-auth",
           "assistant-json-token",
           "debug-client-secret",
+          "debug-hyphen-client",
           "debug-json-client",
           "loose-token"
         ] do
