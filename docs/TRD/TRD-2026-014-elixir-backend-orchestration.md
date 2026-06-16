@@ -388,7 +388,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-005-TEST**: Verify Implement authenticated HTTP server API and Node CLI client transport (3h) [verifies TRD-005] [satisfies REQ-004, REQ-023] [depends: TRD-005]
+- [x] **TRD-005-TEST**: Verify Implement authenticated HTTP server API and Node CLI client transport (3h) [verifies TRD-005] [satisfies REQ-004, REQ-023] [depends: TRD-005]
 
 **Description:** Add unit/integration tests that verify AC-004-1, AC-004-3, AC-023-2 for TRD-005.
 
