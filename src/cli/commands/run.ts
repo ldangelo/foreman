@@ -115,7 +115,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
     getActiveRuns: async (overrideProjectId) => await daemonStore.getActiveRuns(overrideProjectId),
     nativeTaskOps: {
       hasNativeTasks: async () => pg.hasNativeTasks(projectId),
-      getReadyTasks: async () => await pg.listTasks(projectId, { status: ["ready"], limit: 1000 }) as never,
+      getReadyTasks: async () => await pg.listDispatchableReadyTasks(projectId, 1000) as never,
       getTaskByExternalId: async (externalId: string) => await pg.getTaskByExternalId(projectId, externalId) as never,
       getTaskById: async (taskId: string) => await pg.getTask(projectId, taskId) as never,
       claimTask: async (taskId: string, runId: string) => await pg.claimTask(projectId, taskId, runId),

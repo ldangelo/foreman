@@ -159,6 +159,29 @@ describe("syncRegisteredProjectCheckout", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it("skips fast-forward when local default branch has unpushed commits", () => {
+    setGitResponses({
+      "fetch origin main --prune": "",
+      "rev-parse --verify origin/main": "39eb3d7b\n",
+      "symbolic-ref --quiet --short HEAD": "main\n",
+      "diff --name-only": "",
+      "diff --cached --name-only": "",
+      "ls-files --others --exclude-standard": "",
+      "merge-base --is-ancestor HEAD origin/main": new Error("not ancestor"),
+    });
+    const warn = vi.fn();
+
+    syncRegisteredProjectCheckout({
+      projectId: "foreman-b90e0",
+      projectPath: "/repo",
+      defaultBranch: "main",
+      warn,
+    });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("local main has commits"));
+    expect(gitCallKeys()).not.toContain("reset --hard origin/main");
+  });
+
   it("warns and skips fast-forward when non-controller changes exist", () => {
     setGitResponses({
       "fetch origin main --prune": "",

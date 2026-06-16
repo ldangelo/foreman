@@ -17,6 +17,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanDaemon, registerDirectDaemonProcess } from "../index.js";
+import { Dispatcher } from "../../orchestrator/dispatcher.js";
 
 let mockFastify: {
   all: ReturnType<typeof vi.fn>;
@@ -44,6 +45,7 @@ let mockStore: {
 let mockPostgresAdapterInstance: {
   hasNativeTasks: ReturnType<typeof vi.fn>;
   listTasks: ReturnType<typeof vi.fn>;
+  listDispatchableReadyTasks: ReturnType<typeof vi.fn>;
   getTaskByExternalId: ReturnType<typeof vi.fn>;
   getTask: ReturnType<typeof vi.fn>;
   claimTask: ReturnType<typeof vi.fn>;
@@ -125,6 +127,7 @@ function createMockPostgresAdapterInstance() {
   return {
     hasNativeTasks: vi.fn(),
     listTasks: vi.fn(),
+    listDispatchableReadyTasks: vi.fn(),
     getTaskByExternalId: vi.fn(),
     getTask: vi.fn(),
     claimTask: vi.fn(),
@@ -166,6 +169,8 @@ beforeEach(() => {
   };
   mockDispatcherDispatch = vi.fn(async () => ({
     dispatched: [],
+    skipped: [],
+    activeAgents: 0,
   }));
   mockStore = {
     close: vi.fn(),
@@ -176,6 +181,9 @@ beforeEach(() => {
   poolInitCalls = 0;
   poolDestroyCalls = 0;
   vi.clearAllMocks();
+  vi.mocked(Dispatcher).mockImplementation(() => ({
+    dispatch: mockDispatcherDispatch,
+  }) as never);
 });
 
 describe("direct daemon process registration", () => {
@@ -403,6 +411,51 @@ describe("ForemanDaemon dispatch loop", () => {
       });
       expect(mockSyncRegisteredProjectCheckout.mock.invocationCallOrder[0]).toBeLessThan(createTaskClientMock.mock.invocationCallOrder[0]);
       await daemon.stop();
+    } finally {
+      if (originalWebhookSecret !== undefined) {
+        process.env.FOREMAN_WEBHOOK_SECRET = originalWebhookSecret;
+      } else {
+        delete process.env.FOREMAN_WEBHOOK_SECRET;
+      }
+    }
+  });
+
+  it("uses dependency-filtered ready tasks for registered-project dispatch", async () => {
+    const originalWebhookSecret = process.env.FOREMAN_WEBHOOK_SECRET;
+    delete process.env.FOREMAN_WEBHOOK_SECRET;
+
+    const dispatcherModule = vi.mocked(await import("../../orchestrator/dispatcher.js"), { deep: true });
+    const trpcClientMock = vi.mocked(await import("../../lib/trpc-client.js")).createTrpcClient;
+
+    trpcClientMock.mockReturnValue({
+      projects: {
+        list: vi.fn(async () => [
+          {
+            id: "proj-registered",
+            name: "registered-project",
+            path: "/tmp/registered-project",
+            status: "active",
+          },
+        ]),
+      },
+    } as never);
+
+    mockPostgresAdapterInstance.listDispatchableReadyTasks.mockResolvedValue([
+      { id: "unblocked-task" },
+    ]);
+
+    try {
+      const daemon = new ForemanDaemon({ httpPort: 9994, socketPath: join(tmpdir(), "foreman-daemon-test.sock") });
+      await daemon.start();
+      await daemon.stop();
+
+      const overrides = dispatcherModule.Dispatcher.mock.calls[0]?.[4] as {
+        nativeTaskOps?: { getReadyTasks?: () => Promise<unknown[]> };
+      } | undefined;
+      await expect(overrides?.nativeTaskOps?.getReadyTasks?.()).resolves.toEqual([
+        { id: "unblocked-task" },
+      ]);
+      expect(mockPostgresAdapterInstance.listDispatchableReadyTasks).toHaveBeenCalledWith("proj-registered", 1000);
     } finally {
       if (originalWebhookSecret !== undefined) {
         process.env.FOREMAN_WEBHOOK_SECRET = originalWebhookSecret;

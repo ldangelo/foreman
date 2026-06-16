@@ -91,7 +91,7 @@ flowchart TD
         A[User runs foreman run] --> B[Dispatcher.dispatch]
         B --> C{daemon reachable?}
         C -- No --> DAEMON_ERR[Error: start daemon first]
-        C -- Yes --> D[native ready tasks]
+        C -- Yes --> D[dependency-unblocked native ready tasks]
         D --> E{selectStrategy}
         E -- AI triage available --> F[score + sort by AI recommendation]
         E -- default --> H[sort by priority P0→P4]

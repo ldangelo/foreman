@@ -191,6 +191,15 @@ export class WorktreeManager {
     }
   }
 
+  #pruneWorktrees(repoPath: string): void {
+    try {
+      execFileSync("git", ["worktree", "prune"], { cwd: repoPath, stdio: "pipe" });
+    } catch {
+      // Best-effort cleanup only. Worktree creation below will surface any
+      // remaining git errors with task-specific context.
+    }
+  }
+
   /**
    * Get the worktree directory for a specific project+bead.
    */
@@ -228,6 +237,12 @@ export class WorktreeManager {
 
     // Ensure parent directory exists
     mkdirSync(this.getProjectRoot(projectId), { recursive: true, mode: 0o700 });
+
+    // Remove stale worktree registrations before creating/attaching. A reset can
+    // delete the workspace directory while git still believes the branch is
+    // checked out at the old path; without pruning, `git branch -f` refuses to
+    // reset that branch and daemon dispatch silently skips the task.
+    this.#pruneWorktrees(resolvedRepoPath);
 
     // If worktree already exists — reuse it with rebase
     if (existsSync(worktreePath)) {

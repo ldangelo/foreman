@@ -129,6 +129,8 @@ foreman task approve <task-id>
 foreman run --project my-project
 ```
 
+Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers stay queued until the blocker closes. The daemon uses the same queue and writes dispatch/skip summaries to its logs so stalled cycles are diagnosable.
+
 Useful variants:
 
 ```bash

@@ -1013,6 +1013,33 @@ export class PostgresAdapter {
   }
 
   /**
+   * List ready tasks whose blockers are all closed.
+   *
+   * A task can remain in the native `ready` state while dependency links express
+   * that another task must close first. Dispatchers must use this query rather
+   * than raw status filtering so dependency-blocked ready tasks are not claimed.
+   */
+  async listDispatchableReadyTasks(projectId: string, limit = 1000): Promise<TaskRow[]> {
+    return query<TaskRow>(
+      `SELECT t.*
+       FROM tasks t
+       WHERE t.project_id = $1
+         AND t.status = 'ready'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM task_dependencies td
+           JOIN tasks blocker ON blocker.id = td.from_task_id
+           WHERE td.to_task_id = t.id
+             AND blocker.project_id = $1
+             AND blocker.status <> 'closed'
+         )
+       ORDER BY t.priority ASC, t.created_at ASC
+       LIMIT $2`,
+      [projectId, limit],
+    );
+  }
+
+  /**
    * List tasks that need human attention.
    *
    * Includes: backlog (not approved), conflict, failed, stuck, blocked.

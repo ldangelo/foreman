@@ -72,6 +72,35 @@ describe("WorktreeManager", () => {
     expect(git(repo, ["rev-parse", "main"])).toBe(newHead);
   });
 
+  it("prunes stale git worktree registrations before reusing a leftover branch", async () => {
+    const repo = join(tmpDir("foreman-repo-"), "repo");
+    execFileSync("git", ["init", "--initial-branch=main", repo], { stdio: "pipe" });
+    git(repo, ["config", "user.email", "test@example.com"]);
+    git(repo, ["config", "user.name", "Test User"]);
+    const head = commitFile(repo, "file.txt", "initial\n", "initial");
+
+    const root = join(tmpDir("foreman-worktrees-"), "worktrees");
+    const manager = new WorktreeManager({ root });
+    const first = await manager.createWorktree({
+      projectId: "proj",
+      beadId: "seed-1",
+      repoPath: repo,
+      baseBranch: "main",
+    });
+    rmSync(first.path, { recursive: true, force: true });
+    expect(git(repo, ["worktree", "list", "--porcelain"])).toContain("prunable");
+
+    const second = await manager.createWorktree({
+      projectId: "proj",
+      beadId: "seed-1",
+      repoPath: repo,
+      baseBranch: "main",
+    });
+
+    expect(existsSync(second.path)).toBe(true);
+    expect(git(second.path, ["rev-parse", "HEAD"])).toBe(head);
+  });
+
   it("resets leftover branches to the fetched origin target before attaching", async () => {
     const remote = join(tmpDir("foreman-remote-"), "repo.git");
     execFileSync("git", ["init", "--bare", "--initial-branch=main", remote], { stdio: "pipe" });

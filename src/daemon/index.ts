@@ -574,10 +574,7 @@ export class ForemanDaemon {
           },
           nativeTaskOps: {
             hasNativeTasks: async () => pg.hasNativeTasks(project.id),
-            getReadyTasks: async () => (await pg.listTasks(project.id, {
-              status: ["ready"],
-              limit: 1000,
-            })) as never,
+            getReadyTasks: async () => (await pg.listDispatchableReadyTasks(project.id, 1000)) as never,
             getTaskByExternalId: async (externalId: string) => (await pg.getTaskByExternalId(project.id, externalId)) as never,
             getTaskById: async (taskId: string) => (await pg.getTask(project.id, taskId)) as never,
             claimTask: async (taskId: string, runId: string) => pg.claimTask(project.id, taskId, runId),
@@ -644,9 +641,21 @@ export class ForemanDaemon {
         // (Interactive `foreman run` leaves this unset to keep branch stacking.)
         const result = await dispatcher.dispatch({ maxAgents, assumeDefaultBranch: true });
 
-        if (result.dispatched.length > 0) {
+        const dispatched = result.dispatched ?? [];
+        const skipped = result.skipped ?? [];
+        if (dispatched.length > 0) {
           this.fastify.log.info(
-            `[ForemanDaemon] Dispatched ${result.dispatched.length} task(s) for project "${project.name}"`
+            `[ForemanDaemon] Dispatched ${dispatched.length} task(s) for project "${project.name}": ${dispatched.map((task) => task.seedId).join(", ")}`
+          );
+        } else {
+          this.fastify.log.info(
+            `[ForemanDaemon] No tasks dispatched for project "${project.name}" (activeAgents: ${result.activeAgents ?? "unknown"})`
+          );
+        }
+
+        if (skipped.length > 0) {
+          this.fastify.log.info(
+            `[ForemanDaemon] Skipped ${skipped.length} task(s) for project "${project.name}": ${skipped.map((task) => `${task.seedId} — ${task.reason}`).join("; ")}`
           );
         }
 
