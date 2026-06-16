@@ -2,7 +2,7 @@
 document_id: TRD-2026-014
 prd_reference: PRD-2026-014
 prd_path: docs/PRD/PRD-2026-014-elixir-backend-orchestration.md
-version: 1.0.3
+version: 1.0.4
 status: Draft
 date: 2026-06-16
 design_readiness_score: 4.75
@@ -834,33 +834,34 @@ team:
     cross_cutting_count: 18
     dependency_depth: 8
   roles:
-    lead:
+    - name: lead
       agent: planner
       owns:
         - task-selection
         - architecture-review
         - dependency-sequencing
         - final-approval
-    builders:
-      - agent: worker
-        owns:
-          - implementation
-        domains:
-          - runtime-otp
-          - data-cqrs
-          - cli-api
-          - worker-provider
-          - vcs-pr
-          - integrations
-          - security-ops
-          - docs-testing
-    reviewer:
+    - name: builder
+      agents:
+        - worker
+      owns:
+        - implementation
+      domains:
+        - runtime-otp
+        - data-cqrs
+        - cli-api
+        - worker-provider
+        - vcs-pr
+        - integrations
+        - security-ops
+        - docs-testing
+    - name: reviewer
       agent: reviewer
       owns:
         - code-review
         - architecture-consistency-review
         - traceability-review
-    qa:
+    - name: qa
       agent: worker
       owns:
         - test-implementation
@@ -1092,3 +1093,4 @@ Traceability check: 25 requirements covered, 0 uncovered, 0 orphaned annotations
 | 2026-06-16 | 1.0.1 | Pi Agent | Clarified conditional architecture gate, API/event/worker contracts, recovery rules, dependency parallelization, team config, test specificity, and AC-level coverage notes |
 | 2026-06-16 | 1.0.2 | Pi Agent | Added fixture schemas, integration and VCS/PR contracts, quality requirements, concrete AC-to-task coverage, refined team metrics, and further dependency parallelization |
 | 2026-06-16 | 1.0.3 | Pi Agent | Converted Master Task List to parser-compatible checkbox task format for implement-trd-beads |
+| 2026-06-16 | 1.0.4 | Pi Agent | Converted Team Configuration to implement-trd-beads role-list schema and added local agent registry entries |
