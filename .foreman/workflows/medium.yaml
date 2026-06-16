@@ -1,13 +1,7 @@
-# Feature workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
-#
-# Full feature development pipeline. Identical to the default workflow but
-# explicitly selects this workflow when bead type is "feature".
-#
-# Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
-# Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
-
-name: feature
-merge: auto
+# Medium workflow: one implementation lane and one validation lane.
+# Intended for tasks that need a bit of exploration and independent verification
+# without the full pipeline overhead.
+name: medium
 onError: stop
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -16,28 +10,14 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
-rebaseAfterPhase: developer
 
 phases:
-  - name: explorer
-    prompt: explorer.md
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 30
-    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
-    skipIfArtifact: EXPLORER_REPORT.md
-    mail:
-      onStart: true
-      onComplete: true
-      forwardArtifactTo: developer
-
   - name: developer
     prompt: developer.md
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 120
+    maxTurns: 55
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -65,23 +45,8 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 60
+    maxTurns: 20
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
-    verdict: true
-    retryWith: developer
-    retryOnFail: 2
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: developer
-
-  - name: reviewer
-    prompt: reviewer.md
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 50
-    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -89,13 +54,13 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
-      forwardArtifactTo: foreman
 
   - name: finalize
     prompt: finalize.md
     models:
-      default: haiku
-    maxTurns: 60
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 20
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true
     retryWith: developer
@@ -104,12 +69,3 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
-
-onFailure:
-  name: troubleshooter
-  prompt: troubleshooter.md
-  models:
-    default: MiniMax
-    P0: MiniMax-highspeed
-  maxTurns: 20
-  artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

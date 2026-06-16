@@ -1,14 +1,16 @@
-# Task workflow: fix prompt → developer remediation → validation → finalize → auto-merge
+# Bug fix workflow: fix prompt → QA validation → developer remediation on failure → finalize → PR checks → auto-merge
 #
-# Standard task pipeline. Slightly lighter than feature: skips dedicated
-# explorer/reviewer phases. Appropriate for well-scoped implementation tasks,
-# improvements, and non-feature work that still benefits from validation.
+# Lean bug-fix pipeline:
+#   - fix prompt — workflow-scoped issue fixing prompt
+#   - qa phase — validates the fix and writes QA_REPORT.md
+#   - developer prompt — retry-only target for QA/review/finalize findings
+#   - merge: auto — auto-merge on green CI and PR review
 #
-# Auto-selected when bead type is "task".
+# Auto-selected when a bead has type "bug" (TRD-006 type-based dispatch).
+# Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
 
-name: task
+name: bug
 merge: auto
-onError: stop
 setup:
   - command: npm install --prefer-offline --no-audit
     description: Install Node.js dependencies
@@ -16,7 +18,6 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
-rebaseAfterPhase: developer
 
 phases:
   # ── Phase 1: fix ────────────────────────────────────────────────────────
@@ -25,25 +26,12 @@ phases:
   - name: fix
     prompt: fix-issue.md
     tools:
-      allowed:
-        [
-          Agent,
-          Bash,
-          Edit,
-          Glob,
-          Grep,
-          Read,
-          TaskOutput,
-          TaskStop,
-          TodoWrite,
-          WebFetch,
-          WebSearch,
-          Write,
-        ]
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 180
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 80
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -57,25 +45,12 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed:
-        [
-          Agent,
-          Bash,
-          Edit,
-          Glob,
-          Grep,
-          Read,
-          TaskOutput,
-          TaskStop,
-          TodoWrite,
-          WebFetch,
-          WebSearch,
-          Write,
-        ]
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 180
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 120
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -84,6 +59,7 @@ phases:
       reserve: true
       leaseSecs: 600
 
+  # ── Phase 3: QA validation ──────────────────────────────────────────────
   - name: documentation
     prompt: documentation.md
     tools:
@@ -101,10 +77,11 @@ phases:
   - name: qa
     prompt: qa.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
+      allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
-      P0: MiniMax-highspeed
+      P0: MiniMax
+      P4: MiniMax
     maxTurns: 60
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
@@ -115,56 +92,42 @@ phases:
       onComplete: true
       onFail: developer
 
-  - name: reviewer
-    prompt: reviewer.md
-    tools:
-      allowed: [Glob, Grep, Read, Write]
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 80
-    artifact: "{task.projectReportsDir}/REVIEW.md"
-    verdict: true
-    retryWith: developer
-    retryOnFail: 1
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: developer
-      forwardArtifactTo: foreman
-
-  # ── Phase 3: cli-review (builtin) ───────────────────────────────────────
+  # ── Phase 4: cli-review (builtin) ───────────────────────────────────────
+  # Run CodeRabbit CLI before finalize so the developer remediation loop can
+  # address findings before PR creation and merge gates.
   - name: cli-review
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
     verdict: true
     retryWith: developer
-    retryOnFail: 3
+    retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
       onFail: developer
 
-  # ── Phase 4: finalize (prompt phase) ───────────────────────────────────
+  # ── Phase 5: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
+  # artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md" is what the pipeline reads for the validation
+  # contract check (Target Integration / Test Validation sections + Verdict).
+  # FINALIZE_REPORT.md is also written by the agent as a human-readable summary.
   - name: finalize
-    prompt: finalize.md
+    prompt: finalize-bug.md
     tools:
       allowed: [Bash, Glob, Grep, Read, Write]
     models:
       default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 60
+    maxTurns: 30
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true
     retryWith: developer
-    retryOnFail: 3
+    retryOnFail: 1
     mail:
       onStart: false
       onComplete: true
       onFail: developer
-
+      forwardArtifactTo: foreman
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
@@ -177,7 +140,7 @@ phases:
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
     retryWith: developer
-    retryOnFail: 3
+    retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
@@ -213,11 +176,3 @@ phases:
     mail:
       onStart: true
       onComplete: true
-onFailure:
-  name: troubleshooter
-  prompt: troubleshooter.md
-  models:
-    default: MiniMax
-    P0: MiniMax-highspeed
-  maxTurns: 20
-  artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

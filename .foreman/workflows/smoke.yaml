@@ -1,14 +1,10 @@
-# Feature workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
+# Smoke workflow: lightweight pipeline using Haiku for all phases.
 #
-# Full feature development pipeline. Identical to the default workflow but
-# explicitly selects this workflow when bead type is "feature".
+# Used when a bead has the `workflow:smoke` label or type "smoke".
+# Designed for fast, low-cost validation — not for production tasks.
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
-# Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
-
-name: feature
-merge: auto
-onError: stop
+name: smoke
 setup:
   - command: npm install --prefer-offline --no-audit
     description: Install Node.js dependencies
@@ -16,15 +12,12 @@ setup:
 setupCache:
   key: package-lock.json
   path: node_modules
-rebaseAfterPhase: developer
-
 phases:
   - name: explorer
     prompt: explorer.md
     models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 30
+      default: haiku
+    maxTurns: 5
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: EXPLORER_REPORT.md
     mail:
@@ -35,16 +28,12 @@ phases:
   - name: developer
     prompt: developer.md
     models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 120
+      default: haiku
+    maxTurns: 5
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
-    files:
-      reserve: true
-      leaseSecs: 600
 
   - name: documentation
     prompt: documentation.md
@@ -63,9 +52,8 @@ phases:
   - name: qa
     prompt: qa.md
     models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 60
+      default: haiku
+    maxTurns: 5
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
@@ -78,9 +66,8 @@ phases:
   - name: reviewer
     prompt: reviewer.md
     models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 50
+      default: sonnet
+    maxTurns: 5
     artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
@@ -95,7 +82,7 @@ phases:
     prompt: finalize.md
     models:
       default: haiku
-    maxTurns: 60
+    maxTurns: 10
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true
     retryWith: developer
@@ -104,12 +91,3 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
-
-onFailure:
-  name: troubleshooter
-  prompt: troubleshooter.md
-  models:
-    default: MiniMax
-    P0: MiniMax-highspeed
-  maxTurns: 20
-  artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

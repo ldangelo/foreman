@@ -1,13 +1,19 @@
-# Feature workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
+# Default workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
 #
-# Full feature development pipeline. Identical to the default workflow but
-# explicitly selects this workflow when bead type is "feature".
+# This is the standard Foreman pipeline. All bead types except "smoke" use
+# this workflow unless overridden by a `workflow:<name>` label.
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
 # Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
-
-name: feature
-merge: auto
+#
+# Optional: specify VCS backend for this workflow.
+# Overrides project-level .foreman/config.yaml if set.
+# Values: 'auto' (detect from repo), 'git', 'jujutsu'.
+# When absent, project config or auto-detection is used.
+#
+# vcs:
+#   backend: auto
+name: default
 onError: stop
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -37,7 +43,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 120
+    maxTurns: 80
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
