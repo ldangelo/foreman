@@ -376,7 +376,14 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_domain_event(projection, %{type: type, payload: payload})
-       when type in ["WorkerFailureSimulated", "WorkerRecoveryRequired"] do
+       when type in [
+              "WorkerFailureSimulated",
+              "WorkerRecoveryRequired",
+              "ExternalWorkerObserved",
+              "WorkerReattached",
+              "WorkerRestarted",
+              "NeedsOperator"
+            ] do
     update_in(
       projection,
       [:recovery_events],

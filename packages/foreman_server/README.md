@@ -18,6 +18,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - provider adapter registry with Pi SDK as the only v1 production adapter: `ForemanServer.ProviderRegistry`
 - workflow YAML interpreter and phase executor: `ForemanServer.WorkflowInterpreter`
 - deterministic orchestration simulation harness: `ForemanServer.SimulationHarness`
+- worker recovery and external-state reconciliation engine: `ForemanServer.RecoveryEngine`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`

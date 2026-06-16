@@ -571,7 +571,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 4: Recovery, VCS, PR Gates, and Inbox
 
 **Shippable State:** Users can recover crashed workers, manage worktrees, observe PR gate state, and exchange inbox messages from event-backed views.
-- [ ] **TRD-015**: Implement worker recovery and external-state reconciliation engine (6h) [satisfies REQ-012] [depends: TRD-011]
+- [x] **TRD-015**: Implement worker recovery and external-state reconciliation engine (6h) [satisfies REQ-012] [depends: TRD-011]
 
 **Description:** Implement worker recovery and external-state reconciliation engine with production code, migration-safe boundaries, and operator-visible behavior.
 
