@@ -524,7 +524,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-012-TEST**: Verify Implement provider adapter registry with Pi-only production enforcement for v1 (3h) [verifies TRD-012] [satisfies REQ-007] [depends: TRD-012]
+- [x] **TRD-012-TEST**: Verify Implement provider adapter registry with Pi-only production enforcement for v1 (3h) [verifies TRD-012] [satisfies REQ-007] [depends: TRD-012]
 
 **Description:** Add unit/integration tests that verify AC-007-1, AC-007-2, AC-007-3 for TRD-012.
 
