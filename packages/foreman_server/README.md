@@ -10,6 +10,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - versioned event encoding/decoding: `ForemanServer.EventCodec`
 - Postgres schema contract: `priv/repo/migrations/001_create_event_store.sql`
 - CQRS projection pipeline and rebuild entry point: `ForemanServer.ProjectionStore` / `ForemanServer.EventStore.rebuild_projections/0`
+- authenticated JSON HTTP command API: `ForemanServer.Http.Router`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - minimal command boundary: `ForemanServer.CommandRouter`

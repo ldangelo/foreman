@@ -378,7 +378,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-005**: Implement authenticated HTTP server API and Node CLI client transport (5h) [satisfies REQ-004, REQ-023] [depends: TRD-002, TRD-004]
+- [x] **TRD-005**: Implement authenticated HTTP server API and Node CLI client transport (5h) [satisfies REQ-004, REQ-023] [depends: TRD-002, TRD-004]
 
 **Description:** Implement authenticated HTTP server API and Node CLI client transport with production code, migration-safe boundaries, and operator-visible behavior.
 
