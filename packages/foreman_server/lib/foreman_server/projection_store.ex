@@ -124,6 +124,8 @@ defmodule ForemanServer.ProjectionStore do
       worker_sequences: %{},
       worker_heartbeats: %{},
       recovery_events: [],
+      worktrees: %{},
+      vcs_operations: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -388,6 +390,41 @@ defmodule ForemanServer.ProjectionStore do
       projection,
       [:recovery_events],
       &((&1 || []) ++ [Map.put(payload, :event_type, type)])
+    )
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "WorktreeCreated",
+         payload: %{run_id: run_id} = payload
+       }) do
+    projection
+    |> put_in([:worktrees, run_id], payload)
+    |> put_in(
+      [:vcs_operations, payload.operation_id],
+      Map.put(payload, :event_type, "WorktreeCreated")
+    )
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "WorktreeCleaned",
+         payload: %{run_id: run_id} = payload
+       }) do
+    projection
+    |> update_in([:worktrees], &Map.delete(&1 || %{}, run_id))
+    |> put_in(
+      [:vcs_operations, payload.operation_id],
+      Map.put(payload, :event_type, "WorktreeCleaned")
+    )
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "VcsMergeRequested",
+         payload: payload
+       }) do
+    put_in(
+      projection,
+      [:vcs_operations, payload.operation_id],
+      Map.put(payload, :event_type, "VcsMergeRequested")
     )
   end
 

@@ -19,6 +19,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - workflow YAML interpreter and phase executor: `ForemanServer.WorkflowInterpreter`
 - deterministic orchestration simulation harness: `ForemanServer.SimulationHarness`
 - worker recovery and external-state reconciliation engine: `ForemanServer.RecoveryEngine`
+- event-owned Git/Jujutsu VCS and worktree adapter boundary: `ForemanServer.VcsAdapter`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`
