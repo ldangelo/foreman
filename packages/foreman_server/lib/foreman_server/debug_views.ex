@@ -10,6 +10,12 @@ defmodule ForemanServer.DebugViews do
     access_token api_key apikey authorization auth_token client_secret password secret token
   ))
 
+  @secret_key_pattern @secret_key_names
+                      |> MapSet.to_list()
+                      |> Enum.sort_by(&byte_size/1, :desc)
+                      |> Enum.map(&Regex.escape/1)
+                      |> Enum.join("|")
+
   @log_event_types MapSet.new([
                      "WorkerStdout",
                      "WorkerStderr",
@@ -268,9 +274,9 @@ defmodule ForemanServer.DebugViews do
     value = Regex.replace(~r/\bbearer\s+[^\s,&;]+/i, value, "Bearer #{@redacted}")
 
     Regex.replace(
-      ~r/\b(token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,&;]+/i,
+      ~r/(^|[^\w])(["']?)(#{@secret_key_pattern})\2\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,&;}]+)/i,
       value,
-      fn _match, key -> "#{key}=#{@redacted}" end
+      fn _match, prefix, quote, key -> "#{prefix}#{quote}#{key}#{quote}=#{@redacted}" end
     )
   end
 

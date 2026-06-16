@@ -120,7 +120,7 @@ defmodule ForemanServer.Http.RouterTest do
       worker_id: "worker-http-unicode",
       output:
         String.duplicate("🔐", 2_000) <>
-          " token: http-token password: hunter2 Authorization: Bearer bearer-token",
+          " token: http-token access_token=http-access auth_token: http-auth client_secret=http-client password: hunter2 Authorization: Bearer bearer-token {\"token\":\"http-json-token\"} {\"client_secret\": \"http-json-client\"}",
       sequence: 1
     })
 
@@ -138,7 +138,16 @@ defmodule ForemanServer.Http.RouterTest do
     assert String.valid?(output)
     assert String.ends_with?(output, "...[truncated]")
 
-    for secret <- ["http-token", "hunter2", "bearer-token"] do
+    for secret <- [
+          "http-token",
+          "http-access",
+          "http-auth",
+          "http-client",
+          "hunter2",
+          "bearer-token",
+          "http-json-token",
+          "http-json-client"
+        ] do
       refute raw_conn.resp_body =~ secret
     end
   end

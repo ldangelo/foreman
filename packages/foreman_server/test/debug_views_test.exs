@@ -124,7 +124,7 @@ defmodule ForemanServer.DebugViewsTest do
       worker_id: "worker-secret",
       output:
         large_output <>
-          " token=abc123 token: colon-token Authorization: Bearer auth-token secret: sss",
+          " token=abc123 token: colon-token access_token=atok auth_token: authv Authorization: Bearer auth-token secret: sss {\"token\":\"jsonsecret\"}",
       details: %{password: "super-secret"},
       sequence: 1
     })
@@ -133,7 +133,8 @@ defmodule ForemanServer.DebugViewsTest do
       run_id: "run-secret",
       phase_id: "developer",
       worker_id: "worker-secret",
-      output: "stderr api_key=abc123 api_key: colon-key password: hunter2 Bearer loose-token",
+      output:
+        "stderr api_key=abc123 api_key: colon-key client_secret=csec password: hunter2 Bearer loose-token {\"client_secret\": \"json-client-secret\"}",
       sequence: 2
     })
 
@@ -141,7 +142,8 @@ defmodule ForemanServer.DebugViewsTest do
       run_id: "run-secret",
       phase_id: "developer",
       worker_id: "worker-secret",
-      message: "assistant password=hunter2 password: colon-password",
+      message:
+        "assistant password=hunter2 password: colon-password access_token=assistant-access auth_token: assistant-auth {\"token\":\"assistant-json-token\"}",
       sequence: 3
     })
 
@@ -157,6 +159,14 @@ defmodule ForemanServer.DebugViewsTest do
       sequence: 4
     })
 
+    append_run_event("PhaseFailed", %{
+      run_id: "run-secret",
+      phase_id: "developer",
+      reason:
+        "failed with client_secret=debug-client-secret {\"client_secret\": \"debug-json-client\"}",
+      status: "failed"
+    })
+
     assert {:ok, compact} = DebugViews.logs("run-secret", mode: :compact)
     messages = Enum.map(compact.entries, & &1.message)
 
@@ -164,9 +174,17 @@ defmodule ForemanServer.DebugViewsTest do
           "abc123",
           "hunter2",
           "colon-token",
+          "atok",
+          "authv",
           "auth-token",
           "colon-key",
+          "csec",
+          "jsonsecret",
+          "json-client-secret",
           "colon-password",
+          "assistant-access",
+          "assistant-auth",
+          "assistant-json-token",
           "loose-token"
         ] do
       refute Enum.any?(messages, &String.contains?(&1, secret))
@@ -182,12 +200,20 @@ defmodule ForemanServer.DebugViewsTest do
 
     assert String.ends_with?(stdout.payload.output, "...[truncated]")
     refute stdout.payload.output =~ "abc123"
+    refute stdout.payload.output =~ "atok"
+    refute stdout.payload.output =~ "authv"
+    refute stdout.payload.output =~ "jsonsecret"
     refute stderr.payload.output =~ "colon-key"
+    refute stderr.payload.output =~ "csec"
+    refute stderr.payload.output =~ "json-client-secret"
     refute stderr.payload.output =~ "loose-token"
     assert stderr.payload.output =~ "api_key=[REDACTED]"
     assert stderr.payload.output =~ "password=[REDACTED]"
     assert stderr.payload.output =~ "Bearer [REDACTED]"
     refute assistant.payload.message =~ "colon-password"
+    refute assistant.payload.message =~ "assistant-access"
+    refute assistant.payload.message =~ "assistant-auth"
+    refute assistant.payload.message =~ "assistant-json-token"
     assert assistant.payload.message =~ "password=[REDACTED]"
     assert tool.payload.details.client_secret == "[REDACTED]"
     assert tool.payload.metadata.authorization == "[REDACTED]"
@@ -199,9 +225,19 @@ defmodule ForemanServer.DebugViewsTest do
           "abc123",
           "hunter2",
           "colon-token",
+          "atok",
+          "authv",
           "auth-token",
           "colon-key",
+          "csec",
+          "jsonsecret",
+          "json-client-secret",
           "colon-password",
+          "assistant-access",
+          "assistant-auth",
+          "assistant-json-token",
+          "debug-client-secret",
+          "debug-json-client",
           "loose-token"
         ] do
       refute inspect(debug) =~ secret
