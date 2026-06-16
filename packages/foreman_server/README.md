@@ -15,6 +15,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - run and phase OTP actors: `ForemanServer.RunActor` / `ForemanServer.PhaseActor`
 - supervised scheduler and capacity checks: `ForemanServer.Scheduler`
 - Node/Pi worker HTTP protocol: `/worker/v1/phases/:phase_id/start`, `/worker/v1/events`, `/worker/v1/heartbeat`
+- provider adapter registry with Pi SDK as the only v1 production adapter: `ForemanServer.ProviderRegistry`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`

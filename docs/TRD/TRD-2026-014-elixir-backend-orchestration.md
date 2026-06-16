@@ -514,7 +514,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-012**: Implement provider adapter registry with Pi-only production enforcement for v1 (4h) [satisfies REQ-007] [depends: TRD-011]
+- [x] **TRD-012**: Implement provider adapter registry with Pi-only production enforcement for v1 (4h) [satisfies REQ-007] [depends: TRD-011]
 
 **Description:** Implement provider adapter registry with Pi-only production enforcement for v1 with production code, migration-safe boundaries, and operator-visible behavior.
 

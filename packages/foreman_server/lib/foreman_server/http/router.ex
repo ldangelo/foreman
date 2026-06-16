@@ -81,6 +81,13 @@ defmodule ForemanServer.Http.Router do
       {:error, {:missing_or_invalid, key}} ->
         send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
 
+      {:error, {code, value, message}}
+      when code in [:unsupported_provider, :adapter_not_production_ready] ->
+        send_error(conn, 400, "VALIDATION_FAILED", message, false, %{provider: value})
+
+      {:error, {:unsupported_tools, tools, message}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", message, false, %{unsupported_tools: tools})
+
       {:error, reason} ->
         send_error(conn, 500, "INTERNAL", inspect(reason), true)
     end

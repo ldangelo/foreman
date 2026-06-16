@@ -1,7 +1,7 @@
 defmodule ForemanServer.WorkerProtocol do
   @moduledoc "HTTP-facing Node/Pi worker protocol: phase start, events, and heartbeat."
 
-  alias ForemanServer.{EventStore, ProjectionStore}
+  alias ForemanServer.{EventStore, ProjectionStore, ProviderRegistry}
 
   @spec start_phase(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def start_phase(phase_id, payload) when is_binary(phase_id) and is_map(payload) do
@@ -10,12 +10,18 @@ defmodule ForemanServer.WorkerProtocol do
     worker_id = Map.get(payload, :worker_id, "worker-#{phase_id}")
 
     with {:ok, run_id} <- required_binary(run_id, :run_id),
-         {:ok, worker_id} <- required_binary(worker_id, :worker_id) do
+         {:ok, worker_id} <- required_binary(worker_id, :worker_id),
+         {:ok, adapter} <-
+           ProviderRegistry.resolve(%{
+             provider: Map.get(payload, :adapter, Map.get(payload, :provider, "pi_sdk")),
+             model: Map.get(payload, :model),
+             tool_names: Map.get(payload, :tool_names, [])
+           }) do
       append_worker_event("WorkerStarted", %{
         run_id: run_id,
         phase_id: phase_id,
         worker_id: worker_id,
-        adapter: Map.get(payload, :adapter, "pi_sdk"),
+        adapter: adapter.id,
         session_id: Map.get(payload, :session_id),
         prompt_path: Map.get(payload, :prompt_path),
         tool_names: Map.get(payload, :tool_names, []),
