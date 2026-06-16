@@ -133,6 +133,7 @@ defmodule ForemanServer.ProjectionStore do
       inbox_updates: [],
       integration_commands: %{},
       integration_dedupe: %{},
+      logs_by_run: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -441,9 +442,27 @@ defmodule ForemanServer.ProjectionStore do
        ) do
     projection
     |> put_worker_sequence(payload)
+    |> put_log_entry("ToolCallFinished", payload)
     |> update_run(run_id, fn run ->
       update_in(run, [:tool_events], &((&1 || []) ++ [payload]))
       |> update_in([:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: type,
+           payload: %{run_id: run_id, worker_id: worker_id} = payload
+         },
+         _mode
+       )
+       when type in ["WorkerStdout", "WorkerStderr", "AssistantMessage"] do
+    projection
+    |> put_worker_sequence(payload)
+    |> put_log_entry(type, payload)
+    |> update_run(run_id, fn run ->
+      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
     end)
   end
 
@@ -697,6 +716,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp put_worker_sequence(projection, _payload), do: projection
+
+  defp put_log_entry(projection, type, %{run_id: run_id} = payload) do
+    entry = Map.put(payload, :event_type, type)
+    update_in(projection, [:logs_by_run, run_id], &((&1 || []) ++ [entry]))
+  end
 
   defp maybe_notify_inbox_watchers(:live, run_id, message),
     do: notify_inbox_watchers(run_id, message)

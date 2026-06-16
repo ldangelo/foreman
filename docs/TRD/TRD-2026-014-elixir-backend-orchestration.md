@@ -676,7 +676,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-020-TEST**: Verify Implement event-backed logs, reports, and debug timeline views (3h) [verifies TRD-020] [satisfies REQ-017] [depends: TRD-020]
+- [x] **TRD-020-TEST**: Verify Implement event-backed logs, reports, and debug timeline views (3h) [verifies TRD-020] [satisfies REQ-017] [depends: TRD-020]
 
 **Description:** Add unit/integration tests that verify AC-017-1, AC-017-2, AC-017-3 for TRD-020.
 
