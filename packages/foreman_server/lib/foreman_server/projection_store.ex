@@ -10,7 +10,7 @@ defmodule ForemanServer.ProjectionStore do
 
   @spec apply_event(map()) :: :ok
   def apply_event(event) when is_map(event) do
-    GenServer.cast(__MODULE__, {:apply_event, event})
+    GenServer.call(__MODULE__, {:apply_event, event})
   end
 
   @spec snapshot() :: map()
@@ -24,11 +24,10 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_cast({:apply_event, event}, projection) do
-    {:noreply, reduce_event(projection, event)}
+  def handle_call({:apply_event, event}, _from, projection) do
+    {:reply, :ok, reduce_event(projection, event)}
   end
 
-  @impl true
   def handle_call(:snapshot, _from, projection) do
     {:reply, projection, projection}
   end

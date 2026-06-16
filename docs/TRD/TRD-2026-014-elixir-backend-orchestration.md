@@ -334,7 +334,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-002-TEST**: Verify Create Elixir application shell and OTP supervision topology (3h) [verifies TRD-002] [satisfies REQ-001] [depends: TRD-002]
+- [x] **TRD-002-TEST**: Verify Create Elixir application shell and OTP supervision topology (3h) [verifies TRD-002] [satisfies REQ-001] [depends: TRD-002]
 
 **Description:** Add unit/integration tests that verify AC-001-1, AC-001-2, AC-001-3 for TRD-002.
 
