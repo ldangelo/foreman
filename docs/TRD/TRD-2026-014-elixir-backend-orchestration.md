@@ -619,7 +619,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-017-TEST**: Verify Implement PR gate and merge orchestration state machines (3h) [verifies TRD-017] [satisfies REQ-014] [depends: TRD-017]
+- [x] **TRD-017-TEST**: Verify Implement PR gate and merge orchestration state machines (3h) [verifies TRD-017] [satisfies REQ-014] [depends: TRD-017]
 
 **Description:** Add unit/integration tests that verify AC-014-1, AC-014-2, AC-014-3 for TRD-017.
 
