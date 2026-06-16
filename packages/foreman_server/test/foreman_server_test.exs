@@ -84,4 +84,109 @@ defmodule ForemanServerTest do
     assert snapshot.commands["cmd-restart"].command_type == "task.approve"
     assert snapshot.last_sequence == 1
   end
+
+  test "project registration projects path status default branch config and health" do
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:ok,
+            %{
+              event: %ForemanServer.Event{event_type: "ProjectRegistered"},
+              projection: projection
+            }} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project",
+               command_type: "project.register",
+               payload: %{
+                 project_id: "alpha",
+                 path: "/repo/alpha",
+                 status: "active",
+                 default_branch: "main",
+                 config: %{max_agents: 3},
+                 health: %{ok: true, checks: ["git"]}
+               }
+             })
+
+    assert projection.projects["alpha"] == %{
+             project_id: "alpha",
+             path: "/repo/alpha",
+             status: "active",
+             default_branch: "main",
+             config: %{max_agents: 3},
+             health: %{ok: true, checks: ["git"]},
+             updated_at: projection.projects["alpha"].updated_at
+           }
+  end
+
+  test "task lifecycle commands update event and projection state atomically" do
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:ok, %{event: %ForemanServer.Event{event_type: "TaskCreated"}}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-task-create",
+               command_type: "task.create",
+               payload: %{task_id: "task-1", project_id: "alpha", title: "Build server"}
+             })
+
+    assert {:ok,
+            %{event: %ForemanServer.Event{event_type: "TaskUpdated"}, projection: projection}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-task-approve",
+               command_type: "task.approve",
+               payload: %{task_id: "task-1"}
+             })
+
+    assert projection.tasks["task-1"].status == "ready"
+
+    assert {:ok, %{projection: projection}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-task-note",
+               command_type: "task.annotate",
+               payload: %{task_id: "task-1", body: "ready for dispatch", author: "test"}
+             })
+
+    assert [%{body: "ready for dispatch", author: "test"}] =
+             projection.tasks["task-1"].annotations
+
+    assert {:ok, %{projection: projection}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-task-close",
+               command_type: "task.close",
+               payload: %{task_id: "task-1"}
+             })
+
+    assert projection.tasks["task-1"].status == "closed"
+  end
+
+  test "dispatchable tasks exclude ready tasks with open blockers" do
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:ok, _} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-blocker",
+               command_type: "task.create",
+               payload: %{task_id: "blocker", status: "ready"}
+             })
+
+    assert {:ok, _} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-dependent",
+               command_type: "task.create",
+               payload: %{task_id: "dependent", status: "ready", dependencies: ["blocker"]}
+             })
+
+    assert Enum.map(ForemanServer.ProjectionStore.dispatchable_tasks(), & &1.task_id) == [
+             "blocker"
+           ]
+
+    assert {:ok, _} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-close-blocker",
+               command_type: "task.close",
+               payload: %{task_id: "blocker"}
+             })
+
+    assert Enum.map(ForemanServer.ProjectionStore.dispatchable_tasks(), & &1.task_id) == [
+             "dependent"
+           ]
+  end
 end

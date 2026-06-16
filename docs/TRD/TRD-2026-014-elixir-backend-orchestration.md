@@ -447,7 +447,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-008-TEST**: Verify Implement task and project command handlers with atomic projections (3h) [verifies TRD-008] [satisfies REQ-010] [depends: TRD-008]
+- [x] **TRD-008-TEST**: Verify Implement task and project command handlers with atomic projections (3h) [verifies TRD-008] [satisfies REQ-010] [depends: TRD-008]
 
 **Description:** Add unit/integration tests that verify AC-010-1, AC-010-2, AC-010-3 for TRD-008.
 
