@@ -211,6 +211,8 @@ foreman sentinel stop --force
 | `--failure-threshold <n>` | `2` | Consecutive failures before bug |
 | `--dry-run` | — | Simulate |
 
+Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sentinel-pass`, and `sentinel-fail` events for audit/watch surfaces.
+
 **`sentinel status` options:**
 
 | Option | Default | Description |

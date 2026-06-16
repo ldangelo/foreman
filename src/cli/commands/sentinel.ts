@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import { createTaskClient } from "../../lib/task-client-factory.js";
@@ -47,8 +50,9 @@ export function wrapPostgresSentinelStore(store: PostgresStore, projectId: strin
     close: () => store.close(),
     isOpen: () => store.isOpen(),
     logEvent: async (pid: string, eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail", data: Record<string, unknown>) => {
-      const runId = typeof data.runId === "string" ? data.runId : undefined;
-      return store.logEvent(pid, eventType, data, runId);
+      const sentinelRunId = typeof data.runId === "string" ? data.runId : undefined;
+      if (!sentinelRunId) return;
+      return store.recordSentinelEvent(pid, sentinelRunId, eventType, data);
     },
     recordSentinelRun: async (run: Parameters<ForemanStore["recordSentinelRun"]>[0]) => store.recordSentinelRun(projectId, run),
     updateSentinelRun: async (id: string, updates: Parameters<ForemanStore["updateSentinelRun"]>[1]) => store.updateSentinelRun(id, updates),
@@ -73,8 +77,6 @@ async function resolveProject(
 // ─────────────────────────────────────────────────────────────────────────────
 
 function getSentinelLockPath(projectId: string): string {
-  const { join } = require("node:path");
-  const { homedir } = require("node:os");
   return join(homedir(), ".foreman", "sentinels", `${projectId}.lock`);
 }
 
@@ -87,7 +89,6 @@ interface SentinelLock {
 }
 
 function readSentinelLock(projectId: string): SentinelLock | null {
-  const { readFileSync, existsSync } = require("node:fs");
   const lockPath = getSentinelLockPath(projectId);
   if (!existsSync(lockPath)) return null;
   try {
@@ -98,8 +99,6 @@ function readSentinelLock(projectId: string): SentinelLock | null {
 }
 
 function writeSentinelLock(projectId: string, lock: SentinelLock): void {
-  const { writeFileSync, mkdirSync, existsSync } = require("node:fs");
-  const { dirname } = require("node:path");
   const lockPath = getSentinelLockPath(projectId);
   const dir = dirname(lockPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -107,7 +106,6 @@ function writeSentinelLock(projectId: string, lock: SentinelLock): void {
 }
 
 function removeSentinelLock(projectId: string): void {
-  const { unlinkSync, existsSync } = require("node:fs");
   const lockPath = getSentinelLockPath(projectId);
   if (existsSync(lockPath)) {
     try {

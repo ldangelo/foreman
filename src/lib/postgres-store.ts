@@ -275,6 +275,20 @@ export class PostgresStore implements IStore {
     });
   }
 
+  async recordSentinelEvent(
+    projectId: string,
+    sentinelRunId: string,
+    eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail",
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    await this.adapter.recordSentinelEvent({
+      projectId,
+      sentinelRunId,
+      eventType,
+      payload: data,
+    });
+  }
+
   async getRunEvents(runId: string, eventType?: EventType): Promise<Array<{ id: string; event_type: string; data: string; created_at: string }>> {
     const rows = await this.adapter.listPipelineEvents(runId);
     return rows

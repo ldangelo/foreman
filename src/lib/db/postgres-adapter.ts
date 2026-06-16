@@ -172,7 +172,8 @@ export interface PipelineRunRow {
 export interface PipelineEventRow {
   id: string;
   project_id: string;
-  run_id: string;
+  run_id: string | null;
+  sentinel_run_id: string | null;
   task_id: string | null;
   event_type: string;
   payload: Record<string, unknown> | null;
@@ -2015,10 +2016,37 @@ export class PostgresAdapter {
     return rows[0];
   }
 
+  async recordSentinelEvent(data: {
+    projectId: string;
+    sentinelRunId: string;
+    eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail";
+    payload?: Record<string, unknown>;
+  }): Promise<PipelineEventRow> {
+    const rows = await query<PipelineEventRow>(
+      `INSERT INTO events (project_id, run_id, sentinel_run_id, task_id, event_type, payload, created_at)
+       VALUES ($1, NULL, $2, NULL, $3, $4, clock_timestamp())
+       RETURNING *`,
+      [
+        data.projectId,
+        data.sentinelRunId,
+        data.eventType,
+        data.payload ? JSON.stringify(data.payload) : null,
+      ]
+    );
+    return rows[0];
+  }
+
   async listPipelineEvents(runId: string): Promise<PipelineEventRow[]> {
     return query<PipelineEventRow>(
       `SELECT * FROM events WHERE run_id = $1 ORDER BY created_at ASC`,
       [runId]
+    );
+  }
+
+  async listSentinelEvents(sentinelRunId: string): Promise<PipelineEventRow[]> {
+    return query<PipelineEventRow>(
+      `SELECT * FROM events WHERE sentinel_run_id = $1 ORDER BY created_at ASC`,
+      [sentinelRunId]
     );
   }
 

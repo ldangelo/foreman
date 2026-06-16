@@ -98,14 +98,8 @@ export class SentinelAgent {
     const startedAt = new Date().toISOString();
     const startMs = Date.now();
 
-    // Log start event
-    await this.store.logEvent(this.projectId, "sentinel-start", {
-      runId,
-      branch: opts.branch,
-      testCommand: opts.testCommand,
-    });
-
-    // Insert a running record so status is visible immediately
+    // Insert a running record so status is visible immediately. Sentinel events
+    // reference sentinel_runs(id), so the run row must exist before logging.
     await this.store.recordSentinelRun({
       id: runId,
       project_id: this.projectId,
@@ -116,6 +110,13 @@ export class SentinelAgent {
       output: null,
       started_at: startedAt,
       completed_at: null,
+    });
+
+    // Log start event
+    await this.store.logEvent(this.projectId, "sentinel-start", {
+      runId,
+      branch: opts.branch,
+      testCommand: opts.testCommand,
     });
 
     let commitHash: string | null = null;

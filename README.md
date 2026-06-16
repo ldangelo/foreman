@@ -592,7 +592,7 @@ foreman worktree clean --all             # Remove all including active ones
 ```
 
 ### `foreman sentinel`
-QA sentinel for continuous testing on the main branch.
+QA sentinel for continuous testing on the main branch. Sentinel run history is stored in `sentinel_runs`, with start/pass/fail events recorded for observability.
 
 ```bash
 foreman sentinel run-once               # Run tests once and exit
