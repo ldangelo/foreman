@@ -7,8 +7,7 @@ defmodule ForemanServer do
   this application/supervision topology.
   """
 
-  alias ForemanServer.CommandRouter
-  alias ForemanServer.ProjectRegistry
+  alias ForemanServer.{CommandRouter, ProjectRegistry, RunActor}
 
   @doc "Returns currently supervised project IDs."
   @spec active_projects() :: [String.t()]
@@ -23,4 +22,12 @@ defmodule ForemanServer do
   end
 
   def handle_command(_command), do: {:error, :invalid_command}
+
+  @doc "Starts a supervised workflow run actor."
+  @spec start_run(map()) :: {:ok, pid()} | {:error, term()}
+  def start_run(spec) when is_map(spec), do: RunActor.start_run(spec)
+
+  @doc "Returns current run actor state if it is alive."
+  @spec run_state(String.t()) :: map() | nil
+  def run_state(run_id) when is_binary(run_id), do: RunActor.state(run_id)
 end

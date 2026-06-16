@@ -11,6 +11,7 @@ defmodule ForemanServer.Application do
       [
         {ProjectionStore, []},
         {EventStore, []},
+        {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
         {ProjectRegistry, []}
       ] ++ http_children()

@@ -12,6 +12,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - CQRS projection pipeline and rebuild entry point: `ForemanServer.ProjectionStore` / `ForemanServer.EventStore.rebuild_projections/0`
 - authenticated JSON HTTP command API: `ForemanServer.Http.Router`
 - project/task command handlers and projection reads (`/api/v1/projects`, `/api/v1/tasks`, `/api/v1/tasks/dispatchable`)
+- run and phase OTP actors: `ForemanServer.RunActor` / `ForemanServer.PhaseActor`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`
