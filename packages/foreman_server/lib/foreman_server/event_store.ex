@@ -48,6 +48,11 @@ defmodule ForemanServer.EventStore do
     GenServer.call(__MODULE__, {:stream, stream_id})
   end
 
+  @spec rebuild_projections() :: {:ok, map()}
+  def rebuild_projections do
+    GenServer.call(__MODULE__, :rebuild_projections)
+  end
+
   @impl true
   def init(_opts) do
     path = event_log_path()
@@ -83,6 +88,10 @@ defmodule ForemanServer.EventStore do
   def handle_call({:stream, stream_id}, _from, state) do
     events = Enum.filter(state.events, &(&1.stream_id == stream_id))
     {:reply, events, state}
+  end
+
+  def handle_call(:rebuild_projections, _from, state) do
+    {:reply, ProjectionStore.rebuild(state.events), state}
   end
 
   defp validate_stream_id(stream_id) when is_binary(stream_id) and stream_id != "", do: :ok
