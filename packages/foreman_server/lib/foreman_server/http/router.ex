@@ -184,6 +184,11 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  defp normalize_command(%{"command_type" => command_type} = params)
+       when command_type in ["ExternalTriggerCommand", "external.trigger"] do
+    {:ok, params}
+  end
+
   defp normalize_command(%{"command_id" => command_id, "command_type" => command_type} = params)
        when is_binary(command_id) and is_binary(command_type) do
     {:ok,

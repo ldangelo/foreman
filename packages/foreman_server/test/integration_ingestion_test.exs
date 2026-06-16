@@ -92,7 +92,41 @@ defmodule ForemanServer.IntegrationIngestionTest do
     assert snapshot.tasks[github_task].source == "github"
   end
 
-  test "external trigger command routes through integration ingestion" do
+  test "top-level external trigger command routes through integration ingestion" do
+    assert {:ok, %{event: event, integration: %{task_id: task_id, duplicate: false}}} =
+             CommandRouter.handle(%{
+               command_type: "ExternalTriggerCommand",
+               source: "github",
+               repo: "fortium/foreman",
+               event_id: "evt-command-top",
+               external_id: "18-top",
+               project_id: "foreman",
+               event_type: "opened",
+               url: "https://github.com/fortium/foreman/issues/18"
+             })
+
+    assert event.event_type == "IntegrationCommandIngested"
+    assert ProjectionStore.snapshot().tasks[task_id].source == "github"
+
+    assert ProjectionStore.snapshot().integration_dedupe["github:fortium/foreman:evt-command-top"].task_id ==
+             task_id
+
+    assert {:ok, %{integration: %{duplicate: true, existing: existing}}} =
+             CommandRouter.handle(%{
+               "command_type" => "ExternalTriggerCommand",
+               "source" => "github",
+               "repo" => "fortium/foreman",
+               "event_id" => "evt-command-top",
+               "external_id" => "18-top",
+               "project_id" => "foreman",
+               "event_type" => "opened",
+               "url" => "https://github.com/fortium/foreman/issues/18"
+             })
+
+    assert existing.task_id == task_id
+  end
+
+  test "envelope external trigger command routes through integration ingestion" do
     assert {:ok, %{event: event, integration: %{task_id: task_id, duplicate: false}}} =
              CommandRouter.handle(%{
                command_id: "cmd-ext-1",

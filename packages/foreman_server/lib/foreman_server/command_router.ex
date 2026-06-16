@@ -3,7 +3,18 @@ defmodule ForemanServer.CommandRouter do
 
   alias ForemanServer.{EventStore, IntegrationIngestion, ProjectionStore}
 
+  @external_trigger_types ["ExternalTriggerCommand", "external.trigger"]
+
   @spec handle(map()) :: {:ok, map()} | {:error, term()}
+  def handle(%{"command_type" => command_type} = command)
+      when command_type in @external_trigger_types do
+    command
+    |> normalize_payload()
+    |> Map.put(:command_type, command_type)
+    |> Map.put_new(:command_id, external_command_id(command))
+    |> handle()
+  end
+
   def handle(%{"command_id" => command_id, "command_type" => command_type} = command) do
     handle(%{
       command_id: command_id,
@@ -12,6 +23,17 @@ defmodule ForemanServer.CommandRouter do
       payload: Map.get(command, "payload", %{}),
       metadata: Map.get(command, "metadata", %{})
     })
+  end
+
+  def handle(%{command_type: command_type} = command)
+      when command_type in @external_trigger_types do
+    command_id = Map.get(command, :command_id) || external_command_id(command)
+    metadata = normalize_metadata(Map.put(command, :command_id, command_id))
+
+    command
+    |> external_trigger_payload()
+    |> Map.put_new(:command_id, command_id)
+    |> handle_external_trigger(metadata)
   end
 
   def handle(%{command_id: command_id, command_type: command_type} = command)
@@ -24,28 +46,19 @@ defmodule ForemanServer.CommandRouter do
 
     metadata = normalize_metadata(command)
 
-    case command_type do
-      "ExternalTriggerCommand" ->
-        handle_external_trigger(payload, metadata)
-
-      "external.trigger" ->
-        handle_external_trigger(payload, metadata)
-
-      _ ->
-        with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload),
-             {:ok, event} <-
-               EventStore.append(%{
-                 stream_id: stream_id,
-                 event_type: event_type,
-                 payload:
-                   event_payload
-                   |> Map.put_new(:command_id, command_id)
-                   |> Map.put_new(:updated_at, DateTime.utc_now()),
-                 metadata: metadata,
-                 correlation_id: Map.get(metadata, :correlation_id)
-               }) do
-          {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
-        end
+    with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload),
+         {:ok, event} <-
+           EventStore.append(%{
+             stream_id: stream_id,
+             event_type: event_type,
+             payload:
+               event_payload
+               |> Map.put_new(:command_id, command_id)
+               |> Map.put_new(:updated_at, DateTime.utc_now()),
+             metadata: metadata,
+             correlation_id: Map.get(metadata, :correlation_id)
+           }) do
+      {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
     end
   end
 
@@ -174,6 +187,38 @@ defmodule ForemanServer.CommandRouter do
     )
     |> Map.put_new(:source, "node-cli-boundary")
     |> Map.put_new(:idempotency_key, Map.get(command, :command_id))
+  end
+
+  defp external_trigger_payload(command) do
+    top_level =
+      command
+      |> normalize_payload()
+      |> Map.drop([:command_id, :command_type, :correlation_id, :metadata])
+
+    nested = normalize_payload(Map.get(command, :payload, %{}))
+
+    if map_size(nested) == 0 do
+      top_level
+    else
+      command
+      |> Map.has_key?(:command_id)
+      |> case do
+        true -> top_level |> Map.drop([:payload]) |> Map.merge(nested)
+        false -> Map.merge(top_level, nested)
+      end
+    end
+  end
+
+  defp external_command_id(command) do
+    normalized = normalize_payload(command)
+
+    Enum.find_value(
+      [:command_id, :idempotency_key, :dedupe_key, :event_id, :external_id],
+      fn key ->
+        value = Map.get(normalized, key)
+        if is_binary(value) and value != "", do: value
+      end
+    ) || "external-trigger:#{System.unique_integer([:positive])}"
   end
 
   defp normalize_payload(map) when is_map(map) do

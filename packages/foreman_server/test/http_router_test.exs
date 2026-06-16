@@ -57,6 +57,40 @@ defmodule ForemanServer.Http.RouterTest do
     assert body["correlation_id"] == "corr-http"
   end
 
+  test "authorized top-level external trigger command creates and dedupes integration task" do
+    command = top_level_external_trigger_command()
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 202
+    body = Jason.decode!(conn.resp_body)
+    assert body["ok"] == true
+    assert [_event_id] = body["events"]
+
+    task_id =
+      ProjectionStore.snapshot().integration_dedupe["github:fortium/foreman:evt-http-top"].task_id
+
+    assert ProjectionStore.snapshot().tasks[task_id].external_link ==
+             "https://github.com/fortium/foreman/issues/22"
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 202
+
+    assert ProjectionStore.snapshot().integration_dedupe["github:fortium/foreman:evt-http-top"].task_id ==
+             task_id
+  end
+
   test "authorized external trigger command creates and dedupes integration task" do
     command = external_trigger_command("cmd-ext-http-1")
 
@@ -138,6 +172,19 @@ defmodule ForemanServer.Http.RouterTest do
       "schema_version" => 1,
       "payload" => %{"task_id" => "task-http"},
       "metadata" => %{"correlation_id" => "corr-http", "idempotency_key" => "cmd-http"}
+    }
+  end
+
+  defp top_level_external_trigger_command do
+    %{
+      "command_type" => "ExternalTriggerCommand",
+      "source" => "github",
+      "repo" => "fortium/foreman",
+      "event_id" => "evt-http-top",
+      "external_id" => "22",
+      "project_id" => "foreman",
+      "event_type" => "opened",
+      "url" => "https://github.com/fortium/foreman/issues/22"
     }
   end
 
