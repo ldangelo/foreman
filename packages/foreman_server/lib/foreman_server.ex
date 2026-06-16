@@ -7,7 +7,7 @@ defmodule ForemanServer do
   this application/supervision topology.
   """
 
-  alias ForemanServer.{CommandRouter, ProjectRegistry, RunActor}
+  alias ForemanServer.{CommandRouter, ProjectRegistry, RunActor, Scheduler}
 
   @doc "Returns currently supervised project IDs."
   @spec active_projects() :: [String.t()]
@@ -30,4 +30,8 @@ defmodule ForemanServer do
   @doc "Returns current run actor state if it is alive."
   @spec run_state(String.t()) :: map() | nil
   def run_state(run_id) when is_binary(run_id), do: RunActor.state(run_id)
+
+  @doc "Runs one scheduler dispatch tick."
+  @spec scheduler_tick(keyword()) :: {:ok, map()} | {:error, term()}
+  def scheduler_tick(opts \\ []), do: Scheduler.tick(opts)
 end

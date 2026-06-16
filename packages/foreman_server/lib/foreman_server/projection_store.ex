@@ -120,6 +120,7 @@ defmodule ForemanServer.ProjectionStore do
       projects: %{},
       tasks: %{},
       runs: %{},
+      scheduler_skips: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -315,6 +316,13 @@ defmodule ForemanServer.ProjectionStore do
     update_run(projection, run_id, fn run ->
       update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
     end)
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "SchedulerTaskSkipped",
+         payload: %{task_id: task_id} = payload
+       }) do
+    put_in(projection, [:scheduler_skips, task_id], payload)
   end
 
   defp apply_domain_event(projection, _event), do: projection

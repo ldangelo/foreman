@@ -473,7 +473,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-010**: Implement supervised scheduler and capacity enforcement (6h) [satisfies REQ-011] [depends: TRD-008]
+- [x] **TRD-010**: Implement supervised scheduler and capacity enforcement (6h) [satisfies REQ-011] [depends: TRD-008]
 
 **Description:** Implement supervised scheduler and capacity enforcement with production code, migration-safe boundaries, and operator-visible behavior.
 

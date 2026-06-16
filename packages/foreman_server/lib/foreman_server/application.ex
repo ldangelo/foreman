@@ -3,7 +3,7 @@ defmodule ForemanServer.Application do
 
   use Application
 
-  alias ForemanServer.{EventStore, ProjectionStore, ProjectRegistry}
+  alias ForemanServer.{EventStore, ProjectionStore, ProjectRegistry, Scheduler}
 
   @impl true
   def start(_type, _args) do
@@ -13,7 +13,8 @@ defmodule ForemanServer.Application do
         {EventStore, []},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
-        {ProjectRegistry, []}
+        {ProjectRegistry, []},
+        {Scheduler, []}
       ] ++ http_children()
 
     opts = [strategy: :one_for_one, name: ForemanServer.Supervisor]
