@@ -64,6 +64,75 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  post "/worker/v1/phases/:phase_id/start" do
+    with :ok <- authorize(conn),
+         {:ok, %{event: event, projection: projection}} <-
+           ForemanServer.WorkerProtocol.start_phase(phase_id, conn.body_params) do
+      send_json(conn, 202, %{
+        ok: true,
+        events: [event.event_id],
+        projection_version: projection.last_sequence,
+        correlation_id: event.correlation_id
+      })
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+
+      {:error, reason} ->
+        send_error(conn, 500, "INTERNAL", inspect(reason), true)
+    end
+  end
+
+  post "/worker/v1/heartbeat" do
+    with :ok <- authorize(conn),
+         {:ok, %{event: event, projection: projection}} <-
+           ForemanServer.WorkerProtocol.heartbeat(conn.body_params) do
+      send_json(conn, 202, %{
+        ok: true,
+        events: [event.event_id],
+        projection_version: projection.last_sequence,
+        correlation_id: event.correlation_id
+      })
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+
+      {:error, reason} ->
+        send_error(conn, 500, "INTERNAL", inspect(reason), true)
+    end
+  end
+
+  post "/worker/v1/events" do
+    with :ok <- authorize(conn),
+         {:ok, %{event: event, projection: projection}} <-
+           ForemanServer.WorkerProtocol.ingest_event(conn.body_params) do
+      send_json(conn, 202, %{
+        ok: true,
+        events: [event.event_id],
+        projection_version: projection.last_sequence,
+        correlation_id: event.correlation_id
+      })
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+
+      {:error, {:out_of_order_sequence, details}} ->
+        send_error(conn, 409, "CONFLICT", "out-of-order worker sequence", false, Map.new(details))
+
+      {:error, reason} ->
+        send_error(conn, 500, "INTERNAL", inspect(reason), true)
+    end
+  end
+
   post "/api/v1/commands" do
     with :ok <- authorize(conn),
          {:ok, command} <- normalize_command(conn.body_params),

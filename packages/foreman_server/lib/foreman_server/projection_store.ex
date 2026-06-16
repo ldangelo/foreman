@@ -121,6 +121,8 @@ defmodule ForemanServer.ProjectionStore do
       tasks: %{},
       runs: %{},
       scheduler_skips: %{},
+      worker_sequences: %{},
+      worker_heartbeats: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -270,10 +272,18 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(projection, %{
          type: "PhaseCompleted",
-         payload: %{run_id: run_id, phase_id: phase_id}
+         payload: %{run_id: run_id, phase_id: phase_id} = payload
        }) do
-    update_run(projection, run_id, fn run ->
-      update_in(run, [:phase_status], &Map.put(&1 || %{}, phase_id, "completed"))
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
+      run
+      |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "completed"))
+      |> Map.put(
+        :artifact_paths,
+        Map.get(payload, :artifact_paths, Map.get(run, :artifact_paths, []))
+      )
+      |> Map.put(:report_paths, Map.get(payload, :report_paths, Map.get(run, :report_paths, [])))
     end)
   end
 
@@ -315,6 +325,45 @@ defmodule ForemanServer.ProjectionStore do
        }) do
     update_run(projection, run_id, fn run ->
       update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
+    end)
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "WorkerStarted",
+         payload: %{run_id: run_id, worker_id: worker_id, phase_id: phase_id} = payload
+       }) do
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
+      run
+      |> update_in([:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
+      |> Map.put(:current_phase, phase_id)
+      |> Map.put(:adapter, Map.get(payload, :adapter))
+      |> Map.put(:artifact_paths, Map.get(payload, :artifact_paths, []))
+    end)
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "WorkerHeartbeat",
+         payload: %{run_id: run_id, worker_id: worker_id} = payload
+       }) do
+    projection
+    |> put_worker_sequence(payload)
+    |> put_in([:worker_heartbeats, "#{run_id}:#{worker_id}"], payload)
+    |> update_run(run_id, fn run ->
+      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, "heartbeat"))
+    end)
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "ToolCallFinished",
+         payload: %{run_id: run_id, worker_id: worker_id} = payload
+       }) do
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
+      update_in(run, [:tool_events], &((&1 || []) ++ [payload]))
+      |> update_in([:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
     end)
   end
 
@@ -405,6 +454,13 @@ defmodule ForemanServer.ProjectionStore do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, []), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp put_worker_sequence(projection, %{run_id: run_id, worker_id: worker_id, sequence: sequence})
+       when is_integer(sequence) do
+    put_in(projection, [:worker_sequences, "#{run_id}:#{worker_id}"], sequence)
+  end
+
+  defp put_worker_sequence(projection, _payload), do: projection
 
   defp normalize_event(%ForemanServer.Event{} = event) do
     %{type: event.event_type, payload: event.payload}

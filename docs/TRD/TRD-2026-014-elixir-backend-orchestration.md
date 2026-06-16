@@ -494,7 +494,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 3: Worker Bridge and Workflow Execution
 
 **Shippable State:** Users can run existing YAML workflows through a Node/Pi worker controlled by the Elixir server.
-- [ ] **TRD-011**: Implement Node/Pi SDK worker HTTP protocol and heartbeat contract (6h) [satisfies REQ-006] [depends: TRD-005]
+- [x] **TRD-011**: Implement Node/Pi SDK worker HTTP protocol and heartbeat contract (6h) [satisfies REQ-006] [depends: TRD-005]
 
 **Description:** Implement Node/Pi SDK worker HTTP protocol and heartbeat contract with production code, migration-safe boundaries, and operator-visible behavior.
 
