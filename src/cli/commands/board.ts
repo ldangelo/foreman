@@ -305,17 +305,18 @@ export async function pollBoardInboxTaskUpdates(
   projectPath: string,
   lastSeenId: string | null,
   limit = 100,
+  cursorSeeded = lastSeenId !== null,
 ): Promise<BoardInboxUpdateResult> {
   const { client, projectId } = await resolveBoardContext(projectPath);
   const rows = await client.mail.listGlobal({ projectId, limit }) as BoardInboxMessageRow[];
   const newestId = rows[rows.length - 1]?.id ?? null;
 
-  if (!lastSeenId) {
+  if (!cursorSeeded) {
     return { taskIds: [], newestId };
   }
 
-  const lastSeenIndex = rows.findIndex((row) => row.id === lastSeenId);
-  const newRows = lastSeenIndex >= 0 ? rows.slice(lastSeenIndex + 1) : rows;
+  const lastSeenIndex = lastSeenId ? rows.findIndex((row) => row.id === lastSeenId) : -1;
+  const newRows = lastSeenId && lastSeenIndex >= 0 ? rows.slice(lastSeenIndex + 1) : rows;
   const runIds = [...new Set(newRows.map((row) => row.run_id).filter(Boolean))];
   const taskIds = new Set<string>();
 
@@ -1733,6 +1734,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let refreshSpinnerTimer: NodeJS.Timeout | null = null;
   let inboxMonitorTimer: NodeJS.Timeout | null = null;
   let boardInboxLastSeenId: string | null = null;
+  let boardInboxCursorSeeded = false;
   let inboxUpdateInFlight = false;
   let quit = false;
   let stdinRawMode = false;
@@ -1815,22 +1817,35 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   renderCurrentBoard();
 
   try {
-    boardInboxLastSeenId = (await pollBoardInboxTaskUpdates(projectPath, null)).newestId;
+    boardInboxLastSeenId = (await pollBoardInboxTaskUpdates(projectPath, null, 100, false)).newestId;
   } catch {
     boardInboxLastSeenId = null;
   }
+  boardInboxCursorSeeded = true;
 
   const processInboxTaskUpdates = async () => {
     if (quit || inboxUpdateInFlight) return;
     inboxUpdateInFlight = true;
     try {
-      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId);
+      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorSeeded);
+      if (update.taskIds.length === 0) {
+        if (update.newestId) {
+          boardInboxLastSeenId = update.newestId;
+        }
+        return;
+      }
+
+      const refreshedTasks = await Promise.all(
+        update.taskIds.map(async (taskId) => ({ taskId, task: await loadBoardTask(projectPath, taskId) })),
+      );
+      let nextTasks = tasks;
+      for (const { taskId, task } of refreshedTasks) {
+        nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
+      }
+      tasks = nextTasks;
       if (update.newestId) {
         boardInboxLastSeenId = update.newestId;
       }
-      if (update.taskIds.length === 0) return;
-
-      tasks = await refreshBoardTasksById(projectPath, tasks, update.taskIds, sortMode);
       normalizeNavRowIndex(nav, tasks);
       flashTaskId = update.taskIds[0] ?? null;
       refreshedAt = new Date().toLocaleTimeString();

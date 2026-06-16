@@ -259,6 +259,23 @@ describe("board inbox-driven task updates", () => {
     expect(result).toEqual({ taskIds: [], newestId: "msg-1" });
   });
 
+  it("processes first messages after an empty inbox has already been seeded", async () => {
+    const { projectDir } = setupProject();
+    const runGet = vi.fn().mockResolvedValueOnce({ id: "run-1", seed_id: "task-1" });
+    mockCreateTrpcClient.mockReturnValue({
+      mail: {
+        listGlobal: vi.fn().mockResolvedValue([
+          { id: "msg-1", run_id: "run-1", created_at: "2026-01-01T00:00:00Z" },
+        ]),
+      },
+      runs: { get: runGet },
+    });
+
+    const result = await pollBoardInboxTaskUpdates(projectDir, null, 100, true);
+
+    expect(result).toEqual({ taskIds: ["task-1"], newestId: "msg-1" });
+  });
+
   it("maps new inbox messages to changed task IDs through their run records", async () => {
     const { projectDir } = setupProject();
     const runGet = vi.fn()
