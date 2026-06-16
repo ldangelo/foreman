@@ -40,6 +40,39 @@ defmodule ForemanServer.InboxTest do
     assert "Build phase completed" in bodies
   end
 
+  test "default workflow-shaped mail hooks map to phase lifecycle inbox messages" do
+    assert {:ok, workflow} =
+             WorkflowInterpreter.load_yaml("""
+             name: inbox-default-shape
+             phases:
+               - name: build
+                 prompt: build.md
+                 mail:
+                   onStart: true
+                   onComplete: true
+                   onFail: developer
+               - name: done
+                 prompt: done.md
+             """)
+
+    assert {:ok, _pid} = WorkflowInterpreter.start_run("run-default-mail", workflow)
+
+    assert [%{hook: "phase_started", body: "PhaseStarted run-default-mail/build"}] =
+             Inbox.list("run-default-mail")
+
+    assert {:ok, _state} = RunActor.pass("run-default-mail", %{ok: true})
+
+    messages = Inbox.list("run-default-mail")
+    assert Enum.any?(messages, &(&1.hook == "phase_completed" and &1.phase_id == "build"))
+
+    assert {:ok, _pid} = WorkflowInterpreter.start_run("run-default-mail-fail", workflow)
+    assert {:ok, _state} = RunActor.fail("run-default-mail-fail", %{reason: "boom"})
+
+    failed_messages = Inbox.list("run-default-mail-fail")
+    assert Enum.any?(failed_messages, &(&1.hook == "phase_failed" and &1.phase_id == "build"))
+    assert Enum.any?(failed_messages, &(&1.hook == "phase_failed" and &1.to == "developer"))
+  end
+
   test "configured failure mail hook appends from real phase failure", %{fixture: fixture} do
     run_id = "#{fixture["run_id"]}-failed"
 

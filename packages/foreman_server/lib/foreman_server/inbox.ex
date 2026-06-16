@@ -9,6 +9,18 @@ defmodule ForemanServer.Inbox do
     "PhaseFailed" => "phase_failed"
   }
 
+  @hook_aliases %{
+    "phase_started" => [:phase_started, :on_start, "phase_started", "on_start", "onStart"],
+    "phase_completed" => [
+      :phase_completed,
+      :on_complete,
+      "phase_completed",
+      "on_complete",
+      "onComplete"
+    ],
+    "phase_failed" => [:phase_failed, :on_fail, "phase_failed", "on_fail", "onFail"]
+  }
+
   @terminal_statuses MapSet.new(["completed", "failed", "blocked"])
 
   @spec subscribe(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
@@ -133,17 +145,27 @@ defmodule ForemanServer.Inbox do
 
   defp hook_config(event_type, hooks) do
     key = @phase_events[event_type] || event_type
-    hooks |> fetch(phase_atom(key), fetch(hooks, key, [])) |> normalize_configs()
+
+    key
+    |> hook_keys()
+    |> Enum.find_value([], fn hook_key ->
+      case fetch_hook(hooks, hook_key) do
+        nil -> nil
+        value -> value
+      end
+    end)
+    |> normalize_configs()
   end
 
-  defp phase_atom("phase_started"), do: :phase_started
-  defp phase_atom("phase_completed"), do: :phase_completed
-  defp phase_atom("phase_failed"), do: :phase_failed
-  defp phase_atom(_key), do: :unknown_phase_hook
+  defp hook_keys(key), do: Map.get(@hook_aliases, key, [key])
+
+  defp fetch_hook(hooks, key) when is_map(hooks), do: Map.get(hooks, key)
+  defp fetch_hook(_hooks, _key), do: nil
 
   defp normalize_configs(false), do: []
   defp normalize_configs(nil), do: []
   defp normalize_configs(true), do: [%{}]
+  defp normalize_configs(recipient) when is_binary(recipient), do: [%{to: recipient}]
   defp normalize_configs(config) when is_map(config), do: [config]
   defp normalize_configs(configs) when is_list(configs), do: configs
   defp normalize_configs(_), do: []
