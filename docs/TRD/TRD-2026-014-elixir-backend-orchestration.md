@@ -352,7 +352,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-003-TEST**: Verify Define Postgres event store schema, event envelopes, and versioned decoders (3h) [verifies TRD-003] [satisfies REQ-002] [depends: TRD-003]
+- [x] **TRD-003-TEST**: Verify Define Postgres event store schema, event envelopes, and versioned decoders (3h) [verifies TRD-003] [satisfies REQ-002] [depends: TRD-003]
 
 **Description:** Add unit/integration tests that verify AC-002-1, AC-002-2, AC-002-3 for TRD-003.
 
