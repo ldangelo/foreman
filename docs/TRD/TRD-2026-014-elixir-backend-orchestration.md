@@ -2,7 +2,7 @@
 document_id: TRD-2026-014
 prd_reference: PRD-2026-014
 prd_path: docs/PRD/PRD-2026-014-elixir-backend-orchestration.md
-version: 1.0.4
+version: 1.0.5
 status: Draft
 date: 2026-06-16
 design_readiness_score: 4.75
@@ -44,11 +44,11 @@ Project type: brownfield. Existing TypeScript Foreman codebase remains source fo
 
 ## 3. Architecture Decision
 
-Chosen approach: **Option B — Full OTP orchestration core**, conditional on the comparative architecture spike.
+Chosen approach: **Option B — Full OTP orchestration core**.
 
 Foreman will move orchestration ownership to an Elixir/OTP server as the target architecture from the start. Node remains as CLI/runtime edge and Pi SDK worker layer, but the Elixir server owns durable commands, events, projections, supervisors, run/phase actors, recovery, VCS/PR state machines, and integration command ingestion.
 
-**Conditional gate:** Option B is the selected target architecture only if TRD-001 confirms Elixir/OTP remains the correct backend after comparing WolverineFx/Marten and a control alternative. If TRD-001 recommends WolverineFx/Marten or another stack, implementation must halt and this TRD must be revised before tasks TRD-002 and later proceed.
+**Spike result:** TRD-001 completed the comparative architecture spike in `docs/spikes/TRD-2026-014-architecture-spike.md`. The spike compared Elixir/OTP, WolverineFx/Marten, and a TypeScript control alternative against the same Foreman lifecycle and worker-crash recovery scenario. It confirmed Elixir/OTP remains the target backend because OTP supervision best matches Foreman's local long-running worker/process orchestration model, while WolverineFx/Marten's durable inbox/outbox, saga, scheduled-message, dead-letter, and event-store strengths do not remove the need for custom local worker supervision.
 
 ### 3.1 Alternatives Considered
 
@@ -58,7 +58,7 @@ Foreman will move orchestration ownership to an Elixir/OTP server as the target 
 | B: Full OTP orchestration core | Elixir owns all orchestration domains from the target design | Clearest boundaries, strongest recovery model, avoids dual truth | Larger migration, more upfront work | **Selected** |
 | C: Spike-gated hybrid | Architecture spike first, then vertical hybrid slices | Balanced and PRD-aligned | Slower to full ownership | Not selected |
 
-The comparative spike remains a required first task because REQ-025 requires validating Elixir/OTP against WolverineFx/Marten and a control alternative before backend commitment. If the spike disproves Elixir, this TRD must be revised before implementation continues beyond TRD-001.
+The comparative spike is complete. Implementation may proceed beyond TRD-001 under the Elixir/OTP target architecture unless a future TRD explicitly revises the runtime decision.
 
 ## 4. System Architecture
 
@@ -306,9 +306,9 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 1: Architecture Decision and Server Skeleton
 
 **Shippable State:** Operators can run `foreman server doctor` and receive a real Elixir server readiness report showing project loading, database connectivity, and projection health.
-- [ ] **TRD-001**: Complete comparative architecture spike and record final stack decision (6h) [satisfies REQ-025]
+- [x] **TRD-001**: Complete comparative architecture spike and record final stack decision (6h) [satisfies REQ-025]
 
-**Description:** Complete comparative architecture spike and record final stack decision with production code, migration-safe boundaries, and operator-visible behavior.
+**Description:** Complete comparative architecture spike with executable lifecycle/recovery prototypes and record final stack decision before production implementation continues.
 
 **Validates PRD ACs:** AC-025-1, AC-025-2, AC-025-3, AC-025-4
 
@@ -1044,8 +1044,8 @@ The matrix above is requirement-level. Detailed AC coverage is carried by each t
 
 ### 9.2 Coverage Issues
 
-1. **Issue:** REQ-025 requires a spike but chosen Option B assumes Elixir remains selected.  
-   **Resolution:** TRD-001 is a blocking task. If the spike selects WolverineFx/Marten or another stack, stop and revise this TRD.
+1. **Issue:** REQ-025 requires a spike before backend commitment.  
+   **Resolution:** TRD-001 completed the spike in `docs/spikes/TRD-2026-014-architecture-spike.md` and confirmed Elixir/OTP remains selected.
 
 2. **Issue:** Documentation is easy to defer until after behavior changes.  
    **Resolution:** TRD-026 is in the final shippable PR and explicitly covers README, User Guide, CLI Reference, and architecture docs.
@@ -1067,13 +1067,13 @@ The matrix above is requirement-level. Detailed AC coverage is carried by each t
 
 | Dimension | Score | Notes |
 |-----------|-------|-------|
-| Architecture completeness | 4.75 | Components, transports, data flows, contracts, NFRs, fixture schemas, and external boundaries are defined; final stack still depends on REQ-025 spike |
+| Architecture completeness | 4.75 | Components, transports, data flows, contracts, NFRs, fixture schemas, external boundaries, and final stack decision are defined; REQ-025 spike is complete |
 | Task coverage | 4.75 | Every PRD requirement and AC has implementation/test coverage mapping |
 | Dependency clarity | 4.75 | Dependencies are explicit and acyclic; additional recovery, integration, attach, and planning tracks can run in parallel |
 | Estimate confidence | 4.75 | Tasks remain below 8h with concrete fixtures, contracts, and verification targets |
 | **Overall** | **4.75** | **PASS** |
 
-Design gate decision: PASS. Design Readiness: 4.50 -> 4.75 (improved). Proceed only after approving this TRD and completing TRD-001 spike results.
+Design gate decision: PASS. Design Readiness: 4.50 -> 4.75 (improved). TRD-001 spike results are complete; proceed with Elixir/OTP implementation tasks.
 
 ## 11. Traceability Validation Summary
 
@@ -1094,3 +1094,4 @@ Traceability check: 25 requirements covered, 0 uncovered, 0 orphaned annotations
 | 2026-06-16 | 1.0.2 | Pi Agent | Added fixture schemas, integration and VCS/PR contracts, quality requirements, concrete AC-to-task coverage, refined team metrics, and further dependency parallelization |
 | 2026-06-16 | 1.0.3 | Pi Agent | Converted Master Task List to parser-compatible checkbox task format for implement-trd-beads |
 | 2026-06-16 | 1.0.4 | Pi Agent | Converted Team Configuration to implement-trd-beads role-list schema and added local agent registry entries |
+| 2026-06-16 | 1.0.5 | Pi Agent | Recorded TRD-001 comparative architecture spike result and confirmed Elixir/OTP target architecture |
