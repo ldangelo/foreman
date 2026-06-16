@@ -560,7 +560,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-014-TEST**: Verify Implement deterministic simulation harness for run, phase, and worker events (3h) [verifies TRD-014] [satisfies REQ-021] [depends: TRD-014]
+- [x] **TRD-014-TEST**: Verify Implement deterministic simulation harness for run, phase, and worker events (3h) [verifies TRD-014] [satisfies REQ-021] [depends: TRD-014]
 
 **Description:** Add unit/integration tests that verify AC-021-1, AC-021-2, AC-021-3 for TRD-014.
 
