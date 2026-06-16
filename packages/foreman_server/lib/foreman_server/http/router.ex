@@ -64,6 +64,47 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  get "/api/v1/runs/:run_id/logs" do
+    mode = if conn.query_params["view"] == "raw", do: :raw, else: :compact
+
+    with :ok <- authorize(conn),
+         {:ok, logs} <- ForemanServer.DebugViews.logs(run_id, mode: mode) do
+      send_json(conn, 200, %{ok: true, logs: logs})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+    end
+  end
+
+  get "/api/v1/runs/:run_id/report" do
+    with :ok <- authorize(conn),
+         {:ok, report} <- ForemanServer.DebugViews.report(run_id) do
+      send_json(conn, 200, %{ok: true, report: report})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+    end
+  end
+
+  get "/api/v1/runs/:run_id/debug" do
+    with :ok <- authorize(conn),
+         {:ok, debug} <- ForemanServer.DebugViews.debug_timeline(run_id) do
+      send_json(conn, 200, %{ok: true, debug: debug})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+    end
+  end
+
   post "/worker/v1/phases/:phase_id/start" do
     with :ok <- authorize(conn),
          {:ok, %{event: event, projection: projection}} <-

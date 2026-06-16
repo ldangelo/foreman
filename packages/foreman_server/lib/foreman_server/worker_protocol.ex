@@ -112,6 +112,10 @@ defmodule ForemanServer.WorkerProtocol do
     end
   end
 
+  defp worker_event_type("stdout"), do: "WorkerStdout"
+  defp worker_event_type("stderr"), do: "WorkerStderr"
+  defp worker_event_type("assistant"), do: "AssistantMessage"
+  defp worker_event_type("assistant_message"), do: "AssistantMessage"
   defp worker_event_type("tool_call_finished"), do: "ToolCallFinished"
   defp worker_event_type("phase_completed"), do: "PhaseCompleted"
   defp worker_event_type("phase_failed"), do: "PhaseFailed"

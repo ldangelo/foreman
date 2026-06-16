@@ -23,6 +23,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - PR gate and merge orchestration state machine: `ForemanServer.PrGate`
 - event-backed inbox and agent mail projection: `ForemanServer.Inbox`
 - idempotent sentinel/Jira/GitHub `ExternalTriggerCommand` ingestion via the command API: `ForemanServer.IntegrationIngestion`
+- event-backed logs, reports, and debug timeline views: `ForemanServer.DebugViews`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`
