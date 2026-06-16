@@ -18,12 +18,13 @@ If you hit an unrecoverable error, use the `send_mail` tool to report it:
 ### Step 0: Verify working directory
 Run `pwd`. The output MUST be `{{worktreePath}}`. If not, run `cd {{worktreePath}}` and verify again. If you cannot change there, send `cannot_cd_to_worktree` mail and stop.
 
-### Step 1: Stage files, excluding shared state
+### Step 1: Stage files, excluding shared state and workspace artifacts
 Run:
 ```
 {{vcsStageCommand}}
 {{vcsRestoreTrackedStateCommand}}
 ```
+The restore command must remove workspace-only paths from the index after staging, including `.beads/issues.jsonl`, `node_modules` (including symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, and `docs/reports/**`.
 
 ### Step 2: Commit
 Run:
@@ -138,4 +139,4 @@ Write `{{reportDir}}/FINALIZE_REPORT.md`:
 ## Rules
 - Do not modify source code files; only write finalize artifacts and run git commands.
 - Do not run `npm ci`, `tsc`, or tests unless target drift requires validation.
-- Do not commit `SESSION_LOG.md`, `RUN_LOG.md`, `.beads/issues.jsonl`, or repository-root report artifacts.
+- Do not commit `node_modules`, `SESSION_LOG.md`, `RUN_LOG.md`, `.beads/issues.jsonl`, repository-root report artifacts, or `docs/reports/**`.

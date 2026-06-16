@@ -42,11 +42,11 @@ Run the stage command (skip if empty — some backends auto-stage):
 ```
 {{vcsStageCommand}}
 ```
-Then restore tracked shared-state files that must never be committed from a workspace:
+Then restore tracked shared-state files and unstage workspace-only artifacts that must never be committed from a workspace:
 ```
 {{vcsRestoreTrackedStateCommand}}
 ```
-SESSION_LOG.md and RUN_LOG.md are already gitignored diagnostic artifacts. `.beads/issues.jsonl` is managed centrally by the bead-writer process, so finalize restores it out of the workspace before commit using a backend-aware path. This prevents parent-branch Beads updates from dirtying active workspaces.
+The restore command must remove `.beads/issues.jsonl`, `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, repository-root report artifacts, and `docs/reports/**` from the index before commit. `.beads/issues.jsonl` is managed centrally by the bead-writer process, so finalize restores it out of the workspace before commit using a backend-aware path. This prevents parent-branch Beads updates and workspace artifacts from dirtying active workspaces.
 
 ### Step 4: Commit
 Run:
@@ -235,5 +235,5 @@ Use this format:
 - **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" (for non-verification beads) are logged and continue (non-fatal) unless they prevent git push
-- Do NOT commit SESSION_LOG.md, RUN_LOG.md, or .beads/issues.jsonl — SESSION_LOG.md / RUN_LOG.md are gitignored, and finalize restores tracked Beads state out of the workspace before commit
+- Do NOT commit node_modules, SESSION_LOG.md, RUN_LOG.md, .beads/issues.jsonl, repository-root report artifacts, or docs/reports/** — finalize restores tracked Beads state and unstages workspace artifacts before commit
 - **If tests fail in Step 7, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 8 or 9**
