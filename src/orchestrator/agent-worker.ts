@@ -1032,6 +1032,55 @@ async function runTroubleshooterPhase(
 }
 
 /**
+ * Derive fallback refinery options for registered/native run lookups.
+ *
+ * If registeredProjectId is missing but a database URL exists in the project path,
+ * derive a PostgresStore for run lookups. This ensures registered/native runs can
+ * be found even when registeredProjectId was not propagated.
+ *
+ * Error handling: Safely handles the case where the connection pool may not be
+ * properly initialized by wrapping PostgresStore.forProject in a try-catch that
+ * logs the error and returns undefined instead of throwing.
+ */
+function deriveFallbackRefineryOptions(
+  registeredProjectId: string | undefined,
+  registeredReadStore: PostgresStore | undefined,
+  pipelineProjectPath: string,
+  configProjectId: string,
+  log?: (msg: string) => void,
+): { registeredProjectId: string; runLookup: PostgresStore } | undefined {
+  const fallbackRegisteredProjectId = !registeredProjectId && resolveProjectDatabaseUrl(pipelineProjectPath)
+    ? configProjectId
+    : undefined;
+  const refineryProjectId = registeredProjectId ?? fallbackRegisteredProjectId;
+
+  if (!refineryProjectId) {
+    return undefined;
+  }
+
+  let fallbackReadStore: PostgresStore | undefined;
+  const projectIdForFallback = fallbackRegisteredProjectId ?? registeredProjectId;
+  if (!registeredReadStore && projectIdForFallback) {
+    try {
+      fallbackReadStore = PostgresStore.forProject(projectIdForFallback);
+    } catch (err) {
+      log?.(`[deriveFallbackRefineryOptions] Failed to create PostgresStore for fallback: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  const runLookup = registeredReadStore ?? fallbackReadStore;
+  if (!runLookup) {
+    return undefined;
+  }
+
+  return {
+    registeredProjectId: refineryProjectId,
+    runLookup,
+  };
+}
+
+/**
  * Run the full pipeline: Explorer → Developer ⇄ QA → Reviewer → Finalize.
  * Each phase is a separate SDK session. TypeScript orchestrates the loop.
  */
@@ -1063,12 +1112,24 @@ async function runCreatePrBuiltinPhase(args: {
   agentMailClient: AnyMailClient | null;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
   const { config, store, runtimeTaskClient, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, workflowConfig, log, agentMailClient } = args;
+
+  // Fallback logic mirrors runPipeline: if registeredReadStore is missing but a database
+  // URL exists in the project path, derive a PostgresStore for run lookups. This ensures
+  // registered/native runs can be found even when registeredProjectId was not propagated.
+  const registeredRefineryOptions = deriveFallbackRefineryOptions(
+    registeredProjectId,
+    registeredReadStore,
+    pipelineProjectPath,
+    config.projectId,
+    log,
+  );
+
   const refinery = new Refinery(
     store,
     runtimeTaskClient,
     pipelineProjectPath,
     vcsBackend,
-    registeredProjectId && registeredReadStore ? { registeredProjectId, runLookup: registeredReadStore } : undefined,
+    registeredRefineryOptions,
   );
   const baseBranch = config.targetBranch ?? await vcsBackend?.detectDefaultBranch(pipelineProjectPath).catch(() => "main") ?? "main";
   const branchName = `foreman/${config.seedId}`;
@@ -1871,17 +1932,13 @@ async function runPipeline(
       }
 
       const now = new Date().toISOString();
-      const fallbackRegisteredProjectId = !registeredProjectId && resolveProjectDatabaseUrl(pipelineProjectPath)
-        ? config.projectId
-        : undefined;
-      const registeredRefineryProjectId = registeredProjectId ?? fallbackRegisteredProjectId;
-      const fallbackRegisteredReadStore = !registeredReadStore && fallbackRegisteredProjectId
-        ? PostgresStore.forProject(fallbackRegisteredProjectId)
-        : undefined;
-      const registeredRefineryRunLookup = registeredReadStore ?? fallbackRegisteredReadStore;
-      const registeredRefineryOptions = registeredRefineryProjectId && registeredRefineryRunLookup
-        ? { registeredProjectId: registeredRefineryProjectId, runLookup: registeredRefineryRunLookup }
-        : undefined;
+      const registeredRefineryOptions = deriveFallbackRefineryOptions(
+        registeredProjectId,
+        registeredReadStore,
+        pipelineProjectPath,
+        config.projectId,
+        log,
+      );
       if (finalizeSucceeded) {
 
         // Mark run as completed BEFORE enqueue/autoMerge — autoMerge looks
