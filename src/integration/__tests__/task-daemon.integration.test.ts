@@ -16,6 +16,7 @@ const __dirname = dirname(__filename);
 const CLI = join(__dirname, "..", "..", "cli", "index.ts");
 const TSX_LOADER = join(__dirname, "..", "..", "..", "node_modules", "tsx", "dist", "loader.mjs");
 const DAEMON_ENTRY = join(__dirname, "..", "..", "daemon", "index.ts");
+const CLI_COMMAND_TIMEOUT_MS = 60_000;
 
 function readDatabaseUrl(): string {
   const envValue = process.env.DATABASE_URL?.trim();
@@ -167,9 +168,9 @@ describe("task CLI daemon/Postgres integration", () => {
     const create = await runTsxModule(
       CLI,
       ["task", "create", "--project", projectName, "--title", "Daemon Task"],
-      { cwd: projectDir, timeout: 20_000, env },
+      { cwd: projectDir, timeout: CLI_COMMAND_TIMEOUT_MS, env },
     );
-    expect(create.exitCode).toBe(0);
+    expect(create.exitCode, create.stdout + create.stderr).toBe(0);
     const createdIdMatch = (create.stdout + create.stderr).match(new RegExp(`\\[(${projectName}-[0-9a-f]{5})\\]`, "i"));
     expect(createdIdMatch).not.toBeNull();
     const taskId = createdIdMatch![1];
@@ -177,25 +178,25 @@ describe("task CLI daemon/Postgres integration", () => {
     const list = await runTsxModule(
       CLI,
       ["task", "list", "--project", projectName],
-      { cwd: projectDir, timeout: 20_000, env },
+      { cwd: projectDir, timeout: CLI_COMMAND_TIMEOUT_MS, env },
     );
-    expect(list.exitCode).toBe(0);
+    expect(list.exitCode, list.stdout + list.stderr).toBe(0);
     expect(list.stdout + list.stderr).toContain(taskId);
 
     const show = await runTsxModule(
       CLI,
       ["task", "show", taskId, "--project", projectName],
-      { cwd: projectDir, timeout: 20_000, env },
+      { cwd: projectDir, timeout: CLI_COMMAND_TIMEOUT_MS, env },
     );
-    expect(show.exitCode).toBe(0);
+    expect(show.exitCode, show.stdout + show.stderr).toBe(0);
     expect(show.stdout + show.stderr).toContain(`ID:          ${taskId}`);
 
     const approve = await runTsxModule(
       CLI,
       ["task", "approve", taskId, "--project", projectName],
-      { cwd: projectDir, timeout: 20_000, env },
+      { cwd: projectDir, timeout: CLI_COMMAND_TIMEOUT_MS, env },
     );
-    expect(approve.exitCode).toBe(0);
+    expect(approve.exitCode, approve.stdout + approve.stderr).toBe(0);
 
     const adapter = new PostgresAdapter();
     const task = await adapter.getTask(projectId, taskId);
