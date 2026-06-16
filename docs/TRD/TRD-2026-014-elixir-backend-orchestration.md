@@ -398,7 +398,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-006**: Implement server bootstrap, health, and CLI auto-start behavior (4h) [satisfies REQ-004, REQ-005] [depends: TRD-005]
+- [x] **TRD-006**: Implement server bootstrap, health, and CLI auto-start behavior (4h) [satisfies REQ-004, REQ-005] [depends: TRD-005]
 
 **Description:** Implement server bootstrap, health, and CLI auto-start behavior with production code, migration-safe boundaries, and operator-visible behavior.
 

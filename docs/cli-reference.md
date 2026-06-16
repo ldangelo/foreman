@@ -293,6 +293,23 @@ foreman doctor --json             # Machine-readable output
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
 
+### `foreman server`
+
+Manage the experimental Elixir orchestration server used by TRD-2026-014.
+
+```bash
+foreman server start              # Start local Elixir server
+foreman server status             # Show PID/URL and health
+foreman server doctor             # Auto-start then check /api/v1/health
+foreman server doctor --no-auto-start  # Health check only
+foreman server stop               # Stop server started by Foreman
+```
+
+| Option | Description |
+|--------|-------------|
+| `--port <port>` | Override local HTTP port (default `4766`) |
+| `--no-auto-start` | For `doctor`, fail instead of starting a stopped server |
+
 ### `foreman reset`
 
 Reset failed or stuck runs. Cleans up worktrees, deletes branches, and resets task status to a dispatchable state.

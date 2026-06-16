@@ -563,6 +563,16 @@ foreman daemon restart        # Stop + start
 
 > Most commands (`foreman task`, `foreman status`, `foreman inbox`, etc.) require the daemon to be running. Start it once: `foreman daemon start`.
 
+### `foreman server`
+Manage the experimental Elixir orchestration server.
+
+```bash
+foreman server doctor        # Auto-start and check /api/v1/health
+foreman server start         # Start local Elixir server
+foreman server status        # Show PID/URL and health
+foreman server stop          # Stop local Elixir server
+```
+
 ### `foreman doctor`
 Check environment health: Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth.
 

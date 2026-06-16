@@ -88,6 +88,13 @@ foreman doctor
 
 If commands report daemon or database issues, run `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
 
+Experimental Elixir backend work uses a separate local server:
+
+```bash
+foreman server doctor        # auto-starts and checks readiness
+foreman server stop
+```
+
 ### 2. Create a Task
 
 Write a task with enough context for an agent to execute without guessing.

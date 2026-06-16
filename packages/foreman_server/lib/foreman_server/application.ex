@@ -20,7 +20,11 @@ defmodule ForemanServer.Application do
   end
 
   defp http_children do
-    if Application.get_env(:foreman_server, :http_enabled, false) do
+    enabled? =
+      Application.get_env(:foreman_server, :http_enabled, false) ||
+        System.get_env("FOREMAN_SERVER_HTTP_ENABLED") == "true"
+
+    if enabled? do
       [{ForemanServer.Http.Endpoint, []}]
     else
       []
