@@ -27,6 +27,8 @@ import {
   createFindTool,
   createLsTool,
   type AgentSessionEvent,
+  type ExtensionAPI,
+  type ExtensionFactory,
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { createDirectoryGuardrail, wrapToolWithGuardrail, type GuardrailConfig } from "./guardrails.js";
@@ -253,6 +255,33 @@ export function getSandboxedPiResourcePaths(env: NodeJS.ProcessEnv = process.env
   return { extensionPaths, skillPaths, promptTemplatePaths };
 }
 
+export function normalizeLegacySlashPrompt(prompt: string): string {
+  return prompt.replace(/^\/ensemble:([a-z0-9_-]+)(?=\s|$)/i, (_match, command: string) => (
+    `/ensemble-${command.replace(/_/g, "-")}`
+  ));
+}
+
+function createSystemPromptExtension(systemPrompt: string | undefined): ExtensionFactory | undefined {
+  const trimmed = systemPrompt?.trim();
+  if (!trimmed) return undefined;
+
+  return (pi: ExtensionAPI) => {
+    pi.on("before_agent_start", async (event) => ({
+      systemPrompt: `${event.systemPrompt}\n\n${trimmed}`,
+    }));
+  };
+}
+
+function createLegacySlashPromptAliasExtension(): ExtensionFactory {
+  return (pi: ExtensionAPI) => {
+    pi.on("input", async (event: { text: string }) => {
+      const normalized = normalizeLegacySlashPrompt(event.text);
+      if (normalized === event.text) return { action: "continue" };
+      return { action: "transform", text: normalized };
+    });
+  };
+}
+
 // ── Main entry point ────────────────────────────────────────────────────
 
 /**
@@ -369,6 +398,12 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
     const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
     const sandboxPiExtensions = shouldSandboxPiExtensions();
     const sandboxResources = sandboxPiExtensions ? getSandboxedPiResourcePaths() : undefined;
+    const extensionFactories = [
+      createSystemPromptExtension(opts.systemPrompt),
+      createLegacySlashPromptAliasExtension(),
+      phaseTrace ? createPiObservabilityExtensionWithEmitter(phaseTrace, opts.onTraceEvent) : undefined,
+    ].filter((factory): factory is ExtensionFactory => Boolean(factory));
+
     const resourceLoader = new DefaultResourceLoader({
       cwd: opts.cwd,
       agentDir,
@@ -379,7 +414,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       additionalExtensionPaths: sandboxResources?.extensionPaths,
       additionalSkillPaths: sandboxResources?.skillPaths,
       additionalPromptTemplatePaths: sandboxResources?.promptTemplatePaths,
-      extensionFactories: phaseTrace ? [createPiObservabilityExtensionWithEmitter(phaseTrace, opts.onTraceEvent)] : [],
+      extensionFactories,
     });
     await resourceLoader.reload();
 
@@ -514,14 +549,11 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       writeLog(JSON.stringify(event));
     });
 
-    // Send the prompt and await completion.
-    // Prepend systemPrompt as role context since the Pi SDK manages its own
-    // system prompt (from CLAUDE.md, extensions, etc.) and doesn't accept one directly.
-    const fullPrompt = opts.systemPrompt
-      ? `${opts.systemPrompt}\n\n${opts.prompt}`
-      : opts.prompt;
+    // Send the prompt and await completion. System instructions are injected
+    // through a before_agent_start extension so slash prompt expansion still
+    // sees the user's command at the beginning of the input.
     try {
-      await session.prompt(fullPrompt);
+      await session.prompt(opts.prompt);
     } catch (err: unknown) {
       if (!maxTurnsExceeded) {
         success = false;

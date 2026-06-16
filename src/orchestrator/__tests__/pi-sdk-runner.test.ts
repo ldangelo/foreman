@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { extractStructuredOutput, getPiSdkEventError, getSandboxedPiResourcePaths, shouldSandboxPiExtensions, type StreamEvent } from "../pi-sdk-runner.js";
+import { extractStructuredOutput, getPiSdkEventError, getSandboxedPiResourcePaths, normalizeLegacySlashPrompt, shouldSandboxPiExtensions, type StreamEvent } from "../pi-sdk-runner.js";
 
 const tmpDirs: string[] = [];
 
@@ -20,6 +20,20 @@ describe("shouldSandboxPiExtensions", () => {
 
   it("allows opting back into user Pi extensions", () => {
     expect(shouldSandboxPiExtensions({ FOREMAN_PI_EXTENSIONS: "user" })).toBe(false);
+  });
+});
+
+describe("normalizeLegacySlashPrompt", () => {
+  it("maps namespaced legacy slash commands to Pi prompt templates", () => {
+    expect(normalizeLegacySlashPrompt("/ensemble:create-prd Build inbox")).toBe("/ensemble-create-prd Build inbox");
+  });
+
+  it("preserves native /skill:name invocations", () => {
+    expect(normalizeLegacySlashPrompt("/skill:ensemble-create-prd Build inbox")).toBe("/skill:ensemble-create-prd Build inbox");
+  });
+
+  it("leaves non-command prompts unchanged", () => {
+    expect(normalizeLegacySlashPrompt("Please fix this")).toBe("Please fix this");
   });
 });
 
