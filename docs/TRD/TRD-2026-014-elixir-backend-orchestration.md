@@ -342,7 +342,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-003**: Define Postgres event store schema, event envelopes, and versioned decoders (6h) [satisfies REQ-002] [depends: TRD-002]
+- [x] **TRD-003**: Define Postgres event store schema, event envelopes, and versioned decoders (6h) [satisfies REQ-002] [depends: TRD-002]
 
 **Description:** Define Postgres event store schema, event envelopes, and versioned decoders with production code, migration-safe boundaries, and operator-visible behavior.
 

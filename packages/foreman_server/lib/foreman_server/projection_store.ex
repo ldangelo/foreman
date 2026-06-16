@@ -38,11 +38,24 @@ defmodule ForemanServer.ProjectionStore do
 
   defp reduce_event(
          projection,
+         %{event_type: "CommandAccepted", payload: %{command_id: command_id}} = event
+       ) do
+    projection
+    |> put_in([:commands, command_id], event.payload)
+    |> Map.put(:last_sequence, event.stream_version)
+  end
+
+  defp reduce_event(
+         projection,
          %{type: "CommandAccepted", payload: %{command_id: command_id}} = event
        ) do
     projection
     |> put_in([:commands, command_id], event.payload)
     |> Map.put(:last_sequence, event.sequence)
+  end
+
+  defp reduce_event(projection, %{stream_version: stream_version}) do
+    Map.put(projection, :last_sequence, stream_version)
   end
 
   defp reduce_event(projection, %{sequence: sequence}) do

@@ -6,7 +6,9 @@ This package is internal to the Foreman repository. It establishes the first ser
 
 - OTP application supervisor: `ForemanServer.Supervisor`
 - Projection process: `ForemanServer.ProjectionStore`
-- dependency-free durable event log shell: `ForemanServer.EventStore`
+- dependency-free durable event log shell with Postgres-compatible event envelopes: `ForemanServer.EventStore`
+- versioned event encoding/decoding: `ForemanServer.EventCodec`
+- Postgres schema contract: `priv/repo/migrations/001_create_event_store.sql`
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - minimal command boundary: `ForemanServer.CommandRouter`

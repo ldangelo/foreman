@@ -50,14 +50,22 @@ defmodule ForemanServerTest do
   } do
     assert :ok = Application.start(:foreman_server)
 
-    assert {:ok, %{event: %{type: "CommandAccepted"}, projection: projection}} =
+    assert {:ok,
+            %{event: %ForemanServer.Event{event_type: "CommandAccepted"}, projection: projection}} =
              ForemanServer.handle_command(%{command_id: "cmd-1", command_type: "task.create"})
 
     assert projection.commands["cmd-1"].status == "accepted"
     assert File.exists?(event_log_path)
 
-    assert [%{type: "CommandAccepted", payload: %{command_id: "cmd-1"}}] =
-             ForemanServer.EventStore.all()
+    assert [
+             %ForemanServer.Event{
+               event_type: "CommandAccepted",
+               stream_id: "command:cmd-1",
+               stream_version: 1,
+               schema_version: 1,
+               payload: %{command_id: "cmd-1"}
+             }
+           ] = ForemanServer.EventStore.all()
   end
 
   test "rebuilds projection state from durable event log after restart" do

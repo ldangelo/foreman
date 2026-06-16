@@ -1,31 +1,51 @@
 defmodule ForemanServer.EventStore do
-  @moduledoc "Dependency-free durable event log used by the initial OTP shell."
+  @moduledoc """
+  Append-only event store shell with Postgres-compatible event envelopes.
+
+  TRD-003 defines the Postgres schema in `priv/repo/migrations` and keeps this
+  dependency-free term-log adapter as the runtime shell until the Postgres driver
+  is introduced. The semantics are the same: validate envelope, enforce stream
+  versions, persist append, then update projections.
+  """
 
   use GenServer
 
-  alias ForemanServer.ProjectionStore
+  alias ForemanServer.{Event, EventCodec, ProjectionStore}
 
-  @type event :: %{
-          required(:type) => String.t(),
-          required(:payload) => map(),
-          required(:metadata) => map(),
-          required(:sequence) => non_neg_integer()
-        }
+  @type event :: Event.t()
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @spec append(map()) :: {:ok, event()} | {:error, term()}
+  def append(input) when is_map(input) do
+    GenServer.call(__MODULE__, {:append, input})
+  end
+
   @spec append(String.t(), map(), map()) :: {:ok, event()} | {:error, term()}
   def append(type, payload, metadata \\ %{})
       when is_binary(type) and is_map(payload) and is_map(metadata) do
-    GenServer.call(__MODULE__, {:append, type, payload, metadata})
+    stream_id = Map.get(metadata, :stream_id) || Map.get(payload, :command_id) || type
+
+    append(%{
+      stream_id: "command:#{stream_id}",
+      event_type: type,
+      payload: payload,
+      metadata: metadata,
+      correlation_id: Map.get(metadata, :correlation_id)
+    })
   end
 
   @spec all() :: [event()]
   def all do
     GenServer.call(__MODULE__, :all)
+  end
+
+  @spec stream(String.t()) :: [event()]
+  def stream(stream_id) when is_binary(stream_id) do
+    GenServer.call(__MODULE__, {:stream, stream_id})
   end
 
   @impl true
@@ -38,26 +58,63 @@ defmodule ForemanServer.EventStore do
   end
 
   @impl true
-  def handle_call({:append, type, payload, metadata}, _from, state) do
-    event = %{
-      type: type,
-      payload: payload,
-      metadata: Map.put_new(metadata, :recorded_at, DateTime.utc_now()),
-      sequence: length(state.events) + 1
-    }
+  def handle_call({:append, input}, _from, state) do
+    stream_id = Map.get(input, :stream_id)
 
-    case append_to_file(state.path, event) do
-      :ok ->
-        ProjectionStore.apply_event(event)
-        {:reply, {:ok, event}, %{state | events: state.events ++ [event]}}
+    stream_version =
+      if is_binary(stream_id), do: next_stream_version(state.events, stream_id), else: 1
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+    with :ok <- validate_stream_id(stream_id),
+         :ok <- check_expected_version(input, stream_version),
+         :ok <- check_idempotency(state.events, input),
+         {:ok, event} <- Event.new(input, stream_version),
+         :ok <- append_to_file(state.path, event) do
+      ProjectionStore.apply_event(event)
+      {:reply, {:ok, event}, %{state | events: state.events ++ [event]}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
   def handle_call(:all, _from, state) do
     {:reply, state.events, state}
+  end
+
+  def handle_call({:stream, stream_id}, _from, state) do
+    events = Enum.filter(state.events, &(&1.stream_id == stream_id))
+    {:reply, events, state}
+  end
+
+  defp validate_stream_id(stream_id) when is_binary(stream_id) and stream_id != "", do: :ok
+  defp validate_stream_id(_stream_id), do: {:error, {:missing_or_invalid, :stream_id}}
+
+  defp check_expected_version(input, next_version) do
+    case Map.fetch(input, :expected_stream_version) do
+      {:ok, expected} when expected == next_version - 1 -> :ok
+      {:ok, expected} -> {:error, {:conflict, expected: expected, actual: next_version - 1}}
+      :error -> :ok
+    end
+  end
+
+  defp check_idempotency(events, input) do
+    idempotency_key = input |> Map.get(:metadata, %{}) |> Map.get(:idempotency_key)
+
+    duplicate? =
+      is_binary(idempotency_key) and
+        Enum.any?(events, fn event ->
+          event.stream_id == input.stream_id and
+            Map.get(event.metadata, :idempotency_key) == idempotency_key
+        end)
+
+    if duplicate?, do: {:error, {:duplicate_idempotency_key, idempotency_key}}, else: :ok
+  end
+
+  defp next_stream_version(events, stream_id) do
+    events
+    |> Enum.filter(&(&1.stream_id == stream_id))
+    |> Enum.map(& &1.stream_version)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
   end
 
   defp event_log_path do
@@ -72,18 +129,17 @@ defmodule ForemanServer.EventStore do
       |> File.stream!([], :line)
       |> Enum.map(&String.trim/1)
       |> Enum.reject(&(&1 == ""))
-      |> Enum.map(fn line ->
-        line
-        |> Base.decode64!()
-        |> :erlang.binary_to_term()
+      |> Enum.map(&EventCodec.decode/1)
+      |> Enum.map(fn
+        {:ok, event} -> event
+        {:error, reason} -> raise "invalid event in #{path}: #{inspect(reason)}"
       end)
     else
       []
     end
   end
 
-  defp append_to_file(path, event) do
-    line = event |> :erlang.term_to_binary() |> Base.encode64()
-    File.write(path, line <> "\n", [:append])
+  defp append_to_file(path, %Event{} = event) do
+    File.write(path, EventCodec.encode(event) <> "\n", [:append])
   end
 end
