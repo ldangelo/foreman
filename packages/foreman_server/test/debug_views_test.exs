@@ -122,7 +122,9 @@ defmodule ForemanServer.DebugViewsTest do
       run_id: "run-secret",
       phase_id: "developer",
       worker_id: "worker-secret",
-      output: large_output <> " token=abc123",
+      output:
+        large_output <>
+          " token=abc123 token: colon-token Authorization: Bearer auth-token secret: sss",
       details: %{password: "super-secret"},
       sequence: 1
     })
@@ -131,7 +133,7 @@ defmodule ForemanServer.DebugViewsTest do
       run_id: "run-secret",
       phase_id: "developer",
       worker_id: "worker-secret",
-      output: "stderr api_key=abc123",
+      output: "stderr api_key=abc123 api_key: colon-key password: hunter2 Bearer loose-token",
       sequence: 2
     })
 
@@ -139,7 +141,7 @@ defmodule ForemanServer.DebugViewsTest do
       run_id: "run-secret",
       phase_id: "developer",
       worker_id: "worker-secret",
-      message: "assistant password=hunter2",
+      message: "assistant password=hunter2 password: colon-password",
       sequence: 3
     })
 
@@ -157,8 +159,19 @@ defmodule ForemanServer.DebugViewsTest do
 
     assert {:ok, compact} = DebugViews.logs("run-secret", mode: :compact)
     messages = Enum.map(compact.entries, & &1.message)
-    refute Enum.any?(messages, &String.contains?(&1, "abc123"))
-    refute Enum.any?(messages, &String.contains?(&1, "hunter2"))
+
+    for secret <- [
+          "abc123",
+          "hunter2",
+          "colon-token",
+          "auth-token",
+          "colon-key",
+          "colon-password",
+          "loose-token"
+        ] do
+      refute Enum.any?(messages, &String.contains?(&1, secret))
+    end
+
     assert Enum.any?(messages, &String.ends_with?(&1, "...[truncated]"))
 
     assert {:ok, raw} = DebugViews.logs("run-secret", mode: :raw)
@@ -169,15 +182,56 @@ defmodule ForemanServer.DebugViewsTest do
 
     assert String.ends_with?(stdout.payload.output, "...[truncated]")
     refute stdout.payload.output =~ "abc123"
-    assert stderr.payload.output == "stderr api_key=[REDACTED]"
-    assert assistant.payload.message == "assistant password=[REDACTED]"
+    refute stderr.payload.output =~ "colon-key"
+    refute stderr.payload.output =~ "loose-token"
+    assert stderr.payload.output =~ "api_key=[REDACTED]"
+    assert stderr.payload.output =~ "password=[REDACTED]"
+    assert stderr.payload.output =~ "Bearer [REDACTED]"
+    refute assistant.payload.message =~ "colon-password"
+    assert assistant.payload.message =~ "password=[REDACTED]"
     assert tool.payload.details.client_secret == "[REDACTED]"
     assert tool.payload.metadata.authorization == "[REDACTED]"
     assert tool.metadata.authorization == "[REDACTED]"
 
     assert {:ok, debug} = DebugViews.debug_timeline("run-secret")
-    refute inspect(debug) =~ "hunter2"
-    refute inspect(debug) =~ "abc123"
+
+    for secret <- [
+          "abc123",
+          "hunter2",
+          "colon-token",
+          "auth-token",
+          "colon-key",
+          "colon-password",
+          "loose-token"
+        ] do
+      refute inspect(debug) =~ secret
+    end
+  end
+
+  test "debug view truncation preserves valid UTF-8 for long unicode log values" do
+    unicode_output = String.duplicate("🔐", 2_000) <> " token: unicode-secret"
+
+    append_worker_event("WorkerStdout", %{
+      run_id: "run-unicode",
+      phase_id: "developer",
+      worker_id: "worker-unicode",
+      output: unicode_output,
+      sequence: 1
+    })
+
+    assert {:ok, compact} = DebugViews.logs("run-unicode", mode: :compact)
+    [compact_entry] = compact.entries
+    assert String.valid?(compact_entry.message)
+    assert String.ends_with?(compact_entry.message, "...[truncated]")
+    refute compact_entry.message =~ "unicode-secret"
+    assert Jason.encode!(compact)
+
+    assert {:ok, raw} = DebugViews.logs("run-unicode", mode: :raw)
+    [raw_entry] = raw.entries
+    assert String.valid?(raw_entry.payload.output)
+    assert String.ends_with?(raw_entry.payload.output, "...[truncated]")
+    refute raw_entry.payload.output =~ "unicode-secret"
+    assert Jason.encode!(raw)
   end
 
   test "assistant_message events sent with message render non-blank" do

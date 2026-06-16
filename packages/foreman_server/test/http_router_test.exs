@@ -111,6 +111,38 @@ defmodule ForemanServer.Http.RouterTest do
     assert Jason.decode!(invalid_conn.resp_body)["error"]["message"] == "missing or invalid view"
   end
 
+  test "authorized raw log endpoint JSON-encodes long unicode logs and redacts colon secrets" do
+    append_run_event("RunStarted", %{run_id: "run-http-unicode", phase_order: ["developer"]})
+
+    append_worker_event("WorkerStdout", %{
+      run_id: "run-http-unicode",
+      phase_id: "developer",
+      worker_id: "worker-http-unicode",
+      output:
+        String.duplicate("🔐", 2_000) <>
+          " token: http-token password: hunter2 Authorization: Bearer bearer-token",
+      sequence: 1
+    })
+
+    raw_conn =
+      :get
+      |> conn("/api/v1/runs/run-http-unicode/logs?view=raw")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert raw_conn.status == 200
+    raw = Jason.decode!(raw_conn.resp_body)
+    [entry] = raw["logs"]["entries"]
+    output = entry["payload"]["output"]
+
+    assert String.valid?(output)
+    assert String.ends_with?(output, "...[truncated]")
+
+    for secret <- ["http-token", "hunter2", "bearer-token"] do
+      refute raw_conn.resp_body =~ secret
+    end
+  end
+
   test "authorized run report and debug endpoints return event-backed summaries" do
     seed_debug_http_run()
 

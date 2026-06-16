@@ -258,18 +258,42 @@ defmodule ForemanServer.DebugViews do
   end
 
   defp redact_secret_patterns(value) do
+    value =
+      Regex.replace(
+        ~r/\b(authorization)\s*[:=]\s*(?:bearer\s+)?[^\s,&;]+/i,
+        value,
+        fn _match, key -> "#{key}: #{@redacted}" end
+      )
+
+    value = Regex.replace(~r/\bbearer\s+[^\s,&;]+/i, value, "Bearer #{@redacted}")
+
     Regex.replace(
-      ~r/\b(authorization|bearer|token|password|secret|api[_-]?key)=?\s*([^\s,&;]+)/i,
+      ~r/\b(token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,&;]+/i,
       value,
-      fn _match, key, _secret -> "#{key}=#{@redacted}" end
+      fn _match, key -> "#{key}=#{@redacted}" end
     )
   end
 
   defp truncate_string(value) when byte_size(value) <= @max_string_length, do: value
 
   defp truncate_string(value) do
-    keep = @max_string_length - byte_size(@truncated_suffix)
-    binary_part(value, 0, keep) <> @truncated_suffix
+    keep = max(@max_string_length - byte_size(@truncated_suffix), 0)
+
+    value
+    |> String.graphemes()
+    |> Enum.reduce_while({[], 0}, fn grapheme, {acc, size} ->
+      next_size = size + byte_size(grapheme)
+
+      if next_size > keep do
+        {:halt, {acc, size}}
+      else
+        {:cont, {[grapheme | acc], next_size}}
+      end
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> IO.iodata_to_binary()
+    |> Kernel.<>(@truncated_suffix)
   end
 
   defp secret_key?(key) do
