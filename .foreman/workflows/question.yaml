@@ -16,8 +16,6 @@ phases:
   # Investigate the question and produce a written analysis.
   - name: explore
     prompt: explorer.md
-    tools:
-      allowed: [Glob, Grep, Read, Write]
     models:
       default: sonnet
       P0: opus
@@ -46,10 +44,8 @@ phases:
 
   - name: finalize
     prompt: finalize.md
-    tools:
-      allowed: [Bash, Glob, Grep, Read, Write]
     models:
-      default: MiniMax
+      default: haiku
     maxTurns: 15
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true

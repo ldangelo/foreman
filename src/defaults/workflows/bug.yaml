@@ -32,7 +32,7 @@ phases:
       P0: MiniMax
       P4: MiniMax
     maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -68,7 +68,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
-    artifact: DOCUMENTATION_REPORT.md
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -109,7 +109,7 @@ phases:
 
   # ── Phase 5: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
-  # artifact: FINALIZE_VALIDATION.md is what the pipeline reads for the validation
+  # artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md" is what the pipeline reads for the validation
   # contract check (Target Integration / Test Validation sections + Verdict).
   # FINALIZE_REPORT.md is also written by the agent as a human-readable summary.
   - name: finalize
@@ -119,7 +119,7 @@ phases:
     models:
       default: MiniMax
     maxTurns: 30
-    artifact: FINALIZE_VALIDATION.md
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1

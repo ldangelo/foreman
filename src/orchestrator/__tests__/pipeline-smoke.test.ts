@@ -144,7 +144,7 @@ describe("smoke workflow: structural invariants", () => {
 
   it("smoke workflow finalize phase has artifact/verdict/retry wiring", () => {
     const content = readFileSync(SMOKE_WORKFLOW, "utf-8");
-    expect(content).toContain("artifact: FINALIZE_VALIDATION.md");
+    expect(content).toContain('artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"');
     expect(content).toContain("verdict: true");
     expect(content).toContain("retryWith: developer");
     expect(content).toContain("retryOnFail: 1");

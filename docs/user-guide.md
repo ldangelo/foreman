@@ -56,7 +56,7 @@ Important phase reports:
 | PR wait/review | `PR_WAIT_REPORT.md`, `PR_REVIEW_REPORT.md` |
 | Merge | `MERGE_REPORT.md` |
 
-See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
+Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
 
 ### Worktrees
 

@@ -31,7 +31,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 30
-    artifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: EXPLORER_REPORT.md
     mail:
       onStart: true
@@ -46,7 +46,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -62,7 +62,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
-    artifact: DOCUMENTATION_REPORT.md
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -76,7 +76,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 60
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -93,7 +93,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 50
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -128,7 +128,7 @@ phases:
     models:
       default: MiniMax
     maxTurns: 60
-    artifact: FINALIZE_VALIDATION.md
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -193,4 +193,4 @@ onFailure:
     default: MiniMax
     P0: MiniMax-highspeed
   maxTurns: 20
-  artifact: TROUBLESHOOT_REPORT.md
+  artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

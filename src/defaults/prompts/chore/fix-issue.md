@@ -7,6 +7,11 @@ You are running inside Foreman's `chore` workflow for chore **{{seedId}}**: **{{
 {{commentsSection}}
 {{feedbackSection}}
 
+## Fast-Path Triage
+- If retry feedback cites a specific report, failing phase, file, or command, read that artifact first and fix that cited area before broader investigation.
+- Start with one `git status --short` and one focused diff/list command; avoid repeated broad `ls`, `git log --all`, or directory walks unless they answer a specific question.
+- Do not edit workflow or prompt files unless the task explicitly targets workflow/prompt behavior.
+
 ## Instructions
 - Keep the change mechanical and scoped to the chore.
 - Preserve existing behavior unless the task explicitly asks to change it.
@@ -16,7 +21,12 @@ You are running inside Foreman's `chore` workflow for chore **{{seedId}}**: **{{
 - If blocked, write `BLOCKED.md` explaining the blocker and still write `DEVELOPER_REPORT.md` with what you tried.
 
 ## Required Artifact
-Before finishing, write `DEVELOPER_REPORT.md` in the worktree root with this structure:
+Before finishing, write `{{reportDir}}/DEVELOPER_REPORT.md`. Create the directory first:
+```bash
+mkdir -p "{{reportDir}}"
+```
+
+Use this structure:
 
 ```markdown
 # Developer Report: {{seedTitle}}
