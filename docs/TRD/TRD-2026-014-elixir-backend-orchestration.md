@@ -550,7 +550,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-014**: Implement deterministic simulation harness for run, phase, and worker events (5h) [satisfies REQ-021] [depends: TRD-009, TRD-011]
+- [x] **TRD-014**: Implement deterministic simulation harness for run, phase, and worker events (5h) [satisfies REQ-021] [depends: TRD-009, TRD-011]
 
 **Description:** Implement deterministic simulation harness for run, phase, and worker events with production code, migration-safe boundaries, and operator-visible behavior.
 

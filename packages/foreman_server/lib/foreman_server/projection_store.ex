@@ -123,6 +123,7 @@ defmodule ForemanServer.ProjectionStore do
       scheduler_skips: %{},
       worker_sequences: %{},
       worker_heartbeats: %{},
+      recovery_events: [],
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -372,6 +373,15 @@ defmodule ForemanServer.ProjectionStore do
          payload: %{task_id: task_id} = payload
        }) do
     put_in(projection, [:scheduler_skips, task_id], payload)
+  end
+
+  defp apply_domain_event(projection, %{type: type, payload: payload})
+       when type in ["WorkerFailureSimulated", "WorkerRecoveryRequired"] do
+    update_in(
+      projection,
+      [:recovery_events],
+      &((&1 || []) ++ [Map.put(payload, :event_type, type)])
+    )
   end
 
   defp apply_domain_event(projection, _event), do: projection
