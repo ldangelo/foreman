@@ -11,6 +11,59 @@ defmodule ForemanServer.Http.Router do
     send_json(conn, 200, %{ok: true, active_projects: ForemanServer.active_projects()})
   end
 
+  get "/api/v1/projects" do
+    with :ok <- authorize(conn) do
+      send_json(conn, 200, %{ok: true, projects: ForemanServer.ProjectionStore.project_list()})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
+  get "/api/v1/projects/:project_id" do
+    with :ok <- authorize(conn),
+         project when not is_nil(project) <- ForemanServer.ProjectionStore.project(project_id) do
+      send_json(conn, 200, %{ok: true, project: project})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      nil ->
+        send_error(conn, 404, "NOT_FOUND", "project not found", false)
+    end
+  end
+
+  get "/api/v1/tasks" do
+    with :ok <- authorize(conn) do
+      send_json(conn, 200, %{ok: true, tasks: ForemanServer.ProjectionStore.task_list()})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
+  get "/api/v1/tasks/dispatchable" do
+    with :ok <- authorize(conn) do
+      send_json(conn, 200, %{ok: true, tasks: ForemanServer.ProjectionStore.dispatchable_tasks()})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
+  get "/api/v1/tasks/:task_id" do
+    with :ok <- authorize(conn),
+         task when not is_nil(task) <- ForemanServer.ProjectionStore.task(task_id) do
+      send_json(conn, 200, %{ok: true, task: task})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      nil ->
+        send_error(conn, 404, "NOT_FOUND", "task not found", false)
+    end
+  end
+
   post "/api/v1/commands" do
     with :ok <- authorize(conn),
          {:ok, command} <- normalize_command(conn.body_params),
@@ -27,6 +80,9 @@ defmodule ForemanServer.Http.Router do
 
       {:error, :invalid_command} ->
         send_error(conn, 400, "VALIDATION_FAILED", "invalid command envelope", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
 
       {:error, {:conflict, details}} ->
         send_error(conn, 409, "CONFLICT", "stream version conflict", false, Map.new(details))

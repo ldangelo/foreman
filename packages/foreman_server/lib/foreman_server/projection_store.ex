@@ -25,6 +25,16 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :snapshot)
   end
 
+  @spec project(String.t()) :: map() | nil
+  def project(project_id) when is_binary(project_id) do
+    GenServer.call(__MODULE__, {:project, project_id})
+  end
+
+  @spec project_list() :: [map()]
+  def project_list do
+    GenServer.call(__MODULE__, :project_list)
+  end
+
   @spec task(String.t()) :: map() | nil
   def task(task_id) when is_binary(task_id) do
     GenServer.call(__MODULE__, {:task, task_id})
@@ -38,6 +48,11 @@ defmodule ForemanServer.ProjectionStore do
   @spec status_counts() :: map()
   def status_counts do
     GenServer.call(__MODULE__, :status_counts)
+  end
+
+  @spec dispatchable_tasks() :: [map()]
+  def dispatchable_tasks do
+    GenServer.call(__MODULE__, :dispatchable_tasks)
   end
 
   @impl true
@@ -59,6 +74,19 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, projection, projection}
   end
 
+  def handle_call({:project, project_id}, _from, projection) do
+    {:reply, get_in(projection, [:projects, project_id]), projection}
+  end
+
+  def handle_call(:project_list, _from, projection) do
+    projects =
+      projection.projects
+      |> Map.values()
+      |> Enum.sort_by(& &1.project_id)
+
+    {:reply, projects, projection}
+  end
+
   def handle_call({:task, task_id}, _from, projection) do
     {:reply, get_in(projection, [:tasks, task_id]), projection}
   end
@@ -76,9 +104,20 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, projection.status_counts, projection}
   end
 
+  def handle_call(:dispatchable_tasks, _from, projection) do
+    tasks =
+      projection.tasks
+      |> Map.values()
+      |> Enum.filter(&dispatchable?(&1, projection.tasks))
+      |> Enum.sort_by(& &1.task_id)
+
+    {:reply, tasks, projection}
+  end
+
   defp empty_projection do
     %{
       commands: %{},
+      projects: %{},
       tasks: %{},
       runs: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
@@ -102,15 +141,35 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_domain_event(projection, %{
+         type: "ProjectRegistered",
+         payload: %{project_id: project_id} = payload
+       }) do
+    project = %{
+      project_id: project_id,
+      path: Map.fetch!(payload, :path),
+      status: Map.get(payload, :status, "active"),
+      default_branch: Map.get(payload, :default_branch, "main"),
+      config: Map.get(payload, :config, %{}),
+      health: Map.get(payload, :health, %{ok: true}),
+      updated_at: Map.get(payload, :updated_at)
+    }
+
+    put_in(projection, [:projects, project_id], project)
+  end
+
+  defp apply_domain_event(projection, %{
          type: "TaskCreated",
          payload: %{task_id: task_id} = payload
        }) do
-    task = %{
-      task_id: task_id,
-      title: Map.get(payload, :title, task_id),
-      status: Map.get(payload, :status, "open"),
-      updated_at: Map.get(payload, :updated_at)
-    }
+    task =
+      %{
+        task_id: task_id,
+        title: Map.get(payload, :title, task_id),
+        status: Map.get(payload, :status, "open"),
+        updated_at: Map.get(payload, :updated_at)
+      }
+      |> maybe_put(:project_id, Map.get(payload, :project_id))
+      |> maybe_put(:dependencies, Map.get(payload, :dependencies))
 
     put_in(projection, [:tasks, task_id], task)
   end
@@ -119,10 +178,44 @@ defmodule ForemanServer.ProjectionStore do
          type: "TaskUpdated",
          payload: %{task_id: task_id} = payload
        }) do
-    existing =
-      get_in(projection, [:tasks, task_id]) || %{task_id: task_id, title: task_id, status: "open"}
+    existing = empty_task(task_id)
+    existing = get_in(projection, [:tasks, task_id]) || existing
 
     put_in(projection, [:tasks, task_id], Map.merge(existing, Map.drop(payload, [:task_id])))
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "TaskAnnotated",
+         payload: %{task_id: task_id} = payload
+       }) do
+    existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
+
+    annotation = %{
+      body: Map.fetch!(payload, :body),
+      author: Map.get(payload, :author),
+      created_at: Map.get(payload, :created_at)
+    }
+
+    task =
+      existing
+      |> Map.update(:annotations, [annotation], &(&1 ++ [annotation]))
+      |> Map.put(:updated_at, annotation.created_at)
+
+    put_in(projection, [:tasks, task_id], task)
+  end
+
+  defp apply_domain_event(projection, %{
+         type: "TaskDependencyAdded",
+         payload: %{task_id: task_id, depends_on: depends_on} = payload
+       }) do
+    existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
+
+    task =
+      existing
+      |> Map.update(:dependencies, [depends_on], fn deps -> Enum.uniq(deps ++ [depends_on]) end)
+      |> Map.put(:updated_at, Map.get(payload, :updated_at))
+
+    put_in(projection, [:tasks, task_id], task)
   end
 
   defp apply_domain_event(projection, %{type: "RunStarted", payload: %{run_id: run_id} = payload}) do
@@ -230,6 +323,24 @@ defmodule ForemanServer.ProjectionStore do
       do: counts,
       else: Map.update!(counts, :active, &(&1 + 1))
   end
+
+  defp dispatchable?(%{status: status} = task, tasks) when status in ["ready", "approved"] do
+    task
+    |> Map.get(:dependencies, [])
+    |> Enum.all?(fn dependency_id ->
+      match?(%{status: "closed"}, Map.get(tasks, dependency_id))
+    end)
+  end
+
+  defp dispatchable?(_task, _tasks), do: false
+
+  defp empty_task(task_id) do
+    %{task_id: task_id, title: task_id, status: "open", updated_at: nil}
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, []), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp normalize_event(%ForemanServer.Event{} = event) do
     %{type: event.event_type, payload: event.payload}
