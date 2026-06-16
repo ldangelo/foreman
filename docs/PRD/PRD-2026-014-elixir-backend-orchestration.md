@@ -1,30 +1,31 @@
-# PRD-2026-014: Elixir Backend Orchestration Migration
-
-**Document ID:** PRD-2026-014  
-**Version:** 1.0.0  
-**Status:** Draft  
-**Date:** 2026-06-16  
-**Scale Depth:** STANDARD  
-**Author:** Lead Agent (PRD Phase via ensemble:create-prd)  
-**Total Requirements:** 25  
-**Readiness Score:** 4.25 / 5.0 (Implementation Readiness Gate: PASS WITH WATCH ITEMS)
-
 ---
+document_id: PRD-2026-014
+version: 1.0.2
+status: Draft
+date: 2026-06-16
+scale_depth: STANDARD
+author: Lead Agent (PRD Phase via ensemble:create-prd)
+total_requirements: 25
+readiness_score: 4.63
+readiness_gate: PASS
+---
+
+# PRD-2026-014: Elixir Backend Orchestration Migration
 
 ## PRD Health Summary
 
 | Metric | Value |
 |--------|-------|
 | **Total Requirements** | 25 (REQ-001 through REQ-025) |
-| **Must** | 15 |
-| **Should** | 7 |
-| **Could** | 3 |
+| **Must** | 18 |
+| **Should** | 6 |
+| **Could** | 1 |
 | **Won't (this release)** | 0 |
 | **AC Coverage** | 25/25 (100%) |
-| **Risk Flags** | 10 |
-| **Cross-Requirement Dependencies** | 17 |
-| **Readiness Score** | 4.25 / 5.0 |
-| **Ambiguity Markers** | 7 |
+| **Risk Flags** | 25 |
+| **Cross-Requirement Dependencies** | 23 |
+| **Readiness Score** | 4.63 / 5.0 |
+| **Ambiguity Markers** | 0 |
 
 ---
 
@@ -107,7 +108,7 @@ Node CLI/API/integration emits Command
 | G-1 | Replace TS orchestration state ownership with Elixir/OTP server | New runs are owned by Elixir RunServer actors |
 | G-2 | Preserve existing Foreman user workflows during migration | Existing documented commands have compatibility equivalents |
 | G-3 | Reduce state drift between tasks, runs, phases, workers, and PRs | Status projections match event log in 100% of consistency checks |
-| G-4 | Improve recovery after server/worker crashes | Server reattaches or restarts orphan workers within 60s by default [NEEDS CLARIFICATION: Should 60s be the target recovery SLA?] |
+| G-4 | Improve recovery after server/worker crashes | Server reattaches or restarts orphan workers within 60s by default |
 | G-5 | Lower integration flake rate | CI integration flakes from daemon readiness/state races reduced by 80%+ over 30 days |
 | G-6 | Keep Pi SDK usable without blocking future providers | Pi SDK worker adapter ships in v1; provider adapter interface defined |
 | G-7 | Simplify CLI mental model | New CLI groups commands by task/run/project/server/logs and deprecates duplicate aliases |
@@ -121,7 +122,7 @@ Node CLI/API/integration emits Command
 - Removing Git/Jujutsu VCS support.
 - Replacing Postgres.
 - Reimplementing every model provider directly in v1.
-- Zero-downtime migration for active in-flight TS runs [NEEDS CLARIFICATION: Must active TS runs be migrated live, or can they drain before cutover?]
+- Live migration of active in-flight TS runs; active TS runs may drain before cutover instead.
 
 ---
 
@@ -137,7 +138,7 @@ Node CLI/API/integration emits Command
 │ - local bootstrap/update                                     │
 │ - compatibility aliases                                      │
 └───────────────┬─────────────────────────────────────────────┘
-                │ HTTP/Unix socket/WebSocket/SSE [NEEDS CLARIFICATION: final transport]
+                │ HTTP over localhost
 ┌───────────────▼─────────────────────────────────────────────┐
 │ Elixir Foreman Server                                        │
 │ - Command handlers                                           │
@@ -149,7 +150,7 @@ Node CLI/API/integration emits Command
 │ - VCS/PR/merge orchestration                                 │
 │ - Inbox/PubSub                                               │
 └───────────────┬─────────────────────────────────────────────┘
-                │ worker protocol over stdio/HTTP/gRPC [NEEDS CLARIFICATION: final worker protocol]
+                │ worker protocol over HTTP over localhost
 ┌───────────────▼─────────────────────────────────────────────┐
 │ Node Worker Layer                                            │
 │ - Pi SDK worker adapter                                      │
@@ -204,6 +205,7 @@ Existing TS orchestrator remains behind compatibility mode until feature parity
 
 **Priority:** Must  
 **Complexity:** High  
+**Type:** Functional
 **Risk:** [RISK: foundational runtime replacement]
 
 Foreman shall provide an Elixir/OTP server that owns orchestration state for projects, tasks, runs, phases, workers, queues, inbox, and recovery.
@@ -216,6 +218,7 @@ Foreman shall provide an Elixir/OTP server that owns orchestration state for pro
 
 **Priority:** Must  
 **Complexity:** High  
+**Type:** Functional
 **Risk:** [RISK: data migration and event schema design]
 
 Foreman shall use an append-only event store as the durable source of orchestration truth.
@@ -228,6 +231,8 @@ Foreman shall use an append-only event store as the durable source of orchestrat
 
 **Priority:** Must  
 **Complexity:** High
+**Type:** Functional
+**Risk:** [RISK: projection schema drift or rebuild inconsistency]
 
 Foreman shall expose read models through projections optimized for CLI, board, watch, status, debug, inbox, and reporting.
 
@@ -239,17 +244,21 @@ Foreman shall expose read models through projections optimized for CLI, board, w
 
 **Priority:** Must  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: CLI/server bootstrap and compatibility behavior confusion]
 
 Foreman shall retain a Node CLI that delegates orchestration commands to the Elixir server and streamlines overlapping commands.
 
 - AC-004-1: Given the server is running, when a user runs `foreman task create`, `foreman run`, `foreman status`, or `foreman logs`, then the CLI calls the server API rather than mutating DB state directly.
 - AC-004-2: Given legacy aliases such as `--bead`, `dashboard`, or deprecated command names are used, when compatibility mode is enabled, then the CLI warns and maps to the new command.
-- AC-004-3: Given the server is not running, when a command requires it, then the CLI either starts it or prints a clear `foreman server start` instruction [NEEDS CLARIFICATION: Should the CLI auto-start the server by default?].
+- AC-004-3: Given the server is not running, when a command requires it, then the CLI auto-starts the local server by default or prints a clear `foreman server start` instruction if auto-start fails or is disabled.
 
 ### REQ-005: Simplified CLI Command Surface
 
 **Priority:** Should  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: command consolidation may disrupt existing operator muscle memory]
 
 Foreman should consolidate commands into a smaller, clearer surface.
 
@@ -278,6 +287,7 @@ foreman integration jira|github
 
 **Priority:** Must  
 **Complexity:** High  
+**Type:** Functional
 **Risk:** [RISK: worker protocol, streaming, tool-call compatibility]
 
 Foreman shall preserve Pi SDK execution through a Node worker bridge controlled by the Elixir server.
@@ -291,17 +301,21 @@ Foreman shall preserve Pi SDK execution through a Node worker bridge controlled 
 
 **Priority:** Should  
 **Complexity:** High
+**Type:** Functional
+**Risk:** [RISK: provider abstraction may outpace v1 Pi SDK focus]
 
 Foreman should define a provider-agnostic execution adapter so future workers can use Anthropic, OpenAI, OpenRouter, OpenLLM-compatible servers, or other providers without changing orchestration.
 
 - AC-007-1: Given a workflow specifies a model/provider, when execution starts, then provider selection is resolved through an adapter registry.
-- AC-007-2: Given Pi SDK is unavailable, when an alternate configured provider exists, then Foreman can run supported phases through that provider [NEEDS CLARIFICATION: Which provider should be the first non-Pi production adapter?].
+- AC-007-2: Given Pi SDK is unavailable in v1, when execution is requested without a production-ready adapter, then Foreman fails before execution with a clear message that Pi SDK is the only required production adapter for v1.
 - AC-007-3: Given a provider lacks Pi-specific tool semantics, when a workflow uses unsupported tools, then Foreman fails before execution with actionable validation.
 
 ### REQ-008: Workflow Execution State Machines
 
 **Priority:** Must  
 **Complexity:** High
+**Type:** Functional
+**Risk:** [RISK: state machine modeling errors could block valid workflow transitions]
 
 Foreman shall model every run and phase as explicit state machines owned by Elixir actors.
 
@@ -313,6 +327,8 @@ Foreman shall model every run and phase as explicit state machines owned by Elix
 
 **Priority:** Must  
 **Complexity:** High
+**Type:** Functional
+**Risk:** [RISK: workflow parity gaps could break existing automation]
 
 Foreman shall support existing workflow types and phase patterns: default, quick, smoke, task, feature, bug, chore, docs, question, and epic.
 
@@ -324,6 +340,8 @@ Foreman shall support existing workflow types and phase patterns: default, quick
 
 **Priority:** Must  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: task/project parity gaps could create migration regressions]
 
 Foreman shall preserve native task/project management capabilities.
 
@@ -335,6 +353,8 @@ Foreman shall preserve native task/project management capabilities.
 
 **Priority:** Must  
 **Complexity:** High
+**Type:** Functional
+**Risk:** [RISK: scheduler capacity bugs could over-dispatch or starve runs]
 
 Foreman shall dispatch runs through supervised Elixir scheduling instead of ad hoc daemon loops.
 
@@ -346,6 +366,7 @@ Foreman shall dispatch runs through supervised Elixir scheduling instead of ad h
 
 **Priority:** Must  
 **Complexity:** High  
+**Type:** Functional
 **Risk:** [RISK: external reality cannot be fully event-sourced]
 
 Foreman shall discover, reattach to, or restart workers after server crash, worker crash, host restart, or state drift.
@@ -358,6 +379,8 @@ Foreman shall discover, reattach to, or restart workers after server crash, work
 
 **Priority:** Must  
 **Complexity:** High
+**Type:** Functional
+**Risk:** [RISK: VCS/worktree edge cases can corrupt or strand workspace state]
 
 Foreman shall preserve Git and Jujutsu VCS backend behavior, worktree isolation, cleanup, rebase, branch creation, and merge support.
 
@@ -369,6 +392,7 @@ Foreman shall preserve Git and Jujutsu VCS backend behavior, worktree isolation,
 
 **Priority:** Must  
 **Complexity:** High  
+**Type:** Functional
 **Risk:** [RISK: external GitHub eventual consistency]
 
 Foreman shall preserve create-pr, pr-wait, prepare-pr-review, pr-review, and merge gates, including late-check stability behavior.
@@ -381,6 +405,8 @@ Foreman shall preserve create-pr, pr-wait, prepare-pr-review, pr-review, and mer
 
 **Priority:** Must  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: message delivery semantics may diverge during event-backed migration]
 
 Foreman shall preserve agent mail/inbox behavior as event-backed messages.
 
@@ -392,6 +418,8 @@ Foreman shall preserve agent mail/inbox behavior as event-backed messages.
 
 **Priority:** Must  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: external integration idempotency failures could duplicate work]
 
 Foreman shall preserve sentinel, Jira monitor, GitHub integration, and other external triggers through server-side command ingestion.
 
@@ -403,6 +431,8 @@ Foreman shall preserve sentinel, Jira monitor, GitHub integration, and other ext
 
 **Priority:** Must  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: log/artifact references may drift from event timelines]
 
 Foreman shall preserve logs/reports/debug workflows while reducing reliance on raw log inference.
 
@@ -414,6 +444,8 @@ Foreman shall preserve logs/reports/debug workflows while reducing reliance on r
 
 **Priority:** Should  
 **Complexity:** High
+**Type:** Functional
+**Risk:** [RISK: attach support depends on provider/session capabilities]
 
 Foreman should support attaching to active or recently completed worker sessions where the worker adapter supports it.
 
@@ -425,6 +457,8 @@ Foreman should support attaching to active or recently completed worker sessions
 
 **Priority:** Should  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: planning compatibility gaps could break PRD/TRD workflows]
 
 Foreman should preserve planning flows while simplifying their command surface.
 
@@ -436,18 +470,21 @@ Foreman should preserve planning flows while simplifying their command surface.
 
 **Priority:** Must  
 **Complexity:** High  
+**Type:** Functional
 **Risk:** [RISK: dual-write and compatibility complexity]
 
 Foreman shall support incremental migration from TS daemon to Elixir server.
 
 - AC-020-1: Given an existing Foreman project, when migration runs, then projects, tasks, runs, workflows, inbox messages, and config are imported or mapped.
 - AC-020-2: Given TS-era runs exist, when viewed after migration, then their historical records remain readable.
-- AC-020-3: Given migration has not completed, when compatibility mode is enabled, then selected commands can delegate to legacy TS code [NEEDS CLARIFICATION: Which legacy commands must remain callable during coexistence?].
+- AC-020-3: Given migration has not completed, when compatibility mode is enabled, then `run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, and `doctor` can delegate to legacy TS code.
 
 ### REQ-021: Testing and Deterministic Simulation
 
 **Priority:** Must  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: deterministic simulations may miss real subprocess edge cases]
 
 Foreman shall provide deterministic tests for orchestration without requiring full external subprocess races.
 
@@ -459,6 +496,8 @@ Foreman shall provide deterministic tests for orchestration without requiring fu
 
 **Priority:** Should  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: metrics and timelines may add overhead or expose partial truth]
 
 Foreman should expose operational metrics, health checks, and event timeline views.
 
@@ -470,17 +509,21 @@ Foreman should expose operational metrics, health checks, and event timeline vie
 
 **Priority:** Should  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: remote access increases authentication and secret-handling requirements]
 
 Foreman should maintain or improve process isolation, secret handling, and command authorization.
 
 - AC-023-1: Given worker processes start, when environment is prepared, then secrets are scoped to the project/run and forbidden variables are stripped.
-- AC-023-2: Given server API is exposed beyond local socket, when authentication is configured, then commands require an auth token or equivalent [NEEDS CLARIFICATION: Will the server be local-only in v1?].
+- AC-023-2: Given server API is exposed beyond local socket, when authentication is configured, then commands require an auth token or equivalent.
 - AC-023-3: Given destructive commands are requested, when executed, then authorization and audit events are recorded.
 
 ### REQ-024: Documentation and Operator Education
 
 **Priority:** Could  
 **Complexity:** Medium
+**Type:** Functional
+**Risk:** [RISK: incomplete operator docs could make migration unsafe]
 
 Foreman should update documentation to explain the new architecture, migration path, command changes, and recovery model.
 
@@ -492,6 +535,7 @@ Foreman should update documentation to explain the new architecture, migration p
 
 **Priority:** Must  
 **Complexity:** Medium  
+**Type:** Functional
 **Risk:** [RISK: committing to Elixir before validating WolverineFx/Marten tradeoffs]
 
 Foreman shall run a bounded comparative architecture spike before TRD commitment, comparing Elixir/OTP against WolverineFx/Marten and at least one control alternative for Foreman's orchestration workload.
@@ -507,7 +551,7 @@ Foreman shall run a bounded comparative architecture spike before TRD commitment
 
 ### Performance
 
-- Server projection reads for `status`, `task list`, and `run show` should return in <250ms for 1,000 active/recent tasks on a local machine [NEEDS CLARIFICATION: Is 1,000 tasks an appropriate target scale?].
+- Server projection reads for `status`, `task list`, and `run show` should return in <250ms for 100 active/recent tasks on a local machine.
 - Event append path should support at least 100 events/sec locally for bursty worker logs/tool events.
 - Worker event streaming should not block phase execution if non-critical projections lag.
 
@@ -520,7 +564,7 @@ Foreman shall run a bounded comparative architecture spike before TRD commitment
 
 ### Security
 
-- Local server transport should default to Unix socket or localhost-only binding.
+- Server transport should default to authenticated HTTP, binding to localhost for local use and allowing explicitly configured remote connections.
 - Secrets must be redacted from events/logs/projections.
 - Destructive commands must produce audit events.
 
@@ -762,38 +806,37 @@ Default hypothesis: **Elixir/OTP remains preferred** because Foreman's core risk
 
 | Dimension | Score | Notes |
 |-----------|-------|-------|
-| Completeness | 4.5 | Covers server, CLI, workers, workflows, recovery, VCS, PR gates, integrations, docs, comparative architecture spike |
-| Testability | 4.25 | Every requirement has ACs; TRD must add concrete test fixtures and event schemas |
-| Clarity | 4.0 | Architecture direction clear; transport/protocol details intentionally marked for clarification |
+| Completeness | 4.75 | Covers server, CLI, workers, workflows, recovery, VCS, PR gates, integrations, docs, comparative architecture spike, and migration/coexistence decisions |
+| Testability | 4.75 | Every requirement has ACs; clarified transport, scale, and coexistence choices support concrete TRD test fixtures |
+| Clarity | 4.75 | Architecture direction clear; transport, protocol, migration, scale, and v1 provider decisions resolved |
 | Feasibility | 4.25 | Incremental hybrid path reduces risk; full parity remains high effort |
-| **Overall** | **4.25** | **PASS WITH WATCH ITEMS** |
+| **Overall** | **4.63** | **PASS** |
 
-Gate decision: PASS. This PRD is ready for TRD creation after resolving or accepting the marked clarification items.
+Gate decision: PASS. This PRD is ready for TRD creation after the comparative architecture spike.
 
-Ambiguity scan complete: 7 items marked for clarification.
+Ambiguity scan complete: 0 items marked for clarification.
 
 ---
 
-## 14. Open Questions
+## 14. Resolved Decisions
 
-1. Should active TS runs drain before cutover, or must they migrate live?
-2. Should the Node CLI auto-start the Elixir server by default?
-3. Which transport should connect Node CLI ↔ Elixir server: Unix socket HTTP, TCP localhost HTTP, gRPC, or another protocol?
-4. Which protocol should connect Elixir ↔ Node worker: stdio JSON-RPC, HTTP, gRPC, or ports?
-5. Which direct provider adapter should ship first after Pi SDK?
-6. Will the Elixir server be local-only in v1, or should it support authenticated remote access?
-7. What scale target should define projection performance: 1,000 tasks, 10,000 tasks, or another number?
-8. Which control alternative should the spike include alongside Elixir/OTP and WolverineFx/Marten?
+1. Active TypeScript runs may drain before cutover; live migration is not required.
+2. The Node CLI should auto-start the Elixir server by default for normal local commands, with a manual `foreman server start` instruction when auto-start fails or is disabled.
+3. Node CLI ↔ Elixir server transport is HTTP over localhost by default.
+4. Elixir server ↔ Node/Pi SDK worker protocol is HTTP over localhost.
+5. No non-Pi production adapter is required in v1; define the adapter interface and keep Pi SDK as the only required production adapter.
+6. The server may allow remote connections in v1 when explicitly configured and authenticated.
+7. Projection performance target is 100 active/recent tasks returning in <250ms locally.
+8. The control alternative for the comparative spike remains open and should be selected during spike planning.
 
 ---
 
 ## 15. Suggested Next Steps
 
-1. Run `/ensemble:refine-prd docs/PRD/PRD-2026-014-elixir-backend-orchestration.md` to resolve ambiguity markers.
-2. Run the comparative backend architecture spike before backend TRD commitment.
-3. Run `/ensemble:create-trd docs/PRD/PRD-2026-014-elixir-backend-orchestration.md` after refinement and spike recommendation.
-4. If Elixir remains selected, begin with: Elixir event store + one run state machine + Node CLI status projection + simulated worker.
-5. If WolverineFx wins, write the TRD around WolverineFx/Marten command handlers, durable inbox/outbox, sagas, Node CLI bridge, and Node/Pi worker boundary.
+1. Run the comparative backend architecture spike before backend TRD commitment.
+2. Run `/ensemble:create-trd docs/PRD/PRD-2026-014-elixir-backend-orchestration.md` after the spike recommendation.
+3. If Elixir remains selected, begin with: Elixir event store + one run state machine + Node CLI status projection + simulated worker.
+4. If WolverineFx wins, write the TRD around WolverineFx/Marten command handlers, durable inbox/outbox, sagas, Node CLI bridge, and Node/Pi worker boundary.
 
 ---
 
@@ -803,3 +846,4 @@ Ambiguity scan complete: 7 items marked for clarification.
 |------|---------|--------|---------|
 | 2026-06-16 | 1.0.0 | Lead Agent (PRD Phase) | Initial draft via ensemble:create-prd workflow |
 | 2026-06-16 | 1.0.1 | Lead Agent | Added comparative architecture spike for Elixir/OTP vs WolverineFx/Marten before TRD commitment |
+| 2026-06-16 | 1.0.2 | Pi Agent | Resolved clarification markers, converted metadata to YAML frontmatter, updated health/readiness scores, added requirement type metadata and risk indicators |
