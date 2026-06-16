@@ -157,7 +157,11 @@ export async function createTempProjectHarness(): Promise<TempProjectHarness> {
     name: projectName,
     path: projectPath,
     defaultBranch: "main",
-    status: "active",
+    // Keep harness projects out of the real daemon's auto-dispatch loop when
+    // tests reuse a developer DATABASE_URL while the daemon is running. Tests
+    // address projects directly through the registry/project id, so they do
+    // not need active-project daemon polling.
+    status: "paused",
   });
   const registryBaseDir = process.env.FOREMAN_REGISTRY_BASE_DIR ?? join(process.env.HOME ?? tmpdir(), ".foreman");
   const registryDir = join(registryBaseDir, "projects");
