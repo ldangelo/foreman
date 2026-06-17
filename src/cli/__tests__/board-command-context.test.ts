@@ -48,7 +48,7 @@ describe("foreman board command context", () => {
     mockCreateTrpcClient.mockReset();
     mockEnsureRunning.mockReset();
     mockListTasks.mockReset();
-    delete process.env.FOREMAN_BACKEND;
+    process.env.FOREMAN_BACKEND = "node";
   });
 
   afterEach(() => {
@@ -130,7 +130,7 @@ describe("loadBoardTasks status routing", () => {
     vi.clearAllMocks();
     mockListRegisteredProjects.mockReset();
     mockCreateTrpcClient.mockReset();
-    delete process.env.FOREMAN_BACKEND;
+    process.env.FOREMAN_BACKEND = "node";
   });
 
   afterEach(() => {
@@ -271,7 +271,7 @@ describe("board inbox-driven task updates", () => {
     vi.clearAllMocks();
     mockListRegisteredProjects.mockReset();
     mockCreateTrpcClient.mockReset();
-    delete process.env.FOREMAN_BACKEND;
+    process.env.FOREMAN_BACKEND = "node";
   });
 
   afterEach(() => {

@@ -10,9 +10,9 @@ export function migrationComplete(env: Env = process.env): boolean {
 
 export function foremanBackendMode(env: Env = process.env): ForemanBackendMode {
   const configured = (env.FOREMAN_BACKEND ?? "").toLowerCase();
-  if (configured === "elixir") return "elixir";
   if (configured === "node") return "node";
-  return migrationComplete(env) ? "elixir" : "node";
+  if (configured === "elixir") return "elixir";
+  return "elixir";
 }
 
 export function nodeDaemonAllowed(env: Env = process.env): boolean {

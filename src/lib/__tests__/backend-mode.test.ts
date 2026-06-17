@@ -3,9 +3,9 @@ import { foremanBackendMode, migrationComplete, nodeDaemonAllowed, nodeDaemonDis
 import { createTrpcClient } from "../trpc-client.js";
 
 describe("Foreman backend mode", () => {
-  it("defaults to Node until the migration is complete", () => {
-    expect(foremanBackendMode({})).toBe("node");
-    expect(nodeDaemonAllowed({})).toBe(true);
+  it("defaults to Elixir after cutover", () => {
+    expect(foremanBackendMode({})).toBe("elixir");
+    expect(nodeDaemonAllowed({})).toBe(false);
   });
 
   it("selects Elixir and disables the Node daemon scheduler when requested", () => {

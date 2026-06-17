@@ -32,9 +32,10 @@ describe("legacy TS coexistence delegation", () => {
   });
 
   it("enables delegation only while compatibility mode is active and migration is incomplete", () => {
-    expect(shouldUseLegacyCompatibility({ FOREMAN_LEGACY_COMPATIBILITY_MODE: "1" })).toBe(true);
+    expect(shouldUseLegacyCompatibility({ FOREMAN_BACKEND: "node", FOREMAN_LEGACY_COMPATIBILITY_MODE: "1" })).toBe(true);
     expect(
       shouldUseLegacyCompatibility({
+        FOREMAN_BACKEND: "node",
         FOREMAN_LEGACY_COMPATIBILITY_MODE: "1",
         FOREMAN_MIGRATION_COMPLETE: "true",
       }),
@@ -54,6 +55,7 @@ describe("legacy TS coexistence delegation", () => {
     const result = maybeDelegateToLegacyTs(
       ["run", "--dry-run"],
       {
+        FOREMAN_BACKEND: "node",
         FOREMAN_LEGACY_COMPATIBILITY_MODE: "legacy",
         FOREMAN_LEGACY_TS_BIN: "/tmp/foreman-legacy",
       },
@@ -70,7 +72,7 @@ describe("legacy TS coexistence delegation", () => {
 
   it("fails with actionable diagnostics when compatibility mode lacks a legacy binary", () => {
     expect(() =>
-      maybeDelegateToLegacyTs(["status"], { FOREMAN_LEGACY_COMPATIBILITY_MODE: "1" }, vi.fn() as any),
+      maybeDelegateToLegacyTs(["status"], { FOREMAN_BACKEND: "node", FOREMAN_LEGACY_COMPATIBILITY_MODE: "1" }, vi.fn() as any),
     ).toThrow(/FOREMAN_LEGACY_TS_BIN/);
   });
 
@@ -93,6 +95,7 @@ describe("legacy TS coexistence delegation", () => {
       maybeDelegateToLegacyTs(
         ["project", "list"],
         {
+          FOREMAN_BACKEND: "node",
           FOREMAN_LEGACY_COMPATIBILITY_MODE: "1",
           FOREMAN_LEGACY_TS_BIN: "/tmp/legacy",
         },
