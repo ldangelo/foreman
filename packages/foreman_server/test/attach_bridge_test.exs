@@ -86,6 +86,46 @@ defmodule ForemanServer.AttachBridgeTest do
     assert length(attach_events) == 1
   end
 
+  test "duplicate attach returns original matching worker after interleaved attach results" do
+    seed_pi_worker("run-idempotent-workers", "worker-1")
+    seed_pi_worker("run-idempotent-workers", "worker-2")
+
+    first = get_json("/api/v1/runs/run-idempotent-workers/attach?worker_id=worker-1")
+    second = get_json("/api/v1/runs/run-idempotent-workers/attach?worker_id=worker-2")
+    third = get_json("/api/v1/runs/run-idempotent-workers/attach?worker_id=worker-1")
+
+    assert first.status == 200
+    assert second.status == 200
+    assert third.status == 200
+    assert Jason.decode!(first.resp_body)["attach"]["worker_id"] == "worker-1"
+    assert Jason.decode!(second.resp_body)["attach"]["worker_id"] == "worker-2"
+    assert Jason.decode!(third.resp_body)["attach"]["worker_id"] == "worker-1"
+
+    missing = get_json("/api/v1/runs/run-idempotent-workers/attach?worker_id=missing-worker")
+    fourth = get_json("/api/v1/runs/run-idempotent-workers/attach?worker_id=worker-1")
+
+    assert Jason.decode!(missing.resp_body)["attach"]["status"] == "unsupported"
+    assert Jason.decode!(fourth.resp_body)["attach"]["status"] == "ready"
+    assert Jason.decode!(fourth.resp_body)["attach"]["worker_id"] == "worker-1"
+  end
+
+  test "unsupported duplicate attach returns original unsupported result after ready interleaving" do
+    seed_pi_worker("run-idempotent-unsupported", "worker-1")
+
+    first_missing =
+      get_json("/api/v1/runs/run-idempotent-unsupported/attach?worker_id=missing-worker")
+
+    ready = get_json("/api/v1/runs/run-idempotent-unsupported/attach?worker_id=worker-1")
+
+    second_missing =
+      get_json("/api/v1/runs/run-idempotent-unsupported/attach?worker_id=missing-worker")
+
+    assert Jason.decode!(first_missing.resp_body)["attach"]["status"] == "unsupported"
+    assert Jason.decode!(ready.resp_body)["attach"]["status"] == "ready"
+    assert Jason.decode!(second_missing.resp_body)["attach"]["status"] == "unsupported"
+    assert Jason.decode!(second_missing.resp_body)["attach"]["worker_id"] == "missing-worker"
+  end
+
   test "unsupported provider records reason and alternative commands" do
     seed_worker_events(%{
       run_id: "run-unsupported",
@@ -204,6 +244,54 @@ defmodule ForemanServer.AttachBridgeTest do
     assert not_interrupted.status == 409
   end
 
+  test "resume rejects terminal runs before side effects" do
+    for status <- ["completed", "failed", "blocked"] do
+      run_id = "run-terminal-#{status}"
+      seed_pi_worker(run_id, "worker-1")
+
+      assert {:ok, _} =
+               AttachBridge.interrupt_phase(%{run_id: run_id, phase_id: "developer"})
+
+      terminal_run(run_id, status)
+      before_events = EventStore.stream("attach:#{run_id}")
+
+      assert {:error, {:conflict, {:run_not_active, ^status}}} =
+               AttachBridge.resume_after_interrupt(%{
+                 run_id: run_id,
+                 phase_id: "developer",
+                 next_action: "restart_phase"
+               })
+
+      assert EventStore.stream("attach:#{run_id}") == before_events
+      snapshot = ProjectionStore.snapshot()
+      assert snapshot.runs[run_id].phase_status["developer"] == "interrupted"
+      refute snapshot.runs[run_id].recovery_next_action == "restart_phase"
+    end
+  end
+
+  test "HTTP resume rejects terminal runs before side effects" do
+    for status <- ["completed", "failed", "blocked"] do
+      run_id = "run-http-terminal-#{status}"
+      seed_pi_worker(run_id, "worker-1")
+
+      interrupt = post_json("/api/v1/runs/#{run_id}/interrupt", %{phase_id: "developer"})
+      assert interrupt.status == 202
+
+      terminal_run(run_id, status)
+      before_events = EventStore.stream("attach:#{run_id}")
+
+      resume =
+        post_json("/api/v1/runs/#{run_id}/resume", %{
+          phase_id: "developer",
+          next_action: "restart_phase"
+        })
+
+      assert resume.status == 409
+      assert EventStore.stream("attach:#{run_id}") == before_events
+      assert ProjectionStore.snapshot().runs[run_id].phase_status["developer"] == "interrupted"
+    end
+  end
+
   test "attach and recovery projections replay after server restart", %{tmp_dir: tmp_dir} do
     seed_pi_worker("run-rebuild", "worker-1")
     assert {:ok, _} = AttachBridge.request_attach(%{run_id: "run-rebuild"})
@@ -269,13 +357,35 @@ defmodule ForemanServer.AttachBridgeTest do
              })
   end
 
-  defp complete_run(run_id) do
+  defp complete_run(run_id), do: terminal_run(run_id, "completed")
+
+  defp terminal_run(run_id, "completed") do
     assert {:ok, _} =
              EventStore.append(%{
                stream_id: "run:#{run_id}",
                event_type: "RunCompleted",
                payload: %{run_id: run_id, observed_at: DateTime.utc_now()},
                metadata: %{correlation_id: run_id, idempotency_key: "complete:#{run_id}"}
+             })
+  end
+
+  defp terminal_run(run_id, "failed") do
+    assert {:ok, _} =
+             EventStore.append(%{
+               stream_id: "run:#{run_id}",
+               event_type: "RunFailed",
+               payload: %{run_id: run_id, reason: "test_failure", observed_at: DateTime.utc_now()},
+               metadata: %{correlation_id: run_id, idempotency_key: "failed:#{run_id}"}
+             })
+  end
+
+  defp terminal_run(run_id, "blocked") do
+    assert {:ok, _} =
+             EventStore.append(%{
+               stream_id: "run:#{run_id}",
+               event_type: "RunBlocked",
+               payload: %{run_id: run_id, observed_at: DateTime.utc_now()},
+               metadata: %{correlation_id: run_id, idempotency_key: "blocked:#{run_id}"}
              })
   end
 

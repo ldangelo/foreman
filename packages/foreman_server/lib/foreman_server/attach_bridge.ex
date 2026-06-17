@@ -129,6 +129,7 @@ defmodule ForemanServer.AttachBridge do
     snapshot = ProjectionStore.snapshot()
 
     with {:ok, run} <- existing_run(snapshot, run_id),
+         :ok <- active_run(run),
          :ok <- known_phase(run, phase_id),
          :ok <- interrupted_phase(snapshot, run_id, phase_id) do
       :ok
@@ -252,11 +253,21 @@ defmodule ForemanServer.AttachBridge do
 
       {:error, {:duplicate_idempotency_key, ^idempotency_key}} ->
         snapshot = ProjectionStore.snapshot()
-        existing = get_in(snapshot, [:attach_requests, payload.run_id]) || payload
+        existing = duplicate_payload(payload.run_id, idempotency_key) || payload
         {:ok, %{event: nil, projection: snapshot, result: existing}}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp duplicate_payload(run_id, idempotency_key) do
+    "attach:#{run_id}"
+    |> EventStore.stream()
+    |> Enum.find(&(Map.get(&1.metadata, :idempotency_key) == idempotency_key))
+    |> case do
+      nil -> nil
+      event -> Map.put(event.payload, :event_type, event.event_type)
     end
   end
 
