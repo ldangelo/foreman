@@ -6,6 +6,7 @@ defmodule ForemanServer.Scheduler do
   alias ForemanServer.{EventStore, ProjectionStore, RunActor}
 
   @default_phases ["developer"]
+  @default_tick_interval_ms 5_000
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -22,13 +23,21 @@ defmodule ForemanServer.Scheduler do
 
   @impl true
   def init(opts) do
-    {:ok,
-     %{
-       max_concurrent: Keyword.get(opts, :max_concurrent, scheduler_env(:max_concurrent, 2)),
-       project_limits: Keyword.get(opts, :project_limits, scheduler_env(:project_limits, %{})),
-       default_phases: Keyword.get(opts, :default_phases, @default_phases),
-       last_tick: nil
-     }}
+    interval_ms = Keyword.get(opts, :tick_interval_ms, scheduler_env(:tick_interval_ms, @default_tick_interval_ms))
+    auto_tick = Keyword.get(opts, :auto_tick, scheduler_env(:auto_tick, true))
+
+    state = %{
+      max_concurrent: Keyword.get(opts, :max_concurrent, scheduler_env(:max_concurrent, 2)),
+      project_limits: Keyword.get(opts, :project_limits, scheduler_env(:project_limits, %{})),
+      default_phases: Keyword.get(opts, :default_phases, @default_phases),
+      auto_tick: auto_tick,
+      tick_interval_ms: interval_ms,
+      last_tick: nil
+    }
+
+    if auto_tick, do: schedule_tick(interval_ms)
+
+    {:ok, state}
   end
 
   @impl true
@@ -44,6 +53,19 @@ defmodule ForemanServer.Scheduler do
 
     result = dispatch(effective)
     {:reply, {:ok, result}, %{effective | last_tick: result}}
+  end
+
+  @impl true
+  def handle_info(:tick, %{auto_tick: true, tick_interval_ms: interval_ms} = state) do
+    result = dispatch(state)
+    schedule_tick(interval_ms)
+    {:noreply, %{state | last_tick: result}}
+  end
+
+  def handle_info(:tick, state), do: {:noreply, state}
+
+  defp schedule_tick(interval_ms) when is_integer(interval_ms) and interval_ms > 0 do
+    Process.send_after(self(), :tick, interval_ms)
   end
 
   defp dispatch(state) do

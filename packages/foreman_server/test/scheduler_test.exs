@@ -11,11 +11,13 @@ defmodule ForemanServer.SchedulerTest do
 
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+    Application.put_env(:foreman_server, :scheduler, auto_tick: false)
     assert :ok = Application.start(:foreman_server)
 
     on_exit(fn ->
       Application.stop(:foreman_server)
       Application.delete_env(:foreman_server, :event_log_path)
+      Application.delete_env(:foreman_server, :scheduler)
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)
@@ -62,6 +64,29 @@ defmodule ForemanServer.SchedulerTest do
     assert snapshot.tasks["alpha-2"].status == "ready"
     assert snapshot.scheduler_skips["alpha-2"].reason == "project_capacity_exhausted"
   end
+
+  test "periodic tick automatically claims ready tasks" do
+    Application.stop(:foreman_server)
+    Application.put_env(:foreman_server, :scheduler, auto_tick: true, tick_interval_ms: 20)
+    assert :ok = Application.start(:foreman_server)
+
+    create_task("task-auto", %{project_id: "alpha", status: "ready"})
+
+    assert_receive_tick(fn -> ProjectionStore.snapshot().tasks["task-auto"].status end)
+    assert %{current_phase: "developer"} = RunActor.state("run-task-auto")
+  end
+
+  defp assert_receive_tick(fun, attempts \\ 20)
+  defp assert_receive_tick(fun, attempts) when attempts > 0 do
+    if fun.() == "in_progress" do
+      :ok
+    else
+      Process.sleep(10)
+      assert_receive_tick(fun, attempts - 1)
+    end
+  end
+
+  defp assert_receive_tick(_fun, 0), do: flunk("scheduler did not claim ready task")
 
   defp create_task(task_id, attrs) do
     payload = Map.merge(%{task_id: task_id, title: task_id}, attrs)

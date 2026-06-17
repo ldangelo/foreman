@@ -98,7 +98,7 @@ foreman doctor
 
 If commands report daemon or database issues, run `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
 
-Elixir backend work uses a separate local server. Elixir is the default backend after cutover; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler.
+Elixir backend work uses a separate local server. Elixir is the default backend after cutover; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds and automatically claims dispatchable `ready` tasks within capacity.
 
 ```bash
 foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
