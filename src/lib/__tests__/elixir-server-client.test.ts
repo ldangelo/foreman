@@ -42,6 +42,24 @@ describe("ElixirServerClient", () => {
     });
   });
 
+  it("reads authenticated project and task projections", async () => {
+    const fetchMock = vi.fn(async (url: URL, _init: RequestInit) => {
+      const body = url.pathname.endsWith("/projects")
+        ? { ok: true, projects: [{ project_id: "p1", path: "/repo" }] }
+        : { ok: true, tasks: [{ task_id: "t1", project_id: "p1", title: "Task" }] };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ElixirServerClient("http://127.0.0.1:4000", "secret");
+    await expect(client.listProjects()).resolves.toEqual([{ project_id: "p1", path: "/repo" }]);
+    await expect(client.listTasks()).resolves.toEqual([{ task_id: "t1", project_id: "p1", title: "Task" }]);
+    expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({
+      method: "GET",
+      headers: expect.objectContaining({ authorization: "Bearer secret" }),
+    }));
+  });
+
   it("returns server error envelopes without throwing", async () => {
     vi.stubGlobal(
       "fetch",

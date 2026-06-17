@@ -135,9 +135,10 @@ During the Elixir backend migration, operators can import a TypeScript-era migra
 
 ```bash
 foreman import --to-elixir --file migration.json
+foreman import --to-elixir --from-node --project foreman
 ```
 
-The import maps legacy projects, tasks, runs, workflows, inbox messages, and config to durable events/projections so historical runs remain readable. If migration is not complete, compatibility mode can delegate supported commands to the legacy TS CLI:
+The import maps legacy projects, tasks, runs, workflows, inbox messages, and config to durable events/projections so historical runs remain readable. `--from-node` snapshots the selected Node/Postgres project into Elixir. After importing, `FOREMAN_BACKEND=elixir foreman board --project <name>` reads and mutates task state through Elixir without the Node daemon socket. If migration is not complete, compatibility mode can delegate supported commands to the legacy TS CLI:
 
 ```bash
 FOREMAN_LEGACY_COMPATIBILITY_MODE=1 \

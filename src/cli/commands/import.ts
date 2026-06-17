@@ -3,7 +3,8 @@ import chalk from "chalk";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performBeadsImport } from "./task.js";
-import { resolveProjectPathFromOptions } from "./project-task-support.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveProjectPathFromOptions } from "./project-task-support.js";
+import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
@@ -15,9 +16,10 @@ export const importCommand = new Command("import")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .option("--to-elixir", "Import a legacy migration JSON payload into the Elixir event store")
   .option("--file <path>", "Legacy migration JSON payload for --to-elixir")
+  .option("--from-node", "Build a migration payload from the current Node/Postgres project")
   .option("--command-id <id>", "Explicit server command id for idempotent migration retries")
   .option("--no-auto-start", "Require an already-running Elixir server for --to-elixir")
-  .action(async (opts: { dryRun?: boolean; project?: string; projectPath?: string; toElixir?: boolean; file?: string; commandId?: string; autoStart?: boolean }) => {
+  .action(async (opts: { dryRun?: boolean; project?: string; projectPath?: string; toElixir?: boolean; file?: string; fromNode?: boolean; commandId?: string; autoStart?: boolean }) => {
     try {
       if (opts.toElixir) {
         await runElixirMigrationImport(opts);
@@ -55,13 +57,14 @@ export const importCommand = new Command("import")
     }
   });
 
-async function runElixirMigrationImport(opts: { file?: string; commandId?: string; autoStart?: boolean }): Promise<void> {
-  if (!opts.file) {
-    throw new Error("--to-elixir requires --file <migration.json>");
+async function runElixirMigrationImport(opts: { file?: string; fromNode?: boolean; project?: string; projectPath?: string; commandId?: string; autoStart?: boolean }): Promise<void> {
+  if (!opts.file && !opts.fromNode) {
+    throw new Error("--to-elixir requires --file <migration.json> or --from-node");
   }
 
-  const filePath = resolve(opts.file);
-  const payload = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+  const payload = opts.fromNode
+    ? await buildNodeMigrationPayload(opts)
+    : JSON.parse(readFileSync(resolve(opts.file!), "utf8")) as Record<string, unknown>;
   const migrationId = typeof payload.migration_id === "string" ? payload.migration_id : undefined;
   const commandId = opts.commandId ?? migrationId ?? `migration-import-${Date.now()}`;
   const manager = new ElixirServerManager();
@@ -86,4 +89,47 @@ async function runElixirMigrationImport(opts: { file?: string; commandId?: strin
   console.log(chalk.green("✓ Migration import command accepted"));
   console.log(chalk.dim(`Command: ${commandId}`));
   console.log(chalk.dim(`Events: ${response.events.join(", ")}`));
+}
+
+async function buildNodeMigrationPayload(opts: { project?: string; projectPath?: string }): Promise<Record<string, unknown>> {
+  const projectPath = await resolveProjectPathFromOptions(opts);
+  const projects = await listRegisteredProjects();
+  const project = projects.find((record) => resolve(record.path) === resolve(projectPath));
+  if (!project) {
+    throw new Error(`Project at '${projectPath}' is not registered; run 'foreman init' or pass --file`);
+  }
+
+  ensureCliPostgresPool(project.path);
+  const adapter = new PostgresAdapter();
+  const tasks = await adapter.listTasks(project.id, { limit: 10_000 });
+
+  return {
+    migration_id: `node-project-${project.id}`,
+    source: "node-postgres",
+    projects: [{
+      id: project.id,
+      project_id: project.id,
+      name: project.name,
+      path: project.path,
+      default_branch: project.defaultBranch ?? "main",
+      status: "active",
+    }],
+    tasks: tasks.map((task) => ({
+      id: task.id,
+      task_id: task.id,
+      project_id: project.id,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      task_type: task.type,
+      priority: task.priority,
+      external_id: task.external_id,
+      dependencies: [],
+      source: "node-postgres",
+    })),
+    runs: [],
+    workflows: [],
+    inbox_messages: [],
+    config: {},
+  };
 }

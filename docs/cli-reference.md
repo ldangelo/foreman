@@ -597,6 +597,7 @@ Import a TypeScript-era migration payload into the Elixir event store. The paylo
 
 ```bash
 foreman import --to-elixir --file migration.json
+foreman import --to-elixir --from-node --project foreman
 foreman import --to-elixir --file migration.json --command-id migration-2026-014
 foreman import --to-elixir --file migration.json --no-auto-start
 ```
@@ -604,6 +605,7 @@ foreman import --to-elixir --file migration.json --no-auto-start
 | Option | Description |
 |--------|-------------|
 | `--file <path>` | Migration JSON payload to import |
+| `--from-node` | Build the migration payload from the current Node/Postgres project selected by `--project` / `--project-path` |
 | `--command-id <id>` | Explicit server command id for idempotent retries |
 | `--no-auto-start` | Require an already-running Elixir server |
 
@@ -615,7 +617,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Set `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` to disable legacy delegation and prevent `foreman daemon start|restart` from launching the Node scheduler during Elixir cutover. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation.
+Set `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` to disable legacy delegation and prevent `foreman daemon start|restart` from launching the Node scheduler during Elixir cutover. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands; remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
 
 ---
 

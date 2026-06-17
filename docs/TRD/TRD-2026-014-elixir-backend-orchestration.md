@@ -821,7 +821,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 8: CLI Cutover Parity
 
 **Shippable State:** `FOREMAN_BACKEND=elixir` supports the operator commands needed to use Foreman without the legacy Node daemon socket. Commands either route to Elixir HTTP APIs or fail before side effects with a specific parity-gap message.
-- [ ] **TRD-028**: Implement Elixir client read APIs for projects, tasks, runs, logs, debug, and inbox (5h) [satisfies REQ-004, REQ-010, REQ-017, REQ-020] [depends: TRD-024, TRD-027]
+- [x] **TRD-028**: Implement Elixir client read APIs for projects, tasks, runs, logs, debug, and inbox (5h) [satisfies REQ-004, REQ-010, REQ-017, REQ-020] [depends: TRD-024, TRD-027]
 
 **Description:** Extend the Node CLI Elixir client beyond command submission so CLI views can read Elixir projections directly. Include typed methods for `/api/v1/projects`, `/api/v1/tasks`, task detail, run logs, run reports, debug timeline, and any missing run/inbox projection endpoints required by CLI views.
 
@@ -829,13 +829,13 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given `FOREMAN_BACKEND=elixir`, when a read-only CLI view resolves project/task/run state, then it uses Elixir HTTP and never opens `~/.foreman/daemon.sock`.
 - Given an Elixir endpoint is not implemented, when the command is invoked, then the CLI prints a named parity gap and exits before side effects.
 - Given auth is configured, when reads execute, then `FOREMAN_SERVER_AUTH_TOKEN` is sent as bearer auth.
-- [ ] **TRD-028-TEST**: Verify Elixir client read APIs (3h) [verifies TRD-028] [satisfies REQ-004, REQ-010, REQ-017, REQ-020] [depends: TRD-028]
+- [x] **TRD-028-TEST**: Verify Elixir client read APIs (3h) [verifies TRD-028] [satisfies REQ-004, REQ-010, REQ-017, REQ-020] [depends: TRD-028]
 
 **Verification Steps:**
 - Unit tests for Elixir client read methods, auth headers, and server error envelopes.
 - CLI tests proving Elixir-mode reads do not instantiate the tRPC client.
 
-- [ ] **TRD-029**: Route `foreman board` to Elixir task projections in cutover mode (6h) [satisfies REQ-004, REQ-010, REQ-020, REQ-024] [depends: TRD-028]
+- [x] **TRD-029**: Route `foreman board` to Elixir task projections in cutover mode (6h) [satisfies REQ-004, REQ-010, REQ-020, REQ-024] [depends: TRD-028]
 
 **Description:** Make `FOREMAN_BACKEND=elixir foreman board --project <name>` load tasks from Elixir projections and apply supported board mutations through Elixir commands (`task.create`, `task.update`, `task.close`, `task.annotate`). Unsupported actions must fail clearly instead of falling back to Node.
 
@@ -843,13 +843,13 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the Node daemon is stopped and Elixir is running, when `foreman board --project foreman` runs in Elixir mode, then it renders tasks without `daemon.sock`.
 - Given a board status change, close, create, or note action is made in Elixir mode, then the CLI sends an Elixir command and refreshes from projection state.
 - Given the project has not been imported into Elixir, then board prints an import/cutover instruction instead of a socket error.
-- [ ] **TRD-029-TEST**: Verify Elixir board routing and mutations (4h) [verifies TRD-029] [satisfies REQ-004, REQ-010, REQ-020] [depends: TRD-029]
+- [x] **TRD-029-TEST**: Verify Elixir board routing and mutations (4h) [verifies TRD-029] [satisfies REQ-004, REQ-010, REQ-020] [depends: TRD-029]
 
 **Verification Steps:**
 - Unit tests for board Elixir data adapter and mutation command mapping.
 - Smoke test with Node daemon stopped and Elixir server running.
 
-- [ ] **TRD-030**: Route task/status/watch/logs/debug/inbox/attach read views to Elixir in cutover mode (10h) [satisfies REQ-004, REQ-010, REQ-017, REQ-018, REQ-020] [depends: TRD-028]
+- [x] **TRD-030**: Route task/status/watch/logs/debug/inbox/attach read views to Elixir in cutover mode (10h) [satisfies REQ-004, REQ-010, REQ-017, REQ-018, REQ-020] [depends: TRD-028]
 
 **Description:** Port the primary operator views from tRPC to Elixir HTTP when `FOREMAN_BACKEND=elixir`: `task list/show`, `status`, `watch`, `logs`, `debug`, `inbox`, and attach status/control reads.
 
@@ -857,13 +857,13 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given `FOREMAN_BACKEND=elixir`, each listed command either succeeds through Elixir or prints an explicit parity-gap message.
 - Given the Node daemon socket is absent, read-only commands do not fail with `connect ENOENT ~/.foreman/daemon.sock`.
 - Given projections lag or events are inconsistent, commands surface Elixir doctor/debug guidance.
-- [ ] **TRD-030-TEST**: Verify Elixir cutover read views (6h) [verifies TRD-030] [satisfies REQ-004, REQ-010, REQ-017, REQ-018, REQ-020] [depends: TRD-030]
+- [x] **TRD-030-TEST**: Verify Elixir cutover read views (6h) [verifies TRD-030] [satisfies REQ-004, REQ-010, REQ-017, REQ-018, REQ-020] [depends: TRD-030]
 
 **Verification Steps:**
 - CLI tests for each command with tRPC mocked to throw and Elixir mocked to return projections.
 - Integration smoke covering task/status/logs with Elixir server running.
 
-- [ ] **TRD-031**: Route task/run mutating commands to Elixir in cutover mode (12h) [satisfies REQ-004, REQ-010, REQ-011, REQ-020, REQ-023] [depends: TRD-028, TRD-030]
+- [x] **TRD-031**: Route task/run mutating commands to Elixir in cutover mode (12h) [satisfies REQ-004, REQ-010, REQ-011, REQ-020, REQ-023] [depends: TRD-028, TRD-030]
 
 **Description:** Port `task create/update/approve/close/note`, `run`, `retry`, `reset`, `stop`, `recover`, `sling`, and integration-trigger mutations so they use Elixir command APIs in cutover mode, with no silent fallback to Node.
 
@@ -871,14 +871,14 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given `FOREMAN_BACKEND=elixir`, mutating commands send Elixir commands and emit authorization/audit events where required.
 - Given a mutating command has no Elixir equivalent yet, it fails before side effects with the missing command type named.
 - Given legacy mode is explicit (`FOREMAN_BACKEND=node`), existing Node behavior remains available.
-- [ ] **TRD-031-TEST**: Verify Elixir cutover mutations (8h) [verifies TRD-031] [satisfies REQ-004, REQ-010, REQ-011, REQ-020, REQ-023] [depends: TRD-031]
+- [x] **TRD-031-TEST**: Verify Elixir cutover mutations (8h) [verifies TRD-031] [satisfies REQ-004, REQ-010, REQ-011, REQ-020, REQ-023] [depends: TRD-031]
 
 **Verification Steps:**
 - Command-router tests for each command type.
 - CLI tests proving no tRPC/socket use in Elixir mode.
 - Audit/security assertions for destructive mutations.
 
-- [ ] **TRD-032**: Implement migration export/import parity for active projects (6h) [satisfies REQ-020, REQ-024] [depends: TRD-023, TRD-028]
+- [x] **TRD-032**: Implement migration export/import parity for active projects (6h) [satisfies REQ-020, REQ-024] [depends: TRD-023, TRD-028]
 
 **Description:** Provide an operator-supported path to populate Elixir projections from the current Node/Postgres project state, including a snapshot export command or direct import bridge. The path must make `foreman board --project foreman` useful immediately after cutover.
 
@@ -886,13 +886,13 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given an existing Node/Postgres project, when migration export/import runs, then Elixir `/projects` and `/tasks` show the project and tasks.
 - Given migration is re-run with the same idempotency key, then duplicate projects/tasks are not created.
 - Given migration has not run, Elixir-mode commands print import guidance.
-- [ ] **TRD-032-TEST**: Verify migration export/import parity (4h) [verifies TRD-032] [satisfies REQ-020, REQ-024] [depends: TRD-032]
+- [x] **TRD-032-TEST**: Verify migration export/import parity (4h) [verifies TRD-032] [satisfies REQ-020, REQ-024] [depends: TRD-032]
 
 **Verification Steps:**
 - Fixture migration from Node-shaped project/task/run/inbox payload.
 - End-to-end smoke: import, then Elixir-mode board/status read succeeds with Node daemon stopped.
 
-- [ ] **TRD-033**: Retire or isolate the Node daemon after Elixir CLI parity (4h) [satisfies REQ-020, REQ-024] [depends: TRD-029, TRD-030, TRD-031, TRD-032]
+- [x] **TRD-033**: Retire or isolate the Node daemon after Elixir CLI parity (4h) [satisfies REQ-020, REQ-024] [depends: TRD-029, TRD-030, TRD-031, TRD-032]
 
 **Description:** Once Elixir CLI parity exists, make Elixir the default backend, require explicit `FOREMAN_BACKEND=node` for legacy daemon use, and document rollback. Remove stale daemon/socket assumptions from cutover docs.
 
@@ -900,7 +900,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given no backend env is set after cutover, Foreman defaults to Elixir.
 - Given `FOREMAN_BACKEND=node`, legacy daemon behavior is explicit and documented as rollback only.
 - Given both backends are running, doctor warns about dual scheduler risk.
-- [ ] **TRD-033-TEST**: Verify Node daemon retirement/isolation (3h) [verifies TRD-033] [satisfies REQ-020, REQ-024] [depends: TRD-033]
+- [x] **TRD-033-TEST**: Verify Node daemon retirement/isolation (3h) [verifies TRD-033] [satisfies REQ-020, REQ-024] [depends: TRD-033]
 
 **Verification Steps:**
 - Backend-mode tests for default Elixir behavior after cutover.
@@ -1209,3 +1209,4 @@ Traceability check: 25 requirements covered, 0 uncovered, 0 orphaned annotations
 | 2026-06-16 | 1.0.5 | Pi Agent | Recorded TRD-001 comparative architecture spike result and confirmed Elixir/OTP target architecture |
 | 2026-06-17 | 1.0.6 | Pi Agent | Added explicit Elixir cutover gates to disable the Node daemon scheduler and legacy TS delegation during backend migration completion |
 | 2026-06-17 | 1.0.7 | Pi Agent | Reopened Elixir migration scope for CLI cutover parity: board/task/status/watch/logs/inbox mutations and migration export/import remain incomplete |
+| 2026-06-17 | 1.0.8 | Pi Agent | Completed Elixir cutover parity gate: board routes through Elixir, Node/Postgres projects can be imported, and unsupported legacy-daemon commands fail before socket access |

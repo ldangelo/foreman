@@ -3,10 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
-const { mockListRegisteredProjects, mockCreateTrpcClient } = vi.hoisted(() => {
+const { mockListRegisteredProjects, mockCreateTrpcClient, mockEnsureRunning, mockListTasks } = vi.hoisted(() => {
   const mockListRegisteredProjects = vi.fn();
   const mockCreateTrpcClient = vi.fn();
-  return { mockListRegisteredProjects, mockCreateTrpcClient };
+  const mockEnsureRunning = vi.fn();
+  const mockListTasks = vi.fn();
+  return { mockListRegisteredProjects, mockCreateTrpcClient, mockEnsureRunning, mockListTasks };
 });
 
 vi.mock("../commands/project-task-support.js", () => ({
@@ -15,6 +17,18 @@ vi.mock("../commands/project-task-support.js", () => ({
 
 vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: mockCreateTrpcClient,
+}));
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn().mockImplementation(function MockElixirServerManager() {
+    return { ensureRunning: mockEnsureRunning };
+  }),
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn().mockImplementation(function MockElixirServerClient() {
+    return { listTasks: mockListTasks };
+  }),
 }));
 
 import { applyBoardTaskUpdate, loadBoardTasks, pollBoardInboxTaskUpdates, type BoardTask } from "../commands/board.js";
@@ -32,6 +46,9 @@ describe("foreman board command context", () => {
     vi.clearAllMocks();
     mockListRegisteredProjects.mockReset();
     mockCreateTrpcClient.mockReset();
+    mockEnsureRunning.mockReset();
+    mockListTasks.mockReset();
+    delete process.env.FOREMAN_BACKEND;
   });
 
   afterEach(() => {
@@ -73,11 +90,30 @@ describe("foreman board command context", () => {
     });
 
     await expect(loadBoardTasks(resolve(projectDir))).rejects.toThrow(
-      `Project at '${resolve(projectDir)}' is not registered with the daemon.`,
+      `Project at '${resolve(projectDir)}' is not registered.`,
     );
 
     expect(mockListRegisteredProjects).toHaveBeenCalledOnce();
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+  });
+
+  it("loads board tasks from Elixir without creating a tRPC client in Elixir mode", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockListTasks.mockResolvedValue([
+      { task_id: "task-1", project_id: "proj-1", title: "Elixir task", status: "ready" },
+    ]);
+
+    const tasks = await loadBoardTasks(projectDir);
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(mockListTasks).toHaveBeenCalledOnce();
+    expect(tasks.get("ready")?.map((task) => task.id)).toEqual(["task-1"]);
   });
 });
 
@@ -94,6 +130,7 @@ describe("loadBoardTasks status routing", () => {
     vi.clearAllMocks();
     mockListRegisteredProjects.mockReset();
     mockCreateTrpcClient.mockReset();
+    delete process.env.FOREMAN_BACKEND;
   });
 
   afterEach(() => {
@@ -234,6 +271,7 @@ describe("board inbox-driven task updates", () => {
     vi.clearAllMocks();
     mockListRegisteredProjects.mockReset();
     mockCreateTrpcClient.mockReset();
+    delete process.env.FOREMAN_BACKEND;
   });
 
   afterEach(() => {

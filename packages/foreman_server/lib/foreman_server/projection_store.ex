@@ -202,6 +202,8 @@ defmodule ForemanServer.ProjectionStore do
         updated_at: Map.get(payload, :updated_at)
       }
       |> maybe_put(:project_id, Map.get(payload, :project_id))
+      |> maybe_put(:description, Map.get(payload, :description))
+      |> maybe_put(:priority, Map.get(payload, :priority))
       |> maybe_put(:dependencies, Map.get(payload, :dependencies))
       |> maybe_put(:source, Map.get(payload, :source))
       |> maybe_put(:external_id, Map.get(payload, :external_id))

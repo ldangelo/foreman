@@ -15,6 +15,7 @@ import * as http from "node:http";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { appRouter } from "../daemon/router.js";
+import { foremanBackendMode } from "./backend-mode.js";
 
 /** AppRouter type — use `typeof appRouter` to extract. */
 export type AppRouter = typeof appRouter;
@@ -435,6 +436,12 @@ export interface TRPCJiraClient {
 export function createTrpcClient(
   options: TrpcClientOptions = {},
 ): TrpcClient {
+  if (!options.httpUrl && !options.socketPath && foremanBackendMode() === "elixir") {
+    throw new Error(
+      "Elixir backend parity gap: this command still uses the legacy Node daemon tRPC API. Use an Elixir-routed command or set FOREMAN_BACKEND=node for explicit legacy operation.",
+    );
+  }
+
   const socketPath = options.socketPath ?? DEFAULT_SOCKET_PATH;
 
   // Build the Unix-socket URL for httpBatchLink.

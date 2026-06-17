@@ -26,6 +26,37 @@ export type ForemanServerError = {
 
 export type ForemanServerResponse = ForemanServerOk | ForemanServerError;
 
+export type ElixirProject = {
+  project_id?: string;
+  id?: string;
+  name?: string;
+  path: string;
+  status?: string;
+  default_branch?: string;
+  config?: Record<string, unknown>;
+  health?: Record<string, unknown>;
+  updated_at?: string;
+};
+
+export type ElixirTask = {
+  task_id?: string;
+  id?: string;
+  project_id?: string;
+  title?: string;
+  description?: string | null;
+  task_type?: string;
+  type?: string;
+  priority?: number;
+  status?: string;
+  external_id?: string | null;
+  updated_at?: string;
+  created_at?: string;
+  closed_at?: string | null;
+  approved_at?: string | null;
+  annotations?: Array<{ body: string; author?: string; created_at?: string }>;
+  run_id?: string | null;
+};
+
 export class ElixirServerClient {
   constructor(
     private readonly baseUrl: string,
@@ -52,6 +83,52 @@ export class ElixirServerClient {
         correlation_id: command.metadata?.correlation_id as string | undefined,
       },
     };
+  }
+
+  async listProjects(): Promise<ElixirProject[]> {
+    const body = await this.getJson<{ ok: true; projects: ElixirProject[] }>("/api/v1/projects");
+    return body.projects;
+  }
+
+  async listTasks(): Promise<ElixirTask[]> {
+    const body = await this.getJson<{ ok: true; tasks: ElixirTask[] }>("/api/v1/tasks");
+    return body.tasks;
+  }
+
+  async getTask(taskId: string): Promise<ElixirTask | null> {
+    const response = await fetch(new URL(`/api/v1/tasks/${encodeURIComponent(taskId)}`, this.baseUrl), {
+      method: "GET",
+      headers: this.headers({ command_id: `task-get-${taskId}`, command_type: "task.get" }),
+    });
+    if (response.status === 404) return null;
+    const body = await response.json() as { ok: true; task: ElixirTask } | ForemanServerError;
+    if (response.ok && body.ok) return body.task;
+    throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
+  }
+
+  async getRunLogs(runId: string, view: "compact" | "raw" = "compact"): Promise<unknown[]> {
+    const body = await this.getJson<{ ok: true; logs: unknown[] }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?view=${view}`);
+    return body.logs;
+  }
+
+  async getRunReport(runId: string): Promise<unknown> {
+    const body = await this.getJson<{ ok: true; report: unknown }>(`/api/v1/runs/${encodeURIComponent(runId)}/report`);
+    return body.report;
+  }
+
+  async getDebugTimeline(runId: string): Promise<unknown> {
+    const body = await this.getJson<{ ok: true; debug: unknown }>(`/api/v1/runs/${encodeURIComponent(runId)}/debug`);
+    return body.debug;
+  }
+
+  private async getJson<T>(path: string): Promise<T> {
+    const response = await fetch(new URL(path, this.baseUrl), {
+      method: "GET",
+      headers: this.headers({ command_id: `read-${path}`, command_type: "read" }),
+    });
+    const body = await response.json() as T | ForemanServerError;
+    if (response.ok && (body as { ok?: boolean }).ok !== false) return body as T;
+    throw new Error(!(body as ForemanServerError).ok ? (body as ForemanServerError).error.message : `unexpected Foreman server status ${response.status}`);
   }
 
   private headers(command: ForemanServerCommand): Record<string, string> {
