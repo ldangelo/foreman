@@ -84,13 +84,9 @@ phases:
       onFail: developer
 
   - name: finalize
-    prompt: finalize.md
-    tools:
-      allowed: [Bash, Glob, Grep, Read, Write]
-    models:
-      default: MiniMax
-    maxTurns: 60
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -98,7 +94,6 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
-
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"

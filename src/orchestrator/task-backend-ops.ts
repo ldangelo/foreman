@@ -279,8 +279,9 @@ export const enqueueResetSeedToOpen = resetSeedToOpen;
 export const enqueueMarkBeadFailed = markSeedFailed;
 export const enqueueSetBeadStatus = updateSeedStatus;
 
-export function enqueueAddNotesToBead(_store: TaskStatusStore, seedId: string, _note: string, sender: string): void {
-  console.error(`[task-backend-ops] Skipped note for task ${seedId} (sender: ${sender}) — native task notes are not supported`);
+export function enqueueAddNotesToBead(_store: TaskStatusStore, _seedId: string, _note: string, _sender: string): void {
+  // Deprecated legacy alias retained for older call sites. Native task notes are
+  // appended directly by the caller via PostgresAdapter.addTaskNote().
 }
 
 export async function syncBeadStatusOnStartup(

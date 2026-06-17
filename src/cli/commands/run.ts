@@ -36,7 +36,7 @@ import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { wrapPostgresSentinelStore } from "./sentinel.js";
-import { syncBeadStatusOnStartup, syncTaskStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
+import { syncTaskStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
@@ -570,6 +570,7 @@ export const runCommand = new Command("run")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .option("--runtime-mode <mode>", "Runtime mode: normal|test (test uses deterministic phase-runner seams)")
+  .option("--yes", "Answer yes to run confirmation prompts (for non-interactive dispatch)")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -592,6 +593,7 @@ export const runCommand = new Command("run")
     }
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
     const runtimeMode = resolveRuntimeMode(opts.runtimeMode as string | undefined);
+    const assumeYes = opts.yes === true;
 
     // P1: Parse stagger delay for preventing thundering herd on Haiku quotas
     // Accept formats like "30s", "1m", "2m30s"
@@ -786,28 +788,11 @@ export const runCommand = new Command("run")
         }
       }
 
-      // ── Startup Bead / Task Sync ─────────────────────────────────────────
-      // Reconcile bead/task statuses against run state before dispatching.
+      // ── Startup Task Sync ────────────────────────────────────────────────
+      // Reconcile native task statuses against run state before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
+      // The legacy br/bead sync is intentionally not run in native-only mode.
       if (!dryRun && project) {
-        try {
-          const syncResult = await syncBeadStatusOnStartup(daemonStore ?? store, taskClient, project.id, { projectPath });
-          if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {
-            console.log(
-              chalk.dim(
-                `[startup] Reconciled ${syncResult.synced} bead(s), ` +
-                `${syncResult.mismatches.length} mismatch(es) detected`
-              )
-            );
-          }
-          for (const err of syncResult.errors) {
-            console.warn(chalk.yellow(`[startup] Sync warning: ${err}`));
-          }
-        } catch (syncErr: unknown) {
-          const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
-          console.warn(chalk.yellow(`[startup] Bead sync failed (non-fatal): ${msg}`));
-        }
-
         try {
           const taskSyncResult = await syncTaskStatusOnStartup(daemonStore ?? store, project.id);
           if (taskSyncResult.synced > 0 || taskSyncResult.mismatches.length > 0) {
@@ -884,7 +869,7 @@ export const runCommand = new Command("run")
               `Agent work will be branched from and merged into ${chalk.green(cb)}.\n` +
               `Continue? [Y/n] `,
             );
-            const confirmed = await promptYesNo(question);
+            const confirmed = assumeYes ? true : await promptYesNo(question);
             if (!confirmed) {
               console.log(
                 chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),

@@ -45,6 +45,7 @@ export interface CodeRabbitCliResult {
   command: string;
   blockingFindings: CodeRabbitCliFinding[];
   nonBlockingFindings: CodeRabbitCliFinding[];
+  ignoredFindings?: CodeRabbitCliFinding[];
   details: string;
   rawEventsPath: string;
   findingsPath: string;
@@ -113,9 +114,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function classifyFindings(events: CodeRabbitCliEvent[]): { blocking: CodeRabbitCliFinding[]; nonBlocking: CodeRabbitCliFinding[] } {
+function isIgnoredReviewPath(fileName: string): boolean {
+  const normalized = fileName.replaceAll("\\", "/").replace(/^\.\//, "");
+  return normalized.startsWith("dist-old-")
+    || normalized.includes("/dist-old-")
+    || normalized.startsWith("docs/reports/")
+    || normalized.includes("/docs/reports/")
+    || normalized.startsWith("SessionLogs/")
+    || normalized.includes("/SessionLogs/")
+    || normalized.startsWith("node_modules/")
+    || normalized.includes("/node_modules/")
+    || normalized.endsWith("/SESSION_LOG.md")
+    || normalized.endsWith("/RUN_LOG.md");
+}
+
+function classifyFindings(events: CodeRabbitCliEvent[]): { blocking: CodeRabbitCliFinding[]; nonBlocking: CodeRabbitCliFinding[]; ignored: CodeRabbitCliFinding[] } {
   const blocking: CodeRabbitCliFinding[] = [];
   const nonBlocking: CodeRabbitCliFinding[] = [];
+  const ignored: CodeRabbitCliFinding[] = [];
 
 
   for (const event of events) {
@@ -129,14 +145,16 @@ function classifyFindings(events: CodeRabbitCliEvent[]): { blocking: CodeRabbitC
         ? event.suggestions.filter((item): item is string => typeof item === "string")
         : [],
     };
-    if (BLOCKING_SEVERITIES.has(finding.severity)) {
+    if (isIgnoredReviewPath(finding.fileName)) {
+      ignored.push(finding);
+    } else if (BLOCKING_SEVERITIES.has(finding.severity)) {
       blocking.push(finding);
     } else {
       nonBlocking.push(finding);
     }
   }
 
-  return { blocking, nonBlocking };
+  return { blocking, nonBlocking, ignored };
 }
 
 function summarizeDetails(args: {
@@ -209,6 +227,16 @@ function renderReport(args: {
     for (const finding of result.nonBlockingFindings) {
       lines.push(`- ${finding.fileName} [${finding.severity}]`);
       if (finding.comment) lines.push(`  - Note: ${finding.comment}`);
+    }
+  }
+
+  const ignoredFindings = (result as CodeRabbitCliResult & { ignoredFindings?: CodeRabbitCliFinding[] }).ignoredFindings ?? [];
+  lines.push("", "## Ignored Findings");
+  if (ignoredFindings.length === 0) {
+    lines.push("- None");
+  } else {
+    for (const finding of ignoredFindings) {
+      lines.push(`- ${finding.fileName} [${finding.severity}] — ignored generated/runtime artifact path`);
     }
   }
 
@@ -286,7 +314,7 @@ export async function runCodeRabbitCliReview(args: {
   }
 
   const { events, malformedLines } = parseEvents(rawOutput);
-  const { blocking, nonBlocking } = classifyFindings(events);
+  const { blocking, nonBlocking, ignored } = classifyFindings(events);
   const completionStatus = findLastEvent(events, "complete")?.status
     || findLastEvent(events, "status")?.status;
   const explicitError = events.find((event) => event.type === "error");
@@ -320,6 +348,7 @@ export async function runCodeRabbitCliReview(args: {
     command,
     blockingFindings: blocking,
     nonBlockingFindings: nonBlocking,
+    ignoredFindings: ignored,
     details,
     rawEventsPath,
     findingsPath,
@@ -335,12 +364,13 @@ export async function runCodeRabbitCliReview(args: {
     command,
     blockingFindings: blocking,
     nonBlockingFindings: nonBlocking,
+    ignoredFindings: ignored,
     completionStatus,
     eventError,
     malformedLines,
   }, null, 2) + "\n", "utf8");
   await writeFile(reportPath, renderReport({ result, completionStatus, eventError }), "utf8");
 
-  args.log(`[CLI-REVIEW] ${status.toUpperCase()} — blocking=${blocking.length} nonBlocking=${nonBlocking.length} details=${details}`);
+  args.log(`[CLI-REVIEW] ${status.toUpperCase()} — blocking=${blocking.length} nonBlocking=${nonBlocking.length} ignored=${ignored.length} details=${details}`);
   return result;
 }

@@ -56,6 +56,17 @@ function envNonNegativeInt(name: string, defaultValue: number): number {
   return parsed;
 }
 
+function envNonNegativeNumber(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  const parsed = parseFloat(raw);
+  if (isNaN(parsed) || parsed < 0) {
+    console.warn(`[foreman] Warning: invalid value for ${name}="${raw}", using default ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
 // ── Model defaults ───────────────────────────────────────────────────────
 
 /**
@@ -162,6 +173,14 @@ export const PIPELINE_LIMITS = {
    * Override via: FOREMAN_EMPTY_POLL_CYCLES=<n>
    */
   emptyPollCycles: envNonNegativeInt("FOREMAN_EMPTY_POLL_CYCLES", 20),
+  /** Maximum wall-clock runtime for one pipeline in milliseconds. 0 disables. */
+  maxPipelineWallClockMs: envNonNegativeInt("FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS", 0),
+  /** Maximum total SDK/tool calls recorded across one pipeline. 0 disables. */
+  maxPipelineToolCalls: envNonNegativeInt("FOREMAN_MAX_PIPELINE_TOOL_CALLS", 0),
+  /** Maximum total retry/review loop activations across one pipeline. 0 disables. */
+  maxPipelineReviewLoops: envNonNegativeInt("FOREMAN_MAX_PIPELINE_REVIEW_LOOPS", 0),
+  /** Maximum total pipeline cost in USD. 0 disables. */
+  maxPipelineCostUsd: envNonNegativeNumber("FOREMAN_MAX_PIPELINE_COST_USD", 0),
 } as const;
 
 /**

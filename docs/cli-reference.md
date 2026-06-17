@@ -76,6 +76,7 @@ foreman run --max-agents 3        # Limit concurrent agents to 3
 foreman run --resume              # Resume stuck/rate-limited runs
 foreman run --resume-failed       # Also resume permanently failed runs
 foreman run --no-watch            # Dispatch once and exit (don't monitor)
+foreman run --yes                 # Auto-confirm run prompts for non-interactive use
 foreman run --no-pipeline         # Single agent mode (no explorer/qa/reviewer)
 foreman run --workflow quick      # Run all dispatched tasks with the quick workflow
 foreman run --model anthropic/claude-opus-4-6  # Force a specific model
@@ -89,6 +90,7 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 | `--model <model>` | — | Force a specific model for all phases |
 | `--dry-run` | — | Show what would be dispatched without doing it |
 | `--no-watch` | — | Exit immediately after dispatching |
+| `--yes` | — | Answer yes to run confirmation prompts, including non-default target branch confirmation |
 | `--resume` | — | Resume stuck/rate-limited runs from previous dispatch |
 | `--resume-failed` | — | Also resume failed runs (not just stuck) |
 | `--no-pipeline` | — | Skip the pipeline — run as single worker agent |
@@ -98,6 +100,8 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
 > **Deprecated:** `--skip-explore` and `--skip-review` are still parsed for backwards compatibility but have **no effect** on the pipeline (phase shape is defined entirely by the workflow YAML). They are hidden from `--help` and print a deprecation warning. Use `--workflow quick` (a bundled workflow without explorer/reviewer phases) or a custom workflow instead.
+
+Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`, `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`, and `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS`. When exceeded, Foreman stops the run, writes a native task failure note, and marks the run stuck for operator action.
 
 ### `foreman run task`
 

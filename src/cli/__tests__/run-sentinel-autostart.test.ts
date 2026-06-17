@@ -366,7 +366,7 @@ describe("sentinel auto-start in foreman run", () => {
     );
   });
 
-  it("uses the daemon Postgres store for startup bead sync on registered projects", async () => {
+  it("uses the daemon Postgres store for startup native task sync on registered projects", async () => {
     mockGetProjectByPath.mockReturnValue(null);
     mockListRegisteredProjects.mockResolvedValue([
       { id: "registered-proj", path: "/mock/project", name: "project" },
@@ -388,9 +388,7 @@ describe("sentinel auto-start in foreman run", () => {
 
     expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/mock/project");
     expect(mockPostgresStoreForProject).toHaveBeenCalledWith("registered-proj");
-    expect(mockSyncBeadStatusOnStartup).toHaveBeenCalledWith(postgresStore, expect.anything(), "registered-proj", {
-      projectPath: "/mock/project",
-    });
+    expect(mockSyncBeadStatusOnStartup).not.toHaveBeenCalled();
     expect(mockSyncTaskStatusOnStartup).toHaveBeenCalledWith(postgresStore, "registered-proj");
   });
 

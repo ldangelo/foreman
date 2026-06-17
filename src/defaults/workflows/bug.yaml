@@ -113,21 +113,16 @@ phases:
   # contract check (Target Integration / Test Validation sections + Verdict).
   # FINALIZE_REPORT.md is also written by the agent as a human-readable summary.
   - name: finalize
-    prompt: finalize-bug.md
-    tools:
-      allowed: [Bash, Glob, Grep, Read, Write]
-    models:
-      default: MiniMax
-    maxTurns: 30
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
     retryOnFail: 1
     mail:
-      onStart: false
+      onStart: true
       onComplete: true
       onFail: developer
-      forwardArtifactTo: foreman
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"

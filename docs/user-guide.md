@@ -30,7 +30,7 @@ foreman status --project my-project
 
 ### Tasks
 
-Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed.
+Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context.
 
 ```bash
 foreman task create --title "Fix flaky retry" --type bug --priority high
@@ -196,8 +196,11 @@ foreman run --bead <task-id>      # Dispatch one task
 foreman run --max-agents 2        # Limit concurrency
 foreman run --dry-run             # Preview dispatch
 foreman run --no-watch            # Dispatch and exit
+foreman run --yes                 # Auto-confirm run prompts for scripts/non-interactive use
 foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
 ```
+
+Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
 ### 7. Monitor Progress
 

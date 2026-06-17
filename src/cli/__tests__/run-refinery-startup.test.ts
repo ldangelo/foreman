@@ -166,7 +166,9 @@ vi.mock("../../orchestrator/notification-server.js", () => ({
 }));
 vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }));
 vi.mock("../../orchestrator/sentinel.js", () => ({ SentinelAgent: vi.fn(), wrapPostgresSentinelStore: (store: unknown) => store }));
-vi.mock("../../orchestrator/task-backend-ops.js", () => ({ syncBeadStatusOnStartup: vi.fn() }));
+vi.mock("../../orchestrator/task-backend-ops.js", () => ({
+  syncTaskStatusOnStartup: vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] }),
+}));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({ isPiAvailable: vi.fn().mockReturnValue(false) }));
 // Skip runtime asset preflight — no prompts/workflows in CI/unit test env
 vi.mock("../../lib/prompt-loader.js", () => ({

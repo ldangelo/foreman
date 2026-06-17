@@ -120,9 +120,10 @@ describe('TRD-009 bug.yaml workflow integration', () => {
       expect(bugWorkflow.phases.find((p) => p.name === 'developer')?.retryOnly).toBe(true);
     });
 
-    it('finalize phase uses the bug-specific finalize prompt', () => {
+    it('finalize phase uses the deterministic builtin finalizer', () => {
       const finalize = bugWorkflow.phases.find((p) => p.name === 'finalize');
-      expect(finalize?.prompt).toBe('finalize-bug.md');
+      expect(finalize?.builtin).toBe(true);
+      expect(finalize?.prompt).toBeUndefined();
     });
 
     it('finalize phase has verdict: true and retries through developer remediation', () => {

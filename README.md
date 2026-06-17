@@ -485,6 +485,7 @@ foreman run                              # Dispatch to all ready tasks
 foreman run --project my-project         # Dispatch without cd into a registered project
 foreman run --task task-abc              # Dispatch one specific task
 foreman run --max-agents 3               # Limit concurrent agents
+foreman run --yes                        # Auto-confirm run prompts for non-interactive use
 foreman run --model claude-opus-4-6      # Override model for all agents
 foreman run --no-tests                   # Skip test suite in merge step
 foreman run --dry-run                    # Preview without dispatching
@@ -924,6 +925,10 @@ The bundled `epic` workflow uses the same post-finalize PR gates as task/feature
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...          # Required (or use `pi /login` for OAuth)
 export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5)
+export FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS=0  # Per-run wall-clock budget; 0 disables
+export FOREMAN_MAX_PIPELINE_COST_USD=0       # Per-run cost budget; 0 disables
+export FOREMAN_MAX_PIPELINE_TOOL_CALLS=0     # Per-run tool-call budget; 0 disables
+export FOREMAN_MAX_PIPELINE_REVIEW_LOOPS=0   # Per-run retry/review loop budget; 0 disables
 ```
 
 ### Storage locations

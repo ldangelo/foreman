@@ -1302,6 +1302,179 @@ async function runCliReviewBuiltinPhase(args: {
   };
 }
 
+async function runShellForFinalize(command: string, cwd: string, timeoutMs = 120_000): Promise<{ ok: boolean; output: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync("/bin/bash", ["-lc", command], {
+      cwd,
+      timeout: timeoutMs,
+      maxBuffer: 5 * 1024 * 1024,
+    });
+    return { ok: true, output: `${stdout ?? ""}${stderr ?? ""}`.trim() };
+  } catch (err: unknown) {
+    const e = err as { stdout?: string; stderr?: string; message?: string };
+    return { ok: false, output: `${e.stdout ?? ""}${e.stderr ?? ""}${e.message ? `\n${e.message}` : ""}`.trim() };
+  }
+}
+
+function truncateFinalizeOutput(output: string): string {
+  return output.length > 3000 ? `${output.slice(0, 3000)}\n...<truncated>` : output;
+}
+
+function isVerificationTask(config: WorkerConfig): boolean {
+  const type = (config.seedType ?? "").toLowerCase();
+  const title = config.seedTitle.toLowerCase();
+  return type === "test" || /\b(verify|validate|test)\b/.test(title);
+}
+
+async function writeFinalizeValidation(args: {
+  config: WorkerConfig;
+  baseBranch: string;
+  integrationStatus: "SUCCESS" | "SKIPPED" | "FAIL";
+  validationStatus: "PASS" | "FAIL" | "SKIPPED";
+  failureScope: "MODIFIED_FILES" | "UNRELATED_FILES" | "UNKNOWN" | "SKIPPED";
+  verdict: "PASS" | "FAIL";
+  qaRef?: string;
+  currentRef?: string;
+  output: string;
+}): Promise<void> {
+  const reportDir = resolveArtifactPath(args.config.worktreePath, workerReportDir(args.config));
+  await mkdir(reportDir, { recursive: true });
+  await writeFile(join(reportDir, "FINALIZE_VALIDATION.md"), `# Finalize Validation: ${args.config.seedTitle}\n\n` +
+    `## Seed: ${args.config.seedId}\n` +
+    `## Run: ${args.config.runId}\n` +
+    `## Timestamp: ${new Date().toISOString()}\n\n` +
+    `## Target Integration\n` +
+    `- Status: ${args.integrationStatus}\n` +
+    `- Target: origin/${args.baseBranch}\n` +
+    `- QA Validated Target Ref: ${args.qaRef ?? ""}\n` +
+    `- Current Target Ref: ${args.currentRef ?? ""}\n\n` +
+    `## Test Validation\n` +
+    `- Status: ${args.validationStatus}\n` +
+    `- Output:\n\n\`\`\`text\n${truncateFinalizeOutput(args.output) || "(no output)"}\n\`\`\`\n\n` +
+    `## Failure Scope\n` +
+    `- ${args.failureScope}\n\n` +
+    `## Verdict: ${args.verdict}\n`, "utf8");
+}
+
+async function writeFinalizeReport(args: {
+  config: WorkerConfig;
+  install: { ok: boolean; output: string };
+  typecheck: { ok: boolean; output: string };
+  commitHash: string;
+  pushStatus: "SUCCESS" | "FAILED";
+  branchName: string;
+}): Promise<void> {
+  const reportDir = resolveArtifactPath(args.config.worktreePath, workerReportDir(args.config));
+  await mkdir(reportDir, { recursive: true });
+  await writeFile(join(reportDir, "FINALIZE_REPORT.md"), `# Finalize Report: ${args.config.seedTitle}\n\n` +
+    `## Seed: ${args.config.seedId}\n` +
+    `## Run: ${args.config.runId}\n` +
+    `## Timestamp: ${new Date().toISOString()}\n\n` +
+    `## Dependency Install\n- Status: ${args.install.ok ? "SUCCESS" : "FAILED"}\n- Details: ${truncateFinalizeOutput(args.install.output) || "(none)"}\n\n` +
+    `## Type Check\n- Status: ${args.typecheck.ok ? "SUCCESS" : "FAILED"}\n- Details: ${truncateFinalizeOutput(args.typecheck.output) || "(none)"}\n\n` +
+    `## Commit\n- Status: SUCCESS\n- Hash: ${args.commitHash}\n\n` +
+    `## Push\n- Status: ${args.pushStatus}\n- Branch: ${args.branchName}\n`, "utf8");
+}
+
+async function runFinalizeBuiltinPhase(args: {
+  config: WorkerConfig;
+  pipelineProjectPath: string;
+  vcsBackend?: VcsBackend;
+  log: (msg: string) => void;
+  progress?: RunProgress;
+}): Promise<import("./pipeline-executor.js").PhaseResult> {
+  const { config, pipelineProjectPath, log } = args;
+  const vcsBackend = args.vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, config.worktreePath);
+  const baseBranch = config.targetBranch || await vcsBackend.detectDefaultBranch(pipelineProjectPath).catch(() => "main");
+  const branchName = `foreman/${config.seedId}`;
+  const reportDir = workerReportDir(config);
+
+  log(`[FINALIZE] deterministic builtin starting for ${branchName}`);
+  const install = await runShellForFinalize("npm ci", config.worktreePath, 5 * 60_000);
+  const typecheck = await runShellForFinalize("npx tsc --noEmit", config.worktreePath, 5 * 60_000);
+
+  const commands = vcsBackend.getFinalizeCommands({
+    seedId: config.seedId,
+    seedTitle: config.seedTitle,
+    baseBranch,
+    worktreePath: config.worktreePath,
+    githubIssueNumber: config.githubIssueNumber,
+  });
+
+  await runShellForFinalize(commands.stageCommand || "true", config.worktreePath, PIPELINE_TIMEOUTS.gitOperationMs);
+  await runShellForFinalize(commands.restoreTrackedStateCommand || "true", config.worktreePath, PIPELINE_TIMEOUTS.gitOperationMs);
+
+  let commitHash = await vcsBackend.getHeadId(config.worktreePath).catch(() => "unknown");
+  const statusBeforeCommit = await vcsBackend.status(config.worktreePath).catch(() => "");
+  if (statusBeforeCommit.trim()) {
+    try {
+      const suffix = config.githubIssueNumber ? `\n\nFixes #${config.githubIssueNumber}` : "";
+      await vcsBackend.commit(config.worktreePath, `chore: finalize ${config.seedId}\n\n${config.seedTitle}${suffix}`);
+      commitHash = await vcsBackend.getHeadId(config.worktreePath).catch(() => commitHash);
+    } catch (err: unknown) {
+      const changedAgainstBase = await vcsBackend.getChangedFiles(config.worktreePath, `origin/${baseBranch}`, "HEAD").catch(() => []);
+      if (changedAgainstBase.length === 0 && !isVerificationTask(config)) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `nothing_to_commit: ${msg}` };
+      }
+      log(`[FINALIZE] commit skipped; branch already has changes or task is verification-only`);
+    }
+  } else {
+    const changedAgainstBase = await vcsBackend.getChangedFiles(config.worktreePath, `origin/${baseBranch}`, "HEAD").catch(() => []);
+    if (changedAgainstBase.length === 0 && !isVerificationTask(config)) {
+      return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: "nothing_to_commit" };
+    }
+  }
+
+  let currentTargetRef = "";
+  for (const candidate of [`origin/${baseBranch}`, baseBranch]) {
+    try { currentTargetRef = await vcsBackend.resolveRef(config.worktreePath, candidate); break; } catch { /* try next */ }
+  }
+  const qaRef = args.progress?.qaValidatedTargetRef;
+  const shouldValidate = !qaRef || !currentTargetRef || qaRef !== currentTargetRef;
+  let integrationStatus: "SUCCESS" | "SKIPPED" | "FAIL" = "SKIPPED";
+
+  if (shouldValidate) {
+    let rebaseError: string | undefined;
+    const rebase = await vcsBackend.rebase(config.worktreePath, `origin/${baseBranch}`).catch((err: unknown) => {
+      rebaseError = err instanceof Error ? err.message : String(err);
+      return { success: false, hasConflicts: true, conflictingFiles: [] };
+    });
+    if (!rebase.success) {
+      await vcsBackend.abortRebase(config.worktreePath).catch(() => undefined);
+      const details = rebaseError ?? (rebase.conflictingFiles?.length ? `conflicts: ${rebase.conflictingFiles.join(", ")}` : "rebase failed");
+      await writeFinalizeValidation({ config, baseBranch, integrationStatus: "FAIL", validationStatus: "SKIPPED", failureScope: "UNKNOWN", verdict: "FAIL", qaRef, currentRef: currentTargetRef, output: details });
+      return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `rebase_conflict: ${details}`, outputText: readFileSync(resolveArtifactPath(config.worktreePath, join(reportDir, "FINALIZE_VALIDATION.md")), "utf8") };
+    }
+    integrationStatus = "SUCCESS";
+    const test = await runShellForFinalize("npm test -- --reporter=dot", config.worktreePath, 10 * 60_000);
+    if (!test.ok) {
+      await writeFinalizeValidation({ config, baseBranch, integrationStatus, validationStatus: "FAIL", failureScope: "UNKNOWN", verdict: "FAIL", qaRef, currentRef: currentTargetRef, output: test.output });
+      return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: "finalize_validation_failed", outputText: readFileSync(resolveArtifactPath(config.worktreePath, join(reportDir, "FINALIZE_VALIDATION.md")), "utf8") };
+    }
+    await writeFinalizeValidation({ config, baseBranch, integrationStatus, validationStatus: "PASS", failureScope: "SKIPPED", verdict: "PASS", qaRef, currentRef: currentTargetRef, output: test.output });
+  } else {
+    await writeFinalizeValidation({ config, baseBranch, integrationStatus, validationStatus: "SKIPPED", failureScope: "SKIPPED", verdict: "PASS", qaRef, currentRef: currentTargetRef, output: "QA already passed and target branch did not move after QA." });
+  }
+
+  try {
+    await vcsBackend.push(config.worktreePath, branchName, { allowNew: true });
+  } catch (err: unknown) {
+    await writeFinalizeReport({ config, install, typecheck, commitHash, pushStatus: "FAILED", branchName });
+    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `push_failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  await writeFinalizeReport({ config, install, typecheck, commitHash, pushStatus: "SUCCESS", branchName });
+  return {
+    success: true,
+    costUsd: 0,
+    turns: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    outputText: readFileSync(resolveArtifactPath(config.worktreePath, join(reportDir, "FINALIZE_VALIDATION.md")), "utf8"),
+  };
+}
+
 
 async function validatePrReviewGate(args: {
   worktreePath: string;
@@ -1615,7 +1788,7 @@ async function runPipeline(
       },
       epicTasks: config.epicTasks,
       runPhase,
-      async runBuiltinPhase(phase: WorkflowPhaseConfig) {
+      async runBuiltinPhase(phase: WorkflowPhaseConfig, progress?: RunProgress) {
         try {
           if (phase.name === "create-pr") {
             return await runCreatePrBuiltinPhase({
@@ -1636,6 +1809,9 @@ async function runPipeline(
           }
           if (phase.name === "cli-review") {
             return await runCliReviewBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log });
+          }
+          if (phase.name === "finalize") {
+            return await runFinalizeBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log, progress });
           }
           if (phase.name === "prepare-pr-review") {
             return await runPreparePrReviewBuiltinPhase({ config, pipelineProjectPath, log });
@@ -2295,6 +2471,22 @@ async function markStuck(
   const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
   const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;
   enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");
+  if (projectId && seedId) {
+    try {
+      await new PostgresAdapter().addTaskNote(projectId, seedId, {
+        runId,
+        phase,
+        author: "agent-worker-markStuck",
+        kind: "failure",
+        body: failureNote,
+        metadata: { rateLimit: isRateLimit, costUsd: progress.costUsd },
+      });
+      log(`Added native failure note for seed ${seedId}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[task-note] failure note append failed (non-fatal): ${msg}`);
+    }
+  }
   log(`Enqueued add-notes for seed ${seedId}`);
   // Note: do NOT close store here — the caller (main()) owns the store lifecycle.
 }

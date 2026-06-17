@@ -39,7 +39,7 @@ import type { RunProgressSummary } from "./read-models.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";
 import { createPhaseRecord, finalizePhaseRecord, generateActivityLog, writeIncrementalPipelineReport, type PhaseRecord as ActivityPhaseRecord } from "./activity-logger.js";
-import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs, COOLDOWN_RETRY_CONFIG } from "../lib/config.js";
+import { RATE_LIMIT_BACKOFF_CONFIG, calculateRateLimitBackoffMs, COOLDOWN_RETRY_CONFIG, PIPELINE_LIMITS } from "../lib/config.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig } from "../lib/project-config.js";
@@ -197,7 +197,7 @@ export interface PipelineContext {
   /** The runPhase function from agent-worker.ts */
   runPhase: RunPhaseFn;
   /** Execute a TypeScript builtin phase such as create-pr. */
-  runBuiltinPhase?: (phase: import("../lib/workflow-loader.js").WorkflowPhaseConfig) => Promise<PhaseResult>;
+  runBuiltinPhase?: (phase: import("../lib/workflow-loader.js").WorkflowPhaseConfig, progress?: RunProgress) => Promise<PhaseResult>;
   /** Register an agent identity for mail */
   registerAgent: (client: AnyMailClient | null, roleHint: string) => Promise<void>;
   /** Send structured mail */
@@ -1027,6 +1027,26 @@ async function runPhaseSequence(
   const explorerFailures: string[] = [];
   // P1/P2: Rate limit tracking per phase
   const rateLimitRetries: Record<string, number> = {};
+  const pipelineStartedAt = Date.now();
+
+  const totalReviewLoops = (): number => Object.values(retryCounts).reduce((sum, count) => sum + count, 0);
+  const budgetExceededReason = (): string | undefined => {
+    const elapsedMs = Date.now() - pipelineStartedAt;
+    if (PIPELINE_LIMITS.maxPipelineWallClockMs > 0 && elapsedMs > PIPELINE_LIMITS.maxPipelineWallClockMs) {
+      return `pipeline wall-clock budget exceeded (${elapsedMs}ms > ${PIPELINE_LIMITS.maxPipelineWallClockMs}ms)`;
+    }
+    if (PIPELINE_LIMITS.maxPipelineCostUsd > 0 && progress.costUsd > PIPELINE_LIMITS.maxPipelineCostUsd) {
+      return `pipeline cost budget exceeded ($${progress.costUsd.toFixed(4)} > $${PIPELINE_LIMITS.maxPipelineCostUsd.toFixed(4)})`;
+    }
+    if (PIPELINE_LIMITS.maxPipelineToolCalls > 0 && progress.toolCalls > PIPELINE_LIMITS.maxPipelineToolCalls) {
+      return `pipeline tool-call budget exceeded (${progress.toolCalls} > ${PIPELINE_LIMITS.maxPipelineToolCalls})`;
+    }
+    const loops = totalReviewLoops();
+    if (PIPELINE_LIMITS.maxPipelineReviewLoops > 0 && loops > PIPELINE_LIMITS.maxPipelineReviewLoops) {
+      return `pipeline review-loop budget exceeded (${loops} > ${PIPELINE_LIMITS.maxPipelineReviewLoops})`;
+    }
+    return undefined;
+  };
 
   const writeTaskPhaseNote = async (
     phaseName: string,
@@ -1048,6 +1068,13 @@ async function runPhaseSequence(
   while (i < phases.length) {
     const phase = phases[i];
     const phaseName = phase.name;
+    const prePhaseBudgetReason = budgetExceededReason();
+    if (prePhaseBudgetReason) {
+      ctx.log(`[PIPELINE] Budget stop before ${phaseName}: ${prePhaseBudgetReason}`);
+      await writeTaskPhaseNote(phaseName, "failure", prePhaseBudgetReason, { retryable: false, budget: true });
+      await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, prePhaseBudgetReason, config.projectPath, notifyClient);
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+    }
     const agentName = `${phaseName}-${seedId}`;
     const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
     const phaseType = phase.bash
@@ -1293,7 +1320,7 @@ async function runPhaseSequence(
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
 
-      const result = await ctx.runBuiltinPhase(phase);
+      const result = await ctx.runBuiltinPhase(phase, progress);
       const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
       const phaseSucceeded = result.success && (!interpolatedArtifact || artifactPresent === true);
       const phaseError = result.error ?? (phaseSucceeded ? undefined : `Expected artifact missing: ${interpolatedArtifact}`);
@@ -1605,8 +1632,19 @@ async function runPhaseSequence(
     const commandPhaseContractError = commandPhaseContractReasons.length > 0
       ? `Command phase contract violated: ${commandPhaseContractReasons.join("; ")}`
       : undefined;
-    const phaseSucceeded = result.success && !commandPhaseContractError;
-    const phaseError = commandPhaseContractError ?? result.error;
+    let phaseSucceeded = result.success && !commandPhaseContractError;
+    let phaseError = commandPhaseContractError ?? result.error;
+
+    if (!phaseSucceeded && phaseName === "finalize" && !commandPhaseContractError && interpolatedArtifact && artifactPresent) {
+      const finalizeReport = readReport(worktreePath, interpolatedArtifact);
+      const finalizeVerdict = finalizeReport ? parseVerdict(finalizeReport) : "unknown";
+      const terminatedAfterReport = /terminated/i.test(phaseError ?? "");
+      if (terminatedAfterReport && finalizeVerdict === "pass") {
+        phaseSucceeded = true;
+        phaseError = undefined;
+        ctx.log("[FINALIZE] SDK reported terminated after a PASS artifact; accepting finalize evidence");
+      }
+    }
 
     // Record phase result
     phaseRecords.push({
@@ -1693,6 +1731,14 @@ async function runPhaseSequence(
       }
     }
     await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
+
+    const postPhaseBudgetReason = budgetExceededReason();
+    if (postPhaseBudgetReason) {
+      ctx.log(`[PIPELINE] Budget stop after ${phaseName}: ${postPhaseBudgetReason}`);
+      await writeTaskPhaseNote(phaseName, "failure", postPhaseBudgetReason, { retryable: false, budget: true });
+      await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, postPhaseBudgetReason, config.projectPath, notifyClient);
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+    }
 
     // 7. Handle failure
     if (!phaseSucceeded) {

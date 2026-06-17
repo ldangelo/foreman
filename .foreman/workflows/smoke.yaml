@@ -79,11 +79,9 @@ phases:
       forwardArtifactTo: foreman
 
   - name: finalize
-    prompt: finalize.md
-    models:
-      default: haiku
-    maxTurns: 10
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
     retryOnFail: 1

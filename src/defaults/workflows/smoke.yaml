@@ -87,13 +87,9 @@ phases:
       forwardArtifactTo: foreman
 
   - name: finalize
-    prompt: finalize.md
-    tools:
-      allowed: [Bash, Glob, Grep, Read, Write]
-    models:
-      default: MiniMax
-    maxTurns: 10
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
     retryOnFail: 1

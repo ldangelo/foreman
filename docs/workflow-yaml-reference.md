@@ -255,7 +255,7 @@ setupCache:
 
 ## Phases
 
-The `phases` array defines the ordered sequence of pipeline phases. Each phase runs an AI agent with a specific prompt, model, and set of constraints. **New phases require zero TypeScript changes** — just add a YAML entry and a prompt file.
+The `phases` array defines the ordered sequence of pipeline phases. Most phases run an AI agent with a prompt, model, and constraints. Builtin phases run deterministic TypeScript code instead. **New prompt phases require zero TypeScript changes** — just add a YAML entry and a prompt file.
 
 ### Phase Fields
 
@@ -283,6 +283,20 @@ Bundled workflows include a prompt-driven `documentation` phase before `finalize
   - name: documentation
     prompt: documentation.md
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+```
+
+### Finalize Phase
+
+Bundled workflows use a deterministic builtin `finalize` phase. It runs dependency install/typecheck, stages/restores workspace-safe files, commits, rebases when the target changed after QA, conditionally reruns tests, pushes `foreman/<task-id>`, and writes `FINALIZE_VALIDATION.md` plus `FINALIZE_REPORT.md`. Keep `artifact`, `verdict`, `retryWith`, and `retryOnFail` on the phase so validation failures still loop back through remediation.
+
+```yaml
+  - name: finalize
+    builtin: true
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
 ```
 
 ### Models

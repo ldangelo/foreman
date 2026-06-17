@@ -76,6 +76,16 @@ function isCliEntrypoint(): boolean {
   }
 }
 
+function exitSilentlyOnEpipe(error: NodeJS.ErrnoException): void {
+  if (error.code === "EPIPE") {
+    process.exit(0);
+  }
+  throw error;
+}
+
+process.stdout.on("error", exitSilentlyOnEpipe);
+process.stderr.on("error", exitSilentlyOnEpipe);
+
 export const program = new Command();
 
 program
