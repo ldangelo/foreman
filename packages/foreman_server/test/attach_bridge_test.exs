@@ -26,7 +26,7 @@ defmodule ForemanServer.AttachBridgeTest do
       Application.start(:foreman_server)
     end)
 
-    :ok
+    {:ok, tmp_dir: tmp_dir}
   end
 
   test "Pi SDK worker attach endpoint opens interactive attach mode" do
@@ -44,6 +44,46 @@ defmodule ForemanServer.AttachBridgeTest do
 
     snapshot = ProjectionStore.snapshot()
     assert snapshot.attach_requests["run-attach"].event_type == "AttachRequested"
+  end
+
+  test "recently completed Pi SDK worker can attach but stale metadata is rejected" do
+    seed_pi_worker("run-completed", "worker-1")
+    complete_run("run-completed")
+
+    assert {:ok, %{result: recent}} = AttachBridge.request_attach(%{run_id: "run-completed"})
+    assert recent.status == "ready"
+    assert recent.session_id == "session-run-completed"
+
+    seed_worker_events(%{
+      run_id: "run-stale",
+      phase_id: "developer",
+      worker_id: "worker-stale",
+      adapter: "pi_sdk",
+      session_id: "stale-session",
+      attach: %{session_path: "/tmp/stale.jsonl"},
+      observed_at: DateTime.add(DateTime.utc_now(), -120, :second)
+    })
+
+    assert {:ok, %{result: stale}} = AttachBridge.request_attach(%{run_id: "run-stale"})
+    assert stale.status == "unsupported"
+    assert stale.reason == "worker attach metadata is stale"
+  end
+
+  test "repeated attach GET is idempotent for same run worker" do
+    seed_pi_worker("run-idempotent", "worker-1")
+
+    first = get_json("/api/v1/runs/run-idempotent/attach")
+    second = get_json("/api/v1/runs/run-idempotent/attach")
+
+    assert first.status == 200
+    assert second.status == 200
+
+    attach_events =
+      "attach:run-idempotent"
+      |> EventStore.stream()
+      |> Enum.filter(&(&1.event_type == "AttachRequested"))
+
+    assert length(attach_events) == 1
   end
 
   test "unsupported provider records reason and alternative commands" do
@@ -64,6 +104,38 @@ defmodule ForemanServer.AttachBridgeTest do
 
     assert ProjectionStore.snapshot().attach_requests["run-unsupported"].event_type ==
              "AttachUnsupported"
+  end
+
+  test "HTTP attach boundary covers auth unsupported provider and worker selection" do
+    seed_pi_worker("run-worker-select", "worker-selected")
+
+    unauthorized =
+      :get
+      |> conn("/api/v1/runs/run-worker-select/attach")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert unauthorized.status == 401
+
+    selected = get_json("/api/v1/runs/run-worker-select/attach?worker_id=worker-selected")
+    assert selected.status == 200
+    assert Jason.decode!(selected.resp_body)["attach"]["worker_id"] == "worker-selected"
+
+    missing = get_json("/api/v1/runs/run-worker-select/attach?worker_id=missing-worker")
+    assert missing.status == 200
+    assert Jason.decode!(missing.resp_body)["attach"]["reason"] =~ "no worker heartbeat"
+
+    seed_worker_events(%{
+      run_id: "run-http-unsupported",
+      phase_id: "developer",
+      worker_id: "worker-unsupported",
+      adapter: "mock",
+      session_id: "mock-session",
+      attach: %{session_path: "/tmp/mock.jsonl"}
+    })
+
+    unsupported = get_json("/api/v1/runs/run-http-unsupported/attach")
+    assert unsupported.status == 200
+    assert Jason.decode!(unsupported.resp_body)["attach"]["reason"] =~ "provider mock"
   end
 
   test "operator interrupt and resume records next recovery action" do
@@ -97,7 +169,42 @@ defmodule ForemanServer.AttachBridgeTest do
            ]
   end
 
-  test "attach and recovery projections rebuild from durable events" do
+  test "interrupt and resume reject unknown run phase and invalid recovery state before side effects" do
+    before_events = EventStore.all()
+
+    assert {:error, {:not_found, :run}} =
+             AttachBridge.interrupt_phase(%{run_id: "missing-run", phase_id: "developer"})
+
+    assert EventStore.all() == before_events
+
+    seed_pi_worker("run-invalid", "worker-1")
+
+    assert {:error, {:not_found, :phase}} =
+             AttachBridge.interrupt_phase(%{run_id: "run-invalid", phase_id: "reviewer"})
+
+    assert {:error, {:conflict, :phase_not_interrupted}} =
+             AttachBridge.resume_after_interrupt(%{
+               run_id: "run-invalid",
+               phase_id: "developer",
+               next_action: "restart_phase"
+             })
+
+    unknown_run = post_json("/api/v1/runs/missing-run/interrupt", %{phase_id: "developer"})
+    assert unknown_run.status == 404
+
+    unknown_phase = post_json("/api/v1/runs/run-invalid/interrupt", %{phase_id: "reviewer"})
+    assert unknown_phase.status == 404
+
+    not_interrupted =
+      post_json("/api/v1/runs/run-invalid/resume", %{
+        phase_id: "developer",
+        next_action: "restart_phase"
+      })
+
+    assert not_interrupted.status == 409
+  end
+
+  test "attach and recovery projections replay after server restart", %{tmp_dir: tmp_dir} do
     seed_pi_worker("run-rebuild", "worker-1")
     assert {:ok, _} = AttachBridge.request_attach(%{run_id: "run-rebuild"})
 
@@ -111,10 +218,13 @@ defmodule ForemanServer.AttachBridgeTest do
                next_action: "continue_stream"
              })
 
-    assert {:ok, rebuilt} = EventStore.rebuild_projections()
+    restart_app(tmp_dir)
 
-    assert rebuilt.attach_requests["run-rebuild"].event_type == "AttachRequested"
-    assert List.last(rebuilt.interactive_recovery["run-rebuild"]).next_action == "continue_stream"
+    snapshot = ProjectionStore.snapshot()
+    assert snapshot.attach_requests["run-rebuild"].event_type == "AttachRequested"
+
+    assert List.last(snapshot.interactive_recovery["run-rebuild"]).next_action ==
+             "continue_stream"
   end
 
   defp seed_pi_worker(run_id, worker_id) do
@@ -137,7 +247,7 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   defp seed_worker_events(attrs) do
-    now = DateTime.utc_now()
+    now = Map.get(attrs, :observed_at, DateTime.utc_now())
 
     assert {:ok, _} =
              EventStore.append(%{
@@ -157,6 +267,23 @@ defmodule ForemanServer.AttachBridgeTest do
                  idempotency_key: "heartbeat:#{attrs.run_id}"
                }
              })
+  end
+
+  defp complete_run(run_id) do
+    assert {:ok, _} =
+             EventStore.append(%{
+               stream_id: "run:#{run_id}",
+               event_type: "RunCompleted",
+               payload: %{run_id: run_id, observed_at: DateTime.utc_now()},
+               metadata: %{correlation_id: run_id, idempotency_key: "complete:#{run_id}"}
+             })
+  end
+
+  defp restart_app(tmp_dir) do
+    Application.stop(:foreman_server)
+    Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+    Application.put_env(:foreman_server, :auth_token, "secret")
+    assert :ok = Application.start(:foreman_server)
   end
 
   defp get_json(path) do

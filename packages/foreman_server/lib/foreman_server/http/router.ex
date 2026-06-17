@@ -125,6 +125,9 @@ defmodule ForemanServer.Http.Router do
 
       {:error, {:not_found, :run}} ->
         send_error(conn, 404, "NOT_FOUND", "run not found", false)
+
+      {:error, {:conflict, reason}} ->
+        send_error(conn, 409, "CONFLICT", inspect(reason), false)
     end
   end
 
@@ -139,6 +142,15 @@ defmodule ForemanServer.Http.Router do
 
       {:error, {:missing_or_invalid, key}} ->
         send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+
+      {:error, {:not_found, :run}} ->
+        send_error(conn, 404, "NOT_FOUND", "run not found", false)
+
+      {:error, {:not_found, :phase}} ->
+        send_error(conn, 404, "NOT_FOUND", "phase not found", false)
+
+      {:error, {:conflict, reason}} ->
+        send_error(conn, 409, "CONFLICT", inspect(reason), false)
     end
   end
 
@@ -155,6 +167,15 @@ defmodule ForemanServer.Http.Router do
 
       {:error, {:missing_or_invalid, key}} ->
         send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+
+      {:error, {:not_found, :run}} ->
+        send_error(conn, 404, "NOT_FOUND", "run not found", false)
+
+      {:error, {:not_found, :phase}} ->
+        send_error(conn, 404, "NOT_FOUND", "phase not found", false)
+
+      {:error, {:conflict, reason}} ->
+        send_error(conn, 409, "CONFLICT", inspect(reason), false)
     end
   end
 
