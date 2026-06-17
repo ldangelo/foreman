@@ -580,11 +580,13 @@ foreman daemon restart        # Stop + start
 Manage the experimental Elixir orchestration server.
 
 ```bash
-foreman server doctor        # Auto-start and check /api/v1/health
+foreman server doctor        # Auto-start and validate DB, projections, workers, VCS, providers, integrations
 foreman server start         # Start local Elixir server
 foreman server status        # Show PID/URL and health
 foreman server stop          # Stop local Elixir server
 ```
+
+`foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. Run debug views include anomaly detection for inconsistent event timelines.
 
 ### `foreman doctor`
 Check environment health: Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth.

@@ -29,8 +29,16 @@ export class ElixirServerManager {
   }
 
   async health(): Promise<{ ok: boolean; body?: unknown; error?: string }> {
+    return this.getJson("/api/v1/health");
+  }
+
+  async doctor(): Promise<{ ok: boolean; body?: unknown; error?: string }> {
+    return this.getJson("/api/v1/doctor");
+  }
+
+  private async getJson(path: string): Promise<{ ok: boolean; body?: unknown; error?: string }> {
     try {
-      const response = await fetch(new URL("/api/v1/health", this.url));
+      const response = await fetch(new URL(path, this.url));
       const body = (await response.json()) as unknown;
       return { ok: response.ok, body };
     } catch (error) {

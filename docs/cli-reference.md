@@ -320,8 +320,8 @@ Manage the experimental Elixir orchestration server used by TRD-2026-014.
 ```bash
 foreman server start              # Start local Elixir server
 foreman server status             # Show PID/URL and health
-foreman server doctor             # Auto-start then check /api/v1/health
-foreman server doctor --no-auto-start  # Health check only
+foreman server doctor             # Auto-start then run server doctor checks
+foreman server doctor --no-auto-start  # Doctor check only
 foreman server stop               # Stop server started by Foreman
 ```
 
@@ -329,6 +329,8 @@ foreman server stop               # Stop server started by Foreman
 |--------|-------------|
 | `--port <port>` | Override local HTTP port (default `4766`) |
 | `--no-auto-start` | For `doctor`, fail instead of starting a stopped server |
+
+`server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag.
 
 ### `foreman reset`
 

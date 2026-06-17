@@ -27,6 +27,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - attach and interactive recovery bridge: `ForemanServer.AttachBridge` via authenticated `GET /api/v1/runs/:run_id/attach`, `POST /api/v1/runs/:run_id/interrupt`, and `POST /api/v1/runs/:run_id/resume`.
 - worker-backed PRD/TRD planning flow bridge: `ForemanServer.PlanningFlow` via `PlanningFlowCommand`, `plan.prd`, and `plan.trd` command API inputs.
 - migration importer for TypeScript-era projects, tasks, runs, workflows, inbox messages, and config: `ForemanServer.MigrationImporter` via `MigrationImportCommand` / `migration.import` command API inputs.
+- operational doctor checks and metrics: `ForemanServer.Operations` via authenticated `GET /api/v1/doctor` and `/api/v1/metrics`; reports DB/projection/worker/VCS/provider/integration health, projection lag, phase timers, retries, failures, recoveries, and worker restarts.
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`

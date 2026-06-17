@@ -11,6 +11,26 @@ defmodule ForemanServer.Http.Router do
     send_json(conn, 200, %{ok: true, active_projects: ForemanServer.active_projects()})
   end
 
+  get "/api/v1/doctor" do
+    with :ok <- authorize(conn),
+         {:ok, doctor} <- ForemanServer.Operations.doctor() do
+      send_json(conn, if(doctor.ok, do: 200, else: 503), %{ok: doctor.ok, doctor: doctor})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
+  get "/api/v1/metrics" do
+    with :ok <- authorize(conn),
+         {:ok, metrics} <- ForemanServer.Operations.metrics() do
+      send_json(conn, 200, %{ok: true, metrics: metrics})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
   get "/api/v1/projects" do
     with :ok <- authorize(conn) do
       send_json(conn, 200, %{ok: true, projects: ForemanServer.ProjectionStore.project_list()})

@@ -91,9 +91,11 @@ If commands report daemon or database issues, run `foreman doctor` and check [Tr
 Experimental Elixir backend work uses a separate local server:
 
 ```bash
-foreman server doctor        # auto-starts and checks readiness
+foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
 foreman server stop
 ```
+
+The doctor output includes operational metrics: phase duration timers, retry/failure/recovery counters, worker restart counts, and projection lag. Run debug views surface the first inconsistent event transition when a status anomaly appears.
 
 ### 2. Plan Larger Work
 

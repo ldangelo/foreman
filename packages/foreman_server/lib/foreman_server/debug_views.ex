@@ -117,6 +117,7 @@ defmodule ForemanServer.DebugViews do
      %{
        run_id: run_id,
        timeline: timeline,
+       anomalies: timeline_anomalies(timeline),
        artifacts: report.artifact_paths,
        reports: report.report_paths,
        failures: report.failures,
@@ -175,6 +176,77 @@ defmodule ForemanServer.DebugViews do
       report_paths: Map.get(payload, :report_paths, []) |> sanitize_value(),
       reason: Map.get(payload, :reason, Map.get(payload, :error)) |> sanitize_value(),
       occurred_at: event.occurred_at
+    }
+  end
+
+  defp timeline_anomalies(timeline) do
+    {_state, anomalies} =
+      Enum.reduce(timeline, {%{run_started: false, terminal: false, phases: %{}}, []}, fn entry,
+                                                                                          {state,
+                                                                                           anomalies} ->
+        {state, anomaly} = apply_timeline_entry(state, entry)
+        anomalies = if anomaly, do: anomalies ++ [anomaly], else: anomalies
+        {state, anomalies}
+      end)
+
+    %{
+      first: List.first(anomalies),
+      entries: anomalies,
+      count: length(anomalies)
+    }
+  end
+
+  defp apply_timeline_entry(state, %{type: "RunStarted"}),
+    do: {%{state | run_started: true}, nil}
+
+  defp apply_timeline_entry(state, %{type: type} = entry)
+       when type in ["RunCompleted", "RunFailed", "RunBlocked"] do
+    anomaly =
+      cond do
+        not state.run_started -> anomaly(entry, "run_terminal_before_start")
+        state.terminal -> anomaly(entry, "duplicate_terminal_run_transition")
+        true -> nil
+      end
+
+    {%{state | terminal: true}, anomaly}
+  end
+
+  defp apply_timeline_entry(state, %{type: "PhaseStarted", phase_id: phase_id} = entry) do
+    anomaly = if state.terminal, do: anomaly(entry, "phase_started_after_terminal_run")
+
+    state = put_in(state, [:phases, phase_id], "started")
+    {state, anomaly}
+  end
+
+  defp apply_timeline_entry(state, %{type: type, phase_id: phase_id} = entry)
+       when type in ["PhaseCompleted", "PhaseFailed", "PhaseTimedOut"] do
+    phase_state = Map.get(state.phases, phase_id)
+
+    anomaly =
+      cond do
+        not state.run_started -> anomaly(entry, "phase_terminal_before_run_start")
+        state.terminal -> anomaly(entry, "phase_terminal_after_run_terminal")
+        phase_state != "started" -> anomaly(entry, "phase_terminal_before_phase_start")
+        true -> nil
+      end
+
+    state = put_in(state, [:phases, phase_id], "terminal")
+    {state, anomaly}
+  end
+
+  defp apply_timeline_entry(state, entry) do
+    anomaly = if state.terminal, do: anomaly(entry, "event_after_terminal_run")
+    {state, anomaly}
+  end
+
+  defp anomaly(entry, reason) do
+    %{
+      event_id: entry.event_id,
+      sequence: entry.sequence,
+      type: entry.type,
+      phase_id: Map.get(entry, :phase_id),
+      reason: reason,
+      occurred_at: entry.occurred_at
     }
   end
 

@@ -46,15 +46,15 @@ serverCommand
       await manager.ensureRunning();
     }
 
-    const health = await manager.health();
-    if (!health.ok) {
-      console.error(chalk.red("Elixir server readiness: FAIL"));
-      console.error(chalk.dim(health.error ?? JSON.stringify(health.body)));
+    const doctor = await manager.doctor();
+    if (!doctor.ok) {
+      console.error(chalk.red("Elixir server doctor: FAIL"));
+      console.error(chalk.dim(doctor.error ?? JSON.stringify(doctor.body)));
       process.exit(1);
     }
 
-    console.log(chalk.green("Elixir server readiness: PASS"));
-    console.log(JSON.stringify(health.body, null, 2));
+    console.log(chalk.green("Elixir server doctor: PASS"));
+    console.log(JSON.stringify(doctor.body, null, 2));
   });
 
 serverCommand
