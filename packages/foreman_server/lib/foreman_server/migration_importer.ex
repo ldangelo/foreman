@@ -176,7 +176,8 @@ defmodule ForemanServer.MigrationImporter do
                  started_payload,
                  item_metadata(metadata, "run", run_id, "started")
                ),
-             {:ok, terminal} <- append_terminal_run(run_id, status, run, migration_id, metadata) do
+             {:ok, terminal} <-
+               append_terminal_run(run_id, status, run, current_phase, migration_id, metadata) do
           {:ok, [started, terminal]}
         end
       end
@@ -187,14 +188,14 @@ defmodule ForemanServer.MigrationImporter do
     end
   end
 
-  defp append_terminal_run(run_id, "failed", run, migration_id, metadata) do
+  defp append_terminal_run(run_id, "failed", run, current_phase, migration_id, metadata) do
     append(
       "RunFailed",
       "run:#{run_id}",
       %{
         migration_id: migration_id,
         run_id: run_id,
-        phase_id: Map.get(run, :current_phase),
+        phase_id: current_phase,
         retry_history: Map.get(run, :retry_history, []),
         imported_at: now()
       },
@@ -202,7 +203,7 @@ defmodule ForemanServer.MigrationImporter do
     )
   end
 
-  defp append_terminal_run(run_id, "blocked", _run, migration_id, metadata) do
+  defp append_terminal_run(run_id, "blocked", _run, _current_phase, migration_id, metadata) do
     append(
       "RunBlocked",
       "run:#{run_id}",
@@ -211,7 +212,7 @@ defmodule ForemanServer.MigrationImporter do
     )
   end
 
-  defp append_terminal_run(run_id, "completed", _run, migration_id, metadata) do
+  defp append_terminal_run(run_id, "completed", _run, _current_phase, migration_id, metadata) do
     append(
       "RunCompleted",
       "run:#{run_id}",
@@ -384,7 +385,10 @@ defmodule ForemanServer.MigrationImporter do
   defp validate_runs(runs) do
     require_each(runs, fn run ->
       with {:ok, _run_id} <- required_binary(record_id(run, [:run_id, :id]), :run_id),
-           :ok <- validate_run_status(Map.get(run, :status, "completed")) do
+           :ok <- validate_run_status(Map.get(run, :status, "completed")),
+           :ok <- validate_optional_binary(run, :current_phase),
+           :ok <- validate_optional_binary_list(run, :phase_order),
+           :ok <- validate_optional_list(run, :retry_history) do
         :ok
       end
     end)
@@ -410,6 +414,38 @@ defmodule ForemanServer.MigrationImporter do
 
   defp validate_run_status(status) when status in ["completed", "failed", "blocked"], do: :ok
   defp validate_run_status(_status), do: {:error, {:invalid_status, :runs}}
+
+  defp validate_optional_binary(record, key) do
+    case Map.get(record, key) do
+      nil -> :ok
+      value when is_binary(value) -> :ok
+      _ -> {:error, {:missing_or_invalid, key}}
+    end
+  end
+
+  defp validate_optional_list(record, key) do
+    case Map.get(record, key) do
+      nil -> :ok
+      value when is_list(value) -> :ok
+      _ -> {:error, {:missing_or_invalid, key}}
+    end
+  end
+
+  defp validate_optional_binary_list(record, key) do
+    case Map.get(record, key) do
+      nil -> :ok
+      value when is_list(value) -> validate_binary_list(value, key)
+      _ -> {:error, {:missing_or_invalid, key}}
+    end
+  end
+
+  defp validate_binary_list(values, key) do
+    if Enum.all?(values, &is_binary/1) do
+      :ok
+    else
+      {:error, {:missing_or_invalid, key}}
+    end
+  end
 
   defp require_each(records, fun) do
     Enum.reduce_while(records, :ok, fn record, :ok ->

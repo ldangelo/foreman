@@ -106,6 +106,17 @@ defmodule ForemanServer.MigrationImporterTest do
              MigrationImporter.import(legacy_payload("migration-bad-later"))
   end
 
+  test "malformed run optional fields fail before side effects" do
+    bad_payload =
+      legacy_payload("migration-bad-run-phase-order")
+      |> put_in([:runs], [
+        %{run_id: "valid-run", status: "completed", phase_order: ["implement"]},
+        %{run_id: "bad-run", status: "completed", phase_order: "bad"}
+      ])
+
+    assert_validation_without_events(bad_payload, {:missing_or_invalid, :phase_order})
+  end
+
   test "completed same migration id retry is idempotent without duplicate events" do
     assert {:ok, %{status: "completed", existing: false}} =
              MigrationImporter.import(legacy_payload("migration-idempotent"))
@@ -158,7 +169,6 @@ defmodule ForemanServer.MigrationImporterTest do
           task_id: "legacy-task",
           status: "failed",
           phase_order: ["implement"],
-          current_phase: "implement",
           retry_history: [%{attempt: 1, status: "failed"}]
         },
         %{
@@ -175,6 +185,7 @@ defmodule ForemanServer.MigrationImporterTest do
 
     projection = ProjectionStore.snapshot()
     assert projection.runs["legacy-run-failed"].status == "failed"
+    assert projection.runs["legacy-run-failed"].current_phase == "implement"
     assert projection.runs["legacy-run-failed"].retry_history == [%{attempt: 1, status: "failed"}]
     assert projection.runs["legacy-run-blocked"].status == "blocked"
   end
