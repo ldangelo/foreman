@@ -136,6 +136,8 @@ defmodule ForemanServer.ProjectionStore do
       logs_by_run: %{},
       attach_requests: %{},
       interactive_recovery: %{},
+      planning_flows: %{},
+      planning_traceability: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -204,6 +206,10 @@ defmodule ForemanServer.ProjectionStore do
       |> maybe_put(:dedupe_key, Map.get(payload, :dedupe_key))
       |> maybe_put(:task_type, Map.get(payload, :task_type))
       |> maybe_put(:integration_event_type, Map.get(payload, :integration_event_type))
+      |> maybe_put(:planning_run_id, Map.get(payload, :planning_run_id))
+      |> maybe_put(:planning_kind, Map.get(payload, :planning_kind))
+      |> maybe_put(:planning_phase_id, Map.get(payload, :planning_phase_id))
+      |> maybe_put(:trace_event_id, Map.get(payload, :trace_event_id))
 
     put_in(projection, [:tasks, task_id], task)
   end
@@ -655,6 +661,37 @@ defmodule ForemanServer.ProjectionStore do
     projection
     |> put_in([:integration_commands, dedupe_key], record)
     |> put_in([:integration_dedupe, dedupe_key], record)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "PlanningFlowStarted", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    put_in(projection, [:planning_flows, run_id], Map.put(payload, :status, "in_progress"))
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "PlanningTraceLinked",
+           payload: %{traceability_key: key, run_id: run_id} = payload
+         },
+         _mode
+       ) do
+    projection
+    |> put_in([:planning_traceability, key], payload)
+    |> update_in([:planning_flows, run_id, :traceability_keys], &Enum.uniq((&1 || []) ++ [key]))
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "PlanningFlowCompleted", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    projection
+    |> update_in([:planning_flows, run_id], &Map.merge(&1 || %{}, payload))
+    |> put_in([:planning_flows, run_id, :status], "completed")
   end
 
   defp apply_domain_event(projection, _event, _mode), do: projection

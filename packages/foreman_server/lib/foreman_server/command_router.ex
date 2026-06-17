@@ -1,11 +1,21 @@
 defmodule ForemanServer.CommandRouter do
   @moduledoc "Command boundary for server-side project/task mutations."
 
-  alias ForemanServer.{EventStore, IntegrationIngestion, ProjectionStore}
+  alias ForemanServer.{EventStore, IntegrationIngestion, PlanningFlow, ProjectionStore}
 
   @external_trigger_types ["ExternalTriggerCommand", "external.trigger"]
+  @planning_command_types ["PlanningFlowCommand", "plan.prd", "plan.trd"]
 
   @spec handle(map()) :: {:ok, map()} | {:error, term()}
+  def handle(%{"command_type" => command_type} = command)
+      when command_type in @planning_command_types do
+    command
+    |> normalize_payload()
+    |> Map.put(:command_type, command_type)
+    |> Map.put_new(:command_id, external_command_id(command))
+    |> handle()
+  end
+
   def handle(%{"command_type" => command_type} = command)
       when command_type in @external_trigger_types do
     command
@@ -23,6 +33,17 @@ defmodule ForemanServer.CommandRouter do
       payload: Map.get(command, "payload", %{}),
       metadata: Map.get(command, "metadata", %{})
     })
+  end
+
+  def handle(%{command_type: command_type} = command)
+      when command_type in @planning_command_types do
+    command_id = Map.get(command, :command_id) || external_command_id(command)
+    metadata = normalize_metadata(Map.put(command, :command_id, command_id))
+
+    command
+    |> planning_payload(command_type)
+    |> Map.put_new(:command_id, command_id)
+    |> handle_planning_flow(metadata)
   end
 
   def handle(%{command_type: command_type} = command)
@@ -189,6 +210,24 @@ defmodule ForemanServer.CommandRouter do
     |> Map.put_new(:idempotency_key, Map.get(command, :command_id))
   end
 
+  defp handle_planning_flow(payload, metadata) do
+    input = Map.put_new(payload, :correlation_id, Map.get(metadata, :correlation_id))
+
+    with {:ok, result} <- PlanningFlow.run(input) do
+      {:ok, %{event: result.event, projection: ProjectionStore.snapshot(), planning: result}}
+    end
+  end
+
+  defp planning_payload(command, command_type) do
+    payload = external_trigger_payload(command)
+
+    case command_type do
+      "plan.prd" -> Map.put_new(payload, :kind, "prd")
+      "plan.trd" -> Map.put_new(payload, :kind, "trd")
+      _ -> payload
+    end
+  end
+
   defp external_trigger_payload(command) do
     top_level =
       command
@@ -251,12 +290,19 @@ defmodule ForemanServer.CommandRouter do
       :fingerprint,
       :health,
       :id,
+      :input,
+      :kind,
       :idempotency_key,
       :integration_event_type,
       :metadata,
       :occurred_at,
+      :output_dir,
       :path,
       :payload,
+      :plan_type,
+      :planning_kind,
+      :planning_phase_id,
+      :planning_run_id,
       :project_id,
       :repo,
       :severity,
@@ -267,6 +313,7 @@ defmodule ForemanServer.CommandRouter do
       :task_type,
       :threshold,
       :title,
+      :trace_event_id,
       :transition_id,
       :url
     ]
