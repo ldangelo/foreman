@@ -106,6 +106,58 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  get "/api/v1/runs/:run_id/attach" do
+    conn = fetch_query_params(conn)
+
+    with :ok <- authorize(conn),
+         {:ok, %{result: result}} <-
+           ForemanServer.AttachBridge.request_attach(%{
+             run_id: run_id,
+             worker_id: conn.query_params["worker_id"]
+           }) do
+      send_json(conn, 200, %{ok: true, attach: result})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+
+      {:error, {:not_found, :run}} ->
+        send_error(conn, 404, "NOT_FOUND", "run not found", false)
+    end
+  end
+
+  post "/api/v1/runs/:run_id/interrupt" do
+    with :ok <- authorize(conn),
+         {:ok, %{result: result}} <-
+           ForemanServer.AttachBridge.interrupt_phase(Map.put(conn.body_params, "run_id", run_id)) do
+      send_json(conn, 202, %{ok: true, interruption: result})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+    end
+  end
+
+  post "/api/v1/runs/:run_id/resume" do
+    with :ok <- authorize(conn),
+         {:ok, %{result: result}} <-
+           ForemanServer.AttachBridge.resume_after_interrupt(
+             Map.put(conn.body_params, "run_id", run_id)
+           ) do
+      send_json(conn, 202, %{ok: true, recovery: result})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+    end
+  end
+
   post "/worker/v1/phases/:phase_id/start" do
     with :ok <- authorize(conn),
          {:ok, %{event: event, projection: projection}} <-

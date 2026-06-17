@@ -134,6 +134,8 @@ defmodule ForemanServer.ProjectionStore do
       integration_commands: %{},
       integration_dedupe: %{},
       logs_by_run: %{},
+      attach_requests: %{},
+      interactive_recovery: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -491,6 +493,32 @@ defmodule ForemanServer.ProjectionStore do
       [:recovery_events],
       &((&1 || []) ++ [Map.put(payload, :event_type, type)])
     )
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: type, payload: %{run_id: run_id} = payload},
+         _mode
+       )
+       when type in ["AttachRequested", "AttachUnsupported"] do
+    put_in(projection, [:attach_requests, run_id], Map.put(payload, :event_type, type))
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: type, payload: %{run_id: run_id, phase_id: phase_id} = payload},
+         _mode
+       )
+       when type in ["HumanInterruptionRecorded", "InteractiveRecoveryResumed"] do
+    projection
+    |> update_in([:interactive_recovery, run_id], fn events ->
+      (events || []) ++ [Map.put(payload, :event_type, type)]
+    end)
+    |> update_run(run_id, fn run ->
+      run
+      |> put_in([:phase_status, phase_id], Map.get(payload, :status))
+      |> Map.put(:recovery_next_action, Map.get(payload, :next_action))
+    end)
   end
 
   defp apply_domain_event(

@@ -24,6 +24,7 @@ This package is internal to the Foreman repository. It establishes the first ser
 - event-backed inbox and agent mail projection: `ForemanServer.Inbox`
 - idempotent sentinel/Jira/GitHub `ExternalTriggerCommand` ingestion via the command API: `ForemanServer.IntegrationIngestion`
 - event-backed logs, reports, and debug timeline views: `ForemanServer.DebugViews` via authenticated `GET /api/v1/runs/:run_id/logs[?view=raw]`, `/report`, and `/debug`; debug views redact common secrets and truncate large strings before returning compact/raw output.
+- attach and interactive recovery bridge: `ForemanServer.AttachBridge` via authenticated `GET /api/v1/runs/:run_id/attach`, `POST /api/v1/runs/:run_id/interrupt`, and `POST /api/v1/runs/:run_id/resume`.
 - dynamic project process supervisor: `ForemanServer.ProjectDynamicSupervisor`
 - configured project registry: `ForemanServer.ProjectRegistry`
 - project/task command boundary: `ForemanServer.CommandRouter`
