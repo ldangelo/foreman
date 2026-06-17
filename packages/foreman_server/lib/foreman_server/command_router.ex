@@ -1,14 +1,30 @@
 defmodule ForemanServer.CommandRouter do
   @moduledoc "Command boundary for server-side project/task mutations."
 
-  alias ForemanServer.{EventStore, IntegrationIngestion, PlanningFlow, ProjectionStore}
+  alias ForemanServer.{
+    EventStore,
+    IntegrationIngestion,
+    MigrationImporter,
+    PlanningFlow,
+    ProjectionStore
+  }
 
   @external_trigger_types ["ExternalTriggerCommand", "external.trigger"]
   @planning_command_types ["PlanningFlowCommand", "plan.prd", "plan.trd"]
+  @migration_command_types ["MigrationImportCommand", "migration.import"]
 
   @spec handle(map()) :: {:ok, map()} | {:error, term()}
   def handle(%{"command_type" => command_type} = command)
       when command_type in @planning_command_types do
+    command
+    |> normalize_payload()
+    |> Map.put(:command_type, command_type)
+    |> Map.put_new(:command_id, external_command_id(command))
+    |> handle()
+  end
+
+  def handle(%{"command_type" => command_type} = command)
+      when command_type in @migration_command_types do
     command
     |> normalize_payload()
     |> Map.put(:command_type, command_type)
@@ -44,6 +60,18 @@ defmodule ForemanServer.CommandRouter do
     |> planning_payload(command_type)
     |> Map.put_new(:command_id, command_id)
     |> handle_planning_flow(metadata)
+  end
+
+  def handle(%{command_type: command_type} = command)
+      when command_type in @migration_command_types do
+    command_id = Map.get(command, :command_id) || external_command_id(command)
+    metadata = normalize_metadata(Map.put(command, :command_id, command_id))
+
+    command
+    |> migration_payload()
+    |> Map.put_new(:command_id, command_id)
+    |> Map.put_new(:migration_id, command_id)
+    |> handle_migration_import(metadata)
   end
 
   def handle(%{command_type: command_type} = command)
@@ -222,6 +250,14 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp handle_migration_import(payload, metadata) do
+    input = Map.put_new(payload, :correlation_id, Map.get(metadata, :correlation_id))
+
+    with {:ok, result} <- MigrationImporter.import(input) do
+      {:ok, %{event: result.event, projection: ProjectionStore.snapshot(), migration: result}}
+    end
+  end
+
   defp planning_payload(command, command_type) do
     payload = external_trigger_payload(command)
 
@@ -231,6 +267,8 @@ defmodule ForemanServer.CommandRouter do
       _ -> payload
     end
   end
+
+  defp migration_payload(command), do: external_trigger_payload(command)
 
   defp external_trigger_payload(command) do
     top_level =
@@ -296,11 +334,13 @@ defmodule ForemanServer.CommandRouter do
       :fingerprint,
       :health,
       :id,
+      :inbox_messages,
       :input,
       :kind,
       :idempotency_key,
       :integration_event_type,
       :metadata,
+      :migration_id,
       :occurred_at,
       :output_dir,
       :path,
@@ -310,8 +350,10 @@ defmodule ForemanServer.CommandRouter do
       :planning_phase_id,
       :planning_run_id,
       :project_id,
+      :projects,
       :repo,
       :run_id,
+      :runs,
       :severity,
       :site,
       :source,
@@ -323,6 +365,7 @@ defmodule ForemanServer.CommandRouter do
       :trace_event_id,
       :transition_id,
       :url,
+      :workflows,
       :adapter,
       :compatibility_mode,
       :from_prd,

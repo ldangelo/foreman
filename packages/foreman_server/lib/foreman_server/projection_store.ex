@@ -138,6 +138,8 @@ defmodule ForemanServer.ProjectionStore do
       interactive_recovery: %{},
       planning_flows: %{},
       planning_traceability: %{},
+      migration_imports: %{},
+      migration_records: %{},
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -693,6 +695,45 @@ defmodule ForemanServer.ProjectionStore do
     projection
     |> update_in([:planning_flows, run_id], &Map.merge(&1 || %{}, payload))
     |> put_in([:planning_flows, run_id, :status], "completed")
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "MigrationImportStarted", payload: %{migration_id: migration_id} = payload},
+         _mode
+       ) do
+    put_in(
+      projection,
+      [:migration_imports, migration_id],
+      Map.put(payload, :status, "in_progress")
+    )
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "MigrationRecordImported",
+           payload: %{migration_id: migration_id, record_type: type, record_id: id} = payload
+         },
+         _mode
+       ) do
+    projection
+    |> put_in([:migration_records, "#{migration_id}:#{type}:#{id}"], payload)
+    |> update_in([:migration_imports, migration_id], fn import ->
+      import = import || %{migration_id: migration_id, status: "in_progress"}
+      counts = Map.update(Map.get(import, :record_counts, %{}), type, 1, &(&1 + 1))
+      Map.put(import, :record_counts, counts)
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "MigrationImportCompleted", payload: %{migration_id: migration_id} = payload},
+         _mode
+       ) do
+    projection
+    |> update_in([:migration_imports, migration_id], &Map.merge(&1 || %{}, payload))
+    |> put_in([:migration_imports, migration_id, :status], "completed")
   end
 
   defp apply_domain_event(projection, _event, _mode), do: projection

@@ -306,7 +306,15 @@ defmodule ForemanServer.Http.Router do
   end
 
   defp normalize_command(%{"command_type" => command_type} = params)
-       when command_type in ["ExternalTriggerCommand", "external.trigger"] do
+       when command_type in [
+              "ExternalTriggerCommand",
+              "external.trigger",
+              "PlanningFlowCommand",
+              "plan.prd",
+              "plan.trd",
+              "MigrationImportCommand",
+              "migration.import"
+            ] do
     {:ok, params}
   end
 

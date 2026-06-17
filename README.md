@@ -546,6 +546,15 @@ foreman plan trd docs/PRD.md                   # Server-backed TRD planning
 
 `plan prd` and `plan trd` send `plan.prd` / `plan.trd` commands to the local Elixir orchestration server and auto-start it by default.
 
+### Migration and coexistence
+Import a legacy TypeScript-era migration payload into the Elixir event store:
+
+```bash
+foreman import --to-elixir --file migration.json
+```
+
+The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. While migration is incomplete, set `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` to delegate supported commands (`run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`) to the legacy TS CLI.
+
 ### `foreman sling trd`
 Parse a TRD and create a native task hierarchy.
 

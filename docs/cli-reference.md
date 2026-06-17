@@ -577,6 +577,36 @@ foreman task create --from-text "..." --no-llm      # Skip AI parsing (text beco
 
 ---
 
+## Migration and Coexistence
+
+### `foreman import --to-elixir`
+
+Import a TypeScript-era migration payload into the Elixir event store. The payload is JSON and may include `projects`, `tasks`, `runs`, `workflows`, `inbox_messages`, and `config`.
+
+```bash
+foreman import --to-elixir --file migration.json
+foreman import --to-elixir --file migration.json --command-id migration-2026-014
+foreman import --to-elixir --file migration.json --no-auto-start
+```
+
+| Option | Description |
+|--------|-------------|
+| `--file <path>` | Migration JSON payload to import |
+| `--command-id <id>` | Explicit server command id for idempotent retries |
+| `--no-auto-start` | Require an already-running Elixir server |
+
+While migration is incomplete, compatibility mode can delegate these commands to a legacy TS Foreman binary: `run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`.
+
+```bash
+FOREMAN_LEGACY_COMPATIBILITY_MODE=1 \
+FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
+foreman run
+```
+
+Set `FOREMAN_MIGRATION_COMPLETE=true` to disable legacy delegation.
+
+---
+
 ## Agent Sessions
 
 ### `foreman attach`
