@@ -21,6 +21,55 @@ foreman debug <task-id> --raw     # Raw artifacts without AI analysis
 
 ---
 
+## Elixir Backend Migration Issues
+
+The TRD-2026-014 backend migration uses a three-part runtime: the Node CLI sends authenticated JSON commands/reads, the Elixir server owns durable events/projections/recovery/audits, and Node/Pi workers execute phases while streaming ordered events back to Elixir.
+
+### `foreman server doctor` reports projection lag
+
+**Symptoms:** status/watch/debug views look stale, or doctor/metrics reports non-zero projection lag.
+
+**Diagnosis:**
+```bash
+foreman server doctor
+# If auth is configured:
+FOREMAN_SERVER_AUTH_TOKEN=... foreman server doctor
+```
+
+**How to reason about it:**
+1. The event store is the source of truth. Confirm the expected event exists (`RunStarted`, `PhaseCompleted`, `WorkerRestarted`, `AuthorizationChecked`, etc.).
+2. Projections are rebuildable read models. If the event exists but the view is stale, check projection lag and rebuild/restart projections.
+3. Recovery is observation-first. Look for `ExternalWorkerObserved` before resolution events such as `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`.
+
+### Debug timeline shows an anomaly
+
+**Symptoms:** a run is completed but still appears active, a phase completes before it starts, or a worker event sequence looks inconsistent.
+
+**Diagnosis:**
+```bash
+# Authenticated endpoint if FOREMAN_SERVER_AUTH_TOKEN is configured
+curl -H "Authorization: Bearer $FOREMAN_SERVER_AUTH_TOKEN" \
+  http://127.0.0.1:4766/api/v1/runs/<run-id>/debug?view=raw
+```
+
+The debug timeline identifies the first inconsistent transition. Use that event as the root cause, then inspect adjacent worker heartbeat/log/artifact events. Secret values are redacted from events, projections, logs, and debug output; worker start events keep only redacted env values and key metadata.
+
+### Old command spelling still works but warns
+
+Deprecated aliases are hidden from help and print replacements when used:
+
+| Deprecated | Use instead |
+|------------|-------------|
+| `foreman dashboard` | `foreman watch` |
+| `foreman bead` | `foreman task create --from-text` |
+| `foreman purge-logs` | `foreman purge logs` |
+| `foreman purge-zombie-runs` | `foreman purge runs` |
+| `--skip-explore` / `--skip-review` | `--workflow quick` or a custom workflow |
+
+During incomplete migration, `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` delegate supported commands to the legacy TypeScript binary. Set `FOREMAN_MIGRATION_COMPLETE=true` to stop delegation.
+
+---
+
 ## Agent Issues
 
 ### Agent stuck — no progress for 10+ minutes

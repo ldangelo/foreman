@@ -56,6 +56,16 @@ Foreman CLI / Dispatcher
        T3/T4: AI conflict resolution via Pi session
 ```
 
+### Elixir Backend Migration Roles
+
+TRD-2026-014 adds an Elixir/OTP orchestration server alongside the existing Node CLI and Node/Pi workers. The target split is:
+
+- **Node CLI**: parses operator commands, starts or locates the Elixir server, sends authenticated JSON commands/reads, renders projection responses, and keeps deprecated aliases pointing at replacements.
+- **Elixir server**: owns durable commands, append-only events, CQRS projections, run/phase actors, scheduler capacity, VCS/PR state machines, inbox/debug/attach views, recovery, doctor/metrics, and authorization audit events.
+- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/logs/artifacts back to Elixir, and receives scoped project/run environment metadata.
+
+See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) for the migration architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
+
 **ForemanDaemon lifecycle:**
 - `foreman daemon start` — validates Postgres, starts Fastify + Unix socket listener
 - `foreman daemon stop` — clean shutdown (release pool, close socket)
@@ -586,7 +596,7 @@ foreman server status        # Show PID/URL and health
 foreman server stop          # Stop local Elixir server
 ```
 
-`foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines.
+`foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines. Troubleshoot Elixir-backed status issues by checking the durable event first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
 
 Security controls for the Elixir server:
 - Worker startup scopes environment to `FOREMAN_PROJECT_ID`, `FOREMAN_RUN_ID`, allowed base variables, and explicit project/run secret maps. Forbidden host secrets such as `FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, and `DATABASE_*` are stripped before worker launch metadata is recorded.

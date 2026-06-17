@@ -67,6 +67,18 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
                                   (merge queue → dev branch)
 ```
 
+TRD-2026-014 Elixir migration split:
+
+```
+Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker
+   |                              |                                  |
+   |                              |                                  └─ Pi SDK phases, ordered events/heartbeats/logs/artifacts
+   |                              └─ commands, events, projections, run/phase actors, recovery, VCS/PR, doctor/metrics, audits
+   └─ command parsing, auto-start, projection rendering, legacy alias/deprecation warnings
+```
+
+See `docs/guides/elixir-backend-architecture.md` for the operator architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
+
 **Key modules:**
 
 - `src/cli/commands/` — 26 CLI commands (including `debug` for AI-powered analysis)
