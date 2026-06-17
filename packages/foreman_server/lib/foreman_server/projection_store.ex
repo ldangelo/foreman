@@ -344,6 +344,7 @@ defmodule ForemanServer.ProjectionStore do
     |> update_run(run_id, fn run ->
       run
       |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "completed"))
+      |> maybe_complete_worker(payload)
       |> Map.put(
         :artifact_paths,
         Map.get(payload, :artifact_paths, Map.get(run, :artifact_paths, []))
@@ -695,6 +696,13 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_domain_event(projection, _event, _mode), do: projection
+
+  defp maybe_complete_worker(run, %{worker_id: worker_id})
+       when is_binary(worker_id) and worker_id != "" do
+    update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, "completed"))
+  end
+
+  defp maybe_complete_worker(run, _payload), do: run
 
   defp update_run_status(projection, run_id, status) do
     update_run(projection, run_id, &Map.put(&1, :status, status))

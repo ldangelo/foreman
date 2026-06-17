@@ -226,8 +226,8 @@ defmodule ForemanServer.CommandRouter do
     payload = external_trigger_payload(command)
 
     case command_type do
-      "plan.prd" -> Map.put_new(payload, :kind, "prd")
-      "plan.trd" -> Map.put_new(payload, :kind, "trd")
+      "plan.prd" -> Map.put(payload, :kind, "prd")
+      "plan.trd" -> Map.put(payload, :kind, "trd")
       _ -> payload
     end
   end
@@ -311,6 +311,7 @@ defmodule ForemanServer.CommandRouter do
       :planning_run_id,
       :project_id,
       :repo,
+      :run_id,
       :severity,
       :site,
       :source,
@@ -321,7 +322,11 @@ defmodule ForemanServer.CommandRouter do
       :title,
       :trace_event_id,
       :transition_id,
-      :url
+      :url,
+      :adapter,
+      :compatibility_mode,
+      :from_prd,
+      :provider
     ]
   end
 end

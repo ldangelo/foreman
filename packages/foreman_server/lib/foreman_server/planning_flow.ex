@@ -20,11 +20,7 @@ defmodule ForemanServer.PlanningFlow do
          {:ok, description} <-
            required_binary(Map.get(input, :description, Map.get(input, :input)), :description),
          {:ok, adapter} <- adapter(Map.get(input, :adapter, Map.get(input, :provider, "pi_sdk"))),
-         {:ok, run_id} <-
-           required_binary(
-             Map.get(input, :run_id, default_run_id(kind, project_id, description)),
-             :run_id
-           ) do
+         {:ok, run_id} <- planning_run_id(input, kind, project_id, description) do
       output_dir = Map.get(input, :output_dir, "docs")
       compatibility = compatibility_enabled?(input)
 
@@ -38,7 +34,9 @@ defmodule ForemanServer.PlanningFlow do
           Map.get(input, :create_prd_command)
         )
 
-      with {:ok, started} <-
+      with :not_found <- existing_completed_result(run_id),
+           {:ok, _run_started} <- append_run_started(run_id, project_id, phases),
+           {:ok, started} <-
              append_planning_started(
                run_id,
                kind,
@@ -54,7 +52,8 @@ defmodule ForemanServer.PlanningFlow do
            {:ok, task_results} <-
              create_planning_tasks(run_id, project_id, kind, phases, trace_events),
            {:ok, completed} <-
-             append_planning_completed(run_id, kind, project_id, phases, task_results) do
+             append_planning_completed(run_id, kind, project_id, phases, task_results),
+           {:ok, _run_completed} <- append_run_completed(run_id) do
         {:ok,
          %{
            run_id: run_id,
@@ -66,7 +65,43 @@ defmodule ForemanServer.PlanningFlow do
            tasks: task_results,
            projection: ProjectionStore.snapshot()
          }}
+      else
+        {:ok, %{existing: true} = existing} -> {:ok, existing}
+        error -> error
       end
+    end
+  end
+
+  defp existing_completed_result(run_id) do
+    projection = ProjectionStore.snapshot()
+
+    case get_in(projection, [:planning_flows, run_id]) do
+      %{status: "completed"} = flow ->
+        event =
+          EventStore.all()
+          |> Enum.find(
+            &(&1.stream_id == "planning:#{run_id}" and &1.event_type == "PlanningFlowCompleted")
+          )
+
+        if event do
+          {:ok,
+           %{
+             run_id: run_id,
+             kind: Map.get(flow, :planning_kind),
+             event: event,
+             started: nil,
+             phases: [],
+             traceability: [],
+             tasks: [],
+             projection: projection,
+             existing: true
+           }}
+        else
+          :not_found
+        end
+
+      _ ->
+        :not_found
     end
   end
 
@@ -179,6 +214,29 @@ defmodule ForemanServer.PlanningFlow do
         error -> {:halt, error}
       end
     end)
+  end
+
+  defp append_run_started(run_id, project_id, phases) do
+    append_event(
+      "run:#{run_id}",
+      "RunStarted",
+      %{
+        run_id: run_id,
+        task_id: "planning:#{project_id}",
+        phase_order: Enum.map(phases, & &1.id),
+        current_phase: List.first(Enum.map(phases, & &1.id))
+      },
+      "run-started:#{run_id}"
+    )
+  end
+
+  defp append_run_completed(run_id) do
+    append_event(
+      "run:#{run_id}",
+      "RunCompleted",
+      %{run_id: run_id},
+      "run-completed:#{run_id}"
+    )
   end
 
   defp append_planning_started(
@@ -311,9 +369,25 @@ defmodule ForemanServer.PlanningFlow do
   defp compatibility_enabled?(input),
     do: Map.get(input, :compatibility_mode, false) in [true, "true", "1"]
 
-  defp default_run_id(kind, project_id, description) do
+  defp planning_run_id(input, kind, project_id, description) do
+    cond do
+      is_binary(Map.get(input, :run_id)) and Map.get(input, :run_id) != "" ->
+        {:ok, Map.get(input, :run_id)}
+
+      is_binary(Map.get(input, :command_id)) and Map.get(input, :command_id) != "" ->
+        {:ok, "planning-command-#{Map.get(input, :command_id)}"}
+
+      true ->
+        {:ok, unique_run_id(kind, project_id, description)}
+    end
+  end
+
+  defp unique_run_id(kind, project_id, description) do
     digest =
-      :crypto.hash(:sha256, "#{kind}:#{project_id}:#{description}")
+      :crypto.hash(
+        :sha256,
+        "#{kind}:#{project_id}:#{description}:#{System.unique_integer([:positive])}"
+      )
       |> Base.encode16(case: :lower)
       |> binary_part(0, 12)
 
@@ -339,6 +413,6 @@ defmodule ForemanServer.PlanningFlow do
   defp normalize_value(value), do: value
 
   defp known_string_keys do
-    ~w(adapter compatibility_mode create_prd_command description from_prd input kind output_dir plan_type project_id provider run_id)
+    ~w(adapter command_id compatibility_mode create_prd_command description from_prd input kind output_dir plan_type project_id provider run_id)
   end
 end
