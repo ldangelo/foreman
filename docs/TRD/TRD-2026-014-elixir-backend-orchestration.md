@@ -720,7 +720,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-023**: Implement migration importer and legacy TS coexistence delegation (6h) [satisfies REQ-020] [depends: TRD-003, TRD-008]
+- [x] **TRD-023**: Implement migration importer and legacy TS coexistence delegation (6h) [satisfies REQ-020] [depends: TRD-003, TRD-008]
 
 **Description:** Implement migration importer and legacy TS coexistence delegation with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -730,7 +730,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-023-TEST**: Verify Implement migration importer and legacy TS coexistence delegation (3h) [verifies TRD-023] [satisfies REQ-020] [depends: TRD-023]
+- [x] **TRD-023-TEST**: Verify Implement migration importer and legacy TS coexistence delegation (3h) [verifies TRD-023] [satisfies REQ-020] [depends: TRD-023]
 
 **Description:** Add unit/integration tests that verify AC-020-1, AC-020-2, AC-020-3 for TRD-023.
 
@@ -741,7 +741,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 6: Operations, Security, and Documentation
 
 **Shippable State:** Operators can safely run the remotely configurable server with auth, metrics, doctor checks, and updated documentation.
-- [ ] **TRD-024**: Implement operational metrics, server doctor, and projection lag reporting (5h) [satisfies REQ-022] [depends: TRD-004, TRD-020]
+- [x] **TRD-024**: Implement operational metrics, server doctor, and projection lag reporting (5h) [satisfies REQ-022] [depends: TRD-004, TRD-020]
 
 **Description:** Implement operational metrics, server doctor, and projection lag reporting with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -751,7 +751,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-024-TEST**: Verify Implement operational metrics, server doctor, and projection lag reporting (3h) [verifies TRD-024] [satisfies REQ-022] [depends: TRD-024]
+- [x] **TRD-024-TEST**: Verify Implement operational metrics, server doctor, and projection lag reporting (3h) [verifies TRD-024] [satisfies REQ-022] [depends: TRD-024]
 
 **Description:** Add unit/integration tests that verify AC-022-1, AC-022-2, AC-022-3 for TRD-024.
 
@@ -759,7 +759,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-025**: Implement worker secret scoping, authorization audit events, and remote access controls (5h) [satisfies REQ-023] [depends: TRD-005, TRD-011]
+- [x] **TRD-025**: Implement worker secret scoping, authorization audit events, and remote access controls (5h) [satisfies REQ-023] [depends: TRD-005, TRD-011]
 
 **Description:** Implement worker secret scoping, authorization audit events, and remote access controls with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -769,7 +769,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-025-TEST**: Verify Implement worker secret scoping, authorization audit events, and remote access controls (3h) [verifies TRD-025] [satisfies REQ-023] [depends: TRD-025]
+- [x] **TRD-025-TEST**: Verify Implement worker secret scoping, authorization audit events, and remote access controls (3h) [verifies TRD-025] [satisfies REQ-023] [depends: TRD-025]
 
 **Description:** Add unit/integration tests that verify AC-023-1, AC-023-2, AC-023-3 for TRD-025.
 
@@ -777,7 +777,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-026**: Update README, User Guide, CLI Reference, and architecture docs (4h) [satisfies REQ-024] [depends: TRD-024]
+- [x] **TRD-026**: Update README, User Guide, CLI Reference, and architecture docs (4h) [satisfies REQ-024] [depends: TRD-024]
 
 **Description:** Update README, User Guide, CLI Reference, and architecture docs with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -787,7 +787,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-026-TEST**: Verify Update README, User Guide, CLI Reference, and architecture docs (3h) [verifies TRD-026] [satisfies REQ-024] [depends: TRD-026]
+- [x] **TRD-026-TEST**: Verify Update README, User Guide, CLI Reference, and architecture docs (3h) [verifies TRD-026] [satisfies REQ-024] [depends: TRD-026]
 
 **Description:** Add unit/integration tests that verify AC-024-1, AC-024-2, AC-024-3 for TRD-026.
 
@@ -795,6 +795,28 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
+
+### PR 7: Elixir Cutover Gates
+
+**Shippable State:** Operators can select Elixir as the active backend without accidentally running the legacy Node scheduler or silently delegating mutating commands back to the TypeScript control plane.
+- [x] **TRD-027**: Implement explicit Elixir cutover mode and Node daemon scheduler guard (3h) [satisfies REQ-020, REQ-024] [depends: TRD-023, TRD-026]
+
+**Description:** Add an explicit backend-selection gate for cutover. `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` disables Node daemon start/restart, prevents legacy TS delegation, and directs operators to `foreman server start` so there is one active scheduler per project.
+
+**Validates PRD ACs:** AC-020-3, AC-024-1, AC-024-3
+
+**Implementation AC Checklist:**
+- Given `FOREMAN_BACKEND=elixir`, when `foreman daemon start` or `foreman daemon restart` is requested, then the command fails before starting the Node daemon and prints the Elixir server command.
+- Given `FOREMAN_MIGRATION_COMPLETE=true`, when compatibility delegation is configured, then legacy TS delegation is disabled.
+- Given neither cutover flag is set, when legacy operation is required, then existing Node daemon and compatibility behavior remains available.
+- [x] **TRD-027-TEST**: Verify explicit Elixir cutover mode and Node daemon scheduler guard (2h) [verifies TRD-027] [satisfies REQ-020, REQ-024] [depends: TRD-027]
+
+**Description:** Add focused TypeScript tests for backend-mode resolution and legacy delegation behavior during Elixir cutover.
+
+**Verification Steps:**
+- `npx vitest run src/lib/__tests__/backend-mode.test.ts src/cli/__tests__/legacy-coexistence.test.ts --reporter=dot`
+- `npx tsc --noEmit`
+
 
 ## Team Configuration
 
@@ -1095,3 +1117,4 @@ Traceability check: 25 requirements covered, 0 uncovered, 0 orphaned annotations
 | 2026-06-16 | 1.0.3 | Pi Agent | Converted Master Task List to parser-compatible checkbox task format for implement-trd-beads |
 | 2026-06-16 | 1.0.4 | Pi Agent | Converted Team Configuration to implement-trd-beads role-list schema and added local agent registry entries |
 | 2026-06-16 | 1.0.5 | Pi Agent | Recorded TRD-001 comparative architecture spike result and confirmed Elixir/OTP target architecture |
+| 2026-06-17 | 1.0.6 | Pi Agent | Added explicit Elixir cutover gates to disable the Node daemon scheduler and legacy TS delegation during backend migration completion |

@@ -98,9 +98,10 @@ foreman doctor
 
 If commands report daemon or database issues, run `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
 
-Experimental Elixir backend work uses a separate local server:
+Experimental Elixir backend work uses a separate local server. During cutover testing, set `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` before starting Foreman; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler.
 
 ```bash
+export FOREMAN_BACKEND=elixir
 foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
 foreman server stop
 ```
@@ -144,7 +145,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman status
 ```
 
-Delegation supports `run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, and `doctor`. Set `FOREMAN_MIGRATION_COMPLETE=true` to disable compatibility delegation.
+Delegation supports `run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, and `doctor`. Set `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` to disable compatibility delegation and prevent the Node daemon scheduler from starting during Elixir cutover.
 
 ### 4. Create a Task
 

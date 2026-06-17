@@ -31,7 +31,7 @@ foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
-foreman server doctor # Validate Elixir DB/projection/worker/VCS/provider/integration health + metrics; set FOREMAN_SERVER_AUTH_TOKEN when auth/remote access is enabled
+FOREMAN_BACKEND=elixir foreman server doctor # Elixir cutover mode: disables Node daemon scheduler/legacy delegation; validates DB/projection/worker/VCS/provider/integration health + metrics
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session

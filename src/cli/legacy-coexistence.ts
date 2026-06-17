@@ -1,5 +1,6 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { resolve } from "node:path";
+import { foremanBackendMode, migrationComplete } from "../lib/backend-mode.js";
 
 export const LEGACY_DELEGATABLE_COMMANDS = [
   "run",
@@ -32,8 +33,7 @@ const completeValues = new Set(["1", "true", "yes", "complete", "completed"]);
 
 export function shouldUseLegacyCompatibility(env: Env = process.env): boolean {
   const value = (env.FOREMAN_LEGACY_COMPATIBILITY_MODE ?? env.FOREMAN_COMPATIBILITY_MODE ?? "").toLowerCase();
-  const complete = (env.FOREMAN_MIGRATION_COMPLETE ?? "").toLowerCase();
-  return enabledValues.has(value) && !completeValues.has(complete);
+  return enabledValues.has(value) && !migrationComplete(env) && foremanBackendMode(env) !== "elixir";
 }
 
 export function delegatableCommand(argv: string[]): LegacyDelegatableCommand | undefined {
@@ -52,7 +52,7 @@ export function maybeDelegateToLegacyTs(
   if (!shouldUseLegacyCompatibility(env)) {
     return {
       delegated: false,
-      reason: completeValues.has((env.FOREMAN_MIGRATION_COMPLETE ?? "").toLowerCase())
+      reason: completeValues.has((env.FOREMAN_MIGRATION_COMPLETE ?? "").toLowerCase()) || foremanBackendMode(env) === "elixir"
         ? "migration-complete"
         : "disabled",
     };

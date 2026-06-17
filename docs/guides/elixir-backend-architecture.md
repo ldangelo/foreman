@@ -27,7 +27,7 @@ Legacy spellings remain hidden or compatibility-only during migration and point 
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow without those phases |
 | `foreman inbox send` replaces removed `foreman mail send` | Use `foreman inbox send` |
 
-When TypeScript-era migration is incomplete, `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` with `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` delegates supported commands to the legacy binary. Set `FOREMAN_MIGRATION_COMPLETE=true` to disable delegation.
+When TypeScript-era migration is incomplete, `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` with `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` delegates supported commands to the legacy binary. Set `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` to enter cutover mode: legacy delegation is disabled and `foreman daemon start|restart` refuses to launch the Node daemon scheduler. Use `foreman server start` so the Elixir scheduler is the only active scheduler for the project. Set `FOREMAN_BACKEND=node` only for explicit legacy operation.
 
 ## Troubleshooting model
 

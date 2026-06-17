@@ -19,6 +19,7 @@ import {
   DaemonNotRunningError,
   type DaemonStatus,
 } from "../../lib/daemon-manager.js";
+import { nodeDaemonAllowed, nodeDaemonDisabledMessage } from "../../lib/backend-mode.js";
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -54,6 +55,11 @@ const startCommand = new Command("start")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
+    if (!nodeDaemonAllowed()) {
+      console.error(chalk.red(`Error: ${nodeDaemonDisabledMessage()}`));
+      process.exit(1);
+    }
+
     const mgr = new DaemonManager({
       socketPath: opts.socketPath,
       pidPath: opts.pidPath,
@@ -173,6 +179,11 @@ const restartCommand = new Command("restart")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
+    if (!nodeDaemonAllowed()) {
+      console.error(chalk.red(`Error: ${nodeDaemonDisabledMessage()}`));
+      process.exit(1);
+    }
+
     const mgr = new DaemonManager({
       socketPath: opts.socketPath,
       pidPath: opts.pidPath,

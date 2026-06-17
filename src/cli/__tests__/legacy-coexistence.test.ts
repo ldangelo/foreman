@@ -40,6 +40,12 @@ describe("legacy TS coexistence delegation", () => {
       }),
     ).toBe(false);
     expect(shouldUseLegacyCompatibility({})).toBe(false);
+    expect(
+      shouldUseLegacyCompatibility({
+        FOREMAN_LEGACY_COMPATIBILITY_MODE: "1",
+        FOREMAN_BACKEND: "elixir",
+      }),
+    ).toBe(false);
   });
 
   it("delegates supported commands to configured legacy TS binary", () => {
@@ -66,6 +72,20 @@ describe("legacy TS coexistence delegation", () => {
     expect(() =>
       maybeDelegateToLegacyTs(["status"], { FOREMAN_LEGACY_COMPATIBILITY_MODE: "1" }, vi.fn() as any),
     ).toThrow(/FOREMAN_LEGACY_TS_BIN/);
+  });
+
+  it("does not delegate when Elixir backend mode is active", () => {
+    expect(
+      maybeDelegateToLegacyTs(
+        ["run"],
+        {
+          FOREMAN_BACKEND: "elixir",
+          FOREMAN_LEGACY_COMPATIBILITY_MODE: "1",
+          FOREMAN_LEGACY_TS_BIN: "/tmp/legacy",
+        },
+        vi.fn() as any,
+      ),
+    ).toEqual({ delegated: false, reason: "migration-complete" });
   });
 
   it("does not delegate unsupported commands", () => {

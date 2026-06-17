@@ -34,7 +34,7 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow |
 | removed `foreman mail send` | `foreman inbox send` |
 
-During Elixir migration, incomplete legacy command coverage can be delegated with `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman`; set `FOREMAN_MIGRATION_COMPLETE=true` to disable delegation.
+During Elixir migration, incomplete legacy command coverage can be delegated with `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman`. Set `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` for cutover testing; both disable legacy TS delegation and block `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler.
 
 ---
 
@@ -340,7 +340,7 @@ foreman server stop               # Stop server started by Foreman
 
 `server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token. Binding the Elixir HTTP server beyond loopback also requires this token. Worker starts strip forbidden host variables (`FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, `DATABASE_*`) and scope explicit project/run secrets to the run. Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events.
 
-Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
+Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). During cutover, set `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true`; `foreman daemon start|restart` will fail fast and direct operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
 ### `foreman reset`
 
@@ -615,7 +615,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Set `FOREMAN_MIGRATION_COMPLETE=true` to disable legacy delegation.
+Set `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` to disable legacy delegation and prevent `foreman daemon start|restart` from launching the Node scheduler during Elixir cutover. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation.
 
 ---
 
