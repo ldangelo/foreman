@@ -69,7 +69,7 @@ Do NOT run tests if conflict markers are found.
     |-------|-----------|-------|---------------|--------|-------|
     | qa | TIMESTAMP | SCOPE | PATHS | RESULT | NOTES |
     LEDGER
-      sed -i "s/TIMESTAMP/$(date -u +%Y-%m-%dT%H:%M:%SZ)/; s/SCOPE/<targeted|expanded|full>/; s|PATHS|<affected paths>|; s|RESULT|<PASS|FAIL>|; s|NOTES|<justification if full, else empty>|" "{{reportDir}}/VALIDATION_LEDGER.md"
+      sed "s/TIMESTAMP/$(date -u +%Y-%m-%dT%H:%M:%SZ)/; s/SCOPE/<targeted|expanded|full>/; s|PATHS|<affected paths>|; s|RESULT|<PASS\|FAIL>|; s|NOTES|<justification if full, else empty>|" "{{reportDir}}/VALIDATION_LEDGER.md" > "{{reportDir}}/VALIDATION_LEDGER.md.tmp" && mv "{{reportDir}}/VALIDATION_LEDGER.md.tmp" "{{reportDir}}/VALIDATION_LEDGER.md"
     fi
     ```
 
