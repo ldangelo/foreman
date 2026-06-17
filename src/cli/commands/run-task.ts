@@ -143,6 +143,7 @@ export async function runTaskAction(
     dryRun?: boolean;
     watch?: boolean;
     targetBranch?: string;
+    runId?: string;
     project?: string;
     projectPath?: string;
   },
@@ -152,6 +153,7 @@ export async function runTaskAction(
     dryRun = false,
     watch = true,
     targetBranch,
+    runId: requestedRunId,
     project,
     projectPath: optsProjectPath,
   } = opts;
@@ -333,7 +335,7 @@ export async function runTaskAction(
   }
 
   // ── Create run record ────────────────────────────────────────────────
-  let runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  let runId = requestedRunId ?? `run-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const attemptNumber = 1;
 
   try {
@@ -348,7 +350,7 @@ export async function runTaskAction(
         beadId: taskId,
         runNumber,
         branch: branchName,
-        trigger: "direct",
+        trigger: "manual",
         agentType: "developer",
         worktreePath,
         baseBranch: baseBranch ?? undefined,
@@ -500,6 +502,7 @@ export const runTaskCommand = new Command("task")
   .option("--dry-run", "Show what would be done without executing")
   .option("--no-watch", "Exit immediately after spawning worker (don't monitor)")
   .option("--target-branch <branch>", "Override target branch for finalize/merge")
+  .addOption(new Option("--run-id <id>", "Use an existing orchestration run id (internal Elixir scheduler bridge)").hideHelp())
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (taskId, workflowPath, opts) => {
@@ -510,6 +513,7 @@ export const runTaskCommand = new Command("task")
       dryRun: opts.dryRun as boolean | undefined,
       watch: opts.watch as boolean,
       targetBranch: opts.targetBranch as string | undefined,
+      runId: opts.runId as string | undefined,
       project: opts.project as string | undefined,
       projectPath: opts.projectPath as string | undefined,
     });

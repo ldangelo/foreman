@@ -30,6 +30,7 @@ defmodule ForemanServer.Scheduler do
       max_concurrent: Keyword.get(opts, :max_concurrent, scheduler_env(:max_concurrent, 2)),
       project_limits: Keyword.get(opts, :project_limits, scheduler_env(:project_limits, %{})),
       default_phases: Keyword.get(opts, :default_phases, @default_phases),
+      worker_launcher: Keyword.get(opts, :worker_launcher, scheduler_env(:worker_launcher, ForemanServer.WorkerLauncher)),
       auto_tick: auto_tick,
       tick_interval_ms: interval_ms,
       last_tick: nil
@@ -48,7 +49,8 @@ defmodule ForemanServer.Scheduler do
       state
       | max_concurrent: Keyword.get(opts, :max_concurrent, state.max_concurrent),
         project_limits: Keyword.get(opts, :project_limits, state.project_limits),
-        default_phases: Keyword.get(opts, :default_phases, state.default_phases)
+        default_phases: Keyword.get(opts, :default_phases, state.default_phases),
+        worker_launcher: Keyword.get(opts, :worker_launcher, state.worker_launcher)
     }
 
     result = dispatch(effective)
@@ -102,7 +104,7 @@ defmodule ForemanServer.Scheduler do
             )
 
           true ->
-            case claim_task(task, state.default_phases) do
+            case claim_task(task, state.default_phases, state.worker_launcher) do
               {:ok, run_id} ->
                 next_project_counts = Map.update(project_counts, project_id, 1, &(&1 + 1))
 
@@ -118,22 +120,24 @@ defmodule ForemanServer.Scheduler do
     %{claimed: claimed, skipped: skipped, active_runs: length(active_runs)}
   end
 
-  defp claim_task(task, phases) do
-    run_id = "run-#{task.task_id}"
+  defp claim_task(task, phases, worker_launcher) do
+    run_id = uuid()
+    effective_phases = Map.get(task, :phases, phases)
 
     with {:ok, _event} <-
            EventStore.append(%{
              stream_id: "task:#{task.task_id}",
              event_type: "TaskUpdated",
              payload: %{task_id: task.task_id, status: "in_progress", run_id: run_id},
-             metadata: %{correlation_id: run_id, idempotency_key: "claim:#{task.task_id}"}
+             metadata: %{correlation_id: run_id, idempotency_key: "claim:#{task.task_id}:#{run_id}"}
            }),
          {:ok, _pid} <-
            RunActor.start_run(%{
              run_id: run_id,
              task_id: task.task_id,
-             phases: Map.get(task, :phases, phases)
-           }) do
+             phases: effective_phases
+           }),
+         {:ok, _launch} <- worker_launcher.launch(task, run_id, effective_phases) do
       {:ok, run_id}
     end
   end
@@ -156,9 +160,14 @@ defmodule ForemanServer.Scheduler do
   end
 
   defp active_runs do
-    ProjectionStore.snapshot().runs
+    snapshot = ProjectionStore.snapshot()
+
+    snapshot.runs
     |> Map.values()
-    |> Enum.filter(&(Map.get(&1, :status) == "in_progress"))
+    |> Enum.filter(fn run ->
+      task = Map.get(snapshot.tasks, Map.get(run, :task_id))
+      Map.get(run, :status) == "in_progress" and Map.get(task || %{}, :status) in ["in_progress", "in-progress"]
+    end)
   end
 
   defp project_counts(runs) do
@@ -177,6 +186,22 @@ defmodule ForemanServer.Scheduler do
       limit when is_integer(limit) -> Map.get(counts, project_id, 0) >= limit
       _ -> false
     end
+  end
+
+  defp uuid do
+    bytes = :crypto.strong_rand_bytes(16)
+    <<a::32, b::16, c::16, d::16, e::48>> = bytes
+
+    Enum.join(
+      [
+        Base.encode16(<<a::32>>, case: :lower),
+        Base.encode16(<<b::16>>, case: :lower),
+        Base.encode16(<<c::16>>, case: :lower),
+        Base.encode16(<<d::16>>, case: :lower),
+        Base.encode16(<<e::48>>, case: :lower)
+      ],
+      "-"
+    )
   end
 
   defp scheduler_env(key, default) do

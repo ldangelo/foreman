@@ -31,6 +31,25 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  get "/api/v1/scheduler" do
+    with :ok <- authorize(conn) do
+      send_json(conn, 200, %{ok: true, scheduler: ForemanServer.Scheduler.state()})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
+  post "/api/v1/scheduler/tick" do
+    with :ok <- authorize(conn),
+         {:ok, result} <- ForemanServer.scheduler_tick() do
+      send_json(conn, 202, %{ok: true, scheduler: result})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
   get "/api/v1/projects" do
     with :ok <- authorize(conn) do
       send_json(conn, 200, %{ok: true, projects: ForemanServer.ProjectionStore.project_list()})

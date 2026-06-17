@@ -1,3 +1,7 @@
+defmodule ForemanServer.SchedulerTest.NoopLauncher do
+  def launch(_task, run_id, phases), do: {:ok, %{run_id: run_id, phases: phases}}
+end
+
 defmodule ForemanServer.SchedulerTest do
   use ExUnit.Case
 
@@ -11,7 +15,10 @@ defmodule ForemanServer.SchedulerTest do
 
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
-    Application.put_env(:foreman_server, :scheduler, auto_tick: false)
+    Application.put_env(:foreman_server, :scheduler,
+      auto_tick: false,
+      worker_launcher: ForemanServer.SchedulerTest.NoopLauncher
+    )
     assert :ok = Application.start(:foreman_server)
 
     on_exit(fn ->
@@ -28,10 +35,11 @@ defmodule ForemanServer.SchedulerTest do
   test "tick claims ready tasks and starts run actors when capacity exists" do
     create_task("task-a", %{project_id: "alpha", status: "ready"})
 
-    assert {:ok, %{claimed: [%{task_id: "task-a", run_id: "run-task-a"}], skipped: []}} =
+    assert {:ok, %{claimed: [%{task_id: "task-a", run_id: run_id}], skipped: []}} =
              Scheduler.tick(max_concurrent: 2, default_phases: ["dev", "qa"])
 
-    assert %{current_phase: "dev", phase_order: ["dev", "qa"]} = RunActor.state("run-task-a")
+    assert run_id =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    assert %{current_phase: "dev", phase_order: ["dev", "qa"]} = RunActor.state(run_id)
     assert ProjectionStore.snapshot().tasks["task-a"].status == "in_progress"
   end
 
@@ -67,13 +75,18 @@ defmodule ForemanServer.SchedulerTest do
 
   test "periodic tick automatically claims ready tasks" do
     Application.stop(:foreman_server)
-    Application.put_env(:foreman_server, :scheduler, auto_tick: true, tick_interval_ms: 20)
+    Application.put_env(:foreman_server, :scheduler,
+      auto_tick: true,
+      tick_interval_ms: 20,
+      worker_launcher: ForemanServer.SchedulerTest.NoopLauncher
+    )
     assert :ok = Application.start(:foreman_server)
 
     create_task("task-auto", %{project_id: "alpha", status: "ready"})
 
     assert_receive_tick(fn -> ProjectionStore.snapshot().tasks["task-auto"].status end)
-    assert %{current_phase: "developer"} = RunActor.state("run-task-auto")
+    run_id = ProjectionStore.snapshot().tasks["task-auto"].run_id
+    assert %{current_phase: "developer"} = RunActor.state(run_id)
   end
 
   defp assert_receive_tick(fun, attempts \\ 20)
