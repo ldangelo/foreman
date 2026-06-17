@@ -16,6 +16,8 @@ defmodule ForemanServer.PlanningFlowTest do
 
     File.mkdir_p!(tmp_dir)
 
+    previous_auth_token = Application.get_env(:foreman_server, :auth_token, :__unset__)
+
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
     assert :ok = Application.start(:foreman_server)
@@ -23,6 +25,13 @@ defmodule ForemanServer.PlanningFlowTest do
     on_exit(fn ->
       Application.stop(:foreman_server)
       Application.delete_env(:foreman_server, :event_log_path)
+
+      if previous_auth_token == :__unset__ do
+        Application.delete_env(:foreman_server, :auth_token)
+      else
+        Application.put_env(:foreman_server, :auth_token, previous_auth_token)
+      end
+
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)

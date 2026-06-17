@@ -29,6 +29,7 @@ foreman doctor         # Health checks (br, Pi, DB integrity)
 foreman debug <id>     # AI-powered execution analysis (Opus)
 foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
+foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session

@@ -505,7 +505,11 @@ foreman plan "..." --prd-only     # Stop after PRD generation
 foreman plan --from-prd docs/PRD.md  # Start from existing PRD
 foreman plan "..." --output-dir docs/auth  # Custom output directory
 foreman plan "..." --dry-run      # Preview steps
+foreman plan prd "Add user authentication"   # Server-backed PRD planning
+foreman plan trd docs/PRD.md                  # Server-backed TRD planning
 ```
+
+`foreman plan prd` and `foreman plan trd` submit `plan.prd` / `plan.trd` commands to the local Elixir orchestration server. They auto-start the server by default; use `--no-auto-start` to require an already-running server.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -514,6 +518,8 @@ foreman plan "..." --dry-run      # Preview steps
 | `--output-dir <dir>` | `./docs` | Output directory for PRD/TRD |
 | `--runtime <runtime>` | `claude-code` | AI runtime (`claude-code` or `codex`) |
 | `--dry-run` | — | Show steps without executing |
+
+Server-backed `plan prd` / `plan trd` options: `--project <path>`, `--output-dir <dir>`, `--provider <provider>`, `--run-id <id>`, `--command-id <id>`, `--no-auto-start`.
 
 ### `foreman sling trd`
 

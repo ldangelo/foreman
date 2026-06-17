@@ -540,7 +540,11 @@ foreman plan "Build a user auth system with OAuth2"
 foreman plan docs/description.md              # From file
 foreman plan --from-prd docs/PRD.md "unused"  # Skip to TRD
 foreman plan --prd-only "Build a REST API"    # Stop after PRD
+foreman plan prd "Build a REST API"           # Server-backed PRD planning
+foreman plan trd docs/PRD.md                   # Server-backed TRD planning
 ```
+
+`plan prd` and `plan trd` send `plan.prd` / `plan.trd` commands to the local Elixir orchestration server and auto-start it by default.
 
 ### `foreman sling trd`
 Parse a TRD and create a native task hierarchy.

@@ -3,6 +3,8 @@ import chalk from "chalk";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { normalizePriority } from "../../lib/priority.js";
 import { ForemanStore } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
@@ -19,6 +21,15 @@ interface PlanCreateOptions {
   priority?: string;
   parent?: string;
   description?: string;
+}
+
+interface ServerPlanOptions {
+  project?: string;
+  outputDir: string;
+  provider: string;
+  runId?: string;
+  commandId?: string;
+  autoStart?: boolean;
 }
 
 export interface PlanTaskClient extends ITaskClient {
@@ -443,7 +454,98 @@ export const planCommand = new Command("plan")
     },
   );
 
+planCommand
+  .command("prd")
+  .description("Run PRD planning through the Elixir orchestration server")
+  .argument("<description>", "Product description text or path to a description file")
+  .option("--project <path>", "Project path or registered name (default: current directory)")
+  .option("--output-dir <dir>", "Directory to save PRD output (default: ./docs)", "./docs")
+  .option("--provider <provider>", "Planning provider adapter", "pi_sdk")
+  .option("--run-id <id>", "Explicit planning run id")
+  .option("--command-id <id>", "Explicit server command id for idempotent retries")
+  .option("--no-auto-start", "Require an already-running Elixir server")
+  .action(async (description: string, opts: ServerPlanOptions) => {
+    await runServerPlanningCommand("prd", description, opts);
+  });
+
+planCommand
+  .command("trd")
+  .description("Run TRD planning through the Elixir orchestration server")
+  .argument("<description>", "TRD description or path to an existing PRD/input file")
+  .option("--project <path>", "Project path or registered name (default: current directory)")
+  .option("--output-dir <dir>", "Directory to save TRD output (default: ./docs)", "./docs")
+  .option("--provider <provider>", "Planning provider adapter", "pi_sdk")
+  .option("--run-id <id>", "Explicit planning run id")
+  .option("--command-id <id>", "Explicit server command id for idempotent retries")
+  .option("--no-auto-start", "Require an already-running Elixir server")
+  .action(async (description: string, opts: ServerPlanOptions) => {
+    await runServerPlanningCommand("trd", description, opts);
+  });
+
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+async function runServerPlanningCommand(
+  kind: "prd" | "trd",
+  description: string,
+  opts: ServerPlanOptions,
+): Promise<void> {
+  const projectPath = await resolveRepoRootProjectPath(opts.project ? { project: opts.project } : {});
+  const projects = await listRegisteredProjects();
+  const project = projects.find((record) => record.path === projectPath);
+
+  if (!project) {
+    console.error(chalk.red("No project registered for this directory. Run 'foreman init' first."));
+    process.exitCode = 1;
+    return;
+  }
+
+  const outputDir = isAbsolute(opts.outputDir)
+    ? resolve(opts.outputDir)
+    : resolve(projectPath, opts.outputDir);
+  const input = readPlanningInput(description, projectPath);
+  const commandId = opts.commandId ?? `plan-${kind}-${Date.now()}`;
+  const manager = new ElixirServerManager();
+  const status = opts.autoStart === false ? manager.status() : await manager.ensureRunning();
+
+  if (!status.running) {
+    console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start' or omit --no-auto-start."));
+    process.exitCode = 1;
+    return;
+  }
+
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const response = await client.sendCommand({
+    command_id: commandId,
+    command_type: `plan.${kind}`,
+    payload: {
+      kind,
+      project_id: project.id,
+      description: input,
+      output_dir: outputDir,
+      provider: opts.provider,
+      ...(opts.runId ? { run_id: opts.runId } : {}),
+      ...(kind === "trd" && existsSync(resolve(projectPath, description)) ? { from_prd: resolve(projectPath, description) } : {}),
+    },
+    metadata: { correlation_id: commandId, source: "foreman-cli-plan" },
+  });
+
+  if (!response.ok) {
+    console.error(chalk.red(`Planning command failed: ${response.error.message}`));
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(chalk.green(`✓ Planning ${kind.toUpperCase()} command accepted`));
+  console.log(chalk.dim(`Command: ${commandId}`));
+  console.log(chalk.dim(`Events: ${response.events.join(", ")}`));
+}
+
+function readPlanningInput(description: string, projectPath: string): string {
+  const resolvedPath = isAbsolute(description) ? resolve(description) : resolve(projectPath, description);
+  if (!existsSync(resolvedPath)) return description;
+  console.log(chalk.dim(`Reading description from: ${resolvedPath}`));
+  return readFileSync(resolvedPath, "utf-8");
+}
 
 function buildPipelineSteps(
   productDescription: string,
