@@ -15,12 +15,14 @@ export class ElixirServerManager {
   readonly port: number;
   readonly pidPath: string;
   readonly packagePath: string;
+  readonly authToken?: string;
 
-  constructor(opts: { port?: number; pidPath?: string; packagePath?: string } = {}) {
+  constructor(opts: { port?: number; pidPath?: string; packagePath?: string; authToken?: string } = {}) {
     this.port = opts.port ?? Number(process.env.FOREMAN_SERVER_HTTP_PORT ?? 4766);
     this.url = `http://127.0.0.1:${this.port}`;
     this.pidPath = opts.pidPath ?? resolve(process.cwd(), ".foreman", "elixir-server.pid");
     this.packagePath = opts.packagePath ?? resolve(repoRoot(), "packages", "foreman_server");
+    this.authToken = opts.authToken ?? process.env.FOREMAN_SERVER_AUTH_TOKEN;
   }
 
   status(): ElixirServerStatus {
@@ -33,12 +35,20 @@ export class ElixirServerManager {
   }
 
   async doctor(): Promise<{ ok: boolean; body?: unknown; error?: string }> {
-    return this.getJson("/api/v1/doctor");
+    return this.getJson("/api/v1/doctor", { authenticated: true });
   }
 
-  private async getJson(path: string): Promise<{ ok: boolean; body?: unknown; error?: string }> {
+  async metrics(): Promise<{ ok: boolean; body?: unknown; error?: string }> {
+    return this.getJson("/api/v1/metrics", { authenticated: true });
+  }
+
+  private async getJson(
+    path: string,
+    opts: { authenticated?: boolean } = {},
+  ): Promise<{ ok: boolean; body?: unknown; error?: string }> {
     try {
-      const response = await fetch(new URL(path, this.url));
+      const headers = opts.authenticated ? this.authHeaders() : undefined;
+      const response = await fetch(new URL(path, this.url), headers ? { headers } : undefined);
       const body = (await response.json()) as unknown;
       return { ok: response.ok, body };
     } catch (error) {
@@ -83,6 +93,11 @@ export class ElixirServerManager {
     if (!existsSync(this.pidPath)) return undefined;
     const pid = Number(readFileSync(this.pidPath, "utf8").trim());
     return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  }
+
+  private authHeaders(): Record<string, string> | undefined {
+    if (!this.authToken) return undefined;
+    return { Authorization: `Bearer ${this.authToken}` };
   }
 }
 

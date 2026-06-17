@@ -330,7 +330,7 @@ foreman server stop               # Stop server started by Foreman
 | `--port <port>` | Override local HTTP port (default `4766`) |
 | `--no-auto-start` | For `doctor`, fail instead of starting a stopped server |
 
-`server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag.
+`server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token.
 
 ### `foreman reset`
 

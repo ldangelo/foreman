@@ -157,6 +157,27 @@ defmodule ForemanServer.Http.RouterTest do
     end
   end
 
+  test "doctor and metrics endpoints require valid bearer token" do
+    for path <- ["/api/v1/doctor", "/api/v1/metrics"] do
+      missing_conn =
+        :get
+        |> conn(path)
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert missing_conn.status == 401
+      assert Jason.decode!(missing_conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+
+      invalid_conn =
+        :get
+        |> conn(path)
+        |> put_req_header("authorization", "Bearer wrong")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert invalid_conn.status == 401
+      assert Jason.decode!(invalid_conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+    end
+  end
+
   test "authorized doctor and metrics endpoints expose operational status" do
     seed_debug_http_run()
 

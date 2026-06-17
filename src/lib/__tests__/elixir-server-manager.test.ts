@@ -6,6 +6,8 @@ import { ElixirServerManager } from "../elixir-server-manager.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  delete process.env.FOREMAN_SERVER_AUTH_TOKEN;
 });
 
 describe("ElixirServerManager", () => {
@@ -29,14 +31,31 @@ describe("ElixirServerManager", () => {
     expect(String(calls[0][0])).toBe("http://127.0.0.1:4902/api/v1/health");
   });
 
-  it("checks /api/v1/doctor on the configured port", async () => {
+  it("checks /api/v1/doctor on the configured port without auth when no token is configured", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, doctor: { ok: true } }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const manager = new ElixirServerManager({ port: 4903 });
     await expect(manager.doctor()).resolves.toEqual({ ok: true, body: { ok: true, doctor: { ok: true } } });
-    const calls = fetchMock.mock.calls as unknown as [[URL]];
+    const calls = fetchMock.mock.calls as unknown as [[URL, RequestInit | undefined]];
     expect(String(calls[0][0])).toBe("http://127.0.0.1:4903/api/v1/doctor");
+    expect(calls[0][1]).toBeUndefined();
+  });
+
+  it("sends bearer auth for protected reads when token is configured", async () => {
+    process.env.FOREMAN_SERVER_AUTH_TOKEN = "manager-secret";
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const manager = new ElixirServerManager({ port: 4904 });
+    await expect(manager.doctor()).resolves.toEqual({ ok: true, body: { ok: true } });
+    await expect(manager.metrics()).resolves.toEqual({ ok: true, body: { ok: true } });
+
+    const calls = fetchMock.mock.calls as unknown as Array<[URL, RequestInit]>;
+    expect(String(calls[0]![0])).toBe("http://127.0.0.1:4904/api/v1/doctor");
+    expect(calls[0]![1].headers).toEqual({ Authorization: "Bearer manager-secret" });
+    expect(String(calls[1]![0])).toBe("http://127.0.0.1:4904/api/v1/metrics");
+    expect(calls[1]![1].headers).toEqual({ Authorization: "Bearer manager-secret" });
   });
 
   it("treats stale pid files as stopped", () => {

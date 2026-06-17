@@ -586,7 +586,7 @@ foreman server status        # Show PID/URL and health
 foreman server stop          # Stop local Elixir server
 ```
 
-`foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. Run debug views include anomaly detection for inconsistent event timelines.
+`foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines.
 
 ### `foreman doctor`
 Check environment health: Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth.
