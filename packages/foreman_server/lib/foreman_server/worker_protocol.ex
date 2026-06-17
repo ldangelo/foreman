@@ -35,7 +35,8 @@ defmodule ForemanServer.WorkerProtocol do
         prompt_path: Map.get(payload, :prompt_path),
         tool_names: Map.get(payload, :tool_names, []),
         artifact_paths: Map.get(payload, :artifact_paths, []),
-        prepared_env: prepared_env.env,
+        prepared_env: redact_env(prepared_env.env),
+        prepared_env_keys: prepared_env.env |> Map.keys() |> Enum.sort(),
         stripped_env_keys: prepared_env.stripped,
         scoped_secret_keys: prepared_env.scoped_secret_keys,
         sequence: 0
@@ -90,6 +91,10 @@ defmodule ForemanServer.WorkerProtocol do
         details: Map.get(payload, :details, %{})
       })
     end
+  end
+
+  defp redact_env(env) when is_map(env) do
+    Map.new(env, fn {key, _value} -> {key, "[REDACTED]"} end)
   end
 
   defp append_worker_event(event_type, payload) do

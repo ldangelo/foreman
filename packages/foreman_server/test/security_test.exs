@@ -51,12 +51,20 @@ defmodule ForemanServer.SecurityTest do
              })
 
     assert event.payload.prepared_env == %{
-             "FOREMAN_PROJECT_ID" => "project-secure",
-             "FOREMAN_RUN_ID" => "run-secure",
-             "PROJECT_TOKEN" => "project-secret",
-             "RUN_TOKEN" => "run-secret",
-             "SAFE_BASE" => "base"
+             "FOREMAN_PROJECT_ID" => "[REDACTED]",
+             "FOREMAN_RUN_ID" => "[REDACTED]",
+             "PROJECT_TOKEN" => "[REDACTED]",
+             "RUN_TOKEN" => "[REDACTED]",
+             "SAFE_BASE" => "[REDACTED]"
            }
+
+    assert event.payload.prepared_env_keys == [
+             "FOREMAN_PROJECT_ID",
+             "FOREMAN_RUN_ID",
+             "PROJECT_TOKEN",
+             "RUN_TOKEN",
+             "SAFE_BASE"
+           ]
 
     assert event.payload.scoped_secret_keys == %{project: ["PROJECT_TOKEN"], run: ["RUN_TOKEN"]}
 
@@ -68,6 +76,15 @@ defmodule ForemanServer.SecurityTest do
            ]
 
     refute Map.has_key?(event.payload.prepared_env, "FOREMAN_SERVER_AUTH_TOKEN")
+    refute "FOREMAN_SERVER_AUTH_TOKEN" in event.payload.prepared_env_keys
+
+    assert_persisted_payloads_exclude_secret_values([
+      "project-secret",
+      "run-secret",
+      "server-token",
+      "project-server-token",
+      "run-server-token"
+    ])
   end
 
   test "worker secret scopes do not leak across project and run starts" do
@@ -89,15 +106,17 @@ defmodule ForemanServer.SecurityTest do
                "run_secrets" => %{"RUN_TWO_TOKEN" => "r2"}
              })
 
-    assert first.payload.prepared_env["PROJECT_ONE_TOKEN"] == "p1"
-    assert first.payload.prepared_env["RUN_ONE_TOKEN"] == "r1"
+    assert first.payload.prepared_env["PROJECT_ONE_TOKEN"] == "[REDACTED]"
+    assert first.payload.prepared_env["RUN_ONE_TOKEN"] == "[REDACTED]"
     refute Map.has_key?(first.payload.prepared_env, "PROJECT_TWO_TOKEN")
     refute Map.has_key?(first.payload.prepared_env, "RUN_TWO_TOKEN")
 
-    assert second.payload.prepared_env["PROJECT_TWO_TOKEN"] == "p2"
-    assert second.payload.prepared_env["RUN_TWO_TOKEN"] == "r2"
+    assert second.payload.prepared_env["PROJECT_TWO_TOKEN"] == "[REDACTED]"
+    assert second.payload.prepared_env["RUN_TWO_TOKEN"] == "[REDACTED]"
     refute Map.has_key?(second.payload.prepared_env, "PROJECT_ONE_TOKEN")
     refute Map.has_key?(second.payload.prepared_env, "RUN_ONE_TOKEN")
+
+    assert_persisted_payloads_exclude_secret_values(["p1", "r1", "p2", "r2"])
   end
 
   test "remote access requires a configured auth token" do
@@ -113,6 +132,14 @@ defmodule ForemanServer.SecurityTest do
 
     assert %{start: {Bandit, :start_link, _}} =
              ForemanServer.Http.Endpoint.child_spec(ip: {0, 0, 0, 0}, port: 0)
+  end
+
+  defp assert_persisted_payloads_exclude_secret_values(secret_values) do
+    persisted = inspect(%{events: EventStore.all(), projection: ProjectionStore.snapshot()})
+
+    Enum.each(secret_values, fn secret_value ->
+      refute persisted =~ secret_value
+    end)
   end
 
   test "destructive commands record authorization and audit events after execution" do
