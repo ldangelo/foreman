@@ -23,7 +23,7 @@ Do NOT run tests if conflict markers are found.
    - If Developer phase ran targeted tests, note the scope in your report
    - Avoid re-running the same scope unless new information warrants it
 3. Review what the Developer changed (check git diff)
-4. Choose the narrowest verification that can prove the task:
+4. Choose the narrowest verification that can prove the task. **Prefer targeted verification first.**
 
    **Targeted verification (preferred for narrow tasks):**
    - Run tests for changed files: `npm test -- path/to/changed.test.ts`
@@ -52,16 +52,25 @@ Do NOT run tests if conflict markers are found.
    mkdir -p "{{reportDir}}"
    ```
 9. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
-10. Update the validation ledger:
+10. **Mandatory:** Update the validation ledger so downstream phases can skip redundant re-validation:
     ```bash
     mkdir -p "{{reportDir}}"
-    cat >> "{{reportDir}}/VALIDATION_LEDGER.md" << 'EOF'
-    ## Validation Ledger
-
+    if [ -f "{{reportDir}}/VALIDATION_LEDGER.md" ]; then
+      # Append row to existing ledger
+      printf '\n| qa | %s | <targeted|expanded|full> | <affected paths> | <PASS|FAIL> | <justification if full, else empty> |\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "{{reportDir}}/VALIDATION_LEDGER.md"
+    else
+      # Create new ledger with header
+      cat > "{{reportDir}}/VALIDATION_LEDGER.md" << 'LEDGER'
+    # Validation Ledger
+    
+    This ledger tracks test validation runs across pipeline phases to prevent redundant test execution.
+    
     | Phase | Timestamp | Scope | Files/Modules | Result | Notes |
     |-------|-----------|-------|---------------|--------|-------|
-    | qa | $(date -u +%Y-%m-%dT%H:%M:%SZ) | <targeted|expanded|full> | <affected paths> | <PASS|FAIL> | <justification if full, else empty> |
-    EOF
+    | qa | TIMESTAMP | SCOPE | PATHS | RESULT | NOTES |
+    LEDGER
+      sed -i "s/TIMESTAMP/$(date -u +%Y-%m-%dT%H:%M:%SZ)/; s/SCOPE/<targeted|expanded|full>/; s|PATHS|<affected paths>|; s|RESULT|<PASS|FAIL>|; s|NOTES|<justification if full, else empty>|" "{{reportDir}}/VALIDATION_LEDGER.md"
+    fi
     ```
 
     **Schema columns:**

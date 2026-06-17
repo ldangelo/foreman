@@ -69,16 +69,19 @@ Use `npm test -- --reporter=dot` only when:
 
 ### Finalize Phase
 
-**Policy:** Run tests only if target branch drifted after QA.
+**Policy:** Run tests only if target branch drifted after QA. Prefer targeted-affected tests before full suite.
 
 ```
 Condition: shouldRunFinalizeValidation === true
+  └── Step 1: Read VALIDATION_LEDGER.md to see what QA already validated
+  └── Step 2: Run targeted-affected tests first (npm test -- path/to/affected.test.ts)
+  └── Step 3: Run full suite only if targeted reveals broader regression risk or core/shared code affected
   └── Run: npm test -- --reporter=dot 2>&1
 Else:
   └── Skip tests entirely
 ```
 
-**Rationale:** If the target branch hasn't moved since QA, no new test run is needed.
+**Rationale:** If the target branch hasn't moved since QA, no new test run is needed. When drift exists, targeted-affected tests catch most regressions faster than full suite.
 
 ### PR Review Phase
 
@@ -153,7 +156,8 @@ Each phase writes a validation entry to `VALIDATION_LEDGER.md`:
 ### Bug Workflow
 - Developer runs targeted bug-path tests
 - QA runs targeted tests for the fix
-- Finalize may skip tests if fix is isolated and target is stable
+- Finalize skips tests if no target drift; runs targeted-affected tests first when drift exists
+- Uses `finalize-bug.md` prompt (lighterweight than `finalize.md`)
 
 ### Epic Workflow
 - QA may run full suite more frequently due to broad scope
@@ -167,5 +171,7 @@ Each phase writes a validation entry to `VALIDATION_LEDGER.md`:
 
 - QA Prompt: `src/defaults/prompts/default/qa.md`
 - Finalize Prompt: `src/defaults/prompts/default/finalize.md`
+- Finalize-Bug Prompt: `src/defaults/prompts/default/finalize-bug.md`
 - PR Review Prompt: `src/defaults/prompts/default/pr-review.md`
 - Developer Prompt: `src/defaults/prompts/default/developer.md`
+- Validation Ledger Template: `src/defaults/prompts/default/validation-ledger-template.md`

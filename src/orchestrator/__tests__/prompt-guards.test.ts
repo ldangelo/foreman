@@ -7,6 +7,7 @@ const EXPLORER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "defaul
 const DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "developer.md");
 const QA_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "qa.md");
 const FINALIZE_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "finalize.md");
+const FINALIZE_BUG_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "finalize-bug.md");
 const PR_REVIEW_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "pr-review.md");
 
 describe("explorer prompt narrowing", () => {
@@ -90,6 +91,46 @@ describe("finalize prompt failure handling", () => {
   it("includes test execution policy statement", () => {
     expect(prompt).toContain("Test Execution Policy");
     expect(prompt).toContain("shouldRunFinalizeValidation");
+  });
+
+  it("enforces targeted-affected tests before full suite on drift", () => {
+    expect(prompt).toContain("targeted-affected tests first");
+    expect(prompt).toContain("prefer targeted-affected tests");
+  });
+
+  it("reads validation ledger before running tests", () => {
+    expect(prompt).toContain("VALIDATION_LEDGER.md");
+    expect(prompt).toContain("Read validation ledger");
+  });
+});
+
+describe("finalize-bug prompt guardrails", () => {
+  const prompt = readFileSync(FINALIZE_BUG_PROMPT, "utf-8");
+
+  it("includes test execution policy statement", () => {
+    expect(prompt).toContain("Test Execution Policy");
+    expect(prompt).toContain("shouldRunFinalizeValidation");
+  });
+
+  it("skips target integration and tests when no drift", () => {
+    expect(prompt).toContain("shouldRunFinalizeValidation");
+    expect(prompt).toContain("do not run target integration");
+    expect(prompt).toContain("Do not run `npm ci`");
+  });
+
+  it("reads validation ledger before running tests", () => {
+    expect(prompt).toContain("VALIDATION_LEDGER.md");
+    expect(prompt).toContain("Read validation ledger");
+  });
+
+  it("prefers targeted-affected tests before full suite on drift", () => {
+    expect(prompt).toContain("targeted-affected tests first");
+  });
+
+  it("classifies failures by scope", () => {
+    expect(prompt).toContain("Failure Scope");
+    expect(prompt).toContain("MODIFIED_FILES");
+    expect(prompt).toContain("UNRELATED_FILES");
   });
 });
 

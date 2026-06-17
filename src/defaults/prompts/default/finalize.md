@@ -120,10 +120,17 @@ If that merge also conflicts, send the same `rebase_conflict` error and stop.
 - Do **not** run `{{vcsIntegrateTargetCommand}}`
 - Proceed directly to Step 7
 
-### Step 7: Run tests only if the target branch changed after QA
-QA already validated this bead. Finalize should rerun the full test suite only when the target branch moved after QA completed.
+### Step 7: Read validation ledger
+Before running any tests, check what prior phases already validated:
+```bash
+cat {{reportDir}}/VALIDATION_LEDGER.md 2>/dev/null || echo "No ledger found"
+```
+If the ledger shows QA already ran targeted or expanded validation on the same files/modues this bead touched, note that in your TEST_VALIDATION section. The ledger helps avoid redundant re-validation.
 
-First create the reports directory, then write `FINALIZE_VALIDATION.md`:
+### Step 8: Run tests only if the target branch changed after QA
+QA already validated this bead. Finalize should rerun tests **only when the target branch moved after QA** and should prefer targeted-affected tests before running the full suite.
+
+First create the reports directory, then write `{{reportDir}}/FINALIZE_VALIDATION.md`:
 ```bash
 mkdir -p "{{reportDir}}"
 ```
@@ -160,20 +167,22 @@ Then write `{{reportDir}}/FINALIZE_VALIDATION.md`:
 - Write `## Failure Scope` as `- SKIPPED`
 - Explain that QA already passed and the target branch did not move after QA
 - Write `## Verdict: PASS`
-- Continue to Step 8 (push)
+- Continue to Step 9 (push)
 
 **If `{{shouldRunFinalizeValidation}}` = `true`:**
-Run:
+Run **targeted-affected tests first**, then the full suite only if warranted:
 ```
 npm test -- --reporter=dot 2>&1
 ```
+
+> **Targeted-first policy:** Prefer `npm test -- path/to/affected.test.ts` for the files this bead modified. Only run the full suite if the targeted tests reveal broader regression risk or the changes affect core/shared code.
 
 Capture the full output and exit code. The `--reporter=dot` flag reduces per-test output to a single dot per passing test, keeping the agent context concise. Failures still print full details.
 
 **If tests PASS (exit code 0):**
 - Write `## Target Integration` with `- Status: SUCCESS`
 - Write `## Verdict: PASS` in `{{reportDir}}/FINALIZE_VALIDATION.md`
-- Continue to Step 8 (push)
+- Continue to Step 9 (push)
 
 **If tests FAIL (non-zero exit code):**
 - Write `## Target Integration` with `- Status: SUCCESS`
@@ -190,7 +199,7 @@ Capture the full output and exit code. The `--reporter=dot` flag reduces per-tes
 ```
 - Do NOT send a success/complete status when tests failed.
 
-### Step 8: Push to origin
+### Step 9: Push to origin
 Run:
 ```
 {{vcsPushCommand}}
@@ -201,7 +210,7 @@ Run:
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","seedId":"{{seedId}}","error":"push_failed","retryable":true}'
 ```
 
-### Step 9: Write FINALIZE_REPORT.md
+### Step 10: Write FINALIZE_REPORT.md
 Write a `{{reportDir}}/FINALIZE_REPORT.md` file summarizing:
 - Whether `npm ci` succeeded or failed (include any error details)
 - Whether `npx tsc --noEmit` passed or failed (include any error details)
@@ -238,4 +247,4 @@ Use this format:
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" (for non-verification beads) are logged and continue (non-fatal) unless they prevent git push
 - Do NOT commit node_modules, SESSION_LOG.md, RUN_LOG.md, .beads/issues.jsonl, repository-root report artifacts, or docs/reports/** — finalize restores tracked Beads state and unstages workspace artifacts before commit
-- **If tests fail in Step 7, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 8 or 9**
+- **If tests fail in Step 8, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 9 or 10**
