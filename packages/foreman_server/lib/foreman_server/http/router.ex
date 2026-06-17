@@ -314,14 +314,21 @@ defmodule ForemanServer.Http.Router do
   defp log_view_mode(_view), do: {:error, {:missing_or_invalid, :view}}
 
   defp authorize(conn) do
-    expected =
-      Application.get_env(:foreman_server, :auth_token) ||
-        System.get_env("FOREMAN_SERVER_AUTH_TOKEN")
+    expected = ForemanServer.Security.auth_token()
 
     cond do
-      is_nil(expected) or expected == "" -> :ok
-      get_req_header(conn, "authorization") == ["Bearer #{expected}"] -> :ok
-      true -> {:error, :unauthorized}
+      ForemanServer.Security.remote_auth_required?() and
+          not ForemanServer.Security.token_configured?() ->
+        {:error, :unauthorized}
+
+      is_nil(expected) or expected == "" ->
+        :ok
+
+      get_req_header(conn, "authorization") == ["Bearer #{expected}"] ->
+        :ok
+
+      true ->
+        {:error, :unauthorized}
     end
   end
 

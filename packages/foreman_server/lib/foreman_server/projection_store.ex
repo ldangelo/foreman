@@ -140,6 +140,7 @@ defmodule ForemanServer.ProjectionStore do
       planning_traceability: %{},
       migration_imports: %{},
       migration_records: %{},
+      authorization_audits: [],
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
@@ -734,6 +735,15 @@ defmodule ForemanServer.ProjectionStore do
     projection
     |> update_in([:migration_imports, migration_id], &Map.merge(&1 || %{}, payload))
     |> put_in([:migration_imports, migration_id, :status], "completed")
+  end
+
+  defp apply_domain_event(projection, %{type: type, payload: payload}, _mode)
+       when type in ["AuthorizationChecked", "AuditRecorded"] do
+    update_in(
+      projection,
+      [:authorization_audits],
+      &((&1 || []) ++ [Map.put(payload, :event_type, type)])
+    )
   end
 
   defp apply_domain_event(projection, _event, _mode), do: projection

@@ -6,7 +6,8 @@ defmodule ForemanServer.CommandRouter do
     IntegrationIngestion,
     MigrationImporter,
     PlanningFlow,
-    ProjectionStore
+    ProjectionStore,
+    Security
   }
 
   @external_trigger_types ["ExternalTriggerCommand", "external.trigger"]
@@ -96,18 +97,20 @@ defmodule ForemanServer.CommandRouter do
     metadata = normalize_metadata(command)
 
     with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload),
+         enriched_payload =
+           event_payload
+           |> Map.put_new(:command_id, command_id)
+           |> Map.put_new(:updated_at, DateTime.utc_now()),
          {:ok, event} <-
            EventStore.append(%{
              stream_id: stream_id,
              event_type: event_type,
-             payload:
-               event_payload
-               |> Map.put_new(:command_id, command_id)
-               |> Map.put_new(:updated_at, DateTime.utc_now()),
+             payload: enriched_payload,
              metadata: metadata,
              correlation_id: Map.get(metadata, :correlation_id)
-           }) do
-      {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
+           }),
+         {:ok, audit_events} <- maybe_audit(command, event_type, enriched_payload) do
+      {:ok, %{event: event, audit_events: audit_events, projection: ProjectionStore.snapshot()}}
     end
   end
 
@@ -196,6 +199,14 @@ defmodule ForemanServer.CommandRouter do
        status: "accepted",
        input: command
      }, "command:#{Map.get(command, :command_id, command_type)}"}
+  end
+
+  defp maybe_audit(%{command_type: command_type} = command, event_type, payload) do
+    if Security.destructive_command?(command_type) do
+      Security.append_destructive_audit(command, event_type, payload)
+    else
+      {:ok, []}
+    end
   end
 
   defp task_status_event(command_type, payload, status) do
@@ -341,6 +352,7 @@ defmodule ForemanServer.CommandRouter do
       :integration_event_type,
       :metadata,
       :migration_id,
+      :actor,
       :occurred_at,
       :output_dir,
       :path,
