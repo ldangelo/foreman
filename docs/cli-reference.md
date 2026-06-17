@@ -457,7 +457,7 @@ foreman pr --base-branch dev      # PR against dev instead of main
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator.
+View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator. In Elixir/default backend mode, inbox reads the shared Postgres run/message tables directly and does not require the Node daemon socket.
 
 ```bash
 foreman inbox                     # Show latest run's messages

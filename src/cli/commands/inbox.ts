@@ -17,7 +17,10 @@ import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
-import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
+import type { AgentMessageRow, RunRow } from "../../lib/db/postgres-adapter.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, ensureCliPostgresPool } from "./project-task-support.js";
 
 interface DaemonMailMessage {
   id: string;
@@ -760,6 +763,80 @@ function adaptDaemonRun(row: DaemonRunRow): Run {
   };
 }
 
+function adaptPostgresRun(row: RunRow): Run {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    seed_id: row.seed_id,
+    agent_type: row.agent_type,
+    session_key: row.session_key,
+    worktree_path: row.worktree_path,
+    status: row.status as Run["status"],
+    started_at: row.started_at,
+    completed_at: row.completed_at,
+    created_at: row.created_at,
+    progress: row.progress,
+    base_branch: row.base_branch,
+  };
+}
+
+function adaptPostgresMessage(row: AgentMessageRow): Message {
+  return {
+    id: row.id,
+    run_id: row.run_id,
+    sender_agent_type: row.sender_agent_type,
+    recipient_agent_type: row.recipient_agent_type,
+    subject: row.subject,
+    body: row.body,
+    read: row.read,
+    created_at: row.created_at,
+    deleted_at: row.deleted_at,
+  };
+}
+
+async function resolvePostgresInboxProject(projectPath: string, projectSelector?: string): Promise<{ adapter: PostgresAdapter; projectId: string } | null> {
+  ensureCliPostgresPool(projectPath);
+  const projects = await listRegisteredProjects();
+  const project = projectSelector
+    ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
+    : projects.find((record) => resolve(record.path) === resolve(projectPath));
+  if (!project) return null;
+  return { adapter: new PostgresAdapter(), projectId: project.id };
+}
+
+async function resolvePostgresRunId(
+  adapter: PostgresAdapter,
+  projectId: string,
+  options: { run?: string; task?: string; bead?: string },
+): Promise<string | null> {
+  if (options.run) return options.run;
+  const runs = await adapter.listRuns(projectId, { limit: 100 });
+  const taskFilter = options.task ?? options.bead;
+  if (taskFilter) return runs.find((run) => run.seed_id === taskFilter)?.id ?? null;
+  return runs[0]?.id ?? null;
+}
+
+async function fetchPostgresMessages(
+  adapter: PostgresAdapter,
+  projectId: string,
+  options: { all?: boolean; runId?: string; agent?: string; unread?: boolean; limit: number },
+): Promise<Message[]> {
+  if (options.all) {
+    let rows = await adapter.getAllMessagesGlobal(projectId, options.limit);
+    if (options.agent) rows = rows.filter((row) => row.recipient_agent_type === options.agent);
+    if (options.unread) rows = rows.filter((row) => row.read === 0);
+    return rows.map(adaptPostgresMessage);
+  }
+  if (!options.runId) return [];
+  if (options.agent) {
+    const rows = await adapter.getMessages(projectId, options.runId, options.agent, options.unread ?? false);
+    return selectRecentMessages(rows.map(adaptPostgresMessage), options.limit);
+  }
+  let rows = await adapter.getAllMessages(options.runId);
+  if (options.unread) rows = rows.filter((row) => row.read === 0);
+  return selectRecentMessages(rows.map(adaptPostgresMessage), options.limit);
+}
+
 export async function resolveDaemonInboxContext(projectPath: string, projectSelector?: string): Promise<{
   client: ReturnType<typeof createTrpcClient>;
   projectId: string;
@@ -1010,15 +1087,20 @@ export const inboxCommand = new Command("inbox")
       projectPath = process.cwd();
     }
 
-    const daemon = await resolveDaemonInboxContext(projectPath, options.project);
-    const store = daemon ? null : ForemanStore.forProject(projectPath);
+    const postgres = foremanBackendMode() === "elixir"
+      ? await resolvePostgresInboxProject(projectPath, options.project)
+      : null;
+    const daemon = postgres ? null : await resolveDaemonInboxContext(projectPath, options.project);
+    const store = daemon || postgres ? null : ForemanStore.forProject(projectPath);
 
     try {
       // ── One-shot global mode (--all without --watch) ───────────────────────
       if (options.all && !options.watch) {
-        let messages = daemon
-          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
-          : store!.getAllMessagesGlobal(limit);
+        let messages = postgres
+          ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
+          : daemon
+            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
+            : store!.getAllMessagesGlobal(limit);
 
         // Apply agent filter (by recipient, matching single-run behavior)
         if (!daemon && options.agent) {
@@ -1030,9 +1112,11 @@ export const inboxCommand = new Command("inbox")
           messages = messages.filter((m) => m.read === 0);
         }
 
-        const summaryRuns = daemon
-          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-          : getInboxStatusRuns(store!);
+        const summaryRuns = postgres
+          ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+          : daemon
+            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+            : getInboxStatusRuns(store!);
         const chronologicalMessages = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
         if (messages.length === 0) {
@@ -1055,7 +1139,9 @@ export const inboxCommand = new Command("inbox")
         }
 
         if (options.ack && messages.length > 0) {
-          if (daemon) {
+          if (postgres) {
+            for (const msg of messages) await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+          } else if (daemon) {
             for (const msg of messages) {
               await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
             }
@@ -1070,9 +1156,11 @@ export const inboxCommand = new Command("inbox")
         // ── Pipeline events section (--events) ─────────────────────────────
         if (showEvents) {
           console.log("");
-          const events = daemon
-            ? await fetchDaemonEvents(daemon.client, daemon.projectId, { all: true, limit: eventsLimit })
-            : fetchEventsFromStore(store!, eventsLimit);
+          const events = postgres
+            ? []
+            : daemon
+              ? await fetchDaemonEvents(daemon.client, daemon.projectId, { all: true, limit: eventsLimit })
+              : fetchEventsFromStore(store!, eventsLimit);
 
           if (events.length === 0) {
             console.log("No pipeline events found.");
@@ -1094,9 +1182,11 @@ export const inboxCommand = new Command("inbox")
         console.log("Watching all runs... (Ctrl-C to stop)\n");
         const seenIds = new Set<string>();
         const seenRunIds = new Set<string>();
-        const initialGlobal = daemon
-          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
-          : store!.getAllMessagesGlobal(limit);
+        const initialGlobal = postgres
+          ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
+          : daemon
+            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
+            : store!.getAllMessagesGlobal(limit);
         if (initialGlobal.length > 0) {
           console.log(`── past messages ${"─".repeat(53)}`);
           if (fullPayload) {
@@ -1109,21 +1199,27 @@ export const inboxCommand = new Command("inbox")
           }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         }
-        const initRuns = daemon
-          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-          : store!.getRunsByStatuses(["completed", "failed", "running"]);
+        const initRuns = postgres
+          ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+          : daemon
+            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+            : store!.getRunsByStatuses(["completed", "failed", "running"]);
         for (const r of initRuns) seenRunIds.add(r.id);
         const pollAll = (): void => {
           void (async () => {
-            const statusRuns = daemon
-              ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-              : store!.getRunsByStatuses(["completed", "failed", "running"]);
+            const statusRuns = postgres
+              ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+              : daemon
+                ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+                : store!.getRunsByStatuses(["completed", "failed", "running"]);
             for (const run of statusRuns) {
               if (!seenRunIds.has(run.id)) { seenRunIds.add(run.id); console.log(formatRunStatus(run)); console.log(""); }
             }
-            const msgs = daemon
-              ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
-              : store!.getAllMessagesGlobal(limit);
+            const msgs = postgres
+              ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
+              : daemon
+                ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
+                : store!.getAllMessagesGlobal(limit);
             for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
               seenIds.add(msg.id);
               if (fullPayload) {
@@ -1143,39 +1239,47 @@ export const inboxCommand = new Command("inbox")
         return;
       }
 
-      const runId = daemon
-        ? await resolveDaemonRunId(daemon.client, daemon.projectId, { run: options.run, task: options.task, bead: options.bead })
-        : options.run
-          ?? (taskFilter ? resolveRunIdBySeed(store!, taskFilter) : null)
-          ?? resolveLatestRunId(store!);
+      const runId = postgres
+        ? await resolvePostgresRunId(postgres.adapter, postgres.projectId, { run: options.run, task: options.task, bead: options.bead })
+        : daemon
+          ? await resolveDaemonRunId(daemon.client, daemon.projectId, { run: options.run, task: options.task, bead: options.bead })
+          : options.run
+            ?? (taskFilter ? resolveRunIdBySeed(store!, taskFilter) : null)
+            ?? resolveLatestRunId(store!);
       if (!runId) {
         console.error("No runs found. Start a pipeline first with `foreman run`.");
         process.exit(1);
       }
 
       // Resolve seed ID for display (run record carries seed_id)
-      const allRuns = daemon
-        ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-        : store!.getRunsByStatuses(
-          ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
-        );
+      const allRuns = postgres
+        ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+        : daemon
+          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+          : store!.getRunsByStatuses(
+            ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+          );
       const thisRun = allRuns.find((r) => r.id === runId);
       const seedLabel = thisRun?.seed_id ? `  bead: ${thisRun.seed_id}` : "";
 
       if (!options.watch) {
         // One-shot: show current run lifecycle status then fetch and display messages
-        const runStatusRuns = daemon
-          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-          : store!.getRunsByStatuses(["completed", "failed"]);
+        const runStatusRuns = postgres
+          ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+          : daemon
+            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+            : store!.getRunsByStatuses(["completed", "failed"]);
         const currentRun = runStatusRuns.find((r) => r.id === runId);
         if (currentRun) {
           console.log(formatRunStatus(currentRun));
           console.log("");
         }
 
-        const messages = daemon
-          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
-          : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
+        const messages = postgres
+          ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+          : daemon
+            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+            : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
@@ -1195,7 +1299,9 @@ export const inboxCommand = new Command("inbox")
         }
 
         if (options.ack && messages.length > 0) {
-          if (daemon) {
+          if (postgres) {
+            for (const msg of messages) await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+          } else if (daemon) {
             for (const msg of messages) {
               await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
             }
@@ -1210,9 +1316,11 @@ export const inboxCommand = new Command("inbox")
         // ── Pipeline events section (--events) ─────────────────────────────
         if (showEvents) {
           console.log("");
-          const events = daemon
-            ? await fetchDaemonEvents(daemon.client, daemon.projectId, { runId, limit: eventsLimit })
-            : fetchEventsFromStoreForRun(store!, runId, eventsLimit);
+          const events = postgres
+            ? []
+            : daemon
+              ? await fetchDaemonEvents(daemon.client, daemon.projectId, { runId, limit: eventsLimit })
+              : fetchEventsFromStoreForRun(store!, runId, eventsLimit);
 
           if (events.length === 0) {
             console.log("No pipeline events found.");
@@ -1235,9 +1343,11 @@ export const inboxCommand = new Command("inbox")
       const seenRunIds = new Set<string>();
 
       // Initial fetch — print existing messages immediately, then track them as seen
-      const initial = daemon
-        ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: false, limit })
-        : fetchMessages(store!, runId, options.agent, false, limit);
+      const initial = postgres
+        ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: false, limit })
+        : daemon
+          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: false, limit })
+          : fetchMessages(store!, runId, options.agent, false, limit);
       if (initial.length > 0) {
         console.log(`── past messages ${"─".repeat(53)}`);
         if (fullPayload) {
@@ -1253,16 +1363,20 @@ export const inboxCommand = new Command("inbox")
       }
 
       // Seed seenRunIds with any already-completed/failed runs so we only show new transitions
-      const initialRuns = daemon
-        ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-        : store!.getRunsByStatuses(["completed", "failed"]);
+      const initialRuns = postgres
+        ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+        : daemon
+          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+          : store!.getRunsByStatuses(["completed", "failed"]);
       for (const r of initialRuns) seenRunIds.add(r.id);
 
       const poll = (): void => {
         void (async () => {
-          const statusRuns = daemon
-            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-            : store!.getRunsByStatuses(["completed", "failed"]);
+          const statusRuns = postgres
+            ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+            : daemon
+              ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+              : store!.getRunsByStatuses(["completed", "failed"]);
           for (const run of statusRuns) {
             if (!seenRunIds.has(run.id)) {
               seenRunIds.add(run.id);
@@ -1271,9 +1385,11 @@ export const inboxCommand = new Command("inbox")
             }
           }
 
-          const msgs = daemon
-            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
-            : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
+          const msgs = postgres
+            ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+            : daemon
+              ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+              : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
           const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
           for (const msg of newMsgs) {
             seenIds.add(msg.id);
@@ -1286,7 +1402,9 @@ export const inboxCommand = new Command("inbox")
               console.log("");
             }
             if (options.ack) {
-              if (daemon) {
+              if (postgres) {
+                await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+              } else if (daemon) {
                 await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
               } else {
                 store!.markMessageRead(msg.id);
