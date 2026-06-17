@@ -464,8 +464,8 @@ planCommand
   .option("--run-id <id>", "Explicit planning run id")
   .option("--command-id <id>", "Explicit server command id for idempotent retries")
   .option("--no-auto-start", "Require an already-running Elixir server")
-  .action(async (description: string, opts: ServerPlanOptions) => {
-    await runServerPlanningCommand("prd", description, opts);
+  .action(async (description: string, opts: ServerPlanOptions, command: Command) => {
+    await runServerPlanningCommand("prd", description, mergedServerPlanOptions(opts, command));
   });
 
 planCommand
@@ -478,11 +478,22 @@ planCommand
   .option("--run-id <id>", "Explicit planning run id")
   .option("--command-id <id>", "Explicit server command id for idempotent retries")
   .option("--no-auto-start", "Require an already-running Elixir server")
-  .action(async (description: string, opts: ServerPlanOptions) => {
-    await runServerPlanningCommand("trd", description, opts);
+  .action(async (description: string, opts: ServerPlanOptions, command: Command) => {
+    await runServerPlanningCommand("trd", description, mergedServerPlanOptions(opts, command));
   });
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+function mergedServerPlanOptions(opts: ServerPlanOptions, command: Command): ServerPlanOptions {
+  const parentOpts = command.parent?.opts<{ project?: string; outputDir?: string }>() ?? {};
+  const outputDirSource = command.getOptionValueSource("outputDir");
+
+  return {
+    ...opts,
+    project: opts.project ?? parentOpts.project,
+    outputDir: outputDirSource === "cli" ? opts.outputDir : (parentOpts.outputDir ?? opts.outputDir),
+  };
+}
 
 async function runServerPlanningCommand(
   kind: "prd" | "trd",

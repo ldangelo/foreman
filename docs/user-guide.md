@@ -95,7 +95,18 @@ foreman server doctor        # auto-starts and checks readiness
 foreman server stop
 ```
 
-### 2. Create a Task
+### 2. Plan Larger Work
+
+For larger features, generate planning artifacts before creating implementation tasks. The legacy `foreman plan <description>` pipeline still runs the local PRD → TRD flow. The server-backed planning subcommands send PRD/TRD planning to the local Elixir orchestration server:
+
+```bash
+foreman plan prd "Build a planning system" --project my-project --output-dir docs/PRD
+foreman plan trd docs/PRD/PRD-example.md --project my-project --output-dir docs/TRD
+```
+
+Use `foreman server doctor` first if the Elixir server is not already running. `--project` selects the registered project and `--output-dir` selects where the planning artifact should be written.
+
+### 3. Create a Task
 
 Write a task with enough context for an agent to execute without guessing.
 
@@ -122,7 +133,7 @@ Good task descriptions include:
 - Acceptance criteria
 - Known files or commands, if relevant
 
-### 3. Approve the Task
+### 4. Approve the Task
 
 Tasks usually start in backlog. Approve when ready for dispatch.
 
@@ -130,7 +141,7 @@ Tasks usually start in backlog. Approve when ready for dispatch.
 foreman task approve <task-id>
 ```
 
-### 4. Dispatch Work
+### 5. Dispatch Work
 
 ```bash
 foreman run --project my-project
@@ -148,7 +159,7 @@ foreman run --no-watch            # Dispatch and exit
 foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
 ```
 
-### 5. Monitor Progress
+### 6. Monitor Progress
 
 ```bash
 foreman status
@@ -160,7 +171,7 @@ foreman attach <run-id>
 
 Use `foreman board` for kanban-style task triage. Use `foreman status` or `foreman watch` when you need execution health and active run state. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
 
-### 6. Triage Failures
+### 7. Triage Failures
 
 Failed, stuck, blocked, conflict, and review statuses appear as needs-attention work. Start with artifacts before retrying.
 
@@ -179,7 +190,7 @@ foreman retry <task-id> --dispatch
 
 Avoid mass retrying unless failures are known transient and the root cause is external.
 
-### 7. Review and Merge
+### 8. Review and Merge
 
 Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
 

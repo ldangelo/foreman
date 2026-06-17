@@ -55,21 +55,21 @@ describe("foreman plan server subcommands", () => {
     vi.restoreAllMocks();
   });
 
-  it("dispatches foreman plan prd to the Elixir plan.prd command", async () => {
+  it("dispatches foreman plan prd to the Elixir plan.prd command with trailing options", async () => {
     await planCommand.parseAsync([
       "prd",
+      "Build a planning system",
       "--project",
       "foreman",
       "--output-dir",
       "docs/PRD",
-      "Build a planning system",
       "--command-id",
       "cmd-prd",
       "--run-id",
       "run-prd",
     ], { from: "user" });
 
-    expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
+    expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({ project: "foreman" });
     expect(mockEnsureRunning).toHaveBeenCalledOnce();
     expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
       command_id: "cmd-prd",
@@ -78,7 +78,7 @@ describe("foreman plan server subcommands", () => {
         kind: "prd",
         project_id: "proj-1",
         description: "Build a planning system",
-        output_dir: "/repo/docs",
+        output_dir: "/repo/docs/PRD",
         provider: "pi_sdk",
         run_id: "run-prd",
       }),
@@ -87,16 +87,21 @@ describe("foreman plan server subcommands", () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it("dispatches foreman plan trd to the Elixir plan.trd command", async () => {
+  it("dispatches foreman plan trd to the Elixir plan.trd command with trailing options", async () => {
     await planCommand.parseAsync([
       "trd",
       "Build the technical plan",
+      "--project",
+      "foreman",
+      "--output-dir",
+      "docs/TRD",
       "--command-id",
       "cmd-trd",
       "--provider",
       "pi_sdk",
     ], { from: "user" });
 
+    expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({ project: "foreman" });
     expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
       command_id: "cmd-trd",
       command_type: "plan.trd",
@@ -104,7 +109,7 @@ describe("foreman plan server subcommands", () => {
         kind: "trd",
         project_id: "proj-1",
         description: "Build the technical plan",
-        output_dir: "/repo/docs",
+        output_dir: "/repo/docs/TRD",
         provider: "pi_sdk",
       }),
     }));
