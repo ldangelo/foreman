@@ -15,53 +15,43 @@ If you hit an unrecoverable error, invoke:
 ## Instructions
 1. Read TASK.md for task context
 2. Write **EXPLORER_REPORT.md** in the worktree root (see format below) — do this before any other exploration
-3. Explore the codebase to understand the relevant architecture:
-   - Find the files that will need to be modified
-   - Identify existing patterns, conventions, and abstractions
-   - Map dependencies and imports relevant to this task
-   - Note any existing tests that cover the affected code
-   - If the task is narrow/localized (for example: a small CLI/status/output/display bug), aggressively constrain yourself to the smallest likely area first. Prefer identifying 1–3 likely files over broad repo reconnaissance.
-4. Update EXPLORER_REPORT.md with your findings
+3. Explore only enough to produce a developer handoff:
+   - Identify the 1–3 most likely edit files and exact functions/types to inspect
+   - Identify nearby tests/verification owners, but do not design a full test plan
+   - Note the smallest implementation path and any hard blockers
+   - Avoid broad architecture mapping unless the task explicitly requires it
+4. Update EXPLORER_REPORT.md with a concise handoff; stop as soon as the developer can edit without re-discovery
 5. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## EXPLORER_REPORT.md Format
 ```markdown
 # Explorer Report: {{seedTitle}}
 
-## Relevant Files
-- path/to/file.ts — description of what it does and why it's relevant
+## Developer Handoff
+### Edit First
+- path/to/file.ts:line — exact function/type/block to change and why
 
-## Architecture & Patterns
-- Key patterns observed (naming conventions, abstractions, error handling)
+### Read If Needed
+- path/to/file.ts:line — only if the edit target is insufficient
 
-## Dependencies
-- What this code depends on, what depends on it
+### Verification Owner Notes
+- path/to/test.ts — existing coverage or likely QA target
 
-## Existing Tests
-- Test files that cover the affected code
+### Implementation Sketch
+- Ordered, minimal steps the developer should take
 
-## Implementation Plan
-### Likely Edit Files
-- path/to/file.ts — expected change surface
-
-### Likely Targeted Tests
-- path/to/test.ts — direct verification for the change
-
-### Execution Contract
-- The developer should start with the files/tests listed above
-- The developer must justify any deviation before editing files outside this plan
-
-## Recommended Approach
-- Step-by-step implementation plan based on what you found
-- Potential pitfalls or edge cases to watch for
+### Boundaries
+- Files/areas the developer should not inspect or edit unless the sketch fails
+- One-sentence reason required before deviating
 ```
 
 ## Rules
 - **DO NOT modify any source code files** — you are read-only
 - **DO NOT create new source files** — only write EXPLORER_REPORT.md and SESSION_LOG.md
-- Focus on understanding, not implementing
+- Focus on handoff, not completeness
 - Be specific — reference actual file paths and line numbers
-- Keep the report concise and actionable for the Developer agent
-- Start narrow. Use the task title/description to form an initial file hypothesis before reading broadly.
-- Stop early once you can name the likely edit files, nearby tests, and one concrete implementation path. Do not keep exploring just to be exhaustive.
-- Make the **Implementation Plan** concrete enough that Developer can execute it without re-exploring the repository.
+- Keep the report under ~80 lines unless the task is genuinely cross-cutting
+- Start narrow. Use the task title/description to form an initial file hypothesis before reading broadly
+- Do not map generic architecture, dependency graphs, or test strategy unless needed to identify the edit target
+- Stop after you can name likely edit files, nearby verification targets, and one concrete implementation sketch
+- Make the handoff concrete enough that Developer can start editing after reading TASK.md plus EXPLORER_REPORT.md

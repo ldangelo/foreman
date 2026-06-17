@@ -1635,14 +1635,14 @@ async function runPhaseSequence(
     let phaseSucceeded = result.success && !commandPhaseContractError;
     let phaseError = commandPhaseContractError ?? result.error;
 
-    if (!phaseSucceeded && phaseName === "finalize" && !commandPhaseContractError && interpolatedArtifact && artifactPresent) {
-      const finalizeReport = readReport(worktreePath, interpolatedArtifact);
-      const finalizeVerdict = finalizeReport ? parseVerdict(finalizeReport) : "unknown";
-      const terminatedAfterReport = /terminated/i.test(phaseError ?? "");
-      if (terminatedAfterReport && finalizeVerdict === "pass") {
+    if (!phaseSucceeded && phase.verdict && !commandPhaseContractError && interpolatedArtifact && artifactPresent) {
+      const verdictReport = readReport(worktreePath, interpolatedArtifact);
+      const artifactVerdict = verdictReport ? parseVerdict(verdictReport) : "unknown";
+      const interruptedAfterReport = /terminated|aborted|exceeded maxTurns/i.test(phaseError ?? "");
+      if (interruptedAfterReport && artifactVerdict === "pass") {
         phaseSucceeded = true;
         phaseError = undefined;
-        ctx.log("[FINALIZE] SDK reported terminated after a PASS artifact; accepting finalize evidence");
+        ctx.log(`[${phaseName.toUpperCase()}] SDK interrupted after a PASS artifact; accepting ${phaseName} evidence`);
       }
     }
 
