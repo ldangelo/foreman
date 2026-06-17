@@ -30,6 +30,19 @@ defmodule ForemanServer.WorkerProtocolTest do
     {:ok, fixture: fixture()}
   end
 
+  test "worker phase start rejects invalid bearer token before side effects", %{fixture: fixture} do
+    conn =
+      :post
+      |> conn("/worker/v1/phases/developer/start", Jason.encode!(fixture["start"]))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer wrong")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 401
+    assert Jason.decode!(conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+    assert ForemanServer.EventStore.all() == []
+  end
+
   test "worker phase fixture emits heartbeat tool and phase-complete events in order", %{
     fixture: fixture
   } do

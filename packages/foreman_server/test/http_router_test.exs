@@ -29,15 +29,26 @@ defmodule ForemanServer.Http.RouterTest do
     :ok
   end
 
-  test "rejects missing bearer token before side effects" do
-    conn =
+  test "rejects missing and invalid bearer token before side effects" do
+    missing_conn =
       :post
       |> conn("/api/v1/commands", Jason.encode!(valid_command()))
       |> put_req_header("content-type", "application/json")
       |> ForemanServer.Http.Router.call(@opts)
 
-    assert conn.status == 401
-    assert Jason.decode!(conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+    assert missing_conn.status == 401
+    assert Jason.decode!(missing_conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+    assert ForemanServer.EventStore.all() == []
+
+    invalid_conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(valid_command()))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer wrong")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert invalid_conn.status == 401
+    assert Jason.decode!(invalid_conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
     assert ForemanServer.EventStore.all() == []
   end
 

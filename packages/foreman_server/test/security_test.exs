@@ -33,12 +33,21 @@ defmodule ForemanServer.SecurityTest do
                "run_id" => "run-secure",
                "project_id" => "project-secure",
                "worker_id" => "worker-secure",
-               "env" => %{"SAFE_BASE" => "base", "AWS_ACCESS_KEY_ID" => "host-leak"},
+               "env" => %{
+                 "SAFE_BASE" => "base",
+                 "AWS_ACCESS_KEY_ID" => "host-leak",
+                 "FOREMAN_SERVER_AUTH_TOKEN" => "server-token"
+               },
                "project_secrets" => %{
                  "PROJECT_TOKEN" => "project-secret",
-                 "SSH_AUTH_SOCK" => "sock"
+                 "SSH_AUTH_SOCK" => "sock",
+                 "FOREMAN_SERVER_AUTH_TOKEN" => "project-server-token"
                },
-               "run_secrets" => %{"RUN_TOKEN" => "run-secret", "GITHUB_TOKEN" => "gh"}
+               "run_secrets" => %{
+                 "RUN_TOKEN" => "run-secret",
+                 "GITHUB_TOKEN" => "gh",
+                 "FOREMAN_SERVER_AUTH_TOKEN" => "run-server-token"
+               }
              })
 
     assert event.payload.prepared_env == %{
@@ -53,11 +62,42 @@ defmodule ForemanServer.SecurityTest do
 
     assert event.payload.stripped_env_keys == [
              "AWS_ACCESS_KEY_ID",
+             "FOREMAN_SERVER_AUTH_TOKEN",
              "GITHUB_TOKEN",
              "SSH_AUTH_SOCK"
            ]
 
     refute Map.has_key?(event.payload.prepared_env, "FOREMAN_SERVER_AUTH_TOKEN")
+  end
+
+  test "worker secret scopes do not leak across project and run starts" do
+    assert {:ok, %{event: first}} =
+             WorkerProtocol.start_phase("developer", %{
+               "run_id" => "run-one",
+               "project_id" => "project-one",
+               "worker_id" => "worker-one",
+               "project_secrets" => %{"PROJECT_ONE_TOKEN" => "p1"},
+               "run_secrets" => %{"RUN_ONE_TOKEN" => "r1"}
+             })
+
+    assert {:ok, %{event: second}} =
+             WorkerProtocol.start_phase("developer", %{
+               "run_id" => "run-two",
+               "project_id" => "project-two",
+               "worker_id" => "worker-two",
+               "project_secrets" => %{"PROJECT_TWO_TOKEN" => "p2"},
+               "run_secrets" => %{"RUN_TWO_TOKEN" => "r2"}
+             })
+
+    assert first.payload.prepared_env["PROJECT_ONE_TOKEN"] == "p1"
+    assert first.payload.prepared_env["RUN_ONE_TOKEN"] == "r1"
+    refute Map.has_key?(first.payload.prepared_env, "PROJECT_TWO_TOKEN")
+    refute Map.has_key?(first.payload.prepared_env, "RUN_TWO_TOKEN")
+
+    assert second.payload.prepared_env["PROJECT_TWO_TOKEN"] == "p2"
+    assert second.payload.prepared_env["RUN_TWO_TOKEN"] == "r2"
+    refute Map.has_key?(second.payload.prepared_env, "PROJECT_ONE_TOKEN")
+    refute Map.has_key?(second.payload.prepared_env, "RUN_ONE_TOKEN")
   end
 
   test "remote access requires a configured auth token" do
@@ -97,5 +137,24 @@ defmodule ForemanServer.SecurityTest do
 
     audits = ProjectionStore.snapshot().authorization_audits
     assert Enum.map(audits, & &1.event_type) == ["AuthorizationChecked", "AuditRecorded"]
+
+    assert {:ok, rebuilt} = EventStore.rebuild_projections()
+    rebuilt_audits = rebuilt.authorization_audits
+    assert Enum.map(rebuilt_audits, & &1.event_type) == ["AuthorizationChecked", "AuditRecorded"]
+    assert Enum.map(rebuilt_audits, & &1.command_id) == ["cmd-close-secure", "cmd-close-secure"]
+
+    assert Enum.map(rebuilt_audits, & &1.actor) == [
+             "operator@example.com",
+             "operator@example.com"
+           ]
+
+    assert Enum.map(rebuilt_audits, & &1.decision) == ["allowed", "allowed"]
+
+    assert Enum.map(rebuilt_audits, & &1.target) == [
+             %{type: :task_id, id: "task-secure"},
+             %{type: :task_id, id: "task-secure"}
+           ]
+
+    assert List.last(rebuilt_audits).resulting_event_type == "TaskUpdated"
   end
 end
