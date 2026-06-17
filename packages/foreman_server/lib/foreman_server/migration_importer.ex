@@ -12,15 +12,12 @@ defmodule ForemanServer.MigrationImporter do
 
   @spec import(map()) :: {:ok, map()} | {:error, term()}
   def import(input) when is_map(input) do
-    with {:ok, migration_id} <- required_binary(Map.get(input, :migration_id), :migration_id),
-         {:ok, source} <- required_binary(Map.get(input, :source), :source),
-         :ok <- require_list(input, :projects),
-         :ok <- require_list(input, :tasks),
-         :ok <- require_list(input, :runs),
-         :ok <- require_list(input, :workflows),
-         :ok <- require_list(input, :inbox_messages) do
+    with {:ok, normalized} <- validate_input(input),
+         {:ok, migration_id} <-
+           required_binary(Map.get(normalized, :migration_id), :migration_id),
+         {:ok, source} <- required_binary(Map.get(normalized, :source), :source) do
       case existing_completed_import(migration_id) do
-        nil -> execute_import(input, migration_id, source)
+        nil -> execute_import(normalized, migration_id, source)
         completed -> {:ok, existing_result(completed)}
       end
     end
@@ -214,7 +211,7 @@ defmodule ForemanServer.MigrationImporter do
     )
   end
 
-  defp append_terminal_run(run_id, _status, _run, migration_id, metadata) do
+  defp append_terminal_run(run_id, "completed", _run, migration_id, metadata) do
     append(
       "RunCompleted",
       "run:#{run_id}",
@@ -300,10 +297,143 @@ defmodule ForemanServer.MigrationImporter do
 
       config when is_map(config) ->
         {:ok, []}
+    end
+  end
+
+  defp validate_input(input) do
+    normalized = normalize(input)
+
+    with {:ok, _migration_id} <-
+           required_binary(Map.get(normalized, :migration_id), :migration_id),
+         {:ok, _source} <- required_binary(Map.get(normalized, :source), :source),
+         {:ok, projects} <- normalized_record_list(normalized, :projects),
+         {:ok, tasks} <- normalized_record_list(normalized, :tasks),
+         {:ok, runs} <- normalized_record_list(normalized, :runs),
+         {:ok, workflows} <- normalized_record_list(normalized, :workflows),
+         {:ok, inbox_messages} <- normalized_record_list(normalized, :inbox_messages),
+         {:ok, config} <- normalized_config(normalized),
+         :ok <- validate_projects(projects),
+         :ok <- validate_tasks(tasks),
+         :ok <- validate_runs(runs),
+         :ok <- validate_workflows(workflows),
+         :ok <- validate_inbox_messages(inbox_messages),
+         :ok <- reject_duplicate_ids(:projects, projects, &record_id(&1, [:project_id, :id])),
+         :ok <- reject_duplicate_ids(:tasks, tasks, &record_id(&1, [:task_id, :id])),
+         :ok <- reject_duplicate_ids(:runs, runs, &record_id(&1, [:run_id, :id])),
+         :ok <- reject_duplicate_ids(:workflows, workflows, &record_id(&1, [:id, :name])),
+         :ok <-
+           reject_duplicate_ids(
+             :inbox_messages,
+             inbox_messages,
+             &record_id(&1, [:message_id, :id])
+           ) do
+      {:ok,
+       normalized
+       |> Map.put(:projects, projects)
+       |> Map.put(:tasks, tasks)
+       |> Map.put(:runs, runs)
+       |> Map.put(:workflows, workflows)
+       |> Map.put(:inbox_messages, inbox_messages)
+       |> Map.put(:config, config)}
+    end
+  end
+
+  defp normalized_record_list(input, key) do
+    case Map.get(input, key, []) do
+      records when is_list(records) ->
+        records
+        |> Enum.with_index()
+        |> Enum.reduce_while({:ok, []}, fn {record, index}, {:ok, acc} ->
+          if is_map(record) do
+            {:cont, {:ok, acc ++ [normalize(record)]}}
+          else
+            {:halt, {:error, {:missing_or_invalid, {key, index}}}}
+          end
+        end)
 
       _ ->
-        {:error, {:missing_or_invalid, :config}}
+        {:error, {:missing_or_invalid, key}}
     end
+  end
+
+  defp normalized_config(input) do
+    case Map.get(input, :config, %{}) do
+      config when is_map(config) -> {:ok, config}
+      _ -> {:error, {:missing_or_invalid, :config}}
+    end
+  end
+
+  defp validate_projects(projects) do
+    require_each(projects, fn project ->
+      with {:ok, _project_id} <-
+             required_binary(record_id(project, [:project_id, :id]), :project_id),
+           {:ok, _path} <- required_binary(Map.get(project, :path), :path) do
+        :ok
+      end
+    end)
+  end
+
+  defp validate_tasks(tasks) do
+    require_each(tasks, fn task ->
+      with {:ok, _task_id} <- required_binary(record_id(task, [:task_id, :id]), :task_id) do
+        :ok
+      end
+    end)
+  end
+
+  defp validate_runs(runs) do
+    require_each(runs, fn run ->
+      with {:ok, _run_id} <- required_binary(record_id(run, [:run_id, :id]), :run_id),
+           :ok <- validate_run_status(Map.get(run, :status, "completed")) do
+        :ok
+      end
+    end)
+  end
+
+  defp validate_workflows(workflows) do
+    require_each(workflows, fn workflow ->
+      with {:ok, _workflow_id} <- required_binary(record_id(workflow, [:id, :name]), :workflow_id) do
+        :ok
+      end
+    end)
+  end
+
+  defp validate_inbox_messages(messages) do
+    require_each(messages, fn message ->
+      with {:ok, _message_id} <-
+             required_binary(record_id(message, [:message_id, :id]), :message_id),
+           {:ok, _run_id} <- required_binary(Map.get(message, :run_id), :run_id) do
+        :ok
+      end
+    end)
+  end
+
+  defp validate_run_status(status) when status in ["completed", "failed", "blocked"], do: :ok
+  defp validate_run_status(_status), do: {:error, {:invalid_status, :runs}}
+
+  defp require_each(records, fun) do
+    Enum.reduce_while(records, :ok, fn record, :ok ->
+      case fun.(record) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp reject_duplicate_ids(field, records, id_fun) do
+    records
+    |> Enum.map(id_fun)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.frequencies()
+    |> Enum.find(fn {_id, count} -> count > 1 end)
+    |> case do
+      nil -> :ok
+      {id, _count} -> {:error, {:duplicate_id, field, id}}
+    end
+  end
+
+  defp record_id(record, keys) do
+    Enum.find_value(keys, &Map.get(record, &1))
   end
 
   defp map_events(records, fun) when is_list(records) do
@@ -348,13 +478,6 @@ defmodule ForemanServer.MigrationImporter do
     %{metadata | idempotency_key: key}
   end
 
-  defp require_list(input, key) do
-    case Map.get(input, key, []) do
-      value when is_list(value) -> :ok
-      _ -> {:error, {:missing_or_invalid, key}}
-    end
-  end
-
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
   defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
 
@@ -370,7 +493,9 @@ defmodule ForemanServer.MigrationImporter do
   defp known_record_keys do
     [
       :body,
+      :command_id,
       :config,
+      :correlation_id,
       :current_phase,
       :data,
       :default_branch,
@@ -381,21 +506,27 @@ defmodule ForemanServer.MigrationImporter do
       :legacy_id,
       :message,
       :message_id,
+      :migration_id,
       :name,
       :path,
       :phase_id,
       :phase_order,
       :project_id,
+      :projects,
       :recipient,
       :retry_history,
       :run_id,
+      :runs,
       :sender,
       :source,
       :status,
       :task_id,
       :task_type,
+      :tasks,
       :title,
-      :type
+      :type,
+      :workflows,
+      :inbox_messages
     ]
   end
 

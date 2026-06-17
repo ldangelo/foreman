@@ -84,12 +84,99 @@ defmodule ForemanServer.MigrationImporterTest do
   end
 
   test "invalid input fails before side effects" do
-    before_count = EventStore.all() |> length()
+    before_events = EventStore.all()
 
     assert {:error, {:missing_or_invalid, :source}} =
              MigrationImporter.import(%{migration_id: "bad", projects: "not-list"})
 
-    assert EventStore.all() |> length() == before_count
+    assert EventStore.all() == before_events
+  end
+
+  test "malformed later records fail before side effects and can be retried after correction" do
+    before_events = EventStore.all()
+
+    bad_payload =
+      legacy_payload("migration-bad-later")
+      |> put_in([:tasks], [%{task_id: "valid-task"}, %{project_id: "missing-task-id"}])
+
+    assert {:error, {:missing_or_invalid, :task_id}} = MigrationImporter.import(bad_payload)
+    assert EventStore.all() == before_events
+
+    assert {:ok, %{status: "completed", existing: false}} =
+             MigrationImporter.import(legacy_payload("migration-bad-later"))
+  end
+
+  test "completed same migration id retry is idempotent without duplicate events" do
+    assert {:ok, %{status: "completed", existing: false}} =
+             MigrationImporter.import(legacy_payload("migration-idempotent"))
+
+    event_count = EventStore.all() |> length()
+
+    assert {:ok, %{status: "completed", existing: true, events: [_completed]}} =
+             MigrationImporter.import(legacy_payload("migration-idempotent"))
+
+    assert EventStore.all() |> length() == event_count
+  end
+
+  test "invalid records statuses and duplicate ids return validation errors without events" do
+    assert_validation_without_events(
+      legacy_payload("migration-invalid-record") |> put_in([:projects], ["not-a-map"]),
+      {:missing_or_invalid, {:projects, 0}}
+    )
+
+    assert_validation_without_events(
+      legacy_payload("migration-invalid-status")
+      |> put_in([:runs, Access.at(0), :status], "paused"),
+      {:invalid_status, :runs}
+    )
+
+    assert_validation_without_events(
+      legacy_payload("migration-duplicate-projects")
+      |> put_in([:projects], [
+        %{project_id: "duplicate-project", path: "/repo/one"},
+        %{id: "duplicate-project", path: "/repo/two"}
+      ]),
+      {:duplicate_id, :projects, "duplicate-project"}
+    )
+
+    assert_validation_without_events(
+      legacy_payload("migration-duplicate-runs")
+      |> put_in([:runs], [
+        %{run_id: "duplicate-run", status: "completed"},
+        %{id: "duplicate-run", status: "failed"}
+      ]),
+      {:duplicate_id, :runs, "duplicate-run"}
+    )
+  end
+
+  test "imports failed and blocked runs with terminal statuses" do
+    payload =
+      legacy_payload("migration-terminal-runs")
+      |> put_in([:runs], [
+        %{
+          run_id: "legacy-run-failed",
+          task_id: "legacy-task",
+          status: "failed",
+          phase_order: ["implement"],
+          current_phase: "implement",
+          retry_history: [%{attempt: 1, status: "failed"}]
+        },
+        %{
+          run_id: "legacy-run-blocked",
+          task_id: "legacy-task",
+          status: "blocked",
+          phase_order: ["review"],
+          current_phase: "review"
+        }
+      ])
+      |> put_in([:inbox_messages], [])
+
+    assert {:ok, %{imported: %{runs: 2}}} = MigrationImporter.import(payload)
+
+    projection = ProjectionStore.snapshot()
+    assert projection.runs["legacy-run-failed"].status == "failed"
+    assert projection.runs["legacy-run-failed"].retry_history == [%{attempt: 1, status: "failed"}]
+    assert projection.runs["legacy-run-blocked"].status == "blocked"
   end
 
   test "command router and HTTP command boundary route migration imports" do
@@ -114,6 +201,12 @@ defmodule ForemanServer.MigrationImporterTest do
     assert conn.status == 202
     assert %{"ok" => true, "events" => [_event_id]} = Jason.decode!(conn.resp_body)
     assert ProjectionStore.snapshot().migration_imports["migration-http-1"].status == "completed"
+  end
+
+  defp assert_validation_without_events(payload, reason) do
+    before_events = EventStore.all()
+    assert {:error, ^reason} = MigrationImporter.import(payload)
+    assert EventStore.all() == before_events
   end
 
   defp legacy_payload(migration_id \\ "migration-1") do
