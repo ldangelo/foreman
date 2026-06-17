@@ -58,6 +58,8 @@ Important phase reports:
 
 Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
 
+**Test execution** follows a phase ownership model that prevents redundant runs. See [Test Execution Policy](./guides/test-execution-policy.md) for details.
+
 ### Worktrees
 
 Each dispatched task runs in its own git worktree. This isolates agent edits from your main checkout and from other agents. Avoid manually editing active worktrees unless you are intentionally intervening.

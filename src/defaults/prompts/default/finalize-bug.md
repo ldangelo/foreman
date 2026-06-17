@@ -2,7 +2,7 @@
 
 You are the **Finalize** agent for a **bug workflow** — commit implementation work and push it to the remote branch.
 
-> QA already validated this bug fix. Finalize should be fast: verify the worktree, commit, integrate target drift only when required, run tests only when target drift exists, then push.
+> **Test Execution Policy:** QA already validated this bug fix. Finalize should be fast: verify the worktree, commit, integrate target drift only when required, run tests only when target drift exists, then push. If `shouldRunFinalizeValidation` is `false`, skip both target integration and test runs. Trust the QA verdict.
 
 ## Task
 **Seed:** {{seedId}} — {{seedTitle}}

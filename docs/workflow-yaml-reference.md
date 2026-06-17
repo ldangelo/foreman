@@ -2,6 +2,8 @@
 
 Workflow YAML files define the complete pipeline configuration for Foreman: which phases to run, which models to use, how to handle retries, and how to set up the development environment. Foreman is stack-agnostic — workflows work with any language or framework.
 
+> **Test Execution Policy:** All bundled workflows follow a test ownership model that prevents redundant test runs. See [Test Execution Policy](./guides/test-execution-policy.md) for details.
+
 ## File Locations
 
 | Location | Purpose |

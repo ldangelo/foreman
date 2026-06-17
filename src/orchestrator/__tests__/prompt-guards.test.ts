@@ -7,6 +7,7 @@ const EXPLORER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "defaul
 const DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "developer.md");
 const QA_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "qa.md");
 const FINALIZE_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "finalize.md");
+const PR_REVIEW_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "pr-review.md");
 
 describe("explorer prompt narrowing", () => {
   const prompt = readFileSync(EXPLORER_PROMPT, "utf-8");
@@ -44,15 +45,26 @@ describe("qa prompt validation", () => {
   const prompt = readFileSync(QA_PROMPT, "utf-8");
 
   it("requires real command output evidence", () => {
-    expect(prompt).toContain("Targeted command(s) run");
+    expect(prompt).toContain("Command(s) run");
     expect(prompt).toContain("npm test -- --reporter=dot 2>&1");
-    expect(prompt).toContain("Raw summary");
+    expect(prompt).toContain("Test scope:");
     expect(prompt).toContain("reports without real test evidence are invalid");
   });
 
   it("tells QA to prefer targeted verification first", () => {
     expect(prompt).toContain("Choose the narrowest verification");
     expect(prompt).toContain("Prefer targeted verification first for narrow tasks");
+  });
+
+  it("requires justification for full suite runs", () => {
+    expect(prompt).toContain("Test Scope Justification");
+    expect(prompt).toContain("Full suite (requires explicit justification)");
+    expect(prompt).toContain("Full suite runs require explicit justification");
+  });
+
+  it("includes validation ledger guidance", () => {
+    expect(prompt).toContain("VALIDATION_LEDGER.md");
+    expect(prompt).toContain("validation ledger");
   });
 });
 
@@ -73,5 +85,30 @@ describe("finalize prompt failure handling", () => {
   it("documents jj immutable fallback merge guidance", () => {
     expect(prompt).toContain("Jujutsu immutable commit protection");
     expect(prompt).toContain("git fetch origin && git merge --no-edit origin/{{baseBranch}}");
+  });
+
+  it("includes test execution policy statement", () => {
+    expect(prompt).toContain("Test Execution Policy");
+    expect(prompt).toContain("shouldRunFinalizeValidation");
+  });
+});
+
+describe("pr-review prompt guardrails", () => {
+  const prompt = readFileSync(PR_REVIEW_PROMPT, "utf-8");
+
+  it("forbids local test execution", () => {
+    expect(prompt).toContain("Test Execution Policy");
+    expect(prompt).toContain("GitHub CI is the source of truth");
+    expect(prompt).toContain("run local tests");
+    expect(prompt).toContain("Forbidden Actions");
+    expect(prompt).toContain("DO NOT run `npm test`");
+  });
+
+  it("specifies read-only triage behavior", () => {
+    expect(prompt).toContain("Allowed git actions");
+    expect(prompt).toContain("Read-only");
+    expect(prompt).toContain("Do not fix files");
+    expect(prompt).toContain("Do not commit");
+    expect(prompt).toContain("Do not push");
   });
 });
