@@ -29,6 +29,16 @@ describe("ElixirServerManager", () => {
     expect(String(calls[0][0])).toBe("http://127.0.0.1:4902/api/v1/health");
   });
 
+  it("checks /api/v1/doctor on the configured port", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, doctor: { ok: true } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const manager = new ElixirServerManager({ port: 4903 });
+    await expect(manager.doctor()).resolves.toEqual({ ok: true, body: { ok: true, doctor: { ok: true } } });
+    const calls = fetchMock.mock.calls as unknown as [[URL]];
+    expect(String(calls[0][0])).toBe("http://127.0.0.1:4903/api/v1/doctor");
+  });
+
   it("treats stale pid files as stopped", () => {
     const tmp = mkdtempSync(join(tmpdir(), "foreman-elixir-manager-"));
     const pidPath = join(tmp, "server.pid");

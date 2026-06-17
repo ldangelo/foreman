@@ -157,6 +157,36 @@ defmodule ForemanServer.Http.RouterTest do
     end
   end
 
+  test "authorized doctor and metrics endpoints expose operational status" do
+    seed_debug_http_run()
+
+    doctor_conn =
+      :get
+      |> conn("/api/v1/doctor")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert doctor_conn.status == 200
+    doctor = Jason.decode!(doctor_conn.resp_body)["doctor"]
+    assert doctor["ok"] == true
+    assert doctor["checks"]["db"]["ok"] == true
+    assert doctor["checks"]["projections"]["projection_lag"] == 0
+    assert doctor["checks"]["workers"]["ok"] == true
+    assert doctor["checks"]["vcs"]["ok"] == true
+    assert doctor["checks"]["provider_adapters"]["ok"] == true
+    assert doctor["checks"]["integrations"]["ok"] == true
+
+    metrics_conn =
+      :get
+      |> conn("/api/v1/metrics")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert metrics_conn.status == 200
+    metrics = Jason.decode!(metrics_conn.resp_body)["metrics"]
+    assert metrics["gauges"]["projection_lag"] == 0
+  end
+
   test "authorized run report and debug endpoints return event-backed summaries" do
     seed_debug_http_run()
 
