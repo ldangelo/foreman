@@ -27,7 +27,16 @@ defmodule ForemanServer.PlanningFlow do
            ) do
       output_dir = Map.get(input, :output_dir, "docs")
       compatibility = compatibility_enabled?(input)
-      phases = phases(kind, description, output_dir, compatibility, Map.get(input, :from_prd))
+
+      phases =
+        phases(
+          kind,
+          description,
+          output_dir,
+          compatibility,
+          Map.get(input, :from_prd),
+          Map.get(input, :create_prd_command)
+        )
 
       with {:ok, started} <-
              append_planning_started(
@@ -224,12 +233,12 @@ defmodule ForemanServer.PlanningFlow do
     })
   end
 
-  defp phases(:prd, description, output_dir, compatibility, _from_prd) do
+  defp phases(:prd, description, output_dir, compatibility, _from_prd, create_prd_command) do
     [
       phase(
         "create-prd",
         "Create PRD",
-        command("/ensemble:create-prd", compatibility),
+        command(create_prd_command || "/ensemble:create-prd", compatibility),
         description,
         Path.join(output_dir, "PRD.md"),
         nil,
@@ -247,7 +256,7 @@ defmodule ForemanServer.PlanningFlow do
     ]
   end
 
-  defp phases(:trd, description, output_dir, compatibility, from_prd) do
+  defp phases(:trd, description, output_dir, compatibility, from_prd, _create_prd_command) do
     source = from_prd || Path.join(output_dir, "PRD.md")
 
     [
@@ -287,10 +296,7 @@ defmodule ForemanServer.PlanningFlow do
 
   defp command(command, false), do: command
 
-  defp command("/ensemble:create-prd", true),
-    do: Map.fetch!(@compat_commands, "/ensemble:create-prd")
-
-  defp command(command, true), do: Map.get(@compat_commands, command, command)
+  defp command(command, true), do: Map.get(@compat_commands, command, "/ensemble:create-prd")
 
   defp planning_kind(kind) when kind in [:prd, "prd"], do: {:ok, :prd}
   defp planning_kind(kind) when kind in [:trd, "trd"], do: {:ok, :trd}
@@ -333,6 +339,6 @@ defmodule ForemanServer.PlanningFlow do
   defp normalize_value(value), do: value
 
   defp known_string_keys do
-    ~w(adapter compatibility_mode description from_prd input kind output_dir plan_type project_id provider run_id)
+    ~w(adapter compatibility_mode create_prd_command description from_prd input kind output_dir plan_type project_id provider run_id)
   end
 end

@@ -118,7 +118,11 @@ defmodule ForemanServer.CommandRouter do
          external_id: Map.get(payload, :external_id),
          external_link: Map.get(payload, :external_link),
          dedupe_key: Map.get(payload, :dedupe_key),
-         integration_event_type: Map.get(payload, :integration_event_type)
+         integration_event_type: Map.get(payload, :integration_event_type),
+         planning_run_id: Map.get(payload, :planning_run_id),
+         planning_kind: Map.get(payload, :planning_kind),
+         planning_phase_id: Map.get(payload, :planning_phase_id),
+         trace_event_id: Map.get(payload, :trace_event_id)
        }, "task:#{task_id}"}
     else
       command_accepted("task.create", payload)
@@ -279,9 +283,11 @@ defmodule ForemanServer.CommandRouter do
       :config,
       :correlation_id,
       :count,
+      :create_prd_command,
       :dedupe_key,
       :default_branch,
       :dependencies,
+      :description,
       :depends_on,
       :event_id,
       :event_type,
