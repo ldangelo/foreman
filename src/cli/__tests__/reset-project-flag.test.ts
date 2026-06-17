@@ -3,13 +3,12 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import type { ExecResult } from "../../test-support/tsx-subprocess.js";
-import { ForemanStore } from "../../lib/store.js";
 import { resolveProjectTarget } from "../../lib/project-targeting.js";
 import { ProjectNotFoundError } from "../../lib/project-registry.js";
 
@@ -68,12 +67,6 @@ describe("foreman reset --project flag", () => {
     execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir, stdio: "ignore" });
-  }
-
-  function registerLocalProject(projectDir: string, projectName: string): void {
-    const store = ForemanStore.forProject(projectDir);
-    store.registerProject(projectName, projectDir);
-    store.close();
   }
 
   function setupRegistryWithProject(registryDir: string, projectPath: string, projectName: string): void {
@@ -162,7 +155,10 @@ describe("foreman reset --project flag", () => {
     const projectDir = mkProject(tmpBase, "my-project");
 
     initGitRepo(projectDir);
-    registerLocalProject(projectDir, "my-project");
+    writeFileSync(join(projectDir, ".env"), "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/foreman\n", "utf-8");
+
+    const registryDir = join(tmpBase, ".foreman", "projects");
+    setupRegistryWithProject(registryDir, realpathSync(projectDir), "my-project");
 
     const result = await run(["reset"], projectDir, { ...process.env, HOME: tmpBase });
     expect(result.exitCode).toBe(0);
