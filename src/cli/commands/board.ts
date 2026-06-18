@@ -61,13 +61,19 @@ export function normalizeStatusForBoard(status: string): BoardStatus | null {
 
 export function boardColumnForTaskStatus(status: string): BoardStatus {
   const normalized = status.replace(/-/g, "_");
+  if (["open", "todo"].includes(normalized)) {
+    return "backlog";
+  }
   if (["explorer", "developer", "qa", "reviewer", "finalize"].includes(normalized)) {
     return "in_progress";
   }
   if (["failed", "stuck", "conflict", "blocked", "review"].includes(normalized)) {
     return "needs_attention";
   }
-  return normalizeStatusForBoard(status) ?? "closed";
+  if (["merged", "completed", "done"].includes(normalized)) {
+    return "closed";
+  }
+  return normalizeStatusForBoard(status) ?? "needs_attention";
 }
 
 function boardStatusToStoreStatus(status: BoardStatus): string {

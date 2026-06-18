@@ -203,14 +203,9 @@ export class NativeTaskClient implements ITaskClient {
     return readyIssues.map((issue) => toIssue(this.projectPath, issue));
   }
 
-  async show(id: string): Promise<{ status: string; description?: string | null; notes?: string | null; labels?: string[] }> {
+  async show(id: string): Promise<Issue> {
     if (this.registeredProjectId) {
-      return this.withPostgresTask(id, async (row) => ({
-        status: row.status,
-        description: row.description ?? null,
-        notes: null,
-        labels: [`project:${this.projectPath}`, ...(row.labels ?? [])],
-      }));
+      return this.withPostgresTask(id, async (row) => this.toPostgresIssue(row));
     }
 
     return this.withStore((taskStore) => {
@@ -218,12 +213,7 @@ export class NativeTaskClient implements ITaskClient {
       if (!row) {
         throw new Error(`Native task '${id}' not found`);
       }
-      return {
-        status: row.status,
-        description: row.description ?? null,
-        notes: null,
-        labels: [`project:${this.projectPath}`],
-      };
+      return this.toNativeIssue(row);
     });
   }
 

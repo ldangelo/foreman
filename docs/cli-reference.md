@@ -260,7 +260,7 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman board`
 
-Open the terminal kanban board for native tasks. Press `y` to copy the selected task ID. The board monitors agent inbox messages and updates only the task cards tied to changed runs, so phase/status movement appears without a whole-board reload. Press `r` for a full manual refresh; the header shows a `refreshing…` spinner during full reload and `refreshed <time>` after task data updates.
+Open the terminal kanban board for native tasks. Press `y` to copy the selected task ID. `open`/`backlog` tasks render in Backlog, terminal `closed`/`merged` tasks render in Closed, and unknown statuses render in Needs Attention instead of being hidden as closed. The board monitors agent inbox messages and updates only the task cards tied to changed runs, so phase/status movement appears without a whole-board reload. Press `r` for a full manual refresh; the header shows a `refreshing…` spinner during full reload and `refreshed <time>` after task data updates.
 
 ```bash
 foreman board

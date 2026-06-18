@@ -175,7 +175,7 @@ describe("loadBoardTasks status routing", () => {
     ]);
   });
 
-  it("routes backlog, ready, in_progress, review to their respective columns", async () => {
+  it("routes open, backlog, ready, in_progress, review to their respective columns", async () => {
     const { projectDir } = setupProject();
 
     const mockTasks = [
@@ -183,13 +183,14 @@ describe("loadBoardTasks status routing", () => {
       { id: "task-2", title: "Ready task", status: "ready" },
       { id: "task-3", title: "In progress task", status: "in_progress" },
       { id: "task-4", title: "Review task", status: "review" },
+      { id: "task-5", title: "Open task", status: "open" },
     ];
     const list = vi.fn().mockResolvedValue(mockTasks);
     mockCreateTrpcClient.mockReturnValue({ tasks: { list } });
 
     const tasks = await loadBoardTasks(projectDir);
 
-    expect(tasks.get("backlog")).toHaveLength(1);
+    expect(tasks.get("backlog")?.map((task) => task.id)).toEqual(["task-1", "task-5"]);
     expect(tasks.get("ready")).toHaveLength(1);
     expect(tasks.get("in_progress")).toHaveLength(1);
     expect(tasks.get("needs_attention")).toHaveLength(1);
@@ -214,7 +215,7 @@ describe("loadBoardTasks status routing", () => {
     ]);
   });
 
-  it("routes unknown statuses to closed column", async () => {
+  it("routes unknown statuses to needs_attention column", async () => {
     const { projectDir } = setupProject();
 
     const mockTasks = [
@@ -226,8 +227,8 @@ describe("loadBoardTasks status routing", () => {
 
     const tasks = await loadBoardTasks(projectDir);
 
-    expect(tasks.get("closed")).toHaveLength(2);
-    expect(tasks.get("needs_attention")).toHaveLength(0);
+    expect(tasks.get("closed")).toHaveLength(0);
+    expect(tasks.get("needs_attention")).toHaveLength(2);
   });
 
   it("normalizes kebab-case status to snake_case", async () => {
@@ -235,7 +236,7 @@ describe("loadBoardTasks status routing", () => {
 
     const mockTasks = [
       { id: "task-1", title: "In-progress task", status: "in-progress" },
-      { id: "task-2", title: "In-review task (falls through to closed)", status: "in-review" },
+      { id: "task-2", title: "In-review task (falls through to needs_attention)", status: "in-review" },
     ];
     const list = vi.fn().mockResolvedValue(mockTasks);
     mockCreateTrpcClient.mockReturnValue({ tasks: { list } });
@@ -244,8 +245,8 @@ describe("loadBoardTasks status routing", () => {
 
     // "in-progress" normalizes to "in_progress" which is a valid BoardStatus
     expect(tasks.get("in_progress")).toHaveLength(1);
-    // "in-review" normalizes to "in_review" which is NOT a valid BoardStatus -> falls to closed
-    expect(tasks.get("closed")).toHaveLength(1);
+    // "in-review" normalizes to "in_review" which is NOT a valid BoardStatus -> falls to needs_attention
+    expect(tasks.get("needs_attention")).toHaveLength(1);
   });
 });
 
