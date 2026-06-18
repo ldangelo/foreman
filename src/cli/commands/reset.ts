@@ -23,6 +23,8 @@ import type { StateMismatch } from "../../lib/run-status.js";
 import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../../lib/project-config.js";
 import { GhCli } from "../../lib/gh-cli.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 export type { StateMismatch } from "../../lib/run-status.js";
@@ -693,6 +695,29 @@ export interface ResetSeedResult {
  * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
  *   is skipped — the returned `action` accurately reflects what would happen.
  */
+async function syncElixirResetToReady(seedId: string): Promise<void> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const commandId = `reset-${seedId}-${Date.now()}`;
+  const response = await client.sendCommand({
+    command_id: commandId,
+    command_type: "task.update",
+    payload: {
+      task_id: seedId,
+      status: "ready",
+      run_id: null,
+      failure_reason: null,
+      failure_output: null,
+    },
+    metadata: { source: "foreman-reset", correlation_id: commandId },
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
+}
+
 export async function resetSeedToOpen(
   seedId: string,
   seeds: IShowUpdateClient,
@@ -1008,6 +1033,16 @@ export const resetCommand = new Command("reset")
       // 5. Reset seeds to a retryable status
       for (const seedId of seedIds) {
         const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!beadFilter });
+        if (!dryRun && runtimeProjectId && (result.action === "reset" || result.action === "already-open") && result.targetStatus === "ready") {
+          try {
+            await syncElixirResetToReady(seedId);
+            console.log(`  ${chalk.yellow("sync")} Elixir projection ${chalk.cyan(seedId)} → ready`);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            errors.push(`Failed to sync Elixir reset for ${seedId}: ${msg}`);
+            console.log(`    ${chalk.red("error")} syncing Elixir projection: ${msg}`);
+          }
+        }
         switch (result.action) {
           case "skipped-closed":
             console.log(
