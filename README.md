@@ -76,7 +76,7 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
 1. **Explorer** (Haiku, 20 turns emergency fuse, read-only) — owns code discovery and writes concise edit/verification targets → `EXPLORER_REPORT.md`
-2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — executes the Explorer handoff; overwatch blocks tests and broad repo discovery → `DEVELOPER_REPORT.md`
+2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — executes the Explorer handoff; overwatch blocks broad repo discovery and test execution, but allows focused test authoring when the task/handoff requires coverage → `DEVELOPER_REPORT.md`
 3. **QA** (Sonnet, 60 turns, read+bash) — verifies changed files with targeted commands only; overwatch blocks broad discovery/full-suite runs → `QA_REPORT.md`
 4. **Reviewer** (Sonnet, 20 turns, read-only) — overwatch bounds review evidence and requires a verdict report → `REVIEW.md`
 5. **Finalize** — git add/commit/push, native task merge/close update

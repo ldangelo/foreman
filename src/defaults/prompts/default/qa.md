@@ -22,6 +22,7 @@ Do NOT run tests if conflict markers are found.
 2. Review only the implementation surface:
    - `git diff --name-only`
    - `git diff -- <changed files>` when needed to choose verification
+   - For Foreman runtime/state/MCP/activity-feed work during the Elixir cutover, do not fail an implementation for missing `PostgresStore`, `src/lib/store.ts`, or legacy Postgres/native TS storage changes unless the task or Explorer explicitly targets that legacy path. Verify the Elixir server, MCP/Elixir client, and current CLI/read-model consumers named by Explorer.
 3. Choose the narrowest verification that can prove the changed behavior:
    - Prefer the command/test target from Developer's **QA Handoff** when it matches the changed files
    - Otherwise infer one targeted command from the changed files and Explorer's verification notes
@@ -63,6 +64,7 @@ Do NOT run tests if conflict markers are found.
 ## Rules
 - QA is verification-only. Do not modify source code or tests in this phase
 - Focus on correctness and regressions, not style
+- Do not invent legacy backend requirements. During the Elixir cutover, Postgres/native TS store parity is not required unless explicitly requested by the task or Explorer.
 - Be specific about failures — include error messages
 - Use targeted verification only; do not run broad/full-suite commands in QA. Full-suite commands belong only to finalize
 - QA_REPORT.md MUST include `Command run:` plus `Test suite: X passed, Y failed` with real pass/fail evidence; reports without these exact evidence fields are invalid

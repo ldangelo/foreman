@@ -201,7 +201,7 @@ foreman run --yes                 # Auto-confirm run prompts for scripts/non-int
 foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
 ```
 
-Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors. Prompt-backed phases also enable phase overwatch: Foreman tracks tool calls, validates required reports, blocks known drift patterns such as Developer test runs or QA broad full-suite commands, steers runaway work through blocked tool-call messages, and can continue after a max-turn stop when the required artifact is already valid. Optional `FOREMAN_MAX_PIPELINE_*` budgets can still stop runaway wall-clock, cost, tool-call, or retry/review loops.
+Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors. Prompt-backed phases also enable phase overwatch: Foreman tracks tool calls, validates required reports, blocks known drift patterns such as Developer test runs or QA broad full-suite commands, steers runaway work through blocked tool-call messages, and can continue after a max-turn stop when the required artifact is already valid. Developer may author focused tests when the task or Explorer handoff explicitly requires coverage, but QA/finalize own test execution. Optional `FOREMAN_MAX_PIPELINE_*` budgets can still stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
 ### 7. Monitor Progress
 
@@ -234,7 +234,7 @@ foreman retry <task-id> --dispatch
 
 Avoid mass retrying unless failures are known transient and the root cause is external. QA failures that say `report missing test command evidence` mean `QA_REPORT.md` did not include `Command run:` plus `Test suite: X passed, Y failed`; rerun after the QA prompt/report is corrected.
 
-Developer and QA phases are intentionally handoff-driven. Explorer performs code discovery and writes verified edit/verification targets; Developer should execute that plan without broad repo search, and QA should verify the changed files with targeted commands only. Broad discovery commands are blocked by phase overwatch in Developer/QA. If QA or Review still fails after retries, Foreman stops the pipeline instead of proceeding to finalize with invalid/no changes.
+Developer and QA phases are intentionally handoff-driven. Explorer performs code discovery and writes verified edit/verification targets; Developer should execute that plan without broad repo search, and QA should verify the changed files with targeted commands only. During the Elixir cutover, runtime/state/MCP/activity-feed work should target the Elixir event/projection path plus current CLI/read-model consumers, not legacy Postgres/native TS storage unless explicitly requested. Broad discovery commands are blocked by phase overwatch in Developer/QA. If QA or Review still fails after retries, Foreman stops the pipeline instead of proceeding to finalize with invalid/no changes.
 
 ### 9. Review and Merge
 

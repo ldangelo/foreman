@@ -109,7 +109,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 **Default pipeline phases:**
 
 1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
-2. **Developer** (Sonnet) — implementation only; QA/finalize own tests → DEVELOPER_REPORT.md
+2. **Developer** (Sonnet) — implementation only; QA/finalize own test execution, but Developer may author focused tests when task/handoff requires coverage → DEVELOPER_REPORT.md
 3. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
 5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
