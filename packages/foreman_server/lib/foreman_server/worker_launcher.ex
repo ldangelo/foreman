@@ -27,18 +27,27 @@ defmodule ForemanServer.WorkerLauncher do
               env: worker_env()
             )
 
-          if status == 0 do
+          if worker_succeeded?(status, output) do
             append("WorkerLaunchCompleted", task, run_id, %{workflow: workflow, output: output})
             append_run("RunCompleted", task, run_id, %{workflow: workflow})
             append_task_status(task, run_id, "completed", nil, nil)
           else
-            append("WorkerLaunchFailed", task, run_id, %{workflow: workflow, exit_code: status, output: output})
+            reason = worker_failure_reason(status, output)
+
+            append("WorkerLaunchFailed", task, run_id, %{
+              workflow: workflow,
+              exit_code: status,
+              failure_reason: reason,
+              output: output
+            })
+
             append_run("RunFailed", task, run_id, %{
               workflow: workflow,
-              failure_reason: "worker_failed",
+              failure_reason: reason,
               failure_output: String.slice(output, 0, 2_000)
             })
-            append_task_status(task, run_id, "failed", "worker_failed", output)
+
+            append_task_status(task, run_id, "failed", reason, output)
           end
         end)
 
@@ -103,6 +112,20 @@ defmodule ForemanServer.WorkerLauncher do
 
   defp workflow_name(task) do
     Map.get(task, :workflow) || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
+  end
+
+  defp worker_succeeded?(0, output) do
+    not String.contains?(output, ["[PIPELINE] FAILED", "PIPELINE FAILED", "Phase exceeded maxTurns"])
+  end
+
+  defp worker_succeeded?(_status, _output), do: false
+
+  defp worker_failure_reason(_status, output) do
+    cond do
+      String.contains?(output, "Phase exceeded maxTurns") -> "max_turns"
+      String.contains?(output, ["overloaded_error", "529", "rate limit", "429"]) -> "provider_transient"
+      true -> "worker_failed"
+    end
   end
 
   defp append(event_type, task, run_id, payload) do
