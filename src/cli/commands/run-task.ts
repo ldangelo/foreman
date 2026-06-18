@@ -16,6 +16,8 @@
 
 import { Command, Option } from "commander";
 import chalk from "chalk";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { resolveRepoRootProjectPath, listRegisteredProjects } from "./project-task-support.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
@@ -35,6 +37,7 @@ import { loadWorkflowConfig } from "../../lib/workflow-loader.js";
 import type { WorkflowConfig } from "../../lib/workflow-loader.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { buildWorkerEnv, spawnWorkerProcess } from "../../orchestrator/dispatcher.js";
+import { workerAgentMd } from "../../orchestrator/templates.js";
 import { getRunReportsDir } from "../../lib/report-paths.js";
 import { normalizeBranchLabel } from "../../lib/branch-label.js";
 import type { SeedInfo } from "../../orchestrator/types.js";
@@ -364,6 +367,22 @@ export async function runTaskAction(
     return 1;
   }
 
+  const selectedModel: ModelSelection = (model as ModelSelection) ?? "anthropic/claude-sonnet-4-6";
+  const seedInfo: SeedInfo = issueToSeedInfo(task);
+
+  try {
+    await mkdir(worktreePath, { recursive: true });
+    await writeFile(
+      join(worktreePath, "TASK.md"),
+      workerAgentMd(seedInfo, worktreePath, selectedModel),
+      "utf-8",
+    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(`Failed to write TASK.md: ${msg}`));
+    return 1;
+  }
+
   // ── Run setup steps ───────────────────────────────────────────────────
   if (!dryRun && workflowConfig.setup?.length) {
     try {
@@ -470,9 +489,6 @@ export async function runTaskAction(
   }
 
   // ── Spawn worker ──────────────────────────────────────────────────────
-  const selectedModel: ModelSelection = (model as ModelSelection) ?? "anthropic/claude-sonnet-4-6";
-  const seedInfo: SeedInfo = issueToSeedInfo(task);
-
   const env = buildWorkerEnv(false, taskId, runId, selectedModel, notifyUrl, vcsBackend);
 
   try {

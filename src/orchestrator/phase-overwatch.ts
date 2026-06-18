@@ -299,6 +299,28 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
   return { allow: true };
 }
 
+export interface PhaseToolPolicy {
+  beforeTool(toolName: string, input: Record<string, unknown>): string | undefined;
+}
+
+export function createPhaseToolPolicy(config: PhaseControlConfig, emit?: (event: { kind: "warning" | "update"; message: string; toolName?: string; argsPreview?: string }) => void): PhaseToolPolicy | undefined {
+  if (!shouldControl(config)) return undefined;
+  const telemetry = new PhaseTelemetry(config);
+  return {
+    beforeTool(toolName: string, input: Record<string, unknown>): string | undefined {
+      const decision = deterministicPolicy(config, telemetry, { toolName, input });
+      if (!decision.allow) {
+        telemetry.deny(decision.reason);
+        telemetry.steer(decision.reason);
+        emit?.({ kind: "warning", message: decision.reason, toolName, argsPreview: JSON.stringify(input) });
+        if (mode(config) === "enforce") return decision.reason;
+      }
+      telemetry.recordTool(toolName, input);
+      return undefined;
+    },
+  };
+}
+
 export function createPhaseOverwatchExtension(config: PhaseControlConfig, emit?: (event: { kind: "warning" | "update"; message: string; toolName?: string; argsPreview?: string }) => void): ExtensionFactory | undefined {
   if (!shouldControl(config)) return undefined;
   const telemetry = new PhaseTelemetry(config);

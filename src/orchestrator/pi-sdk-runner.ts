@@ -45,7 +45,9 @@ import {
 import {
   acceptBudgetLimitedCompletion,
   createPhaseOverwatchExtension,
+  createPhaseToolPolicy,
   type PhaseControlConfig,
+  type PhaseToolPolicy,
 } from "./phase-overwatch.js";
 import type { PhaseTraceLiveEvent, PhaseTraceMetadata } from "./pi-observability-types.js";
 import { writePhaseTrace } from "./pi-observability-writer.js";
@@ -157,6 +159,7 @@ function buildTools(
   allowedNames: readonly string[],
   cwd: string,
   guardrailConfig?: GuardrailConfig,
+  phaseToolPolicy?: PhaseToolPolicy,
 ) {
   const tools = [];
 
@@ -183,12 +186,32 @@ function buildTools(
         guardrailHook,
         () => process.cwd(),
       );
-      tools.push(wrappedFactory(cwd));
+      tools.push(wrapToolWithPhasePolicy(wrappedFactory(cwd) as ToolDefinition, phaseToolPolicy));
     } else {
-      tools.push(factory(cwd));
+      tools.push(wrapToolWithPhasePolicy(factory(cwd), phaseToolPolicy));
     }
   }
   return tools;
+}
+
+function wrapToolWithPhasePolicy<T extends ToolDefinition>(tool: T, policy?: PhaseToolPolicy): T {
+  if (!policy) return tool;
+  const originalExecute = tool.execute.bind(tool) as (...args: unknown[]) => Promise<unknown>;
+  return {
+    ...tool,
+    async execute(...args: unknown[]) {
+      const params = args[1] && typeof args[1] === "object" ? args[1] as Record<string, unknown> : {};
+      const reason = policy.beforeTool(tool.name, params);
+      if (reason) {
+        return {
+          content: [{ type: "text", text: reason }],
+          details: { blockedBy: "phase-overwatch" },
+          isError: true,
+        };
+      }
+      return originalExecute(...args);
+    },
+  } as T;
 }
 
 // ── Model resolution ────────────────────────────────────────────────────
@@ -372,10 +395,23 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   const { provider, modelId } = parseModelString(opts.model);
   const model = getModel(provider as never, modelId as never);
 
+  const emitPhaseControlEvent = (event: { kind: "warning" | "update"; message: string; toolName?: string; argsPreview?: string }) => {
+    if (!opts.phaseControl) return;
+    opts.onTraceEvent?.({
+      kind: event.kind,
+      phase: opts.phaseControl.phaseName,
+      seedId: opts.observability?.seedId ?? "unknown",
+      message: event.message,
+      toolName: event.toolName,
+      argsPreview: event.argsPreview,
+    });
+  };
+  const phaseToolPolicy = opts.phaseControl ? createPhaseToolPolicy(opts.phaseControl, emitPhaseControlEvent) : undefined;
+
   // Build tool set from allowed names
   const tools = opts.allowedTools
-    ? buildTools(opts.allowedTools, opts.cwd, opts.guardrailConfig)
-    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd, opts.guardrailConfig);
+    ? buildTools(opts.allowedTools, opts.cwd, opts.guardrailConfig, phaseToolPolicy)
+    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd, opts.guardrailConfig, phaseToolPolicy);
 
   // Accumulators
   let totalTurns = 0;
@@ -409,16 +445,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       createSystemPromptExtension(opts.systemPrompt),
       createLegacySlashPromptAliasExtension(),
       phaseTrace ? createPiObservabilityExtensionWithEmitter(phaseTrace, opts.onTraceEvent) : undefined,
-      opts.phaseControl ? createPhaseOverwatchExtension(opts.phaseControl, (event) => {
-        opts.onTraceEvent?.({
-          kind: event.kind,
-          phase: opts.phaseControl!.phaseName,
-          seedId: opts.observability?.seedId ?? "unknown",
-          message: event.message,
-          toolName: event.toolName,
-          argsPreview: event.argsPreview,
-        });
-      }) : undefined,
+      opts.phaseControl ? createPhaseOverwatchExtension(opts.phaseControl, emitPhaseControlEvent) : undefined,
     ].filter((factory): factory is ExtensionFactory => Boolean(factory));
 
     const resourceLoader = new DefaultResourceLoader({
