@@ -1,5 +1,9 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ElixirServerClient } from "../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
 
@@ -315,7 +319,7 @@ export class ForemanMcpServer {
           const view = optionalString(args.view) === "raw" ? "raw" : "compact";
           const limit = numberParam(args, "limit", 100);
           const runId = optionalString(args.run_id);
-          if (runId) return tailRunLogs(await this.client.getRunLogs(runId, view), limit);
+          if (runId) return await this.runLogBundle(runId, view, limit);
 
           const projectId = await this.resolveProjectId(args).catch(() => undefined);
           const runs = (await this.client.listRuns())
@@ -326,7 +330,7 @@ export class ForemanMcpServer {
           for (const run of runs) {
             const id = run.run_id ?? run.id;
             if (!id) continue;
-            logs.push({ run_id: id, task_id: run.task_id, status: run.status, logs: tailRunLogs(await this.client.getRunLogs(id, view), limit) });
+            logs.push({ run_id: id, task_id: run.task_id, status: run.status, logs: await this.runLogBundle(id, view, limit) });
           }
           return logs;
         },
@@ -343,7 +347,24 @@ export class ForemanMcpServer {
         handler: async (args) => {
           const runId = optionalString(args.run_id);
           const projectId = await this.resolveProjectId(args).catch(() => undefined);
-          return this.client.listInbox({ runId, projectId, limit: numberParam(args, "limit", 50), unread: args.unread === true });
+          const limit = numberParam(args, "limit", 50);
+          const inbox = await this.client.listInbox({ runId, projectId, limit, unread: args.unread === true });
+
+          if (runId) {
+            const derived = await this.runInboxMessages(runId, limit);
+            return mergeInbox(inbox, derived, limit);
+          }
+
+          const runs = (await this.client.listRuns())
+            .filter((run) => !projectId || run.project_id === projectId)
+            .slice(0, numberParam(args, "runs", 20));
+          const derived = [];
+          for (const run of runs) {
+            const id = run.run_id ?? run.id;
+            if (!id) continue;
+            derived.push(...await this.runInboxMessages(id, Math.max(1, Math.ceil(limit / Math.max(1, runs.length)))));
+          }
+          return mergeInbox(inbox, derived, limit);
         },
       },
       {
@@ -415,6 +436,20 @@ export class ForemanMcpServer {
     if (!token) return true;
     const header = req.headers.authorization;
     return header === `Bearer ${token}`;
+  }
+
+  private async runLogBundle(runId: string, view: "compact" | "raw", limit: number): Promise<unknown> {
+    const files = await tailRunLogFiles(runId, limit);
+    const eventLogs = tailRunLogs(await this.client.getRunLogs(runId, view), limit);
+    return { run_id: runId, source: files.length ? "files+events" : "events", files, events: eventLogs };
+  }
+
+  private async runInboxMessages(runId: string, limit: number): Promise<Array<Record<string, unknown>>> {
+    const [fileMessages, eventMessages] = await Promise.all([
+      tailRunInboxFromFiles(runId, limit),
+      this.client.listEvents({ runId, limit }).then((events) => eventsToInboxMessages(events)).catch(() => []),
+    ]);
+    return mergeInbox(fileMessages, eventMessages, limit);
   }
 
   private async resolveProjectId(args: Record<string, unknown>): Promise<string> {
@@ -491,6 +526,110 @@ function objectParam(args: Record<string, unknown>, name: string, fallback: Reco
 
 function arrayOfStrings(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+}
+
+async function tailRunLogFiles(runId: string, limit: number): Promise<Array<Record<string, unknown>>> {
+  const files = [];
+  for (const suffix of ["log", "err", "out"] as const) {
+    const path = runLogPath(runId, suffix);
+    if (!existsSync(path)) continue;
+    const stat = statSync(path);
+    const text = await readFile(path, "utf8");
+    const lines = text.split("\n").filter((line) => line.length > 0);
+    files.push({
+      type: suffix,
+      path,
+      size: stat.size,
+      mtime: stat.mtime.toISOString(),
+      lines: lines.slice(-limit),
+      tailed: lines.length > limit,
+      total_lines: lines.length,
+    });
+  }
+  return files;
+}
+
+async function tailRunInboxFromFiles(runId: string, limit: number): Promise<Array<Record<string, unknown>>> {
+  const messages: Array<Record<string, unknown>> = [];
+  for (const suffix of ["err", "out"] as const) {
+    const path = runLogPath(runId, suffix);
+    if (!existsSync(path)) continue;
+    const stat = statSync(path);
+    const text = await readFile(path, "utf8");
+    const lines = text.split("\n").filter((line) => line.trim().length > 0).slice(-Math.max(limit * 5, 50));
+    lines.forEach((line, index) => {
+      const parsed = tryParseJson(line);
+      const message = typeof parsed?.message === "string" ? parsed.message : line;
+      if (!message.trim()) return;
+      messages.push({
+        message_id: `log-${runId}-${suffix}-${index}`,
+        run_id: runId,
+        from: suffix === "err" ? "worker stderr" : "worker stdout",
+        to: "operator",
+        direction: "worker_to_operator",
+        body: message,
+        created_at: typeof parsed?.timestamp === "string" ? parsed.timestamp : stat.mtime.toISOString(),
+        source: `log.${suffix}`,
+        level: parsed?.level,
+      });
+    });
+  }
+  return messages.slice(-limit);
+}
+
+function runLogPath(runId: string, suffix: "log" | "err" | "out"): string {
+  return join(homedir(), ".foreman", "logs", `${runId}.${suffix}`);
+}
+
+function tryParseJson(line: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function eventsToInboxMessages(events: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return events.map((event) => ({
+    message_id: `event-${event.event_id ?? event.sequence ?? randomUUID()}`,
+    run_id: event.run_id,
+    task_id: event.task_id,
+    project_id: event.project_id,
+    from: "foreman",
+    to: "operator",
+    direction: "event_to_operator",
+    body: eventInboxBody(event),
+    created_at: event.occurred_at,
+    source: "event",
+    event_type: event.event_type ?? event.type,
+  }));
+}
+
+function eventInboxBody(event: Record<string, unknown>): string {
+  const type = String(event.event_type ?? event.type ?? "Event");
+  const payload = event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {};
+  const phase = payload.phase_id ? ` ${payload.phase_id}` : "";
+  const reason = payload.reason ?? payload.error;
+  return `${type}${phase}${reason ? `: ${String(reason)}` : ""}`;
+}
+
+function mergeInbox(...args: unknown[]): Array<Record<string, unknown>> {
+  const limit = typeof args.at(-1) === "number" ? args.pop() as number : 50;
+  const all = (args as Array<unknown>)
+    .flatMap((items) => Array.isArray(items) ? items : [])
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object");
+  const seen = new Set<string>();
+  const deduped = [];
+  for (const item of all) {
+    const key = String(item.message_id ?? `${item.run_id}:${item.created_at}:${item.body}`);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped
+    .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
+    .slice(0, limit);
 }
 
 function tailRunLogs(logs: unknown, limit: number): unknown {

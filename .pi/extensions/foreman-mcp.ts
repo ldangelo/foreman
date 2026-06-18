@@ -145,7 +145,7 @@ function formatRuns(runs: any[], heading = "Foreman runs"): string {
 
 function formatInbox(messages: any[], heading = "Foreman inbox"): string {
 	if (!messages.length) return `${heading}\n(no messages)`;
-	return [heading, ...messages.map((msg) => `- ${msg.created_at ?? ""} ${msg.run_id ?? "-"} ${msg.from ?? "?"}->${msg.to ?? "?"}: ${firstLine(msg.body ?? msg.message ?? msg.summary)}`)].join("\n");
+	return [heading, ...messages.map((msg) => `- ${msg.created_at ?? ""} ${msg.run_id ?? "-"} ${msg.source ? `[${msg.source}] ` : ""}${msg.from ?? "?"}->${msg.to ?? "?"}: ${firstLine(msg.body ?? msg.message ?? msg.summary)}`)].join("\n");
 }
 
 function formatEvents(events: any[], heading = "Foreman events"): string {
@@ -162,6 +162,19 @@ function formatLogEntries(logs: any, heading = "Foreman logs"): string {
 }
 
 function formatLogLines(logs: any, heading = "logs"): string[] {
+	if (Array.isArray(logs?.files) && logs.files.length) {
+		const lines = [`${heading} (${logs.source ?? "files"})`];
+		for (const file of logs.files) {
+			const fileLines = Array.isArray(file.lines) ? file.lines : [];
+			const suffix = file.tailed ? ` tail ${fileLines.length}/${file.total_lines}` : `${fileLines.length} lines`;
+			lines.push(`### ${file.type} ${suffix}`);
+			lines.push(...fileLines.map((line: string) => `- ${firstLine(line, 220)}`));
+		}
+		const entries = Array.isArray(logs?.events?.entries) ? logs.events.entries : [];
+		if (entries.length) lines.push(...formatLogLines(logs.events, "events").slice(1));
+		return lines;
+	}
+
 	const entries = Array.isArray(logs?.entries) ? logs.entries : Array.isArray(logs) ? logs : [];
 	if (!entries.length) return [heading, "(no logs)"];
 	const suffix = logs?.tailed ? ` (tail ${entries.length}/${logs.total_entries})` : "";
