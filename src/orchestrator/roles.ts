@@ -545,7 +545,7 @@ If it is missing, invoke and stop — do not proceed with implementation:
 Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     : "";
   const feedbackSection = context.feedbackContext
-    ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
+    ? `\n## Focused Repair Feedback\nAddress ONLY the issues below from the previous verification/review. Do not redesign unrelated code. Do not create temporary debug tests, console logs, or one-off debug files. Prefer the smallest patch that makes the reported verification pass. If you need to touch more than five source/test files, explain why in DEVELOPER_REPORT.md before doing so.\n${context.feedbackContext}\n`
     : "";
 
   const vars: Record<string, string> = {
@@ -615,7 +615,7 @@ export function developerPrompt(
     : `2. Explore the codebase to understand the relevant architecture`;
 
   const feedbackSection = feedbackContext
-    ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${feedbackContext}\n`
+    ? `\n## Focused Repair Feedback\nAddress ONLY the issues below from the previous verification/review. Do not redesign unrelated code. Do not create temporary debug tests, console logs, or one-off debug files. Prefer the smallest patch that makes the reported verification pass. If you need to touch more than five source/test files, explain why in DEVELOPER_REPORT.md before doing so.\n${feedbackContext}\n`
     : "";
 
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";

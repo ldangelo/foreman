@@ -271,10 +271,11 @@ Use retry/reset surgically.
 
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
 - Use `foreman reset --bead <task-id>` to clear failed/stuck run state and make the task retryable.
+- Use `foreman reset --bead <task-id> --preserve-worktree` (or `--retry-failed-phase`) when a repair should keep the failed run's branch/worktree instead of starting from a clean checkout.
 - Use `--dry-run` before destructive cleanup.
 - Do not reset active work with uncommitted controller changes unless those changes are committed or exported.
 
-Transient failures include provider rate limits, temporary network failures, and unavailable external CLIs. Implementation failures should route back through developer/remediation phases instead of blind retry.
+Transient failures include provider rate limits, provider overloads (`529 overloaded_error`), temporary network failures, and unavailable external CLIs. Max-turn failures are treated as expensive human-review signals; inspect the diff/log before retrying.
 
 ### Direct Task Execution with `foreman run task`
 

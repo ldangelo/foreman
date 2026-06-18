@@ -29,9 +29,16 @@ defmodule ForemanServer.WorkerLauncher do
 
           if status == 0 do
             append("WorkerLaunchCompleted", task, run_id, %{workflow: workflow, output: output})
+            append_run("RunCompleted", task, run_id, %{workflow: workflow})
+            append_task_status(task, run_id, "completed", nil, nil)
           else
             append("WorkerLaunchFailed", task, run_id, %{workflow: workflow, exit_code: status, output: output})
-            append_task_failed(task, run_id, output)
+            append_run("RunFailed", task, run_id, %{
+              workflow: workflow,
+              failure_reason: "worker_failed",
+              failure_output: String.slice(output, 0, 2_000)
+            })
+            append_task_status(task, run_id, "failed", "worker_failed", output)
           end
         end)
 
@@ -113,16 +120,31 @@ defmodule ForemanServer.WorkerLauncher do
     })
   end
 
-  defp append_task_failed(task, run_id, output) do
+  defp append_run(event_type, task, run_id, payload) do
+    EventStore.append(%{
+      stream_id: "run:#{run_id}",
+      event_type: event_type,
+      payload:
+        Map.merge(payload, %{
+          run_id: run_id,
+          task_id: task.task_id,
+          project_id: Map.get(task, :project_id),
+          observed_at: DateTime.utc_now()
+        }),
+      metadata: %{correlation_id: run_id}
+    })
+  end
+
+  defp append_task_status(task, run_id, status, failure_reason, output) do
     EventStore.append(%{
       stream_id: "task:#{task.task_id}",
       event_type: "TaskUpdated",
       payload: %{
         task_id: task.task_id,
-        status: "failed",
+        status: status,
         run_id: run_id,
-        failure_reason: "worker_launch_failed",
-        failure_output: String.slice(output, 0, 2_000)
+        failure_reason: failure_reason,
+        failure_output: if(output, do: String.slice(output, 0, 2_000), else: nil)
       },
       metadata: %{correlation_id: run_id}
     })

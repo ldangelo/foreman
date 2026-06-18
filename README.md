@@ -646,7 +646,7 @@ foreman sentinel status                  # Show sentinel status
 ```
 
 ### `foreman reset`
-Reset failed/stuck runs: kill agents, remove worktrees, reset tasks to a dispatchable state.
+Reset failed/stuck runs: kill agents, remove worktrees, reset tasks to a dispatchable state. For focused repair after a phase failure, use `--preserve-worktree` or `--retry-failed-phase` to keep the branch/worktree intact.
 
 ```bash
 foreman reset                           # Reset failed/stuck runs
@@ -654,6 +654,7 @@ foreman reset --project my-project      # Reset runs in a registered project wit
 foreman reset --all                     # Reset ALL active runs
 foreman reset --detect-stuck            # Detect stuck runs first, then reset
 foreman reset --detect-stuck --timeout 20  # Stuck after 20 minutes
+foreman reset --task task-abc --preserve-worktree  # Keep branch/worktree for repair
 ```
 
 ### `foreman retry`

@@ -344,7 +344,7 @@ Elixir backend roles: the **Node CLI** parses commands/renders projections, the 
 
 ### `foreman reset`
 
-Reset failed or stuck runs. Cleans up worktrees, deletes branches, and resets task status to a dispatchable state.
+Reset failed or stuck runs. By default this cleans up worktrees, deletes branches, and resets task status to a dispatchable state. Use `--preserve-worktree`/`--retry-failed-phase` for focused repair when you want to keep the current branch and worktree after a phase failure.
 
 ```bash
 foreman reset                     # Reset all failed/stuck runs
@@ -352,6 +352,8 @@ foreman reset --project my-project # Reset runs in a registered project without 
 foreman reset --task bd-abc1      # Reset a specific task by ID
 foreman reset --all               # Reset ALL active runs (nuclear option)
 foreman reset --detect-stuck      # Find and reset stuck agents
+foreman reset --preserve-worktree --task bd-abc1  # Reset state but keep branch/worktree
+foreman reset --retry-failed-phase --task bd-abc1 # Alias for focused phase repair reset
 foreman reset --dry-run           # Preview what would be reset
 ```
 
@@ -363,6 +365,8 @@ foreman reset --dry-run           # Preview what would be reset
 | `--detect-stuck` | — | Run stuck detection first |
 | `--timeout <minutes>` | `15` | Stuck detection timeout |
 | `--dry-run` | — | Preview changes |
+| `--preserve-worktree` | — | Reset task/run state without removing the worktree or branch |
+| `--retry-failed-phase` | — | Focused repair reset; preserves the worktree and branch for the next dispatch |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
 ### `foreman retry`

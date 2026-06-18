@@ -312,8 +312,22 @@ export function isRateLimitError(error: string | undefined): boolean {
     errorLower.includes("429") ||
     errorLower.includes("hit your limit") ||
     errorLower.includes("too many requests") ||
-    errorLower.includes("rate_limit_exceeded")
+    errorLower.includes("rate_limit_exceeded") ||
+    errorLower.includes("overloaded_error") ||
+    errorLower.includes("529") ||
+    errorLower.includes("server is temporarily busy") ||
+    errorLower.includes("peak-hour surge")
   );
+}
+
+export function isMaxTurnsExceededError(error: string | undefined): boolean {
+  return /phase exceeded maxTurns|exceeded max turns|maxTurns/i.test(error ?? "");
+}
+
+function failureKind(error: string | undefined): "provider_transient" | "max_turns" | "phase_failed" {
+  if (isRateLimitError(error)) return "provider_transient";
+  if (isMaxTurnsExceededError(error)) return "max_turns";
+  return "phase_failed";
 }
 
 /** Return true when a failed phase should enter cooldown retry instead of terminal failure. */
@@ -353,6 +367,20 @@ function getHaikuFallbackModel(model: string): string {
  */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function findDebugArtifacts(root: string, max = 20): string[] {
+  try {
+    const output = execSync("git status --porcelain", { cwd: root, encoding: "utf8" });
+    return output
+      .split("\n")
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean)
+      .filter((path) => /(^|\/)(?:.*debug.*|scratch.*|tmp.*)(?:\.(?:test\.)?[cm]?[jt]sx?|\.md|\.txt)$/i.test(path))
+      .slice(0, max);
+  } catch {
+    return [];
+  }
 }
 
 async function writeNormalPhaseProgress(
@@ -1635,6 +1663,14 @@ async function runPhaseSequence(
     let phaseSucceeded = result.success && !commandPhaseContractError;
     let phaseError = commandPhaseContractError ?? result.error;
 
+    if (phaseSucceeded && phaseName === "developer") {
+      const debugArtifacts = findDebugArtifacts(worktreePath);
+      if (debugArtifacts.length > 0) {
+        phaseSucceeded = false;
+        phaseError = `Debug artifacts left in worktree: ${debugArtifacts.join(", ")}`;
+      }
+    }
+
     if (!phaseSucceeded && phase.verdict && !commandPhaseContractError && interpolatedArtifact && artifactPresent) {
       const verdictReport = readReport(worktreePath, interpolatedArtifact);
       const artifactVerdict = verdictReport ? parseVerdict(verdictReport) : "unknown";
@@ -1920,10 +1956,12 @@ async function runPhaseSequence(
         }
       }
 
+      const kind = failureKind(errorMsg);
+      const retryable = kind === "provider_transient";
       ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-        seedId, phase: phaseName, error: errorMsg, retryable: !isRateLimit,
+        seedId, phase: phaseName, error: errorMsg, retryable, failureKind: kind,
       });
-      await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: !isRateLimit });
+      await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable, failureKind: kind });
       await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }

@@ -230,7 +230,12 @@ defmodule ForemanServer.ProjectionStore do
     existing = empty_task(task_id)
     existing = get_in(projection, [:tasks, task_id]) || existing
 
-    put_in(projection, [:tasks, task_id], Map.merge(existing, Map.drop(payload, [:task_id])))
+    updates =
+      payload
+      |> Map.drop([:task_id])
+      |> clear_failure_fields_for_active_status()
+
+    put_in(projection, [:tasks, task_id], Map.merge(existing, updates))
   end
 
   defp apply_domain_event(
@@ -831,6 +836,15 @@ defmodule ForemanServer.ProjectionStore do
   defp empty_task(task_id) do
     %{task_id: task_id, title: task_id, status: "open", updated_at: nil}
   end
+
+  defp clear_failure_fields_for_active_status(%{status: status} = updates)
+       when status in ["ready", "approved", "in_progress", "in-progress"] do
+    updates
+    |> Map.put(:failure_reason, nil)
+    |> Map.put(:failure_output, nil)
+  end
+
+  defp clear_failure_fields_for_active_status(updates), do: updates
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, []), do: map

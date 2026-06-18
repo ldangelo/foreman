@@ -23,6 +23,7 @@ foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
 foreman reset          # Clean up failed/stuck runs
 foreman reset --detect-stuck  # Detect + reset stuck runs (replaces 'foreman monitor')
+foreman reset --task X --preserve-worktree  # Reset state but keep repair worktree/branch
 foreman retry <seed>   # Re-run a failed pipeline phase
 foreman stop           # Gracefully stop all agents
 foreman doctor         # Health checks (br, Pi, DB integrity)

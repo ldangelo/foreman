@@ -45,10 +45,33 @@ defmodule ForemanServer.ProjectionStoreTest do
              task_id: "task-1",
              title: "Implement server",
              status: "in_progress",
-             updated_at: nil
+             updated_at: nil,
+             failure_reason: nil,
+             failure_output: nil
            }
 
     assert Enum.map(ProjectionStore.task_list(), & &1.task_id) == ["task-1", "task-2"]
+  end
+
+  test "active task updates clear stale failure metadata" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "failed"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      task_id: "task-1",
+      status: "failed",
+      failure_reason: "worker_failed",
+      failure_output: "boom"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{task_id: "task-1", status: "ready"})
+
+    assert ProjectionStore.task("task-1").status == "ready"
+    assert ProjectionStore.task("task-1").failure_reason == nil
+    assert ProjectionStore.task("task-1").failure_output == nil
   end
 
   test "run projection exposes status counts without log inference" do

@@ -740,6 +740,8 @@ export const resetCommand = new Command("reset")
     String(PIPELINE_LIMITS.stuckDetectionMinutes),
   )
   .option("--dry-run", "Show what would be reset without doing it")
+  .option("--preserve-worktree", "Keep worktree and branch when resetting task state for focused repair")
+  .option("--retry-failed-phase", "Preserve worktree and reset only task/run state so the next dispatch can repair the failed phase")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts, cmd) => {
@@ -747,6 +749,7 @@ export const resetCommand = new Command("reset")
     const all = opts.all as boolean | undefined;
     const detectStuck = opts.detectStuck as boolean | undefined;
     const beadFilter = (opts.task ?? opts.bead) as string | undefined;
+    const preserveWorktree = Boolean(opts.preserveWorktree || opts.retryFailedPhase);
     const timeoutMinutes = parseInt(opts.timeout as string, 10);
 
     if (isNaN(timeoutMinutes)) {
@@ -901,8 +904,12 @@ export const resetCommand = new Command("reset")
 
         // 2. Remove the worktree
         if (run.worktree_path) {
-          console.log(`    ${chalk.yellow("remove")} worktree ${run.worktree_path}`);
-          if (!dryRun) {
+          if (preserveWorktree) {
+            console.log(`    ${chalk.dim("preserve")} worktree ${run.worktree_path}`);
+          } else {
+            console.log(`    ${chalk.yellow("remove")} worktree ${run.worktree_path}`);
+          }
+          if (!dryRun && !preserveWorktree) {
             try {
               await archiveWorktreeReports(projectPath, run.worktree_path, run.seed_id).catch(() => {});
               await vcs.removeWorkspace(projectPath, run.worktree_path);
@@ -921,8 +928,12 @@ export const resetCommand = new Command("reset")
         }
 
         // 3. Delete the branch — switch to main first if it is currently checked out
-        console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
-        if (!dryRun) {
+        if (preserveWorktree) {
+          console.log(`    ${chalk.dim("preserve")} branch ${branchName}`);
+        } else {
+          console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
+        }
+        if (!dryRun && !preserveWorktree) {
           const { execFile } = await import("node:child_process");
           const { promisify } = await import("node:util");
           try {
@@ -1061,7 +1072,7 @@ export const resetCommand = new Command("reset")
       // 6b. Clean up orphaned worktrees — directories in .foreman-worktrees/ that either have
       //     no Postgres run record OR only have completed/merged runs (finalize should remove them
       //     but sometimes fails to do so)
-      if (!dryRun) {
+      if (!dryRun && !preserveWorktree) {
         const worktreesDir = getWorkspaceRoot(projectPath);
         if (existsSync(worktreesDir)) {
           // Read the active keep-set from helperStore (the same Postgres-backed
