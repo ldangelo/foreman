@@ -68,7 +68,7 @@ foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 | `--resume` | — | Resume stuck/rate-limited runs from previous dispatch |
 | `--resume-failed` | — | Also resume failed runs (not just stuck) |
 | `--no-pipeline` | — | Skip the pipeline — run as single worker agent |
-| `--workflow <name>` | — | Run all dispatched tasks with this workflow (overrides `workflow:<name>` labels and task-type mapping; fails fast with the list of available workflows if it cannot be loaded) |
+| `--workflow <name>` | — | Run all dispatched tasks with this workflow (overrides `workflow:<name>` labels, workflow YAML `task_type` routing, and legacy task-type mapping; fails fast with the list of available workflows if it cannot be loaded) |
 | `--no-auto-dispatch` | — | Disable auto-dispatch when capacity is available |
 | `--telemetry` | — | Enable OpenTelemetry tracing (requires OTEL_* env vars) |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
@@ -278,7 +278,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, and workflow configs.
+Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, workflow configs, and duplicate workflow YAML `task_type` declarations.
 
 ```bash
 foreman doctor                    # Run all health checks

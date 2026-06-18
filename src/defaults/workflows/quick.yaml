@@ -10,6 +10,7 @@
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
 # Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
 name: quick
+task_type: quick
 onError: stop
 setup:
   - command: npm install --prefer-offline --no-audit
