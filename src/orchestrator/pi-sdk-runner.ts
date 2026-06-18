@@ -42,6 +42,11 @@ import {
   createPiObservabilityExtensionWithEmitter,
   finalizePhaseTrace,
 } from "./pi-observability-extension.js";
+import {
+  acceptBudgetLimitedCompletion,
+  createPhaseOverwatchExtension,
+  type PhaseControlConfig,
+} from "./phase-overwatch.js";
 import type { PhaseTraceLiveEvent, PhaseTraceMetadata } from "./pi-observability-types.js";
 import { writePhaseTrace } from "./pi-observability-writer.js";
 import { z } from "zod";
@@ -121,6 +126,8 @@ export interface PiRunOptions {
   guardrailConfig?: GuardrailConfig;
   /** Optional phase-level observability metadata used to emit Pi hook traces. */
   observability?: PhaseTraceMetadata;
+  /** Optional runtime control for phase overwatch/tool policy. */
+  phaseControl?: PhaseControlConfig;
   /** Live observability callback fired from Pi extension hooks. */
   onTraceEvent?: (event: PhaseTraceLiveEvent) => void;
   /** Optional structured output extraction. When provided, the runner will extract and validate JSON from outputText. */
@@ -402,6 +409,16 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       createSystemPromptExtension(opts.systemPrompt),
       createLegacySlashPromptAliasExtension(),
       phaseTrace ? createPiObservabilityExtensionWithEmitter(phaseTrace, opts.onTraceEvent) : undefined,
+      opts.phaseControl ? createPhaseOverwatchExtension(opts.phaseControl, (event) => {
+        opts.onTraceEvent?.({
+          kind: event.kind,
+          phase: opts.phaseControl!.phaseName,
+          seedId: opts.observability?.seedId ?? "unknown",
+          message: event.message,
+          toolName: event.toolName,
+          argsPreview: event.argsPreview,
+        });
+      }) : undefined,
     ].filter((factory): factory is ExtensionFactory => Boolean(factory));
 
     const resourceLoader = new DefaultResourceLoader({
@@ -558,6 +575,16 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       if (!maxTurnsExceeded) {
         success = false;
         errorMessage = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    if (!success && opts.phaseControl) {
+      const budgetCompletion = acceptBudgetLimitedCompletion(opts.phaseControl, errorMessage);
+      if (budgetCompletion.accept) {
+        success = true;
+        errorMessage = undefined;
+        phaseTrace?.warnings.push(budgetCompletion.reason ?? "Accepted budget-limited phase completion");
+        writeLog(`[pi-sdk-runner] ${budgetCompletion.reason}`);
       }
     }
 

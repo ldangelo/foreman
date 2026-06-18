@@ -75,14 +75,14 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 > **Note:** Foreman uses PostgreSQL via `DATABASE_URL`. The daemon owns the shared Postgres pool and exposes a tRPC layer for CLI commands, avoiding per-invocation connection overhead and enabling multi-project aggregation.
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 20 turns, read-only) — concise developer handoff → `EXPLORER_REPORT.md`
+1. **Explorer** (Haiku, 20 turns emergency fuse, read-only) — overwatch steers broad investigation into a concise developer handoff → `EXPLORER_REPORT.md`
 2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — implementation only; QA/finalize own tests
-3. **QA** (Sonnet, 30 turns, read+bash) — targeted test verification only → `QA_REPORT.md`
+3. **QA** (Sonnet, 30 turns, read+bash) — overwatch blocks broad full-suite runs; targeted test verification only → `QA_REPORT.md`
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
-5. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
-6. **Finalize** — git add/commit/push, native task merge/close update
+5. **Finalize** — git add/commit/push, native task merge/close update
+6. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
 
-Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs before finalization so fixes/features do not merge without an explicit documentation decision.
+Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for Explorer and QA.
 
 ## Dispatch Flow
 
@@ -431,13 +431,13 @@ Standard Pi tools are also available per phase (configured in [workflow YAML](do
 
 Models are configured per-phase in the workflow YAML with priority-based overrides. See [Workflow YAML Reference](docs/workflow-yaml-reference.md) for full details.
 
-| Phase | Default Model | P0 Override | Max Turns |
+| Phase | Default Model | P0 Override | Runtime Guard |
 |---|---|---|---|
-| Explorer | haiku | sonnet | 30 |
-| Developer | sonnet | opus | 80 |
-| QA | sonnet | opus | 30 |
-| Reviewer | sonnet | opus | 20 |
-| Finalize | haiku | — | 20 |
+| Explorer | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch artifact gate |
+| Developer | workflow-defined | workflow-defined | maxTurns emergency fuse |
+| QA | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch targeted-test policy |
+| Reviewer | workflow-defined | workflow-defined | maxTurns emergency fuse |
+| Finalize | builtin | — | deterministic validation/commit logic |
 
 ### Per-phase trace artifacts
 

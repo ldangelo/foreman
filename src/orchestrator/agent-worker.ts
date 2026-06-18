@@ -16,6 +16,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, basename } from "node:path";
 import { request as httpRequest } from "node:http";
 import { runPhaseSession } from "./phase-runner.js";
+import type { PhaseControlConfig } from "./phase-overwatch.js";
 import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter } from "./pipeline-executor.js";
@@ -311,6 +312,8 @@ interface WorkerConfig {
   /** Workflow phase maxTurns limit for the current phase. */
   maxTurns?: number;
   allowedTools?: string[];
+  /** Runtime phase control/overwatch policy for the current phase. */
+  phaseControl?: PhaseControlConfig;
   worktreePath: string;
   /** Project root directory (contains .beads/). Used as cwd for br commands. */
   projectPath?: string;
@@ -823,6 +826,7 @@ async function runPhase(
         workflowName: observability?.workflowName,
         workflowPath: observability?.workflowPath,
       },
+      phaseControl: config.phaseControl,
       onTraceEvent: (event) => {
         sendTraceMail(agentMailClient ?? null, event);
       },

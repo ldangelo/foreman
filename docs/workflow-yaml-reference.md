@@ -273,11 +273,38 @@ The `phases` array defines the ordered sequence of pipeline phases. Most phases 
 | `retryOnFail` | number | `0` | Maximum retry count for verdict failures |
 | `mail` | object | — | Mail hook configuration (see below) |
 | `files` | object | — | File reservation configuration (see below) |
+| `contract` | object | — | Optional artifact completion contract used by phase overwatch |
+| `overwatch` | object | — | Optional runtime supervisor/policy controls for runaway phase prevention |
 | `builtin` | boolean | `false` | Phase implemented in TypeScript, not as agent prompt |
+
+### Phase Overwatch
+
+Prompt phases can enable `overwatch` to make `maxTurns` an emergency fuse instead of the only runaway-control mechanism. Overwatch tracks tool calls, validates the phase artifact, blocks known drift patterns, and returns steering messages through blocked tool-call results. If a phase hits a budget/max-turn stop after producing a valid artifact and `continueIfArtifactValidOnBudgetStop: true`, Foreman accepts the phase evidence and continues.
+
+Bundled default/feature/bug workflows enable overwatch for Explorer and QA. Explorer stops further read/grep work once `EXPLORER_REPORT.md` is valid and steers broad investigation toward a concise handoff. QA blocks broad full-suite commands and requires a verdict/report contract.
+
+```yaml
+  - name: explorer
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    contract:
+      requiredSections: [Summary, Likely edit targets, Test targets, Risks]
+      completion:
+        minEditTargets: 1
+        maxEditTargets: 3
+        requireTestTargets: true
+      allowedScope:
+        canWriteOnly: [EXPLORER_REPORT.md, SESSION_LOG.md]
+    overwatch:
+      enabled: true
+      mode: enforce # or warn/off
+      continueIfArtifactValidOnBudgetStop: true
+      maxSteersPerPhase: 3
+      forceArtifactAfterSteers: 2
+```
 
 ### Documentation Phase
 
-Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `{task.projectReportsDir}/DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
+Bundled workflows include a prompt-driven `documentation` phase after `finalize` and before PR creation. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `{task.projectReportsDir}/DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
 
 ```yaml
   - name: documentation

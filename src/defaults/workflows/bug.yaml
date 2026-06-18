@@ -73,6 +73,12 @@ phases:
     maxTurns: 60
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Commands, Findings]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
     verdict: true
     retryWith: developer
     retryOnFail: 2

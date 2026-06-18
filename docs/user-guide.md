@@ -74,7 +74,7 @@ For architecture details, deprecated command mappings, and troubleshooting examp
 
 ### Documentation Gate
 
-Foreman workflows include a documentation phase before finalization. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`.
+Foreman workflows include a documentation phase after finalization and before PR creation. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`.
 
 Docs that must be considered for every fix or feature:
 
@@ -201,7 +201,7 @@ foreman run --yes                 # Auto-confirm run prompts for scripts/non-int
 foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
 ```
 
-Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors, and optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
+Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors. Explorer and QA also enable phase overwatch: Foreman tracks tool calls, validates required reports, steers runaway exploration/testing through blocked tool-call messages, and can continue after a max-turn stop when the required artifact is already valid. Optional `FOREMAN_MAX_PIPELINE_*` budgets can still stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
 ### 7. Monitor Progress
 

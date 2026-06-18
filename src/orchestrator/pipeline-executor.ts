@@ -1359,7 +1359,19 @@ async function runPhaseSequence(
       phaseModel = fallbackModelForPhase;
     }
 
-    const phaseConfig = { ...config, model: phaseModel, maxTurns: phase.maxTurns };
+    const phaseConfig = {
+      ...config,
+      model: phaseModel,
+      maxTurns: phase.maxTurns,
+      phaseControl: phase.overwatch?.enabled ? {
+        phaseName,
+        worktreePath,
+        artifact: interpolatedArtifact,
+        maxTurns: phase.maxTurns,
+        contract: phase.contract,
+        overwatch: phase.overwatch,
+      } : undefined,
+    };
     if (phase.tools?.allowed) {
       (phaseConfig as typeof phaseConfig & { allowedTools?: string[] }).allowedTools = phase.tools.allowed;
     }
