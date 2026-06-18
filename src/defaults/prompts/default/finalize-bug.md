@@ -2,7 +2,7 @@
 
 You are the **Finalize** agent for a **bug workflow** — commit implementation work and push it to the remote branch.
 
-> QA already validated this bug fix. Finalize should be fast: verify the worktree, commit, integrate target drift only when required, run tests only when target drift exists, then push.
+> **Test Execution Policy:** QA already validated this bug fix. Finalize should be fast: verify the worktree, commit, integrate target drift only when required, run tests only when target drift exists, then push. If `shouldRunFinalizeValidation` is `false`, skip both target integration and test runs. Trust the QA verdict.
 
 ## Task
 **Seed:** {{seedId}} — {{seedTitle}}
@@ -65,7 +65,14 @@ If integration conflicts, run `git rebase --abort` if a rebase is active, send `
 
 If `{{shouldRunFinalizeValidation}}` = `false`, do not run target integration.
 
-### Step 5: Write validation and run tests only for target drift
+### Step 5: Read validation ledger
+Before running any tests, check what prior phases already validated:
+```bash
+cat {{reportDir}}/VALIDATION_LEDGER.md 2>/dev/null || echo "No ledger found"
+```
+If the ledger shows QA already ran targeted or expanded validation on the same files/modules this bead touched, note that in your TEST_VALIDATION section. The ledger helps avoid redundant re-validation.
+
+### Step 6: Write validation and run tests only for target drift
 Create the reports directory:
 ```bash
 mkdir -p "{{reportDir}}"
@@ -104,18 +111,19 @@ If `{{shouldRunFinalizeValidation}}` = `false`:
 - Set Verdict `PASS`.
 
 If `{{shouldRunFinalizeValidation}}` = `true`:
-- Run `npm test -- --reporter=dot 2>&1`.
+- Run **targeted-affected tests first** (`npm test -- path/to/affected.test.ts`), then the full suite only if the targeted tests reveal broader regression risk or the bug fix touches core/shared code.
+- Run `npm test -- --reporter=dot 2>&1` for the full suite if warranted.
 - If tests pass, mark Target Integration `SUCCESS`, Test Validation `PASS`, Verdict `PASS`.
 - If tests fail, write failure details, classify Failure Scope, set Verdict `FAIL`, and stop without pushing.
 
-### Step 6: Push to origin
+### Step 7: Push to origin
 Run:
 ```
 {{vcsPushCommand}}
 ```
 If push fails, send `push_failed` mail and stop.
 
-### Step 7: Write finalize report
+### Step 8: Write finalize report
 Write `{{reportDir}}/FINALIZE_REPORT.md`:
 ```markdown
 # Finalize Report: {{seedTitle}}
