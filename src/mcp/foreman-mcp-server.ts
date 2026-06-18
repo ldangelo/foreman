@@ -265,6 +265,26 @@ export class ForemanMcpServer {
         }),
       },
       {
+        name: "foreman.tasks.approve",
+        description: "Approve an open task through the Elixir command boundary, moving it to ready for dispatch.",
+        inputSchema: {
+          type: "object",
+          required: ["task_id"],
+          properties: {
+            task_id: { type: "string" },
+            project_id: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+        futureUseCases: ["operator task triage", "human-in-the-loop approvals", "controlled scheduler dispatch"],
+        handler: async (args) => this.client.sendCommand({
+          command_id: `mcp-task-approve-${Date.now()}-${randomUUID()}`,
+          command_type: "task.approve",
+          payload: args,
+          metadata: { source: "foreman-mcp" },
+        }),
+      },
+      {
         name: "foreman.runs.list",
         description: "List recent runs from the Elixir run projection.",
         inputSchema: {

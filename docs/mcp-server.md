@@ -43,6 +43,7 @@ The HTTP transport accepts JSON-RPC MCP requests via `POST /mcp` and exposes `GE
 | `foreman.tasks.list` | Project task list from the Elixir projection. |
 | `foreman.tasks.get` | One task from the Elixir projection. |
 | `foreman.tasks.update` | Mutate task through Elixir command boundary. |
+| `foreman.tasks.approve` | Approve an open task through Elixir command boundary. |
 | `foreman.runs.list` | Recent project runs. |
 | `foreman.inbox.list` | Agent messages by run or project. |
 | `foreman.events.list` | Lifecycle events by run or project. |
@@ -81,6 +82,7 @@ The project-local Pi extension `.pi/extensions/foreman-mcp.ts` also registers op
 - `/foreman-smoke [project] [limit]` — health, scheduler, active count, recent open tasks.
 - `/foreman-tasks [status|all] [limit]` — compact task list; defaults to `open`.
 - `/foreman-task <task-id>` — one task detail.
+- `/foreman-approve [project]` — interactively select open/backlog tasks and approve them.
 - `/foreman-runs [status|all] [limit]` — compact run list.
 - `/foreman-inbox [run-id] [limit]` — recent inbox messages.
 - `/foreman-events [run-id] [limit]` — recent lifecycle events.

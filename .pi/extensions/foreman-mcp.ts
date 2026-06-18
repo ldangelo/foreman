@@ -327,6 +327,60 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("foreman-approve", {
+		description: "Select open/backlog Foreman tasks and approve them (usage: /foreman-approve [project])",
+		handler: async (args, ctx) => {
+			try {
+				const parsed = parseArgs(args);
+				const project = parsed.project ?? parsed["0"] ?? "foreman";
+				const tasks = structured(await callTool("foreman.tasks.list", { project, status: ["open"], limit: 100 }));
+				const backlog = Array.isArray(tasks) ? tasks : [];
+				if (!backlog.length) {
+					show(pi, "Foreman approve\n(no open/backlog tasks)", tasks);
+					return;
+				}
+
+				const selected = new Set<string>();
+				while (true) {
+					const choices = backlog.map((task) => {
+						const id = taskId(task);
+						const mark = selected.has(id) ? "✓" : " ";
+						return `${mark} ${id} [p${task.priority ?? "?"}] ${firstLine(task.title, 80)}`;
+					});
+					choices.push("Approve selected");
+					choices.push("Cancel");
+
+					const choice = await ctx.ui.select(`Select tasks to approve (${selected.size} selected)`, choices);
+					if (!choice || choice === "Cancel") return;
+					if (choice === "Approve selected") break;
+
+					const id = /\bforeman-[a-z0-9]+\b/i.exec(choice)?.[0];
+					if (!id) continue;
+					if (selected.has(id)) selected.delete(id);
+					else selected.add(id);
+				}
+
+				if (!selected.size) {
+					ctx.ui.notify("No tasks selected", "warning");
+					return;
+				}
+
+				const ok = await ctx.ui.confirm("Approve Foreman tasks?", [...selected].join("\n"));
+				if (!ok) return;
+
+				const results: string[] = [];
+				for (const id of selected) {
+					const task = backlog.find((candidate) => taskId(candidate) === id);
+					const response = structured(await callTool("foreman.tasks.approve", { project_id: task?.project_id, task_id: id }));
+					results.push(`- ${id}: ${response?.ok ? "approved" : "failed"}`);
+				}
+				show(pi, ["Foreman approve", ...results].join("\n"), { selected: [...selected] });
+			} catch (error) {
+				ctx.ui.notify(`Foreman approve failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
 	pi.registerCommand("foreman-runs", {
 		description: "List Foreman runs (usage: /foreman-runs [status|all] [limit])",
 		handler: async (args, ctx) => {

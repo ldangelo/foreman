@@ -44,7 +44,7 @@ foreman inbox          # Agent mail + selected-run lifecycle events
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
 foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
-# In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
+# In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
 
 # br (beads_rust) task tracking
 br ready               # Unblocked tasks

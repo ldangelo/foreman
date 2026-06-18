@@ -479,7 +479,7 @@ foreman mcp --transport http --server-url http://foreman.internal:4766
 | `--mcp-auth-token <token>` | unset | Require bearer token for HTTP MCP requests |
 | `--no-auto-start` | — | Do not auto-start the local Elixir server |
 
-Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, runs, inbox, lifecycle events, and debug timelines. MCP reads/writes through the Elixir backend only. The project-local Pi extension exposes common slash commands (`/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, `/foreman-tick`) backed by these tools. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
+Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, inbox, lifecycle events, and debug timelines. MCP reads/writes through the Elixir backend only. The project-local Pi extension exposes common slash commands (`/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, `/foreman-tick`) backed by these tools. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
 
 ---
 

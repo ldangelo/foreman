@@ -17,6 +17,7 @@ describe("ForemanMcpServer", () => {
       "foreman.tasks.list",
       "foreman.tasks.get",
       "foreman.tasks.update",
+      "foreman.tasks.approve",
       "foreman.runs.list",
       "foreman.inbox.list",
       "foreman.events.list",
