@@ -103,6 +103,110 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  get "/api/v1/runs" do
+    conn = fetch_query_params(conn)
+
+    with :ok <- authorize(conn) do
+      snapshot = ForemanServer.ProjectionStore.snapshot()
+      project_id = conn.query_params["project_id"]
+
+      runs =
+        snapshot.runs
+        |> Map.values()
+        |> Enum.map(fn run ->
+          Map.put(
+            run,
+            :project_id,
+            get_in(snapshot, [:tasks, Map.get(run, :task_id), :project_id])
+          )
+        end)
+        |> Enum.filter(fn run ->
+          is_nil(project_id) or Map.get(run, :project_id) == project_id
+        end)
+        |> Enum.sort_by(& &1.run_id)
+
+      send_json(conn, 200, %{ok: true, runs: runs})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
+  get "/api/v1/inbox" do
+    conn = fetch_query_params(conn)
+
+    with :ok <- authorize(conn) do
+      snapshot = ForemanServer.ProjectionStore.snapshot()
+      run_id = conn.query_params["run_id"]
+      project_id = conn.query_params["project_id"]
+      unread = conn.query_params["unread"]
+      limit = query_limit(conn.query_params["limit"], 50)
+
+      inbox =
+        snapshot.inbox_messages
+        |> Map.values()
+        |> Enum.map(fn message ->
+          Map.put(
+            message,
+            :project_id,
+            get_in(snapshot, [:tasks, Map.get(message, :task_id), :project_id])
+          )
+        end)
+        |> Enum.filter(fn message -> is_nil(run_id) or Map.get(message, :run_id) == run_id end)
+        |> Enum.filter(fn message ->
+          is_nil(project_id) or Map.get(message, :project_id) == project_id
+        end)
+        |> Enum.filter(fn message ->
+          unread != "true" or Map.get(message, :read_at) in [nil, ""]
+        end)
+        |> Enum.sort_by(&Map.get(&1, :created_at, ""), :desc)
+        |> Enum.take(limit)
+
+      send_json(conn, 200, %{ok: true, inbox: inbox})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
+  get "/api/v1/events" do
+    conn = fetch_query_params(conn)
+
+    with :ok <- authorize(conn) do
+      snapshot = ForemanServer.ProjectionStore.snapshot()
+      run_id = conn.query_params["run_id"]
+      project_id = conn.query_params["project_id"]
+      limit = query_limit(conn.query_params["limit"], 50)
+
+      events =
+        ForemanServer.EventStore.all()
+        |> Enum.map(&ForemanServer.Event.to_map/1)
+        |> Enum.map(fn event ->
+          event_run_id = get_in(event, [:payload, :run_id])
+
+          event_task_id =
+            get_in(event, [:payload, :task_id]) ||
+              get_in(snapshot, [:runs, event_run_id, :task_id])
+
+          event
+          |> Map.put(:run_id, event_run_id)
+          |> Map.put(:task_id, event_task_id)
+          |> Map.put(:project_id, get_in(snapshot, [:tasks, event_task_id, :project_id]))
+        end)
+        |> Enum.filter(fn event -> is_nil(run_id) or Map.get(event, :run_id) == run_id end)
+        |> Enum.filter(fn event ->
+          is_nil(project_id) or Map.get(event, :project_id) == project_id
+        end)
+        |> Enum.sort_by(&Map.get(&1, :occurred_at), {:desc, DateTime})
+        |> Enum.take(limit)
+
+      send_json(conn, 200, %{ok: true, events: events})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
   get "/api/v1/runs/:run_id/logs" do
     conn = fetch_query_params(conn)
 
@@ -324,6 +428,16 @@ defmodule ForemanServer.Http.Router do
 
   match _ do
     send_error(conn, 404, "UNSUPPORTED", "route not found", false)
+  end
+
+  defp query_limit(nil, fallback), do: fallback
+  defp query_limit("", fallback), do: fallback
+
+  defp query_limit(value, fallback) do
+    case Integer.parse(value) do
+      {limit, ""} when limit > 0 -> limit
+      _ -> fallback
+    end
   end
 
   defp log_view_mode(nil), do: {:ok, :compact}

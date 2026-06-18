@@ -2,8 +2,6 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { ElixirServerClient } from "../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
-import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
-import { ensureCliPostgresPool } from "../cli/commands/project-task-support.js";
 
 export type McpTransport = "stdio" | "http";
 
@@ -36,7 +34,6 @@ export type ForemanMcpOptions = {
   serverUrl?: string;
   authToken?: string;
   mcpAuthToken?: string;
-  projectPath?: string;
   autoStart?: boolean;
 };
 
@@ -45,8 +42,6 @@ const okSchema = { type: "object", properties: {}, additionalProperties: false }
 export class ForemanMcpServer {
   private readonly manager: ElixirServerManager;
   private readonly client: ElixirServerClient;
-  private readonly adapter = new PostgresAdapter();
-  private readonly projectPath: string;
   private readonly autoStart: boolean;
   private readonly tools: ToolSpec[];
 
@@ -54,7 +49,6 @@ export class ForemanMcpServer {
     this.manager = new ElixirServerManager({ authToken: opts.authToken });
     const baseUrl = opts.serverUrl ?? this.manager.url;
     this.client = new ElixirServerClient(baseUrl, opts.authToken ?? process.env.FOREMAN_SERVER_AUTH_TOKEN);
-    this.projectPath = opts.projectPath ?? process.cwd();
     this.autoStart = opts.autoStart ?? true;
     this.tools = this.buildTools();
   }
@@ -162,21 +156,22 @@ export class ForemanMcpServer {
           const health = await this.elixirHealth();
           const projectId = await this.resolveProjectId(args).catch(() => undefined);
           if (!projectId) return { health, scheduler, project: null };
-          const activeStatuses = ["ready", "approved", "in-progress", "in_progress", "explorer", "developer", "qa", "reviewer", "finalize"];
-          const active = await this.withPostgres(() => this.adapter.listTasks(projectId, { status: activeStatuses, limit: 100 }));
-          const recentOpen = await this.withPostgres(async () => {
-            const rows = await this.adapter.listTasks(projectId, { limit: numberParam(args, "limit", 12) });
-            return rows.filter((task) => !["closed", "merged", "completed", "done"].includes(task.status));
-          });
+          const activeStatuses = ["ready", "approved", "in-progress", "in_progress", "open", "explorer", "developer", "qa", "reviewer", "finalize"];
+          const tasks = await this.client.listTasks();
+          const projectTasks = tasks.filter((task) => !projectId || task.project_id === projectId);
+          const active = projectTasks.filter((task) => task.status && activeStatuses.includes(task.status));
+          const recentOpen = projectTasks
+            .filter((task) => !["closed", "merged", "completed", "done"].includes(task.status ?? ""))
+            .slice(0, numberParam(args, "limit", 12));
           return { health, scheduler, project_id: projectId, active_count: active.length, active, recent_open: recentOpen };
         },
       },
       {
         name: "foreman.health",
-        description: "Return MCP, Elixir server, and optional Postgres health in one compact object.",
+        description: "Return MCP and Elixir server health in one compact object.",
         inputSchema: okSchema,
         futureUseCases: ["remote client readiness checks", "CI preflight gates", "agent startup context"],
-        handler: async () => ({ mcp: { ok: true }, elixir: await this.elixirHealth(), postgres: await this.postgresHealth() }),
+        handler: async () => ({ mcp: { ok: true }, elixir: await this.elixirHealth() }),
       },
       {
         name: "foreman.scheduler.status",
@@ -194,21 +189,24 @@ export class ForemanMcpServer {
       },
       {
         name: "foreman.projects.list",
-        description: "List registered Postgres projects.",
+        description: "List registered Elixir projects.",
         inputSchema: {
           type: "object",
           properties: { status: { type: "string", enum: ["active", "paused", "archived"] }, search: { type: "string" } },
           additionalProperties: false,
         },
         futureUseCases: ["multi-tenant remote Foreman", "project-scoped auth", "project health rollups"],
-        handler: async (args) => this.withPostgres(() => this.adapter.listProjects({
-          status: optionalString(args.status) as "active" | "paused" | "archived" | undefined,
-          search: optionalString(args.search),
-        })),
+        handler: async (args) => {
+          const status = optionalString(args.status);
+          const search = optionalString(args.search)?.toLowerCase();
+          return (await this.client.listProjects())
+            .filter((project) => !status || project.status === status)
+            .filter((project) => !search || [project.project_id, project.id, project.name, project.path].some((value) => value?.toLowerCase().includes(search)));
+        },
       },
       {
         name: "foreman.tasks.list",
-        description: "List tasks for a project. Reads Postgres for rich task metadata.",
+        description: "List tasks from the Elixir task projection.",
         inputSchema: {
           type: "object",
           properties: {
@@ -221,16 +219,17 @@ export class ForemanMcpServer {
         },
         futureUseCases: ["natural-language backlog triage", "remote task approval", "cross-project board views"],
         handler: async (args) => {
-          const projectId = await this.resolveProjectId(args);
-          return this.withPostgres(() => this.adapter.listTasks(projectId, {
-            status: arrayOfStrings(args.status),
-            limit: numberParam(args, "limit", 50),
-          }));
+          const projectId = await this.resolveProjectId(args).catch(() => undefined);
+          const statuses = arrayOfStrings(args.status);
+          return (await this.client.listTasks())
+            .filter((task) => !projectId || task.project_id === projectId)
+            .filter((task) => !statuses?.length || (task.status !== undefined && statuses.includes(task.status)))
+            .slice(0, numberParam(args, "limit", 50));
         },
       },
       {
         name: "foreman.tasks.get",
-        description: "Get one task by id. Uses Postgres first, then Elixir projection fallback.",
+        description: "Get one task by id from the Elixir task projection.",
         inputSchema: {
           type: "object",
           required: ["task_id"],
@@ -239,10 +238,7 @@ export class ForemanMcpServer {
         },
         futureUseCases: ["task-context injection for remote agents", "debug bundles", "workflow routing explainers"],
         handler: async (args) => {
-          const taskId = stringParam(args, "task_id");
-          const projectId = await this.resolveProjectId(args).catch(() => undefined);
-          const row = projectId ? await this.withPostgres(() => this.adapter.getTask(projectId, taskId)).catch(() => null) : null;
-          return row ?? await this.client.getTask(taskId);
+          return this.client.getTask(stringParam(args, "task_id"));
         },
       },
       {
@@ -270,7 +266,7 @@ export class ForemanMcpServer {
       },
       {
         name: "foreman.runs.list",
-        description: "List recent runs for a project from Postgres.",
+        description: "List recent runs from the Elixir run projection.",
         inputSchema: {
           type: "object",
           properties: { project_id: { type: "string" }, project: { type: "string" }, status: { type: "array", items: { type: "string" } }, limit: { type: "number", default: 20 } },
@@ -278,8 +274,12 @@ export class ForemanMcpServer {
         },
         futureUseCases: ["remote run monitor", "cost/capacity reporting", "replay/debug launchers"],
         handler: async (args) => {
-          const projectId = await this.resolveProjectId(args);
-          return this.withPostgres(() => this.adapter.listRuns(projectId, { status: arrayOfStrings(args.status), limit: numberParam(args, "limit", 20) }));
+          const projectId = await this.resolveProjectId(args).catch(() => undefined);
+          const statuses = arrayOfStrings(args.status);
+          return (await this.client.listRuns())
+            .filter((run) => !projectId || run.project_id === projectId)
+            .filter((run) => !statuses?.length || (typeof run.status === "string" && statuses.includes(run.status)))
+            .slice(0, numberParam(args, "limit", 20));
         },
       },
       {
@@ -293,9 +293,8 @@ export class ForemanMcpServer {
         futureUseCases: ["remote agent collaboration", "operator notification feeds", "threaded message UIs"],
         handler: async (args) => {
           const runId = optionalString(args.run_id);
-          if (runId) return this.withPostgres(() => this.adapter.getAllMessages(runId));
-          const projectId = await this.resolveProjectId(args);
-          return this.withPostgres(() => this.adapter.getAllMessagesGlobal(projectId, numberParam(args, "limit", 50)));
+          const projectId = await this.resolveProjectId(args).catch(() => undefined);
+          return this.client.listInbox({ runId, projectId, limit: numberParam(args, "limit", 50), unread: args.unread === true });
         },
       },
       {
@@ -309,9 +308,8 @@ export class ForemanMcpServer {
         futureUseCases: ["activity feed unification", "audit export", "remote timeline visualization"],
         handler: async (args) => {
           const runId = optionalString(args.run_id);
-          if (runId) return this.withPostgres(() => this.adapter.listPipelineEventsForRun(runId, numberParam(args, "limit", 50)));
-          const projectId = await this.resolveProjectId(args);
-          return this.withPostgres(() => this.adapter.listProjectPipelineEvents(projectId, numberParam(args, "limit", 50)));
+          const projectId = await this.resolveProjectId(args).catch(() => undefined);
+          return this.client.listEvents({ runId, projectId, limit: numberParam(args, "limit", 50) });
         },
       },
       {
@@ -342,15 +340,6 @@ export class ForemanMcpServer {
     return this.manager.health();
   }
 
-  private async postgresHealth(): Promise<unknown> {
-    try {
-      await this.withPostgres(async () => this.adapter.listProjects({}));
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
-
   private async getJson(path: string): Promise<unknown> {
     await this.ensureElixir();
     const response = await fetch(new URL(path, this.opts.serverUrl ?? this.manager.url), { headers: this.headers() });
@@ -379,21 +368,17 @@ export class ForemanMcpServer {
     return header === `Bearer ${token}`;
   }
 
-  private async withPostgres<T>(fn: () => Promise<T>): Promise<T> {
-    ensureCliPostgresPool(this.projectPath);
-    return fn();
-  }
-
   private async resolveProjectId(args: Record<string, unknown>): Promise<string> {
     const direct = optionalString(args.project_id);
     if (direct) return direct;
     const selector = optionalString(args.project);
-    const projects = await this.withPostgres(() => this.adapter.listProjects({}));
+    const projects = await this.client.listProjects();
     const match = selector
-      ? projects.find((project) => project.id === selector || project.name === selector)
-      : projects.find((project) => project.path === this.projectPath) ?? projects.find((project) => project.name === "foreman");
-    if (!match) throw new Error("Project not found; pass project_id or project");
-    return match.id;
+      ? projects.find((project) => project.project_id === selector || project.id === selector || project.name === selector || project.path === selector || project.path.includes(selector))
+      : projects[0];
+    const projectId = match?.project_id ?? match?.id;
+    if (!projectId) throw new Error("Project not found; pass project_id or project");
+    return projectId;
   }
 }
 

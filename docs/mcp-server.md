@@ -6,7 +6,7 @@ Foreman ships an MCP server so agents and remote operator clients can inspect an
 
 - Provide typed tools for health, scheduler, tasks, runs, inbox, lifecycle events, and debug timelines.
 - Support both local agent sessions and future remote Foreman deployments.
-- Keep the first implementation thin: TypeScript MCP adapter over the Elixir HTTP API plus Postgres read models.
+- Keep the implementation thin: TypeScript MCP adapter over the Elixir HTTP API/projections only.
 - Route mutations through Foreman's command boundary instead of direct database writes.
 
 ## Transports
@@ -36,12 +36,12 @@ The HTTP transport accepts JSON-RPC MCP requests via `POST /mcp` and exposes `GE
 | Tool | Purpose |
 |------|---------|
 | `foreman.smoke.status` | One-call operator smoke check with health, scheduler, active tasks, and recent open tasks. |
-| `foreman.health` | Combined MCP/Elixir/Postgres readiness. |
+| `foreman.health` | Combined MCP/Elixir readiness. |
 | `foreman.scheduler.status` | Scheduler state, capacity, active runs, stale active runs. |
 | `foreman.scheduler.tick` | One manual scheduler tick for smoke checks/controlled dispatch. |
 | `foreman.projects.list` | Registered project inventory. |
-| `foreman.tasks.list` | Project task list from Postgres read model. |
-| `foreman.tasks.get` | One task from Postgres with Elixir projection fallback. |
+| `foreman.tasks.list` | Project task list from the Elixir projection. |
+| `foreman.tasks.get` | One task from the Elixir projection. |
 | `foreman.tasks.update` | Mutate task through Elixir command boundary. |
 | `foreman.runs.list` | Recent project runs. |
 | `foreman.inbox.list` | Agent messages by run or project. |
@@ -66,13 +66,28 @@ MCP client
   └─ HTTP:  POST /mcp
         ↓
 Foreman MCP adapter (TypeScript)
-  ├─ Elixir HTTP API: health, scheduler, command boundary, debug timelines
-  └─ Postgres read model: projects, tasks, runs, inbox, lifecycle events
+  └─ Elixir HTTP API: health, scheduler, projects, tasks, runs, inbox, lifecycle events, command boundary, debug timelines
         ↓
-Foreman Elixir backend / Postgres
+Foreman Elixir backend
 ```
 
-The adapter intentionally keeps writes behind Elixir commands (`task.update`, future approvals, etc.). Direct Postgres access is used for read-model parity while CLI cutover is still in progress.
+The adapter keeps all reads and writes behind the Elixir HTTP API/command boundary. MCP does not read Postgres directly.
+
+## Pi Slash Commands
+
+The project-local Pi extension `.pi/extensions/foreman-mcp.ts` also registers operator slash commands backed by the same MCP tools:
+
+- `/foreman-health` — MCP/Elixir readiness.
+- `/foreman-smoke [project] [limit]` — health, scheduler, active count, recent open tasks.
+- `/foreman-tasks [status|all] [limit]` — compact task list; defaults to `open`.
+- `/foreman-task <task-id>` — one task detail.
+- `/foreman-runs [status|all] [limit]` — compact run list.
+- `/foreman-inbox [run-id] [limit]` — recent inbox messages.
+- `/foreman-events [run-id] [limit]` — recent lifecycle events.
+- `/foreman-scheduler` — scheduler state summary.
+- `/foreman-tick` — run one scheduler tick.
+
+Run `/reload` in Pi after changing the extension.
 
 ## Remote Deployment Notes
 

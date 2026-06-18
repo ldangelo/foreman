@@ -77,6 +77,95 @@ function textFromMcpResult(response: JsonRpcResponse): string {
 	return JSON.stringify(response.result ?? response, null, 2);
 }
 
+function structured(response: JsonRpcResponse): any {
+	return response.result?.structuredContent ?? tryJson(textFromMcpResult(response));
+}
+
+function tryJson(text: string): any {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+}
+
+function firstLine(value: unknown, max = 110): string {
+	const line = String(value ?? "").replace(/\s+/g, " ").trim();
+	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+function parseArgs(args: string): Record<string, string | boolean> {
+	const out: Record<string, string | boolean> = {};
+	const parts = args.trim().match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+	let positional = 0;
+	for (let index = 0; index < parts.length; index += 1) {
+		const part = parts[index].replace(/^"|"$/g, "");
+		if (part.startsWith("--")) {
+			const [rawKey, inlineValue] = part.slice(2).split("=", 2);
+			const next = parts[index + 1]?.replace(/^"|"$/g, "");
+			if (inlineValue !== undefined) out[rawKey] = inlineValue;
+			else if (next && !next.startsWith("--")) {
+				out[rawKey] = next;
+				index += 1;
+			} else out[rawKey] = true;
+		} else {
+			out[String(positional)] = part;
+			positional += 1;
+		}
+	}
+	return out;
+}
+
+function numberArg(value: unknown, fallback: number): number {
+	const n = Number(value);
+	return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function taskId(task: any): string {
+	return task?.task_id ?? task?.id ?? "<unknown>";
+}
+
+function runId(run: any): string {
+	return run?.run_id ?? run?.id ?? "<unknown>";
+}
+
+function formatTaskList(tasks: any[], heading: string): string {
+	if (!tasks.length) return `${heading}\n(no tasks)`;
+	return [heading, ...tasks.map((task) => {
+		const type = task.task_type ?? task.type ?? "task";
+		const priority = task.priority ?? "?";
+		return `- ${taskId(task)} [${task.status ?? "?"}, ${type}, p${priority}] ${firstLine(task.title)}`;
+	})].join("\n");
+}
+
+function formatRuns(runs: any[], heading = "Foreman runs"): string {
+	if (!runs.length) return `${heading}\n(no runs)`;
+	return [heading, ...runs.map((run) => `- ${runId(run)} [${run.status ?? "?"}] task=${run.task_id ?? "?"} phase=${run.current_phase ?? "-"}`)].join("\n");
+}
+
+function formatInbox(messages: any[], heading = "Foreman inbox"): string {
+	if (!messages.length) return `${heading}\n(no messages)`;
+	return [heading, ...messages.map((msg) => `- ${msg.created_at ?? ""} ${msg.run_id ?? "-"} ${msg.from ?? "?"}->${msg.to ?? "?"}: ${firstLine(msg.body ?? msg.message ?? msg.summary)}`)].join("\n");
+}
+
+function formatEvents(events: any[], heading = "Foreman events"): string {
+	if (!events.length) return `${heading}\n(no events)`;
+	return [heading, ...events.map((event) => `- ${event.occurred_at ?? ""} ${event.type ?? event.event_type ?? "?"} run=${event.run_id ?? "-"} task=${event.task_id ?? "-"}`)].join("\n");
+}
+
+function summarizeHealth(data: any): string {
+	return [
+		"Foreman health",
+		`- MCP: ${data?.mcp?.ok ? "ok" : "fail"}`,
+		`- Elixir: ${data?.elixir?.ok ? "ok" : "fail"}`,
+		`- active_projects: ${data?.elixir?.body?.active_projects?.length ?? "?"}`,
+	].join("\n");
+}
+
+function show(pi: ExtensionAPI, content: string, details?: unknown): void {
+	pi.sendMessage({ customType: "foreman", content, display: true, details });
+}
+
 export default function foremanMcpExtension(pi: ExtensionAPI) {
 	const registered = new Set<string>();
 
@@ -158,6 +247,172 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 				await registerDiscoveredTools(ctx);
 			} catch (error) {
 				ctx.ui.notify(`Foreman MCP refresh failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-health", {
+		description: "Show Foreman MCP/Elixir health",
+		handler: async (_args, ctx) => {
+			try {
+				const data = structured(await callTool("foreman.health", {}));
+				show(pi, summarizeHealth(data), data);
+			} catch (error) {
+				ctx.ui.notify(`Foreman health failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-smoke", {
+		description: "Show Foreman smoke status (usage: /foreman-smoke [project] [limit])",
+		handler: async (args, ctx) => {
+			try {
+				const parsed = parseArgs(args);
+				const project = parsed.project ?? parsed["0"] ?? "foreman";
+				const limit = numberArg(parsed.limit ?? parsed["1"], 12);
+				const data = structured(await callTool("foreman.smoke.status", { project, limit }));
+				const lines = [
+					"Foreman smoke",
+					`- health: ${data?.health?.ok ? "ok" : "fail"}`,
+					`- scheduler auto_tick: ${data?.scheduler?.scheduler?.auto_tick ?? "?"}`,
+					`- active_count: ${data?.active_count ?? 0}`,
+					formatTaskList(data?.recent_open ?? [], "recent open"),
+				];
+				show(pi, lines.join("\n"), data);
+			} catch (error) {
+				ctx.ui.notify(`Foreman smoke failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-tasks", {
+		description: "List Foreman tasks (usage: /foreman-tasks [status=open|closed|all] [limit])",
+		getArgumentCompletions: (prefix: string) => ["open", "closed", "all", "--status", "--limit", "--project"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
+		handler: async (args, ctx) => {
+			try {
+				const parsed = parseArgs(args);
+				const status = String(parsed.status ?? parsed["0"] ?? "open");
+				const limit = numberArg(parsed.limit ?? parsed["1"], 50);
+				const project = parsed.project ?? "foreman";
+				const toolArgs: Record<string, unknown> = { project, limit };
+				if (status !== "all") toolArgs.status = [status];
+				const tasks = structured(await callTool("foreman.tasks.list", toolArgs));
+				show(pi, formatTaskList(Array.isArray(tasks) ? tasks : [], `Foreman tasks (${status})`), tasks);
+			} catch (error) {
+				ctx.ui.notify(`Foreman tasks failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-task", {
+		description: "Show one Foreman task (usage: /foreman-task <task-id>)",
+		handler: async (args, ctx) => {
+			const id = args.trim().split(/\s+/)[0];
+			if (!id) return ctx.ui.notify("Usage: /foreman-task <task-id>", "warning");
+			try {
+				const task = structured(await callTool("foreman.tasks.get", { task_id: id }));
+				if (!task) return show(pi, `Foreman task ${id}\n(not found)`);
+				show(pi, [
+					`Foreman task ${taskId(task)}`,
+					`- status: ${task.status ?? "?"}`,
+					`- type: ${task.task_type ?? task.type ?? "?"}`,
+					`- priority: ${task.priority ?? "?"}`,
+					`- run: ${task.run_id ?? "-"}`,
+					`- title: ${task.title ?? ""}`,
+					`- desc: ${firstLine(task.description, 500)}`,
+				].join("\n"), task);
+			} catch (error) {
+				ctx.ui.notify(`Foreman task failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-runs", {
+		description: "List Foreman runs (usage: /foreman-runs [status|all] [limit])",
+		handler: async (args, ctx) => {
+			try {
+				const parsed = parseArgs(args);
+				const status = String(parsed.status ?? parsed["0"] ?? "all");
+				const limit = numberArg(parsed.limit ?? parsed["1"], 20);
+				const toolArgs: Record<string, unknown> = { project: parsed.project ?? "foreman", limit };
+				if (status !== "all") toolArgs.status = [status];
+				const runs = structured(await callTool("foreman.runs.list", toolArgs));
+				show(pi, formatRuns(Array.isArray(runs) ? runs : [], `Foreman runs (${status})`), runs);
+			} catch (error) {
+				ctx.ui.notify(`Foreman runs failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-inbox", {
+		description: "List Foreman inbox messages (usage: /foreman-inbox [run-id] [limit])",
+		handler: async (args, ctx) => {
+			try {
+				const parsed = parseArgs(args);
+				const first = String(parsed["0"] ?? "");
+				const limit = numberArg(parsed.limit ?? parsed["1"], 20);
+				const toolArgs: Record<string, unknown> = { limit };
+				if (parsed.project || !first) toolArgs.project = parsed.project ?? "foreman";
+				if (parsed.run_id || first.startsWith("run-") || first.length > 20) toolArgs.run_id = parsed.run_id ?? first;
+				const messages = structured(await callTool("foreman.inbox.list", toolArgs));
+				show(pi, formatInbox(Array.isArray(messages) ? messages : []), messages);
+			} catch (error) {
+				ctx.ui.notify(`Foreman inbox failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-events", {
+		description: "List Foreman lifecycle events (usage: /foreman-events [run-id] [limit])",
+		handler: async (args, ctx) => {
+			try {
+				const parsed = parseArgs(args);
+				const first = String(parsed["0"] ?? "");
+				const limit = numberArg(parsed.limit ?? parsed["1"], 20);
+				const toolArgs: Record<string, unknown> = { limit };
+				if (parsed.project || !first) toolArgs.project = parsed.project ?? "foreman";
+				if (parsed.run_id || first.startsWith("run-") || first.length > 20) toolArgs.run_id = parsed.run_id ?? first;
+				const events = structured(await callTool("foreman.events.list", toolArgs));
+				show(pi, formatEvents(Array.isArray(events) ? events : []), events);
+			} catch (error) {
+				ctx.ui.notify(`Foreman events failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-scheduler", {
+		description: "Show Foreman scheduler status",
+		handler: async (_args, ctx) => {
+			try {
+				const data = structured(await callTool("foreman.scheduler.status", {}));
+				const scheduler = data?.scheduler ?? data;
+				show(pi, [
+					"Foreman scheduler",
+					`- auto_tick: ${scheduler?.auto_tick ?? "?"}`,
+					`- max_concurrent: ${scheduler?.max_concurrent ?? "?"}`,
+					`- active_runs: ${scheduler?.last_tick?.active_runs ?? 0}`,
+					`- stale_active_runs: ${scheduler?.last_tick?.stale_active_runs?.length ?? 0}`,
+				].join("\n"), data);
+			} catch (error) {
+				ctx.ui.notify(`Foreman scheduler failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-tick", {
+		description: "Run one Foreman scheduler tick",
+		handler: async (_args, ctx) => {
+			try {
+				const data = structured(await callTool("foreman.scheduler.tick", {}));
+				const scheduler = data?.scheduler ?? data;
+				show(pi, [
+					"Foreman scheduler tick",
+					`- claimed: ${scheduler?.claimed?.length ?? 0}`,
+					`- skipped: ${scheduler?.skipped?.length ?? 0}`,
+					`- active_runs: ${scheduler?.active_runs ?? "?"}`,
+				].join("\n"), data);
+			} catch (error) {
+				ctx.ui.notify(`Foreman tick failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 			}
 		},
 	});

@@ -57,6 +57,29 @@ export type ElixirTask = {
   run_id?: string | null;
 };
 
+export type ElixirRun = Record<string, unknown> & {
+  run_id?: string;
+  id?: string;
+  project_id?: string;
+  task_id?: string;
+  status?: string;
+};
+
+export type ElixirInboxMessage = Record<string, unknown> & {
+  message_id?: string;
+  run_id?: string;
+  project_id?: string;
+  unread?: boolean;
+};
+
+export type ElixirEvent = Record<string, unknown> & {
+  event_id?: string;
+  run_id?: string;
+  project_id?: string;
+  type?: string;
+  event_type?: string;
+};
+
 export class ElixirServerClient {
   constructor(
     private readonly baseUrl: string,
@@ -104,6 +127,32 @@ export class ElixirServerClient {
     const body = await response.json() as { ok: true; task: ElixirTask } | ForemanServerError;
     if (response.ok && body.ok) return body.task;
     throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
+  }
+
+  async listRuns(): Promise<ElixirRun[]> {
+    const body = await this.getJson<{ ok: true; runs: ElixirRun[] }>("/api/v1/runs");
+    return body.runs;
+  }
+
+  async listInbox(opts: { runId?: string; projectId?: string; limit?: number; unread?: boolean } = {}): Promise<ElixirInboxMessage[]> {
+    const params = new URLSearchParams();
+    if (opts.runId) params.set("run_id", opts.runId);
+    if (opts.projectId) params.set("project_id", opts.projectId);
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts.unread !== undefined) params.set("unread", String(opts.unread));
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; inbox: ElixirInboxMessage[] }>(`/api/v1/inbox${query ? `?${query}` : ""}`);
+    return body.inbox;
+  }
+
+  async listEvents(opts: { runId?: string; projectId?: string; limit?: number } = {}): Promise<ElixirEvent[]> {
+    const params = new URLSearchParams();
+    if (opts.runId) params.set("run_id", opts.runId);
+    if (opts.projectId) params.set("project_id", opts.projectId);
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; events: ElixirEvent[] }>(`/api/v1/events${query ? `?${query}` : ""}`);
+    return body.events;
   }
 
   async getRunLogs(runId: string, view: "compact" | "raw" = "compact"): Promise<unknown[]> {

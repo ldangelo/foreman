@@ -9,7 +9,6 @@ export const mcpCommand = new Command("mcp")
   .option("--port <port>", "HTTP port", "4777")
   .option("--server-url <url>", "Foreman Elixir server URL (default: local manager URL)")
   .option("--mcp-auth-token <token>", "Require this bearer token for HTTP MCP requests")
-  .option("--project-path <path>", "Project path used for Postgres/project resolution", process.cwd())
   .option("--no-auto-start", "Do not auto-start the Elixir server for tools that need it")
   .action(async (opts: {
     transport: McpTransport;
@@ -17,7 +16,6 @@ export const mcpCommand = new Command("mcp")
     port: string;
     serverUrl?: string;
     mcpAuthToken?: string;
-    projectPath: string;
     autoStart?: boolean;
   }) => {
     const server = new ForemanMcpServer({
@@ -26,7 +24,6 @@ export const mcpCommand = new Command("mcp")
       port: Number(opts.port),
       serverUrl: opts.serverUrl,
       mcpAuthToken: opts.mcpAuthToken,
-      projectPath: opts.projectPath,
       autoStart: opts.autoStart !== false,
     });
 
