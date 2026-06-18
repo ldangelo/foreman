@@ -35,6 +35,7 @@ export type ForemanMcpOptions = {
   port?: number;
   serverUrl?: string;
   authToken?: string;
+  mcpAuthToken?: string;
   projectPath?: string;
   autoStart?: boolean;
 };
@@ -104,6 +105,10 @@ export class ForemanMcpServer {
       if (req.method !== "POST" || (req.url !== "/mcp" && req.url !== "/")) {
         return void res.writeHead(404).end("not found");
       }
+      if (!this.authorizeHttpRequest(req)) {
+        res.writeHead(401, { "content-type": "application/json" });
+        return void res.end(JSON.stringify(this.error(null, -32001, "Unauthorized MCP request")));
+      }
       try {
         const body = await readRequestBody(req);
         const payload = JSON.parse(body) as JsonRpcRequest | JsonRpcRequest[];
@@ -143,6 +148,29 @@ export class ForemanMcpServer {
 
   private buildTools(): ToolSpec[] {
     return [
+      {
+        name: "foreman.smoke.status",
+        description: "One-call operator smoke check: health, scheduler, active project tasks, and recent non-closed tasks.",
+        inputSchema: {
+          type: "object",
+          properties: { project_id: { type: "string" }, project: { type: "string" }, limit: { type: "number", default: 12 } },
+          additionalProperties: false,
+        },
+        futureUseCases: ["agent startup checks", "remote runbooks", "dashboard summary cards"],
+        handler: async (args) => {
+          const scheduler = await this.getJson("/api/v1/scheduler");
+          const health = await this.elixirHealth();
+          const projectId = await this.resolveProjectId(args).catch(() => undefined);
+          if (!projectId) return { health, scheduler, project: null };
+          const activeStatuses = ["ready", "approved", "in-progress", "in_progress", "explorer", "developer", "qa", "reviewer", "finalize"];
+          const active = await this.withPostgres(() => this.adapter.listTasks(projectId, { status: activeStatuses, limit: 100 }));
+          const recentOpen = await this.withPostgres(async () => {
+            const rows = await this.adapter.listTasks(projectId, { limit: numberParam(args, "limit", 12) });
+            return rows.filter((task) => !["closed", "merged", "completed", "done"].includes(task.status));
+          });
+          return { health, scheduler, project_id: projectId, active_count: active.length, active, recent_open: recentOpen };
+        },
+      },
       {
         name: "foreman.health",
         description: "Return MCP, Elixir server, and optional Postgres health in one compact object.",
@@ -342,6 +370,13 @@ export class ForemanMcpServer {
   private headers(): Record<string, string> {
     const token = this.opts.authToken ?? process.env.FOREMAN_SERVER_AUTH_TOKEN;
     return token ? { authorization: `Bearer ${token}` } : {};
+  }
+
+  private authorizeHttpRequest(req: http.IncomingMessage): boolean {
+    const token = this.opts.mcpAuthToken ?? process.env.FOREMAN_MCP_AUTH_TOKEN;
+    if (!token) return true;
+    const header = req.headers.authorization;
+    return header === `Bearer ${token}`;
   }
 
   private async withPostgres<T>(fn: () => Promise<T>): Promise<T> {

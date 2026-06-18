@@ -25,6 +25,7 @@ Use for local or remote clients that connect to a long-running MCP endpoint:
 
 ```bash
 foreman mcp --transport http --host 127.0.0.1 --port 4777
+foreman mcp --transport http --host 0.0.0.0 --port 4777 --mcp-auth-token "$FOREMAN_MCP_AUTH_TOKEN"
 # endpoint: http://127.0.0.1:4777/mcp
 ```
 
@@ -34,6 +35,7 @@ The HTTP transport accepts JSON-RPC MCP requests via `POST /mcp` and exposes `GE
 
 | Tool | Purpose |
 |------|---------|
+| `foreman.smoke.status` | One-call operator smoke check with health, scheduler, active tasks, and recent open tasks. |
 | `foreman.health` | Combined MCP/Elixir/Postgres readiness. |
 | `foreman.scheduler.status` | Scheduler state, capacity, active runs, stale active runs. |
 | `foreman.scheduler.tick` | One manual scheduler tick for smoke checks/controlled dispatch. |
@@ -77,4 +79,5 @@ The adapter intentionally keeps writes behind Elixir commands (`task.update`, fu
 - Run the MCP HTTP transport next to the Foreman backend or behind a private network/VPN.
 - Pass `--server-url` when the Elixir API is remote.
 - Use `FOREMAN_SERVER_AUTH_TOKEN` for authenticated Elixir endpoints.
-- Future hardening should add MCP-level auth, project-scoped authorization, audit events for all mutating tools, and TLS termination guidance.
+- Use `--mcp-auth-token` or `FOREMAN_MCP_AUTH_TOKEN` to require a bearer token for HTTP MCP requests.
+- Future hardening should add project-scoped authorization, audit events for all mutating tools, and TLS termination guidance.

@@ -9,6 +9,7 @@ describe("ForemanMcpServer", () => {
     expect(response?.result).toMatchObject({ tools: expect.any(Array) });
     const tools = (response?.result as { tools: Array<{ name: string; description: string }> }).tools;
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "foreman.smoke.status",
       "foreman.health",
       "foreman.scheduler.status",
       "foreman.scheduler.tick",

@@ -466,6 +466,7 @@ Run the Foreman MCP server for agent/tool integrations. Use stdio for local MCP 
 ```bash
 foreman mcp --transport stdio
 foreman mcp --transport http --host 127.0.0.1 --port 4777
+foreman mcp --transport http --host 0.0.0.0 --mcp-auth-token "$FOREMAN_MCP_AUTH_TOKEN"
 foreman mcp --transport http --server-url http://foreman.internal:4766
 ```
 
@@ -475,10 +476,11 @@ foreman mcp --transport http --server-url http://foreman.internal:4766
 | `--host <host>` | `127.0.0.1` | HTTP bind host |
 | `--port <port>` | `4777` | HTTP bind port |
 | `--server-url <url>` | local Elixir URL | Elixir backend URL for remote Foreman |
+| `--mcp-auth-token <token>` | unset | Require bearer token for HTTP MCP requests |
 | `--project-path <path>` | cwd | Project path for Postgres/project resolution |
 | `--no-auto-start` | — | Do not auto-start the local Elixir server |
 
-Initial tools include health, scheduler status/tick, projects, tasks, runs, inbox, lifecycle events, and debug timelines. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
+Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, runs, inbox, lifecycle events, and debug timelines. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
 
 ---
 

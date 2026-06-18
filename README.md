@@ -521,9 +521,10 @@ Run Foreman's MCP server for agent/tool integrations. Supports local stdio clien
 ```bash
 foreman mcp --transport stdio
 foreman mcp --transport http --host 127.0.0.1 --port 4777
+foreman mcp --transport http --host 0.0.0.0 --mcp-auth-token "$FOREMAN_MCP_AUTH_TOKEN"
 ```
 
-Tools cover health, scheduler status/tick, projects, tasks, runs, inbox messages, lifecycle events, and debug timelines. See [`docs/mcp-server.md`](docs/mcp-server.md).
+Tools cover one-call smoke status, health, scheduler status/tick, projects, tasks, runs, inbox messages, lifecycle events, and debug timelines. See [`docs/mcp-server.md`](docs/mcp-server.md).
 
 ### `foreman watch`
 Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
