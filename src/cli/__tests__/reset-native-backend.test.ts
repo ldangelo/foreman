@@ -13,6 +13,9 @@ const {
   mockForemanStoreForProject,
   mockVcsCreate,
   mockMergeQueueCtor,
+  mockElixirEnsureRunning,
+  mockElixirGetTask,
+  mockElixirSendCommand,
   nativeTaskClient,
   beadsTaskClient,
   localStore,
@@ -154,6 +157,15 @@ const {
     return mergeQueue;
   });
 
+  const mockElixirEnsureRunning = vi.fn(async () => ({ url: "http://127.0.0.1:4777" }));
+  const mockElixirGetTask = vi.fn(async () => null);
+  const mockElixirSendCommand = vi.fn(async () => ({
+    ok: true,
+    events: ["evt-test"],
+    projection_version: 1,
+    correlation_id: "cmd-test",
+  }));
+
   const taskClients = {
     native: nativeTaskClient,
     beads: beadsTaskClient,
@@ -173,6 +185,9 @@ const {
     mockForemanStoreForProject: vi.fn(() => localStore),
     mockVcsCreate: vi.fn(async () => vcsBackend),
     mockMergeQueueCtor,
+    mockElixirEnsureRunning,
+    mockElixirGetTask,
+    mockElixirSendCommand,
     nativeTaskClient,
     beadsTaskClient,
     localStore,
@@ -220,6 +235,18 @@ vi.mock("../../orchestrator/postgres-merge-queue.js", () => ({
   PostgresMergeQueue: vi.fn(),
 }));
 
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn(function MockElixirServerManager() {
+    return { ensureRunning: mockElixirEnsureRunning };
+  }),
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn(function MockElixirServerClient() {
+    return { getTask: mockElixirGetTask, sendCommand: mockElixirSendCommand };
+  }),
+}));
+
 import { resetCommand } from "../commands/reset.js";
 
 async function runReset(args: string[]): Promise<void> {
@@ -233,6 +260,14 @@ describe("foreman reset — native backend", () => {
     mockResolveRepoRootProjectPath.mockResolvedValue("/mock/project");
     mockCreateTaskClient.mockResolvedValue({ taskClient: nativeTaskClient, backendType: "native" });
     mockListRegisteredProjects.mockResolvedValue([]);
+    mockElixirEnsureRunning.mockResolvedValue({ url: "http://127.0.0.1:4777" });
+    mockElixirGetTask.mockResolvedValue(null);
+    mockElixirSendCommand.mockResolvedValue({
+      ok: true,
+      events: ["evt-test"],
+      projection_version: 1,
+      correlation_id: "cmd-test",
+    });
     localStore.getProjectByPath.mockReturnValue({ id: "proj-native", path: "/mock/project" });
   });
 
@@ -250,6 +285,8 @@ describe("foreman reset — native backend", () => {
     expect(nativeTaskClient.update).not.toHaveBeenCalled();
     expect(nativeTaskClient.show).toHaveBeenCalledWith("task-actual");
     expect(nativeTaskClient.show).not.toHaveBeenCalledWith("task-trap");
+    expect(mockElixirGetTask).toHaveBeenCalledWith("task-actual");
+    expect(mockElixirSendCommand).not.toHaveBeenCalled();
     expect(mergeQueue.list).toHaveBeenCalled();
   });
 
