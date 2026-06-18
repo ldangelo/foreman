@@ -303,6 +303,35 @@ export class ForemanMcpServer {
         },
       },
       {
+        name: "foreman.runs.logs",
+        description: "Show event-backed logs for one run, or tail logs for recent runs when run_id is omitted.",
+        inputSchema: {
+          type: "object",
+          properties: { run_id: { type: "string" }, project_id: { type: "string" }, project: { type: "string" }, view: { type: "string", enum: ["compact", "raw"] }, limit: { type: "number", default: 100 }, runs: { type: "number", default: 20 } },
+          additionalProperties: false,
+        },
+        futureUseCases: ["operator debugging", "run log tailing", "support bundles"],
+        handler: async (args) => {
+          const view = optionalString(args.view) === "raw" ? "raw" : "compact";
+          const limit = numberParam(args, "limit", 100);
+          const runId = optionalString(args.run_id);
+          if (runId) return tailRunLogs(await this.client.getRunLogs(runId, view), limit);
+
+          const projectId = await this.resolveProjectId(args).catch(() => undefined);
+          const runs = (await this.client.listRuns())
+            .filter((run) => !projectId || run.project_id === projectId)
+            .slice(0, numberParam(args, "runs", 20));
+
+          const logs = [];
+          for (const run of runs) {
+            const id = run.run_id ?? run.id;
+            if (!id) continue;
+            logs.push({ run_id: id, task_id: run.task_id, status: run.status, logs: tailRunLogs(await this.client.getRunLogs(id, view), limit) });
+          }
+          return logs;
+        },
+      },
+      {
         name: "foreman.inbox.list",
         description: "List agent inbox messages for a run or project.",
         inputSchema: {
@@ -462,4 +491,15 @@ function objectParam(args: Record<string, unknown>, name: string, fallback: Reco
 
 function arrayOfStrings(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+}
+
+function tailRunLogs(logs: unknown, limit: number): unknown {
+  if (Array.isArray(logs)) return logs.slice(-limit);
+  if (logs && typeof logs === "object") {
+    const record = logs as Record<string, unknown>;
+    if (Array.isArray(record.entries)) {
+      return { ...record, entries: record.entries.slice(-limit), tailed: record.entries.length > limit, total_entries: record.entries.length };
+    }
+  }
+  return logs;
 }

@@ -153,6 +153,27 @@ function formatEvents(events: any[], heading = "Foreman events"): string {
 	return [heading, ...events.map((event) => `- ${event.occurred_at ?? ""} ${event.type ?? event.event_type ?? "?"} run=${event.run_id ?? "-"} task=${event.task_id ?? "-"}`)].join("\n");
 }
 
+function formatLogEntries(logs: any, heading = "Foreman logs"): string {
+	if (Array.isArray(logs)) {
+		if (!logs.length) return `${heading}\n(no logs)`;
+		return [heading, ...logs.flatMap((item) => [`## ${item.run_id ?? "run"} task=${item.task_id ?? "?"} status=${item.status ?? "?"}`, ...formatLogLines(item.logs).slice(1)])].join("\n");
+	}
+	return formatLogLines(logs, heading).join("\n");
+}
+
+function formatLogLines(logs: any, heading = "logs"): string[] {
+	const entries = Array.isArray(logs?.entries) ? logs.entries : Array.isArray(logs) ? logs : [];
+	if (!entries.length) return [heading, "(no logs)"];
+	const suffix = logs?.tailed ? ` (tail ${entries.length}/${logs.total_entries})` : "";
+	return [`${heading}${suffix}`, ...entries.map((entry: any) => {
+		const ts = entry.occurred_at ?? "";
+		const type = entry.type ?? entry.event_type ?? entry.stream ?? "log";
+		const phase = entry.phase_id ? ` ${entry.phase_id}` : "";
+		const msg = entry.message ?? entry.body ?? entry.text ?? JSON.stringify(entry.payload ?? entry);
+		return `- ${ts} ${type}${phase}: ${firstLine(msg, 180)}`;
+	})];
+}
+
 function summarizeHealth(data: any): string {
 	return [
 		"Foreman health",
@@ -394,6 +415,26 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 				show(pi, formatRuns(Array.isArray(runs) ? runs : [], `Foreman runs (${status})`), runs);
 			} catch (error) {
 				ctx.ui.notify(`Foreman runs failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("foreman-logs", {
+		description: "Show Foreman logs (usage: /foreman-logs [run-id] [limit])",
+		handler: async (args, ctx) => {
+			try {
+				const parsed = parseArgs(args);
+				const first = String(parsed["0"] ?? "");
+				const limit = numberArg(parsed.limit ?? parsed.tail ?? parsed["1"], 80);
+				const toolArgs: Record<string, unknown> = { limit };
+				if (parsed.view) toolArgs.view = parsed.view;
+				if (parsed.runs) toolArgs.runs = numberArg(parsed.runs, 20);
+				if (parsed.run_id || first) toolArgs.run_id = parsed.run_id ?? first;
+				else toolArgs.project = parsed.project ?? "foreman";
+				const logs = structured(await callTool("foreman.runs.logs", toolArgs));
+				show(pi, formatLogEntries(logs, first ? `Foreman logs ${first}` : "Foreman logs"), logs);
+			} catch (error) {
+				ctx.ui.notify(`Foreman logs failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 			}
 		},
 	});
