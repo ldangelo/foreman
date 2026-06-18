@@ -702,7 +702,38 @@ async function syncElixirResetToReady(seedId: string, projectId?: string): Promi
   const existingTask = await client.getTask(seedId);
   if (!existingTask) return false;
 
-  const commandId = `reset-${seedId}-${Date.now()}`;
+  const resetStartedAt = Date.now();
+  const activeRuns = (await client.listRuns()).filter((run) => {
+    const runTaskId = run.task_id;
+    const runProjectId = run.project_id;
+    const status = String(run.status ?? "");
+    return runTaskId === seedId &&
+      (!projectId || runProjectId === projectId) &&
+      ["pending", "running", "in_progress"].includes(status);
+  });
+
+  for (const run of activeRuns) {
+    const runId = run.run_id ?? run.id;
+    if (!runId) continue;
+    const failCommandId = `reset-${seedId}-${runId}-${resetStartedAt}`;
+    const failResponse = await client.sendCommand({
+      command_id: failCommandId,
+      command_type: "run.fail",
+      payload: {
+        task_id: seedId,
+        project_id: run.project_id ?? existingTask.project_id ?? projectId,
+        run_id: runId,
+        failure_reason: "reset",
+        failure_output: "Run reset by foreman reset",
+      },
+      metadata: { source: "foreman-reset", correlation_id: failCommandId },
+    });
+    if (!failResponse.ok) {
+      throw new Error(failResponse.error.message);
+    }
+  }
+
+  const commandId = `reset-${seedId}-${resetStartedAt}`;
   const response = await client.sendCommand({
     command_id: commandId,
     command_type: "task.update",

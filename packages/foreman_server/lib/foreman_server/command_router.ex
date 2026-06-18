@@ -178,6 +178,12 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event("run.fail", payload) do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
+      {:ok, "RunFailed", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
+    end
+  end
+
   defp domain_event("task.annotate", payload) do
     with {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id),
          {:ok, body} <- required_binary(Map.get(payload, :body), :body) do

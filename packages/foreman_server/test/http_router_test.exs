@@ -68,6 +68,39 @@ defmodule ForemanServer.Http.RouterTest do
     assert body["correlation_id"] == "corr-http"
   end
 
+  test "authorized run.fail command appends RunFailed projection event" do
+    append_run_event("RunStarted", %{
+      run_id: "run-http-fail",
+      task_id: "task-http-fail",
+      project_id: "proj-http",
+      phase_order: ["developer"],
+      current_phase: "developer"
+    })
+
+    command = %{
+      "command_id" => "cmd-run-fail",
+      "command_type" => "run.fail",
+      "schema_version" => 1,
+      "payload" => %{
+        "run_id" => "run-http-fail",
+        "task_id" => "task-http-fail",
+        "project_id" => "proj-http",
+        "failure_reason" => "reset"
+      },
+      "metadata" => %{"correlation_id" => "run-http-fail"}
+    }
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 202
+    assert ProjectionStore.snapshot().runs["run-http-fail"].status == "failed"
+  end
+
   test "run log/report/debug endpoints require bearer token" do
     seed_debug_http_run()
 
