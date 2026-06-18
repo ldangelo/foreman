@@ -515,6 +515,16 @@ foreman board                             # Launch interactive kanban board
 foreman board --project my-project        # Board for a specific project
 ```
 
+### `foreman mcp`
+Run Foreman's MCP server for agent/tool integrations. Supports local stdio clients and HTTP clients for future remote Foreman deployments.
+
+```bash
+foreman mcp --transport stdio
+foreman mcp --transport http --host 127.0.0.1 --port 4777
+```
+
+Tools cover health, scheduler status/tick, projects, tasks, runs, inbox messages, lifecycle events, and debug timelines. See [`docs/mcp-server.md`](docs/mcp-server.md).
+
 ### `foreman watch`
 Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
 

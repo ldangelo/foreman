@@ -457,6 +457,31 @@ foreman pr --base-branch dev      # PR against dev instead of main
 
 ---
 
+## MCP Server
+
+### `foreman mcp`
+
+Run the Foreman MCP server for agent/tool integrations. Use stdio for local MCP clients that spawn Foreman directly, or HTTP for long-running local/remote clients.
+
+```bash
+foreman mcp --transport stdio
+foreman mcp --transport http --host 127.0.0.1 --port 4777
+foreman mcp --transport http --server-url http://foreman.internal:4766
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--transport <stdio\|http>` | `stdio` | MCP transport |
+| `--host <host>` | `127.0.0.1` | HTTP bind host |
+| `--port <port>` | `4777` | HTTP bind port |
+| `--server-url <url>` | local Elixir URL | Elixir backend URL for remote Foreman |
+| `--project-path <path>` | cwd | Project path for Postgres/project resolution |
+| `--no-auto-start` | — | Do not auto-start the local Elixir server |
+
+Initial tools include health, scheduler status/tick, projects, tasks, runs, inbox, lifecycle events, and debug timelines. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
+
+---
+
 ## Agent Mail
 
 ### `foreman inbox`

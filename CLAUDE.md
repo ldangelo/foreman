@@ -43,6 +43,7 @@ foreman purge runs     # Remove stale failed run records
 foreman inbox          # Agent mail + selected-run lifecycle events
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
+foreman mcp --transport stdio # MCP tools for agents; use --transport http for remote clients
 
 # br (beads_rust) task tracking
 br ready               # Unblocked tasks

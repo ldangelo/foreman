@@ -213,7 +213,7 @@ foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
+Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
 
 ### 8. Triage Failures
 

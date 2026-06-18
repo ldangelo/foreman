@@ -63,6 +63,7 @@ import { daemonCommand } from "./commands/daemon.js";
 import { jiraCommand } from "./commands/jira.js";
 import { logsCommand } from "./commands/logs.js";
 import { serverCommand } from "./commands/server.js";
+import { mcpCommand } from "./commands/mcp.js";
 import { maybeDelegateToLegacyTs } from "./legacy-coexistence.js";
 function isCliEntrypoint(): boolean {
   try {
@@ -124,6 +125,7 @@ program.addCommand(daemonCommand);
 program.addCommand(jiraCommand);
 program.addCommand(logsCommand);
 program.addCommand(serverCommand);
+program.addCommand(mcpCommand);
 
 program.addHelpText(
   "after",
@@ -133,7 +135,7 @@ Domain groups:
   Planning:         plan, sling
   Execution:        run, retry, reset, stop, recover
   Tasks/views:      task, status, board, watch, logs
-  Collaboration:    inbox, attach, debug
+  Collaboration:    inbox, attach, debug, mcp
   Delivery/VCS:     worktree, merge, pr
 
 Deprecated aliases print the replacement spelling when used:
