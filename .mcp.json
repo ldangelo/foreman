@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "foreman": {
+      "command": "node",
+      "args": [
+        "/Users/ldangelo/Development/Fortium/foreman/dist/cli/index.js",
+        "mcp",
+        "--transport",
+        "stdio",
+        "--project-path",
+        "/Users/ldangelo/Development/Fortium/foreman"
+      ]
+    }
+  }
+}
