@@ -34,6 +34,24 @@ phases:
     maxTurns: 80
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    contract:
+      requiredSections: [Approach, Files Changed, QA Handoff, Decisions, Known Limitations]
+      completion:
+        requireFilesChanged: true
+        requireValidationNotes: true
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 45
+      maxToolCalls: 65
+      repeatedCommandLimit: 2
+      blockedCommands:
+        - "(^|\\s)(npm|pnpm|yarn)\\s+(test|vitest)\\b"
+        - "(^|\\s)npx\\s+vitest\\b"
+        - "(^|\\s)mix\\s+test\\b"
+        - "(^|\\s)cargo\\s+test\\b"
+        - "(^|\\s)go\\s+test\\b"
     mail:
       onStart: true
       onComplete: true
@@ -54,6 +72,24 @@ phases:
     maxTurns: 120
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    contract:
+      requiredSections: [Approach, Files Changed, QA Handoff, Decisions, Known Limitations]
+      completion:
+        requireFilesChanged: true
+        requireValidationNotes: true
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 35
+      maxToolCalls: 50
+      repeatedCommandLimit: 2
+      blockedCommands:
+        - "(^|\\s)(npm|pnpm|yarn)\\s+(test|vitest)\\b"
+        - "(^|\\s)npx\\s+vitest\\b"
+        - "(^|\\s)mix\\s+test\\b"
+        - "(^|\\s)cargo\\s+test\\b"
+        - "(^|\\s)go\\s+test\\b"
     mail:
       onStart: true
       onComplete: true
@@ -79,6 +115,9 @@ phases:
       enabled: true
       mode: enforce
       continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 30
+      maxToolCalls: 45
+      repeatedCommandLimit: 2
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -129,6 +168,15 @@ phases:
     maxTurns: 40
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Documentation Updated, Documentation Not Needed, Checks]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 20
+      maxToolCalls: 30
+      repeatedCommandLimit: 2
     mail:
       onStart: true
       onComplete: true
@@ -168,6 +216,15 @@ phases:
     maxTurns: 40
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Findings Reviewed, Actions Taken, Validation, Remaining Blocking Items]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 20
+      maxToolCalls: 30
+      repeatedCommandLimit: 2
     verdict: true
     retryWith: developer
     retryOnFail: 3

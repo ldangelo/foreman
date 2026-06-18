@@ -121,6 +121,8 @@ export interface WorkflowPhaseContractConfig {
     minEditTargets?: number;
     maxEditTargets?: number;
     requireTestTargets?: boolean;
+    requireFilesChanged?: boolean;
+    requireValidationNotes?: boolean;
   };
   allowedScope?: {
     canRead?: boolean;
@@ -136,6 +138,10 @@ export interface WorkflowPhaseOverwatchConfig {
   continueIfArtifactValidOnBudgetStop?: boolean;
   maxSteersPerPhase?: number;
   forceArtifactAfterSteers?: number;
+  forceArtifactAfterToolCalls?: number;
+  repeatedCommandLimit?: number;
+  maxToolCalls?: number;
+  blockedCommands?: string[];
 }
 
 /** Per-phase configuration in a workflow YAML. */
@@ -564,6 +570,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         if (typeof completion["minEditTargets"] === "number") phase.contract.completion.minEditTargets = completion["minEditTargets"];
         if (typeof completion["maxEditTargets"] === "number") phase.contract.completion.maxEditTargets = completion["maxEditTargets"];
         if (typeof completion["requireTestTargets"] === "boolean") phase.contract.completion.requireTestTargets = completion["requireTestTargets"];
+        if (typeof completion["requireFilesChanged"] === "boolean") phase.contract.completion.requireFilesChanged = completion["requireFilesChanged"];
+        if (typeof completion["requireValidationNotes"] === "boolean") phase.contract.completion.requireValidationNotes = completion["requireValidationNotes"];
       }
       if (isRecord(c["allowedScope"])) {
         const allowedScope = c["allowedScope"];
@@ -585,6 +593,12 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (typeof o["continueIfArtifactValidOnBudgetStop"] === "boolean") phase.overwatch.continueIfArtifactValidOnBudgetStop = o["continueIfArtifactValidOnBudgetStop"];
       if (typeof o["maxSteersPerPhase"] === "number") phase.overwatch.maxSteersPerPhase = o["maxSteersPerPhase"];
       if (typeof o["forceArtifactAfterSteers"] === "number") phase.overwatch.forceArtifactAfterSteers = o["forceArtifactAfterSteers"];
+      if (typeof o["forceArtifactAfterToolCalls"] === "number") phase.overwatch.forceArtifactAfterToolCalls = o["forceArtifactAfterToolCalls"];
+      if (typeof o["repeatedCommandLimit"] === "number") phase.overwatch.repeatedCommandLimit = o["repeatedCommandLimit"];
+      if (typeof o["maxToolCalls"] === "number") phase.overwatch.maxToolCalls = o["maxToolCalls"];
+      if (Array.isArray(o["blockedCommands"])) {
+        phase.overwatch.blockedCommands = o["blockedCommands"].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+      }
     }
 
     // Exactly one of bash, command, or prompt must be set (unless builtin: true)

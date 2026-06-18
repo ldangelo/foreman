@@ -76,13 +76,13 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
 1. **Explorer** (Haiku, 20 turns emergency fuse, read-only) — overwatch steers broad investigation into a concise developer handoff → `EXPLORER_REPORT.md`
-2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — implementation only; QA/finalize own tests
+2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — overwatch blocks test-command drift and requires a changed-files/QA-handoff report → `DEVELOPER_REPORT.md`
 3. **QA** (Sonnet, 30 turns, read+bash) — overwatch blocks broad full-suite runs; targeted test verification only → `QA_REPORT.md`
-4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
+4. **Reviewer** (Sonnet, 20 turns, read-only) — overwatch bounds review evidence and requires a verdict report → `REVIEW.md`
 5. **Finalize** — git add/commit/push, native task merge/close update
 6. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
 
-Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for Explorer and QA.
+Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for prompt-backed phases rather than only Explorer/QA.
 
 ## Dispatch Flow
 
@@ -434,9 +434,9 @@ Models are configured per-phase in the workflow YAML with priority-based overrid
 | Phase | Default Model | P0 Override | Runtime Guard |
 |---|---|---|---|
 | Explorer | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch artifact gate |
-| Developer | workflow-defined | workflow-defined | maxTurns emergency fuse |
+| Developer | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch handoff/test-command gate |
 | QA | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch targeted-test policy |
-| Reviewer | workflow-defined | workflow-defined | maxTurns emergency fuse |
+| Reviewer | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch verdict artifact gate |
 | Finalize | builtin | — | deterministic validation/commit logic |
 
 ### Per-phase trace artifacts

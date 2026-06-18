@@ -512,6 +512,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
 
         case "turn_end": {
           opts.onTurnEnd?.(totalTurns);
+          phaseToolPolicy?.afterTurn?.(totalTurns);
           const stats = session.getSessionStats();
           safeEmitStreamEvent({
             type: "turnEnd",

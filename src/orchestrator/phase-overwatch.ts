@@ -11,6 +11,8 @@ export interface PhaseContractConfig {
     minEditTargets?: number;
     maxEditTargets?: number;
     requireTestTargets?: boolean;
+    requireFilesChanged?: boolean;
+    requireValidationNotes?: boolean;
   };
   allowedScope?: {
     canRead?: boolean;
@@ -26,6 +28,10 @@ export interface PhaseOverwatchConfig {
   continueIfArtifactValidOnBudgetStop?: boolean;
   maxSteersPerPhase?: number;
   forceArtifactAfterSteers?: number;
+  forceArtifactAfterToolCalls?: number;
+  repeatedCommandLimit?: number;
+  maxToolCalls?: number;
+  blockedCommands?: string[];
 }
 
 export interface PhaseControlConfig {
@@ -145,10 +151,18 @@ export function validatePhaseArtifact(config: PhaseControlConfig): ArtifactValid
     if (requireTestTargets && testTargets < 1) result.findings.push("Expected at least one test target");
   }
 
-  if (config.phaseName === "qa" || config.phaseName === "reviewer" || config.phaseName === "finalize") {
+  if (["qa", "reviewer", "finalize", "cli-review", "pr-review"].includes(config.phaseName)) {
     if (!/\b(PASS|FAIL|BLOCKED|VERDICT)\b/i.test(content)) {
       result.findings.push("Expected explicit verdict/status");
     }
+  }
+
+  if (config.contract?.completion?.requireFilesChanged && !/\b(Files Changed|Changed Files|Modified Files)\b/i.test(content)) {
+    result.findings.push("Expected changed-files summary");
+  }
+
+  if (config.contract?.completion?.requireValidationNotes && !/\b(QA Handoff|Commands|Validation|Verification|Findings)\b/i.test(content)) {
+    result.findings.push("Expected validation handoff or command notes");
   }
 
   result.valid = result.missingSections.length === 0 && result.findings.length === 0;
@@ -159,10 +173,18 @@ function defaultRequiredSections(phaseName: string): string[] {
   switch (phaseName) {
     case "explorer":
       return ["Summary", "Likely edit targets", "Test targets", "Risks"];
+    case "developer":
+      return ["Approach", "Files Changed", "QA Handoff", "Decisions", "Known Limitations"];
     case "qa":
       return ["Verdict", "Commands", "Findings"];
     case "reviewer":
-      return ["Verdict", "Findings"];
+      return ["Verdict", "Summary", "Issues"];
+    case "documentation":
+      return ["Verdict", "Documentation Updated", "Documentation Not Needed", "Checks"];
+    case "pr-review":
+      return ["Verdict", "Findings Reviewed", "Actions Taken", "Validation", "Remaining Blocking Items"];
+    case "troubleshooter":
+      return ["Summary", "Root Cause", "Recommended Fix"];
     case "finalize":
       return ["Verdict", "Commands"];
     default:
@@ -247,12 +269,37 @@ function block(reason: string) {
   return { block: true, reason };
 }
 
+function normalizedCommand(command: string): string {
+  return command.replace(/\s+/g, " ").trim();
+}
+
 function qaBroadCommand(command: string): boolean {
-  const normalized = command.replace(/\s+/g, " ").trim();
+  const normalized = normalizedCommand(command);
   return /^(npm|pnpm|yarn)\s+(test|vitest)(\s+run)?$/i.test(normalized)
     || /^mix\s+test$/i.test(normalized)
     || /^cargo\s+test$/i.test(normalized)
     || /^go\s+test\s+\.\/\.\.\.$/i.test(normalized);
+}
+
+function anyTestCommand(command: string): boolean {
+  const normalized = normalizedCommand(command);
+  return /(^|\s)(npm|pnpm|yarn)\s+(test|vitest)\b/i.test(normalized)
+    || /(^|\s)npx\s+vitest\b/i.test(normalized)
+    || /(^|\s)mix\s+test\b/i.test(normalized)
+    || /(^|\s)cargo\s+test\b/i.test(normalized)
+    || /(^|\s)go\s+test\b/i.test(normalized);
+}
+
+function configuredBlockedCommand(config: PhaseControlConfig, command: string): string | undefined {
+  const normalized = normalizedCommand(command);
+  for (const pattern of config.overwatch?.blockedCommands ?? []) {
+    try {
+      if (new RegExp(pattern, "i").test(normalized)) return pattern;
+    } catch {
+      if (normalized.includes(pattern)) return pattern;
+    }
+  }
+  return undefined;
 }
 
 function steeringMessage(config: PhaseControlConfig, validation: ArtifactValidation): string {
@@ -270,7 +317,7 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
   const command = asString(input.command);
   const validation = validatePhaseArtifact(config);
 
-  if ((tool === "read" || tool === "grep" || tool === "find" || tool === "ls") && validation.valid) {
+  if (validation.valid) {
     return { allow: false, reason: steeringMessage(config, validation) };
   }
 
@@ -278,22 +325,52 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
     return { allow: false, reason: `Overwatch: ${config.phaseName} may only write configured artifact files.` };
   }
 
-  if (config.phaseName === "qa" && tool === "bash" && command && qaBroadCommand(command)) {
-    return { allow: false, reason: "Overwatch: QA may not run broad full-suite commands; run targeted validation only or write BLOCKED with rationale." };
+  if (tool === "bash" && command) {
+    const blockedPattern = configuredBlockedCommand(config, command);
+    if (blockedPattern) {
+      return { allow: false, reason: `Overwatch: command blocked for ${config.phaseName} by pattern ${blockedPattern}.` };
+    }
+    if (config.phaseName === "developer" && anyTestCommand(command)) {
+      return { allow: false, reason: "Overwatch: Developer must not run tests; write QA handoff with focused validation commands instead." };
+    }
+    if (config.phaseName === "qa" && qaBroadCommand(command)) {
+      return { allow: false, reason: "Overwatch: QA may not run broad full-suite commands; run targeted validation only or write BLOCKED with rationale." };
+    }
+    const repeatedCommandLimit = config.overwatch?.repeatedCommandLimit ?? 3;
+    const previousRuns = telemetry.summary().commandsRun.filter((previous) => normalizedCommand(previous) === normalizedCommand(command)).length;
+    if (previousRuns >= repeatedCommandLimit) {
+      return { allow: false, reason: `Overwatch: repeated command limit reached for ${config.phaseName}. Write ${config.artifact ?? "the phase artifact"} with current evidence or change strategy.` };
+    }
   }
 
   if (config.phaseName === "documentation" && (tool === "write" || tool === "edit") && path && !/(^|\/)docs\/|README\.md$|CLAUDE\.md$|AGENTS\.md$/i.test(path)) {
     return { allow: false, reason: "Overwatch: documentation phase may only edit documentation files." };
   }
 
+  const summary = telemetry.summary();
   const maxSteers = config.overwatch?.maxSteersPerPhase ?? 3;
   const forceAfter = config.overwatch?.forceArtifactAfterSteers ?? 2;
-  const readLikeCalls = (telemetry.summary().toolCounts.read ?? 0) + (telemetry.summary().toolCounts.grep ?? 0) + (telemetry.summary().toolCounts.find ?? 0);
-  if (config.phaseName === "explorer" && readLikeCalls >= 10 && telemetry.summary().steers < maxSteers) {
+  const forceAfterTools = config.overwatch?.forceArtifactAfterToolCalls ?? (config.phaseName === "explorer" ? 10 : undefined);
+  const maxToolCalls = config.overwatch?.maxToolCalls;
+  const nearMaxTurns = Boolean(config.maxTurns && summary.turns >= Math.max(1, config.maxTurns - 5));
+  const readLikeCalls = (summary.toolCounts.read ?? 0) + (summary.toolCounts.grep ?? 0) + (summary.toolCounts.find ?? 0);
+  const shouldForceArtifact = Boolean(
+    config.artifact &&
+    (
+      nearMaxTurns ||
+      (forceAfterTools !== undefined && summary.toolCalls >= forceAfterTools) ||
+      (config.phaseName === "explorer" && readLikeCalls >= 10)
+    ) &&
+    summary.steers < maxSteers
+  );
+  if (shouldForceArtifact && tool !== "write" && tool !== "edit") {
     return { allow: false, reason: steeringMessage(config, validation) };
   }
-  if (config.phaseName === "explorer" && telemetry.summary().steers >= forceAfter && (tool === "read" || tool === "grep" || tool === "find")) {
-    return { allow: false, reason: `Overwatch: no more investigation. Write ${config.artifact ?? "the artifact"} with current evidence.` };
+  if (config.artifact && summary.steers >= forceAfter && tool !== "write" && tool !== "edit") {
+    return { allow: false, reason: `Overwatch: no more unbounded work in ${config.phaseName}. Write ${config.artifact} with current evidence.` };
+  }
+  if (maxToolCalls !== undefined && summary.toolCalls >= maxToolCalls) {
+    return { allow: false, reason: `Overwatch: ${config.phaseName} exceeded maxToolCalls (${maxToolCalls}). Finish or write ${config.artifact ?? "a handoff artifact"}.` };
   }
 
   return { allow: true };
@@ -301,12 +378,16 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
 
 export interface PhaseToolPolicy {
   beforeTool(toolName: string, input: Record<string, unknown>): string | undefined;
+  afterTurn?(turn: number): void;
 }
 
 export function createPhaseToolPolicy(config: PhaseControlConfig, emit?: (event: { kind: "warning" | "update"; message: string; toolName?: string; argsPreview?: string }) => void): PhaseToolPolicy | undefined {
   if (!shouldControl(config)) return undefined;
   const telemetry = new PhaseTelemetry(config);
   return {
+    afterTurn(turn: number): void {
+      telemetry.recordTurn(turn);
+    },
     beforeTool(toolName: string, input: Record<string, unknown>): string | undefined {
       const decision = deterministicPolicy(config, telemetry, { toolName, input });
       if (!decision.allow) {

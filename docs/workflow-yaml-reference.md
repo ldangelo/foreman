@@ -281,7 +281,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Most phases 
 
 Prompt phases can enable `overwatch` to make `maxTurns` an emergency fuse instead of the only runaway-control mechanism. Overwatch tracks tool calls, validates the phase artifact, blocks known drift patterns, and returns steering messages through blocked tool-call results. If a phase hits a budget/max-turn stop after producing a valid artifact and `continueIfArtifactValidOnBudgetStop: true`, Foreman accepts the phase evidence and continues.
 
-Bundled default/feature/bug workflows enable overwatch for Explorer and QA. Explorer stops further read/grep work once `EXPLORER_REPORT.md` is valid and steers broad investigation toward a concise handoff. QA blocks broad full-suite commands and requires a verdict/report contract.
+Bundled default/feature/bug workflows enable overwatch across prompt-backed phases: Explorer, Developer/fix, QA, Reviewer, Documentation, and PR Review. Explorer stops further read/grep work once `EXPLORER_REPORT.md` is valid and steers broad investigation toward a concise handoff. Developer/fix blocks test commands and requires a changed-files/QA-handoff report instead of burning turns on verification. QA blocks broad full-suite commands and requires a verdict/report contract. Review and documentation phases stop after bounded evidence and valid reports.
 
 ```yaml
   - name: explorer
@@ -300,7 +300,12 @@ Bundled default/feature/bug workflows enable overwatch for Explorer and QA. Expl
       continueIfArtifactValidOnBudgetStop: true
       maxSteersPerPhase: 3
       forceArtifactAfterSteers: 2
+      forceArtifactAfterToolCalls: 10
+      maxToolCalls: 20
+      repeatedCommandLimit: 2
 ```
+
+Additional `contract.completion` fields include `requireFilesChanged` and `requireValidationNotes` for handoff-style phases. Additional `overwatch` controls include `forceArtifactAfterToolCalls`, `maxToolCalls`, `repeatedCommandLimit`, and `blockedCommands` (regular-expression strings matched against normalized shell commands).
 
 ### Documentation Phase
 
@@ -310,6 +315,12 @@ Bundled workflows include a prompt-driven `documentation` phase after `finalize`
   - name: documentation
     prompt: documentation.md
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Documentation Updated, Documentation Not Needed, Checks]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
 ```
 
 ### Finalize Phase
