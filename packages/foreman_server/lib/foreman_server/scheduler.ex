@@ -117,7 +117,13 @@ defmodule ForemanServer.Scheduler do
         end
       end)
 
-    %{claimed: claimed, skipped: skipped, active_runs: length(active_runs)}
+    %{
+      claimed: claimed,
+      skipped: skipped,
+      active_runs: length(active_runs),
+      active_run_details: active_runs,
+      stale_active_runs: stale_active_runs(active_runs)
+    }
   end
 
   defp claim_task(task, phases, worker_launcher) do
@@ -161,6 +167,7 @@ defmodule ForemanServer.Scheduler do
 
   defp active_runs do
     snapshot = ProjectionStore.snapshot()
+    now = DateTime.utc_now()
 
     snapshot.runs
     |> Map.values()
@@ -168,6 +175,34 @@ defmodule ForemanServer.Scheduler do
       task = Map.get(snapshot.tasks, Map.get(run, :task_id))
       Map.get(run, :status) == "in_progress" and Map.get(task || %{}, :status) in ["in_progress", "in-progress"]
     end)
+    |> Enum.map(fn run ->
+      task = Map.get(snapshot.tasks, Map.get(run, :task_id), %{})
+      updated_at = Map.get(run, :updated_at) || Map.get(task, :updated_at)
+      %{
+        run_id: Map.get(run, :run_id),
+        task_id: Map.get(run, :task_id),
+        project_id: Map.get(task, :project_id),
+        task_status: Map.get(task, :status),
+        run_status: Map.get(run, :status),
+        updated_at: updated_at,
+        age_seconds: age_seconds(updated_at, now),
+        stale: stale?(updated_at, now)
+      }
+    end)
+  end
+
+  defp stale_active_runs(active_runs), do: Enum.filter(active_runs, &Map.get(&1, :stale))
+
+  defp stale?(nil, _now), do: true
+  defp stale?(updated_at, now), do: age_seconds(updated_at, now) > scheduler_env(:stale_active_seconds, 30 * 60)
+
+  defp age_seconds(nil, _now), do: nil
+  defp age_seconds(%DateTime{} = updated_at, now), do: DateTime.diff(now, updated_at, :second)
+  defp age_seconds(updated_at, now) when is_binary(updated_at) do
+    case DateTime.from_iso8601(updated_at) do
+      {:ok, parsed, _offset} -> DateTime.diff(now, parsed, :second)
+      _ -> nil
+    end
   end
 
   defp project_counts(runs) do

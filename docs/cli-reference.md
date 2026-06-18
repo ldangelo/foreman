@@ -105,7 +105,7 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 
 ### `foreman run task`
 
-Run a specific task through an explicit workflow, bypassing scheduler state gates. This is intended for debugging, recovery, and manual reruns where the task may be `failed`, `closed`, `in-progress`, or otherwise not `ready`. Worktree/run locking still applies.
+Run a specific task through an explicit workflow, bypassing scheduler state gates. This is intended for debugging, recovery, and manual reruns where the task may be `failed`, `closed`, `in-progress`, or otherwise not `ready`. Worktree/run locking still applies. When the Elixir scheduler launches the legacy Node worker bridge and the task only exists in Elixir projections, Foreman mirrors that task into the Postgres worker store before execution so prompts receive title/type/priority/description metadata.
 
 ```bash
 foreman run task foreman-12345 task --project foreman --no-watch
@@ -461,7 +461,7 @@ foreman pr --base-branch dev      # PR against dev instead of main
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator. In Elixir/default backend mode, inbox reads the shared Postgres run/message tables directly and does not require the Node daemon socket.
+View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator. In Elixir/default backend mode, inbox reads the shared Postgres run/message/event tables directly and does not require the Node daemon socket. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written.
 
 ```bash
 foreman inbox                     # Show latest run's messages
@@ -484,6 +484,8 @@ foreman inbox --ack               # Mark shown messages as read
 | `--unread` | — | Show only unread messages |
 | `--limit <n>` | `50` | Maximum messages to show |
 | `--ack` | — | Mark shown messages as read |
+| `--events` | — | Show an expanded pipeline event section |
+| `--events-limit <n>` | `50` | Maximum lifecycle events to show |
 
 ### `foreman inbox send`
 

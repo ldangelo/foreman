@@ -42,6 +42,8 @@ import { autoMerge } from "../../orchestrator/auto-merge.js";
 import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -94,6 +96,75 @@ function issueToSeedInfo(seed: Issue): SeedInfo {
     type: seed.type,
     labels: seed.labels,
   };
+}
+
+async function syncElixirTaskToPostgres(
+  taskId: string,
+  registeredProjectId: string,
+  projectPath: string,
+): Promise<Issue | null> {
+  try {
+    const manager = new ElixirServerManager();
+    if (!(await manager.health()).ok) return null;
+    const client = new ElixirServerClient(manager.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    const task = await client.getTask(taskId);
+    if (!task) return null;
+
+    const adapter = new PostgresAdapter();
+    const row = await adapter.createTask(registeredProjectId, elixirTaskToPostgresTask(task));
+    console.warn(chalk.yellow(`[foreman] mirrored Elixir task '${taskId}' into Postgres worker store`));
+    return postgresRowToIssue(projectPath, row);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(chalk.yellow(`[foreman] could not mirror Elixir task '${taskId}' into Postgres: ${msg}`));
+    return null;
+  }
+}
+
+function elixirTaskToPostgresTask(task: ElixirTask): Record<string, unknown> {
+  const id = task.task_id ?? task.id;
+  const status = normalizeElixirStatusForPostgres(task.status ?? "open");
+  return {
+    id,
+    title: task.title ?? id,
+    description: task.description ?? null,
+    type: task.task_type ?? task.type ?? "task",
+    priority: typeof task.priority === "number" ? task.priority : 2,
+    status,
+    external_id: task.external_id ?? null,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    approved_at: task.approved_at ?? null,
+    closed_at: task.closed_at ?? null,
+    labels: task.project_id ? [`project:${task.project_id}`] : [],
+  };
+}
+
+function normalizeElixirStatusForPostgres(status: string): string {
+  if (status === "open") return "backlog";
+  if (status === "in_progress") return "in-progress";
+  if (status === "completed") return "closed";
+  return status;
+}
+
+function postgresRowToIssue(projectPath: string, row: Awaited<ReturnType<PostgresAdapter["createTask"]>>): Issue {
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    description: row.description ?? null,
+    type: row.type,
+    priority: String(row.priority),
+    assignee: null,
+    parent: null,
+    labels: [`project:${projectPath}`, ...(row.labels ?? [])],
+    created_at: dateishToIso(row.created_at),
+    updated_at: dateishToIso(row.updated_at),
+  };
+}
+
+function dateishToIso(value: unknown): string {
+  return value instanceof Date ? value.toISOString() : String(value);
 }
 
 /**
@@ -180,8 +251,14 @@ export async function runTaskAction(
   try {
     task = await taskClient.show(taskId) as Issue;
   } catch {
-    console.error(chalk.red(`Task '${taskId}' not found`));
-    return 1;
+    const synced = registered
+      ? await syncElixirTaskToPostgres(taskId, registered.id, resolvedProjectPath)
+      : null;
+    if (!synced) {
+      console.error(chalk.red(`Task '${taskId}' not found`));
+      return 1;
+    }
+    task = synced;
   }
   if (!task) {
     console.error(chalk.red(`Task '${taskId}' not found`));

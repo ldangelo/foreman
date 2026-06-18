@@ -2043,6 +2043,20 @@ export class PostgresAdapter {
     );
   }
 
+  async listProjectPipelineEvents(projectId: string, limit = 100): Promise<PipelineEventRow[]> {
+    return query<PipelineEventRow>(
+      `SELECT * FROM events WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [projectId, limit]
+    );
+  }
+
+  async listPipelineEventsForRun(runId: string, limit = 100): Promise<PipelineEventRow[]> {
+    return query<PipelineEventRow>(
+      `SELECT * FROM events WHERE run_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [runId, limit]
+    );
+  }
+
   async listSentinelEvents(sentinelRunId: string): Promise<PipelineEventRow[]> {
     return query<PipelineEventRow>(
       `SELECT * FROM events WHERE sentinel_run_id = $1 ORDER BY created_at ASC`,

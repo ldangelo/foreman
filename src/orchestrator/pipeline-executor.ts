@@ -82,6 +82,31 @@ export interface PhaseResult {
   stopPipelineSuccess?: boolean;
 }
 
+async function phaseAgentError(
+  agentMailClient: AnyMailClient | null | undefined,
+  phaseName: string,
+  seedId: string,
+  sinceIso: string,
+): Promise<{ error: string; retryable: boolean } | null> {
+  if (!agentMailClient) return null;
+  const expectedSenders = new Set([phaseName, `${phaseName}-${seedId}`]);
+  const sinceMs = Date.parse(sinceIso);
+  const messages = await agentMailClient.fetchInbox("foreman", { limit: 50 });
+  const msg = [...messages].reverse().find((candidate) =>
+    candidate.subject === "agent-error" &&
+    expectedSenders.has(candidate.from) &&
+    (!Number.isFinite(sinceMs) || Date.parse(candidate.receivedAt) >= sinceMs)
+  );
+  if (!msg) return null;
+  try {
+    const body = JSON.parse(msg.body ?? "{}") as Record<string, unknown>;
+    const error = typeof body.error === "string" ? body.error : "agent-error";
+    return { error, retryable: body.retryable !== false };
+  } catch {
+    return { error: msg.body || "agent-error", retryable: true };
+  }
+}
+
 export interface PhaseObservabilityInput {
   phaseType?: "prompt" | "command" | "bash" | "builtin";
   expectedArtifact?: string;
@@ -1621,6 +1646,7 @@ async function runPhaseSequence(
       workflowPath: workflowConfig.sourcePath,
     };
 
+    const phaseRunStartedAt = new Date().toISOString();
     const result = await ctx.runPhase(
       phaseName, prompt, phaseConfig, progress, logFile, store, notifyClient, agentMailClient,
       observabilityInput,
@@ -1662,6 +1688,14 @@ async function runPhaseSequence(
       : undefined;
     let phaseSucceeded = result.success && !commandPhaseContractError;
     let phaseError = commandPhaseContractError ?? result.error;
+
+    const explicitAgentError = await phaseAgentError(agentMailClient, phaseName, seedId, phaseRunStartedAt);
+    if (explicitAgentError) {
+      phaseSucceeded = false;
+      phaseError = explicitAgentError.error;
+      ctx.log(`[${phaseName.toUpperCase()}] FAIL — agent-error mail received: ${explicitAgentError.error}`);
+      await appendFile(logFile, `\n[PIPELINE] ${phaseName} agent-error: ${explicitAgentError.error}\n`);
+    }
 
     if (phaseSucceeded && phaseName === "developer") {
       const debugArtifacts = findDebugArtifacts(worktreePath);
@@ -1784,6 +1818,15 @@ async function runPhaseSequence(
       // P1: Track Explorer failures for circuit breaker
       if (phaseName === "explorer") {
         explorerFailures.push(new Date().toISOString());
+      }
+
+      if (explicitAgentError && !explicitAgentError.retryable) {
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          seedId, phase: phaseName, error: errorMsg, retryable: false,
+        });
+        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} agent-error: ${errorMsg}`, { retryable: false });
+        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
 
       // P1: Rate limit handling with smarter backoff

@@ -123,6 +123,32 @@ function formatEventSummary(eventType: string, details: Record<string, unknown> 
   }
 }
 
+function adaptPostgresEvent(row: { id: string; run_id: string | null; event_type: string; payload: unknown; created_at: string | Date }): PipelineEvent {
+  const payload = typeof row.payload === "string"
+    ? JSON.parse(row.payload)
+    : row.payload;
+  return {
+    id: row.id,
+    runId: row.run_id,
+    eventType: row.event_type,
+    details: payload && typeof payload === "object" ? payload as Record<string, unknown> : null,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  };
+}
+
+async function fetchPostgresEvents(
+  adapter: PostgresAdapter,
+  projectId: string,
+  options: { all?: boolean; runId?: string; limit: number },
+): Promise<PipelineEvent[]> {
+  const rows = options.runId
+    ? await adapter.listPipelineEventsForRun(options.runId, options.limit)
+    : options.all
+      ? await adapter.listProjectPipelineEvents(projectId, options.limit)
+      : [];
+  return rows.map(adaptPostgresEvent);
+}
+
 async function fetchDaemonEvents(
   client: ReturnType<typeof createTrpcClient>,
   projectId: string,
@@ -1157,7 +1183,7 @@ export const inboxCommand = new Command("inbox")
         if (showEvents) {
           console.log("");
           const events = postgres
-            ? []
+            ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { all: true, limit: eventsLimit })
             : daemon
               ? await fetchDaemonEvents(daemon.client, daemon.projectId, { all: true, limit: eventsLimit })
               : fetchEventsFromStore(store!, eventsLimit);
@@ -1298,6 +1324,16 @@ export const inboxCommand = new Command("inbox")
           }
         }
 
+        if (postgres && !showEvents) {
+          const lifecycleEvents = await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: Math.min(eventsLimit, 10) });
+          if (lifecycleEvents.length > 0) {
+            console.log(chalk.bold("\nLifecycle Events — run: ") + runId);
+            console.log("─".repeat(70));
+            for (const event of lifecycleEvents) console.log(formatPipelineEvent(event));
+            console.log("─".repeat(70));
+          }
+        }
+
         if (options.ack && messages.length > 0) {
           if (postgres) {
             for (const msg of messages) await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
@@ -1317,7 +1353,7 @@ export const inboxCommand = new Command("inbox")
         if (showEvents) {
           console.log("");
           const events = postgres
-            ? []
+            ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: eventsLimit })
             : daemon
               ? await fetchDaemonEvents(daemon.client, daemon.projectId, { runId, limit: eventsLimit })
               : fetchEventsFromStoreForRun(store!, runId, eventsLimit);

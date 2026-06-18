@@ -176,7 +176,7 @@ Good task descriptions include:
 
 ### 5. Approve the Task
 
-Tasks usually start in backlog. Approve when ready for dispatch.
+Tasks usually start in backlog. Approve when ready for dispatch. During the Elixir cutover, a task created only in Elixir is mirrored into the Postgres worker store when the worker bridge starts, so worker prompts receive the task title, type, priority, and description instead of placeholder metadata.
 
 ```bash
 foreman task approve <task-id>
@@ -213,7 +213,7 @@ foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman status` or `foreman watch` when you need execution health and active run state. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
+Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
 
 ### 8. Triage Failures
 

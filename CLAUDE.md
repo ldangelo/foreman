@@ -40,7 +40,7 @@ foreman worktree       # Git worktree management
 foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead')
 foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
 foreman purge runs     # Remove stale failed run records
-foreman inbox          # Agent mail inbox viewer
+foreman inbox          # Agent mail + selected-run lifecycle events
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
 
