@@ -167,11 +167,14 @@ flowchart TD
         P2A --> P2_ok{success?}
         P2_ok -- No --> STUCK
 
+        P2_ok -- transient provider error --> COOLDOWN[Cooldown retry
+re-dispatch later]
+
         P2_ok -- Yes --> P3A
 
         subgraph P3["Phase 3: QA (Sonnet, 30 turns, read+bash)"]
             P3A[Run SDK query\nqaPrompt + dev report]
-            P3A --> P3B[Run tests\nWrite QA_REPORT.md]
+            P3A --> P3B[Run targeted tests\nWrite QA_REPORT.md\nwith command + pass/fail counts]
             P3B --> P3C[Write QA_TRACE.{md,json}]
             P3C --> P3D[Parse verdict: PASS / FAIL]
         end
@@ -611,7 +614,7 @@ foreman server status        # Show PID/URL and health
 foreman server stop          # Stop local Elixir server
 ```
 
-The Elixir server scheduler automatically ticks every 5 seconds, claims dispatchable `ready` tasks within global/project capacity, and launches the Node/Pi worker bridge. `foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines. Troubleshoot Elixir-backed status issues by checking the durable event first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
+The Elixir server scheduler automatically ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, claims dispatchable `ready` tasks within global/project capacity, and launches the Node/Pi worker bridge. `foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines. Troubleshoot Elixir-backed status issues by checking the durable event first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
 
 Security controls for the Elixir server:
 - Worker startup scopes environment to `FOREMAN_PROJECT_ID`, `FOREMAN_RUN_ID`, allowed base variables, and explicit project/run secret maps. Forbidden host secrets such as `FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, and `DATABASE_*` are stripped before worker launch metadata is recorded.

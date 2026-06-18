@@ -40,9 +40,9 @@ Do NOT run tests if conflict markers are found.
 ## Verdict: PASS | FAIL
 
 ## Test Results
-- Targeted command(s) run: <specific command(s) or manual verification used first>
+- Command run: <exact targeted test command, e.g. npm test -- path/to/test.ts>
 - Full suite command: SKIPPED (finalize owns broad/full-suite validation)
-- Test suite: X passed, Y failed | SKIPPED
+- Test suite: X passed, Y failed
 - Raw summary: <copy the pass/fail count lines from the command actually used>
 - Test changes: none (QA is verification-only)
 
@@ -58,6 +58,6 @@ Do NOT run tests if conflict markers are found.
 - Focus on correctness and regressions, not style
 - Be specific about failures — include error messages
 - Use targeted verification only; do not run broad/full-suite commands in QA.
-- QA_REPORT.md MUST include the actual command(s) run and real pass/fail evidence; reports without real test evidence are invalid
+- QA_REPORT.md MUST include `Command run:` plus `Test suite: X passed, Y failed` with real pass/fail evidence; reports without these exact evidence fields are invalid
 - **DO NOT** commit, push, or close the seed
 - **Write SESSION_LOG.md** documenting your session work (required, not optional)

@@ -1158,7 +1158,7 @@ export class JujutsuBackend implements VcsBackend {
     const { seedId, seedTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
     // Escape single quotes so the shell-level single-quoted commit message is
     // safe even when seedTitle contains apostrophes or shell-special characters.
-    const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
+    const safeSeedTitle = (seedTitle || seedId).replace(/'/g, "'\\''");
     const footerSuffix = githubIssueNumber
       ? `\\n\\nFixes #${githubIssueNumber}`
       : "";

@@ -500,6 +500,7 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 					`- max_concurrent: ${scheduler?.max_concurrent ?? "?"}`,
 					`- active_runs: ${scheduler?.last_tick?.active_runs ?? 0}`,
 					`- stale_active_runs: ${scheduler?.last_tick?.stale_active_runs?.length ?? 0}`,
+					`- reconciled_terminal_runs: ${scheduler?.last_tick?.reconciled_terminal_runs?.length ?? 0}`,
 				].join("\n"), data);
 			} catch (error) {
 				ctx.ui.notify(`Foreman scheduler failed: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -518,6 +519,7 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 					`- claimed: ${scheduler?.claimed?.length ?? 0}`,
 					`- skipped: ${scheduler?.skipped?.length ?? 0}`,
 					`- active_runs: ${scheduler?.active_runs ?? "?"}`,
+					`- reconciled_terminal_runs: ${scheduler?.reconciled_terminal_runs?.length ?? 0}`,
 				].join("\n"), data);
 			} catch (error) {
 				ctx.ui.notify(`Foreman tick failed: ${error instanceof Error ? error.message : String(error)}`, "error");

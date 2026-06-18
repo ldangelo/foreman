@@ -32,7 +32,7 @@ foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
-foreman server doctor # Elixir default backend; scheduler ticks every 5s and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
+foreman server doctor # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
@@ -272,7 +272,9 @@ npx tsc --noEmit       # Type-check without building
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)
 - br state diverged from git → `br sync --flush-only && git add .beads/ && git commit -m "sync beads"`
-- agent-worker crash on startup → check `~/.foreman/logs/<runId>.err` for syntax/import errors
+- agent-worker crash on startup/finalize → check `~/.foreman/logs/<runId>.err`; fatal handlers print stack traces when available
+- QA says `report missing test command evidence` → ensure `QA_REPORT.md` has `Command run:` and `Test suite: X passed, Y failed`
+- provider `529` / `overloaded_error` → bundled prompt phases enter cooldown retry instead of burning normal retry loops
 
 <!-- br-agent-instructions-v1 -->
 

@@ -924,7 +924,7 @@ export class GitBackend implements VcsBackend {
     // characters (brackets, colons, parentheses, $, !, etc.).
     // Strategy: end the single-quoted string, escape the quote, reopen it:
     //   O'Brien → 'O'\''Brien'
-    const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
+    const safeSeedTitle = (seedTitle || seedId).replace(/'/g, "'\\''");
     const footerSuffix = githubIssueNumber
       ? `\\n\\nFixes #${githubIssueNumber}`
       : "";

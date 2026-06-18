@@ -133,6 +133,17 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(cmds.commitCommand).not.toContain('jj new');
   });
 
+  it("falls back to seedId when seedTitle is missing at runtime", () => {
+    const b = new JujutsuBackend('/tmp');
+    const cmds = b.getFinalizeCommands({
+      seedId: 'bd-test',
+      seedTitle: undefined as unknown as string,
+      baseBranch: 'main',
+      worktreePath: '/tmp/worktrees/bd-test',
+    });
+    expect(cmds.commitCommand).toContain('bd-test (bd-test)');
+  });
+
   it("returns a jj git push bookmark command for pushCommand", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({

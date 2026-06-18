@@ -37,8 +37,8 @@ The HTTP transport accepts JSON-RPC MCP requests via `POST /mcp` and exposes `GE
 |------|---------|
 | `foreman.smoke.status` | One-call operator smoke check with health, scheduler, active tasks, and recent open tasks. |
 | `foreman.health` | Combined MCP/Elixir readiness. |
-| `foreman.scheduler.status` | Scheduler state, capacity, active runs, stale active runs. |
-| `foreman.scheduler.tick` | One manual scheduler tick for smoke checks/controlled dispatch. |
+| `foreman.scheduler.status` | Scheduler state, capacity, active runs, stale active runs, and terminal-log reconciliations from the last tick. |
+| `foreman.scheduler.tick` | One manual scheduler tick for smoke checks/controlled dispatch; also reconciles active runs with terminal worker-log markers before capacity checks. |
 | `foreman.projects.list` | Registered project inventory. |
 | `foreman.tasks.list` | Project task list from the Elixir projection. |
 | `foreman.tasks.get` | One task from the Elixir projection. |

@@ -98,7 +98,7 @@ foreman doctor
 
 If commands report daemon or database issues, run `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
 
-Elixir backend work uses a separate local server. Elixir is the default backend after cutover; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
+Elixir backend work uses a separate local server. Elixir is the default backend after cutover; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
 
 ```bash
 foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
@@ -201,7 +201,7 @@ foreman run --yes                 # Auto-confirm run prompts for scripts/non-int
 foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
 ```
 
-Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
+Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors, and optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
 ### 7. Monitor Progress
 
@@ -232,7 +232,7 @@ foreman reset --bead <task-id> --dry-run
 foreman retry <task-id> --dispatch
 ```
 
-Avoid mass retrying unless failures are known transient and the root cause is external.
+Avoid mass retrying unless failures are known transient and the root cause is external. QA failures that say `report missing test command evidence` mean `QA_REPORT.md` did not include `Command run:` plus `Test suite: X passed, Y failed`; rerun after the QA prompt/report is corrected.
 
 ### 9. Review and Merge
 

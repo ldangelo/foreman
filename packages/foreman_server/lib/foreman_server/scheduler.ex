@@ -3,7 +3,7 @@ defmodule ForemanServer.Scheduler do
 
   use GenServer
 
-  alias ForemanServer.{EventStore, ProjectionStore, RunActor}
+  alias ForemanServer.{EventStore, LogReconciler, ProjectionStore, RunActor}
 
   @default_phases ["developer"]
   @default_tick_interval_ms 5_000
@@ -23,14 +23,25 @@ defmodule ForemanServer.Scheduler do
 
   @impl true
   def init(opts) do
-    interval_ms = Keyword.get(opts, :tick_interval_ms, scheduler_env(:tick_interval_ms, @default_tick_interval_ms))
+    interval_ms =
+      Keyword.get(
+        opts,
+        :tick_interval_ms,
+        scheduler_env(:tick_interval_ms, @default_tick_interval_ms)
+      )
+
     auto_tick = Keyword.get(opts, :auto_tick, scheduler_env(:auto_tick, true))
 
     state = %{
       max_concurrent: Keyword.get(opts, :max_concurrent, scheduler_env(:max_concurrent, 2)),
       project_limits: Keyword.get(opts, :project_limits, scheduler_env(:project_limits, %{})),
       default_phases: Keyword.get(opts, :default_phases, @default_phases),
-      worker_launcher: Keyword.get(opts, :worker_launcher, scheduler_env(:worker_launcher, ForemanServer.WorkerLauncher)),
+      worker_launcher:
+        Keyword.get(
+          opts,
+          :worker_launcher,
+          scheduler_env(:worker_launcher, ForemanServer.WorkerLauncher)
+        ),
       auto_tick: auto_tick,
       tick_interval_ms: interval_ms,
       last_tick: nil
@@ -71,6 +82,8 @@ defmodule ForemanServer.Scheduler do
   end
 
   defp dispatch(state) do
+    initial_active_runs = active_runs()
+    reconciled_terminal_runs = LogReconciler.reconcile_terminal_runs(initial_active_runs)
     tasks = ProjectionStore.dispatchable_tasks()
     active_runs = active_runs()
 
@@ -122,7 +135,8 @@ defmodule ForemanServer.Scheduler do
       skipped: skipped,
       active_runs: length(active_runs),
       active_run_details: active_runs,
-      stale_active_runs: stale_active_runs(active_runs)
+      stale_active_runs: stale_active_runs(active_runs),
+      reconciled_terminal_runs: reconciled_terminal_runs
     }
   end
 
@@ -135,7 +149,10 @@ defmodule ForemanServer.Scheduler do
              stream_id: "task:#{task.task_id}",
              event_type: "TaskUpdated",
              payload: %{task_id: task.task_id, status: "in_progress", run_id: run_id},
-             metadata: %{correlation_id: run_id, idempotency_key: "claim:#{task.task_id}:#{run_id}"}
+             metadata: %{
+               correlation_id: run_id,
+               idempotency_key: "claim:#{task.task_id}:#{run_id}"
+             }
            }),
          {:ok, _pid} <-
            RunActor.start_run(%{
@@ -173,11 +190,14 @@ defmodule ForemanServer.Scheduler do
     |> Map.values()
     |> Enum.filter(fn run ->
       task = Map.get(snapshot.tasks, Map.get(run, :task_id))
-      Map.get(run, :status) == "in_progress" and Map.get(task || %{}, :status) in ["in_progress", "in-progress"]
+
+      Map.get(run, :status) == "in_progress" and
+        Map.get(task || %{}, :status) in ["in_progress", "in-progress"]
     end)
     |> Enum.map(fn run ->
       task = Map.get(snapshot.tasks, Map.get(run, :task_id), %{})
       updated_at = Map.get(run, :updated_at) || Map.get(task, :updated_at)
+
       %{
         run_id: Map.get(run, :run_id),
         task_id: Map.get(run, :task_id),
@@ -194,10 +214,13 @@ defmodule ForemanServer.Scheduler do
   defp stale_active_runs(active_runs), do: Enum.filter(active_runs, &Map.get(&1, :stale))
 
   defp stale?(nil, _now), do: true
-  defp stale?(updated_at, now), do: age_seconds(updated_at, now) > scheduler_env(:stale_active_seconds, 30 * 60)
+
+  defp stale?(updated_at, now),
+    do: age_seconds(updated_at, now) > scheduler_env(:stale_active_seconds, 30 * 60)
 
   defp age_seconds(nil, _now), do: nil
   defp age_seconds(%DateTime{} = updated_at, now), do: DateTime.diff(now, updated_at, :second)
+
   defp age_seconds(updated_at, now) when is_binary(updated_at) do
     case DateTime.from_iso8601(updated_at) do
       {:ok, parsed, _offset} -> DateTime.diff(now, parsed, :second)

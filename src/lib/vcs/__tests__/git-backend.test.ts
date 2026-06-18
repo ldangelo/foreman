@@ -273,6 +273,17 @@ describe("GitBackend.getFinalizeCommands", () => {
     expect(cmds.commitCommand).toContain("My Feature");
   });
 
+  it("falls back to seedId when seedTitle is missing at runtime", () => {
+    const backend = new GitBackend("/tmp");
+    const cmds = backend.getFinalizeCommands({
+      seedId: "bd-abc",
+      seedTitle: undefined as unknown as string,
+      baseBranch: "main",
+      worktreePath: "/tmp",
+    });
+    expect(cmds.commitCommand).toContain("bd-abc (bd-abc)");
+  });
+
   it("pushCommand references the correct branch", () => {
     const backend = new GitBackend("/tmp");
     const cmds = backend.getFinalizeCommands({

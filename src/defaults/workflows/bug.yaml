@@ -32,6 +32,7 @@ phases:
       P0: MiniMax
       P4: MiniMax
     maxTurns: 80
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -51,6 +52,7 @@ phases:
       P0: MiniMax
       P4: MiniMax
     maxTurns: 120
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -68,6 +70,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
@@ -83,6 +86,7 @@ phases:
       P0: MiniMax
       P4: MiniMax
     maxTurns: 60
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
@@ -155,6 +159,7 @@ phases:
     models:
       default: MiniMax
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
     verdict: true
     retryWith: developer

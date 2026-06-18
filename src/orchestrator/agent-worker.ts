@@ -396,6 +396,7 @@ interface LogContext {
 
 /** Module-level log context; initialized in main() after config is loaded. */
 let logContext: LogContext | null = null;
+let activeConfig: WorkerConfig | null = null;
 
 /**
  * Initialize the structured logging context from worker config.
@@ -465,6 +466,7 @@ async function main(): Promise<void> {
 
   // Read and delete config file (contains env vars including credentials — delete immediately)
   const config: WorkerConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+  activeConfig = config;
   try { unlinkSync(configPath); } catch { /* already deleted */ }
   installTestWorkerGuard(config);
 
@@ -2535,7 +2537,9 @@ function log(msg: string): void {
  */
 async function fatalHandler(err: unknown): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack : undefined;
   console.error(`[foreman-worker] Fatal: ${msg}`);
+  if (stack) console.error(stack);
 
   // Try to recover enough context to update Postgres + send Agent Mail.
   const configPath = process.argv[2];
@@ -2548,18 +2552,20 @@ async function fatalHandler(err: unknown): Promise<void> {
   let projectId: string | undefined;
   let projectPath: string | undefined;
 
-  // Config may have already been deleted by main(); re-read if still present.
+  // Config may have already been deleted by main(); prefer in-memory config,
+  // then re-read from disk if still present.
   try {
-    const raw = readFileSync(configPath, "utf-8");
-    const cfg = JSON.parse(raw) as Partial<WorkerConfig>;
+    const cfg = activeConfig ?? JSON.parse(readFileSync(configPath, "utf-8")) as Partial<WorkerConfig>;
     runId = cfg.runId;
     seedId = cfg.seedId;
     projectId = cfg.projectId;
     projectPath = cfg.projectPath ?? (cfg.worktreePath ? inferProjectPathFromWorkspacePath(cfg.worktreePath) : undefined);
   } catch {
-    // Config already deleted (worker started successfully but crashed later).
-    // We cannot recover context from disk at this point.
+    // Config unavailable. Fall back to logContext below when possible.
   }
+
+  runId ??= logContext?.runId;
+  seedId ??= logContext?.issueId;
 
   if (runId && projectPath) {
     // Repair the fatal run status with the registered backend when available,
@@ -2589,6 +2595,7 @@ async function fatalHandler(err: unknown): Promise<void> {
             runId,
             seedId,
             error: msg,
+            stack,
             phase: currentPhase,
           }),
         );
