@@ -137,7 +137,7 @@ export class ForemanMcpServer {
     const args = objectParam(params, "arguments", {});
     const tool = this.tools.find((candidate) => candidate.name === name);
     if (!tool) throw new Error(`Unknown Foreman MCP tool: ${name}`);
-    const data = await tool.handler(args);
+    const data = compactMcpData(await tool.handler(args));
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
       structuredContent: data,
@@ -317,14 +317,14 @@ export class ForemanMcpServer {
         futureUseCases: ["operator debugging", "run log tailing", "support bundles"],
         handler: async (args) => {
           const view = optionalString(args.view) === "raw" ? "raw" : "compact";
-          const limit = numberParam(args, "limit", 100);
+          const limit = boundedNumberParam(args, "limit", 50, 1, view === "raw" ? 20 : 50);
           const runId = optionalString(args.run_id);
           if (runId) return await this.runLogBundle(runId, view, limit);
 
           const projectId = await this.resolveProjectId(args).catch(() => undefined);
           const runs = (await this.client.listRuns())
             .filter((run) => !projectId || run.project_id === projectId)
-            .slice(0, numberParam(args, "runs", 20));
+            .slice(0, boundedNumberParam(args, "runs", 5, 1, 10));
 
           const logs = [];
           for (const run of runs) {
@@ -347,7 +347,7 @@ export class ForemanMcpServer {
         handler: async (args) => {
           const runId = optionalString(args.run_id);
           const projectId = await this.resolveProjectId(args).catch(() => undefined);
-          const limit = numberParam(args, "limit", 50);
+          const limit = boundedNumberParam(args, "limit", 25, 1, 50);
           const inbox = await this.client.listInbox({ runId, projectId, limit, unread: args.unread === true });
 
           if (runId) {
@@ -357,7 +357,7 @@ export class ForemanMcpServer {
 
           const runs = (await this.client.listRuns())
             .filter((run) => !projectId || run.project_id === projectId)
-            .slice(0, numberParam(args, "runs", 20));
+            .slice(0, boundedNumberParam(args, "runs", 5, 1, 10));
           const derived = [];
           for (const run of runs) {
             const id = run.run_id ?? run.id;
@@ -379,7 +379,7 @@ export class ForemanMcpServer {
         handler: async (args) => {
           const runId = optionalString(args.run_id);
           const projectId = await this.resolveProjectId(args).catch(() => undefined);
-          return this.client.listEvents({ runId, projectId, limit: numberParam(args, "limit", 50) });
+          return this.client.listEvents({ runId, projectId, limit: boundedNumberParam(args, "limit", 25, 1, 50) });
         },
       },
       {
@@ -519,6 +519,10 @@ function numberParam(args: Record<string, unknown>, name: string, fallback: numb
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function boundedNumberParam(args: Record<string, unknown>, name: string, fallback: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, numberParam(args, name, fallback)));
+}
+
 function objectParam(args: Record<string, unknown>, name: string, fallback: Record<string, unknown>): Record<string, unknown> {
   const value = args[name];
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : fallback;
@@ -541,7 +545,7 @@ async function tailRunLogFiles(runId: string, limit: number): Promise<Array<Reco
       path,
       size: stat.size,
       mtime: stat.mtime.toISOString(),
-      lines: lines.slice(-limit),
+      lines: lines.slice(-limit).map((line) => compactLogLine(line)),
       tailed: lines.length > limit,
       total_lines: lines.length,
     });
@@ -559,7 +563,7 @@ async function tailRunInboxFromFiles(runId: string, limit: number): Promise<Arra
     const lines = text.split("\n").filter((line) => line.trim().length > 0).slice(-Math.max(limit * 5, 50));
     lines.forEach((line, index) => {
       const parsed = tryParseJson(line);
-      const message = typeof parsed?.message === "string" ? parsed.message : line;
+      const message = compactLogLine(typeof parsed?.message === "string" ? parsed.message : line);
       if (!message.trim()) return;
       messages.push({
         message_id: `log-${runId}-${suffix}-${index}`,
@@ -579,6 +583,20 @@ async function tailRunInboxFromFiles(runId: string, limit: number): Promise<Arra
 
 function runLogPath(runId: string, suffix: "log" | "err" | "out"): string {
   return join(homedir(), ".foreman", "logs", `${runId}.${suffix}`);
+}
+
+function compactLogLine(line: string, max = 500): string {
+  const text = line.replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max)}… [truncated ${text.length - max} chars]` : text;
+}
+
+function compactMcpData(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return compactLogLine(value, 1000);
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => compactMcpData(item, depth + 1));
+  if (!value || typeof value !== "object" || depth > 6) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) out[key] = compactMcpData(item, depth + 1);
+  return out;
 }
 
 function tryParseJson(line: string): Record<string, unknown> | null {

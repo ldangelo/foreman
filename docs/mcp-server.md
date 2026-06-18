@@ -85,13 +85,13 @@ The project-local Pi extension `.pi/extensions/foreman-mcp.ts` also registers op
 - `/foreman-task <task-id>` — one task detail.
 - `/foreman-approve [project]` — interactively select open/backlog tasks and approve them.
 - `/foreman-runs [status|all] [limit]` — compact run list.
-- `/foreman-logs [run-id] [limit]` — tail event-backed logs for one run, or recent runs when no run id is passed.
+- `/foreman-logs [run-id] [limit]` — tail event-backed logs for one run, or recent runs when no run id is passed; defaults to a compact tail and clamps very large log lines/results to protect Pi context.
 - `/foreman-inbox [run-id] [limit]` — recent inbox messages.
 - `/foreman-events [run-id] [limit]` — recent lifecycle events.
 - `/foreman-scheduler` — scheduler state summary.
 - `/foreman-tick` — run one scheduler tick.
 
-Run `/reload` in Pi after changing the extension.
+Run `/reload` in Pi after changing the extension. Generic MCP tool output is also capped before being returned to Pi; request smaller `limit`/`runs` values or inspect raw log files directly when full log payloads are required.
 
 ## Remote Deployment Notes
 

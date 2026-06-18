@@ -66,19 +66,28 @@ async function callTool(name: string, args: Record<string, unknown>, signal?: Ab
 
 function textFromMcpResult(response: JsonRpcResponse): string {
 	const content = response.result?.content;
-	if (Array.isArray(content) && content.length > 0) {
-		return content
+	const text = Array.isArray(content) && content.length > 0
+		? content
 			.map((item: any) => {
 				if (item?.type === "text") return String(item.text ?? "");
 				return JSON.stringify(item);
 			})
-			.join("\n");
-	}
-	return JSON.stringify(response.result ?? response, null, 2);
+			.join("\n")
+		: JSON.stringify(response.result ?? response, null, 2);
+	return clampToolText(text);
+}
+
+function clampToolText(text: string, maxChars = 12000): string {
+	if (text.length <= maxChars) return text;
+	return `${text.slice(0, maxChars)}\n… [Foreman MCP output truncated: ${text.length - maxChars} chars omitted. Use lower limit/tail or raw log file if needed.]`;
 }
 
 function structured(response: JsonRpcResponse): any {
 	return response.result?.structuredContent ?? tryJson(textFromMcpResult(response));
+}
+
+function compactDetails(response: JsonRpcResponse): unknown {
+	return response.result?.structuredContent ?? { ok: true, note: "full MCP response omitted from pi details to prevent context overflow" };
 }
 
 function tryJson(text: string): any {
@@ -224,7 +233,7 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 					const response = await callTool(tool.name, params as Record<string, unknown>, signal);
 					return {
 						content: [{ type: "text", text: textFromMcpResult(response) }],
-						details: { mcpTool: tool.name, response },
+						details: { mcpTool: tool.name, data: compactDetails(response) },
 					};
 				},
 			});
@@ -269,7 +278,7 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 			const response = await callTool(params.name, params.arguments ?? {}, signal);
 			return {
 				content: [{ type: "text", text: textFromMcpResult(response) }],
-				details: { mcpTool: params.name, response },
+				details: { mcpTool: params.name, data: compactDetails(response) },
 			};
 		},
 	});
@@ -438,10 +447,10 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 			try {
 				const parsed = parseArgs(args);
 				const first = String(parsed["0"] ?? "");
-				const limit = numberArg(parsed.limit ?? parsed.tail ?? parsed["1"], 80);
+				const limit = Math.min(numberArg(parsed.limit ?? parsed.tail ?? parsed["1"], 30), 50);
 				const toolArgs: Record<string, unknown> = { limit };
 				if (parsed.view) toolArgs.view = parsed.view;
-				if (parsed.runs) toolArgs.runs = numberArg(parsed.runs, 20);
+				if (parsed.runs) toolArgs.runs = Math.min(numberArg(parsed.runs, 5), 10);
 				if (parsed.run_id || first) toolArgs.run_id = parsed.run_id ?? first;
 				else toolArgs.project = parsed.project ?? "foreman";
 				const logs = structured(await callTool("foreman.runs.logs", toolArgs));
