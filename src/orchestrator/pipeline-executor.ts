@@ -2032,7 +2032,7 @@ async function runPhaseSequence(
       const report = readReport(worktreePath, interpolatedArtifact);
       let verdict = report ? parseVerdict(report) : "unknown";
 
-      if (phaseName === "qa" && report && !qaReportHasTestEvidence(report)) {
+      if (phaseName === "qa" && report && verdict !== "fail" && !qaReportHasTestEvidence(report)) {
         verdict = "fail";
         feedbackContext = "QA report invalid: missing explicit test command/output evidence with pass/fail counts.";
         ctx.log("[QA] FAIL — report missing test command evidence");
@@ -2150,11 +2150,13 @@ async function runPhaseSequence(
           }
           ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — continuing`);
         } else {
-          const terminalFinalizeFailure = phaseName === "finalize";
-          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}`);
-          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}\n`);
+          const terminalVerdictFailure = phaseName === "finalize"
+            || phase.stopOnFailExhausted === true
+            || ["qa", "reviewer", "cli-review", "pr-review"].includes(phaseName);
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted || terminalVerdictFailure ? "" : ", continuing"}`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted || terminalVerdictFailure ? "" : ", continuing"}\n`);
           feedbackContext = undefined;
-          if (failOnRetriesExhausted || terminalFinalizeFailure) {
+          if (failOnRetriesExhausted || terminalVerdictFailure) {
             return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
           }
         }

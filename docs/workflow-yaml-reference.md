@@ -441,7 +441,7 @@ Phases with `verdict: true` parse PASS/FAIL from their artifact. On FAIL, `retry
     onFail: developer
 ```
 
-QA and Reviewer have **independent retry budgets** — QA exhausting its retries does not affect Reviewer's ability to retry.
+QA and Reviewer have **independent retry budgets** while retries remain. If QA, Reviewer, CLI review, PR review, or Finalize still reports FAIL after its retry budget is exhausted, the pipeline stops instead of continuing to later phases with invalid evidence.
 
 ---
 

@@ -197,6 +197,8 @@ export interface WorkflowPhaseConfig {
    * When retryWith is set, the executor loops back retryOnFail times.
    */
   retryOnFail?: number;
+  /** Stop the pipeline when verdict FAIL remains after retries are exhausted. */
+  stopOnFailExhausted?: boolean;
   /**
    * When true and this phase fails with a retryable/transient error (e.g. rate limit),
    * the task is placed in cooldown state instead of being marked failed/stuck.
@@ -534,6 +536,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
     if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
+    if (typeof p["stopOnFailExhausted"] === "boolean") phase.stopOnFailExhausted = p["stopOnFailExhausted"];
     if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
     if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];

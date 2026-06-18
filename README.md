@@ -82,7 +82,7 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 5. **Finalize** — git add/commit/push, native task merge/close update
 6. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
 
-Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for prompt-backed phases rather than only Explorer/QA.
+Dev ↔ QA retries up to 2x; if QA or Review still fails after its retry budget, the pipeline stops instead of proceeding to finalize with invalid/no changes. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for prompt-backed phases rather than only Explorer/QA.
 
 ## Dispatch Flow
 

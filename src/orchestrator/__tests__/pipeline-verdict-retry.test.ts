@@ -6,7 +6,7 @@
  *  2. qa FAIL verdict loops back to developer
  *  3. Retry counter is independent per phase (reviewer and qa don't share budget)
  *  4. Max retries (retryOnFail) limits loop count
- *  5. After max retries exhausted, pipeline continues to next phase
+ *  5. After max retries exhausted, required verdict phases stop the pipeline
  *  6. PASS verdict does NOT loop back (normal flow)
  *  7. Missing artifact yields "unknown" verdict — no retry triggered
  *  8. QA report without test evidence is treated as FAIL
@@ -315,7 +315,7 @@ describe("verdict-triggered retry", () => {
     expect(ctx.markStuck).not.toHaveBeenCalled();
   });
 
-  it("after max retries (retryOnFail: 1) exhausted, pipeline continues to finalize", async () => {
+  it("after max retries exhausted, required verdict phase stops before finalize", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const phaseOrder: string[] = [];
     const log = vi.fn();
@@ -337,8 +337,8 @@ describe("verdict-triggered retry", () => {
 
     await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
 
-    // developer → reviewer (FAIL, retry 1) → developer → reviewer (FAIL, exhausted) → finalize
-    expect(phaseOrder).toEqual(["developer", "reviewer", "developer", "reviewer", "finalize"]);
+    // developer → reviewer (FAIL, retry 1) → developer → reviewer (FAIL, exhausted) → stop
+    expect(phaseOrder).toEqual(["developer", "reviewer", "developer", "reviewer"]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("max retries"));
   });
 
@@ -472,7 +472,7 @@ describe("verdict-triggered retry", () => {
         if (qaCount === 1) {
           writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: FAIL\n");
         } else {
-          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n");
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n");
         }
       }
       if (phaseName === "reviewer") {

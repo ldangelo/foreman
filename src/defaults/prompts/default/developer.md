@@ -18,7 +18,7 @@ If you hit an unrecoverable error, invoke:
 - Normal mode: read `TASK.md`, `{{reportDir}}/EXPLORER_REPORT.md`, and `git status --short`; then edit the files named in Explorer's **Edit First** / implementation plan.
 - Repair mode: if retry feedback is present, read the cited report/command/file first and change only the failing area.
 - Do not run broad repo discovery. Avoid `find`, unscoped `rg`/`grep`, recursive `ls`, `tree`, `git log --all`, web search, or architecture mapping.
-- Additional search is allowed only when the Explorer plan or repair feedback is demonstrably wrong or incomplete. Before doing it, write one sentence to `SESSION_LOG.md` explaining the failed assumption and the exact bounded search you will run.
+- If Explorer names a file that does not exist, do one bounded correction search for the exact filename/symbol under likely source roots (for example `rg "name" src packages tests docs` or `find src packages -name '<exact-file>'`). Before doing it, write one sentence to `SESSION_LOG.md` explaining the failed assumption and exact bounded search.
 - Do not inspect or edit files outside Explorer's targets unless you first record that deviation in `SESSION_LOG.md` and later in `DEVELOPER_REPORT.md`.
 
 ## Merge Conflict / PR-Wait Feedback Pre-flight

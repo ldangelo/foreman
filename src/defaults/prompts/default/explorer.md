@@ -20,9 +20,11 @@ If you hit an unrecoverable error, invoke:
    ```
 3. Explore only enough to produce a developer handoff:
    - Identify the 1–3 most likely edit files and exact functions/types to inspect
+   - **Verify every Edit First path by successfully reading that exact file before listing it**
    - Identify nearby tests/verification owners, but do not design a full test plan
    - Note the smallest implementation path and any hard blockers
    - Avoid broad architecture mapping unless the task explicitly requires it
+   - For Foreman runtime/state/MCP/activity-feed tasks, prefer the Elixir event/projection path (`packages/foreman_server/`) and current CLI/read-model files; do not propose new Postgres-backed work unless the task explicitly targets legacy Postgres storage
 4. Update `{{reportDir}}/EXPLORER_REPORT.md` with a concise handoff; stop as soon as the developer can edit without re-discovery
 5. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
@@ -52,7 +54,7 @@ If you hit an unrecoverable error, invoke:
 - **DO NOT modify any source code files** — you are read-only
 - **DO NOT create new source files** — only write `{{reportDir}}/EXPLORER_REPORT.md` and SESSION_LOG.md
 - Focus on handoff, not completeness
-- Be specific — reference actual file paths and line numbers
+- Be specific — reference actual file paths and line numbers that you verified by reading
 - Keep the report under ~80 lines unless the task is genuinely cross-cutting
 - Start narrow. Use the task title/description to form an initial file hypothesis before reading broadly
 - Do not map generic architecture, dependency graphs, or test strategy unless needed to identify the edit target

@@ -234,7 +234,7 @@ foreman retry <task-id> --dispatch
 
 Avoid mass retrying unless failures are known transient and the root cause is external. QA failures that say `report missing test command evidence` mean `QA_REPORT.md` did not include `Command run:` plus `Test suite: X passed, Y failed`; rerun after the QA prompt/report is corrected.
 
-Developer and QA phases are intentionally handoff-driven. Explorer performs code discovery and writes the edit/verification targets; Developer should execute that plan without broad repo search, and QA should verify the changed files with targeted commands only. Broad discovery commands are blocked by phase overwatch in Developer/QA.
+Developer and QA phases are intentionally handoff-driven. Explorer performs code discovery and writes verified edit/verification targets; Developer should execute that plan without broad repo search, and QA should verify the changed files with targeted commands only. Broad discovery commands are blocked by phase overwatch in Developer/QA. If QA or Review still fails after retries, Foreman stops the pipeline instead of proceeding to finalize with invalid/no changes.
 
 ### 9. Review and Merge
 

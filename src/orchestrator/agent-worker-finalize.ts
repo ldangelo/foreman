@@ -15,7 +15,7 @@
 
 import { writeFileSync, renameSync, existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -71,8 +71,9 @@ export function rotateReport(worktreePath: string, filename: string): void {
   const p = resolveArtifactPath(worktreePath, filename);
   if (!existsSync(p)) return;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const ext = filename.endsWith(".md") ? ".md" : "";
-  const base = ext ? filename.slice(0, -3) : filename;
+  const name = basename(p);
+  const ext = name.endsWith(".md") ? ".md" : "";
+  const base = ext ? name.slice(0, -3) : name;
   const rotated = join(dirname(p), `${base}.${stamp}${ext}`);
   try {
     renameSync(p, rotated);
