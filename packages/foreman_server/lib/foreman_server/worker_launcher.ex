@@ -29,8 +29,6 @@ defmodule ForemanServer.WorkerLauncher do
 
           if worker_succeeded?(status, output) do
             append("WorkerLaunchCompleted", task, run_id, %{workflow: workflow, output: output})
-            append_run("RunCompleted", task, run_id, %{workflow: workflow})
-            append_task_status(task, run_id, "completed", nil, nil)
           else
             reason = worker_failure_reason(status, output)
 

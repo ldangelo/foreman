@@ -75,7 +75,7 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 > **Note:** Foreman uses PostgreSQL via `DATABASE_URL`. The daemon owns the shared Postgres pool and exposes a tRPC layer for CLI commands, avoiding per-invocation connection overhead and enabling multi-project aggregation.
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 12 turns, read-only) — concise developer handoff → `EXPLORER_REPORT.md`
+1. **Explorer** (Haiku, 20 turns, read-only) — concise developer handoff → `EXPLORER_REPORT.md`
 2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — implementation only; QA/finalize own tests
 3. **QA** (Sonnet, 30 turns, read+bash) — targeted test verification only → `QA_REPORT.md`
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
@@ -146,7 +146,7 @@ flowchart TD
     subgraph PIPELINE["Pipeline phases"]
         AC --> P1A
 
-        subgraph P1["Phase 1: Explorer (Haiku, 12 turns, read-only)"]
+        subgraph P1["Phase 1: Explorer (Haiku, 20 turns, read-only)"]
             P1A[Register agent-mail identity] --> P1B[Run SDK query\nexplorerPrompt]
             P1B --> P1C[Write EXPLORER_REPORT.md]
             P1C --> P1D[Write EXPLORER_TRACE.{md,json}]

@@ -1,7 +1,7 @@
 defmodule ForemanServer.WorkerLauncherTest do
   use ExUnit.Case
 
-  alias ForemanServer.{ProjectionStore, WorkerLauncher}
+  alias ForemanServer.{EventStore, ProjectionStore, WorkerLauncher}
 
   setup do
     tmp_dir = Path.join(System.tmp_dir!(), "foreman-worker-launcher-test-#{System.unique_integer([:positive])}")
@@ -26,6 +26,30 @@ defmodule ForemanServer.WorkerLauncherTest do
 
     assert :ok = Application.start(:foreman_server)
     {:ok, bin_dir: bin_dir, project_dir: project_dir}
+  end
+
+  test "zero-exit launch success does not mark run or task completed", %{bin_dir: bin_dir, project_dir: project_dir} do
+    foreman = Path.join(bin_dir, "foreman")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    echo 'worker launched'
+    exit 0
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{task_id: "task-a", project_id: "project-a", project_path: project_dir, task_type: "feature"}
+    run_id = "00000000-0000-0000-0000-000000000001"
+
+    assert {:ok, _} = WorkerLauncher.launch(task, run_id, ["developer"])
+
+    assert_eventually(fn -> EventStore.stream("worker-launch:#{run_id}") end, fn events ->
+      Enum.any?(events, &(&1.event_type == "WorkerLaunchCompleted"))
+    end)
+
+    assert EventStore.stream("run:#{run_id}") == []
+    refute match?(%{status: "completed"}, ProjectionStore.task("task-a"))
   end
 
   test "zero-exit worker output with pipeline failure marks task failed", %{bin_dir: bin_dir, project_dir: project_dir} do

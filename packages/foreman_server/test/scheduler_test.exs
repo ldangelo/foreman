@@ -95,6 +95,27 @@ defmodule ForemanServer.SchedulerTest do
     assert ProjectionStore.snapshot().runs["run-done"].status == "completed"
   end
 
+  test "tick prefers PIPELINE FAILED over PIPELINE COMPLETED across .err and .log files" do
+    log_dir = Application.get_env(:foreman_server, :scheduler)[:log_dir]
+    File.mkdir_p!(log_dir)
+
+    create_task("task-fail", %{project_id: "alpha", status: "in_progress"})
+    append_run_started("run-fail", "task-fail")
+    # .err has the failure (stderr), .log has an earlier COMPLETED marker
+    File.write!(Path.join(log_dir, "run-fail.err"), "[PIPELINE] FAILED ($1.00)\n")
+    File.write!(Path.join(log_dir, "run-fail.log"), "[PIPELINE] COMPLETED ($0.50)\n")
+
+    create_task("task-ready", %{project_id: "alpha", status: "ready"})
+
+    assert {:ok, result} = Scheduler.tick(max_concurrent: 1)
+
+    assert [%{run_id: "run-fail", status: "failed", source: "log"}] =
+             result.reconciled_terminal_runs
+
+    assert [%{task_id: "task-ready"}] = result.claimed
+    assert ProjectionStore.snapshot().runs["run-fail"].status == "failed"
+  end
+
   test "periodic tick automatically claims ready tasks" do
     Application.stop(:foreman_server)
 

@@ -25,17 +25,19 @@ defmodule ForemanServer.LogReconciler do
     end)
   end
 
+  # Check failed markers FIRST across all files before looking for completed.
+  # This prevents a PIPELINE COMPLETED in .log from hiding PIPELINE FAILED in .err.
   defp terminal_status_from_logs(log_dir, run_id) do
-    text =
+    texts =
       @log_exts
       |> Enum.map(&Path.join(log_dir, run_id <> &1))
       |> Enum.map(&tail_file/1)
-      |> Enum.join("\n")
+      |> Enum.reject(&(&1 == ""))
 
     cond do
-      text == "" -> :error
-      Enum.any?(@failed_markers, &String.contains?(text, &1)) -> {:ok, "failed"}
-      Enum.any?(@completed_markers, &String.contains?(text, &1)) -> {:ok, "completed"}
+      texts == [] -> :error
+      Enum.any?(texts, fn text -> Enum.any?(@failed_markers, &String.contains?(text, &1)) end) -> {:ok, "failed"}
+      Enum.any?(texts, fn text -> Enum.any?(@completed_markers, &String.contains?(text, &1)) end) -> {:ok, "completed"}
       true -> :error
     end
   end

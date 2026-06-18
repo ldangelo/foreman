@@ -426,7 +426,7 @@ phases:
     models:
       default: haiku
       P0: sonnet
-    maxTurns: 12
+    maxTurns: 20
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
@@ -509,7 +509,7 @@ phases:
     models:
       default: haiku
       P0: sonnet
-    maxTurns: 12
+    maxTurns: 20
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
