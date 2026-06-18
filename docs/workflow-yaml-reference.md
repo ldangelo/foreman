@@ -281,7 +281,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Most phases 
 
 Prompt phases can enable `overwatch` to make `maxTurns` an emergency fuse instead of the only runaway-control mechanism. Overwatch tracks tool calls, validates the phase artifact, blocks known drift patterns, and returns steering messages through blocked tool-call results. If a phase hits a budget/max-turn stop after producing a valid artifact and `continueIfArtifactValidOnBudgetStop: true`, Foreman accepts the phase evidence and continues.
 
-Bundled default/feature/bug workflows enable overwatch across prompt-backed phases: Explorer, Developer/fix, QA, Reviewer, Documentation, and PR Review. Explorer stops further read/grep work once `EXPLORER_REPORT.md` is valid and steers broad investigation toward a concise handoff. Developer/fix blocks test commands and requires a changed-files/QA-handoff report instead of burning turns on verification. QA blocks broad full-suite commands and requires a verdict/report contract. Review and documentation phases stop after bounded evidence and valid reports.
+Bundled default/feature/bug workflows enable overwatch across prompt-backed phases: Explorer, Developer/fix, QA, Reviewer, Documentation, and PR Review. Explorer owns code discovery and writes the edit/verification handoff. Developer/fix is execution-only: it follows `EXPLORER_REPORT.md` or focused retry feedback, blocks test commands, blocks broad repo discovery, and requires changed-files/QA-handoff evidence. QA is verification-only: it reviews changed files, runs targeted commands, blocks broad discovery/full-suite commands, and requires a verdict/report contract. Review and documentation phases stop after bounded evidence and valid reports.
 
 ```yaml
   - name: explorer

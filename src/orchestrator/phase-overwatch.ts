@@ -250,7 +250,13 @@ class PhaseTelemetry {
   }
 }
 
+function artifactWriteAllowed(config: PhaseControlConfig, filePath: string): boolean {
+  if (!config.artifact) return false;
+  return resolve(config.worktreePath, filePath) === resolve(config.worktreePath, config.artifact);
+}
+
 function writeAllowed(config: PhaseControlConfig, filePath: string): boolean {
+  if (artifactWriteAllowed(config, filePath)) return true;
   const allow = config.contract?.allowedScope?.canWriteOnly;
   if (!allow?.length) return true;
   const targetBase = basename(filePath);
@@ -279,6 +285,29 @@ function qaBroadCommand(command: string): boolean {
     || /^mix\s+test$/i.test(normalized)
     || /^cargo\s+test$/i.test(normalized)
     || /^go\s+test\s+\.\/\.\.\.$/i.test(normalized);
+}
+
+function hasExplicitSearchPath(command: string): boolean {
+  return /\s(--glob|-g|src\/?|packages\/?|lib\/?|test\/?|tests\/?|docs\/?|\.ts\b|\.tsx\b|\.js\b|\.jsx\b|\.ex\b|\.exs\b|\.md\b)/i.test(command);
+}
+
+function broadDiscoveryCommand(command: string): boolean {
+  const normalized = normalizedCommand(command);
+  const recursiveGrep = /(^|\s)grep\s+[^|;]*\s-[^|;]*r/i.test(normalized) && !hasExplicitSearchPath(normalized);
+  const unscopedRg = /(^|\s)rg(\s|$)/i.test(normalized) && !hasExplicitSearchPath(normalized);
+  return /(^|\s)(find|fd)\s+(\.|\*|\/|$)/i.test(normalized)
+    || /(^|\s)ls\s+(-[^\s]*R|.*\s-R)(\s|$)/i.test(normalized)
+    || /(^|\s)tree(\s|$)/i.test(normalized)
+    || /(^|\s)git\s+log\b.*\s--all\b/i.test(normalized)
+    || recursiveGrep
+    || unscopedRg;
+}
+
+function broadDiscoveryTool(tool: string, input: Record<string, unknown>): boolean {
+  if (tool === "glob") return true;
+  if (tool !== "grep") return false;
+  const path = asString(input.path) ?? asString(input.glob) ?? asString(input.include);
+  return !path;
 }
 
 function anyTestCommand(command: string): boolean {
@@ -325,10 +354,17 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
     return { allow: false, reason: `Overwatch: ${config.phaseName} may only write configured artifact files.` };
   }
 
+  if (["developer", "qa"].includes(config.phaseName) && broadDiscoveryTool(tool, input)) {
+    return { allow: false, reason: `Overwatch: ${config.phaseName} must use Explorer/Developer handoff targets, not broad discovery tools.` };
+  }
+
   if (tool === "bash" && command) {
     const blockedPattern = configuredBlockedCommand(config, command);
     if (blockedPattern) {
       return { allow: false, reason: `Overwatch: command blocked for ${config.phaseName} by pattern ${blockedPattern}.` };
+    }
+    if (["developer", "qa"].includes(config.phaseName) && broadDiscoveryCommand(command)) {
+      return { allow: false, reason: `Overwatch: ${config.phaseName} must not run broad repo discovery; use the handoff targets or report blocked.` };
     }
     if (config.phaseName === "developer" && anyTestCommand(command)) {
       return { allow: false, reason: "Overwatch: Developer must not run tests; write QA handoff with focused validation commands instead." };
@@ -352,6 +388,7 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
   const forceAfter = config.overwatch?.forceArtifactAfterSteers ?? 2;
   const forceAfterTools = config.overwatch?.forceArtifactAfterToolCalls ?? (config.phaseName === "explorer" ? 10 : undefined);
   const maxToolCalls = config.overwatch?.maxToolCalls;
+  const isArtifactWrite = Boolean(path && (tool === "write" || tool === "edit") && artifactWriteAllowed(config, path));
   const nearMaxTurns = Boolean(config.maxTurns && summary.turns >= Math.max(1, config.maxTurns - 5));
   const readLikeCalls = (summary.toolCounts.read ?? 0) + (summary.toolCounts.grep ?? 0) + (summary.toolCounts.find ?? 0);
   const shouldForceArtifact = Boolean(
@@ -363,13 +400,13 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
     ) &&
     summary.steers < maxSteers
   );
-  if (shouldForceArtifact && tool !== "write" && tool !== "edit") {
+  if (shouldForceArtifact && !isArtifactWrite) {
     return { allow: false, reason: steeringMessage(config, validation) };
   }
-  if (config.artifact && summary.steers >= forceAfter && tool !== "write" && tool !== "edit") {
+  if (config.artifact && summary.steers >= forceAfter && !isArtifactWrite) {
     return { allow: false, reason: `Overwatch: no more unbounded work in ${config.phaseName}. Write ${config.artifact} with current evidence.` };
   }
-  if (maxToolCalls !== undefined && summary.toolCalls >= maxToolCalls) {
+  if (maxToolCalls !== undefined && summary.toolCalls >= maxToolCalls && !isArtifactWrite) {
     return { allow: false, reason: `Overwatch: ${config.phaseName} exceeded maxToolCalls (${maxToolCalls}). Finish or write ${config.artifact ?? "a handoff artifact"}.` };
   }
 

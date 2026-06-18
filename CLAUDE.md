@@ -275,6 +275,7 @@ npx tsc --noEmit       # Type-check without building
 - br state diverged from git → `br sync --flush-only && git add .beads/ && git commit -m "sync beads"`
 - agent-worker crash on startup/finalize → check `~/.foreman/logs/<runId>.err`; fatal handlers print stack traces when available
 - QA says `report missing test command evidence` → ensure `QA_REPORT.md` has `Command run:` and `Test suite: X passed, Y failed`
+- Developer/QA broad search blocked → expected; Explorer owns code discovery, Developer follows `EXPLORER_REPORT.md`, QA verifies changed files with targeted commands
 - provider `529` / `overloaded_error` → bundled prompt phases enter cooldown retry instead of burning normal retry loops
 
 <!-- br-agent-instructions-v1 -->

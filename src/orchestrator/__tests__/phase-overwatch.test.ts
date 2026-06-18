@@ -67,6 +67,56 @@ describe("phase overwatch artifact validation", () => {
     expect(reason).toContain("Developer must not run tests");
   });
 
+  it("blocks broad developer discovery commands", () => {
+    const worktreePath = tempWorktree();
+    const policy = createPhaseToolPolicy({
+      phaseName: "developer",
+      worktreePath,
+      artifact: "DEVELOPER_REPORT.md",
+      overwatch: { enabled: true, mode: "enforce" },
+    });
+
+    expect(policy?.beforeTool("bash", { command: "find . -name '*.ts'" })).toContain("broad repo discovery");
+    expect(policy?.beforeTool("bash", { command: "rg activity" })).toContain("broad repo discovery");
+  });
+
+  it("allows focused developer searches with explicit paths", () => {
+    const worktreePath = tempWorktree();
+    const policy = createPhaseToolPolicy({
+      phaseName: "developer",
+      worktreePath,
+      artifact: "DEVELOPER_REPORT.md",
+      overwatch: { enabled: true, mode: "enforce" },
+    });
+
+    expect(policy?.beforeTool("bash", { command: "rg activity src/orchestrator/phase-overwatch.ts" })).toBeUndefined();
+  });
+
+  it("blocks QA broad discovery tools", () => {
+    const worktreePath = tempWorktree();
+    const policy = createPhaseToolPolicy({
+      phaseName: "qa",
+      worktreePath,
+      artifact: "QA_REPORT.md",
+      overwatch: { enabled: true, mode: "enforce" },
+    });
+
+    expect(policy?.beforeTool("glob", { pattern: "**/*.ts" })).toContain("broad discovery tools");
+  });
+
+  it("allows QA conflict marker grep scoped to src", () => {
+    const worktreePath = tempWorktree();
+    const policy = createPhaseToolPolicy({
+      phaseName: "qa",
+      worktreePath,
+      artifact: "QA_REPORT.md",
+      overwatch: { enabled: true, mode: "enforce" },
+    });
+
+    const command = `grep -rn --include="*.ts" --include="*.tsx" --include="*.js" '<<<<<<<\\|>>>>>>>\\||||||||' src/ 2>/dev/null || true`;
+    expect(policy?.beforeTool("bash", { command })).toBeUndefined();
+  });
+
   it("forces phase artifact before maxTurns is exhausted", () => {
     const worktreePath = tempWorktree();
     const policy = createPhaseToolPolicy({
@@ -81,6 +131,40 @@ describe("phase overwatch artifact validation", () => {
     const reason = policy?.beforeTool("read", { path: "src/a.ts" });
 
     expect(reason).toContain("Write REVIEW.md");
+  });
+
+  it("still permits writing the configured artifact after maxToolCalls trips", () => {
+    const worktreePath = tempWorktree();
+    const policy = createPhaseToolPolicy({
+      phaseName: "developer",
+      worktreePath,
+      artifact: "DEVELOPER_REPORT.md",
+      overwatch: { enabled: true, mode: "enforce", maxToolCalls: 1 },
+    });
+
+    expect(policy?.beforeTool("read", { path: "src/a.ts" })).toBeUndefined();
+
+    const blocked = policy?.beforeTool("read", { path: "src/b.ts" });
+    const artifactWrite = policy?.beforeTool("write", { path: join(worktreePath, "DEVELOPER_REPORT.md"), content: "# Approach\n" });
+
+    expect(blocked).toContain("exceeded maxToolCalls");
+    expect(artifactWrite).toBeUndefined();
+  });
+
+  it("blocks non-artifact writes after forced handoff", () => {
+    const worktreePath = tempWorktree();
+    const policy = createPhaseToolPolicy({
+      phaseName: "developer",
+      worktreePath,
+      artifact: "DEVELOPER_REPORT.md",
+      overwatch: { enabled: true, mode: "enforce", forceArtifactAfterToolCalls: 1, maxToolCalls: 5 },
+    });
+
+    expect(policy?.beforeTool("read", { path: "src/a.ts" })).toBeUndefined();
+
+    const reason = policy?.beforeTool("write", { path: join(worktreePath, "src/b.ts"), content: "x" });
+
+    expect(reason).toContain("Write DEVELOPER_REPORT.md");
   });
 
   it("allows budget-limited completion only when the artifact is valid", () => {

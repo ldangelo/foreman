@@ -234,6 +234,8 @@ foreman retry <task-id> --dispatch
 
 Avoid mass retrying unless failures are known transient and the root cause is external. QA failures that say `report missing test command evidence` mean `QA_REPORT.md` did not include `Command run:` plus `Test suite: X passed, Y failed`; rerun after the QA prompt/report is corrected.
 
+Developer and QA phases are intentionally handoff-driven. Explorer performs code discovery and writes the edit/verification targets; Developer should execute that plan without broad repo search, and QA should verify the changed files with targeted commands only. Broad discovery commands are blocked by phase overwatch in Developer/QA.
+
 ### 9. Review and Merge
 
 Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.

@@ -1129,7 +1129,6 @@ async function runPhaseSequence(
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
     const agentName = `${phaseName}-${seedId}`;
-    const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
     const phaseType = phase.bash
       ? "bash"
       : phase.command
@@ -1146,6 +1145,9 @@ async function runPhaseSequence(
       ...ctx.taskMeta,
       projectReportsDir: ctx.taskMeta?.projectReportsDir || getRunReportsDir(projectId, seedId, runId),
     };
+    const projectReportsDir = phaseMeta.projectReportsDir ?? getRunReportsDir(projectId, seedId, runId);
+    const hasExplorerReport = existsSync(join(projectReportsDir, "EXPLORER_REPORT.md"))
+      || existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
 
     if (phase.retryOnly && !retryOnlyActivations.has(phaseName)) {
       ctx.log(`[${phaseName.toUpperCase()}] Skipping — retryOnly phase not activated by retryWith`);
@@ -1283,7 +1285,7 @@ async function runPhaseSequence(
           seedType: config.seedType,
           runId,
           hasExplorerReport,
-          requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
+          requiresExplorerReport: ["default", "feature"].includes(workflowConfig.name) && phaseName === "developer" && !phase.retryOnly,
           feedbackContext,
           worktreePath,
           reportDir: phaseMeta.projectReportsDir,

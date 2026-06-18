@@ -75,9 +75,9 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 > **Note:** Foreman uses PostgreSQL via `DATABASE_URL`. The daemon owns the shared Postgres pool and exposes a tRPC layer for CLI commands, avoiding per-invocation connection overhead and enabling multi-project aggregation.
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 20 turns emergency fuse, read-only) — overwatch steers broad investigation into a concise developer handoff → `EXPLORER_REPORT.md`
-2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — overwatch blocks test-command drift and requires a changed-files/QA-handoff report → `DEVELOPER_REPORT.md`
-3. **QA** (Sonnet, 30 turns, read+bash) — overwatch blocks broad full-suite runs; targeted test verification only → `QA_REPORT.md`
+1. **Explorer** (Haiku, 20 turns emergency fuse, read-only) — owns code discovery and writes concise edit/verification targets → `EXPLORER_REPORT.md`
+2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — executes the Explorer handoff; overwatch blocks tests and broad repo discovery → `DEVELOPER_REPORT.md`
+3. **QA** (Sonnet, 60 turns, read+bash) — verifies changed files with targeted commands only; overwatch blocks broad discovery/full-suite runs → `QA_REPORT.md`
 4. **Reviewer** (Sonnet, 20 turns, read-only) — overwatch bounds review evidence and requires a verdict report → `REVIEW.md`
 5. **Finalize** — git add/commit/push, native task merge/close update
 6. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
