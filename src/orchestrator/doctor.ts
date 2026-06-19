@@ -1,4 +1,4 @@
-import { access, stat, rm, readFile, readdir } from "node:fs/promises";
+import { access, stat, rm, readFile, readdir, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -1186,9 +1186,13 @@ export class Doctor {
       const runs = project?.id
         ? await Promise.resolve(runStore.getRunsForSeed(seedId, project.id))
         : await Promise.resolve(runStore.getRunsForSeed(seedId));
-      const activeRun = runs.find((r: Run) =>
-        ["pending", "running"].includes(r.status) && r.worktree_path === wt.path,
-      );
+      const wtRealPath = await realpath(wt.path).catch(() => wt.path);
+      const activeRun = runs.find((r: Run) => {
+        if (!["pending", "running"].includes(r.status)) return false;
+        const runPath = r.worktree_path;
+        if (runPath === wt.path || runPath === wtRealPath) return true;
+        return false;
+      });
       const completedRun = runs.find((r: Run) => r.status === "completed");
       const mergedRun = runs.find((r: Run) => r.status === "merged");
       const prCreatedRun = runs.find((r: Run) => r.status === "pr-created");

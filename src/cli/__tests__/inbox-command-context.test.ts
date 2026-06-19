@@ -14,6 +14,7 @@ vi.mock("../commands/project-task-support.js", () => ({
   listRegisteredProjects: mockListRegisteredProjects,
   resolveRepoRootProjectPath: vi.fn(async ({ projectPath }: { projectPath?: string }) => resolve(projectPath ?? process.cwd())),
   requireProjectOrAllInMultiMode: vi.fn(),
+  ensureCliPostgresPool: vi.fn(),
 }));
 
 vi.mock("../../lib/trpc-client.js", () => ({
@@ -101,7 +102,7 @@ describe("inbox command context", () => {
 
     await inboxCommand.parseAsync(["--all", "--project-path", `${projectDir}/.`], { from: "user" });
 
-    expect(mockListRegisteredProjects).toHaveBeenCalledOnce();
+    expect(mockListRegisteredProjects).toHaveBeenCalledTimes(2);
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     expect(forProjectSpy).toHaveBeenCalledWith(resolve(projectDir));
     expect(localStore.getAllMessagesGlobal).toHaveBeenCalledWith(50);

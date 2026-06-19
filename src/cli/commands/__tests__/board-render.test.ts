@@ -458,7 +458,7 @@ describe("BoardRendering", () => {
       expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("blocked")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("closed")).toBe("closed");
-      expect(boardColumnForTaskStatus("unknown")).toBe("closed");
+      expect(boardColumnForTaskStatus("unknown")).toBe("needs_attention");
     });
   });
 

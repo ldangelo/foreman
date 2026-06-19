@@ -73,7 +73,7 @@ export function boardColumnForTaskStatus(status: string): BoardStatus {
   if (["merged", "completed", "done"].includes(normalized)) {
     return "closed";
   }
-  return normalizeStatusForBoard(status) ?? "closed";
+  return normalizeStatusForBoard(status) ?? "needs_attention";
 }
 
 function boardStatusToStoreStatus(status: BoardStatus): string {
