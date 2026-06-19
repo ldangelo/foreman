@@ -35,6 +35,7 @@ function readPackageVersion(): string {
   return "0.0.0-dev";
 }
 import { initCommand } from "./commands/init.js";
+import { runsCommand } from "./commands/runs.js";
 import { planCommand } from "./commands/plan.js";
 import { runCommand } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
@@ -97,6 +98,7 @@ program
 program.addCommand(initCommand);
 program.addCommand(planCommand);
 program.addCommand(runCommand);
+program.addCommand(runsCommand);
 program.addCommand(statusCommand);
 program.addCommand(mergeCommand);
 program.addCommand(prCommand);
@@ -134,7 +136,7 @@ Domain groups:
   Setup/health:     init, doctor, daemon, server
   Planning:         plan, sling
   Execution:        run, retry, reset, stop, recover
-  Tasks/views:      task, status, board, watch, logs
+  Tasks/views:      task, status, board, watch, logs, runs
   Collaboration:    inbox, attach, debug, mcp
   Delivery/VCS:     worktree, merge, pr
 
