@@ -76,13 +76,13 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
 1. **Explorer** (Haiku, 20 turns emergency fuse, read-only) — owns code discovery and writes concise edit/verification targets → `EXPLORER_REPORT.md`
-2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — executes the Explorer handoff; overwatch blocks broad repo discovery/test execution and treats valid-report stop instructions as terminal guidance, but allows focused test authoring when the task/handoff requires coverage → `DEVELOPER_REPORT.md`
+2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — executes the Explorer handoff; overwatch blocks broad repo discovery/test execution and treats valid-report stop instructions as terminal guidance, allows focused test authoring when the task/handoff requires coverage, and must pass the pre-QA completion gate → `DEVELOPER_REPORT.md`
 3. **QA** (Sonnet, 60 turns, read+bash) — verifies changed files with targeted commands only; overwatch blocks broad discovery/full-suite runs → `QA_REPORT.md`
 4. **Reviewer** (Sonnet, 20 turns, read-only) — overwatch bounds review evidence and requires a verdict report → `REVIEW.md`
 5. **Finalize** — git add/commit/push, native task merge/close update
 6. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
 
-QA retries Developer up to 3x; Finalize can retry Developer up to 6x. Retry budgets are charged to the failing/source phase, not to the Developer target, so Developer can run once initially plus source-phase retries. If QA or Review still fails after its retry budget, the pipeline stops instead of proceeding to finalize with invalid/no changes. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for prompt-backed phases rather than only Explorer/QA.
+QA retries Developer up to 3x; Finalize can retry Developer up to 6x. Retry budgets are charged to the failing/source phase, not to the Developer target, so Developer can run once initially plus source-phase retries. Before QA, Foreman validates Developer's report/diff evidence, claimed files, required docs/tests, and runs `npx tsc --noEmit` when TS/JS changed; failures loop back to Developer before spending QA. Phase reports are preserved as `REPORT.attempt-N.md` plus a `RETRY_ATTEMPTS.md` summary while the canonical report remains the latest attempt. If QA or Review still fails after its retry budget, the pipeline stops instead of proceeding to finalize with invalid/no changes. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for prompt-backed phases rather than only Explorer/QA.
 
 ## Dispatch Flow
 
