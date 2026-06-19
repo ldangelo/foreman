@@ -393,6 +393,156 @@ defmodule ForemanServer.InboxTest do
 
       assert Inbox.list("run-invalid-activity") == []
     end
+
+    test "WorkerExited creates activity entry in inbox" do
+      start_run_event("run-worker-exit-activity")
+
+      EventStore.append(%{
+        stream_id: "run:run-worker-exit-activity",
+        event_type: "WorkerExited",
+        payload: %{
+          run_id: "run-worker-exit-activity",
+          worker_id: "worker-1",
+          adapter: "pi-sdk",
+          exit_code: 0
+        },
+        metadata: %{correlation_id: "run-worker-exit-activity"}
+      })
+
+      inbox = Inbox.list("run-worker-exit-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "worker_exit"))
+      exited = Enum.find(inbox, &(&1.activity_type == "worker_exit"))
+      assert exited.actor == "pi-sdk"
+      assert exited.severity == "info"
+    end
+
+    test "QaVerdict creates activity entry with correct severity" do
+      start_run_event("run-qa-verdict-activity")
+
+      EventStore.append(%{
+        stream_id: "run:run-qa-verdict-activity",
+        event_type: "QaVerdict",
+        payload: %{
+          run_id: "run-qa-verdict-activity",
+          verdict: "fail",
+          phase: "qa",
+          failure_reasons: ["test timeout"]
+        },
+        metadata: %{correlation_id: "run-qa-verdict-activity"}
+      })
+
+      inbox = Inbox.list("run-qa-verdict-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "qa_verdict"))
+      verdict = Enum.find(inbox, &(&1.activity_type == "qa_verdict"))
+      assert verdict.actor == "qa"
+      assert verdict.severity == "error"
+      assert verdict.body =~ "fail"
+    end
+
+    test "ReviewFinding creates activity entry with blocking severity" do
+      start_run_event("run-review-finding-activity")
+
+      EventStore.append(%{
+        stream_id: "run:run-review-finding-activity",
+        event_type: "ReviewFinding",
+        payload: %{
+          run_id: "run-review-finding-activity",
+          finding: "missing test coverage",
+          severity: "blocking",
+          phase: "review"
+        },
+        metadata: %{correlation_id: "run-review-finding-activity"}
+      })
+
+      inbox = Inbox.list("run-review-finding-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "review_finding"))
+      finding = Enum.find(inbox, &(&1.activity_type == "review_finding"))
+      assert finding.actor == "reviewer"
+      assert finding.severity == "error"
+      assert finding.body =~ "missing test coverage"
+    end
+
+    test "PrCreated creates activity entry in inbox" do
+      start_run_event("run-pr-created-activity")
+
+      EventStore.append(%{
+        stream_id: "run:run-pr-created-activity",
+        event_type: "PrCreated",
+        payload: %{
+          run_id: "run-pr-created-activity",
+          pr_id: "PR-456",
+          source_link: "https://github.com/org/repo/pull/456"
+        },
+        metadata: %{correlation_id: "run-pr-created-activity"}
+      })
+
+      inbox = Inbox.list("run-pr-created-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "pr_created"))
+      created = Enum.find(inbox, &(&1.activity_type == "pr_created"))
+      assert created.actor == "vcs"
+      assert created.severity == "info"
+      assert created.body == "PR PR-456 created"
+    end
+
+    test "SchedulerClaim creates activity entry in inbox" do
+      start_run_event("run-scheduler-claim-activity")
+
+      EventStore.append(%{
+        stream_id: "run:run-scheduler-claim-activity",
+        event_type: "SchedulerClaim",
+        payload: %{
+          run_id: "run-scheduler-claim-activity"
+        },
+        metadata: %{correlation_id: "run-scheduler-claim-activity"}
+      })
+
+      inbox = Inbox.list("run-scheduler-claim-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "scheduler_claim"))
+      claimed = Enum.find(inbox, &(&1.activity_type == "scheduler_claim"))
+      assert claimed.actor == "scheduler"
+      assert claimed.severity == "info"
+    end
+
+    test "manual TaskUpdated creates activity entry in inbox" do
+      start_run_event("run-task-update-activity")
+
+      # Append a TaskUpdated event with run_id (manual update)
+      EventStore.append(%{
+        stream_id: "task:foreman-task-update",
+        event_type: "TaskUpdated",
+        payload: %{
+          task_id: "foreman-task-update",
+          run_id: "run-task-update-activity",
+          status: "in_progress",
+          updated_by: "operator"
+        },
+        metadata: %{correlation_id: "run-task-update-activity"}
+      })
+
+      inbox = Inbox.list("run-task-update-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "task_updated"))
+      updated = Enum.find(inbox, &(&1.activity_type == "task_updated"))
+      assert updated.actor == "operator"
+    end
+
+    test "TaskUpdated without run_id does not create activity entry" do
+      start_run_event("run-task-update-no-run-id")
+
+      # Append a TaskUpdated event WITHOUT run_id field (event not linked to a run)
+      EventStore.append(%{
+        stream_id: "task:foreman-task-orphan",
+        event_type: "TaskUpdated",
+        payload: %{
+          task_id: "foreman-task-orphan",
+          status: "in_progress",
+          updated_by: "operator"
+        },
+        metadata: %{correlation_id: "run-task-update-no-run-id"}
+      })
+
+      inbox = Inbox.list("run-task-update-no-run-id")
+      refute Enum.any?(inbox, &(&1.activity_type == "task_updated"))
+    end
   end
 
   defp start_workflow_run(run_id) do

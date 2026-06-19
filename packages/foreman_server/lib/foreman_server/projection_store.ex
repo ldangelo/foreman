@@ -225,7 +225,7 @@ defmodule ForemanServer.ProjectionStore do
            type: "TaskUpdated",
            payload: %{task_id: task_id} = payload
          },
-         _mode
+         mode
        ) do
     existing = empty_task(task_id)
     existing = get_in(projection, [:tasks, task_id]) || existing
@@ -235,7 +235,27 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.drop([:task_id])
       |> clear_failure_fields_for_active_status()
 
-    put_in(projection, [:tasks, task_id], Map.merge(existing, updates))
+    updated_projection =
+      put_in(projection, [:tasks, task_id], Map.merge(existing, updates))
+
+    # Emit activity event when run_id is present (manual or programmatic update)
+    if run_id = Map.get(payload, :run_id) do
+      activity_payload = %{
+        run_id: run_id,
+        event_type: "task_updated",
+        timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+        actor: Map.get(payload, :updated_by, "foreman"),
+        severity: "info",
+        summary: "Task #{task_id} updated",
+        phase: Map.get(payload, :phase),
+        source_link: Map.get(payload, :source_link),
+        log_path: Map.get(payload, :log_path)
+      }
+
+      apply_activity_and_notify(updated_projection, activity_payload, mode)
+    else
+      updated_projection
+    end
   end
 
   defp apply_domain_event(
