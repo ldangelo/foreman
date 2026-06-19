@@ -303,7 +303,7 @@ foreman runs --all                        # Include completed/failed runs in sum
 
 **Example output:**
 
-```
+```text
 Foreman Runs  (3 shown)
 
   Use --verbose to show log path, report path, and cost/turns.

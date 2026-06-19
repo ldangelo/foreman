@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import chalk from "chalk";
-import { renderRunsTable, runToJson, isStuck, type RunRow } from "../runs.js";
+import { renderRunsTable, runToJson, isStuck, filterStuckRuns, type RunRow } from "../runs.js";
 import type { Run } from "../../../lib/store.js";
 
 describe("isStuck", () => {
@@ -40,6 +40,27 @@ describe("isStuck", () => {
   it("uses created_at when started_at is null", () => {
     const run = { ...baseRun, started_at: null };
     expect(isStuck(run, null)).toBe(true);
+  });
+
+  it("filters --stuck candidates to only genuinely stale active runs", () => {
+    const staleRun = { ...baseRun, id: "stale-run" };
+    const freshRun = {
+      ...baseRun,
+      id: "fresh-run",
+      started_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    };
+    const completedRun = { ...baseRun, id: "done-run", status: "completed" as const };
+
+    const filtered = filterStuckRuns(
+      [staleRun, freshRun, completedRun],
+      new Map([
+        [staleRun.id, null],
+        [freshRun.id, null],
+        [completedRun.id, null],
+      ]),
+    );
+
+    expect(filtered.map((run) => run.id)).toEqual(["stale-run"]);
   });
 });
 

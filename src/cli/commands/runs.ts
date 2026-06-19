@@ -39,9 +39,13 @@ const STUCK_THRESHOLD_MINUTES = 15;
  */
 export function isStuck(run: Run, progress: RunProgress | null): boolean {
   if (run.status !== "pending" && run.status !== "running") return false;
-  const since = run.started_at ?? run.created_at;
+  const since = progress?.lastActivity ?? run.started_at ?? run.created_at;
   const elapsedMs = Date.now() - new Date(since).getTime();
   return elapsedMs > STUCK_THRESHOLD_MINUTES * 60 * 1000;
+}
+
+export function filterStuckRuns(runs: Run[], progressByRunId: Map<string, RunProgress | null>): Run[] {
+  return runs.filter((run) => isStuck(run, progressByRunId.get(run.id) ?? null));
 }
 
 // ── Run row type ─────────────────────────────────────────────────────────
@@ -151,12 +155,15 @@ export function renderRunsTable(rows: RunRow[], verbose = false): string {
       : [];
     const statusColor = (s: string): string => {
       switch (s.toLowerCase()) {
-        case "completed": return chalk.green(s.toUpperCase());
-        case "failed":    return chalk.red(s.toUpperCase());
-        case "running":   return chalk.blue(s.toUpperCase());
-        case "stuck":      return chalk.yellow(s.toUpperCase());
-        case "pending":    return chalk.gray(s.toUpperCase());
-        default:           return chalk.gray(s.toUpperCase());
+        case "completed":   return chalk.green(s.toUpperCase());
+        case "merged":      return chalk.green(s.toUpperCase());
+        case "failed":      return chalk.red(s.toUpperCase());
+        case "test-failed": return chalk.red(s.toUpperCase());
+        case "conflict":    return chalk.magenta(s.toUpperCase());
+        case "running":     return chalk.blue(s.toUpperCase());
+        case "stuck":       return chalk.yellow(s.toUpperCase());
+        case "pending":     return chalk.gray(s.toUpperCase());
+        default:            return chalk.gray(s.toUpperCase());
       }
     };
     return [...base, ...verboseVals, pad(r.indicators.join(" "), maxes.indicators)]
@@ -245,56 +252,62 @@ export const runsCommand = new Command("runs")
       process.exit(1);
     }
 
-    const allRuns = opts.all
-      ? store.getRunsByStatuses(
-          ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created"],
-          project.id,
-        )
-      : store.getActiveRuns(project.id);
+    let rows: RunRow[] = [];
+    try {
+      const allRuns = opts.all
+        ? store.getRunsByStatuses(
+            ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created"],
+            project.id,
+          )
+        : store.getActiveRuns(project.id);
 
-    const activeRuns = opts.stuck
-      ? allRuns.filter((r) => r.status === "pending" || r.status === "running")
-      : allRuns;
-
-    // Build RunRow for each active run
-    const rows: RunRow[] = [];
-    for (const run of activeRuns) {
-      const progress = store.getRunProgress(run.id);
-      const lastEvent = await getLastPiActivity(run.id);
-      const since = run.started_at ?? run.created_at;
-      const runElapsed = elapsed(since);
-
-      const indicators: string[] = [];
-      if (run.status === "failed") indicators.push("FATAL");
-      if (isStuck(run, progress)) indicators.push("STUCK");
-      if (run.status === "conflict") indicators.push("CONFLICT");
-      if (run.status === "test-failed") indicators.push("TEST-FAIL");
-
-      let costStr: string | null = null;
-      let turns: number | null = null;
-      if (progress) {
-        if (progress.costUsd > 0) costStr = `$${progress.costUsd.toFixed(4)}`;
-        if (progress.turns > 0) turns = progress.turns;
+      const progressByRunId = new Map<string, RunProgress | null>();
+      for (const run of allRuns) {
+        progressByRunId.set(run.id, store.getRunProgress(run.id));
       }
 
-      rows.push({
-        id: run.id,
-        task: run.seed_id,
-        status: run.status,
-        phase: progress?.currentPhase ?? null,
-        workerPid: null, // workerPid not available in current RunProgress model
-        elapsed: runElapsed,
-        lastEvent,
-        logPath: null, // populated from progress or environment when available
-        reportPath: null,
-        cost: costStr,
-        turns,
-        indicators,
-        raw: run,
-      });
-    }
+      const activeRuns = opts.stuck ? filterStuckRuns(allRuns, progressByRunId) : allRuns;
 
-    store.close();
+      // Build RunRow for each active run
+      rows = [];
+      for (const run of activeRuns) {
+        const progress = progressByRunId.get(run.id) ?? null;
+        const lastEvent = await getLastPiActivity(run.id);
+        const since = run.started_at ?? run.created_at;
+        const runElapsed = elapsed(since);
+
+        const indicators: string[] = [];
+        if (run.status === "failed") indicators.push("FATAL");
+        if (isStuck(run, progress)) indicators.push("STUCK");
+        if (run.status === "conflict") indicators.push("CONFLICT");
+        if (run.status === "test-failed") indicators.push("TEST-FAIL");
+
+        let costStr: string | null = null;
+        let turns: number | null = null;
+        if (progress) {
+          if (progress.costUsd > 0) costStr = `$${progress.costUsd.toFixed(4)}`;
+          if (progress.turns > 0) turns = progress.turns;
+        }
+
+        rows.push({
+          id: run.id,
+          task: run.seed_id,
+          status: run.status,
+          phase: progress?.currentPhase ?? null,
+          workerPid: null, // workerPid not available in current RunProgress model
+          elapsed: runElapsed,
+          lastEvent,
+          logPath: null, // populated from progress or environment when available
+          reportPath: null,
+          cost: costStr,
+          turns,
+          indicators,
+          raw: run,
+        });
+      }
+    } finally {
+      store.close();
+    }
 
     if (opts.json) {
       console.log(JSON.stringify(rows.map(runToJson), null, 2));
@@ -305,7 +318,7 @@ export const runsCommand = new Command("runs")
     const failedCount = rows.filter((r) => r.indicators.includes("FATAL")).length;
     const activeCount = rows.filter((r) => r.status === "pending" || r.status === "running").length;
 
-    console.log(chalk.bold("Foreman Runs") + chalk.dim(`  (${rows.length} shown`));
+    console.log(chalk.bold("Foreman Runs") + chalk.dim(`  (${rows.length} shown)`));
     if (stuckCount > 0) console.log(chalk.yellow(`  ⚠  ${stuckCount} stuck run(s) detected`));
     if (failedCount > 0) console.log(chalk.red(`  ✗  ${failedCount} failed run(s)`));
     if (!opts.stuck && opts.all) {
