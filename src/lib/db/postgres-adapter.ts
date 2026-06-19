@@ -2,7 +2,7 @@
  * PostgresAdapter — database operations via PoolManager.
  *
  * This adapter implements project/task operations, legacy Foreman compatibility
- * operations, and TRD-032 pipeline run/event/message operations on Postgres.
+ * operations, and pipeline/GitHub support on Postgres.
  *
  * Design decisions:
  * - All methods accept `projectId: string` as the first argument for data isolation.
@@ -20,7 +20,9 @@ import {
   acquireClient,
   releaseClient,
 } from "./pool-manager.js";
-import { randomUUID } from "node:crypto";
+import type { RunProgress, SentinelConfigRow, SentinelRunRow } from "../store.js";
+import { randomBytes } from "node:crypto";
+import { normalizeTaskIdPrefix } from "../task-store.js";
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -52,23 +54,18 @@ export interface ProjectRow {
 export interface RunRow {
   id: string;
   project_id: string;
-  seed_id: string | null;
-  agent_type: string | null;
+  seed_id: string;
+  agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
+  branch: string | null;
   status: string;
   started_at: string | null;
   completed_at: string | null;
+  base_branch: string | null;
+  merge_strategy: "auto" | "pr" | "none" | null;
   created_at: string;
   progress: string | null;
-  bead_id?: string | null;
-  run_number?: number | null;
-  branch?: string | null;
-  trigger?: string | null;
-  queued_at?: string;
-  updated_at?: string;
-  base_branch?: string | null;
-  merge_strategy?: "auto" | "pr" | "none" | null;
 }
 
 export interface TaskRow {
@@ -86,6 +83,47 @@ export interface TaskRow {
   updated_at: string;
   approved_at: string | null;
   closed_at: string | null;
+  // GitHub integration fields (TRD-007)
+  external_repo?: string | null;
+  github_issue_number?: number | null;
+  github_milestone?: string | null;
+  sync_enabled?: boolean;
+  last_sync_at?: string | null;
+  // Labels array (may not exist in all projects)
+  labels?: string[] | null;
+  // PR state from associated run (AC-4: task list surfaces PR state)
+  pr_state?: "none" | "draft" | "open" | "merged" | "closed" | null;
+  pr_url?: string | null;
+  /** HEAD SHA of the branch when the PR was last updated. Null if no PR exists. */
+  pr_head_sha?: string | null;
+}
+
+export interface TaskDependencyRow {
+  from_task_id: string;
+  to_task_id: string;
+  type: "blocks" | "parent-child";
+}
+
+export interface TaskNoteRow {
+  id: string;
+  project_id: string;
+  task_id: string;
+  run_id: string | null;
+  phase: string | null;
+  author: string;
+  kind: string;
+  body: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AddTaskNoteInput {
+  runId?: string | null;
+  phase?: string | null;
+  author: string;
+  kind?: string;
+  body: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface EventRow {
@@ -118,6 +156,12 @@ export interface PipelineRunRow {
   branch: string;
   commit_sha: string | null;
   trigger: string;
+  agent_type: string | null;
+  session_key: string | null;
+  worktree_path: string | null;
+  progress: string | null;
+  base_branch: string | null;
+  merge_strategy: string | null;
   queued_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -128,11 +172,84 @@ export interface PipelineRunRow {
 export interface PipelineEventRow {
   id: string;
   project_id: string;
-  run_id: string;
+  run_id: string | null;
+  sentinel_run_id: string | null;
   task_id: string | null;
   event_type: string;
   payload: Record<string, unknown> | null;
   created_at: string;
+}
+
+export interface RateLimitEventRow {
+  id: string;
+  project_id: string;
+  run_id: string | null;
+  model: string;
+  phase: string | null;
+  error: string;
+  retry_after_seconds: number | null;
+  recorded_at: string;
+}
+
+function mapLegacyRunStatusToPipeline(status: string): PipelineRunRow["status"] {
+  switch (status) {
+    case "pending":
+      return "pending";
+    case "running":
+      return "running";
+    case "completed":
+    case "merged":
+    case "pr-created":
+      return "success";
+    case "failed":
+    case "test-failed":
+    case "stuck":
+    case "conflict":
+      return "failure";
+    case "reset":
+      return "cancelled";
+    default:
+      return "skipped";
+  }
+}
+
+function mapPipelineRunStatusToLegacy(status: string): RunRow["status"] {
+  switch (status) {
+    case "pending":
+      return "pending";
+    case "running":
+      return "running";
+    case "success":
+      return "completed";
+    case "failure":
+      return "failed";
+    case "cancelled":
+    case "skipped":
+      return "reset";
+    default:
+      return "failed";
+  }
+}
+
+function runRowSelectSql(): string {
+  return `
+    SELECT
+      id,
+      project_id,
+      bead_id AS seed_id,
+      COALESCE(agent_type, 'claude-code') AS agent_type,
+      session_key,
+      worktree_path,
+      branch,
+      status,
+      started_at,
+      finished_at AS completed_at,
+      created_at,
+      CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress,
+      base_branch,
+      merge_strategy
+    FROM runs
+  `;
 }
 
 export interface MessageRow {
@@ -145,37 +262,137 @@ export interface MessageRow {
   created_at: string;
 }
 
-export interface SentinelConfigRow {
+export interface AgentMessageRow {
+  id: string;
+  project_id: string;
+  run_id: string;
+  sender_agent_type: string;
+  recipient_agent_type: string;
+  subject: string;
+  body: string;
+  read: number;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+export type MergeQueueStatus = "pending" | "merging" | "merged" | "conflict" | "failed";
+export type MergeQueueOperation = "auto_merge" | "create_pr";
+
+export interface MergeQueueEntryRow {
   id: number;
   project_id: string;
-  branch: string;
-  test_command: string;
-  interval_minutes: number;
-  failure_threshold: number;
-  enabled: number;
-  pid: number | null;
+  branch_name: string;
+  seed_id: string;
+  run_id: string;
+  operation: MergeQueueOperation;
+  agent_name: string | null;
+  files_modified: string[];
+  enqueued_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  status: MergeQueueStatus;
+  resolved_tier: number | null;
+  error: string | null;
+  retry_count: number;
+  last_attempted_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// GitHub integration types (TRD-007, TRD-008)
+// ---------------------------------------------------------------------------
+
+export interface GithubRepoRow {
+  id: string;
+  project_id: string;
+  owner: string;
+  repo: string;
+  auth_type: "pat" | "app";
+  auth_config: Record<string, unknown>;
+  default_labels: string[];
+  auto_import: boolean;
+  webhook_secret: string | null;
+  webhook_enabled: boolean;
+  sync_strategy: "foreman-wins" | "github-wins" | "manual" | "last-write-wins";
+  last_sync_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface SentinelRunRow {
+export interface GithubSyncEventRow {
   id: string;
   project_id: string;
-  branch: string;
-  commit_hash: string | null;
-  status: "running" | "passed" | "failed" | "error";
-  test_command: string;
-  output: string | null;
-  failure_count: number;
-  started_at: string;
-  completed_at: string | null;
+  external_id: string;
+  event_type: string;
+  direction: "to_github" | "from_github";
+  github_payload: Record<string, unknown> | null;
+  foreman_changes: Record<string, unknown> | null;
+  conflict_detected: boolean;
+  resolved_with: string | null;
+  processed_at: string;
 }
 
-// ---------------------------------------------------------------------------
-// PostgresAdapter
-// ---------------------------------------------------------------------------
+export interface UpsertGithubRepoInput {
+  id?: string;
+  projectId: string;
+  owner: string;
+  repo: string;
+  authType?: "pat" | "app";
+  authConfig?: Record<string, unknown>;
+  defaultLabels?: string[];
+  autoImport?: boolean;
+  webhookSecret?: string | null;
+  webhookEnabled?: boolean;
+  syncStrategy?: "foreman-wins" | "github-wins" | "manual" | "last-write-wins";
+  lastSyncAt?: string | null;
+}
 
+export interface RecordGithubSyncEventInput {
+  projectId: string;
+  externalId: string;
+  eventType: string;
+  direction: "to_github" | "from_github";
+  githubPayload?: Record<string, unknown> | null;
+  foremanChanges?: Record<string, unknown> | null;
+  conflictDetected?: boolean;
+  resolvedWith?: string | null;
+}
+// Jira issue state types (TRD-013)
+export interface JiraIssueStateRow {
+  project_key: string;
+  issue_key: string;
+  last_known_status: string;
+  last_updated_at: string;
+}
+export interface JiraIssueStateInput {
+  jiraProjectKey: string;
+  issueKey: string;
+  lastKnownStatus: string;
+  lastUpdatedAt: string;
+}
+// Jira project config row type (TRD-028)
+export interface JiraProjectRow {
+  id: string;
+  project_id: string;
+  api_url: string;
+  email: string;
+  poll_interval_seconds: number | null;
+  webhook_enabled: boolean;
+  last_poll_at: string | null;
+  webhook_secret_encrypted: string | null;
+}
+  // ---------------------------------------------------------------------------
+  // PostgresAdapter
+  // ---------------------------------------------------------------------------
 export class PostgresAdapter {
+  private async allocateTaskId(projectId: string): Promise<string> {
+    const rows = await query<{ name: string | null }>(
+      `SELECT name FROM projects WHERE id = $1 LIMIT 1`,
+      [projectId],
+    );
+    const prefix = normalizeTaskIdPrefix(rows[0]?.name);
+    return `${prefix}-${randomBytes(3).toString("hex").slice(0, 5)}`;
+  }
+
   // -------------------------------------------------------------------------
   // Project operations
   // -------------------------------------------------------------------------
@@ -355,19 +572,58 @@ export class PostgresAdapter {
    * @throws DatabaseError on constraint violation.
    */
   async createTask(projectId: string, taskData: Record<string, unknown>): Promise<TaskRow> {
-    const id = taskData.id as string;
+    const id = (taskData.id as string | undefined) ?? await this.allocateTaskId(projectId);
     const title = (taskData.title as string) ?? id;
     const description = taskData.description as string | null ?? null;
     const type = (taskData.type as string) ?? "task";
     const priority = (taskData.priority as number) ?? 2;
-    const externalId = taskData.external_id as string | null ?? null;
+    const externalId =
+      (taskData.external_id as string | null | undefined) ??
+      (taskData.externalId as string | null | undefined) ??
+      null;
     const branch = taskData.branch as string | null ?? null;
+    const status = (taskData.status as string) ?? "backlog";
+    const createdAt = (taskData.created_at as string) ?? new Date().toISOString();
+    const updatedAt = (taskData.updated_at as string) ?? createdAt;
+    const approvedAt = taskData.approved_at as string | null ?? null;
+    const closedAt = taskData.closed_at as string | null ?? null;
 
     const rows = await query<TaskRow>(
-      `INSERT INTO tasks (id, project_id, title, description, type, priority, external_id, branch)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO tasks (
+         id, project_id, title, description, type, priority, status,
+         external_id, branch, created_at, updated_at, approved_at, closed_at,
+         external_repo, github_issue_number, github_milestone, sync_enabled, labels
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING *`,
-      [id, projectId, title, description, type, priority, externalId, branch],
+      [
+        id,
+        projectId,
+        title,
+        description,
+        type,
+        priority,
+        status,
+        externalId,
+        branch,
+        createdAt,
+        updatedAt,
+        approvedAt,
+        closedAt,
+        (taskData.external_repo as string | null | undefined) ??
+          (taskData.externalRepo as string | null | undefined) ??
+          null,
+        (taskData.github_issue_number as number | null | undefined) ??
+          (taskData.githubIssueNumber as number | null | undefined) ??
+          null,
+        (taskData.github_milestone as string | null | undefined) ??
+          (taskData.githubMilestone as string | null | undefined) ??
+          null,
+        (taskData.sync_enabled as boolean | undefined) ??
+          (taskData.syncEnabled as boolean | undefined) ??
+          false,
+        (taskData.labels as string[] | null | undefined) ?? null,
+      ],
     );
     return rows[0];
   }
@@ -386,29 +642,45 @@ export class PostgresAdapter {
       status?: string[];
       runId?: string;
       limit?: number;
+      externalId?: string;
+      labels?: string[];
     }
   ): Promise<TaskRow[]> {
-    const conditions = ["project_id = $1"];
+    const conditions = ["t.project_id = $1"];
     const params: unknown[] = [projectId];
     let i = 2;
 
     if (filters?.status && filters.status.length > 0) {
-      conditions.push(`status IN (${filters.status.map((_, idx) => `$${i + idx}`).join(",")})`);
+      conditions.push(`t.status IN (${filters.status.map((_, idx) => `$${i + idx}`).join(",")})`);
       params.push(...filters.status);
       i += filters.status.length;
     }
 
     if (filters?.runId !== undefined) {
-      conditions.push(`run_id = $${i++}`);
+      conditions.push(`t.run_id = $${i++}`);
       params.push(filters.runId);
+    }
+
+    if (filters?.externalId !== undefined) {
+      conditions.push(`t.external_id = $${i++}`);
+      params.push(filters.externalId);
+    }
+
+    if (filters?.labels && filters.labels.length > 0) {
+      conditions.push(`t.labels @> $${i++}::text[]`);
+      params.push(filters.labels);
     }
 
     const limit = filters?.limit ?? 100;
     params.push(limit);
 
+    // LEFT JOIN runs to get PR state (AC-4: task list surfaces PR state)
     return query<TaskRow>(
-      `SELECT * FROM tasks WHERE ${conditions.join(" AND ")}
-       ORDER BY priority ASC, created_at ASC
+      `SELECT t.*, r.pr_state, r.pr_url, r.pr_head_sha
+       FROM tasks t
+       LEFT JOIN runs r ON t.run_id = r.id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY t.priority ASC, t.created_at ASC
        LIMIT $${i}`,
       params,
     );
@@ -436,6 +708,91 @@ export class PostgresAdapter {
    * @param taskId - The task UUID.
    * @param updates - Fields to update. Supported: title, description, type, priority, status, branch, external_id.
    */
+  async addTaskNote(
+    projectId: string,
+    taskId: string,
+    input: AddTaskNoteInput,
+  ): Promise<TaskNoteRow> {
+    const rows = await query<TaskNoteRow>(
+      `INSERT INTO task_notes (
+         id, project_id, task_id, run_id, phase, author, kind, body, metadata, created_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+       RETURNING *`,
+      [
+        `note-${randomBytes(8).toString("hex")}`,
+        projectId,
+        taskId,
+        input.runId ?? null,
+        input.phase ?? null,
+        input.author,
+        input.kind ?? "progress",
+        input.body,
+        input.metadata ?? null,
+      ],
+    );
+    return rows[0];
+  }
+
+  async listTaskNotes(
+    projectId: string,
+    taskId: string,
+    opts?: { limit?: number; newestFirst?: boolean },
+  ): Promise<TaskNoteRow[]> {
+    const limit = opts?.limit ?? 50;
+    const direction = opts?.newestFirst === false ? "ASC" : "DESC";
+    const notes = await query<TaskNoteRow>(
+      `SELECT *
+       FROM task_notes
+       WHERE project_id = $1 AND task_id = $2
+       ORDER BY created_at ${direction}
+       LIMIT $3`,
+      [projectId, taskId, limit],
+    );
+    if (notes.length > 0) return notes;
+
+    const events = await query<PipelineEventRow>(
+      `SELECT *
+       FROM events
+       WHERE project_id = $1
+         AND (
+           task_id = $2
+           OR run_id IN (SELECT id FROM runs WHERE project_id = $1 AND bead_id = $2)
+         )
+         AND event_type IN ('phase-start', 'complete', 'fail', 'stuck', 'conflict')
+       ORDER BY created_at ${direction}
+       LIMIT $3`,
+      [projectId, taskId, limit],
+    );
+
+    return events.map((event) => {
+      const payload = event.payload ?? {};
+      const phase = typeof payload.phase === "string" ? payload.phase : null;
+      const reason = typeof payload.reason === "string" ? payload.reason : null;
+      const title = typeof payload.title === "string" ? payload.title : null;
+      const body = (() => {
+        if (event.event_type === "phase-start") return `${phase ?? "Phase"} started.`;
+        if (event.event_type === "complete") return `${phase ?? "Task"} completed.`;
+        if (event.event_type === "fail") return reason ? `${phase ?? "Task"} failed: ${reason}` : `${title ?? "Task"} failed.`;
+        if (event.event_type === "stuck") return reason ? `${phase ?? "Task"} stuck: ${reason}` : `${phase ?? "Task"} stuck.`;
+        if (event.event_type === "conflict") return reason ? `${phase ?? "Task"} conflict: ${reason}` : `${phase ?? "Task"} conflict.`;
+        return event.event_type;
+      })();
+      return {
+        id: `event-${event.id}`,
+        project_id: event.project_id,
+        task_id: event.task_id ?? taskId,
+        run_id: event.run_id,
+        phase,
+        author: "pipeline",
+        kind: event.event_type === "fail" || event.event_type === "stuck" || event.event_type === "conflict" ? "failure" : "progress",
+        body,
+        metadata: { source: "events", eventType: event.event_type, payload },
+        created_at: event.created_at,
+      } satisfies TaskNoteRow;
+    });
+  }
+
   async updateTask(
     projectId: string,
     taskId: string,
@@ -484,6 +841,20 @@ export class PostgresAdapter {
   }
 
   /**
+   * Sync the claimed task linked to a run into a terminal status.
+   *
+   * No-op when no task is currently linked to the run.
+   */
+  async updateTaskStatusForRun(projectId: string, runId: string, status: string): Promise<void> {
+    await execute(
+      `UPDATE tasks
+       SET status = $1, updated_at = now()
+       WHERE project_id = $2 AND run_id = $3`,
+      [status, projectId, runId],
+    );
+  }
+
+  /**
    * Delete a task and its dependencies.
    *
    * @param projectId - The owner project UUID.
@@ -512,7 +883,7 @@ export class PostgresAdapter {
   async claimTask(
     projectId: string,
     taskId: string,
-    runId: string
+    runId: string | null
   ): Promise<boolean> {
     const client = await acquireClient();
     try {
@@ -534,7 +905,7 @@ export class PostgresAdapter {
 
       await client.query(
         `UPDATE tasks SET run_id = $1, status = 'in-progress', updated_at = now()
-         WHERE id = $2 AND project_id = $3`,
+          WHERE id = $2 AND project_id = $3`,
         [runId, taskId, projectId],
       );
 
@@ -569,6 +940,19 @@ export class PostgresAdapter {
       throw new Error(
         `Cannot approve task '${taskId}': task not found or not in backlog status`,
       );
+    }
+  }
+
+  async closeTask(projectId: string, taskId: string): Promise<void> {
+    const rows = await query<TaskRow>(
+      `UPDATE tasks
+       SET status = 'closed', closed_at = now(), updated_at = now()
+       WHERE id = $1 AND project_id = $2
+       RETURNING id`,
+      [taskId, projectId],
+    );
+    if (rows.length === 0) {
+      throw new Error(`Cannot close task '${taskId}': task not found`);
     }
   }
 
@@ -630,6 +1014,33 @@ export class PostgresAdapter {
   }
 
   /**
+   * List ready tasks whose blockers are all closed.
+   *
+   * A task can remain in the native `ready` state while dependency links express
+   * that another task must close first. Dispatchers must use this query rather
+   * than raw status filtering so dependency-blocked ready tasks are not claimed.
+   */
+  async listDispatchableReadyTasks(projectId: string, limit = 1000): Promise<TaskRow[]> {
+    return query<TaskRow>(
+      `SELECT t.*
+       FROM tasks t
+       WHERE t.project_id = $1
+         AND t.status = 'ready'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM task_dependencies td
+           JOIN tasks blocker ON blocker.id = td.from_task_id
+           WHERE td.to_task_id = t.id
+             AND blocker.project_id = $1
+             AND blocker.status <> 'closed'
+         )
+       ORDER BY t.priority ASC, t.created_at ASC
+       LIMIT $2`,
+      [projectId, limit],
+    );
+  }
+
+  /**
    * List tasks that need human attention.
    *
    * Includes: backlog (not approved), conflict, failed, stuck, blocked.
@@ -645,9 +1056,152 @@ export class PostgresAdapter {
     );
   }
 
-  // -------------------------------------------------------------------------
+  /**
+   * Get a task by its external ID (e.g., bead ID).
+   */
+  async getTaskByExternalId(projectId: string, externalId: string): Promise<TaskRow | null> {
+    const rows = await query<TaskRow>(
+      `SELECT * FROM tasks WHERE project_id = $1 AND external_id = $2 LIMIT 1`,
+      [projectId, externalId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Check if any tasks exist for a project (native tasks).
+   */
+  async hasNativeTasks(projectId: string): Promise<boolean> {
+    const result = await query<{ cnt: string }>(
+      `SELECT COUNT(*) as cnt FROM tasks WHERE project_id = $1`,
+      [projectId],
+    );
+    return parseInt(result[0]?.cnt ?? "0", 10) > 0;
+  }
+
+  async addTaskDependency(
+    projectId: string,
+    fromTaskId: string,
+    toTaskId: string,
+    type: "blocks" | "parent-child" = "blocks",
+  ): Promise<void> {
+    if (fromTaskId === toTaskId) {
+      throw new Error("Adding this dependency would create a circular dependency.");
+    }
+
+    const client = await acquireClient();
+    try {
+      await client.query("BEGIN");
+
+      const rows = await client.query<{ id: string }>(
+        `SELECT id FROM tasks
+         WHERE project_id = $1 AND id IN ($2, $3)`,
+        [projectId, fromTaskId, toTaskId],
+      );
+      if (rows.rows.length !== 2) {
+        throw new Error("One or both task IDs were not found in this project.");
+      }
+
+      const cycle = await client.query<{ found: number }>(
+        `WITH RECURSIVE reach(id) AS (
+           SELECT $1::text
+           UNION
+           SELECT td.to_task_id
+           FROM task_dependencies td
+           JOIN reach r ON td.from_task_id = r.id
+         )
+         SELECT 1 AS found
+         FROM reach
+         WHERE id = $2
+         LIMIT 1`,
+        [toTaskId, fromTaskId],
+      );
+      if (cycle.rows.length > 0) {
+        throw new Error("Adding this dependency would create a circular dependency.");
+      }
+
+      await client.query(
+        `INSERT INTO task_dependencies (from_task_id, to_task_id, type)
+         VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING`,
+        [fromTaskId, toTaskId, type],
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      releaseClient(client);
+    }
+  }
+
+  async listTaskDependencies(
+    projectId: string,
+    taskId: string,
+    direction: "outgoing" | "incoming" = "outgoing",
+  ): Promise<TaskDependencyRow[]> {
+    if (direction === "outgoing") {
+      return query<TaskDependencyRow>(
+        `SELECT td.*
+         FROM task_dependencies td
+         JOIN tasks t ON t.id = td.from_task_id
+         WHERE t.project_id = $1 AND td.from_task_id = $2
+         ORDER BY td.to_task_id ASC`,
+        [projectId, taskId],
+      );
+    }
+
+    return query<TaskDependencyRow>(
+      `SELECT td.*
+       FROM task_dependencies td
+       JOIN tasks t ON t.id = td.to_task_id
+       WHERE t.project_id = $1 AND td.to_task_id = $2
+       ORDER BY td.from_task_id ASC`,
+      [projectId, taskId],
+    );
+  }
+
+  async removeTaskDependency(
+    projectId: string,
+    fromTaskId: string,
+    toTaskId: string,
+    type: "blocks" | "parent-child" = "blocks",
+  ): Promise<void> {
+    await execute(
+      `DELETE FROM task_dependencies td
+       USING tasks tf, tasks tt
+       WHERE td.from_task_id = $1
+         AND td.to_task_id = $2
+         AND td.type = $3
+         AND tf.id = td.from_task_id
+         AND tf.project_id = $4
+         AND tt.id = td.to_task_id
+         AND tt.project_id = $4`,
+      [fromTaskId, toTaskId, type, projectId],
+    );
+  }
+
+  /**
+   * Get runs by multiple statuses since a given time.
+   */
+  async getRunsByStatusesSince(
+    projectId: string,
+    statuses: string[],
+    since: string,
+  ): Promise<RunRow[]> {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map((_, i) => `$${i + 2}`).join(", ");
+    return query<RunRow>(
+      `SELECT * FROM runs
+       WHERE project_id = $1 AND status IN (${placeholders}) AND created_at >= $${statuses.length + 2}
+       ORDER BY created_at DESC`,
+      [projectId, ...statuses, since],
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Run operations
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
 
   /**
    * Create a new run.
@@ -665,19 +1219,8 @@ export class PostgresAdapter {
   ): Promise<RunRow> {
     const rows = await query<RunRow>(
       `INSERT INTO runs (
-         project_id,
-         bead_id,
-         run_number,
-         status,
-         branch,
-         trigger,
-         seed_id,
-         agent_type,
-         session_key,
-         worktree_path,
-         progress,
-         base_branch,
-         merge_strategy
+         project_id, bead_id, run_number, status, branch, trigger,
+         agent_type, session_key, worktree_path, base_branch, merge_strategy, progress
        )
        VALUES (
          $1::uuid,
@@ -685,28 +1228,39 @@ export class PostgresAdapter {
          COALESCE((SELECT MAX(run_number) + 1 FROM runs WHERE bead_id = $3::varchar(255)), 1),
          'pending',
          $4::varchar(255),
-         'bead',
-         $5::varchar(255),
-         $6::varchar(255),
-         $7::varchar(255),
-         $8::text,
-         NULL,
-         $9::varchar(255),
-         $10::varchar(16)
+         'manual',
+         $5::varchar(64),
+         $6::text,
+         $7::text,
+         $8::varchar(255),
+         $9::varchar(16),
+         NULL
        )
-       RETURNING *`,
+       RETURNING
+         id,
+         project_id,
+         bead_id AS seed_id,
+         agent_type,
+         session_key,
+         worktree_path,
+         status,
+         started_at,
+         finished_at AS completed_at,
+         created_at,
+         CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress,
+         base_branch,
+         merge_strategy`,
       [
         projectId,
         seedId,
         seedId,
-        options?.baseBranch ?? seedId,
-        seedId,
+        options?.worktreePath ?? `foreman/${seedId}`,
         agentType,
         options?.sessionKey ?? null,
         options?.worktreePath ?? null,
         options?.baseBranch ?? null,
         options?.mergeStrategy ?? "auto",
-      ]
+      ],
     );
     return rows[0];
   }
@@ -718,23 +1272,22 @@ export class PostgresAdapter {
     projectId: string,
     filters?: { status?: string[]; limit?: number }
   ): Promise<RunRow[]> {
-    const conditions = ["project_id = $1", "seed_id IS NOT NULL"];
+    const conditions = [`project_id = $1`];
     const params: unknown[] = [projectId];
     let i = 2;
-
     if (filters?.status && filters.status.length > 0) {
-      conditions.push(`status IN (${filters.status.map((_, index) => `$${i + index}`).join(",")})`);
-      params.push(...filters.status);
-      i += filters.status.length;
+      const mapped = filters.status.map(mapLegacyRunStatusToPipeline);
+      conditions.push(`status IN (${mapped.map((_, idx) => `$${i + idx}`).join(",")})`);
+      params.push(...mapped);
+      i += mapped.length;
     }
-
-    let sql = `SELECT * FROM runs WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC`;
+    let sql = `${runRowSelectSql()} WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC`;
     if (filters?.limit) {
       sql += ` LIMIT $${i}`;
       params.push(filters.limit);
     }
-
-    return query<RunRow>(sql, params);
+    const rows = await query<RunRow>(sql, params);
+    return rows.map((row) => ({ ...row, status: mapPipelineRunStatusToLegacy(row.status) }));
   }
 
   /**
@@ -742,10 +1295,11 @@ export class PostgresAdapter {
      */
   async getRun(projectId: string, runId: string): Promise<RunRow | null> {
     const rows = await query<RunRow>(
-      `SELECT * FROM runs WHERE id = $1 AND project_id = $2 AND seed_id IS NOT NULL`,
-      [runId, projectId]
+      `${runRowSelectSql()} WHERE project_id = $1 AND id = $2 LIMIT 1`,
+      [projectId, runId],
     );
-    return rows[0] ?? null;
+    const row = rows[0];
+    return row ? { ...row, status: mapPipelineRunStatusToLegacy(row.status) } : null;
   }
 
   /**
@@ -754,25 +1308,47 @@ export class PostgresAdapter {
   async updateRun(
     projectId: string,
     runId: string,
-    updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at">>
+    updates: Partial<Pick<RunRow, "status" | "session_key" | "worktree_path" | "progress" | "started_at" | "completed_at" | "base_branch" | "merge_strategy">>
   ): Promise<void> {
     const setClauses: string[] = ["updated_at = now()"];
     const params: unknown[] = [];
     let i = 1;
-
-    for (const [key, value] of Object.entries(updates)) {
-      if (value !== undefined) {
-        setClauses.push(`${key} = $${i++}`);
-        params.push(value);
-      }
+    if (updates.status !== undefined) {
+      setClauses.push(`status = $${i++}`);
+      params.push(mapLegacyRunStatusToPipeline(updates.status));
     }
-
-    if (setClauses.length === 1) return;
-
+    if (updates.session_key !== undefined) {
+      setClauses.push(`session_key = $${i++}`);
+      params.push(updates.session_key);
+    }
+    if (updates.worktree_path !== undefined) {
+      setClauses.push(`worktree_path = $${i++}`);
+      params.push(updates.worktree_path);
+    }
+    if (updates.progress !== undefined) {
+      setClauses.push(`progress = $${i++}::jsonb`);
+      params.push(updates.progress);
+    }
+    if (updates.started_at !== undefined) {
+      setClauses.push(`started_at = $${i++}`);
+      params.push(updates.started_at);
+    }
+    if (updates.completed_at !== undefined) {
+      setClauses.push(`finished_at = $${i++}`);
+      params.push(updates.completed_at);
+    }
+    if (updates.base_branch !== undefined) {
+      setClauses.push(`base_branch = $${i++}`);
+      params.push(updates.base_branch);
+    }
+    if (updates.merge_strategy !== undefined) {
+      setClauses.push(`merge_strategy = $${i++}`);
+      params.push(updates.merge_strategy);
+    }
     params.push(runId, projectId);
     await execute(
-      `UPDATE runs SET ${setClauses.join(", ")} WHERE id = $${i++} AND project_id = $${i} AND seed_id IS NOT NULL`,
-      params
+      `UPDATE runs SET ${setClauses.join(", ")} WHERE id = $${i++} AND project_id = $${i}`,
+      params,
     );
   }
 
@@ -780,12 +1356,21 @@ export class PostgresAdapter {
    * List active (pending/running) runs for a project.
      */
   async listActiveRuns(projectId: string): Promise<RunRow[]> {
-    return query<RunRow>(
-      `SELECT * FROM runs
-       WHERE project_id = $1 AND seed_id IS NOT NULL AND status IN ('pending', 'running')
-       ORDER BY created_at DESC`,
-      [projectId]
-    );
+    const rows = await query<RunRow>(
+      `${runRowSelectSql()} r
+       WHERE r.project_id = $1
+         AND r.status IN ('pending','running')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM tasks t
+           WHERE t.project_id = r.project_id
+             AND t.id = r.bead_id
+             AND t.status IN ('closed','merged')
+         )
+       ORDER BY r.created_at DESC`,
+       [projectId],
+     );
+    return rows.map((row) => ({ ...row, status: mapPipelineRunStatusToLegacy(row.status) }));
   }
 
   /**
@@ -795,11 +1380,9 @@ export class PostgresAdapter {
     projectId: string,
     seedId: string
   ): Promise<boolean> {
-    const rows = await query<{ present: number }>(
-      `SELECT 1 AS present FROM runs
-       WHERE project_id = $1 AND seed_id = $2 AND status IN ('pending', 'running', 'completed', 'stuck', 'pr-created')
-       LIMIT 1`,
-      [projectId, seedId]
+    const rows = await query<{ found: number }>(
+      `SELECT 1 as found FROM runs WHERE project_id = $1 AND bead_id = $2 AND status IN ('pending','running','success') LIMIT 1`,
+      [projectId, seedId],
     );
     return rows.length > 0;
   }
@@ -810,37 +1393,19 @@ export class PostgresAdapter {
   async updateRunProgress(
     projectId: string,
     runId: string,
-    progress: {
-      phase?: string;
-      currentTargetRef?: string;
-      lastToolCall?: string;
-      lastActivity?: string;
-      tokensIn?: number;
-      tokensOut?: number;
-      costByPhase?: Record<string, number>;
-      agentByPhase?: Record<string, string>;
-    }
+    progress: Partial<RunProgress> & { phase?: string }
   ): Promise<void> {
-    const existing = await this.getRun(projectId, runId);
-    const current = existing?.progress ? JSON.parse(existing.progress) as Record<string, unknown> : {};
-    const merged = {
-      ...current,
-      ...(progress.phase !== undefined ? { currentPhase: progress.phase } : {}),
-      ...(progress.currentTargetRef !== undefined ? { currentTargetRef: progress.currentTargetRef } : {}),
-      ...(progress.lastToolCall !== undefined ? { lastToolCall: progress.lastToolCall } : {}),
-      ...(progress.lastActivity !== undefined ? { lastActivity: progress.lastActivity } : {}),
-      ...(progress.tokensIn !== undefined ? { tokensIn: progress.tokensIn } : {}),
-      ...(progress.tokensOut !== undefined ? { tokensOut: progress.tokensOut } : {}),
-      ...(progress.costByPhase !== undefined ? { costByPhase: progress.costByPhase } : {}),
-      ...(progress.agentByPhase !== undefined ? { agentByPhase: progress.agentByPhase } : {}),
-    };
-
-    await execute(
-      `UPDATE runs
-       SET progress = $1, updated_at = now()
-       WHERE id = $2 AND project_id = $3 AND seed_id IS NOT NULL`,
-      [JSON.stringify(merged), runId, projectId]
-    );
+    const run = await this.getRun(projectId, runId);
+    let existing: Record<string, unknown> = {};
+    if (run?.progress) {
+      try {
+        existing = JSON.parse(run.progress) as Record<string, unknown>;
+      } catch {
+        existing = {};
+      }
+    }
+    const merged = { ...existing, ...progress };
+    await this.updateRun(projectId, runId, { progress: JSON.stringify(merged) });
   }
 
   /**
@@ -853,10 +1418,9 @@ export class PostgresAdapter {
     return execute(
       `DELETE FROM runs
        WHERE project_id = $1
-         AND seed_id IS NOT NULL
-         AND status IN ('failed', 'merged', 'test-failed', 'conflict')
+         AND status IN ('failure', 'success')
          AND created_at < $2`,
-      [projectId, olderThan]
+      [projectId, olderThan],
     );
   }
 
@@ -865,9 +1429,8 @@ export class PostgresAdapter {
      */
   async deleteRun(projectId: string, runId: string): Promise<boolean> {
     const changed = await execute(
-      `DELETE FROM runs
-       WHERE id = $1 AND project_id = $2 AND seed_id IS NOT NULL`,
-      [runId, projectId]
+      `DELETE FROM runs WHERE project_id = $1 AND id = $2`,
+      [projectId, runId],
     );
     return changed > 0;
   }
@@ -890,16 +1453,9 @@ export class PostgresAdapter {
     }
   ): Promise<void> {
     await execute(
-      `INSERT INTO costs (id, run_id, tokens_in, tokens_out, cache_read, estimated_cost, recorded_at)
-       VALUES ($1, $2, $3, $4, $5, $6, now())`,
-      [
-        randomUUID(),
-        runId,
-        cost.tokensIn,
-        cost.tokensOut,
-        cost.cacheRead,
-        cost.estimatedCost,
-      ]
+      `INSERT INTO costs (run_id, tokens_in, tokens_out, cache_read, estimated_cost, recorded_at)
+       VALUES ($1, $2, $3, $4, $5, clock_timestamp())`,
+      [runId, cost.tokensIn, cost.tokensOut, cost.cacheRead, cost.estimatedCost],
     );
   }
 
@@ -916,11 +1472,26 @@ export class PostgresAdapter {
     eventType: string,
     details?: string
   ): Promise<void> {
-    await execute(
-      `INSERT INTO events (id, project_id, run_id, event_type, details, payload, created_at)
-       VALUES ($1, $2, $3, $4, $5, NULL, now())`,
-      [randomUUID(), projectId, runId, eventType, details ?? null]
-    );
+    let payload: Record<string, unknown> | undefined;
+    if (details !== undefined) {
+      try {
+        const parsed = JSON.parse(details) as unknown;
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          payload = parsed as Record<string, unknown>;
+        } else {
+          payload = { details: parsed };
+        }
+      } catch {
+        payload = { details };
+      }
+    }
+
+    await this.recordPipelineEvent({
+      projectId,
+      runId,
+      eventType,
+      payload,
+    });
   }
 
   /**
@@ -929,22 +1500,16 @@ export class PostgresAdapter {
   async logRateLimitEvent(
     projectId: string,
     runId: string | null,
-    agentType: string,
-    details: string
+    model: string,
+    phase: string | null,
+    error: string,
+    retryAfterSeconds: number | null
   ): Promise<void> {
     await execute(
       `INSERT INTO rate_limit_events (
-         id,
-         project_id,
-         run_id,
-         model,
-         phase,
-         error,
-         retry_after_seconds,
-         recorded_at
-       )
-       VALUES ($1, $2, $3, $4, NULL, $5, NULL, now())`,
-      [randomUUID(), projectId, runId, agentType, details]
+         project_id, run_id, model, phase, error, retry_after_seconds
+       ) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [projectId, runId, model, phase, error, retryAfterSeconds],
     );
   }
 
@@ -958,28 +1523,20 @@ export class PostgresAdapter {
   async sendMessage(
     projectId: string,
     runId: string,
+    senderAgentType: string,
     toAgent: string,
+    subject: string,
     body: string
-  ): Promise<void> {
-    await execute(
-      `INSERT INTO messages (
-         id,
-         run_id,
-         step_key,
-         stream,
-         chunk,
-         line_number,
-         sender_agent_type,
-         recipient_agent_type,
-         subject,
-         body,
-         read,
-         deleted_at,
-         created_at
-       )
-       VALUES ($1, $2, NULL, 'system', $3, 0, 'foreman', $4, $5, $3, 0, NULL, now())`,
-      [randomUUID(), runId, body, toAgent, toAgent]
+  ): Promise<AgentMessageRow> {
+    const rows = await query<AgentMessageRow>(
+      `INSERT INTO agent_messages (
+         project_id, run_id, sender_agent_type, recipient_agent_type, subject, body, read, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, 0, clock_timestamp())
+        RETURNING *`,
+      [projectId, runId, senderAgentType, toAgent, subject, body],
     );
+    return rows[0];
   }
 
   /**
@@ -989,17 +1546,13 @@ export class PostgresAdapter {
     projectId: string,
     messageId: string
   ): Promise<boolean> {
-    const changed = await execute(
-      `UPDATE messages AS m
+    const result = await execute(
+      `UPDATE agent_messages
        SET read = 1
-       WHERE m.id = $1
-         AND EXISTS (
-           SELECT 1 FROM runs r
-           WHERE r.id = m.run_id AND r.project_id = $2
-         )`,
-      [messageId, projectId]
+       WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL`,
+      [messageId, projectId],
     );
-    return changed > 0;
+    return result > 0;
   }
 
   /**
@@ -1011,16 +1564,10 @@ export class PostgresAdapter {
     agentType: string
   ): Promise<void> {
     await execute(
-      `UPDATE messages AS m
+      `UPDATE agent_messages
        SET read = 1
-       WHERE m.run_id = $1
-         AND m.recipient_agent_type = $2
-         AND m.deleted_at IS NULL
-         AND EXISTS (
-           SELECT 1 FROM runs r
-           WHERE r.id = m.run_id AND r.project_id = $3
-         )`,
-      [runId, agentType, projectId]
+       WHERE project_id = $1 AND run_id = $2 AND recipient_agent_type = $3 AND deleted_at IS NULL`,
+      [projectId, runId, agentType],
     );
   }
 
@@ -1031,53 +1578,170 @@ export class PostgresAdapter {
     projectId: string,
     messageId: string
   ): Promise<boolean> {
-    const changed = await execute(
-      `UPDATE messages AS m
+    const result = await execute(
+      `UPDATE agent_messages
        SET deleted_at = now()
-       WHERE m.id = $1
-         AND EXISTS (
-           SELECT 1 FROM runs r
-           WHERE r.id = m.run_id AND r.project_id = $2
-         )`,
-      [messageId, projectId]
+       WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL`,
+      [messageId, projectId],
     );
-    return changed > 0;
+    return result > 0;
   }
 
-  // -------------------------------------------------------------------------
-  // Bead write queue
-  // -------------------------------------------------------------------------
-
-  /**
-   * Enqueue a bead write operation.
-     */
-  async enqueueBeadWrite(
+  async getMessages(
     projectId: string,
-    sender: string,
-    operation: string,
-    payload: unknown
+    runId: string,
+    agentType: string,
+    unreadOnly = false,
+  ): Promise<AgentMessageRow[]> {
+    let sql = `SELECT * FROM agent_messages
+               WHERE project_id = $1 AND run_id = $2 AND recipient_agent_type = $3 AND deleted_at IS NULL`;
+    const params: unknown[] = [projectId, runId, agentType];
+    if (unreadOnly) {
+      sql += ` AND read = 0`;
+    }
+    sql += ` ORDER BY created_at ASC`;
+    return query<AgentMessageRow>(sql, params);
+  }
+
+  async getAllMessages(runId: string): Promise<AgentMessageRow[]> {
+    return query<AgentMessageRow>(
+      `SELECT * FROM agent_messages
+       WHERE run_id = $1 AND deleted_at IS NULL
+       ORDER BY created_at ASC`,
+      [runId],
+    );
+  }
+
+  async getAllMessagesGlobal(projectId: string, limit = 200): Promise<AgentMessageRow[]> {
+    const rows = await query<AgentMessageRow>(
+      `SELECT * FROM agent_messages
+       WHERE project_id = $1 AND deleted_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [projectId, limit],
+    );
+    return rows.reverse();
+  }
+
+  async enqueueMergeQueueEntry(data: {
+    projectId: string;
+    branchName: string;
+    seedId: string;
+    runId: string;
+    operation?: MergeQueueOperation;
+    agentName?: string | null;
+    filesModified?: string[];
+  }): Promise<MergeQueueEntryRow> {
+    const rows = await query<MergeQueueEntryRow>(
+      `INSERT INTO merge_queue (
+         project_id, branch_name, seed_id, run_id, operation, agent_name, files_modified
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+       ON CONFLICT (project_id, branch_name, run_id) DO UPDATE
+       SET branch_name = EXCLUDED.branch_name
+       RETURNING *`,
+      [
+        data.projectId,
+        data.branchName,
+        data.seedId,
+        data.runId,
+        data.operation ?? "auto_merge",
+        data.agentName ?? null,
+        JSON.stringify(data.filesModified ?? []),
+      ],
+    );
+    return rows[0];
+  }
+
+  async listMergeQueue(projectId: string, status?: MergeQueueStatus): Promise<MergeQueueEntryRow[]> {
+    const params: unknown[] = [projectId];
+    let sql = `SELECT * FROM merge_queue WHERE project_id = $1`;
+    if (status) {
+      sql += ` AND status = $2`;
+      params.push(status);
+    }
+    sql += ` ORDER BY enqueued_at ASC`;
+    return query<MergeQueueEntryRow>(sql, params);
+  }
+
+  async updateMergeQueueStatus(
+    projectId: string,
+    id: number,
+    status: MergeQueueStatus,
+    extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number },
   ): Promise<void> {
-    await execute(
-      `INSERT INTO bead_write_queue (id, project_id, sender, operation, payload, created_at, processed_at)
-       VALUES ($1, $2, $3, $4, $5, now(), NULL)`,
-      [randomUUID(), projectId, sender, operation, JSON.stringify(payload)]
+    const fields = ["status = $1"];
+    const params: unknown[] = [status];
+    let i = 2;
+    if (extra?.resolvedTier !== undefined) {
+      fields.push(`resolved_tier = $${i++}`);
+      params.push(extra.resolvedTier);
+    }
+    if (extra?.error !== undefined) {
+      fields.push(`error = $${i++}`);
+      params.push(extra.error);
+    }
+    if (extra?.completedAt !== undefined) {
+      fields.push(`completed_at = $${i++}`);
+      params.push(extra.completedAt);
+    }
+    if (extra?.lastAttemptedAt !== undefined) {
+      fields.push(`last_attempted_at = $${i++}`);
+      params.push(extra.lastAttemptedAt);
+    }
+    if (extra?.retryCount !== undefined) {
+      fields.push(`retry_count = $${i++}`);
+      params.push(extra.retryCount);
+    }
+    params.push(projectId, id);
+    await execute(`UPDATE merge_queue SET ${fields.join(", ")} WHERE project_id = $${i++} AND id = $${i}`, params);
+  }
+
+  async removeMergeQueueEntry(projectId: string, id: number): Promise<void> {
+    await execute(`DELETE FROM merge_queue WHERE project_id = $1 AND id = $2`, [projectId, id]);
+  }
+
+  async resetMergeQueueForRetry(projectId: string, seedId: string): Promise<boolean> {
+    const rows = await query<{ id: number }>(
+      `UPDATE merge_queue
+       SET status = 'pending', error = NULL, started_at = NULL, last_attempted_at = now()
+       WHERE project_id = $1 AND seed_id = $2 AND status IN ('failed','conflict','merging')
+       RETURNING id`,
+      [projectId, seedId],
+    );
+    return rows.length > 0;
+  }
+
+  async listRetryableMergeQueue(projectId: string): Promise<MergeQueueEntryRow[]> {
+    return query<MergeQueueEntryRow>(
+      `SELECT * FROM merge_queue
+       WHERE project_id = $1 AND status IN ('conflict','failed')
+       ORDER BY enqueued_at ASC`,
+      [projectId],
     );
   }
 
-  /**
-   * Mark a bead write as processed.
-     */
-  async markBeadWriteProcessed(
-    projectId: string,
-    id: string
-  ): Promise<boolean> {
-    const changed = await execute(
-      `UPDATE bead_write_queue
-       SET processed_at = now()
-       WHERE id = $1 AND project_id = $2`,
-      [id, projectId]
+  async reEnqueueMergeQueue(projectId: string, id: number): Promise<boolean> {
+    const rows = await query<{ id: number }>(
+      `UPDATE merge_queue
+       SET status = 'pending', error = NULL, started_at = NULL,
+           retry_count = retry_count + 1, last_attempted_at = now()
+       WHERE project_id = $1 AND id = $2 AND status IN ('conflict','failed')
+       RETURNING id`,
+      [projectId, id],
     );
-    return changed > 0;
+    return rows.length > 0;
+  }
+
+  async listMissingFromMergeQueue(projectId: string): Promise<Array<{ run_id: string; seed_id: string }>> {
+    return query<{ run_id: string; seed_id: string }>(
+      `SELECT r.id AS run_id, r.bead_id AS seed_id
+       FROM runs r
+       WHERE r.project_id = $1 AND r.status = 'success'
+         AND r.id NOT IN (SELECT run_id FROM merge_queue WHERE project_id = $1)
+       ORDER BY r.created_at ASC`,
+      [projectId],
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1089,45 +1753,31 @@ export class PostgresAdapter {
      */
   async upsertSentinelConfig(
     projectId: string,
-    config: Partial<Omit<SentinelConfigRow, "id" | "project_id" | "created_at" | "updated_at">>
-  ): Promise<SentinelConfigRow> {
-    const existing = await this.getSentinelConfig(projectId);
-
-    if (existing) {
-      const setClauses: string[] = ["updated_at = now()"];
-      const params: unknown[] = [];
-      let i = 1;
-
-      for (const [key, value] of Object.entries(config)) {
-        if (value !== undefined) {
-          setClauses.push(`${key} = $${i++}`);
-          params.push(value);
-        }
-      }
-
-      if (setClauses.length > 1) {
-        params.push(projectId);
-        await execute(
-          `UPDATE sentinel_configs SET ${setClauses.join(", ")} WHERE project_id = $${i}`,
-          params
-        );
-      }
-
-      return (await this.getSentinelConfig(projectId))!;
-    }
-
-    await query<SentinelConfigRow>(
-      `INSERT INTO sentinel_configs (
-         project_id,
-         branch,
-         test_command,
-         interval_minutes,
-         failure_threshold,
-         enabled,
-         pid,
-         created_at,
-         updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
+    config: Record<string, unknown>
+  ): Promise<void> {
+    const fields = [
+      "project_id",
+      "branch",
+      "test_command",
+      "interval_minutes",
+      "failure_threshold",
+      "enabled",
+      "pid",
+      "created_at",
+      "updated_at",
+    ];
+    const now = new Date().toISOString();
+    await execute(
+      `INSERT INTO sentinel_configs (${fields.join(",")})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (project_id) DO UPDATE SET
+         branch = EXCLUDED.branch,
+         test_command = EXCLUDED.test_command,
+         interval_minutes = EXCLUDED.interval_minutes,
+         failure_threshold = EXCLUDED.failure_threshold,
+         enabled = EXCLUDED.enabled,
+         pid = EXCLUDED.pid,
+         updated_at = EXCLUDED.updated_at`,
       [
         projectId,
         config.branch ?? "main",
@@ -1136,18 +1786,10 @@ export class PostgresAdapter {
         config.failure_threshold ?? 2,
         config.enabled ?? 1,
         config.pid ?? null,
-      ]
+        now,
+        now,
+      ],
     );
-
-    return (await this.getSentinelConfig(projectId))!;
-  }
-
-  async getSentinelConfig(projectId: string): Promise<SentinelConfigRow | null> {
-    const rows = await query<SentinelConfigRow>(
-      `SELECT * FROM sentinel_configs WHERE project_id = $1`,
-      [projectId]
-    );
-    return rows[0] ?? null;
   }
 
   /**
@@ -1155,21 +1797,12 @@ export class PostgresAdapter {
      */
   async recordSentinelRun(
     projectId: string,
-    run: Omit<SentinelRunRow, "project_id" | "failure_count"> & { failure_count?: number }
+    run: Record<string, unknown>
   ): Promise<void> {
     await execute(
       `INSERT INTO sentinel_runs (
-         id,
-         project_id,
-         branch,
-         commit_hash,
-         status,
-         test_command,
-         output,
-         failure_count,
-         started_at,
-         completed_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+         id, project_id, branch, commit_hash, status, test_command, output, failure_count, started_at, completed_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
         run.id,
         projectId,
@@ -1181,7 +1814,7 @@ export class PostgresAdapter {
         run.failure_count ?? 0,
         run.started_at,
         run.completed_at ?? null,
-      ]
+      ],
     );
   }
 
@@ -1191,49 +1824,35 @@ export class PostgresAdapter {
   async updateSentinelRun(
     projectId: string,
     runId: string,
-    updates: Partial<Pick<SentinelRunRow, "status" | "output" | "completed_at" | "failure_count">>
+    updates: Record<string, unknown>
   ): Promise<void> {
-    const setClauses: string[] = [];
+    const fields: string[] = [];
     const params: unknown[] = [];
     let i = 1;
-
-    for (const [key, value] of Object.entries(updates)) {
-      if (value !== undefined) {
-        setClauses.push(`${key} = $${i++}`);
-        params.push(value);
+    for (const key of ["status", "output", "completed_at", "failure_count"] as const) {
+      if (updates[key] !== undefined) {
+        fields.push(`${key} = $${i++}`);
+        params.push(updates[key]);
       }
     }
-
-    if (setClauses.length === 0) return;
-
-    params.push(runId, projectId);
-    await execute(
-      `UPDATE sentinel_runs AS sr
-       SET ${setClauses.join(", ")}
-       WHERE sr.id = $${i++}
-         AND sr.project_id = $${i}`,
-      params
-    );
+    if (fields.length === 0) return;
+    params.push(projectId, runId);
+    await execute(`UPDATE sentinel_runs SET ${fields.join(", ")} WHERE project_id = $${i++} AND id = $${i}`, params);
   }
 
-  async getSentinelRuns(projectId?: string, limit?: number): Promise<SentinelRunRow[]> {
-    const conditions: string[] = [];
-    const params: unknown[] = [];
-    let i = 1;
+  async getSentinelConfig(projectId: string): Promise<SentinelConfigRow | null> {
+    const rows = await query<SentinelConfigRow>(
+      `SELECT * FROM sentinel_configs WHERE project_id = $1 LIMIT 1`,
+      [projectId],
+    );
+    return rows[0] ?? null;
+  }
 
-    if (projectId) {
-      conditions.push(`project_id = $${i++}`);
-      params.push(projectId);
-    }
-
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    let sql = `SELECT * FROM sentinel_runs ${where} ORDER BY started_at DESC`;
-    if (limit) {
-      sql += ` LIMIT $${i}`;
-      params.push(limit);
-    }
-
-    return query<SentinelRunRow>(sql, params);
+  async getSentinelRuns(projectId: string, limit = 10): Promise<SentinelRunRow[]> {
+    return query<SentinelRunRow>(
+      `SELECT * FROM sentinel_runs WHERE project_id = $1 ORDER BY started_at DESC LIMIT $2`,
+      [projectId, limit],
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1241,24 +1860,42 @@ export class PostgresAdapter {
   // -------------------------------------------------------------------------
 
   async createPipelineRun(data: {
+    id?: string;
     projectId: string;
     beadId: string;
     runNumber: number;
     branch: string;
     commitSha?: string;
     trigger?: string;
+    agentType?: string;
+    sessionKey?: string;
+    worktreePath?: string;
+    progress?: string;
+    baseBranch?: string;
+    mergeStrategy?: string;
   }): Promise<PipelineRunRow> {
     const rows = await query<PipelineRunRow>(
-      `INSERT INTO runs (project_id, bead_id, run_number, branch, commit_sha, trigger)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
+      `INSERT INTO runs (
+         id, project_id, bead_id, run_number, status, branch, commit_sha, trigger,
+         agent_type, session_key, worktree_path, progress, base_branch, merge_strategy,
+         queued_at, created_at, updated_at
+        )
+        VALUES (COALESCE($1, gen_random_uuid()), $2, $3, $4, 'pending', $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, clock_timestamp(), clock_timestamp(), clock_timestamp())
+        RETURNING *`,
       [
+        data.id ?? null,
         data.projectId,
         data.beadId,
         data.runNumber,
         data.branch,
         data.commitSha ?? null,
         data.trigger ?? "manual",
+        data.agentType ?? null,
+        data.sessionKey ?? null,
+        data.worktreePath ?? null,
+        data.progress ?? null,
+        data.baseBranch ?? null,
+        data.mergeStrategy ?? null,
       ]
     );
     return rows[0];
@@ -1303,6 +1940,11 @@ export class PostgresAdapter {
     runId: string,
     updates: {
       status?: string;
+      sessionKey?: string;
+      worktreePath?: string;
+      progress?: string;
+      baseBranch?: string;
+      mergeStrategy?: string;
       startedAt?: string;
       finishedAt?: string;
     }
@@ -1313,6 +1955,26 @@ export class PostgresAdapter {
     if (updates.status !== undefined) {
       setParts.push(`status = $${p++}`);
       params.push(updates.status);
+    }
+    if (updates.sessionKey !== undefined) {
+      setParts.push(`session_key = $${p++}`);
+      params.push(updates.sessionKey);
+    }
+    if (updates.worktreePath !== undefined) {
+      setParts.push(`worktree_path = $${p++}`);
+      params.push(updates.worktreePath);
+    }
+    if (updates.progress !== undefined) {
+      setParts.push(`progress = $${p++}::jsonb`);
+      params.push(updates.progress);
+    }
+    if (updates.baseBranch !== undefined) {
+      setParts.push(`base_branch = $${p++}`);
+      params.push(updates.baseBranch);
+    }
+    if (updates.mergeStrategy !== undefined) {
+      setParts.push(`merge_strategy = $${p++}`);
+      params.push(updates.mergeStrategy);
     }
     if (updates.startedAt !== undefined) {
       setParts.push(`started_at = $${p++}`);
@@ -1334,19 +1996,39 @@ export class PostgresAdapter {
 
   async recordPipelineEvent(data: {
     projectId: string;
-    runId: string;
+    runId: string | null;
     taskId?: string;
     eventType: string;
     payload?: Record<string, unknown>;
   }): Promise<PipelineEventRow> {
     const rows = await query<PipelineEventRow>(
-      `INSERT INTO events (project_id, run_id, task_id, event_type, payload)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO events (project_id, run_id, task_id, event_type, payload, created_at)
+       VALUES ($1, $2, $3, $4, $5, clock_timestamp())
        RETURNING *`,
       [
         data.projectId,
         data.runId,
         data.taskId ?? null,
+        data.eventType,
+        data.payload ? JSON.stringify(data.payload) : null,
+      ]
+    );
+    return rows[0];
+  }
+
+  async recordSentinelEvent(data: {
+    projectId: string;
+    sentinelRunId: string;
+    eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail";
+    payload?: Record<string, unknown>;
+  }): Promise<PipelineEventRow> {
+    const rows = await query<PipelineEventRow>(
+      `INSERT INTO events (project_id, run_id, sentinel_run_id, task_id, event_type, payload, created_at)
+       VALUES ($1, NULL, $2, NULL, $3, $4, clock_timestamp())
+       RETURNING *`,
+      [
+        data.projectId,
+        data.sentinelRunId,
         data.eventType,
         data.payload ? JSON.stringify(data.payload) : null,
       ]
@@ -1361,6 +2043,27 @@ export class PostgresAdapter {
     );
   }
 
+  async listProjectPipelineEvents(projectId: string, limit = 100): Promise<PipelineEventRow[]> {
+    return query<PipelineEventRow>(
+      `SELECT * FROM events WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [projectId, limit]
+    );
+  }
+
+  async listPipelineEventsForRun(runId: string, limit = 100): Promise<PipelineEventRow[]> {
+    return query<PipelineEventRow>(
+      `SELECT * FROM events WHERE run_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [runId, limit]
+    );
+  }
+
+  async listSentinelEvents(sentinelRunId: string): Promise<PipelineEventRow[]> {
+    return query<PipelineEventRow>(
+      `SELECT * FROM events WHERE sentinel_run_id = $1 ORDER BY created_at ASC`,
+      [sentinelRunId]
+    );
+  }
+
   async appendMessage(data: {
     runId: string;
     stepKey?: string;
@@ -1369,8 +2072,8 @@ export class PostgresAdapter {
     lineNumber: number;
   }): Promise<MessageRow> {
     const rows = await query<MessageRow>(
-      `INSERT INTO messages (run_id, step_key, stream, chunk, line_number)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO messages (run_id, step_key, stream, chunk, line_number, created_at)
+       VALUES ($1, $2, $3, $4, $5, clock_timestamp())
        RETURNING *`,
       [data.runId, data.stepKey ?? null, data.stream, data.chunk, data.lineNumber]
     );
@@ -1387,10 +2090,292 @@ export class PostgresAdapter {
     sql += ` ORDER BY line_number ASC`;
     return query<MessageRow>(sql, params);
   }
-}
 
+  // GitHub repository operations (TRD-008)
+  async upsertGithubRepo(input: UpsertGithubRepoInput): Promise<GithubRepoRow> {
+    const rows = await query<GithubRepoRow>(
+      `INSERT INTO github_repos (
+         id, project_id, owner, repo, auth_type, auth_config,
+         default_labels, auto_import, webhook_secret, webhook_enabled,
+         sync_strategy, last_sync_at, created_at, updated_at
+       )
+       VALUES (
+         COALESCE($1, gen_random_uuid()),
+         $2, $3, $4, $5, $6,
+         COALESCE($7::text[], '{}'::text[]), COALESCE($8, false), $9, COALESCE($10, false),
+         COALESCE($11, 'github-wins'), $12,
+         now(), now()
+       )
+       ON CONFLICT (project_id, owner, repo)
+       DO UPDATE SET
+         auth_type     = EXCLUDED.auth_type,
+         auth_config   = EXCLUDED.auth_config,
+         default_labels     = EXCLUDED.default_labels,
+         auto_import        = EXCLUDED.auto_import,
+         webhook_secret     = EXCLUDED.webhook_secret,
+         webhook_enabled    = EXCLUDED.webhook_enabled,
+         sync_strategy      = EXCLUDED.sync_strategy,
+         last_sync_at       = EXCLUDED.last_sync_at,
+         updated_at         = now()
+       RETURNING *`,
+      [
+        input.id ?? null,
+        input.projectId,
+        input.owner,
+        input.repo,
+        input.authType ?? "pat",
+        JSON.stringify(input.authConfig ?? {}),
+        input.defaultLabels ?? null,
+        input.autoImport ?? false,
+        input.webhookSecret ?? null,
+        input.webhookEnabled ?? false,
+        input.syncStrategy ?? "github-wins",
+        input.lastSyncAt ?? null,
+      ],
+    );
+    return rows[0];
+  }
+
+  async getGithubRepo(
+    projectId: string,
+    owner: string,
+    repo: string,
+  ): Promise<GithubRepoRow | null> {
+    const rows = await query<GithubRepoRow>(
+      `SELECT * FROM github_repos
+       WHERE project_id = $1 AND owner = $2 AND repo = $3`,
+      [projectId, owner, repo],
+    );
+    return rows[0] ?? null;
+  }
+
+  async listGithubRepos(projectId: string): Promise<GithubRepoRow[]> {
+    return query<GithubRepoRow>(
+      `SELECT * FROM github_repos
+       WHERE project_id = $1
+       ORDER BY created_at DESC`,
+      [projectId],
+    );
+  }
+
+  async deleteGithubRepo(id: string): Promise<boolean> {
+    const result = await execute(
+      `DELETE FROM github_repos WHERE id = $1`,
+      [id],
+    );
+    return (result as unknown as { rowCount: number }).rowCount > 0;
+  }
+
+  async recordGithubSyncEvent(
+    input: RecordGithubSyncEventInput,
+  ): Promise<GithubSyncEventRow> {
+    const rows = await query<GithubSyncEventRow>(
+      `INSERT INTO github_sync_events (
+         project_id, external_id, event_type, direction,
+         github_payload, foreman_changes,
+         conflict_detected, resolved_with, processed_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+       RETURNING *`,
+      [
+        input.projectId,
+        input.externalId,
+        input.eventType,
+        input.direction,
+        input.githubPayload ? JSON.stringify(input.githubPayload) : null,
+        input.foremanChanges ? JSON.stringify(input.foremanChanges) : null,
+        input.conflictDetected ?? false,
+        input.resolvedWith ?? null,
+      ],
+    );
+    return rows[0];
+  }
+
+  async listGithubSyncEvents(
+    projectId: string,
+    externalId?: string,
+    limit = 100,
+  ): Promise<GithubSyncEventRow[]> {
+    if (externalId) {
+      return query<GithubSyncEventRow>(
+        `SELECT * FROM github_sync_events
+         WHERE project_id = $1 AND external_id = $2
+         ORDER BY processed_at DESC
+         LIMIT $3`,
+        [projectId, externalId, limit],
+      );
+    }
+    return query<GithubSyncEventRow>(
+      `SELECT * FROM github_sync_events
+       WHERE project_id = $1
+       ORDER BY processed_at DESC
+       LIMIT $2`,
+      [projectId, limit],
+    );
+  }
+
+  async updateGithubRepoLastSync(id: string): Promise<void> {
+    await execute(
+      "UPDATE github_repos SET last_sync_at = now(), updated_at = now() WHERE id = $1",
+      [id],
+    );
+  }
+
+  async listTasksWithExternalId(projectId: string): Promise<TaskRow[]> {
+    return query<TaskRow>(
+      "SELECT * FROM tasks WHERE project_id = $1 AND external_repo IS NOT NULL AND github_issue_number IS NOT NULL ORDER BY updated_at DESC",
+      [projectId],
+    );
+  }
+
+  async updateTaskGitHubFields(
+    projectId: string,
+    taskId: string,
+    updates: {
+      title?: string;
+      description?: string | null;
+      state?: "open" | "closed";
+      labels?: string[];
+      type?: string;
+      milestone?: string | null;
+      syncEnabled?: boolean;
+      lastSyncAt?: string;
+    },
+  ): Promise<TaskRow | null> {
+    const setParts: string[] = [];
+    const params: unknown[] = [];
+    let i = 1;
+    if (updates.title !== undefined) {
+      setParts.push("title = $" + i++);
+      params.push(updates.title);
+    }
+    if (updates.description !== undefined) {
+      setParts.push("description = $" + i++);
+      params.push(updates.description);
+    }
+    if (updates.state !== undefined) {
+      setParts.push("status = $" + i++);
+      params.push(updates.state === "closed" ? "merged" : "backlog");
+    }
+    if (updates.labels !== undefined) {
+      setParts.push("labels = $" + i++ + "::text[]");
+      params.push(updates.labels);
+    }
+    if (updates.type !== undefined) {
+      setParts.push("type = $" + i++);
+      params.push(updates.type);
+    }
+    if (updates.milestone !== undefined) {
+      setParts.push("github_milestone = $" + i++);
+      params.push(updates.milestone);
+    }
+    if (updates.syncEnabled !== undefined) {
+      setParts.push("sync_enabled = $" + i++);
+      params.push(updates.syncEnabled);
+    }
+    if (updates.lastSyncAt !== undefined) {
+      setParts.push("last_sync_at = $" + i++);
+      params.push(updates.lastSyncAt);
+    }
+    if (setParts.length === 0) {
+      return null;
+    }
+    setParts.push("updated_at = now()");
+    params.push(taskId, projectId);
+    const sql = "UPDATE tasks SET " + setParts.join(", ") + " WHERE id = $" + i + " AND project_id = $" + (i + 1) + " RETURNING *";
+    const rows = await query<TaskRow>(sql, params);
+    return rows[0] ?? null;
+  }
+  // -------------------------------------------------------------------------
+  // Jira issue state operations (TRD-013: polling infrastructure)
+  // -------------------------------------------------------------------------
+  /**
+   * Fetch all Jira issue states from the database.
+   */
+  async getJiraIssueStates(): Promise<JiraIssueStateRow[]> {
+    return query<JiraIssueStateRow>(
+      `SELECT
+        jmp.jira_project_key AS project_key,
+        jis.issue_key,
+        jis.last_known_status,
+        jis.last_updated_at
+       FROM jira_issue_states jis
+       JOIN jira_monitored_projects jmp ON jis.jira_monitored_project_id = jmp.id
+       JOIN jira_projects jp ON jmp.jira_project_id = jp.id
+       ORDER BY jis.last_updated_at DESC`,
+    );
+  }
+  /**
+   * Upsert a Jira issue state record.
+   * Creates the record if it doesn't exist, updates if it does.
+   */
+  async upsertJiraIssueState(input: JiraIssueStateInput): Promise<void> {
+    // Look up the monitored project ID from the project key
+    const monitoredRows = await query<{ id: string }>(
+      `SELECT jmp.id
+       FROM jira_monitored_projects jmp
+       JOIN jira_projects jp ON jmp.jira_project_id = jp.id
+       WHERE jmp.jira_project_key = $1
+       LIMIT 1`,
+      [input.jiraProjectKey],
+    );
+    const monitoredId = monitoredRows[0]?.id;
+    if (!monitoredId) {
+      console.warn(`[PostgresAdapter] No monitored project found for key: ${input.jiraProjectKey}`);
+    }
+  }
+  // -------------------------------------------------------------------------
+  // Jira project operations (TRD-013)
+  // -------------------------------------------------------------------------
+  /**
+   * List Jira project configurations for a Foreman project.
+   */
+  async listJiraProjects(projectId: string): Promise<JiraProjectRow[]> {
+    return query<JiraProjectRow>(
+      `SELECT id, project_id, api_url, email, poll_interval_seconds, webhook_enabled, last_poll_at, webhook_secret_encrypted
+       FROM jira_projects
+       WHERE project_id = $1`,
+      [projectId],
+    );
+  }
+  /**
+   * Get observability metrics for Jira monitoring (TRD-028).
+   */
+  async getJiraMetrics(projectId: string, jiraProjectKey: string): Promise<{
+    monitoredIssues: number;
+    triggeredToday: number;
+    lastError?: string;
+  }> {
+    const countResult = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM jira_issue_states
+       WHERE jira_project_key = $1 AND project_id = $2`,
+      [jiraProjectKey, projectId],
+    );
+    const monitoredIssues = parseInt(countResult[0]?.count ?? "0", 10);
+    const todayResult = await query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM jira_issue_states
+       WHERE jira_project_key = $1
+         AND project_id = $2
+         AND last_triggered_at IS NOT NULL
+         AND last_triggered_at > NOW() - INTERVAL '24 hours'`,
+      [jiraProjectKey, projectId],
+    );
+    const triggeredToday = parseInt(todayResult[0]?.count ?? "0", 10);
+    const errorResult = await query<{ last_error: string | null }>(
+      `SELECT last_error FROM jira_monitored_projects
+       WHERE jira_project_key = $1 AND project_id = $2`,
+      [jiraProjectKey, projectId],
+    );
+    return {
+      monitoredIssues,
+      triggeredToday,
+      lastError: errorResult[0]?.last_error ?? undefined,
+    };
+  }
+}
 // ---------------------------------------------------------------------------
 // Named export
 // ---------------------------------------------------------------------------
-
 export const Database = { Adapter: PostgresAdapter };

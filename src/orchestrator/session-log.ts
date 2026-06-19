@@ -7,13 +7,13 @@
  * at completion, accumulating the same data that /ensemble:sessionlog would
  * otherwise capture interactively.
  *
- * Output: SessionLogs/session-DDMMYY-HH:MM.md in the worktree root.
- * These files are picked up by `git add -A` in finalize() and committed
- * to the branch, so they persist through merge to main.
+ * Output: ~/.foreman/reports/session-logs/session-DDMMYY-HH:MM.md.
+ * Session logs are runtime/operator artifacts and are not committed.
  */
 
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ export interface PhaseRecord {
   name: string;
   /** Execution surface used for this phase. */
   phaseType?: "prompt" | "command" | "bash" | "builtin";
-  /** True if this phase was skipped (e.g., --skip-explore or artifact already exists) */
+  /** True if this phase was skipped (e.g., skipIfArtifact matched an existing artifact) */
   skipped: boolean;
   /** Whether the phase succeeded (undefined if skipped) */
   success?: boolean;
@@ -267,7 +267,7 @@ export async function writeSessionLog(
   data: SessionLogData,
   date: Date = new Date(),
 ): Promise<string> {
-  const sessionLogsDir = join(basePath, "SessionLogs");
+  const sessionLogsDir = getForemanHomePath("reports", "session-logs");
   await mkdir(sessionLogsDir, { recursive: true });
 
   const filename = formatSessionLogFilename(date);

@@ -1,19 +1,37 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { wrapPostgresSentinelStore } from "../commands/sentinel.js";
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 /** Per-subprocess timeout (ms). Generous to reduce flakiness under load. */
 const SUBPROCESS_TIMEOUT_MS = 25_000;
 
 /** Per-test timeout (ms): allows up to 2 attempts × subprocess timeout + margin. */
-const TEST_TIMEOUT_MS = 30_000;
+const TEST_TIMEOUT_MS = 60_000;
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: SUBPROCESS_TIMEOUT_MS });
+  return runTsxModule(CLI, args, {
+    cwd,
+    timeout: SUBPROCESS_TIMEOUT_MS,
+    env: {
+      PATH: process.env.PATH,
+      HOME: cwd,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
+      TSX_DISABLE_IPC: "1",
+      NO_COLOR: "1",
+      FOREMAN_HOME: undefined,
+      FOREMAN_TASK_STORE: undefined,
+      FOREMAN_TASK_BACKEND: undefined,
+      FOREMAN_REGISTRY_BASE_DIR: undefined,
+      DATABASE_URL: undefined,
+    },
+  });
 }
 
 /**
@@ -94,6 +112,33 @@ describe("sentinel CLI smoke tests", () => {
         output.includes("init"),
     ).toBe(true);
   }, TEST_TIMEOUT_MS);
+
+  it("forwards sentinel runId to Postgres sentinel event logging", async () => {
+    const store = {
+      close: vi.fn(),
+      isOpen: vi.fn(() => true),
+      recordSentinelEvent: vi.fn().mockResolvedValue(undefined),
+      recordSentinelRun: vi.fn().mockResolvedValue(undefined),
+      updateSentinelRun: vi.fn().mockResolvedValue(undefined),
+      upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
+      getSentinelConfig: vi.fn().mockResolvedValue(null),
+      getSentinelRuns: vi.fn().mockResolvedValue([]),
+    };
+
+    const wrapped = wrapPostgresSentinelStore(store as never, "proj-1");
+
+    await wrapped.logEvent("proj-1", "sentinel-pass", {
+      runId: "run-123",
+      status: "passed",
+    });
+
+    expect(store.recordSentinelEvent).toHaveBeenCalledWith(
+      "proj-1",
+      "run-123",
+      "sentinel-pass",
+      expect.objectContaining({ runId: "run-123", status: "passed" }),
+    );
+  });
 
   it("--help includes sentinel command", async () => {
     const { program } = await import("../index.js");

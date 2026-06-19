@@ -16,6 +16,8 @@ export interface SeedInfo {
   type?: string;
   labels?: string[];
   comments?: string | null;
+  /** GitHub issue number for this task (from github_issue_number field). */
+  githubIssueNumber?: number;
 }
 
 /** @deprecated Use SeedInfo instead */
@@ -129,10 +131,13 @@ export interface PrReport {
 
 // ── Worker Notification types ─────────────────────────────────────────────
 
+import type { RunStatus } from "./read-models.js";
+import type { RunProgressSummary } from "./read-models.js";
+
 export interface WorkerStatusNotification {
   type: "status";
   runId: string;
-  status: import("../lib/store.js").Run["status"];
+  status: RunStatus;
   timestamp: string;
   details?: Record<string, unknown>;
 }
@@ -140,7 +145,7 @@ export interface WorkerStatusNotification {
 export interface WorkerProgressNotification {
   type: "progress";
   runId: string;
-  progress: import("../lib/store.js").RunProgress;
+  progress: RunProgressSummary;
   timestamp: string;
 }
 
@@ -149,6 +154,36 @@ export type WorkerNotification = WorkerStatusNotification | WorkerProgressNotifi
 // ── Sling types ─────────────────────────────────────────────────────────
 
 export type TrdTaskStatus = "open" | "in_progress" | "completed";
+
+/**
+ * Native task statuses matching the TASKS_SCHEMA CHECK constraint.
+ * Use this type for compile-time status coverage when operating on
+ * native task records in the Postgres store.
+ *
+ * Valid values: 'backlog' | 'ready' | 'in-progress' | 'review' |
+ *   'explorer' | 'developer' | 'qa' | 'reviewer' | 'finalize' |
+ *   'merged' | 'closed' | 'conflict' | 'failed' | 'stuck' | 'blocked'
+ *
+ * NOTE: 'in-progress' uses hyphen, not underscore. The legacy 'in_progress'
+ * form (underscore) is normalized by normalizeLegacyTaskStatus() in store.ts.
+ */
+export type NativeTaskStatus =
+  | "backlog"
+  | "ready"
+  | "in-progress"
+  | "review"
+  | "explorer"
+  | "developer"
+  | "qa"
+  | "reviewer"
+  | "finalize"
+  | "merged"
+  | "closed"
+  | "conflict"
+  | "failed"
+  | "stuck"
+  | "blocked"
+  | "cooldown";
 export type RiskLevel = "high" | "medium";
 
 export interface TrdTask {
@@ -260,6 +295,51 @@ export interface SentinelResult {
   commitHash: string | null;
   output: string;
   durationMs: number;
+}
+
+// ── Workspace lifecycle hooks ───────────────────────────────────────────
+
+/**
+ * Shell commands that run at specific points in the workspace lifecycle.
+ * Used for pre/post-run customization (e.g., clone repos, sync deps, archive results).
+ *
+ * @example
+ * ```yaml
+ * hooks:
+ *   afterCreate: "git clone https://github.com/org/repo.git addons/"
+ *   beforeRun: "npm run sync-deps"
+ *   afterRun: "npm run archive-results"
+ *   beforeRemove: "gcloud cleanup --workspace $FOREMAN_WORKSPACE_PATH"
+ *   timeoutMs: 60000
+ * ```
+ */
+export interface WorkspaceHooks {
+  /**
+   * One-time setup when workspace is created.
+   * Runs after `WorktreeManager.createWorktree()` and setup steps complete.
+   * Failures are fatal — block agent spawn.
+   */
+  afterCreate?: string;
+  /**
+   * Run before agent launch (after workspace creation, before spawnAgent).
+   * Failures are fatal — block agent spawn.
+   */
+  beforeRun?: string;
+  /**
+   * Run after agent completes (success or failure).
+   * Failures are logged but ignored — non-blocking.
+   */
+  afterRun?: string;
+  /**
+   * Run before workspace cleanup.
+   * Failures are logged but ignored — non-blocking.
+   */
+  beforeRemove?: string;
+  /**
+   * Default timeout in milliseconds for all hooks.
+   * Default: 60000 (60 seconds).
+   */
+  timeoutMs?: number;
 }
 
 // ── Doctor types ────────────────────────────────────────────────────────

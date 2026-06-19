@@ -2,7 +2,14 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-factory.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
+import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice } from "./cli-output.js";
+import { getSeedRetryTargetStatus } from "../../lib/run-status.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -16,54 +23,38 @@ export interface RetryOpts {
   dryRun?: boolean;
 }
 
-const RETRYABLE_NATIVE_STATUSES = new Set([
-  "backlog",
-  "ready",
-  "in-progress",
-  "blocked",
-  "conflict",
-  "failed",
-  "stuck",
-  "explorer",
-  "developer",
-  "qa",
-  "reviewer",
-  "finalize",
-]);
+interface RetryStore {
+  getProjectByPath(path: string): Promise<{ id: string; path: string } | null>;
+  getRunsForSeed(seedId: string, projectId: string): Promise<import("../../lib/store.js").Run[]>;
+  updateRun(runId: string, updates: Partial<Pick<import("../../lib/store.js").Run, "status" | "completed_at">>): Promise<void>;
+  logEvent(projectId: string, eventType: "restart", data: Record<string, unknown>, runId?: string): Promise<void>;
+}
 
-function getRetryTargetStatus(
-  currentStatus: string,
-  backendType: TaskClientBackend,
-): "open" | "ready" | null {
-  if (backendType === "native") {
-    if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
-      return null;
-    }
-
-    if (currentStatus === "ready") {
-      return "ready";
-    }
-
-    if (RETRYABLE_NATIVE_STATUSES.has(currentStatus)) {
-      return "ready";
-    }
-
-    return null;
-  }
-
-  if (currentStatus === "open") {
-    return "open";
-  }
-
-  if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
-    return null;
-  }
-
-  if (currentStatus === "in_progress" || currentStatus === "blocked") {
-    return "open";
-  }
-
-  return null;
+function createDaemonTaskClient(client: ReturnType<typeof createTrpcClient>, projectId: string): ITaskClient {
+  return {
+    async show(id: string) {
+      const task = await client.tasks.get({ projectId, taskId: id }) as { status: string; description?: string | null; title?: string } | null;
+      if (!task) throw new Error(`Task '${id}' not found`);
+      return { status: task.status, description: task.description ?? null, title: task.title };
+    },
+    async update(id: string, opts) {
+      await client.tasks.update({
+        projectId,
+        taskId: id,
+        updates: {
+          status: opts.status,
+          title: opts.title,
+          description: opts.description ?? undefined,
+        },
+      });
+    },
+    async resetToReady(id: string) {
+      await client.tasks.retry({ projectId, taskId: id });
+    },
+    async ready() { return []; },
+    async list() { return []; },
+    async close() { throw new Error("not implemented"); },
+  } as ITaskClient;
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -76,19 +67,17 @@ export async function retryAction(
   beadId: string,
   opts: RetryOpts,
   beadsClient: ITaskClient,
-  store: ForemanStore,
+  store: RetryStore,
   projectPath: string,
   dispatcher?: Dispatcher,
-  backendType: TaskClientBackend = "beads",
+  backendType: TaskClientBackend = "native",
 ): Promise<number> {
   const dryRun = opts.dryRun ?? false;
 
-  if (dryRun) {
-    console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-  }
+  printDryRunNotice(dryRun);
 
   // 1. Validate project exists
-  const project = store.getProjectByPath(projectPath);
+  const project = await store.getProjectByPath(projectPath);
   if (!project) {
     console.error(
       chalk.red("No project registered for this path. Run 'foreman init' first."),
@@ -118,7 +107,7 @@ export async function retryAction(
   console.log(`  Status: ${chalk.yellow(bead.status)}`);
 
   // 3. Look up run history
-  const runs = store.getRunsForSeed(beadId, project.id);
+  const runs = await store.getRunsForSeed(beadId, project.id);
   const latestRun = runs.length > 0 ? runs[0] : null;
 
   if (latestRun) {
@@ -130,7 +119,7 @@ export async function retryAction(
   }
 
   // 4. Determine what needs to be reset
-  const beadResetTarget = getRetryTargetStatus(bead.status, backendType);
+  const beadResetTarget = getSeedRetryTargetStatus(bead.status, { command: "retry", backendType });
   const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== bead.status;
   const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === bead.status;
 
@@ -174,29 +163,29 @@ export async function retryAction(
       console.log(
         `  ${chalk.yellow("reset")} run ${latestRun.id}: ${latestRun.status} → failed`,
       );
-      store.updateRun(latestRun.id, {
-        status: "failed",
-        completed_at: new Date().toISOString(),
-      });
-      store.logEvent(
-        project.id,
-        "restart",
-        { reason: "foreman retry", beadId, previousRunId: latestRun.id },
-        latestRun.id,
-      );
+        await store.updateRun(latestRun.id, {
+          status: "failed",
+          completed_at: new Date().toISOString(),
+        });
+        await store.logEvent(
+          project.id,
+          "restart",
+          { reason: "foreman retry", beadId, previousRunId: latestRun.id },
+          latestRun.id,
+        );
     } else if (runNeedsExplicitReset && latestRun) {
       console.log(
         `  ${chalk.yellow("reset")} run ${latestRun.id}: ${latestRun.status} → reset`,
       );
-      store.updateRun(latestRun.id, {
-        status: "reset",
-        completed_at: new Date().toISOString(),
-      });
-      store.logEvent(
-        project.id,
-        "restart",
-        { reason: "foreman retry", beadId, previousRunId: latestRun.id },
-        latestRun.id,
+        await store.updateRun(latestRun.id, {
+          status: "reset",
+          completed_at: new Date().toISOString(),
+        });
+        await store.logEvent(
+          project.id,
+          "restart",
+          { reason: "foreman retry", beadId, previousRunId: latestRun.id },
+          latestRun.id,
       );
     } else if (latestRun) {
       // Run exists but doesn't need resetting (already completed/merged/etc.)
@@ -239,8 +228,13 @@ export async function retryAction(
   if (opts.dispatch) {
     console.log();
     console.log(chalk.bold("Dispatching…"));
-    const disp =
-      dispatcher ?? new Dispatcher(beadsClient, store, projectPath);
+    const disp = dispatcher
+      ?? (store instanceof ForemanStore
+        ? new Dispatcher(beadsClient, store, projectPath)
+        : null);
+    if (!disp) {
+      throw new Error("Dispatcher unavailable for daemon-backed retry path.");
+    }
     const result = await disp.dispatch({
       maxAgents: 1,
       model: opts.model,
@@ -286,10 +280,10 @@ export async function retryAction(
 
 export const retryCommand = new Command("retry")
   .description(
-    "Reset a bead and optionally re-dispatch it for execution",
+    "Reset a task and optionally re-dispatch it for execution",
   )
-  .argument("<bead-id>", "Bead ID (seed ID) to retry, e.g. bd-ps1")
-  .option("--dispatch", "Dispatch the bead immediately after resetting")
+  .argument("<task-id>", "Task ID to retry (alias: bead-id for backward compatibility)")
+  .option("--dispatch", "Dispatch the task immediately after resetting")
   .option("--model <model>", "Override agent model for dispatch")
   .option("--dry-run", "Show what would happen without making changes")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -300,7 +294,10 @@ export const retryCommand = new Command("retry")
 
     let projectPath: string;
     try {
-      projectPath = await resolveRepoRootProjectPath(opts);
+      projectPath = await resolveRepoRootProjectPath({
+        project: opts.project,
+        projectPath: opts.projectPath,
+      });
     } catch {
       console.error(
         chalk.red(
@@ -308,10 +305,119 @@ export const retryCommand = new Command("retry")
         ),
       );
       process.exit(1);
+      return;
     }
 
-    const store = ForemanStore.forProject(projectPath);
-    const { taskClient, backendType } = await createTaskClient(projectPath);
+    const localStore = ForemanStore.forProject(projectPath);
+    const registered = await findRegisteredProjectByPath(projectPath, { normalizePaths: true });
+    const store: RetryStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(localStore);
+    const { taskClient, backendType } = registered
+      ? { taskClient: createDaemonTaskClient(createTrpcClient(), registered.id), backendType: "native" as const }
+      : await createTaskClient(projectPath);
+    const dispatcher = registered
+      ? (() => {
+          const pg = new PostgresAdapter();
+          return new Dispatcher(taskClient, localStore, projectPath, null, {
+            externalProjectId: registered.id,
+            getRecentFailureCount: async (_projectId, since) => {
+              const failures = await pg.listTasks(registered.id, { status: ["failed", "stuck", "conflict"], limit: 1000 });
+              return failures.filter((t) => t.updated_at >= since).length;
+            },
+            getActiveSeedIds: async () => {
+              const active = await pg.listPipelineRuns(registered.id, { status: "running", limit: 1000 });
+              const pending = await pg.listPipelineRuns(registered.id, { status: "pending", limit: 1000 });
+              return [...active, ...pending].map((r) => r.bead_id);
+            },
+            getActiveAgentCount: async () => {
+              const active = await pg.listPipelineRuns(registered.id, { status: "running", limit: 1000 });
+              const pending = await pg.listPipelineRuns(registered.id, { status: "pending", limit: 1000 });
+              return active.length + pending.length;
+            },
+            hasActiveOrPendingRun: async (seedId) => {
+              const runs = await pg.listPipelineRuns(registered.id, { beadId: seedId, limit: 20 });
+              return runs.some((r) => ["pending", "running", "success"].includes(r.status));
+            },
+            nativeTaskOps: {
+              hasNativeTasks: async () => pg.hasNativeTasks(registered.id),
+              getReadyTasks: async () => await pg.listTasks(registered.id, { status: ["ready"], limit: 1000 }) as never,
+              getTaskByExternalId: async (externalId) => await pg.getTaskByExternalId(registered.id, externalId) as never,
+              getTaskById: async (taskId) => await pg.getTask(registered.id, taskId) as never,
+              claimTask: async (taskId, runId) => await pg.claimTask(registered.id, taskId, runId),
+            },
+            runOps: {
+              createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+                const createdAt = new Date().toISOString();
+                const existing = await pg.listPipelineRuns(registered.id, { beadId: seedId });
+                await pg.createPipelineRun({
+                  id: runId,
+                  projectId: registered.id,
+                  beadId: seedId,
+                  runNumber: existing.length + 1,
+                  branch: branchName,
+                  trigger: "bead",
+                  agentType,
+                  worktreePath: worktreePath ?? undefined,
+                  baseBranch: baseBranch ?? undefined,
+                  mergeStrategy: mergeStrategy ?? undefined,
+                });
+                return {
+                  id: runId,
+                  project_id: registered.id,
+                  seed_id: seedId,
+                  agent_type: agentType,
+                  session_key: null,
+                  worktree_path: worktreePath,
+                  status: "pending",
+                  started_at: null,
+                  completed_at: null,
+                  created_at: createdAt,
+                  progress: null,
+                  tmux_session: null,
+                  base_branch: baseBranch ?? null,
+                  merge_strategy: mergeStrategy ?? "auto",
+                };
+              },
+              updateRun: async (runId, updates) => {
+                const patch: {
+                  status?: string;
+                  sessionKey?: string;
+                  worktreePath?: string;
+                  startedAt?: string;
+                  finishedAt?: string;
+                } = {};
+                if (updates.status) patch.status = updates.status;
+                if (updates.session_key !== undefined) patch.sessionKey = updates.session_key ?? undefined;
+                if (updates.worktree_path !== undefined) patch.worktreePath = updates.worktree_path ?? undefined;
+                if (updates.started_at) patch.startedAt = updates.started_at;
+                if (updates.completed_at) patch.finishedAt = updates.completed_at;
+                if (Object.keys(patch).length > 0) {
+                  await pg.updatePipelineRun(runId, patch);
+                }
+              },
+              sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
+                await pg.sendMessage(registered.id, runId, senderAgentType, recipientAgentType, subject, body);
+              },
+              logEvent: async (runId, _projectId, eventType, payload) => {
+                const mappedEventType = eventType === "complete"
+                  ? "run:success"
+                  : eventType === "fail"
+                    ? "run:failure"
+                    : eventType === "restart" || eventType === "dispatch"
+                      ? "run:queued"
+                      : null;
+                if (!mappedEventType) return;
+                await pg.recordPipelineEvent({
+                  projectId: registered.id,
+                  runId,
+                  taskId: payload.seedId as string | undefined,
+                  eventType: mappedEventType,
+                  payload,
+                });
+              },
+            },
+          });
+        })()
+      : undefined;
 
     try {
       const exitCode = await retryAction(
@@ -320,15 +426,17 @@ export const retryCommand = new Command("retry")
         taskClient,
         store,
         projectPath,
-        undefined,
+        dispatcher,
         backendType,
       );
-      store.close();
+      localStore.close();
+      closeStoreIfPossible(store);
       process.exit(exitCode);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Unexpected error: ${msg}`));
-      store.close();
+      localStore.close();
+      closeStoreIfPossible(store);
       process.exit(1);
     }
   });

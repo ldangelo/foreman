@@ -26,7 +26,7 @@ If you hit an unrecoverable error, invoke:
    - Missing edge cases or error handling
    - Whether the implementation actually satisfies the requirement
    - Code quality: naming, structure, unnecessary complexity
-6. Write your findings to **REVIEW.md**
+6. Write your findings to **{{reportDir}}/REVIEW.md** (create the directory first with `mkdir -p "{{reportDir}}"`).
 7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## REVIEW.md Format
@@ -48,7 +48,7 @@ One paragraph assessment.
 ```
 
 ## Rules
-- **DO NOT modify any files** — you are read-only, only write REVIEW.md and SESSION_LOG.md
+- **DO NOT modify any files** — you are read-only, only write {{reportDir}}/REVIEW.md and SESSION_LOG.md
 - Be fair but thorough — PASS means ready to ship with no remaining issues
 - Mark **FAIL** for any CRITICAL or WARNING issues that should be fixed
 - Mark **PASS** only when there are no actionable issues remaining

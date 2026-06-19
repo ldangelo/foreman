@@ -201,7 +201,38 @@ describe("HeartbeatManager", () => {
   });
 
   describe("fireHeartbeat()", () => {
-    it("should write heartbeat event to store", async () => {
+    it("should write heartbeat event through injected writer when present", async () => {
+      const heartbeatWriter = {
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      };
+      const manager = new HeartbeatManager(
+        { enabled: true },
+        mockStoreInstance,
+        "proj-123",
+        "run-456",
+        mockVcsInstance,
+        "/worktrees/project/seed-abc",
+        heartbeatWriter,
+      );
+
+      await manager.start("developer");
+      manager.setSeedId("seed-123");
+
+      await manager.fireHeartbeat();
+
+      expect(heartbeatWriter.logEvent).toHaveBeenCalledWith(
+        "heartbeat",
+        expect.objectContaining({
+          seedId: "seed-123",
+          phase: "developer",
+          turns: expect.any(Number),
+          toolCalls: expect.any(Number),
+        }),
+      );
+      expect(mockStore.logEvent).not.toHaveBeenCalled();
+    });
+
+    it("should fall back to local store.logEvent when no writer is provided", async () => {
       const manager = new HeartbeatManager(
         { enabled: true },
         mockStoreInstance,
@@ -212,6 +243,7 @@ describe("HeartbeatManager", () => {
       );
 
       await manager.start("developer");
+      manager.setSeedId("seed-123");
 
       await manager.fireHeartbeat();
 
@@ -219,6 +251,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "heartbeat",
         expect.objectContaining({
+          seedId: "seed-123",
           phase: "developer",
           turns: expect.any(Number),
           toolCalls: expect.any(Number),
@@ -299,7 +332,10 @@ describe("HeartbeatManager", () => {
   });
 
   describe("fail-safe behavior", () => {
-    it("should continue on store write failure", async () => {
+    it("should continue on heartbeat writer failure", async () => {
+      const heartbeatWriter = {
+        logEvent: vi.fn().mockRejectedValue(new Error("writer failed")),
+      };
       const manager = new HeartbeatManager(
         { enabled: true },
         mockStoreInstance,
@@ -307,14 +343,14 @@ describe("HeartbeatManager", () => {
         "run-456",
         mockVcsInstance,
         "/worktrees/project/seed-abc",
+        heartbeatWriter,
       );
-
-      mockStore.logEvent.mockRejectedValueOnce(new Error("DB write failed"));
 
       await manager.start("developer");
 
       // Should not throw
       await expect(manager.fireHeartbeat()).resolves.not.toThrow();
+      expect(mockStore.logEvent).not.toHaveBeenCalled();
     });
   });
 });

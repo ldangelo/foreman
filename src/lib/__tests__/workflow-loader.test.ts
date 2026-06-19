@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   mkdirSync,
   writeFileSync,
+  readFileSync,
   rmSync,
   existsSync,
 } from "node:fs";
@@ -17,6 +18,8 @@ import {
   findMissingWorkflows,
   resolveWorkflowName,
   resolvePhaseModel,
+  listAvailableWorkflows,
+  ensureBundledWorkflowsInstalled,
   WorkflowConfigError,
   BUNDLED_WORKFLOW_NAMES,
   type WorkflowSetupStep,
@@ -31,8 +34,8 @@ function mkTmpDir(): string {
   return dir;
 }
 
-function writeWorkflowFile(projectRoot: string, name: string, content: string): void {
-  const dir = join(projectRoot, ".foreman", "workflows");
+function writeWorkflowFile(foremanHome: string, name: string, content: string): void {
+  const dir = join(foremanHome, "workflows");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${name}.yaml`), content, "utf-8");
 }
@@ -57,6 +60,33 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].skipIfArtifact).toBe("EXPLORER_REPORT.md");
     expect(config.phases[2].retryOnFail).toBe(2);
     expect(config.phases[3].builtin).toBe(true);
+  });
+
+  it("parses retryAfterCooldown and cooldownSeconds from phase config", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        { name: "cli-review", builtin: true, retryAfterCooldown: true, cooldownSeconds: 600 },
+        { name: "developer", prompt: "developer.md" },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+    expect(config.phases[0].retryAfterCooldown).toBe(true);
+    expect(config.phases[0].cooldownSeconds).toBe(600);
+    expect(config.phases[1].retryAfterCooldown).toBeUndefined();
+    expect(config.phases[1].cooldownSeconds).toBeUndefined();
+  });
+
+  it("treats retryAfterCooldown as optional (defaults to undefined when not set)", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        { name: "cli-review", builtin: true },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+    expect(config.phases[0].retryAfterCooldown).toBeUndefined();
+    expect(config.phases[0].cooldownSeconds).toBeUndefined();
   });
 
   it("uses workflowName as fallback when name is missing", () => {
@@ -90,6 +120,26 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].name).toBe("explorer");
     // unknown fields are simply not included
     expect((config.phases[0] as unknown as Record<string, unknown>)["unknown"]).toBeUndefined();
+  });
+
+  it("parses per-phase tool allowlists", () => {
+    const raw = {
+      name: "w",
+      phases: [{
+        name: "pr-review",
+        prompt: "pr-review.md",
+        tools: { allowed: ["Bash", "Edit", "Read", "Write"] },
+      }],
+    };
+    const config = validateWorkflowConfig(raw, "w");
+    expect(config.phases[0].tools?.allowed).toEqual(["Bash", "Edit", "Read", "Write"]);
+  });
+
+  it("throws when tools.allowed is not a string array", () => {
+    expect(() => validateWorkflowConfig({
+      name: "w",
+      phases: [{ name: "developer", prompt: "developer.md", tools: { allowed: ["Read", ""] } }],
+    }, "w")).toThrow(WorkflowConfigError);
   });
 });
 
@@ -175,10 +225,12 @@ describe("loadWorkflowConfig — setup block integration", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("bundled default workflow has a setup block", () => {
@@ -195,7 +247,7 @@ describe("loadWorkflowConfig — setup block integration", () => {
     expect(config.setup![0].command).toBeTruthy();
   });
 
-  it("project-local workflow without setup block has undefined setup", () => {
+  it("global workflow without setup block has undefined setup", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: default
 phases:
@@ -206,7 +258,7 @@ phases:
     expect(config.setup).toBeUndefined();
   });
 
-  it("project-local workflow with setup block parses correctly", () => {
+  it("global workflow with setup block parses correctly", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: default
 setup:
@@ -234,13 +286,15 @@ describe("loadWorkflowConfig", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
-  it("loads a valid project-local workflow YAML", () => {
+  it("loads a valid global workflow YAML", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: default
 phases:
@@ -256,8 +310,23 @@ phases:
     expect(config.phases[1].builtin).toBe(true);
   });
 
-  it("falls back to bundled defaults when no project-local file exists", () => {
-    // tmpDir has no .foreman/workflows/ — should fall through to bundled defaults
+  it("loads an explicit project-relative workflow YAML path", () => {
+    mkdirSync(join(tmpDir, "custom"), { recursive: true });
+    writeFileSync(join(tmpDir, "custom", "manual.yaml"), `
+name: manual
+phases:
+  - name: qa
+    prompt: qa.md
+`);
+
+    const config = loadWorkflowConfig("custom/manual.yaml", tmpDir);
+    expect(config.name).toBe("manual");
+    expect(config.sourcePath).toBe(join(tmpDir, "custom", "manual.yaml"));
+    expect(config.phases.map((p) => p.name)).toEqual(["qa"]);
+  });
+
+  it("falls back to bundled defaults when no global workflow file exists", () => {
+    // tmpDir has no workflows/ — should fall through to bundled defaults
     const config = loadWorkflowConfig("default", tmpDir);
     expect(config.name).toBe("default");
     expect(config.phases.length).toBeGreaterThan(0);
@@ -272,11 +341,127 @@ phases:
     expect(config.phases.some((p) => p.name === "developer")).toBe(true);
   });
 
+  it("loads bundled task workflow with retry targets that reference existing phases", () => {
+    const config = loadWorkflowConfig("task", tmpDir);
+    const phaseNames = new Set(config.phases.map((p) => p.name));
+    const fixPhase = config.phases.find((p) => p.name === "fix");
+    const developerPhase = config.phases.find((p) => p.name === "developer");
+    const qaPhase = config.phases.find((p) => p.name === "qa");
+
+    expect(fixPhase?.prompt).toBe("fix-issue.md");
+    expect(fixPhase?.command).toBeUndefined();
+    expect(developerPhase?.prompt).toBe("developer.md");
+    expect(qaPhase?.prompt).toBe("qa.md");
+    expect(qaPhase?.retryWith).toBe("developer");
+    expect(qaPhase?.retryOnFail).toBe(2);
+
+    for (const phase of config.phases) {
+      if (phase.retryWith) {
+        expect(phaseNames.has(phase.retryWith), `${phase.name}.retryWith`).toBe(true);
+      }
+      if (phase.mail?.onFail) {
+        expect(phaseNames.has(phase.mail.onFail), `${phase.name}.mail.onFail`).toBe(true);
+      }
+    }
+  });
+
+  it("loads bundled bug and chore workflows with scoped fix prompts", () => {
+    for (const workflow of ["bug", "chore"] as const) {
+      const config = loadWorkflowConfig(workflow, tmpDir);
+      const fixPhase = config.phases.find((p) => p.name === "fix");
+      const validationPhase = config.phases.find((p) => p.name === (workflow === "bug" ? "qa" : "test"));
+      expect(fixPhase?.prompt).toBe("fix-issue.md");
+      expect(fixPhase?.command).toBeUndefined();
+      if (workflow === "bug") {
+        expect(validationPhase?.prompt).toBe("qa.md");
+        expect(config.phases.find((p) => p.name === "developer")?.retryOnly).toBe(true);
+      } else {
+        expect(validationPhase?.bash).toBe("npm run test:unit");
+      }
+    }
+  });
+
+  it("feature workflow inserts cli-review, PR review, and merge phases after reviewer", () => {
+    const config = loadWorkflowConfig("feature", tmpDir);
+    const phaseNames = config.phases.map((phase) => phase.name);
+    expect(phaseNames.slice(phaseNames.indexOf("reviewer"))).toEqual([
+      "reviewer",
+      "cli-review",
+      "finalize",
+      "create-pr",
+      "pr-wait",
+      "prepare-pr-review",
+      "pr-review",
+      "merge",
+    ]);
+    const cliReviewPhase = config.phases.find((phase) => phase.name === "cli-review");
+    expect(cliReviewPhase?.builtin).toBe(true);
+    expect(cliReviewPhase?.artifact).toBe("{task.projectReportsDir}/CR_CLI_REPORT.md");
+    expect(cliReviewPhase?.retryWith).toBe("developer");
+    expect(cliReviewPhase?.retryOnFail).toBe(2);
+    expect(cliReviewPhase?.timeoutSecs).toBe(600);
+    expect(config.phases.find((phase) => phase.name === "create-pr")?.builtin).toBe(true);
+    const prWaitPhase = config.phases.find((phase) => phase.name === "pr-wait");
+    expect(prWaitPhase?.artifact).toBe("{task.projectReportsDir}/PR_WAIT_REPORT.md");
+    expect(prWaitPhase?.retryWith).toBe("developer");
+    expect(prWaitPhase?.retryOnFail).toBe(2);
+    const prReviewPhase = config.phases.find((phase) => phase.name === "pr-review");
+    expect(prReviewPhase?.artifact).toBe("{task.projectReportsDir}/PR_REVIEW_REPORT.md");
+    expect(prReviewPhase?.retryOnFail).toBe(3);
+    expect(prReviewPhase?.tools?.allowed).not.toContain("Edit");
+    const mergePhase = config.phases.find((phase) => phase.name === "merge");
+    expect(mergePhase?.builtin).toBe(true);
+    expect(mergePhase?.artifact).toBe("{task.projectReportsDir}/MERGE_REPORT.md");
+  });
+
+  it("bundled auto-merge workflows expose cli-review, PR review, and merge phases", () => {
+    const workflows = ["default", "feature", "bug", "chore", "docs", "task", "quick"];
+    for (const workflowName of workflows) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const phaseNames = config.phases.map((phase) => phase.name);
+      expect(phaseNames, workflowName).toContain("cli-review");
+      expect(phaseNames, workflowName).toContain("create-pr");
+      expect(phaseNames, workflowName).toContain("pr-wait");
+      expect(phaseNames, workflowName).toContain("prepare-pr-review");
+      expect(phaseNames, workflowName).toContain("pr-review");
+      expect(phaseNames, workflowName).toContain("merge");
+      expect(config.phases.find((phase) => phase.name === "cli-review")?.builtin, workflowName).toBe(true);
+      expect(config.phases.find((phase) => phase.name === "merge")?.builtin, workflowName).toBe(true);
+    }
+  });
+
+  it("bundled workflows run documentation before finalization", () => {
+    for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const phaseNames = config.phases.map((phase) => phase.name);
+      const documentationIdx = phaseNames.indexOf("documentation");
+      const finalizeIdx = phaseNames.indexOf("finalize");
+      expect(documentationIdx, workflowName).toBeGreaterThanOrEqual(0);
+      expect(finalizeIdx, workflowName).toBeGreaterThanOrEqual(0);
+      expect(documentationIdx, workflowName).toBeLessThan(finalizeIdx);
+      const documentationPhase = config.phases[documentationIdx];
+      expect(documentationPhase?.prompt, workflowName).toBe("documentation.md");
+      expect(documentationPhase?.artifact, workflowName).toBe("{task.projectReportsDir}/DOCUMENTATION_REPORT.md");
+      expect(documentationPhase?.tools?.allowed, workflowName).toContain("Edit");
+    }
+  });
+
+  it("does not use Anthropic Haiku for bundled finalize phases", () => {
+    for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const finalizePhase = config.phases.find((p) => p.name === "finalize");
+      if (!finalizePhase) continue;
+
+      const model = resolvePhaseModel(finalizePhase, undefined, "minimax/MiniMax-M2.7");
+      expect(model, `${workflowName} finalize model`).not.toBe("anthropic/claude-haiku-4-5");
+    }
+  });
+
   it("throws WorkflowConfigError for unknown workflow with no bundled default", () => {
     expect(() => loadWorkflowConfig("nonexistent-workflow", tmpDir)).toThrow(WorkflowConfigError);
   });
 
-  it("project-local file takes precedence over bundled defaults", () => {
+  it("global file takes precedence over bundled defaults", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: custom-default
 phases:
@@ -289,7 +474,7 @@ phases:
     const config = loadWorkflowConfig("default", tmpDir);
     // Name comes from the YAML content
     expect(config.name).toBe("custom-default");
-    // Only 2 phases (no explorer, qa, reviewer) - confirming project-local was used
+    // Only 2 phases (no explorer, qa, reviewer) - confirming global override was used
     expect(config.phases).toHaveLength(2);
   });
 
@@ -326,10 +511,12 @@ describe("installBundledWorkflows", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("installs all bundled workflow files", () => {
@@ -337,7 +524,7 @@ describe("installBundledWorkflows", () => {
     expect(installed.length).toBeGreaterThan(0);
     expect(skipped).toHaveLength(0);
     for (const name of BUNDLED_WORKFLOW_NAMES) {
-      expect(existsSync(join(tmpDir, ".foreman", "workflows", `${name}.yaml`))).toBe(true);
+      expect(existsSync(join(tmpDir, "workflows", `${name}.yaml`))).toBe(true);
     }
   });
 
@@ -354,8 +541,8 @@ describe("installBundledWorkflows", () => {
     expect(installed.length).toBeGreaterThan(0);
   });
 
-  it("creates .foreman/workflows/ directory if missing", () => {
-    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+  it("creates ~/.foreman/workflows/ directory if missing", () => {
+    const workflowsDir = join(tmpDir, "workflows");
     expect(existsSync(workflowsDir)).toBe(false);
     installBundledWorkflows(tmpDir);
     expect(existsSync(workflowsDir)).toBe(true);
@@ -369,10 +556,12 @@ describe("findMissingWorkflows", () => {
 
   beforeEach(() => {
     tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("returns all bundled workflow names when nothing is installed", () => {
@@ -388,7 +577,7 @@ describe("findMissingWorkflows", () => {
 
   it("returns only the missing workflow names", () => {
     // Install only 'default', leaving 'smoke' missing
-    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+    const workflowsDir = join(tmpDir, "workflows");
     mkdirSync(workflowsDir, { recursive: true });
     writeFileSync(join(workflowsDir, "default.yaml"), "name: default\nphases:\n  - name: finalize\n    builtin: true\n");
 
@@ -401,6 +590,18 @@ describe("findMissingWorkflows", () => {
 // ── resolveWorkflowName ───────────────────────────────────────────────────────
 
 describe("resolveWorkflowName", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
   it("returns 'smoke' for smoke bead type", () => {
     expect(resolveWorkflowName("smoke")).toBe("smoke");
   });
@@ -440,6 +641,17 @@ describe("resolveWorkflowName", () => {
 
   it("returns workflow when labels is undefined", () => {
     expect(resolveWorkflowName("feature", undefined)).toBe("feature");
+  });
+
+  it("uses a workflow file installed in the global foreman home", () => {
+    writeWorkflowFile(tmpDir, "custom-seed", `
+name: custom-seed
+phases:
+  - name: finalize
+    builtin: true
+`);
+
+    expect(resolveWorkflowName("custom-seed")).toBe("custom-seed");
   });
 
   it("ignores optional routing hints — uses type-based workflow when no workflow label", () => {
@@ -669,6 +881,59 @@ describe("validateWorkflowConfig — vcs block", () => {
 
 // ── validateWorkflowConfig — epic mode (taskPhases, finalPhases) ────────────
 
+describe("validateWorkflowConfig — sandbox block", () => {
+  const bashConfig = {
+    name: "sandboxed",
+    phases: [{ name: "test", bash: "npm test" }],
+  };
+
+  it("parses sandbox for bash-only workflows", () => {
+    const config = validateWorkflowConfig(
+      { ...bashConfig, sandbox: { backend: "docker", image: "ubuntu:22.04", network: false } },
+      "sandboxed",
+    );
+
+    expect(config.sandbox).toEqual({
+      backend: "docker",
+      image: "ubuntu:22.04",
+      network: false,
+    });
+  });
+
+  it("throws when sandbox is not an object", () => {
+    expect(() => validateWorkflowConfig({ ...bashConfig, sandbox: "docker" }, "sandboxed")).toThrow(
+      /'sandbox' must be an object/,
+    );
+  });
+
+  it("throws when sandbox.limits is not an object", () => {
+    expect(() => validateWorkflowConfig({ ...bashConfig, sandbox: { limits: "2g" } }, "sandboxed")).toThrow(
+      /'sandbox.limits' must be an object/,
+    );
+  });
+
+  it("throws when sandbox.image is empty", () => {
+    expect(() => validateWorkflowConfig({ ...bashConfig, sandbox: { image: "" } }, "sandboxed")).toThrow(
+      /'sandbox.image' must be a non-empty string/,
+    );
+  });
+
+  it("throws when sandbox.limits.memory is empty", () => {
+    expect(() => validateWorkflowConfig({ ...bashConfig, sandbox: { limits: { memory: "" } } }, "sandboxed")).toThrow(
+      /'sandbox.limits.memory' must be a non-empty string/,
+    );
+  });
+
+  it("rejects sandboxed workflows with host-executed prompt phases", () => {
+    expect(() => validateWorkflowConfig(
+      { name: "sandboxed", phases: [{ name: "developer", prompt: "developer.md" }], sandbox: { backend: "docker" } },
+      "sandboxed",
+    )).toThrow(/sandbox is only supported for bash phases/);
+  });
+});
+
+// ── validateWorkflowConfig — epic mode (taskPhases, finalPhases) ────────────
+
 describe("validateWorkflowConfig — epic mode", () => {
   const epicConfig = {
     name: "epic",
@@ -753,5 +1018,156 @@ describe("validateWorkflowConfig — epic mode", () => {
     expect(BUNDLED_WORKFLOW_NAMES).toContain("default");
     expect(BUNDLED_WORKFLOW_NAMES).toContain("smoke");
     expect(BUNDLED_WORKFLOW_NAMES).toContain("epic");
+  });
+});
+
+// ── quick workflow (YAML-first replacement for --skip-explore/--skip-review) ──
+
+describe("quick bundled workflow", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("is registered as a bundled workflow", () => {
+    expect(BUNDLED_WORKFLOW_NAMES).toContain("quick");
+  });
+
+  it("loads from bundled defaults and omits explorer and reviewer phases", () => {
+    const config = loadWorkflowConfig("quick", tmpDir);
+    expect(config.name).toBe("quick");
+    const phaseNames = config.phases.map((p) => p.name);
+    expect(phaseNames).not.toContain("explorer");
+    expect(phaseNames).not.toContain("reviewer");
+    expect(phaseNames).toContain("developer");
+    expect(phaseNames).toContain("qa");
+    expect(phaseNames).toContain("documentation");
+    expect(phaseNames).toContain("finalize");
+  });
+
+  it("keeps QA verdict/retry wiring like the default workflow", () => {
+    const config = loadWorkflowConfig("quick", tmpDir);
+    const qaPhase = config.phases.find((p) => p.name === "qa");
+    expect(qaPhase?.verdict).toBe(true);
+    expect(qaPhase?.retryWith).toBe("developer");
+    expect(typeof qaPhase?.retryOnFail).toBe("number");
+  });
+});
+
+// ── resolveWorkflowName explicit override ────────────────────────────────────
+
+describe("resolveWorkflowName explicit override", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("explicit override takes priority over workflow:<name> labels", () => {
+    expect(resolveWorkflowName("feature", ["workflow:smoke"], undefined, "quick")).toBe("quick");
+  });
+
+  it("explicit override takes priority over taskTypeWorkflowMap", () => {
+    expect(
+      resolveWorkflowName("bug", undefined, { bug: "bug", default: "default" }, "quick"),
+    ).toBe("quick");
+  });
+
+  it("falls back to label resolution when override is undefined", () => {
+    expect(resolveWorkflowName("feature", ["workflow:smoke"], undefined, undefined)).toBe("smoke");
+  });
+
+  it("ignores empty/whitespace overrides", () => {
+    expect(resolveWorkflowName("feature", ["workflow:smoke"], undefined, "  ")).toBe("smoke");
+  });
+});
+
+// ── listAvailableWorkflows ───────────────────────────────────────────────────
+
+describe("listAvailableWorkflows", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("includes all bundled workflow names", () => {
+    const available = listAvailableWorkflows();
+    for (const name of BUNDLED_WORKFLOW_NAMES) {
+      expect(available).toContain(name);
+    }
+  });
+
+  it("includes custom workflows installed in ~/.foreman/workflows/", () => {
+    writeWorkflowFile(tmpDir, "my-custom", "name: my-custom\nphases:\n  - name: finalize\n    builtin: true\n");
+    const available = listAvailableWorkflows();
+    expect(available).toContain("my-custom");
+  });
+
+  it("deduplicates names present in both global and bundled locations", () => {
+    writeWorkflowFile(tmpDir, "default", "name: default\nphases:\n  - name: finalize\n    builtin: true\n");
+    const available = listAvailableWorkflows();
+    expect(available.filter((n) => n === "default")).toHaveLength(1);
+  });
+});
+
+// ── ensureBundledWorkflowsInstalled ──────────────────────────────────────────
+
+describe("ensureBundledWorkflowsInstalled", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("auto-installs missing bundled workflows and returns an empty missing list", () => {
+    const stillMissing = ensureBundledWorkflowsInstalled(tmpDir);
+    expect(stillMissing).toHaveLength(0);
+    for (const name of BUNDLED_WORKFLOW_NAMES) {
+      expect(existsSync(join(tmpDir, "workflows", `${name}.yaml`))).toBe(true);
+    }
+  });
+
+  it("does not overwrite existing installed workflows", () => {
+    const customContent = "name: default\nphases:\n  - name: finalize\n    builtin: true\n";
+    writeWorkflowFile(tmpDir, "default", customContent);
+    ensureBundledWorkflowsInstalled(tmpDir);
+    const after = readFileSync(join(tmpDir, "workflows", "default.yaml"), "utf-8");
+    expect(after).toBe(customContent);
+  });
+
+  it("installs newly added bundled workflows (e.g. quick) into existing installs", () => {
+    // Simulate an existing install that predates quick.yaml: install everything,
+    // then delete quick.yaml.
+    installBundledWorkflows(tmpDir);
+    rmSync(join(tmpDir, "workflows", "quick.yaml"), { force: true });
+    const stillMissing = ensureBundledWorkflowsInstalled(tmpDir);
+    expect(stillMissing).toHaveLength(0);
+    expect(existsSync(join(tmpDir, "workflows", "quick.yaml"))).toBe(true);
   });
 });

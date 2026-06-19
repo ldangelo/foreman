@@ -54,10 +54,18 @@ function makeMockVcs(
     commit: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
     pull: vi.fn().mockResolvedValue(undefined),
+    saveWorktreeState: vi.fn().mockResolvedValue(false),
+    restoreWorktreeState: vi.fn().mockResolvedValue(undefined),
     // Rebase and merge
     rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    rebaseBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     abortRebase: vi.fn().mockResolvedValue(undefined),
     merge: vi.fn().mockResolvedValue({ success: true, conflictingFiles: [] }),
+    mergeWithStrategy: vi.fn().mockResolvedValue({ success: true, conflicts: [] }),
+    rollbackFailedMerge: vi.fn().mockResolvedValue(undefined),
+    stageFile: vi.fn().mockResolvedValue(undefined),
+    stageFiles: vi.fn().mockResolvedValue(undefined),
     // Diff, status, conflict detection
     getHeadId: vi.fn().mockResolvedValue("abc1234"),
     fetch: vi.fn().mockResolvedValue(undefined),

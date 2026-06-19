@@ -1,9 +1,10 @@
-# Bug fix workflow: command phase → bash phase → finalize → auto-merge
+# Bug fix workflow: fix prompt → QA validation → developer remediation on failure → finalize → PR checks → auto-merge
 #
-# Demonstrates all three new features from TRD-2026-008:
-#   - command: phase (fix) — sends an interpolated command to the agent
-#   - bash: phase (test) — runs npm test with verdict parsing
-#   - merge: auto — auto-merge on green CI
+# Lean bug-fix pipeline:
+#   - fix prompt — workflow-scoped issue fixing prompt
+#   - qa phase — validates the fix and writes QA_REPORT.md
+#   - developer prompt — retry-only target for QA/review/finalize findings
+#   - merge: auto — auto-merge on green CI and PR review
 #
 # Auto-selected when a bead has type "bug" (TRD-006 type-based dispatch).
 # Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
@@ -19,51 +20,154 @@ setupCache:
   path: node_modules
 
 phases:
-  # ── Phase 1: fix (command phase — TRD-005) ───────────────────────────────
-  # Uses /ensemble:fix-issue as the agent prompt, with task metadata interpolated.
-  # All other phase config (model, maxTurns, artifact, mail) works identically
-  # to a prompt: phase.
+  # ── Phase 1: fix ────────────────────────────────────────────────────────
+  # Uses the workflow-scoped fix-issue prompt so the artifact contract is
+  # explicit and isolated from other workflows.
   - name: fix
-    command: "/skill:ensemble-fix-issue {task.title} {task.description}"
+    prompt: fix-issue.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
       P4: MiniMax
     maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
 
-  # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
-  # Executes `npm run test:unit` via /bin/sh -c in the worktree directory.
-  # {task.*} placeholders are interpolated before execution.
-  # Artifact is written from stdout; verdict is parsed from output.
-  - name: test
-    bash: "npm run test:unit"
-    artifact: TEST_RESULTS.md
+  # ── Retry-only: developer remediation ──────────────────────────────────
+  # Retry target for QA/finalize/PR-review findings. Skipped during normal
+  # sequential execution; activated only when a later phase fails and uses
+  # retryWith: developer.
+  - name: developer
+    retryOnly: true
+    prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 120
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  # ── Phase 3: QA validation ──────────────────────────────────────────────
+  - name: documentation
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
+  - name: qa
+    prompt: qa.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 60
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
+      onFail: developer
 
-  # ── Phase 3: finalize (prompt phase) ───────────────────────────────────
+  # ── Phase 4: cli-review (builtin) ───────────────────────────────────────
+  # Run CodeRabbit CLI before finalize so the developer remediation loop can
+  # address findings before PR creation and merge gates.
+  - name: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  # ── Phase 5: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
-  # artifact: FINALIZE_VALIDATION.md is what the pipeline reads for the validation
+  # artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md" is what the pipeline reads for the validation
   # contract check (Target Integration / Test Validation sections + Verdict).
   # FINALIZE_REPORT.md is also written by the agent as a human-readable summary.
   - name: finalize
-    prompt: finalize-bug.md
-    models:
-      default: MiniMax
+    builtin: true
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
-    artifact: FINALIZE_VALIDATION.md
     verdict: true
-    retryWith: fix
+    retryWith: developer
     retryOnFail: 1
     mail:
-      onStart: false
+      onStart: true
       onComplete: true
+      onFail: developer
+  - name: create-pr
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    timeoutSecs: 1200
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: prepare-pr-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-review
+    prompt: pr-review.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
+    models:
+      default: MiniMax
+    maxTurns: 40
+    artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    verdict: true
+    retryWith: developer
+    retryOnFail: 3
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
       forwardArtifactTo: foreman
+
+  - name: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true

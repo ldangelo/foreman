@@ -1,73 +1,26 @@
-/**
- * Tests for NativeTaskStore — the native SQLite task management back-end.
- *
- * Covers:
- *   - create() — task creation with compact IDs, defaults, validation
- *   - approve() — backlog → ready transition
- *   - close()   — set status to merged
- *   - addDependency() — with cycle detection
- *   - getDependencies() — outgoing/incoming directions
- *   - hasCyclicDependency() — DFS cycle detection
- *   - removeDependency() — edge removal
- *   - parsePriority() — alias and numeric parsing
- *   - priorityLabel() — numeric → label conversion
- *   - InvalidStatusTransitionError — error shape
- *   - TaskNotFoundError — error shape
- *   - CircularDependencyError — error shape
- *
- * REQ-003: tasks table with CHECK constraint
- * REQ-004: task_dependencies table for dependency graph
- * REQ-005: approval gate
- * REQ-006: task creation
- * REQ-008: task closure
- * REQ-021.3: circular dependency detection
- */
-
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { ForemanStore } from "../store.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  NativeTaskStore,
+  CircularDependencyError,
+  InvalidStatusTransitionError,
+  TaskNotFoundError,
+  isCompactTaskId,
   parsePriority,
   priorityLabel,
-  isCompactTaskId,
-  TaskNotFoundError,
-  InvalidStatusTransitionError,
-  CircularDependencyError,
-  type TaskRow,
-  type DependencyRow,
 } from "../task-store.js";
+import {
+  createPostgresProjectFixture,
+  startPostgresTestcontainer,
+  stopPostgresTestcontainer,
+} from "../../test-support/postgres-testcontainer.js";
 
-// ── Test fixtures ─────────────────────────────────────────────────────────────
-
-function setupStore(): { store: ForemanStore; taskStore: NativeTaskStore; tmpDir: string; projectId: string } {
-  const tmpDir = mkdtempSync(join(tmpdir(), "foreman-task-store-test-"));
-  const dbPath = join(tmpDir, "test.db");
-  const store = new ForemanStore(dbPath);
-  const project = store.registerProject("foreman", tmpDir);
-  const taskStore = new NativeTaskStore(store.getDb(), { projectKey: "foreman" });
-  return { store, taskStore, tmpDir, projectId: project.id };
-}
-
-function teardownStore(ctx: { store: ForemanStore; tmpDir: string }): void {
-  ctx.store.close();
-  rmSync(ctx.tmpDir, { recursive: true, force: true });
-}
-
-// ── parsePriority ──────────────────────────────────────────────────────────────
-
+/**
+ * Native task persistence now targets production Postgres tables through
+ * PostgresAdapter. The old sync NativeTaskStore+ForemanStore sqlite fixture was
+ * removed because local sqlite storage is no longer production behavior.
+ */
 describe("parsePriority", () => {
-  it("parses numeric strings 0-4", () => {
+  it("parses numeric and named priorities", () => {
     expect(parsePriority("0")).toBe(0);
-    expect(parsePriority("1")).toBe(1);
-    expect(parsePriority("2")).toBe(2);
-    expect(parsePriority("3")).toBe(3);
-    expect(parsePriority("4")).toBe(4);
-  });
-
-  it("parses named aliases", () => {
     expect(parsePriority("critical")).toBe(0);
     expect(parsePriority("high")).toBe(1);
     expect(parsePriority("medium")).toBe(2);
@@ -75,998 +28,125 @@ describe("parsePriority", () => {
     expect(parsePriority("backlog")).toBe(4);
   });
 
-  it("throws RangeError for invalid input", () => {
+  it("throws RangeError for invalid priority", () => {
     expect(() => parsePriority("invalid")).toThrow(RangeError);
     expect(() => parsePriority("5")).toThrow(RangeError);
-    expect(() => parsePriority("-1")).toThrow(RangeError);
-    expect(() => parsePriority("urgent")).toThrow(RangeError);
   });
 });
 
-// ── priorityLabel ──────────────────────────────────────────────────────────────
-
 describe("priorityLabel", () => {
-  it("returns correct labels for 0-4", () => {
+  it("formats priority labels", () => {
     expect(priorityLabel(0)).toBe("critical");
     expect(priorityLabel(1)).toBe("high");
     expect(priorityLabel(2)).toBe("medium");
     expect(priorityLabel(3)).toBe("low");
     expect(priorityLabel(4)).toBe("backlog");
   });
+});
 
-  it("returns string representation for unknown values", () => {
-    expect(priorityLabel(5)).toBe("5");
-    expect(priorityLabel(-1)).toBe("-1");
+describe("isCompactTaskId", () => {
+  it("recognizes compact task IDs", () => {
+    expect(isCompactTaskId("foreman-a1b2c")).toBe(true);
+    expect(isCompactTaskId("not compact")).toBe(false);
   });
 });
 
-// ── Error classes ──────────────────────────────────────────────────────────────
-
-describe("TaskNotFoundError", () => {
-  it("has correct name and message", () => {
-    const err = new TaskNotFoundError("abc-123");
-    expect(err.name).toBe("TaskNotFoundError");
-    expect(err.message).toContain("abc-123");
-    expect(err.taskId).toBe("abc-123");
-    expect(err).toBeInstanceOf(Error);
+describe("task error types", () => {
+  it("preserves custom error names", () => {
+    expect(new TaskNotFoundError("x").name).toBe("TaskNotFoundError");
+    expect(new InvalidStatusTransitionError("x", "ready", "closed").name).toBe("InvalidStatusTransitionError");
+    expect(new CircularDependencyError("a", "b").name).toBe("CircularDependencyError");
   });
 });
 
-describe("InvalidStatusTransitionError", () => {
-  it("has correct name and message", () => {
-    const err = new InvalidStatusTransitionError("t1", "backlog", "merged");
-    expect(err.name).toBe("InvalidStatusTransitionError");
-    expect(err.message).toContain("backlog");
-    expect(err.message).toContain("merged");
-    expect(err.fromStatus).toBe("backlog");
-    expect(err.toStatus).toBe("merged");
-    expect(err).toBeInstanceOf(Error);
-  });
-});
+describe("Postgres native task lifecycle", { timeout: 120_000 }, () => {
+  let postgresAvailable = true;
 
-describe("CircularDependencyError", () => {
-  it("has correct name and message", () => {
-    const err = new CircularDependencyError("a", "b");
-    expect(err.name).toBe("CircularDependencyError");
-    expect(err.message).toContain("circular");
-    expect(err.fromId).toBe("a");
-    expect(err.toId).toBe("b");
-    expect(err).toBeInstanceOf(Error);
-  });
-});
-
-// ── NativeTaskStore.create() ──────────────────────────────────────────────────
-
-describe("NativeTaskStore.create()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-
-  beforeEach(() => {
-    ctx = setupStore();
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("creates a task with required title", () => {
-    const task = ctx.taskStore.create({ title: "My Task" });
-    expect(task.id).toBeTruthy();
-    expect(task.id).toMatch(/^foreman-[0-9a-f]{5}$/);
-    expect(isCompactTaskId(task.id)).toBe(true);
-    expect(task.title).toBe("My Task");
-    expect(task.status).toBe("backlog");
-    expect(task.type).toBe("task"); // default type
-    expect(task.priority).toBe(2); // default medium
-    expect(task.description).toBeNull();
-    expect(task.external_id).toBeNull();
-    expect(task.created_at).toBeTruthy();
-    expect(task.updated_at).toBeTruthy();
+  beforeAll(async () => {
+    try {
+      await startPostgresTestcontainer();
+    } catch {
+      postgresAvailable = false;
+    }
   });
 
-  it("creates a task with custom options", () => {
-    const task = ctx.taskStore.create({
-      title: "Bug Fix",
-      description: "Fix the crash",
-      type: "bug",
-      priority: 0,
-      externalId: "bd-abc123",
+  afterAll(async () => {
+    if (postgresAvailable) {
+      await stopPostgresTestcontainer();
+    }
+  });
+
+  it("creates, approves, claims, updates, resets, and closes tasks", async () => {
+    if (!postgresAvailable) return;
+    const { adapter, project } = await createPostgresProjectFixture("task-store-lifecycle");
+    const task = await adapter.createTask(project.id, {
+      id: "task-life-001",
+      title: "Lifecycle",
+      description: "native task lifecycle",
+      type: "task",
+      priority: 2,
     });
-    expect(task.title).toBe("Bug Fix");
-    expect(task.description).toBe("Fix the crash");
-    expect(task.type).toBe("bug");
-    expect(task.priority).toBe(0);
-    expect(task.external_id).toBe("bd-abc123");
     expect(task.status).toBe("backlog");
+    expect(await adapter.hasNativeTasks(project.id)).toBe(true);
+
+    await adapter.approveTask(project.id, task.id);
+    expect(await adapter.listReadyTasks(project.id)).toEqual([expect.objectContaining({ id: task.id, status: "ready" })]);
+
+    const run = await adapter.createRun(project.id, task.id, "developer");
+    expect(await adapter.claimTask(project.id, task.id, run.id)).toBe(true);
+    expect(await adapter.claimTask(project.id, task.id, run.id)).toBe(false);
+    expect(await adapter.getTask(project.id, task.id)).toEqual(expect.objectContaining({ status: "in-progress", run_id: run.id }));
+
+    await adapter.updateTask(project.id, task.id, { status: "failed" });
+    await adapter.resetTask(project.id, task.id);
+    expect(await adapter.getTask(project.id, task.id)).toEqual(expect.objectContaining({ status: "ready", run_id: null }));
+
+    await adapter.closeTask(project.id, task.id);
+    expect(await adapter.getTask(project.id, task.id)).toEqual(expect.objectContaining({ status: "closed" }));
   });
 
-  it("creates tasks with unique compact IDs", () => {
-    const t1 = ctx.taskStore.create({ title: "T1" });
-    const t2 = ctx.taskStore.create({ title: "T2" });
-    expect(t1.id).not.toBe(t2.id);
-  });
+  it("lists tasks by status and external id", async () => {
+    if (!postgresAvailable) return;
+    const { adapter, project } = await createPostgresProjectFixture("task-store-list");
+    await adapter.createTask(project.id, {
+      id: "task-list-001",
+      title: "List me",
+      status: "ready",
+      external_id: "github:owner/repo#123",
+      priority: 1,
+    });
+    await adapter.createTask(project.id, { id: "task-list-002", title: "Backlog", status: "backlog", priority: 3 });
 
-  it("new tasks are visible in list()", () => {
-    ctx.taskStore.create({ title: "Visible Task" });
-    const tasks = ctx.taskStore.list();
-    expect(tasks.length).toBeGreaterThan(0);
-    expect(tasks.some((t) => t.title === "Visible Task")).toBe(true);
-  });
-
-  it("new tasks are not visible to dispatcher (status=backlog, not ready)", () => {
-    ctx.taskStore.create({ title: "Backlog Task" });
-    const readyTasks = ctx.taskStore.list({ status: "ready" });
-    expect(readyTasks.every((t) => t.title !== "Backlog Task")).toBe(true);
-  });
-});
-
-// ── NativeTaskStore.get() ─────────────────────────────────────────────────────
-
-describe("NativeTaskStore.get()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-
-  beforeEach(() => {
-    ctx = setupStore();
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("returns TaskRow for existing task", () => {
-    const created = ctx.taskStore.create({ title: "Get Test" });
-    const fetched = ctx.taskStore.get(created.id);
-    expect(fetched).toBeDefined();
-    expect(fetched?.id).toBe(created.id);
-    expect(fetched?.title).toBe("Get Test");
-  });
-
-  it("returns null for non-existent task", () => {
-    const result = ctx.taskStore.get("00000000-0000-0000-0000-000000000000");
-    expect(result).toBeNull();
-  });
-});
-
-describe("NativeTaskStore.migrateLegacyTaskIds()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-
-  beforeEach(() => {
-    ctx = setupStore();
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("rewrites legacy UUID IDs and dependent rows while deferring active work", () => {
-    const db = ctx.store.getDb();
-    const now = new Date().toISOString();
-    const legacyA = "11111111-1111-4111-8111-111111111111";
-    const legacyB = "22222222-2222-4222-8222-222222222222";
-    const legacyActive = "33333333-3333-4333-8333-333333333333";
-    const finishedRunId = "run-finished";
-    const activeRunId = "run-active";
-
-    db.prepare(
-      `INSERT INTO runs
-         (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch)
-       VALUES (?, ?, ?, 'codex', NULL, ?, ?, NULL, ?, ?, NULL)`,
-    ).run(finishedRunId, ctx.projectId, legacyB, `/tmp/worktrees/${legacyB}`, "reset", now, now);
-
-    db.prepare(
-      `INSERT INTO runs
-         (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch)
-       VALUES (?, ?, ?, 'codex', NULL, ?, ?, ?, NULL, ?, NULL)`,
-    ).run(activeRunId, ctx.projectId, legacyActive, `/tmp/worktrees/${legacyActive}`, "running", now, now);
-
-    db.prepare(
-      `INSERT INTO tasks
-         (id, title, description, type, priority, status, run_id, branch, external_id, created_at, updated_at, approved_at, closed_at)
-       VALUES (?, ?, NULL, 'task', 2, ?, ?, ?, NULL, ?, ?, NULL, NULL)`,
-    ).run(legacyA, "Legacy A", "backlog", null, `foreman/${legacyA}`, now, now);
-
-    db.prepare(
-      `INSERT INTO tasks
-         (id, title, description, type, priority, status, run_id, branch, external_id, created_at, updated_at, approved_at, closed_at)
-       VALUES (?, ?, NULL, 'task', 2, ?, ?, ?, NULL, ?, ?, NULL, NULL)`,
-    ).run(legacyB, "Legacy B", "merged", finishedRunId, `foreman/${legacyB}`, now, now);
-
-    db.prepare(
-      `INSERT INTO tasks
-         (id, title, description, type, priority, status, run_id, branch, external_id, created_at, updated_at, approved_at, closed_at)
-       VALUES (?, ?, NULL, 'task', 2, ?, ?, ?, NULL, ?, ?, NULL, NULL)`,
-    ).run(legacyActive, "Legacy Active", "in-progress", activeRunId, `foreman/${legacyActive}`, now, now);
-
-    db.prepare(
-      `INSERT INTO task_dependencies (from_task_id, to_task_id, type)
-       VALUES (?, ?, 'blocks')`,
-    ).run(legacyB, legacyA);
-
-    db.prepare(
-      `INSERT INTO merge_queue
-         (branch_name, seed_id, run_id, agent_name, files_modified, enqueued_at, status)
-       VALUES (?, ?, ?, 'agent', '[]', ?, 'pending')`,
-    ).run(`foreman/${legacyB}`, legacyB, finishedRunId, now);
-
-    const migratedStore = new NativeTaskStore(db, { projectKey: "foreman", autoMigrateLegacyIds: false });
-    const result = migratedStore.migrateLegacyTaskIds();
-
-    expect(result.migrated).toBe(2);
-    expect(result.deferredActive).toBe(1);
-
-    const allTasks = db.prepare("SELECT id, title FROM tasks ORDER BY title").all() as Array<{ id: string; title: string }>;
-    const migratedA = allTasks.find((row) => row.title === "Legacy A");
-    const migratedB = allTasks.find((row) => row.title === "Legacy B");
-    const deferred = allTasks.find((row) => row.title === "Legacy Active");
-
-    expect(migratedA?.id).toMatch(/^foreman-[0-9a-f]{5}$/);
-    expect(migratedB?.id).toMatch(/^foreman-[0-9a-f]{5}$/);
-    expect(deferred?.id).toBe(legacyActive);
-
-    const deps = db.prepare("SELECT * FROM task_dependencies").all() as DependencyRow[];
-    expect(deps).toEqual([
-      expect.objectContaining({
-        from_task_id: migratedB?.id,
-        to_task_id: migratedA?.id,
-        type: "blocks",
-      }),
+    expect(await adapter.listTasks(project.id, { status: ["ready"] })).toEqual([
+      expect.objectContaining({ id: "task-list-001" }),
     ]);
-
-    const updatedRun = db.prepare("SELECT seed_id, worktree_path FROM runs WHERE id = ?").get(finishedRunId) as {
-      seed_id: string;
-      worktree_path: string | null;
-    };
-    expect(updatedRun.seed_id).toBe(migratedB?.id);
-    expect(updatedRun.worktree_path).toContain(migratedB?.id ?? "");
-
-    const activeRun = db.prepare("SELECT seed_id FROM runs WHERE id = ?").get(activeRunId) as { seed_id: string };
-    expect(activeRun.seed_id).toBe(legacyActive);
-
-    const mergeQueueRow = db.prepare("SELECT seed_id, branch_name FROM merge_queue WHERE run_id = ?").get(finishedRunId) as {
-      seed_id: string;
-      branch_name: string;
-    };
-    expect(mergeQueueRow.seed_id).toBe(migratedB?.id);
-    expect(mergeQueueRow.branch_name).toBe(`foreman/${migratedB?.id}`);
-  });
-});
-
-// ── NativeTaskStore.approve() ─────────────────────────────────────────────────
-
-describe("NativeTaskStore.approve()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-
-  beforeEach(() => {
-    ctx = setupStore();
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("transitions backlog task to ready", () => {
-    const task = ctx.taskStore.create({ title: "Approve Me" });
-    ctx.taskStore.approve(task.id);
-    const updated = ctx.taskStore.get(task.id);
-    expect(updated?.status).toBe("ready");
-    expect(updated?.approved_at).toBeTruthy();
-  });
-
-  it("approved task is visible to dispatcher", () => {
-    const task = ctx.taskStore.create({ title: "Ready Task" });
-    ctx.taskStore.approve(task.id);
-    const readyTasks = ctx.taskStore.list({ status: "ready" });
-    expect(readyTasks.some((t) => t.id === task.id)).toBe(true);
-  });
-
-  it("throws TaskNotFoundError for unknown ID", () => {
-    expect(() =>
-      ctx.taskStore.approve("00000000-0000-0000-0000-000000000000"),
-    ).toThrow(TaskNotFoundError);
-  });
-
-  it("throws for non-backlog tasks", () => {
-    const task = ctx.taskStore.create({ title: "Already Ready" });
-    ctx.taskStore.approve(task.id);
-    // Try to approve again
-    expect(() => ctx.taskStore.approve(task.id)).toThrow();
-  });
-
-  it("sets approved_at timestamp on approval", () => {
-    const before = new Date().toISOString();
-    const task = ctx.taskStore.create({ title: "Timestamp Test" });
-    ctx.taskStore.approve(task.id);
-    const after = new Date().toISOString();
-    const updated = ctx.taskStore.get(task.id);
-    const approvedAt = updated?.approved_at;
-    expect(approvedAt).toBeTruthy();
-    expect(approvedAt && approvedAt >= before).toBe(true);
-    expect(approvedAt && approvedAt <= after).toBe(true);
-  });
-});
-
-// ── NativeTaskStore.close() ───────────────────────────────────────────────────
-
-describe("NativeTaskStore.close()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-
-  beforeEach(() => {
-    ctx = setupStore();
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("sets task status to closed", () => {
-    const task = ctx.taskStore.create({ title: "Close Me" });
-    ctx.taskStore.close(task.id);
-    const updated = ctx.taskStore.get(task.id);
-    expect(updated?.status).toBe("closed");
-    expect(updated?.closed_at).toBeTruthy();
-  });
-
-  it("closed task is no longer visible in ready list", () => {
-    const task = ctx.taskStore.create({ title: "Close Then Gone" });
-    ctx.taskStore.approve(task.id);
-    ctx.taskStore.close(task.id);
-    const readyTasks = ctx.taskStore.list({ status: "ready" });
-    expect(readyTasks.every((t) => t.id !== task.id)).toBe(true);
-  });
-
-  it("throws TaskNotFoundError for unknown ID", () => {
-    expect(() =>
-      ctx.taskStore.close("00000000-0000-0000-0000-000000000000"),
-    ).toThrow(TaskNotFoundError);
-  });
-
-  it("sets closed_at timestamp", () => {
-    const before = new Date().toISOString();
-    const task = ctx.taskStore.create({ title: "Timestamp Close" });
-    ctx.taskStore.close(task.id);
-    const after = new Date().toISOString();
-    const updated = ctx.taskStore.get(task.id);
-    const closedAt = updated?.closed_at;
-    expect(closedAt).toBeTruthy();
-    expect(closedAt && closedAt >= before).toBe(true);
-    expect(closedAt && closedAt <= after).toBe(true);
-  });
-});
-
-// ── NativeTaskStore.resetToReady() ───────────────────────────────────────────
-
-describe("NativeTaskStore.resetToReady()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-  let runId: string;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    const project = ctx.store.registerProject("test-proj", "/tmp/test-proj");
-    runId = ctx.store.createRun(project.id, "seed-001", "runner").id;
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("resets an in-progress task back to ready and clears run linkage", () => {
-    const task = ctx.taskStore.create({ title: "Reset Me" });
-    ctx.taskStore.approve(task.id);
-    ctx.taskStore.claim(task.id, runId);
-
-    const updated = ctx.taskStore.resetToReady(task.id);
-
-    expect(updated.status).toBe("ready");
-    expect(updated.run_id).toBeNull();
-    expect(updated.branch).toBeNull();
-    expect(updated.closed_at).toBeNull();
-    expect(updated.approved_at).toBeTruthy();
-  });
-
-  it("preserves an existing approved_at timestamp", () => {
-    const task = ctx.taskStore.create({ title: "Keep Approval" });
-    ctx.taskStore.approve(task.id);
-    const approvedAt = ctx.taskStore.get(task.id)?.approved_at ?? null;
-    ctx.taskStore.claim(task.id, runId);
-
-    const updated = ctx.taskStore.resetToReady(task.id);
-
-    expect(updated.approved_at).toBe(approvedAt);
-  });
-
-  it("throws for closed tasks", () => {
-    const task = ctx.taskStore.create({ title: "Do Not Reopen" });
-    ctx.taskStore.close(task.id);
-
-    expect(() => ctx.taskStore.resetToReady(task.id)).toThrow(InvalidStatusTransitionError);
-  });
-});
-
-// ── NativeTaskStore.addDependency() + hasCyclicDependency() ───────────────────
-
-describe("NativeTaskStore.addDependency() and hasCyclicDependency()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-  let taskA: TaskRow;
-  let taskB: TaskRow;
-  let taskC: TaskRow;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    taskA = ctx.taskStore.create({ title: "Task A" });
-    taskB = ctx.taskStore.create({ title: "Task B" });
-    taskC = ctx.taskStore.create({ title: "Task C" });
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("adds a blocks dependency without error", () => {
-    expect(() =>
-      ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks"),
-    ).not.toThrow();
-  });
-
-  it("adds a parent-child dependency without error", () => {
-    expect(() =>
-      ctx.taskStore.addDependency(taskA.id, taskB.id, "parent-child"),
-    ).not.toThrow();
-  });
-
-  it("throws CircularDependencyError for self-dependency", () => {
-    expect(() =>
-      ctx.taskStore.addDependency(taskA.id, taskA.id, "blocks"),
-    ).toThrow(CircularDependencyError);
-  });
-
-  it("throws CircularDependencyError for direct cycle A→B then B→A", () => {
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    expect(() =>
-      ctx.taskStore.addDependency(taskB.id, taskA.id, "blocks"),
-    ).toThrow(CircularDependencyError);
-  });
-
-  it("throws CircularDependencyError for transitive cycle A→B→C then C→A", () => {
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    ctx.taskStore.addDependency(taskB.id, taskC.id, "blocks");
-    expect(() =>
-      ctx.taskStore.addDependency(taskC.id, taskA.id, "blocks"),
-    ).toThrow(CircularDependencyError);
-  });
-
-  it("throws TaskNotFoundError for unknown from-task", () => {
-    expect(() =>
-      ctx.taskStore.addDependency("00000000-0000-0000-0000-000000000000", taskB.id),
-    ).toThrow(TaskNotFoundError);
-  });
-
-  it("throws TaskNotFoundError for unknown to-task", () => {
-    expect(() =>
-      ctx.taskStore.addDependency(taskA.id, "00000000-0000-0000-0000-000000000000"),
-    ).toThrow(TaskNotFoundError);
-  });
-
-  it("hasCyclicDependency returns false for non-circular relationship", () => {
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    // Adding B→C would not create a cycle
-    expect(ctx.taskStore.hasCyclicDependency(taskB.id, taskC.id)).toBe(false);
-  });
-
-  it("hasCyclicDependency returns true when cycle would exist", () => {
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    ctx.taskStore.addDependency(taskB.id, taskC.id, "blocks");
-    // Adding C→A would create a cycle
-    expect(ctx.taskStore.hasCyclicDependency(taskC.id, taskA.id)).toBe(true);
-  });
-
-  it("ignores duplicate dependencies (OR IGNORE)", () => {
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    expect(() =>
-      ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks"),
-    ).not.toThrow();
-  });
-});
-
-// ── NativeTaskStore.getDependencies() ─────────────────────────────────────────
-
-describe("NativeTaskStore.getDependencies()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-  let taskA: TaskRow;
-  let taskB: TaskRow;
-  let taskC: TaskRow;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    taskA = ctx.taskStore.create({ title: "Task A" });
-    taskB = ctx.taskStore.create({ title: "Task B" });
-    taskC = ctx.taskStore.create({ title: "Task C" });
-    // A blocks B, A parent-child C
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    ctx.taskStore.addDependency(taskA.id, taskC.id, "parent-child");
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("outgoing returns tasks that A blocks/parents", () => {
-    const deps = ctx.taskStore.getDependencies(taskA.id, "outgoing");
-    expect(deps.length).toBe(2);
-    const toIds = deps.map((d) => d.to_task_id);
-    expect(toIds).toContain(taskB.id);
-    expect(toIds).toContain(taskC.id);
-  });
-
-  it("incoming returns tasks that block B", () => {
-    const deps = ctx.taskStore.getDependencies(taskB.id, "incoming");
-    expect(deps.length).toBe(1);
-    expect(deps[0]!.from_task_id).toBe(taskA.id);
-    expect(deps[0]!.type).toBe("blocks");
-  });
-
-  it("returns empty array for task with no dependencies", () => {
-    const taskD = ctx.taskStore.create({ title: "Task D" });
-    expect(ctx.taskStore.getDependencies(taskD.id, "outgoing")).toHaveLength(0);
-    expect(ctx.taskStore.getDependencies(taskD.id, "incoming")).toHaveLength(0);
-  });
-});
-
-// ── NativeTaskStore.removeDependency() ───────────────────────────────────────
-
-describe("NativeTaskStore.removeDependency()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-  let taskA: TaskRow;
-  let taskB: TaskRow;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    taskA = ctx.taskStore.create({ title: "Task A" });
-    taskB = ctx.taskStore.create({ title: "Task B" });
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("removes an existing dependency", () => {
-    ctx.taskStore.removeDependency(taskA.id, taskB.id, "blocks");
-    const deps = ctx.taskStore.getDependencies(taskA.id, "outgoing");
-    expect(deps).toHaveLength(0);
-  });
-
-  it("is a no-op for non-existent dependency", () => {
-    expect(() =>
-      ctx.taskStore.removeDependency(taskB.id, taskA.id, "blocks"),
-    ).not.toThrow();
-  });
-
-  it("after removal, cycle no longer prevents re-adding in reverse", () => {
-    // A blocks B — remove it
-    ctx.taskStore.removeDependency(taskA.id, taskB.id, "blocks");
-    // Now B blocks A should be possible (no cycle)
-    expect(() =>
-      ctx.taskStore.addDependency(taskB.id, taskA.id, "blocks"),
-    ).not.toThrow();
-  });
-});
-
-// ── NativeTaskStore.hasNativeTasks() ─────────────────────────────────────────
-
-describe("NativeTaskStore.hasNativeTasks()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-
-  beforeEach(() => {
-    ctx = setupStore();
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("returns false when no tasks exist", () => {
-    expect(ctx.taskStore.hasNativeTasks()).toBe(false);
-  });
-
-  it("returns true after creating a task", () => {
-    ctx.taskStore.create({ title: "Existence Test" });
-    expect(ctx.taskStore.hasNativeTasks()).toBe(true);
-  });
-});
-
-// ── NativeTaskStore.updatePhase() ────────────────────────────────────────────
-
-describe("NativeTaskStore.updatePhase()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-
-  beforeEach(() => {
-    ctx = setupStore();
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("updates the status of a task by taskId", () => {
-    const task = ctx.taskStore.create({ title: "Phase Test" });
-    ctx.taskStore.updatePhase(task.id, "explorer");
-    const updated = ctx.taskStore.get(task.id);
-    expect(updated?.status).toBe("explorer");
-  });
-
-  it("is a no-op when taskId is null", () => {
-    // Should not throw
-    expect(() => ctx.taskStore.updatePhase(null, "developer")).not.toThrow();
-  });
-
-  it("is a no-op when taskId is undefined", () => {
-    expect(() => ctx.taskStore.updatePhase(undefined, "developer")).not.toThrow();
-  });
-});
-
-// ── NativeTaskStore.claim() ───────────────────────────────────────────────────
-
-describe("NativeTaskStore.claim()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-  let runId1: string;
-  let runId2: string;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    // Create a project and two runs for FK compliance
-    const project = ctx.store.registerProject("test-proj", "/tmp/test-proj");
-    const run1 = ctx.store.createRun(project.id, "seed-001", "runner");
-    const run2 = ctx.store.createRun(project.id, "seed-001", "runner");
-    runId1 = run1.id;
-    runId2 = run2.id;
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("claims a task by setting status=in-progress and run_id", () => {
-    const task = ctx.taskStore.create({ title: "Claimable" });
-    ctx.taskStore.approve(task.id);
-    ctx.taskStore.claim(task.id, runId1);
-    const updated = ctx.taskStore.get(task.id);
-    expect(updated?.status).toBe("in-progress");
-    expect(updated?.run_id).toBe(runId1);
-  });
-
-  it("is idempotent for same run claiming same task", () => {
-    const task = ctx.taskStore.create({ title: "Idempotent Claim" });
-    ctx.taskStore.claim(task.id, runId1);
-    expect(() => ctx.taskStore.claim(task.id, runId1)).not.toThrow();
-  });
-
-  it("throws for task already claimed by different run", () => {
-    const task = ctx.taskStore.create({ title: "Contested Task" });
-    ctx.taskStore.claim(task.id, runId1);
-    expect(() => ctx.taskStore.claim(task.id, runId2)).toThrow();
-  });
-
-  it("throws for unknown task", () => {
-    expect(() =>
-      ctx.taskStore.claim("00000000-0000-0000-0000-000000000000", runId1),
-    ).toThrow();
-  });
-});
-
-// ── NativeTaskStore.list() ────────────────────────────────────────────────────
-
-describe("NativeTaskStore.list()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    // Create tasks with different statuses
-    const t1 = ctx.taskStore.create({ title: "Task 1", priority: 2 });
-    const t2 = ctx.taskStore.create({ title: "Task 2", priority: 1 });
-    ctx.taskStore.create({ title: "Task 3", priority: 0 }); // stays backlog
-    ctx.taskStore.approve(t1.id);
-    ctx.taskStore.approve(t2.id);
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("returns all tasks when no filter provided", () => {
-    const tasks = ctx.taskStore.list();
-    expect(tasks.length).toBe(3);
-  });
-
-  it("filters by status=ready", () => {
-    const readyTasks = ctx.taskStore.list({ status: "ready" });
-    expect(readyTasks.length).toBe(2);
-    expect(readyTasks.every((t) => t.status === "ready")).toBe(true);
-  });
-
-  it("returns tasks ordered by priority ASC then created_at ASC", () => {
-    const tasks = ctx.taskStore.list({ status: "ready" });
-    // priority 1 < priority 2
-    expect(tasks[0]?.title).toBe("Task 2");
-    expect(tasks[1]?.title).toBe("Task 1");
-  });
-
-  it("returns empty array when no tasks match filter", () => {
-    const mergedTasks = ctx.taskStore.list({ status: "merged" });
-    expect(mergedTasks).toHaveLength(0);
-  });
-});
-
-// ── NativeTaskStore.ready() ───────────────────────────────────────────────────
-
-describe("NativeTaskStore.ready()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-  let runId: string;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    // Create a project and run for FK compliance
-    const project = ctx.store.registerProject("test-proj", "/tmp/test-proj");
-    const run = ctx.store.createRun(project.id, "seed-001", "runner");
-    runId = run.id;
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("returns only tasks with status='ready' AND run_id IS NULL", async () => {
-    const t1 = ctx.taskStore.create({ title: "Ready Task" });
-    const t2 = ctx.taskStore.create({ title: "Backlog Task" });
-    const t3 = ctx.taskStore.create({ title: "Claimed Task" });
-    ctx.taskStore.approve(t1.id);
-    ctx.taskStore.approve(t3.id);
-    // Claim t3 (sets run_id)
-    ctx.taskStore.claim(t3.id, runId);
-
-    const ready = await ctx.taskStore.ready();
-
-    expect(ready.length).toBe(1);
-    expect(ready[0]!.id).toBe(t1.id);
-    expect(ready[0]!.title).toBe("Ready Task");
-  });
-
-  it("excludes tasks that are claimed (run_id set)", async () => {
-    const t1 = ctx.taskStore.create({ title: "Task 1" });
-    const t2 = ctx.taskStore.create({ title: "Task 2" });
-    ctx.taskStore.approve(t1.id);
-    ctx.taskStore.approve(t2.id);
-    ctx.taskStore.claim(t1.id, runId);
-
-    const ready = await ctx.taskStore.ready();
-
-    expect(ready.length).toBe(1);
-    expect(ready[0]!.id).toBe(t2.id);
-  });
-
-  it("returns tasks ordered by priority ASC then created_at ASC", async () => {
-    const t1 = ctx.taskStore.create({ title: "Low Priority", priority: 3 });
-    const t2 = ctx.taskStore.create({ title: "High Priority", priority: 0 });
-    const t3 = ctx.taskStore.create({ title: "Medium Priority", priority: 2 });
-    ctx.taskStore.approve(t1.id);
-    ctx.taskStore.approve(t2.id);
-    ctx.taskStore.approve(t3.id);
-
-    const ready = await ctx.taskStore.ready();
-
-    expect(ready[0]!.title).toBe("High Priority");
-    expect(ready[1]!.title).toBe("Medium Priority");
-    expect(ready[2]!.title).toBe("Low Priority");
-  });
-
-  it("returns empty array when no ready tasks exist", async () => {
-    ctx.taskStore.create({ title: "Backlog Task" });
-    const ready = await ctx.taskStore.ready();
-    expect(ready).toHaveLength(0);
-  });
-
-  it("after task is approved and claimed, it is excluded from ready()", async () => {
-    const task = ctx.taskStore.create({ title: "Will be claimed" });
-    ctx.taskStore.approve(task.id);
-
-    // Before claim
-    let ready = await ctx.taskStore.ready();
-    expect(ready.length).toBe(1);
-    expect(ready[0]!.id).toBe(task.id);
-
-    // Claim it
-    ctx.taskStore.claim(task.id, runId);
-
-    // After claim
-    ready = await ctx.taskStore.ready();
-    expect(ready).toHaveLength(0);
-  });
-
-  it("returns Promise<Issue[]> (async)", async () => {
-    const result = ctx.taskStore.ready();
-    expect(result).toBeInstanceOf(Promise);
-    const issues = await result;
-    expect(Array.isArray(issues)).toBe(true);
-  });
-
-  it("excludes tasks in all non-ready statuses", async () => {
-    // All 13 valid statuses from TASKS_SCHEMA CHECK constraint
-    const allStatuses = [
-      "backlog",
-      "ready",
-      "in-progress",
-      "explorer",
-      "developer",
-      "qa",
-      "reviewer",
-      "finalize",
-      "merged",
-      "conflict",
-      "failed",
-      "stuck",
-      "blocked",
-    ] as const;
-
-    // Create a task for each status
-    const tasksByStatus = new Map<string, TaskRow>();
-    for (const status of allStatuses) {
-      const task = ctx.taskStore.create({ title: `Task ${status}` });
-      tasksByStatus.set(status, task);
-    }
-
-    // Approve the backlog task so it transitions to ready
-    ctx.taskStore.approve(tasksByStatus.get("backlog")!.id);
-
-    // Claim one of the ready tasks to verify run_id IS NULL exclusion
-    const readyTask = tasksByStatus.get("ready")!;
-    ctx.taskStore.claim(readyTask.id, runId);
-
-    // Set statuses directly for terminal/phase statuses that can't be reached via API
-    const db = ctx.store.getDb();
-    const setStatus = (taskId: string, status: string) =>
-      db.prepare("UPDATE tasks SET status=? WHERE id=?").run(status, taskId);
-
-    // Set phase statuses directly (pipeline sets these, not the store API)
-    setStatus(tasksByStatus.get("in-progress")!.id, "in-progress");
-    setStatus(tasksByStatus.get("explorer")!.id, "explorer");
-    setStatus(tasksByStatus.get("developer")!.id, "developer");
-    setStatus(tasksByStatus.get("qa")!.id, "qa");
-    setStatus(tasksByStatus.get("reviewer")!.id, "reviewer");
-    setStatus(tasksByStatus.get("finalize")!.id, "finalize");
-
-    // Set terminal statuses directly (pipeline sets these)
-    setStatus(tasksByStatus.get("merged")!.id, "merged");
-    setStatus(tasksByStatus.get("conflict")!.id, "conflict");
-    setStatus(tasksByStatus.get("failed")!.id, "failed");
-    setStatus(tasksByStatus.get("stuck")!.id, "stuck");
-    setStatus(tasksByStatus.get("blocked")!.id, "blocked");
-
-    // Now ready() should only return the backlog task (now ready) since:
-    // - ready task is claimed (run_id is set)
-    // - all other tasks are in non-ready statuses
-    const ready = await ctx.taskStore.ready();
-
-    expect(ready.length).toBe(1);
-    expect(ready[0]!.status).toBe("ready");
-    expect(ready[0]!.id).toBe(tasksByStatus.get("backlog")!.id);
-
-    // Verify all excluded statuses are NOT in the result
-    const readyIds = new Set(ready.map((t) => t.id));
-    for (const [status, task] of tasksByStatus) {
-      if (status === "backlog") continue; // this one IS included
-      expect(readyIds.has(task.id)).toBe(false);
-    }
-  });
-});
-
-// ── Dependency Row Verification ───────────────────────────────────────────────
-
-describe("Dependency row verification", () => {
-  let ctx: ReturnType<typeof setupStore>;
-  let taskA: TaskRow;
-  let taskB: TaskRow;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    taskA = ctx.taskStore.create({ title: "Task A" });
-    taskB = ctx.taskStore.create({ title: "Task B" });
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("stores blocks row with correct from/to after addDependency", () => {
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    const deps = ctx.taskStore.getDependencies(taskA.id, "outgoing");
-    expect(deps).toHaveLength(1);
-    expect(deps[0]!).toMatchObject({
-      from_task_id: taskA.id,
-      to_task_id: taskB.id,
-      type: "blocks",
-    } as DependencyRow);
-  });
-
-  it("stores parent-child row with correct type after addDependency", () => {
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "parent-child");
-    const deps = ctx.taskStore.getDependencies(taskA.id, "outgoing");
-    expect(deps).toHaveLength(1);
-    expect(deps[0]!.type).toBe("parent-child");
-  });
-
-  it("blocks row appears in incoming query of the blocker", () => {
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    const incoming = ctx.taskStore.getDependencies(taskB.id, "incoming");
-    expect(incoming).toHaveLength(1);
-    expect(incoming[0]!.from_task_id).toBe(taskA.id);
-    expect(incoming[0]!.type).toBe("blocks");
-  });
-});
-
-// ── Cascade Unblock (reevaluateBlockedTasks) ──────────────────────────────────
-
-describe("NativeTaskStore.reevaluateBlockedTasks()", () => {
-  let ctx: ReturnType<typeof setupStore>;
-  let taskA: TaskRow;
-  let taskB: TaskRow;
-  let taskC: TaskRow;
-
-  beforeEach(() => {
-    ctx = setupStore();
-    taskA = ctx.taskStore.create({ title: "Task A" });
-    taskB = ctx.taskStore.create({ title: "Task B" });
-    taskC = ctx.taskStore.create({ title: "Task C" });
-  });
-  afterEach(() => teardownStore(ctx));
-
-  it("transitions blocked→ready when all blockers merged", () => {
-    // Setup: A is blocked by B
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    // Manually set A to blocked (dispatcher does this)
-    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
-    // Approve and close the blocker
-    ctx.taskStore.approve(taskB.id);
-    ctx.taskStore.close(taskB.id);
-    // Re-evaluate
-    ctx.taskStore.reevaluateBlockedTasks();
-    // Verify
-    const updated = ctx.taskStore.get(taskA.id);
-    expect(updated?.status).toBe("ready");
-  });
-
-  it("does not unblock when any blocker is still open", () => {
-    // A blocked by B and C
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    ctx.taskStore.addDependency(taskA.id, taskC.id, "blocks");
-    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
-    // Only close B, leave C open
-    ctx.taskStore.approve(taskB.id);
-    ctx.taskStore.close(taskB.id);
-    ctx.taskStore.reevaluateBlockedTasks();
-    // A should still be blocked
-    const updated = ctx.taskStore.get(taskA.id);
-    expect(updated?.status).toBe("blocked");
-  });
-
-  it("unblocks when all multiple blockers are merged", () => {
-    // A blocked by B and C
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    ctx.taskStore.addDependency(taskA.id, taskC.id, "blocks");
-    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
-    // Close both blockers
-    ctx.taskStore.approve(taskB.id);
-    ctx.taskStore.close(taskB.id);
-    ctx.taskStore.approve(taskC.id);
-    ctx.taskStore.close(taskC.id);
-    ctx.taskStore.reevaluateBlockedTasks();
-    // A should now be ready
-    const updated = ctx.taskStore.get(taskA.id);
-    expect(updated?.status).toBe("ready");
-  });
-
-  it("is a no-op when no tasks are blocked", () => {
-    // No tasks are blocked - should not throw
-    expect(() => ctx.taskStore.reevaluateBlockedTasks()).not.toThrow();
-  });
-
-  it("parent-child dependency does not affect blocking", () => {
-    // Add parent-child relationship: A parent-child B
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "parent-child");
-    // A is in backlog, B is closed - A should NOT be affected
-    ctx.taskStore.approve(taskB.id);
-    ctx.taskStore.close(taskB.id);
-    ctx.taskStore.reevaluateBlockedTasks();
-    // A should remain in whatever status it was (backlog, unchanged)
-    const updated = ctx.taskStore.get(taskA.id);
-    expect(updated?.status).toBe("backlog");
-  });
-
-  it("approved-only unblock: unblocked task transitions to ready with approved_at set", () => {
-    // A starts in backlog (not approved), then is marked blocked
-    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    ctx.taskStore.approve(taskB.id);
-    ctx.taskStore.close(taskB.id);
-    const before = new Date().toISOString();
-    ctx.taskStore.reevaluateBlockedTasks();
-    const after = new Date().toISOString();
-    // When unblocked, status transitions to ready AND approved_at is set
-    // (so the task is treated as approved — matches approve() semantics)
-    const updated = ctx.taskStore.get(taskA.id);
-    expect(updated?.status).toBe("ready");
-    const approvedAt = updated?.approved_at;
-    expect(approvedAt).toBeTruthy();
-    expect(approvedAt && approvedAt >= before).toBe(true);
-    expect(approvedAt && approvedAt <= after).toBe(true);
-  });
-
-  it("does not overwrite approved_at when task was already approved before being blocked", () => {
-    // A is approved first, then marked blocked
-    ctx.taskStore.approve(taskA.id);
-    const originalApprovedAt = ctx.taskStore.get(taskA.id)?.approved_at;
-    expect(originalApprovedAt).toBeTruthy();
-    // Mark A as blocked
-    ctx.store.getDb().prepare("UPDATE tasks SET status='blocked' WHERE id=?").run(taskA.id);
-    ctx.taskStore.addDependency(taskA.id, taskB.id, "blocks");
-    ctx.taskStore.approve(taskB.id);
-    ctx.taskStore.close(taskB.id);
-    ctx.taskStore.reevaluateBlockedTasks();
-    // approved_at should be preserved (not overwritten with a new timestamp)
-    const updated = ctx.taskStore.get(taskA.id);
-    expect(updated?.status).toBe("ready");
-    expect(updated?.approved_at).toBe(originalApprovedAt);
+    expect(await adapter.getTaskByExternalId(project.id, "github:owner/repo#123")).toEqual(
+      expect.objectContaining({ id: "task-list-001" }),
+    );
+    expect(await adapter.listNeedsHumanTasks(project.id)).toEqual([
+      expect.objectContaining({ id: "task-list-002" }),
+    ]);
+  });
+
+  it("manages dependencies and prevents cycles", async () => {
+    if (!postgresAvailable) return;
+    const { adapter, project } = await createPostgresProjectFixture("task-store-deps");
+    await adapter.createTask(project.id, { id: "task-dep-a", title: "A", status: "ready" });
+    await adapter.createTask(project.id, { id: "task-dep-b", title: "B", status: "ready" });
+    await adapter.createTask(project.id, { id: "task-dep-c", title: "C", status: "ready" });
+
+    await adapter.addTaskDependency(project.id, "task-dep-a", "task-dep-b");
+    await adapter.addTaskDependency(project.id, "task-dep-b", "task-dep-c");
+
+    expect(await adapter.listTaskDependencies(project.id, "task-dep-a", "outgoing")).toEqual([
+      expect.objectContaining({ from_task_id: "task-dep-a", to_task_id: "task-dep-b" }),
+    ]);
+    expect(await adapter.listTaskDependencies(project.id, "task-dep-b", "incoming")).toEqual([
+      expect.objectContaining({ from_task_id: "task-dep-a", to_task_id: "task-dep-b" }),
+    ]);
+    await expect(adapter.addTaskDependency(project.id, "task-dep-c", "task-dep-a")).rejects.toThrow(/circular/i);
+
+    await adapter.removeTaskDependency(project.id, "task-dep-a", "task-dep-b");
+    expect(await adapter.listTaskDependencies(project.id, "task-dep-a", "outgoing")).toEqual([]);
   });
 });

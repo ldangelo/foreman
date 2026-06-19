@@ -109,6 +109,9 @@ vi.mock("../../lib/prompt-loader.js", () => ({
 vi.mock("../../lib/workflow-loader.js", () => ({
   findMissingWorkflows: () => [],
   findStaleWorkflows: () => [],
+  ensureBundledWorkflowsInstalled: () => [],
+  listAvailableWorkflows: () => ["default", "quick"],
+  loadWorkflowConfig: () => ({ name: "default", phases: [] }),
 }));
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
@@ -137,7 +140,7 @@ vi.mock("../../orchestrator/sentinel.js", () => ({
   }),
 }));
 vi.mock("../../orchestrator/task-backend-ops.js", () => ({
-  syncBeadStatusOnStartup: vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] }),
+  syncTaskStatusOnStartup: vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] }),
 }));
 vi.mock("../../orchestrator/auto-merge.js", () => ({
   autoMerge: vi.fn().mockResolvedValue({ merged: 0, conflicts: 0, failed: 0 }),

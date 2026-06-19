@@ -21,6 +21,29 @@ function makeIssue(id: string, overrides?: Partial<Issue>): Issue {
   };
 }
 
+
+let currentReadyIssues: Issue[] = [];
+
+function nativeTaskFromIssue(issue: Issue) {
+  return {
+    id: issue.id,
+    title: issue.title,
+    description: issue.description ?? null,
+    type: issue.type,
+    priority: Number(String(issue.priority ?? "2").replace(/^P/, "")) || 2,
+    status: "ready",
+    run_id: null,
+    branch: null,
+    external_id: null,
+    labels: issue.labels ?? [],
+    parent: issue.parent ?? null,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at,
+    approved_at: new Date().toISOString(),
+    closed_at: null,
+  };
+}
+
 function makeRun(overrides?: Partial<Run>): Run {
   return {
     id: "run-1",
@@ -46,17 +69,21 @@ function makeStore(runsForSeed: Run[] = []): ForemanStore {
   return {
     getActiveRuns: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-    getRunsForSeed: vi.fn().mockReturnValue(runsForSeed),
+    getRunsForSeed: vi.fn((seedId: string) => runsForSeed.filter((run) => run.seed_id === seedId || run.seed_id === "seed-1")),
     getRunsByStatus: vi.fn().mockReturnValue([]),
     createRun: vi.fn().mockReturnValue({ id: "new-run" }),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
-    hasNativeTasks: vi.fn().mockReturnValue(false),
-    getReadyTasks: vi.fn().mockReturnValue([]),
+    hasNativeTasks: vi.fn().mockReturnValue(true),
+    getReadyTasks: vi.fn(() => currentReadyIssues.map(nativeTaskFromIssue)),
+    getTaskByExternalId: vi.fn().mockReturnValue(null),
+    getTaskById: vi.fn((id: string) => currentReadyIssues.map(nativeTaskFromIssue).find((task) => task.id === id) ?? null),
+    claimTask: vi.fn().mockReturnValue(true),
   } as unknown as ForemanStore;
 }
 
 function makeSeeds(issues: Issue[]): ITaskClient {
+  currentReadyIssues = issues;
   return {
     ready: vi.fn().mockResolvedValue(issues),
     show: vi.fn().mockResolvedValue({}),
@@ -249,8 +276,11 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
         return seedId === "bd-001" ? [stuckRun] : [];
       }),
       getRunsByStatus: vi.fn().mockReturnValue([]),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      getReadyTasks: vi.fn().mockReturnValue([]),
+      hasNativeTasks: vi.fn().mockReturnValue(true),
+      getReadyTasks: vi.fn(() => currentReadyIssues.map(nativeTaskFromIssue)),
+      getTaskByExternalId: vi.fn().mockReturnValue(null),
+      getTaskById: vi.fn((id: string) => currentReadyIssues.map(nativeTaskFromIssue).find((task) => task.id === id) ?? null),
+      claimTask: vi.fn().mockReturnValue(true),
     } as unknown as ForemanStore;
 
     const seeds = makeSeeds([stuckSeed, cleanSeed]);

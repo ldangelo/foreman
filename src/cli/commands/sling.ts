@@ -7,10 +7,10 @@ import { parseTrd } from "../../orchestrator/trd-parser.js";
 import { analyzeParallel } from "../../orchestrator/sprint-parallel.js";
 import { execute } from "../../orchestrator/sling-executor.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
-import { ForemanStore } from "../../lib/store.js";
-import { NativeTaskStore } from "../../lib/task-store.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import type { TaskRow } from "../../lib/task-store.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
-import { resolveProjectPathFromOption } from "./project-task-support.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 // ── Legacy backend flag helpers (exported for testing) ────────────────────
 
@@ -64,46 +64,55 @@ async function resolveSlingProjectPath(opts: SlingTargetingOptions): Promise<str
     return opts.projectPath;
   }
 
-  if (opts.project && isAbsolute(opts.project)) {
-    console.warn(
-      chalk.yellow("`--project` with an absolute path is deprecated; use `--project-path` instead."),
-    );
-    return opts.project;
-  }
-
-  return resolveProjectPathFromOption(opts.project);
+  return resolveRepoRootProjectPath({ project: opts.project });
 }
 
-export function shouldAnnounceNativeTaskMigration(projectPath: string): boolean {
-  const dbPath = join(projectPath, ".foreman", "foreman.db");
-  if (!existsSync(dbPath)) {
-    return false;
-  }
-
-  try {
-    const db = ForemanStore.openReadonly(projectPath);
-    try {
-      const row = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")
-        .get() as { name: string } | undefined;
-      return !row;
-    } finally {
-      db.close();
-    }
-  } catch {
-    return false;
-  }
-}
-
-function openNativeTaskStore(projectPath: string): { store: ForemanStore; taskStore: NativeTaskStore } {
-  if (shouldAnnounceNativeTaskMigration(projectPath)) {
-    console.log(chalk.dim("Migrating task store to native format..."));
-  }
-
-  const store = ForemanStore.forProject(projectPath);
+function createDaemonSlingWriter(client: ReturnType<typeof createTrpcClient>, projectId: string) {
   return {
-    store,
-    taskStore: new NativeTaskStore(store.getDb()),
+    async getByExternalId(externalId: string) {
+      const rows = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+      return rows.find((row) => row.external_id === externalId) ?? null;
+    },
+    async create(opts: { title: string; description?: string | null; type?: string; priority?: number; externalId?: string }) {
+      const existing = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+      const prefix = "foreman";
+      let id = "";
+      for (;;) {
+        const candidate = `${prefix}-${Math.random().toString(16).slice(2, 7)}`;
+        if (!existing.some((row) => row.id === candidate)) {
+          id = candidate;
+          break;
+        }
+      }
+      return await client.tasks.create({
+        projectId,
+        id,
+        title: opts.title,
+        description: opts.description ?? undefined,
+        type: opts.type ?? "task",
+        priority: opts.priority ?? 2,
+        externalId: opts.externalId,
+      }) as unknown as TaskRow;
+    },
+    async update(id: string, opts: { title?: string; description?: string | null; priority?: number; force?: boolean }) {
+      void opts.force;
+      await client.tasks.update({
+        projectId,
+        taskId: id,
+        updates: {
+          title: opts.title,
+          description: opts.description ?? undefined,
+          priority: opts.priority,
+        },
+      });
+      return await client.tasks.get({ projectId, taskId: id }) as unknown as TaskRow;
+    },
+    async close(id: string, _reason?: string) {
+      await client.tasks.close({ projectId, taskId: id });
+    },
+    async addDependency(fromId: string, toId: string, type: "blocks" | "parent-child" = "blocks") {
+      await client.tasks.addDependency({ projectId, fromTaskId: fromId, toTaskId: toId, type });
+    },
   };
 }
 
@@ -229,21 +238,22 @@ async function handleTrdImport(
     noQuality: opts.quality === false,
   };
 
-  const { store, taskStore } = openNativeTaskStore(projectPath);
-  try {
-    const spinner = createProgressSpinner();
-    const result = await execute(
-      plan,
-      parallel,
-      slingOptions,
-      taskStore,
-      spinner.update,
-    );
-    spinner.finish();
-    printSummary(result);
-  } finally {
-    store.close();
+  const projects = await listRegisteredProjects();
+  const project = projects.find((record) => record.path === projectPath);
+  if (!project) {
+    throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
   }
+  const taskWriter = createDaemonSlingWriter(createTrpcClient(), project.id);
+  const spinner = createProgressSpinner();
+  const result = await execute(
+    plan,
+    parallel,
+    slingOptions,
+    taskWriter as never,
+    spinner.update,
+  );
+  spinner.finish();
+  printSummary(result);
 }
 
 // ── Preview display ──────────────────────────────────────────────────────

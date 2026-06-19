@@ -86,10 +86,11 @@ describe("verdict-triggered retry", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-verdict-test-"));
     mkdirSync(tmpDir, { recursive: true });
+    process.env["FOREMAN_HOME"] = tmpDir;
     // Create stub prompt files so prompt-loader doesn't throw
-    const promptDir = join(tmpDir, ".foreman", "prompts", "default");
+    const promptDir = join(tmpDir, "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
-    for (const phase of ["developer", "qa", "reviewer", "explorer"]) {
+    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix", "fix-issue"]) {
       writeFileSync(join(promptDir, `${phase}.md`), `# ${phase} stub\n`);
     }
     writeFileSync(
@@ -100,6 +101,7 @@ describe("verdict-triggered retry", () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("reviewer FAIL loops back to developer (retryOnFail: 1)", async () => {
@@ -157,7 +159,7 @@ describe("verdict-triggered retry", () => {
         if (qaCallCount < 3) {
           writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: FAIL\nTests failed.\n");
         } else {
-          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\nAll tests pass.\n");
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n");
         }
       }
       return successResult();
@@ -173,6 +175,144 @@ describe("verdict-triggered retry", () => {
       "finalize",
     ]);
     expect(qaCallCount).toBe(3);
+  });
+
+  it("skips retryOnly developer during normal task flow", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const phases = [
+      { name: "fix", artifact: "DEVELOPER_REPORT.md" },
+      { name: "developer", artifact: "DEVELOPER_REPORT.md", retryOnly: true },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n");
+      }
+      return successResult();
+    });
+
+    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
+
+    expect(phaseOrder).toEqual(["fix", "qa", "finalize"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("DEVELOPER] Skipping — retryOnly phase"));
+  });
+
+  it("accepts a PASS verdict artifact when the SDK reports maxTurns after writing it", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+    const onPipelineComplete = vi.fn();
+
+    const phases = [
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true },
+      { name: "reviewer", artifact: "REVIEW.md" },
+    ];
+
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npx vitest run src/lib/foo.test.ts --reporter=dot`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n");
+        return { success: false, costUsd: 0.02, turns: 31, tokensIn: 100, tokensOut: 50, error: "Phase exceeded maxTurns (30)" };
+      }
+      return successResult();
+    });
+
+    await executePipeline({
+      ...makeBasePipelineArgs(tmpDir, phases, runPhase, log),
+      onPipelineComplete,
+    } as never);
+
+    expect(phaseOrder).toEqual(["qa", "reviewer"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("SDK interrupted after a PASS artifact"));
+    expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it("runs retryOnly developer only after a verdict failure, then retries QA", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const phases = [
+      { name: "fix", artifact: "DEVELOPER_REPORT.md" },
+      { name: "developer", artifact: "DEVELOPER_REPORT.md", retryOnly: true },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    let qaCallCount = 0;
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        qaCallCount++;
+        writeFileSync(
+          join(tmpDir, "QA_REPORT.md"),
+          qaCallCount === 1
+            ? "# QA\n\n## Verdict: FAIL\nTests failed.\n"
+            : "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n",
+        );
+      }
+      return successResult();
+    });
+
+    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
+
+    expect(phaseOrder).toEqual(["fix", "qa", "developer", "qa", "finalize"]);
+    expect(qaCallCount).toBe(2);
+  });
+
+  it("bash phase failure loops back to retryWith target before marking stuck", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+    const testArtifact = join(tmpDir, "TEST_RESULTS.md");
+
+    const phases = [
+      { name: "fix", prompt: "fix-issue.md", artifact: "DEVELOPER_REPORT.md" },
+      {
+        name: "test",
+        bash: "if [ -f retry-marker ]; then echo '## Verdict: PASS'; else echo '## Verdict: FAIL'; exit 1; fi",
+        artifact: testArtifact,
+        verdict: true,
+        retryWith: "fix",
+        retryOnFail: 1,
+        mail: { onFail: "fix" },
+      },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    let fixCallCount = 0;
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "fix") {
+        fixCallCount++;
+        writeFileSync(join(tmpDir, "DEVELOPER_REPORT.md"), `# Developer Report\n\nfix pass ${fixCallCount}\n`);
+        if (fixCallCount === 2) {
+          writeFileSync(join(tmpDir, "retry-marker"), "ready\n");
+        }
+      }
+      return successResult();
+    });
+
+    const ctx = makeBasePipelineArgs(tmpDir, phases, runPhase, log) as ReturnType<typeof makeBasePipelineArgs>;
+
+    await executePipeline(ctx as never);
+
+    expect(phaseOrder).toEqual(["fix", "fix", "finalize"]);
+    expect(fixCallCount).toBe(2);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("TEST] FAIL — looping back to fix"));
+    expect(ctx.sendMailText).toHaveBeenCalledWith(
+      null,
+      "fix-seed-verdict",
+      "Test Feedback - Retry 1",
+      expect.stringContaining("## Verdict: FAIL"),
+    );
+    expect(ctx.markStuck).not.toHaveBeenCalled();
   });
 
   it("after max retries (retryOnFail: 1) exhausted, pipeline continues to finalize", async () => {
@@ -395,7 +535,7 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
+        pushCommand: "jj git push --bookmark foreman/seed-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
         branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
         cleanCommand: "jj workspace forget foreman-seed-verdict",
@@ -467,7 +607,7 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
+        pushCommand: "jj git push --bookmark foreman/seed-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
         branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
         cleanCommand: "jj workspace forget foreman-seed-verdict",
@@ -521,7 +661,7 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
+        pushCommand: "jj git push --bookmark foreman/seed-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
         branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
         cleanCommand: "jj workspace forget foreman-seed-verdict",
@@ -579,7 +719,7 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
+        pushCommand: "jj git push --bookmark foreman/seed-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
         branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
         cleanCommand: "jj workspace forget foreman-seed-verdict",
@@ -635,7 +775,7 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict --allow-new",
+        pushCommand: "jj git push --bookmark foreman/seed-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
         branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
         cleanCommand: "jj workspace forget foreman-seed-verdict",

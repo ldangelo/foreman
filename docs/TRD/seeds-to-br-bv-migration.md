@@ -205,8 +205,8 @@ All priority comparisons throughout the codebase go through this utility.
   - Test bv call timeout triggers fallback within budget
   - Test priority-sort completes in under 100ms
 
-- [x] **TRD-NF-004**: Backwards compatibility for in-flight SQLite runs (1h) [satisfies REQ-NF-004]
-  - SQLite seed_id column stores IDs compatible with both sd and br formats
+- [x] **TRD-NF-004**: Backwards compatibility for in-flight Postgres runs (1h) [satisfies REQ-NF-004]
+  - Postgres seed_id column stores IDs compatible with both sd and br formats
   - Monitor handles "issue not found" as transient during migration
   - [depends: TRD-009]
 

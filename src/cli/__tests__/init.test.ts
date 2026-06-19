@@ -1,15 +1,106 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { initProjectStore } from "../commands/init.js";
+import { buildInitWizardConfig, formatInitDatabaseError, initProjectStore } from "../commands/init.js";
+
+type InitProjectStore = Parameters<typeof initProjectStore>[2];
 
 function makeStore(overrides: Record<string, unknown> = {}) {
   return {
     getProjectByPath: vi.fn().mockReturnValue(null),
     registerProject: vi.fn().mockReturnValue({ id: "proj-new" }),
     getSentinelConfig: vi.fn().mockReturnValue(null),
-    upsertSentinelConfig: vi.fn().mockReturnValue({}),
+    upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
     ...overrides,
-  } as unknown as import("../../lib/store.js").ForemanStore;
+  } as InitProjectStore;
 }
+
+describe("init wizard config", () => {
+  it("renders selected VCS backend and workflow template", () => {
+    expect(
+      buildInitWizardConfig({
+        vcsBackend: "jujutsu",
+        workflowTemplate: "smoke",
+        issueTracker: "beads",
+      }),
+    ).toContain("backend: jujutsu");
+    expect(
+      buildInitWizardConfig({
+        vcsBackend: "jujutsu",
+        workflowTemplate: "smoke",
+        issueTracker: "beads",
+      }),
+    ).toContain("default: smoke");
+  });
+
+  it("outputs valid ProjectConfig schema with taskTypeWorkflowMap", () => {
+    const config = buildInitWizardConfig({
+      vcsBackend: "auto",
+      workflowTemplate: "epic",
+      issueTracker: "beads",
+    });
+    // Should use taskTypeWorkflowMap (ProjectConfig schema) not init: block
+    expect(config).toContain("taskTypeWorkflowMap:");
+    expect(config).toContain("default: epic");
+    expect(config).not.toContain("init:");
+    expect(config).not.toContain("issueTracker:");
+    expect(config).not.toContain("authenticate:");
+  });
+
+  it("renders jira issue tracker config when jira is selected", () => {
+    const config = buildInitWizardConfig({
+      vcsBackend: "git",
+      workflowTemplate: "default",
+      issueTracker: "jira",
+      jira: {
+        apiUrl: "https://test.atlassian.net",
+        email: "test@example.com",
+        apiToken: "encrypted-token",
+        projectKey: "PROJ",
+        startStatus: ["In Progress"],
+      },
+    });
+    expect(config).toContain("issueTracker:");
+    expect(config).toContain("backend: jira");
+    expect(config).toContain("apiUrl: https://test.atlassian.net");
+    expect(config).toContain("email: test@example.com");
+    expect(config).toContain("apiToken: encrypted-token");
+    expect(config).toContain("key: PROJ");
+    expect(config).toContain("startStatus:");
+    expect(config).toContain("- In Progress");
+  });
+
+  it("renders github issue tracker config when github is selected", () => {
+    const config = buildInitWizardConfig({
+      vcsBackend: "git",
+      workflowTemplate: "default",
+      issueTracker: "github",
+      github: {
+        apiUrl: "https://api.github.com",
+        token: "encrypted-token",
+        owner: "myorg",
+        repo: "myrepo",
+        triggerLabels: ["foreman", "fixme"],
+      },
+    });
+    expect(config).toContain("issueTracker:");
+    expect(config).toContain("backend: github");
+    expect(config).toContain("apiUrl: https://api.github.com");
+    expect(config).toContain("token: encrypted-token");
+    expect(config).toContain("owner: myorg");
+    expect(config).toContain("repo: myrepo");
+    expect(config).toContain("triggerLabels:");
+    expect(config).toContain("- foreman");
+    expect(config).toContain("- fixme");
+  });
+
+  it("does not render issueTracker block when beads is selected", () => {
+    const config = buildInitWizardConfig({
+      vcsBackend: "auto",
+      workflowTemplate: "default",
+      issueTracker: "beads",
+    });
+    expect(config).not.toContain("issueTracker:");
+  });
+});
 
 describe("initProjectStore — sentinel seeding", () => {
   beforeEach(() => {
@@ -23,6 +114,27 @@ describe("initProjectStore — sentinel seeding", () => {
 
     expect(store.getSentinelConfig).toHaveBeenCalledWith("proj-new");
     expect(store.upsertSentinelConfig).toHaveBeenCalledWith("proj-new", {
+      branch: "main",
+      test_command: "npm test",
+      interval_minutes: 30,
+      failure_threshold: 2,
+      enabled: 1,
+    });
+  });
+
+  it("awaits async Postgres-backed sentinel config methods", async () => {
+    const store = makeStore({
+      getProjectByPath: vi.fn().mockResolvedValue(null),
+      registerProject: vi.fn().mockResolvedValue({ id: "proj-async" }),
+      getSentinelConfig: vi.fn().mockResolvedValue(null),
+      upsertSentinelConfig: vi.fn().mockResolvedValue({}),
+    });
+
+    await initProjectStore("/my/project", "my-project", store);
+
+    expect(store.registerProject).toHaveBeenCalledWith("my-project", "/my/project");
+    expect(store.getSentinelConfig).toHaveBeenCalledWith("proj-async");
+    expect(store.upsertSentinelConfig).toHaveBeenCalledWith("proj-async", {
       branch: "main",
       test_command: "npm test",
       interval_minutes: 30,
@@ -55,6 +167,34 @@ describe("initProjectStore — sentinel seeding", () => {
   });
 });
 
+describe("formatInitDatabaseError", () => {
+  it("turns missing-password registry failures into actionable guidance", async () => {
+    const { DatabaseError } = await import("../../lib/db/pool-manager.js");
+    const err = new DatabaseError(
+      "Query failed after 4 attempts: SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string",
+      "UNKNOWN",
+      new Error("SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string"),
+    );
+
+    expect(formatInitDatabaseError(err, "/tmp/prompts")).toContain(
+      "DATABASE_URL is missing a password for the configured Postgres user.",
+    );
+    expect(formatInitDatabaseError(err, "/tmp/prompts")).toContain("/tmp/prompts/.env");
+  });
+
+  it("includes config validation errors verbatim", async () => {
+    const { DatabaseConfigError } = await import("../../lib/db/pool-manager.js");
+    const err = new DatabaseConfigError(
+      "Invalid DATABASE_URL. User 'foreman' is missing a password.",
+      "postgresql://foreman@db.example.com/foreman",
+    );
+
+    expect(formatInitDatabaseError(err, "/tmp/prompts")).toContain(
+      "Invalid DATABASE_URL. User 'foreman' is missing a password.",
+    );
+  });
+});
+
 // ── installPrompts ────────────────────────────────────────────────────────────
 
 import { describe as describeInstall, it as itInstall, expect as expectInstall } from "vitest";
@@ -67,14 +207,16 @@ describeInstall("installPrompts", () => {
   itInstall("installs bundled prompts to .foreman/prompts/ on first init", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-test-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       const { installed, skipped } = installPrompts(tmpDir, false);
       expectInstall(installed.length).toBeGreaterThan(0);
       expectInstall(skipped.length).toBe(0);
       // Verify key files exist
-      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "default", "explorer.md"))).toBe(true);
-      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "default", "developer.md"))).toBe(true);
-      expectInstall(existsSync(join(tmpDir, ".foreman", "prompts", "smoke", "explorer.md"))).toBe(true);
+      expectInstall(existsSync(join(tmpDir, "prompts", "default", "explorer.md"))).toBe(true);
+      expectInstall(existsSync(join(tmpDir, "prompts", "default", "developer.md"))).toBe(true);
+      expectInstall(existsSync(join(tmpDir, "prompts", "smoke", "explorer.md"))).toBe(true);
     } finally {
+      delete process.env["FOREMAN_HOME"];
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -82,6 +224,7 @@ describeInstall("installPrompts", () => {
   itInstall("skips existing files when force=false", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-skip-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       // First install
       installPrompts(tmpDir, false);
       // Second install — should skip all
@@ -89,6 +232,7 @@ describeInstall("installPrompts", () => {
       expectInstall(installed.length).toBe(0);
       expectInstall(skipped.length).toBeGreaterThan(0);
     } finally {
+      delete process.env["FOREMAN_HOME"];
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -96,11 +240,13 @@ describeInstall("installPrompts", () => {
   itInstall("overwrites existing files when force=true", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "foreman-init-prompts-force-"));
     try {
+      process.env["FOREMAN_HOME"] = tmpDir;
       installPrompts(tmpDir, false);
       const { installed, skipped } = installPrompts(tmpDir, true);
       expectInstall(installed.length).toBeGreaterThan(0);
       expectInstall(skipped.length).toBe(0);
     } finally {
+      delete process.env["FOREMAN_HOME"];
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });

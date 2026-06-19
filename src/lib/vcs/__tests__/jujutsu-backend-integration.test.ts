@@ -10,7 +10,7 @@
  *   2. Colocated jj+git local clone
  *   3. Create workspace on feature bookmark
  *   4. Write file and commit (no explicit staging — jj auto-stages)
- *   5. Push to remote with --allow-new (required for new bookmarks)
+ *   5. Push to remote using syntax compatible with both legacy and modern jj
  *   6. Fetch on main worktree
  *   7. Merge feature bookmark into dev
  *   8. Verify results and clean up
@@ -214,7 +214,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       expect(headAfterCommit).toBeTruthy();
       expect(headAfterCommit.length).toBeGreaterThan(0);
 
-      // ── Phase 4: Push to remote (--allow-new required for jj) ───────
+      // ── Phase 4: Push to remote (legacy/new jj compatible) ─────────────
       await backend.push(
         workspaceResult.workspacePath,
         workspaceResult.branchName,
@@ -319,7 +319,7 @@ describe.skipIf(!JJ_AVAILABLE)(
 describe.skipIf(!JJ_AVAILABLE)(
   "AC-007-2: JujutsuBackend commands are called in the expected order",
   () => {
-    it("push() calls jj git push --bookmark <branchName> --allow-new and puts bookmark on remote", async () => {
+    it("push() pushes a bookmark to the remote with legacy/new jj compatibility", async () => {
       const { remoteDir, localDir } = makeRemoteAndLocal();
       tempDirs.push(remoteDir, localDir);
 
@@ -494,7 +494,9 @@ describe.skipIf(!JJ_AVAILABLE)(
       );
       await backend.commit(workspacePath, `feat: feature work (${seedId})`);
 
-      // Push the feature bookmark (first push needs --allow-new)
+      // Push the feature bookmark. `allowNew` uses legacy --allow-new when the
+      // local jj binary supports it, and otherwise falls back to plain
+      // `jj git push --bookmark`, which auto-tracks on newer releases.
       await backend.push(workspacePath, branchName, { allowNew: true });
 
       // Fetch and rebase onto origin/dev (simulating Foreman's finalize step)
@@ -504,9 +506,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       expect(rebaseResult.hasConflicts).toBe(false);
 
       // After rebase, push again. jj applies safety checks similar to
-      // git push --force-with-lease by default, so --allow-new is sufficient
-      // for an updated bookmark that was previously pushed.
-      // Note: jj 0.39.x does not support a --force flag on jj git push.
+      // git push --force-with-lease by default.
       await backend.push(workspacePath, branchName, { allowNew: true });
 
       // Now merge the rebased feature bookmark

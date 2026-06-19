@@ -65,7 +65,7 @@ Four options were evaluated:
 Thread history retrieval (`fetchThread`) is not in the current `AgentMailClient` and not confirmed to exist on the Agent Mail server. Even if it did, the sequential TypeScript driver still needs to call `runPhase()` per phase — the thread doesn't drive transitions, the TypeScript loop does. Option A achieves the same message-body transport without any new API surface.
 
 **Why Option A:**
-Sequential `await`-chain stays unchanged. No new processes. No SQLite schema changes. Disk files remain as fallback. The entire change is ~60 lines of new code plus targeted modifications in `runPipeline()`.
+Sequential `await`-chain stays unchanged. No new processes. No Postgres schema changes. Disk files remain as fallback. The entire change is ~60 lines of new code plus targeted modifications in `runPipeline()`.
 
 ---
 
@@ -262,7 +262,7 @@ Test cases for `fetchLatestPhaseMessage()`:
 **Unchanged:**
 - `src/orchestrator/roles.ts` — `developerPrompt(feedbackContext?)` signature untouched
 - `src/orchestrator/dispatcher.ts` — spawn strategy untouched
-- `src/lib/store.ts` — SQLite schema untouched
+- `src/lib/store.ts` — Postgres schema untouched
 - `src/orchestrator/foreman-inbox-processor.ts` — untouched
 
 ---
@@ -370,7 +370,7 @@ Replaces the `buildRoleConfigs()` function in `roles.ts`. Environment variable o
 
 ### `~/.foreman/workflows.json`
 
-Defines which phases run for each seed type, in order. The seed type comes from the bead's `type` field (already stored in SQLite). Unknown types fall back to `"feature"`.
+Defines which phases run for each seed type, in order. The seed type comes from the bead's `type` field (already stored in Postgres). Unknown types fall back to `"feature"`.
 
 ```json
 {

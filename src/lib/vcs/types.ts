@@ -68,8 +68,8 @@ export interface PushOptions {
   /** If true, force-push (overwrite remote history). Use with caution. */
   force?: boolean;
   /**
-   * Jujutsu-specific: passes --allow-new flag to allow pushing new bookmarks.
-   * GitBackend ignores this field.
+   * Jujutsu-specific compatibility hint: older jj versions needed
+   * `--allow-new` for first push of a new bookmark. GitBackend ignores it.
    */
   allowNew?: boolean;
 }
@@ -84,6 +84,12 @@ export interface FinalizeTemplateVars {
   baseBranch: string;
   /** Absolute path to the worktree/workspace directory. */
   worktreePath: string;
+  /**
+   * GitHub issue number for this task. When present, the finalize commit
+   * message is suffixed with "Fixes #{issueNumber}" to auto-close the issue
+   * when the PR is merged (TRD-042).
+   */
+  githubIssueNumber?: number;
 }
 
 /**
@@ -109,7 +115,7 @@ export interface FinalizeCommands {
   restoreTrackedStateCommand: string;
 }
 
-/** VCS configuration read from project config YAML (.foreman/config.yaml). */
+/** VCS configuration read from Foreman's global config YAML (~/.foreman/config.yaml). */
 export interface VcsConfig {
   /** Which VCS backend to use. 'auto' detects based on repository contents. */
   backend: 'git' | 'jujutsu' | 'auto';

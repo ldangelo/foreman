@@ -32,21 +32,21 @@ Then verify again with `pwd`. If you cannot change to that directory, send an er
 ```
 
 ### Step 1: Dependency Install (non-fatal)
-Run `npm ci` to perform a clean, deterministic dependency install. If it fails, log the error in docs/reports/{{seedId}}/FINALIZE_REPORT.md and continue — do not stop.
+Run `npm ci` to perform a clean, deterministic dependency install. If it fails, log the error in {{reportDir}}/FINALIZE_REPORT.md and continue — do not stop.
 
 ### Step 2: Type Check (non-fatal)
-Run `npx tsc --noEmit` to check for type errors. If it fails, log the error in docs/reports/{{seedId}}/FINALIZE_REPORT.md and continue — do not stop.
+Run `npx tsc --noEmit` to check for type errors. If it fails, log the error in {{reportDir}}/FINALIZE_REPORT.md and continue — do not stop.
 
 ### Step 3: Stage all files (excluding diagnostic artifacts)
 Run the stage command (skip if empty — some backends auto-stage):
 ```
 {{vcsStageCommand}}
 ```
-Then restore tracked shared-state files that must never be committed from a workspace:
+Then restore tracked shared-state files and unstage workspace-only artifacts that must never be committed from a workspace:
 ```
 {{vcsRestoreTrackedStateCommand}}
 ```
-SESSION_LOG.md and RUN_LOG.md are already gitignored diagnostic artifacts. `.beads/issues.jsonl` is managed centrally by the bead-writer process, so finalize restores it out of the workspace before commit using a backend-aware path. This prevents parent-branch Beads updates from dirtying active workspaces.
+The restore command must remove `.beads/issues.jsonl`, `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, repository-root report artifacts, and `docs/reports/**` from the index before commit. `.beads/issues.jsonl` is managed centrally by the bead-writer process, so finalize restores it out of the workspace before commit using a backend-aware path. This prevents parent-branch Beads updates and workspace artifacts from dirtying active workspaces.
 
 ### Step 4: Commit
 Run:
@@ -123,9 +123,9 @@ QA already validated this bead. Finalize should rerun the full test suite only w
 
 First create the reports directory, then write `FINALIZE_VALIDATION.md`:
 ```bash
-mkdir -p docs/reports/{{seedId}}
+mkdir -p "{{reportDir}}"
 ```
-Then write `docs/reports/{{seedId}}/FINALIZE_VALIDATION.md`:
+Then write `{{reportDir}}/FINALIZE_VALIDATION.md`:
 
 ```markdown
 # Finalize Validation: {{seedTitle}}
@@ -170,12 +170,12 @@ Capture the full output and exit code. The `--reporter=dot` flag reduces per-tes
 
 **If tests PASS (exit code 0):**
 - Write `## Target Integration` with `- Status: SUCCESS`
-- Write `## Verdict: PASS` in `docs/reports/{{seedId}}/FINALIZE_VALIDATION.md`
+- Write `## Verdict: PASS` in `{{reportDir}}/FINALIZE_VALIDATION.md`
 - Continue to Step 8 (push)
 
 **If tests FAIL (non-zero exit code):**
 - Write `## Target Integration` with `- Status: SUCCESS`
-- Write `## Verdict: FAIL` in `docs/reports/{{seedId}}/FINALIZE_VALIDATION.md`
+- Write `## Verdict: FAIL` in `{{reportDir}}/FINALIZE_VALIDATION.md`
 - Include test failure details in the `## Test Validation` section
 - Classify the failures in `## Failure Scope`:
   - `MODIFIED_FILES` if the failures are in files changed by this bead or are clearly caused by this bead's work
@@ -200,7 +200,7 @@ Run:
 ```
 
 ### Step 9: Write FINALIZE_REPORT.md
-Write a `docs/reports/{{seedId}}/FINALIZE_REPORT.md` file summarizing:
+Write a `{{reportDir}}/FINALIZE_REPORT.md` file summarizing:
 - Whether `npm ci` succeeded or failed (include any error details)
 - Whether `npx tsc --noEmit` passed or failed (include any error details)
 - The commit hash (from `git rev-parse --short HEAD`)
@@ -235,5 +235,5 @@ Use this format:
 - **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
 - All failures except "nothing to commit" (for non-verification beads) are logged and continue (non-fatal) unless they prevent git push
-- Do NOT commit SESSION_LOG.md, RUN_LOG.md, or .beads/issues.jsonl — SESSION_LOG.md / RUN_LOG.md are gitignored, and finalize restores tracked Beads state out of the workspace before commit
+- Do NOT commit node_modules, SESSION_LOG.md, RUN_LOG.md, .beads/issues.jsonl, repository-root report artifacts, or docs/reports/** — finalize restores tracked Beads state and unstages workspace artifacts before commit
 - **If tests fail in Step 7, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 8 or 9**

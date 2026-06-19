@@ -96,7 +96,7 @@ Phase configuration (model, budget, allowed tools) is defined in `ROLE_CONFIGS` 
 - **Changing the Agent Mail send paths**: All existing sends (Explorer report, QA feedback, QA report, phase-complete events) are already implemented and remain unchanged.
 - **Adding new Agent Mail server features**: No new Agent Mail API endpoints are required. Only the existing `fetchInbox` and `acknowledgeMessage` client methods are used.
 - **Removing disk-file reports**: `EXPLORER_REPORT.md`, `QA_REPORT.md`, `REVIEW.md` continue to be written for backward compatibility and debugging.
-- **Modifying SQLite schema**: No database changes are required for either part.
+- **Modifying Postgres schema**: No database changes are required for either part.
 - **Changing `foreman status` or `foreman monitor`**: Both commands continue to work unchanged.
 - **Implementing a full template engine**: Only `{{variable}}` substitution and `{{#if var}}...{{/if}}` conditionals are supported. No nesting, no loops, no partials.
 - **Removing `roles.ts` prompt functions**: The existing TypeScript functions are retained as fallback defaults. No deletions.
@@ -171,7 +171,7 @@ Four architectural options were evaluated for Part 1:
 | `foreman status` unchanged | Yes | Needs update | Needs update | Yes |
 | Requires new Agent Mail API | No | No | No | Yes (`fetchThread`) |
 
-**Why Option A:** The sequential `await`-chain in `runPipeline()` stays unchanged. No new processes. No SQLite schema changes. Disk files remain as fallback. The entire Part 1 change is ~60 lines of new code plus targeted read-path modifications.
+**Why Option A:** The sequential `await`-chain in `runPipeline()` stays unchanged. No new processes. No Postgres schema changes. Disk files remain as fallback. The entire Part 1 change is ~60 lines of new code plus targeted read-path modifications.
 
 ### 6.2 Part 1: Message Flow After Implementation
 
@@ -528,18 +528,18 @@ Invalid configuration files must log warnings but never crash the process.
 - AC-019-2: Given `~/.foreman/workflows.json` contains valid JSON but with an empty array for a workflow (`"feature": []`), when `loadWorkflows()` validates the workflow map, then finalize enforcement (REQ-025) rejects the empty array with a validation error since it does not end with `"finalize"`, and the built-in `DEFAULT_WORKFLOWS` are returned instead. *(v1.2: Updated to align with REQ-025 finalize enforcement — empty arrays are validation errors, not passthrough cases.)*
 - AC-019-3: Given `~/.foreman/prompts/explorer.md` contains malformed template syntax (e.g., unclosed `{{#if`), when `loadPrompt()` processes it, then the malformed syntax passes through as literal text rather than crashing.
 
-### REQ-020: No SQLite Schema Changes (P0)
+### REQ-020: No Postgres Schema Changes (P0)
 
-Neither Part 1 nor Part 2 requires any changes to the SQLite database schema.
+Neither Part 1 nor Part 2 requires any changes to the Postgres database schema.
 
 - AC-020-1: Given the full implementation of both parts, when `src/lib/store.ts` is reviewed, then zero lines are added, modified, or removed.
-- AC-020-2: Given an existing Foreman installation with a populated SQLite database, when the new version is deployed, then no migration is required.
+- AC-020-2: Given an existing Foreman installation with a populated Postgres database, when the new version is deployed, then no migration is required.
 
 ### REQ-021: Existing CLI Commands Unchanged (P0)
 
 `foreman status` and `foreman monitor` continue to work identically with no visible changes.
 
-- AC-021-1: Given the full implementation of both parts, when `foreman status` is invoked, then its output format, content sources (SQLite), and refresh behavior are unchanged.
+- AC-021-1: Given the full implementation of both parts, when `foreman status` is invoked, then its output format, content sources (Postgres), and refresh behavior are unchanged.
 - AC-021-2: Given the full implementation of both parts, when `foreman monitor` is invoked, then its polling loop, health checks, and output are unchanged.
 
 ### REQ-022: Performance (P1)
@@ -663,7 +663,7 @@ foreman run --bead <bug-seed-id>
 | REQ-017 | Zero regression without Agent Mail server | 2 | P0 |
 | REQ-018 | Zero regression without config files | 2 | P0 |
 | REQ-019 | Invalid config resilience | 3 | P0 |
-| REQ-020 | No SQLite schema changes | 2 | P0 |
+| REQ-020 | No Postgres schema changes | 2 | P0 |
 | REQ-021 | Existing CLI commands unchanged | 2 | P0 |
 | REQ-022 | Performance | 3 | P1 |
 | REQ-023 | Explorer report read path via Agent Mail | 4 | P0 |

@@ -24,7 +24,7 @@ function makeMocks() {
     getRun: vi.fn((runId: string) => makeRun({ id: runId })),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
-    getRunProgress: vi.fn(() => null),
+    getRunProgress: vi.fn(async () => null),
     getRunEvents: vi.fn((): any[] => []),
   };
   const seeds = {
@@ -67,7 +67,7 @@ describe("Monitor", () => {
       const { store, seeds, monitor } = makeMocks();
       const run = makeRun({ id: "run-merged-race" });
       store.getActiveRuns.mockReturnValue([run]);
-      store.getRun.mockReturnValueOnce({ ...run, status: "merged" });
+      store.getRun.mockResolvedValueOnce({ ...run, status: "merged" });
       seeds.show.mockResolvedValue({ status: "open" });
 
       const report = await monitor.checkAll({ stuckTimeoutMinutes: 15 });
@@ -121,7 +121,7 @@ describe("Monitor", () => {
     it("returns true and skips mutation when the run is already pr-created", async () => {
       const { store, monitor } = makeMocks();
       const run = makeRun({ id: "run-pr-created" });
-      store.getRun.mockReturnValueOnce({ ...run, status: "pr-created" });
+      store.getRun.mockResolvedValueOnce({ ...run, status: "pr-created" });
 
       const result = await monitor.recoverStuck(run, 3);
 

@@ -168,12 +168,30 @@ export class GitBackend implements VcsBackend {
     return this.git(["rev-parse", "--abbrev-ref", "HEAD"], repoPath);
   }
 
+  /**
+   * Get the URL of a remote by name.
+   */
+  async getRemoteUrl(repoPath: string, remote = "origin"): Promise<string | null> {
+    try {
+      return await this.git(["ls-remote", "--get-url", remote], repoPath);
+    } catch {
+      return null;
+    }
+  }
+
   // ── Branch Operations ────────────────────────────────────────────────
 
   /**
    * Checkout a branch by name.
+   * Rejects Git pseudo-refs (HEAD, refs/stash, etc.) to prevent detached HEAD.
    */
   async checkoutBranch(repoPath: string, branchName: string): Promise<void> {
+    const pseudoRefPatterns = [/^HEAD$/, /^refs\//, /^stash$/, /^\./];
+    for (const pattern of pseudoRefPatterns) {
+      if (pattern.test(branchName)) {
+        throw new Error(`Cannot checkout pseudo-ref "${branchName}" — use a real branch name`);
+      }
+    }
     await this.git(["checkout", branchName], repoPath);
   }
 
@@ -435,6 +453,22 @@ export class GitBackend implements VcsBackend {
     await this.git(["pull", "origin", branchName, "--ff-only"], workspacePath);
   }
 
+  async saveWorktreeState(workspacePath: string): Promise<boolean> {
+    try {
+      const stashOut = await this.git(
+        ["stash", "push", "--include-untracked", "-m", "foreman-worktree-state"],
+        workspacePath,
+      );
+      return !stashOut.includes("No local changes");
+    } catch {
+      return false;
+    }
+  }
+
+  async restoreWorktreeState(workspacePath: string): Promise<void> {
+    await this.git(["stash", "pop"], workspacePath);
+  }
+
   // ── Rebase and Merge Operations ──────────────────────────────────────
 
   /**
@@ -478,6 +512,55 @@ export class GitBackend implements VcsBackend {
     }
   }
 
+  async rebaseBranch(
+    repoPath: string,
+    branchName: string,
+    onto: string,
+  ): Promise<RebaseResult> {
+    try {
+      await this.git(["rebase", onto, branchName], repoPath);
+      return { success: true, hasConflicts: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      let conflictingFiles: string[] = [];
+      try {
+        const statusOut = await this.git(["diff", "--name-only", "--diff-filter=U"], repoPath);
+        conflictingFiles = statusOut.split("\n").map((f) => f.trim()).filter(Boolean);
+      } catch {
+        // Best effort
+      }
+      if (msg.includes("CONFLICT") || msg.includes("conflict") || conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
+  async restackBranch(
+    repoPath: string,
+    branchName: string,
+    oldBase: string,
+    newBase: string,
+  ): Promise<RebaseResult> {
+    try {
+      await this.git(["rebase", "--onto", newBase, oldBase, branchName], repoPath);
+      return { success: true, hasConflicts: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      let conflictingFiles: string[] = [];
+      try {
+        const statusOut = await this.git(["diff", "--name-only", "--diff-filter=U"], repoPath);
+        conflictingFiles = statusOut.split("\n").map((f) => f.trim()).filter(Boolean);
+      } catch {
+        // Best effort
+      }
+      if (msg.includes("CONFLICT") || msg.includes("conflict") || conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
   /**
    * Abort an in-progress rebase.
    */
@@ -496,17 +579,7 @@ export class GitBackend implements VcsBackend {
   ): Promise<MergeResult> {
     const target = targetBranch ?? (await this.getCurrentBranch(repoPath));
 
-    // Stash local changes if needed
-    let stashed = false;
-    try {
-      const stashOut = await this.git(
-        ["stash", "push", "-m", "foreman-merge-auto-stash"],
-        repoPath,
-      );
-      stashed = !stashOut.includes("No local changes");
-    } catch {
-      // stash may fail if nothing to stash — fine
-    }
+    const stashed = await this.saveWorktreeState(repoPath);
 
     try {
       await this.git(["checkout", target], repoPath);
@@ -532,12 +605,37 @@ export class GitBackend implements VcsBackend {
     } finally {
       if (stashed) {
         try {
-          await this.git(["stash", "pop"], repoPath);
+          await this.restoreWorktreeState(repoPath);
         } catch {
           // pop may conflict — leave in stash
         }
       }
     }
+  }
+
+  async mergeWithStrategy(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+    strategy: "theirs",
+  ): Promise<MergeResult> {
+    try {
+      await this.git(["checkout", targetBranch], repoPath);
+      await this.git(["merge", sourceBranch, "--no-ff", "-X", strategy], repoPath);
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("CONFLICT") || message.includes("Merge conflict")) {
+        const statusOut = await this.git(["diff", "--name-only", "--diff-filter=U"], repoPath);
+        const conflicts = statusOut.split("\n").map((f) => f.trim()).filter(Boolean);
+        return { success: false, conflicts };
+      }
+      throw err;
+    }
+  }
+
+  async rollbackFailedMerge(workspacePath: string, beforeRef: string): Promise<void> {
+    await this.resetHard(workspacePath, beforeRef);
   }
 
   // ── Diff, Status and Conflict Detection ─────────────────────────────
@@ -716,6 +814,11 @@ export class GitBackend implements VcsBackend {
     await this.git(["add", filePath], workspacePath);
   }
 
+  async stageFiles(workspacePath: string, filePaths: string[]): Promise<void> {
+    if (filePaths.length === 0) return;
+    await this.git(["add", ...filePaths], workspacePath);
+  }
+
   /**
    * Checkout a file from a specific ref into the working tree.
    * The special ref "--theirs" is resolved based on the current rebase context.
@@ -776,6 +879,14 @@ export class GitBackend implements VcsBackend {
   }
 
   /**
+   * Apply a patch file to the working tree and index.
+   */
+  async applyPatchToIndex(workspacePath: string, patchFilePath: string): Promise<void> {
+    await this.git(["update-index", "-q", "--refresh"], workspacePath);
+    await this.git(["apply", "--index", patchFilePath], workspacePath);
+  }
+
+  /**
    * Get the merge base of two refs.
    */
   async getMergeBase(repoPath: string, ref1: string, ref2: string): Promise<string> {
@@ -807,16 +918,19 @@ export class GitBackend implements VcsBackend {
    * Return pre-computed git finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch, worktreePath } = vars;
+    const { seedId, seedTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
     // Escape single quotes in seedTitle so the shell-level single-quoted commit
     // message is safe even when the title contains apostrophes or shell-special
     // characters (brackets, colons, parentheses, $, !, etc.).
     // Strategy: end the single-quoted string, escape the quote, reopen it:
     //   O'Brien → 'O'\''Brien'
     const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
+    const footerSuffix = githubIssueNumber
+      ? `\\n\\nFixes #${githubIssueNumber}`
+      : "";
     return {
       stageCommand: "git add -A",
-      commitCommand: `git commit -m '${safeSeedTitle} (${seedId})'`,
+      commitCommand: `git commit -m '${safeSeedTitle} (${seedId})${footerSuffix}'`,
       pushCommand: `git push -u origin foreman/${seedId}`,
       integrateTargetCommand: `git fetch origin && git rebase origin/${baseBranch}`,
       branchVerifyCommand: `git rev-parse --abbrev-ref HEAD`,

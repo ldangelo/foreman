@@ -1,15 +1,16 @@
 /**
  * Feature flag utilities — single source of truth for env-driven feature toggles.
  *
- * TRD-024: FOREMAN_TASK_BACKEND feature flag removed. br is the only backend.
+ * TRD-024: FOREMAN_TASK_BACKEND feature flag removed. The native Postgres
+ * task store is the only supported backend (beads is import-only).
  */
 
-export type TaskBackend = 'sd' | 'br';
+export type TaskBackend = 'native';
 
 /**
  * Returns the active task backend.
- * TRD-024: sd backend removed; br is the only backend.
+ * TRD-024: Native Postgres task store is the only supported backend.
  */
 export function getTaskBackend(): TaskBackend {
-  return 'br'; // TRD-024: sd backend removed; br is the only backend
+  return 'native'; // TRD-024: native Postgres store is the only supported backend
 }

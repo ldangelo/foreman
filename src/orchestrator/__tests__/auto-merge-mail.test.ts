@@ -9,7 +9,7 @@
  *   - bead-closed     — bead status synced in br after merge outcome
  *
  * These tests use a mock store.sendMessage() to capture sent messages
- * without requiring a real SQLite database.
+ * without requiring a real Postgres database.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -93,6 +93,8 @@ vi.mock("../../lib/store.js", () => ({
     this.getProjectByPath = mockGetProjectByPath;
     this.getDb = mockGetDb;
     this.getRun = mockGetRun;
+    this.getTaskById = vi.fn().mockResolvedValue(null);
+    this.updateTaskStatus = vi.fn().mockResolvedValue(undefined);
     this.sendMessage = mockSendMessage;
     this.getRunsByStatuses = vi.fn().mockReturnValue([]);
   }),
@@ -124,6 +126,8 @@ function makeStore(): {
   getProjectByPath: ReturnType<typeof vi.fn>;
   getDb: ReturnType<typeof vi.fn>;
   getRun: ReturnType<typeof vi.fn>;
+  getTaskById: ReturnType<typeof vi.fn>;
+  updateTaskStatus: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
   getRunsByStatuses: ReturnType<typeof vi.fn>;
 } {
@@ -132,6 +136,8 @@ function makeStore(): {
     getProjectByPath: mockGetProjectByPath,
     getDb: mockGetDb,
     getRun: mockGetRun,
+    getTaskById: vi.fn().mockResolvedValue(null),
+    updateTaskStatus: vi.fn().mockResolvedValue(undefined),
     sendMessage: mockSendMessage,
     getRunsByStatuses: vi.fn().mockReturnValue([]),
   };
@@ -505,6 +511,21 @@ describe("autoMerge() mail — non-fatal", () => {
       prsCreated: [],
     });
     mockSendMessage.mockImplementation(() => { throw new Error("DB write failed"); });
+
+    await expect(autoMerge(makeOpts())).resolves.not.toThrow();
+  });
+
+  it("does not throw when store.sendMessage() returns a rejected promise", async () => {
+    mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
+    mockMergeQueueDequeue.mockReturnValueOnce(makeEntry(1)).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
+      conflicts: [],
+      testFailures: [],
+      unexpectedErrors: [],
+      prsCreated: [],
+    });
+    mockSendMessage.mockRejectedValueOnce(new Error("DB write failed"));
 
     await expect(autoMerge(makeOpts())).resolves.not.toThrow();
   });

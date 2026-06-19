@@ -164,7 +164,7 @@ export function createPiObservabilityExtensionWithEmitter(
       if (event.toolName !== "bash") return;
       const forbidden = getForbiddenVcsAction(event.input?.command, trace.phase);
       if (!forbidden) return;
-      const warning = `Blocked ${forbidden} during non-finalize phase`;
+      const warning = `Blocked ${forbidden} outside finalize phase`;
       trace.warnings.push(warning);
       emit?.({
         kind: "warning",

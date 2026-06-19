@@ -1,16 +1,18 @@
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { emitKeypressEvents } from "node:readline";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import chalk from "chalk";
-import { ForemanStore } from "../../lib/store.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { ForemanStore, type StatusReadStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
-import { renderAgentCard, formatSuccessRate } from "../watch-ui.js";
+import { renderAgentCard, formatSuccessRate, elapsed } from "../watch-ui.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
 import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { listRegisteredProjects } from "./project-task-support.js";
-import { pollDashboard, renderDashboard } from "./dashboard.js";
+import { fetchDaemonDashboardState, pollDashboard, renderDashboard } from "../dashboard-state.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
 
@@ -59,10 +61,10 @@ export async function getLastPiActivity(runId: string): Promise<string | null> {
 
 /**
  * Returns the active task backend. Exported for testing.
- * TRD-024: Always returns 'br'; sd backend removed.
+ * TRD-024: Native Postgres task store is the only supported backend.
  */
 export function getStatusBackend(): TaskBackend {
-  return 'br';
+  return 'native';
 }
 
 /**
@@ -76,37 +78,167 @@ export interface StatusCounts {
   blocked: number;
 }
 
+interface ProjectStats {
+  tasks: {
+    backlog: number;
+    ready: number;
+    inProgress: number;
+    approved: number;
+    merged: number;
+    closed: number;
+    total: number;
+  };
+  runs: {
+    active: number;
+    pending: number;
+  };
+}
+
+export interface DaemonRunSummary {
+  id: string;
+  seed_id?: string;
+  bead_id?: string;
+  status: string;
+  branch?: string | null;
+  started_at?: string | null;
+  queued_at?: string;
+  created_at: string;
+}
+
+interface DaemonStatusSnapshot {
+  projectId: string;
+  counts: StatusCounts;
+  failed: number;
+  stuck: number;
+  activeRuns: DaemonRunSummary[];
+}
+
+function resolveRegisteredProject(projects: Array<{ path: string; id: string }>, projectPath: string) {
+  const resolvedProjectPath = resolve(projectPath);
+  return projects.find((record) => resolve(record.path) === resolvedProjectPath) ?? null;
+}
+
+export async function fetchDaemonStatusSnapshot(projectPath: string): Promise<DaemonStatusSnapshot | null> {
+  try {
+    const projects = await listRegisteredProjects();
+    const project = resolveRegisteredProject(projects, projectPath);
+    if (!project) return null;
+
+    const client = createTrpcClient();
+    const [stats, needsHuman, activeRuns] = await Promise.all([
+      client.projects.stats({ projectId: project.id }) as Promise<ProjectStats>,
+      client.projects.listNeedsHuman({ projectId: project.id }) as Promise<Array<{ status: string }>>,
+      client.runs.listActive({ projectId: project.id }) as Promise<DaemonRunSummary[]>,
+    ]);
+
+    return {
+      projectId: project.id,
+      counts: {
+        total: stats.tasks.total,
+        ready: stats.tasks.ready,
+        inProgress: stats.tasks.inProgress,
+        completed: stats.tasks.merged + stats.tasks.closed,
+        blocked: stats.tasks.backlog,
+      },
+      failed: needsHuman.filter((task) => task.status === "failed" || task.status === "conflict").length,
+      stuck: needsHuman.filter((task) => task.status === "stuck").length,
+      activeRuns,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function renderDaemonRunCard(run: DaemonRunSummary): string {
+  const since = run.started_at ?? run.queued_at ?? run.created_at;
+  const time = since ? elapsed(since) : "—";
+  const taskId = run.seed_id ?? run.bead_id ?? run.id;
+  const branch = run.branch ?? (taskId !== run.id ? `foreman/${taskId}` : "—");
+  return `${chalk.dim("▶")} ${chalk.cyan.bold(taskId)} ${chalk.yellow(run.status.toUpperCase())} ${chalk.dim(time)}  ${chalk.dim(branch)}`;
+}
+
 /**
  * Fetch task status counts using the shared task backend selector.
  */
 export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
-  return fetchTaskCounts(projectPath);
-}
-
-function getRecentOutcomeCountsCompat(store: ForemanStore, projectId: string): { failed: number; stuck: number } {
-  const compatStore = store as ForemanStore & {
-    getRecentOutcomeCounts?: (projectId: string) => { failed: number; stuck: number };
-    getRunsByStatusSince?: (status: Run["status"], since: string, projectId?: string) => Run[];
-  };
-
-  if (typeof compatStore.getRecentOutcomeCounts === "function") {
-    const counts = compatStore.getRecentOutcomeCounts(projectId);
-    return { failed: counts.failed, stuck: counts.stuck };
+  try {
+    const projects = await listRegisteredProjects();
+    const project = resolveRegisteredProject(projects, projectPath);
+    if (project) {
+      const client = createTrpcClient();
+      const stats = await client.projects.stats({ projectId: project.id }) as ProjectStats;
+      return {
+        total: stats.tasks.total,
+        ready: stats.tasks.ready,
+        inProgress: stats.tasks.inProgress,
+        completed: stats.tasks.merged + stats.tasks.closed,
+        blocked: stats.tasks.backlog,
+      };
+    }
+  } catch {
+    // Fall back to legacy task-count path when daemon-backed project stats are unavailable.
   }
 
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  return {
-    failed: compatStore.getRunsByStatusSince?.("failed", since, projectId).length ?? 0,
-    stuck: compatStore.getRunsByStatusSince?.("stuck", since, projectId).length ?? 0,
-  };
+  return fetchTaskCounts(projectPath);
 }
 
 // ── Internal render helper ────────────────────────────────────────────────
 
+/**
+ * Render status counts using the provided store.
+ * Pure read operation - accepts narrow StatusReadStore interface.
+ */
+function renderStatusCounts(store: StatusReadStore, projectId: string): void {
+  const outcomeCounts = store.getRecentOutcomeCounts(projectId);
+  if (outcomeCounts.failed > 0) console.log(`  Failed:      ${chalk.red(outcomeCounts.failed)} ${chalk.dim("(last 24h)")}`);
+  if (outcomeCounts.stuck > 0) console.log(`  Stuck:       ${chalk.red(outcomeCounts.stuck)} ${chalk.dim("(last 24h)")}`);
+  const sr = store.getSuccessRate(projectId);
+  console.log(`  Success Rate (24h): ${formatSuccessRate(sr.rate)}${sr.rate === null ? chalk.dim(" (need 3+ runs)") : ""}`);
+}
+
+/**
+ * Render active agents using the provided store.
+ * Pure read operation - accepts narrow StatusReadStore interface.
+ */
+async function renderActiveAgents(store: StatusReadStore, projectId: string): Promise<void> {
+  const activeRuns = store.getActiveRuns(projectId);
+  if (activeRuns.length === 0) {
+    console.log(chalk.dim("  (no agents running)"));
+    return;
+  }
+
+  for (let i = 0; i < activeRuns.length; i++) {
+    const run = activeRuns[i];
+    const progress = store.getRunProgress(run.id);
+    const allRuns = store.getRunsForSeed(run.seed_id, projectId);
+    const attemptNumber = allRuns.length > 1 ? allRuns.length : undefined;
+    const previousRun = allRuns.length > 1 ? allRuns[1] : null;
+    const previousStatus = previousRun?.status;
+    console.log(renderAgentCard(run, progress, true, undefined, attemptNumber, previousStatus));
+    if (run.status === "running") {
+      const lastActivity = await getLastPiActivity(run.id);
+      if (lastActivity) {
+        console.log(`  ${chalk.dim("Last tool  ")} ${chalk.dim(lastActivity)}`);
+      }
+    }
+    if (i < activeRuns.length - 1) console.log();
+  }
+
+  const metrics = store.getMetrics(projectId);
+  if (metrics.totalCost > 0) {
+    console.log();
+    console.log(chalk.bold("Costs"));
+    console.log(`  Total: ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
+    console.log(`  Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
+  }
+}
+
 async function renderStatus(projectPath: string): Promise<void> {
   let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
+  let daemonSnapshot: DaemonStatusSnapshot | null = null;
   try {
-    counts = await fetchStatusCounts(projectPath);
+    daemonSnapshot = await fetchDaemonStatusSnapshot(projectPath);
+    counts = daemonSnapshot?.counts ?? await fetchTaskCounts(projectPath);
   } catch (err) {
     console.error(chalk.red(err instanceof Error ? err.message : String(err)));
     process.exit(1);
@@ -121,90 +253,42 @@ async function renderStatus(projectPath: string): Promise<void> {
   console.log(`  Completed:   ${chalk.cyan(completed)}`);
   console.log(`  Blocked:     ${chalk.red(blocked)}`);
 
-  const store = ForemanStore.forProject(projectPath);
-  const project = store.getProjectByPath(projectPath);
-
-  if (project) {
-    const outcomeCounts = getRecentOutcomeCountsCompat(store, project.id);
-    if (outcomeCounts.failed > 0) console.log(`  Failed:      ${chalk.red(outcomeCounts.failed)} ${chalk.dim("(last 24h)")}`);
-    if (outcomeCounts.stuck > 0) console.log(`  Stuck:       ${chalk.red(outcomeCounts.stuck)} ${chalk.dim("(last 24h)")}`);
-
-    const sr = store.getSuccessRate(project.id);
-    console.log(`  Success Rate (24h): ${formatSuccessRate(sr.rate)}${sr.rate === null ? chalk.dim(" (need 3+ runs)") : ""}`);
+  if (daemonSnapshot) {
+    if (daemonSnapshot.failed > 0) console.log(`  Failed:      ${chalk.red(daemonSnapshot.failed)} ${chalk.dim("(last 24h)")}`);
+    if (daemonSnapshot.stuck > 0) console.log(`  Stuck:       ${chalk.red(daemonSnapshot.stuck)} ${chalk.dim("(last 24h)")}`);
+    console.log(`  Success Rate (24h): ${chalk.dim("--")} ${chalk.dim("(daemon metrics pending)")}`);
+  } else {
+    const store = ForemanStore.forProject(projectPath);
+    const project = store.getProjectByPath(projectPath);
+    if (project) {
+      renderStatusCounts(store, project.id);
+    }
+    store.close();
   }
 
   console.log();
   console.log(chalk.bold("Active Agents"));
 
-  if (project) {
-    const activeRuns = store.getActiveRuns(project.id);
+  if (daemonSnapshot) {
+    const activeRuns = daemonSnapshot.activeRuns;
     if (activeRuns.length === 0) {
       console.log(chalk.dim("  (no agents running)"));
     } else {
       for (let i = 0; i < activeRuns.length; i++) {
-        const run = activeRuns[i];
-        const progress = store.getRunProgress(run.id);
-
-        // Fetch run history to show attempt count and previous outcome
-        const allRuns = store.getRunsForSeed(run.seed_id, project.id);
-        const attemptNumber = allRuns.length > 1 ? allRuns.length : undefined;
-        const previousRun = allRuns.length > 1 ? allRuns[1] : null;
-        const previousStatus = previousRun?.status;
-
-        console.log(renderAgentCard(run, progress, true, undefined, attemptNumber, previousStatus));
-        // For running agents, show last Pi activity from the .out log file
-        if (run.status === "running") {
-          const lastActivity = await getLastPiActivity(run.id);
-          if (lastActivity) {
-            console.log(`  ${chalk.dim("Last tool  ")} ${chalk.dim(lastActivity)}`);
-          }
-        }
-        // Separate cards with a blank line, but don't add a trailing blank
-        // after the last card (avoids a dangling empty line in single-agent output).
+        console.log(renderDaemonRunCard(activeRuns[i]!));
         if (i < activeRuns.length - 1) console.log();
       }
     }
-
-    // Cost summary
-    const metrics = store.getMetrics(project.id);
-    if (metrics.totalCost > 0) {
-      console.log();
-      console.log(chalk.bold("Costs"));
-      console.log(`  Total: ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
-      console.log(`  Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
-
-      // Per-phase cost breakdown
-      if (metrics.costByPhase && Object.keys(metrics.costByPhase).length > 0) {
-        console.log(`  ${chalk.dim("By phase:")}`);
-        const phaseOrder = ["explorer", "developer", "qa", "reviewer"];
-        const phases = Object.entries(metrics.costByPhase)
-          .sort(([a], [b]) => {
-            const ai = phaseOrder.indexOf(a);
-            const bi = phaseOrder.indexOf(b);
-            if (ai === -1 && bi === -1) return a.localeCompare(b);
-            if (ai === -1) return 1;
-            if (bi === -1) return -1;
-            return ai - bi;
-          });
-        for (const [phase, cost] of phases) {
-          console.log(`    ${phase.padEnd(12)} ${chalk.yellow(`$${cost.toFixed(4)}`)}`);
-        }
-      }
-
-      // Per-agent/model cost breakdown
-      if (metrics.agentCostBreakdown && Object.keys(metrics.agentCostBreakdown).length > 0) {
-        console.log(`  ${chalk.dim("By model:")}`);
-        const sorted = Object.entries(metrics.agentCostBreakdown).sort(([, a], [, b]) => b - a);
-        for (const [model, cost] of sorted) {
-          console.log(`    ${model.padEnd(32)} ${chalk.yellow(`$${cost.toFixed(4)}`)}`);
-        }
-      }
-    }
   } else {
-    console.log(chalk.dim("  (project not registered — run 'foreman init')"));
+    const store = ForemanStore.forProject(projectPath);
+    const project = store.getProjectByPath(projectPath);
+    if (project) {
+      await renderActiveAgents(store, project.id);
+    } else {
+      console.log(chalk.dim("  (project not registered — run 'foreman init')"));
+    }
+    store.close();
   }
-
-  store.close();
 }
 
 // ── Live status header (used by --live mode) ─────────────────────────────
@@ -227,10 +311,73 @@ export function renderLiveStatusHeader(counts: StatusCounts): string {
   return parts.join("  ");
 }
 
+function createStatusDetachController(message: string): {
+  isDetached: () => boolean;
+  wait: () => Promise<void>;
+  cleanup: () => void;
+} {
+  let detached = false;
+  const listeners: Array<() => void> = [];
+  const waiters = new Set<() => void>();
+  const wasRaw = process.stdin.isTTY && "isRaw" in process.stdin ? Boolean(process.stdin.isRaw) : false;
+
+  const detach = () => {
+    if (detached) return;
+    detached = true;
+    process.stdout.write("\x1b[?25h\n");
+    console.log(chalk.dim(message));
+    for (const resolveWaiter of waiters) resolveWaiter();
+    waiters.clear();
+  };
+
+  const onSigint = () => detach();
+  process.on("SIGINT", onSigint);
+  listeners.push(() => process.removeListener("SIGINT", onSigint));
+
+  if (process.stdin.isTTY) {
+    emitKeypressEvents(process.stdin);
+    if (typeof process.stdin.setRawMode === "function") {
+      try { process.stdin.setRawMode(true); } catch { /* ignore */ }
+    }
+    process.stdin.resume();
+
+    const onKeypress = (_str: string, key: { name?: string; ctrl?: boolean; sequence?: string }) => {
+      if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q" || key.sequence === "\u0003") {
+        detach();
+      }
+    };
+    process.stdin.on("keypress", onKeypress);
+    listeners.push(() => process.stdin.off("keypress", onKeypress));
+  }
+
+  return {
+    isDetached: () => detached,
+    wait: () => detached
+      ? Promise.resolve()
+      : new Promise<void>((resolveWaiter) => { waiters.add(resolveWaiter); }),
+    cleanup: () => {
+      for (const remove of listeners.splice(0)) remove();
+      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+        try { process.stdin.setRawMode(wasRaw); } catch { /* ignore */ }
+      }
+      if (!wasRaw && process.stdin.isTTY) {
+        try { process.stdin.pause(); } catch { /* ignore */ }
+      }
+    },
+  };
+}
+
+function sleepOrDetach(ms: number, detach: { wait: () => Promise<void> }): Promise<void> {
+  return Promise.race([
+    new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms)),
+    detach.wait(),
+  ]);
+}
+
 export const statusCommand = new Command("status")
-  .description("Show project status from beads_rust (br) + sqlite")
+  .description("Show project status from the native Postgres task store")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
-  .option("--live", "Enable full dashboard TUI with event stream (implies --watch; use instead of 'foreman dashboard')")
+  .option("--live", "Enable full dashboard TUI with event stream (implies --watch; see also 'foreman watch')")
   .option("--json", "Output status as JSON")
   .option("--all", "Show status across all registered projects")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -253,27 +400,21 @@ export const statusCommand = new Command("status")
       let totalFailed = 0;
       let totalStuck = 0;
       let totalActiveAgents = 0;
-      let totalCost = 0;
 
       for (const proj of projects) {
         try {
-          const counts = await fetchStatusCounts(proj.path);
-          aggregated.total += counts.total;
-          aggregated.ready += counts.ready;
-          aggregated.inProgress += counts.inProgress;
-          aggregated.completed += counts.completed;
-          aggregated.blocked += counts.blocked;
-
-          const store = ForemanStore.forProject(proj.path);
-          const project = store.getProjectByPath(proj.path);
-          if (project) {
-            const outcomeCounts = getRecentOutcomeCountsCompat(store, project.id);
-            totalFailed += outcomeCounts.failed;
-            totalStuck += outcomeCounts.stuck;
-            totalActiveAgents += store.getActiveRuns(project.id).length;
-            totalCost += store.getMetrics(project.id).totalCost;
-          }
-          store.close();
+          const client = createTrpcClient();
+          const stats = await client.projects.stats({ projectId: proj.id }) as ProjectStats;
+          const needsHuman = await client.projects.listNeedsHuman({ projectId: proj.id }) as Array<{ status: string }>;
+          const activeRuns = await client.runs.listActive({ projectId: proj.id }) as DaemonRunSummary[];
+          aggregated.total += stats.tasks.total;
+          aggregated.ready += stats.tasks.ready;
+          aggregated.inProgress += stats.tasks.inProgress;
+          aggregated.completed += stats.tasks.merged + stats.tasks.closed;
+          aggregated.blocked += stats.tasks.backlog;
+          totalFailed += needsHuman.filter((task) => task.status === "failed" || task.status === "conflict").length;
+          totalStuck += needsHuman.filter((task) => task.status === "stuck").length;
+          totalActiveAgents += (await activeRuns).length;
         } catch {
           // Ignore stale/inaccessible projects in aggregated status.
         }
@@ -290,7 +431,6 @@ export const statusCommand = new Command("status")
       if (totalFailed > 0) console.log(`  Failed (24h): ${chalk.red(totalFailed)}`);
       if (totalStuck > 0) console.log(`  Stuck (24h):  ${chalk.red(totalStuck)}`);
       console.log(`  Active Agents: ${chalk.yellow(totalActiveAgents)}`);
-      if (totalCost > 0) console.log(`  Total Cost:   ${chalk.yellow(`$${totalCost.toFixed(2)}`)}`);
       console.log();
       console.log(chalk.dim(`Projects: ${projects.map((p) => p.name).join(", ")}`));
       return;
@@ -300,31 +440,35 @@ export const statusCommand = new Command("status")
     if (opts.json) {
       // JSON output path — gather data and serialize
       try {
+        const daemon = await fetchDaemonStatusSnapshot(projectPath);
+
         let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
-        try {
-          counts = await fetchStatusCounts(projectPath);
-        } catch { /* return zeros on error */ }
-
-        const store = ForemanStore.forProject(projectPath);
-        const project = store.getProjectByPath(projectPath);
-
         let failed = 0;
         let stuck = 0;
-        let activeRuns: Array<{ run: Run; progress: RunProgress | null }> = [];
-        let metrics: Metrics = { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] };
+        let activeRuns: unknown[] = [];
         let successRateData: { rate: number | null; merged: number; failed: number } = { rate: null, merged: 0, failed: 0 };
+        let metrics: Metrics = { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] };
 
-        if (project) {
-          const outcomeCounts = getRecentOutcomeCountsCompat(store, project.id);
-          failed = outcomeCounts.failed;
-          stuck = outcomeCounts.stuck;
-          const runs = store.getActiveRuns(project.id);
-          activeRuns = runs.map((run) => ({ run, progress: store.getRunProgress(run.id) }));
-          metrics = store.getMetrics(project.id);
-          successRateData = store.getSuccessRate(project.id);
+        if (daemon) {
+          counts = daemon.counts;
+          failed = daemon.failed;
+          stuck = daemon.stuck;
+          activeRuns = daemon.activeRuns;
+        } else {
+          counts = await fetchTaskCounts(projectPath);
+          const store = ForemanStore.forProject(projectPath);
+          const project = store.getProjectByPath(projectPath);
+          if (project) {
+            const outcomeCounts = store.getRecentOutcomeCounts(project.id);
+            failed = outcomeCounts.failed;
+            stuck = outcomeCounts.stuck;
+            const runs = store.getActiveRuns(project.id);
+            activeRuns = runs.map((run) => ({ ...run, progress: store.getRunProgress(run.id) }));
+            successRateData = store.getSuccessRate(project.id);
+            metrics = store.getMetrics(project.id);
+          }
+          store.close();
         }
-
-        store.close();
 
         const output = {
           tasks: {
@@ -342,7 +486,7 @@ export const statusCommand = new Command("status")
             failed: successRateData.failed,
           },
           agents: {
-            active: activeRuns.map(({ run, progress }) => ({ ...run, progress })),
+            active: activeRuns,
           },
           costs: {
             totalCost: metrics.totalCost,
@@ -368,29 +512,25 @@ export const statusCommand = new Command("status")
       const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 3;
       const seconds = Number.isFinite(interval) && interval > 0 ? interval : 3;
 
-      let detached = false;
-      const onSigint = () => {
-        if (detached) return;
-        detached = true;
-        process.stdout.write("\x1b[?25h\n");
-        console.log(chalk.dim("  Detached — agents continue in background."));
-        console.log(chalk.dim("  Check status: foreman status"));
-        process.exit(0);
-      };
-      process.on("SIGINT", onSigint);
+      const detach = createStatusDetachController("  Detached — agents continue in background. Check status: foreman status");
       process.stdout.write("\x1b[?25l"); // hide cursor
 
       try {
-        while (!detached) {
-          const store = ForemanStore.forProject(projectPath);
-
+        while (!detach.isDetached()) {
           let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
           try {
             counts = await fetchStatusCounts(projectPath);
           } catch { /* br not available — show zero counts */ }
 
-          const dashState = pollDashboard(store, undefined, 8);
-          store.close();
+          const daemonDashboard = await fetchDaemonDashboardState(projectPath);
+          const dashState = daemonDashboard ?? (() => {
+            const store = ForemanStore.forDashboard(projectPath);
+            try {
+              return pollDashboard(store, undefined, 8);
+            } finally {
+              store.close();
+            }
+          })();
 
           const taskLine = renderLiveStatusHeader(counts);
           const dashDisplay = renderDashboard(dashState);
@@ -403,11 +543,11 @@ export const statusCommand = new Command("status")
           const combined = dashLines.join("\n");
 
           process.stdout.write("\x1B[2J\x1B[H" + combined + "\n");
-          await new Promise<void>((r) => setTimeout(r, seconds * 1000));
+          await sleepOrDetach(seconds * 1000, detach);
         }
       } finally {
         process.stdout.write("\x1b[?25h");
-        process.removeListener("SIGINT", onSigint);
+        detach.cleanup();
       }
       return;
     }
@@ -416,20 +556,21 @@ export const statusCommand = new Command("status")
       const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 10;
       const seconds = Number.isFinite(interval) && interval > 0 ? interval : 10;
 
-      // Keep process alive and handle Ctrl+C gracefully
-      process.on("SIGINT", () => {
-        process.stdout.write("\x1b[?25h"); // restore cursor
-        process.exit(0);
-      });
+      const detach = createStatusDetachController("  Stopped watching. Agents continue in background.");
 
       process.stdout.write("\x1b[?25l"); // hide cursor
-      while (true) {
+      try {
+        while (!detach.isDetached()) {
         // Clear screen and move cursor to top
         process.stdout.write("\x1b[2J\x1b[H");
         console.log(chalk.bold("Project Status") + chalk.dim(`  (watching every ${seconds}s — Ctrl+C to stop)\n`));
         await renderStatus(projectPath);
         console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
-        await new Promise((r) => setTimeout(r, seconds * 1000));
+          await sleepOrDetach(seconds * 1000, detach);
+        }
+      } finally {
+        process.stdout.write("\x1b[?25h");
+        detach.cleanup();
       }
     } else {
       console.log(chalk.bold("Project Status\n"));

@@ -158,10 +158,11 @@ describe("CI Workflow: required steps", () => {
     expect(hasTsc).toBe(true);
   });
 
-  it("includes a PR-required test execution step (npm run test:ci)", () => {
+  it("includes a PR-required full CI test execution step", () => {
     const steps = getAllSteps();
-    const hasDeterministicTests = steps.some((s) => s.run?.includes("npm run test:ci"));
-    expect(hasDeterministicTests).toBe(true);
+    const hasCiTests = steps.some((s) => s.run?.includes("npm run test:ci"));
+    expect(hasCiTests).toBe(true);
+    expect(steps.some((s) => s.run?.includes("npm run test:unit"))).toBe(false);
   });
 
   it("type check step comes before test execution step", () => {

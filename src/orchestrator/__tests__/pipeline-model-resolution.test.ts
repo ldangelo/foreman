@@ -127,7 +127,7 @@ describe("pipeline-executor.ts — resolvePhaseModel integration", () => {
     );
     // phaseModel is set (can be 'let' to allow Haiku fallback) and phaseConfig uses it
     expect(src).toMatch(/[\n\r]\s*(const|let)\s+phaseModel\s*=\s*resolvePhaseModel\(/);
-    expect(src).toContain("const phaseConfig = { ...config, model: phaseModel }");
+    expect(src).toContain("const phaseConfig = { ...config, model: phaseModel, maxTurns: phase.maxTurns }");
     // runPhase is called with phaseConfig
     expect(src).toMatch(/ctx\.runPhase\(\s*phaseName,\s*prompt,\s*phaseConfig,/);
   });
@@ -145,8 +145,9 @@ describe("agent-worker.ts — uses config.model instead of roleConfig.model", ()
     );
     // The resolved model should come from config.model
     expect(src).toContain("const resolvedModel: string = config.model || roleConfig.model");
-    // Pi SDK call uses resolvedModel
+    // Pi SDK call uses resolvedModel and workflow maxTurns
     expect(src).toContain("model: resolvedModel");
+    expect(src).toContain("maxTurns: config.maxTurns");
     // agentByPhase records the resolved model
     expect(src).toContain("progress.agentByPhase[role] = resolvedModel");
   });

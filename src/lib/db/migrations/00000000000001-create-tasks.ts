@@ -4,7 +4,7 @@ import { MigrationBuilder } from "node-pg-migrate";
 /**
  * Migration 00000000000001: create tasks table with project_id FK.
  *
- * Schema mirrors the existing SQLite `tasks` table from NativeTaskStore (store.ts)
+ * Schema mirrors the existing Postgres `tasks` table from NativeTaskStore (store.ts)
  * but scoped per-project for the multi-project orchestrator.
  *
  * Key design decisions:
@@ -12,7 +12,7 @@ import { MigrationBuilder } from "node-pg-migrate";
  * - id is TEXT (bead UUID) to match native task store compatibility.
  * - external_id is unique per project (not globally), allowing the same Jira/Linear ID
  *   in different projects without conflict.
- * - status CHECK mirrors the SQLite constraint for consistency.
+ * - status CHECK mirrors the Postgres constraint for consistency.
  *
  * @module db/migrations/00000000000001-create-tasks
  */
@@ -62,7 +62,7 @@ export const up = (pgm: MigrationBuilder) => {
       notNull: true,
       default: "'backlog'",
       check: `status IN (
-        'backlog', 'ready', 'in-progress',
+        'backlog', 'ready', 'in-progress', 'review',
         'explorer', 'developer', 'qa', 'reviewer', 'finalize',
         'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked'
       )`,
@@ -133,7 +133,7 @@ export const up = (pgm: MigrationBuilder) => {
     COMMENT ON COLUMN tasks.priority IS
       'P0=critical, P1=high, P2=medium (default), P3=low, P4=backlog.';
     COMMENT ON COLUMN tasks.status IS
-      'backlog=unstarted, ready=dispatchable, in-progress=executing, explorer/developer/qa/reviewer/finalize=running phases, merged/closed=terminal, conflict/failed/stuck/blocked=needs-attention.';
+      'backlog=unstarted, ready=dispatchable, in-progress=executing, review=awaiting PR/merge review, explorer/developer/qa/reviewer/finalize=running phases, merged/closed=terminal, conflict/failed/stuck/blocked=needs-attention.';
     COMMENT ON COLUMN tasks.run_id IS
       'NULL when not claimed by any run. Set to NULL when the owning run is deleted.';
     COMMENT ON COLUMN tasks.external_id IS

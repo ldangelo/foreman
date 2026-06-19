@@ -15,12 +15,14 @@ export interface ExecResult {
 }
 
 function buildEnv(extraEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    TSX_DISABLE_IPC: "1",
-    NO_COLOR: "1",
-    ...extraEnv,
-  };
+  return Object.fromEntries(
+    Object.entries({
+      ...process.env,
+      TSX_DISABLE_IPC: "1",
+      NO_COLOR: "1",
+      ...extraEnv,
+    }).filter(([, value]) => value !== undefined),
+  ) as NodeJS.ProcessEnv;
 }
 
 export async function runTsxModule(

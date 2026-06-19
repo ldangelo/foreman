@@ -16,7 +16,7 @@
 
 The Merge Queue epic transforms Foreman's merge pipeline from a fragile, inline process into a robust, persistent, AI-powered merge system. The current merge implementation in `src/orchestrator/refinery.ts` handles conflict resolution as a binary choice: auto-resolve report files OR create a PR for manual review. This leaves a wide gap where AI-assisted resolution could automatically handle the majority of code conflicts that currently require human intervention.
 
-This epic introduces a persistent, overlap-aware merge queue backed by SQLite, a 4-tier cascading AI conflict resolution system with per-file tier progression, safe branch lifecycle management, dedicated worktree commands, and conflict pattern learning -- closing the most significant feature gap identified in the Overstory comparison analysis.
+This epic introduces a persistent, overlap-aware merge queue backed by Postgres, a 4-tier cascading AI conflict resolution system with per-file tier progression, safe branch lifecycle management, dedicated worktree commands, and conflict pattern learning -- closing the most significant feature gap identified in the Overstory comparison analysis.
 
 ### 1.2 Problem Statement
 
@@ -61,7 +61,7 @@ Refinery.mergeCompleted()
 **Key files:**
 - `src/orchestrator/refinery.ts` -- Merge logic (706 lines)
 - `src/lib/git.ts` -- Git operations including `mergeWorktree`, `deleteBranch`, `removeWorktree`
-- `src/lib/store.ts` -- SQLite state store (WAL mode, better-sqlite3)
+- `src/lib/store.ts` -- Postgres state store (WAL mode, pg)
 - `src/cli/commands/merge.ts` -- CLI command
 - `src/orchestrator/types.ts` -- MergeReport, ConflictRun, etc.
 
@@ -256,7 +256,7 @@ Each conflicted file independently progresses through the tier cascade. A single
 - AC-1.6: Tier 3/4 performs syntax validation using the configurable syntax checker map; files with unmapped extensions are accepted without syntax check
 - AC-1.7: Tier 4 successfully reimplements branch changes onto canonical when conflict markers are too complex for Tier 3
 - AC-1.8: Tier 3 uses Sonnet model; Tier 4 uses Opus model
-- AC-1.9: Each tier's outcome (success/failure, tier used, file path) is recorded per-file in the SQLite events table
+- AC-1.9: Each tier's outcome (success/failure, tier used, file path) is recorded per-file in the Postgres events table
 - AC-1.10: MergeReport type extended with per-file `resolved_tiers` map (filepath -> tier) indicating which tier resolved each file
 - AC-1.11: All Claude SDK calls use non-interactive `query()` (no streaming, no prompts)
 - AC-1.12: Files exceeding the size gate (default: 1000 lines) skip AI resolution and cascade to PR creation
@@ -298,7 +298,7 @@ Each conflicted file independently progresses through the tier cascade. A single
 
 #### FR-3: Persistent Overlap-Aware Merge Queue (bd-uba.3)
 
-**Description:** Replace inline merge iteration with a persistent SQLite-backed merge queue that survives process restarts and supports concurrent agent completion. Uses a hybrid enqueue strategy: agents auto-enqueue on completion (primary path) with `foreman merge` performing a reconciliation scan as a safety net. Queue processing uses overlap-aware ordering with graph-based conflict clustering to minimize merge conflicts.
+**Description:** Replace inline merge iteration with a persistent Postgres-backed merge queue that survives process restarts and supports concurrent agent completion. Uses a hybrid enqueue strategy: agents auto-enqueue on completion (primary path) with `foreman merge` performing a reconciliation scan as a safety net. Queue processing uses overlap-aware ordering with graph-based conflict clustering to minimize merge conflicts.
 
 **Schema:**
 
@@ -349,7 +349,7 @@ CREATE INDEX IF NOT EXISTS idx_merge_queue_status
 - This prevents stale entries from completed runs that predate the merge queue feature or whose branches were cleaned up externally
 
 **Concurrency:**
-- SQLite WAL mode (already configured in store.ts)
+- Postgres WAL mode (already configured in store.ts)
 - 5-second busy timeout for concurrent access
 - Dequeue uses atomic SQL claim (see Overlap-Aware Ordering for claim strategy)
 
@@ -536,7 +536,7 @@ CREATE INDEX IF NOT EXISTS idx_conflict_patterns_merge
 - AC-7.2: Tiers with >= 2 failures and 0 successes for matching file extensions are skipped
 - AC-7.3: Past successful resolutions are provided as context to AI-resolve tiers
 - AC-7.4: Pattern recording never blocks or delays the merge process
-- AC-7.5: Pattern data persists in SQLite alongside existing store
+- AC-7.5: Pattern data persists in Postgres alongside existing store
 - AC-7.6: Post-merge test failures record all AI-resolved files with `failure_reason='post_merge_test_failure'`
 - AC-7.7: Files with >= 2 post-merge test failure records prefer Fallback (PR) over AI resolution
 
@@ -612,7 +612,7 @@ For each queued/completed branch, show:
 | Requirement | Target | Rationale |
 |-------------|--------|-----------|
 | Merge queue enqueue latency | < 50ms | Must not slow down agent finalize phase |
-| Merge queue dequeue (atomic) | < 100ms | Including SQLite transaction |
+| Merge queue dequeue (atomic) | < 100ms | Including Postgres transaction |
 | Tier 1-2 resolution | < 5s per branch | Git operations only, no AI calls |
 | Tier 3 AI resolution (Sonnet) | < 60s per file | Claude SDK query with timeout |
 | Tier 4 reimagine (Opus) | < 120s per file | More complex Claude SDK query with higher-capability model |
@@ -632,8 +632,8 @@ For each queued/completed branch, show:
 - **TypeScript strict mode:** No `any` escape hatches, all new code must compile under `strict: true`
 - **ESM only:** All imports use `.js` extensions
 - **Non-interactive:** All git and shell commands must be non-interactive (no `-i` flags, no prompts)
-- **Transition strategy:** New merge queue behavior is the default from day one. `foreman merge --legacy` provides an escape hatch to the old inline behavior. The `--legacy` flag produces a hard error after 50 successful merges through the new queue (tracked in SQLite), with message directing users to remove the flag. A deprecation warning is shown on every `--legacy` invocation before the threshold is reached. This is intentionally a hard stop -- CI scripts using `--legacy` will break, forcing migration to the new queue path.
-- **SQLite compatibility:** Must work with existing better-sqlite3 setup, WAL mode, and migration pattern
+- **Transition strategy:** New merge queue behavior is the default from day one. `foreman merge --legacy` provides an escape hatch to the old inline behavior. The `--legacy` flag produces a hard error after 50 successful merges through the new queue (tracked in Postgres), with message directing users to remove the flag. A deprecation warning is shown on every `--legacy` invocation before the threshold is reached. This is intentionally a hard stop -- CI scripts using `--legacy` will break, forcing migration to the new queue path.
+- **Postgres compatibility:** Must work with existing pg setup, WAL mode, and migration pattern
 - **git-town integration:** Merge queue internals use direct git commands for low-level operations (merge, rebase, conflict resolution). Branch creation/cleanup and the final "ship" step (PR creation fallback) use git-town commands (`git town propose`, `git town hack`, etc.) to maintain project conventions.
 
 ### 5.4 Observability
@@ -661,7 +661,7 @@ These are architectural guidance notes for the implementing team (tech-lead-orch
 ### 6.1 Suggested Module Structure
 
 ```
-src/orchestrator/merge-queue.ts       -- MergeQueue class (SQLite queue + overlap-aware ordering + reconciliation)
+src/orchestrator/merge-queue.ts       -- MergeQueue class (Postgres queue + overlap-aware ordering + reconciliation)
 src/orchestrator/conflict-resolver.ts -- Per-file 4-tier resolution logic + validation
 src/orchestrator/conflict-cluster.ts  -- Graph-based overlap clustering algorithm
 src/orchestrator/conflict-patterns.ts -- Pattern learning (FR-7) including test failure tracking
@@ -694,7 +694,7 @@ src/cli/commands/worktree.ts          -- Worktree CLI commands
 
 - The new merge queue path is the default behavior for `foreman merge`
 - `foreman merge --legacy` activates the old inline merge path (current `Refinery.mergeCompleted()` behavior)
-- A counter in SQLite tracks successful merges through the new queue:
+- A counter in Postgres tracks successful merges through the new queue:
   ```sql
   -- Tracked via: SELECT COUNT(*) FROM merge_queue WHERE status = 'merged'
   ```
@@ -723,7 +723,7 @@ src/cli/commands/worktree.ts          -- Worktree CLI commands
 | FR-7 blocked by FR-1 | Internal | Conflict patterns require resolution tiers to exist first |
 | FR-10 blocked by FR-3 | Internal | Health checks require merge queue table to exist |
 | Claude SDK (`@anthropic-ai/claude-code`) | External | Required for Tier 3 (Sonnet) and Tier 4 (Opus) AI resolution |
-| better-sqlite3 | External | Already in use; merge queue extends existing store |
+| pg | External | Already in use; merge queue extends existing store |
 | git >= 2.38 | External | `git merge-tree` (3-way) required for dry-run mode |
 | git-town | External | Required for branch lifecycle and PR creation fallback |
 
@@ -733,7 +733,7 @@ src/cli/commands/worktree.ts          -- Worktree CLI commands
 |------|-----------|--------|------------|
 | AI resolution produces invalid code | Medium | High | Multi-layer validation: prose detection, per-file syntax check, conflict marker detection; full test suite after each merge commit with auto-revert on failure |
 | AI resolution cost escalation | Low | Medium | Per-session budget cap (default $5); per-file size gate (default 1000 lines); Sonnet for Tier 3, Opus only for Tier 4; pattern learning skips failing tiers |
-| Concurrent merge corruption | Low | High | SQLite WAL + atomic dequeue; sequential git commit with mutex; parallel only for AI resolution work |
+| Concurrent merge corruption | Low | High | Postgres WAL + atomic dequeue; sequential git commit with mutex; parallel only for AI resolution work |
 | Migration breaks existing store | Low | High | Idempotent migrations matching existing pattern; no destructive changes to existing tables |
 | git merge-tree unavailable | Low | Low | Fallback to temporary merge+abort for dry-run; version check on startup |
 | Post-merge test failure blocks pipeline | Medium | Medium | `git reset --hard HEAD~1` + PR escalation ensures target branch stays clean; queue processing continues with next entry |
@@ -764,7 +764,7 @@ Recommended implementation sequence based on dependencies and value delivery:
 |--------|---------|--------|-------------|
 | Auto-resolved code conflicts | 0% | >= 80% | (conflicts resolved by Tier 2-4) / (total code conflicts), displayed as rolling 30-day rate in merge output |
 | Merge failures from state files | Occasional | 0 | Count of merge failures with `.seeds/` or `.foreman/` in error |
-| Merge state loss on restart | Always | Never | Queue entries persist in SQLite |
+| Merge state loss on restart | Always | Never | Queue entries persist in Postgres |
 | Accidental branch deletion | Possible | 0 | Count of `branch -D` on unmerged branches without --force |
 | Time to resolve merge (median) | 5-15 min (manual) | < 2 min (automated) | Time from merge start to completion |
 | AI resolution cost per conflict | N/A | < $0.10 (Tier 3), < $1.00 (Tier 4) | Claude SDK token cost per file, tracked per session |
@@ -910,7 +910,7 @@ See Section 11 for the complete error code reference.
 
 **Decision: Cumulative cost tracking with `foreman merge --stats`.**
 
-AI resolution costs are tracked per-call in a `merge_costs` SQLite table with actual costs from Claude SDK response metadata. `foreman merge --stats` displays daily, weekly, monthly, and all-time cost summaries with breakdowns by tier and model. JSON output available for CI integration.
+AI resolution costs are tracked per-call in a `merge_costs` Postgres table with actual costs from Claude SDK response metadata. `foreman merge --stats` displays daily, weekly, monthly, and all-time cost summaries with breakdowns by tier and model. JSON output available for CI integration.
 
 See Section 12 for schema and output format.
 
@@ -1032,7 +1032,7 @@ Error codes are structured as `MQ-{NNN}` where the numeric range indicates the c
 
 ### 12.1 Cost Tracking Schema
 
-AI resolution costs are tracked per-session and cumulatively in SQLite:
+AI resolution costs are tracked per-session and cumulatively in Postgres:
 
 ```sql
 CREATE TABLE IF NOT EXISTS merge_costs (
@@ -1103,5 +1103,5 @@ By model:
 | 1.0 | 2026-03-12 | Product Management | Initial PRD draft with 10 functional requirements, 4 open questions |
 | 2.0 | 2026-03-12 | Product Management | Refined PRD based on stakeholder interview. Key changes: (1) Resolved all 4 open questions -- hybrid auto-enqueue with reconciliation, Sonnet/Opus model tiering, parallel AI with sequential commits, direct git + git-town hybrid. (2) Added per-file syntax validation and full test suite per merge commit. (3) Added auto-revert + PR escalation on post-merge test failure. (4) Updated Tier 2 safety check to hybrid threshold (lines OR percentage, configurable). (5) Added cost controls: per-session budget cap ($5 default) and per-file size gate (1000 lines default). (6) Changed transition strategy: new behavior default from day one with --legacy escape hatch, removed after 50 successful queue merges. (7) Added running success rate display in merge output. (8) Added parallel merge architecture (--parallel N flag). (9) Added Configuration Reference section (Section 10). (10) Updated acceptance criteria throughout to reflect new requirements. |
 | 3.0 | 2026-03-12 | Product Management | Second refinement pass with 10 additional stakeholder decisions. Key changes: (1) Tier 2 changed from global `git merge -X theirs` to per-file `git checkout --theirs` with per-file safety check -- files failing safety check cascade independently to Tier 3. (2) Per-file tier cascade -- each conflicted file independently progresses through tiers; a single merge commit can contain files resolved by different tiers. (3) Configurable syntax checker map in `.foreman/config.json` with defaults for .ts/.js and accept-without-check for unmapped extensions. (4) Post-merge test failure records all AI-resolved files to conflict_patterns with failure_reason for pattern learning. (5) Reconciliation scan validates branch existence before enqueuing -- skips deleted branches with log message. (6) Confirmed hard error for --legacy after 50 merges (no grace period). (7) Overlap-aware queue ordering with graph-based conflict clustering -- independent clusters processed in parallel, FIFO within clusters, re-clustering after each merge. (8) Tier 4 uses `git merge --no-commit --no-ff` to preserve two-parent merge topology. (9) Cost tracking uses estimated + actuals from Claude SDK response metadata with soft budget enforcement (current file completes, subsequent files skip AI). (10) Added conflict-cluster.ts to suggested module structure. (11) Extended conflict_patterns schema with failure_reason and merge_queue_id columns. (12) Added 9 new resolved questions (9.5-9.13). (13) Updated 5 new acceptance criteria for FR-1 (AC-1.16 through AC-1.20) and 5 for FR-3 (AC-3.11 through AC-3.15) and 2 for FR-7 (AC-7.6, AC-7.7). |
-| 4.0 | 2026-03-12 | Product Management | Third refinement pass (polish). 6 stakeholder decisions. Key changes: (1) Replaced hardcoded prose detection prefix list with language-aware first-line heuristic -- built-in patterns for .ts/.js, .py, .go with generic fallback for unmapped extensions; patterns configurable via `mergeQueue.proseDetection` in config. (2) Clarified `resolved_tier` schema column stores max tier used (single integer); per-file detail available in MergeReport and conflict_patterns table. (3) Changed post-merge test failure recovery from `git revert --no-edit HEAD` to `git reset --hard HEAD~1` to avoid anti-merge pitfall where revert prevents future re-merge of the branch. (4) Added structured error code system (MQ-001 through MQ-020) covering all failure modes -- budget, validation, AI, test, queue, branch, merge, pattern, legacy, and state errors; referenceable in docs and usable for programmatic CI handling (Section 11). (5) Added cumulative AI cost tracking with `merge_costs` SQLite table and `foreman merge --stats` command showing daily/weekly/monthly/all-time cost summaries with tier and model breakdowns (Section 12). (6) Confirmed `tsc --noEmit` for full TypeScript type checking (thoroughness over speed). Added 3 new FR-1 acceptance criteria (AC-1.21 through AC-1.23) and 5 cost tracking acceptance criteria (AC-COST.1 through AC-COST.5). |
+| 4.0 | 2026-03-12 | Product Management | Third refinement pass (polish). 6 stakeholder decisions. Key changes: (1) Replaced hardcoded prose detection prefix list with language-aware first-line heuristic -- built-in patterns for .ts/.js, .py, .go with generic fallback for unmapped extensions; patterns configurable via `mergeQueue.proseDetection` in config. (2) Clarified `resolved_tier` schema column stores max tier used (single integer); per-file detail available in MergeReport and conflict_patterns table. (3) Changed post-merge test failure recovery from `git revert --no-edit HEAD` to `git reset --hard HEAD~1` to avoid anti-merge pitfall where revert prevents future re-merge of the branch. (4) Added structured error code system (MQ-001 through MQ-020) covering all failure modes -- budget, validation, AI, test, queue, branch, merge, pattern, legacy, and state errors; referenceable in docs and usable for programmatic CI handling (Section 11). (5) Added cumulative AI cost tracking with `merge_costs` Postgres table and `foreman merge --stats` command showing daily/weekly/monthly/all-time cost summaries with tier and model breakdowns (Section 12). (6) Confirmed `tsc --noEmit` for full TypeScript type checking (thoroughness over speed). Added 3 new FR-1 acceptance criteria (AC-1.21 through AC-1.23) and 5 cost tracking acceptance criteria (AC-COST.1 through AC-COST.5). |
 | 5.0 | 2026-03-12 | Product Management | Final quality pass. 4 stakeholder decisions focused on cross-feature edge cases and internal consistency. Key changes: (1) Parallel budget tracking is optimistic/approximate -- each worker tracks independently, session total may slightly exceed cap; simplicity over precision (resolved question 9.18). (2) Syntax check performance target increased from 5s to 15s per file to accommodate full `tsc --noEmit` project-wide type checking (resolved question 9.20). (3) Re-clustering after merge commit cancels in-progress AI resolution work in invalidated clusters and re-queues entries; correctness over efficiency (resolved question 9.19). (4) Added two acceptance criteria to FR-8 (Dry-Run): AC-8.5 for showing estimated resolution tiers when FR-7 data exists, AC-8.6 for graceful degradation when FR-7 is unavailable (resolved question 9.21). (5) Fixed error code range descriptions in Section 11 which had overlapping ranges (007-009 was listed in two categories). (6) Added 2 new FR-3 acceptance criteria (AC-3.16 for parallel budget, AC-3.17 for re-clustering cancellation). (7) Updated Section 6.5 parallel architecture with re-clustering cancellation semantics and budget tracking approach. (8) Added 4 new resolved questions (9.18-9.21). |

@@ -5,7 +5,7 @@
 #
 # When epic has no children (native mode): runs skill phases directly as a
 # single-agent pipeline:
-#   prd → trd → implement → developer → qa → finalize
+#   prd → trd → implement → developer → qa → finalize → create-pr → pr-wait → prepare-pr-review → pr-review → merge
 #
 # Skill invocation: `command:` sends /ensemble:<skill-name> as the agent prompt.
 # The Pi SDK agent recognizes skill invocations and loads the SKILL.md.
@@ -19,6 +19,7 @@
 name: epic
 onError: stop
 taskTimeout: 300
+merge: auto
 
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -42,7 +43,9 @@ phases:
   # PRD skill writes to docs/PRD/PRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/PRD/PRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: prd
-    command: "/ensemble:create-prd {task.title}"
+    command: "/skill:ensemble-create-prd {task.title}"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -56,7 +59,9 @@ phases:
   # TRD skill writes to docs/TRD/TRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/TRD/TRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: trd
-    command: "/ensemble:create-trd"
+    command: "/skill:ensemble-create-trd"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -70,15 +75,17 @@ phases:
 
   # ── Phase 3: Implement ────────────────────────────────────────────────────
   # Implement skill writes an IMPLEMENT_REPORT.md to the current working directory.
-  # We anchor it to docs/reports/{seedId}/ so it's committed with the worktree.
+  # Move it to the runtime report directory so it is not committed with the worktree.
   - name: implement
-    command: "mkdir -p docs/reports/{task.id} && /ensemble:implement-trd && mv IMPLEMENT_REPORT.md docs/reports/{task.id}/IMPLEMENT_REPORT.md 2>/dev/null || true"
+    command: "mkdir -p \"{task.projectReportsDir}\" && /skill:ensemble-implement-trd && mv IMPLEMENT_REPORT.md \"{task.projectReportsDir}/IMPLEMENT_REPORT.md\" 2>/dev/null || true"
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
     maxTurns: 120
-    artifact: docs/reports/{task.id}/IMPLEMENT_REPORT.md
-    skipIfArtifact: docs/reports/{task.id}/IMPLEMENT_REPORT.md
+    artifact: "{task.projectReportsDir}/IMPLEMENT_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/IMPLEMENT_REPORT.md"
     verdict: false
     retryWith: trd
     retryOnFail: 2
@@ -89,11 +96,13 @@ phases:
   # ── Phase 4: Developer (fix issues from finalize / qa) ──────────────────
   - name: developer
     prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
     maxTurns: 80
-    artifact: docs/reports/{task.id}/DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     verdict: false
     retryWith: implement
     retryOnFail: 2
@@ -102,13 +111,29 @@ phases:
       onComplete: true
 
   # ── Phase 5: QA ──────────────────────────────────────────────────────────
+  - name: documentation
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
   - name: qa
     prompt: qa.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     models:
       default: MiniMax
       P0: MiniMax
     maxTurns: 30
-    artifact: docs/reports/{task.id}/QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -119,14 +144,61 @@ phases:
 
   # ── Phase 6: finalize ───────────────────────────────────────────────────
   - name: finalize
-    prompt: finalize.md
-    models:
-      default: MiniMax
+    builtin: true
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
-    artifact: docs/reports/{task.id}/FINALIZE_VALIDATION.md
     verdict: true
     retryWith: developer
     retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+  - name: create-pr
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    timeoutSecs: 1200
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: prepare-pr-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-review
+    prompt: pr-review.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
+    models:
+      default: MiniMax
+    maxTurns: 40
+    artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    verdict: true
+    retryWith: developer
+    retryOnFail: 3
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+      forwardArtifactTo: foreman
+
+  - name: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -138,4 +210,4 @@ onFailure:
     default: sonnet
     P0: opus
   maxTurns: 20
-  artifact: docs/reports/{task.id}/TROUBLESHOOT_REPORT.md
+  artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

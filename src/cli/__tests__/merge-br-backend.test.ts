@@ -1,31 +1,38 @@
 /**
- * Tests for TRD-017: Update merge.ts to use ITaskClient pattern.
+ * Tests for TRD-017: createMergeTaskClient is a thin wrapper around createTaskClient.
  *
  * Verifies:
- * - When FOREMAN_TASK_STORE='beads': createMergeTaskClient returns BeadsRustClient
- * - When FOREMAN_TASK_STORE='beads' and binary missing: throws with friendly error
+ * - createMergeTaskClient forwards to createTaskClient with the correct project path
+ * - createMergeTaskClient forwards the registered project id when provided
+ *
+ * Note: The FOREMAN_TASK_STORE env var is not read by createTaskClient.
+ * The native task store is the only supported backend (TRD-024) — this is
+ * verified by the tests below without needing env stubs.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 const {
-  mockEnsureBrInstalled,
-  MockBeadsRustClient,
+  mockCreateTaskClient,
   mockHasNativeTasks,
   MockForemanStore,
+  MockPostgresStore,
   mockVcsCreate,
 } = vi.hoisted(() => {
-  const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
-  const MockBeadsRustClient = vi.fn(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
-    this.ensureBrInstalled = mockEnsureBrInstalled;
-  });
+  const mockCreateTaskClient = vi.fn().mockResolvedValue({ taskClient: { kind: "task-client" } });
   const mockHasNativeTasks = vi.fn().mockReturnValue(false);
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.hasNativeTasks = mockHasNativeTasks;
     this.close = vi.fn();
     this.getProjectByPath = vi.fn().mockReturnValue(null);
     this.getDb = vi.fn().mockReturnValue({});
+  });
+  const MockPostgresStore = vi.fn(function MockPostgresStoreImpl(this: Record<string, unknown>) {
+    this.getRun = vi.fn();
+    this.getRunsByStatus = vi.fn();
+    this.getRunsByStatuses = vi.fn();
+    this.getRunsByBaseBranch = vi.fn();
   });
   (MockForemanStore as any).forProject = vi.fn(
     (...args: unknown[]) => new (MockForemanStore as any)(...args),
@@ -36,20 +43,28 @@ const {
     detectDefaultBranch: vi.fn().mockResolvedValue("main"),
   });
   return {
-    mockEnsureBrInstalled,
-    MockBeadsRustClient,
+    mockCreateTaskClient,
     mockHasNativeTasks,
     MockForemanStore,
+    MockPostgresStore,
     mockVcsCreate,
   };
 });
 
 vi.mock("../../lib/beads-rust.js", () => ({
-  BeadsRustClient: MockBeadsRustClient,
+  BeadsRustClient: vi.fn(),
+}));
+
+vi.mock("../../lib/task-client-factory.js", () => ({
+  createTaskClient: mockCreateTaskClient,
 }));
 
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: MockForemanStore,
+}));
+
+vi.mock("../../lib/postgres-store.js", () => ({
+  PostgresStore: MockPostgresStore,
 }));
 
 vi.mock("../../lib/vcs/index.js", () => ({
@@ -88,19 +103,14 @@ vi.mock("../../orchestrator/merge-cost-tracker.js", () => ({
 // ── Module under test ──────────────────────────────────────────────────────
 import { createMergeTaskClient } from "../commands/merge.js";
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
 
 const PROJECT_PATH = "/mock/project";
 
-describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
+describe("TRD-017: createMergeTaskClient forwards to createTaskClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("FOREMAN_TASK_STORE", "beads");
-    mockEnsureBrInstalled.mockResolvedValue(undefined);
     mockHasNativeTasks.mockReturnValue(false);
-    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
-      this.ensureBrInstalled = mockEnsureBrInstalled;
-    });
     MockForemanStore.mockImplementation(function MockForemanStoreImpl(this: Record<string, unknown>) {
       this.hasNativeTasks = mockHasNativeTasks;
       this.close = vi.fn();
@@ -116,41 +126,24 @@ describe("TRD-017: merge.ts backend selection via FOREMAN_TASK_STORE", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── br backend ────────────────────────────────────────────────────────────
+  // ── createMergeTaskClient forwards to createTaskClient ──────────────────
 
-  describe("when FOREMAN_TASK_STORE='beads'", () => {
-    it("returns a BeadsRustClient as the task client", async () => {
+  describe("createMergeTaskClient forwards to createTaskClient", () => {
+    it("returns the task client from createTaskClient", async () => {
       const result = await createMergeTaskClient(PROJECT_PATH);
 
-      expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockBeadsRustClient).toHaveBeenCalledTimes(1);
       expect(result).toBeDefined();
+      expect(mockCreateTaskClient).toHaveBeenCalledWith(PROJECT_PATH, {
+        registeredProjectId: undefined,
+      });
     });
 
-    it("calls ensureBrInstalled() to verify binary exists", async () => {
-      await createMergeTaskClient(PROJECT_PATH);
+    it("forwards a registered project id to createTaskClient", async () => {
+      await createMergeTaskClient(PROJECT_PATH, "proj-1");
 
-      expect(mockEnsureBrInstalled).toHaveBeenCalledTimes(1);
-    });
-
-  });
-
-  // ── br backend with missing binary ────────────────────────────────────────
-
-  describe("when FOREMAN_TASK_STORE='beads' and br binary is missing", () => {
-    beforeEach(() => {
-      mockEnsureBrInstalled.mockRejectedValue(
-        new Error(
-          "br (beads_rust) CLI not found at /home/user/.local/bin/br. Install via: cargo install beads_rust",
-        ),
-      );
-    });
-
-    it("throws an error when br binary is not found", async () => {
-      await expect(createMergeTaskClient(PROJECT_PATH)).rejects.toThrow(
-        /br.*not found|beads_rust/i,
-      );
+      expect(mockCreateTaskClient).toHaveBeenCalledWith(PROJECT_PATH, {
+        registeredProjectId: "proj-1",
+      });
     });
   });
-
 });

@@ -3,15 +3,16 @@ import chalk from "chalk";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { normalizePriority } from "../../lib/priority.js";
 import { ForemanStore } from "../../lib/store.js";
-import { NativeTaskStore, type TaskRow } from "../../lib/task-store.js";
-import { selectTaskReadBackend } from "../../lib/task-client-factory.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { type TaskRow } from "../../lib/task-store.js";
 import type { ITaskClient, Issue, UpdateOptions } from "../../lib/task-client.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
 import type { PlanStepDefinition } from "../../orchestrator/types.js";
-import { resolveProjectPathFromOption } from "./project-task-support.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 // ── Client factory (TRD-016) ──────────────────────────────────────────────
 
@@ -20,6 +21,15 @@ interface PlanCreateOptions {
   priority?: string;
   parent?: string;
   description?: string;
+}
+
+interface ServerPlanOptions {
+  project?: string;
+  outputDir: string;
+  provider: string;
+  runId?: string;
+  commandId?: string;
+  autoStart?: boolean;
 }
 
 export interface PlanTaskClient extends ITaskClient {
@@ -46,58 +56,78 @@ function taskRowToIssue(row: TaskRow): Issue {
 class NativePlanTaskClient implements PlanTaskClient {
   constructor(private readonly projectPath: string) {}
 
-  private withStore<T>(fn: (taskStore: NativeTaskStore) => T): T {
-    const store = ForemanStore.forProject(this.projectPath);
-    try {
-      return fn(new NativeTaskStore(store.getDb()));
-    } finally {
-      store.close();
+  private async withClient<T>(fn: (client: ReturnType<typeof createTrpcClient>, projectId: string, projectKey: string) => Promise<T>): Promise<T> {
+    const projects = await listRegisteredProjects();
+    const project = projects.find((record) => record.path === this.projectPath);
+    if (!project) {
+      throw new Error(`Project at '${this.projectPath}' is not registered with the daemon.`);
     }
+    return fn(createTrpcClient(), project.id, project.name);
   }
 
   async create(title: string, opts?: PlanCreateOptions): Promise<Issue> {
-    return this.withStore((taskStore) => {
-      const row = taskStore.create({
+    return this.withClient(async (client, projectId, projectKey) => {
+      const existing = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+      const prefix = projectKey.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "task";
+      const seen = new Set(existing.map((row) => row.id));
+      let id = "";
+      for (;;) {
+        const candidate = `${prefix}-${Math.random().toString(16).slice(2, 7)}`;
+        if (!seen.has(candidate)) {
+          id = candidate;
+          break;
+        }
+      }
+      const row = await client.tasks.create({
+        projectId,
+        id,
         title,
         description: opts?.description,
-        type: opts?.type,
+        type: opts?.type ?? "task",
         priority: opts?.priority ? normalizePriority(opts.priority) : 2,
-      });
-      taskStore.approve(row.id);
+      }) as TaskRow;
+      await client.tasks.approve({ projectId, taskId: row.id });
       if (opts?.parent) {
-        taskStore.addDependency(row.id, opts.parent, "parent-child");
+        await client.tasks.addDependency({
+          projectId,
+          fromTaskId: row.id,
+          toTaskId: opts.parent,
+          type: "parent-child",
+        });
       }
-      return taskRowToIssue(taskStore.get(row.id) ?? row);
+      const current = await client.tasks.get({ projectId, taskId: row.id }) as TaskRow | null;
+      return taskRowToIssue(current ?? row);
     });
   }
 
   async addDependency(fromId: string, toId: string): Promise<void> {
-    this.withStore((taskStore) => {
-      taskStore.addDependency(fromId, toId, "blocks");
-      const blocker = taskStore.get(toId);
-      if (!blocker || !["merged", "closed"].includes(blocker.status)) {
-        taskStore.update(fromId, { status: "blocked", force: true });
-      } else {
-        taskStore.reevaluateBlockedTasks();
-      }
+    await this.withClient(async (client, projectId) => {
+      await client.tasks.addDependency({
+        projectId,
+        fromTaskId: fromId,
+        toTaskId: toId,
+        type: "blocks",
+      });
     });
   }
 
   async list(opts?: { status?: string; type?: string }): Promise<Issue[]> {
-    return this.withStore((taskStore) =>
-      taskStore
-        .list(opts?.status ? { status: opts.status } : undefined)
-        .filter((issue) => !opts?.type || issue.type === opts.type),
-    );
+    return this.withClient(async (client, projectId) => {
+      const rows = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+      return rows
+        .filter((row) => !opts?.status || row.status === opts.status)
+        .filter((row) => !opts?.type || row.type === opts.type)
+        .map(taskRowToIssue);
+    });
   }
 
   async ready(): Promise<Issue[]> {
-    return this.withStore((taskStore) => taskStore.ready());
+    return this.list({ status: "ready" });
   }
 
   async show(id: string): Promise<{ status: string; description?: string | null; notes?: string | null }> {
-    return this.withStore((taskStore) => {
-      const row = taskStore.get(id);
+    return this.withClient(async (client, projectId) => {
+      const row = await client.tasks.get({ projectId, taskId: id }) as TaskRow | null;
       if (!row) {
         throw new Error(`Native task '${id}' not found`);
       }
@@ -110,23 +140,23 @@ class NativePlanTaskClient implements PlanTaskClient {
   }
 
   async update(id: string, opts: UpdateOptions): Promise<void> {
-    this.withStore((taskStore) => {
-      taskStore.update(id, {
-        ...(opts.title !== undefined ? { title: opts.title } : {}),
-        ...(opts.description !== undefined ? { description: opts.description ?? null } : {}),
-        ...(opts.status !== undefined
-          ? { status: opts.status === "in_progress" ? "in-progress" : opts.status }
-          : {}),
-        ...(opts.claim ? { status: "in-progress" } : {}),
-        force: true,
+    await this.withClient(async (client, projectId) => {
+      await client.tasks.update({
+        projectId,
+        taskId: id,
+        updates: {
+          title: opts.title,
+          description: opts.description ?? undefined,
+          status: opts.claim ? "in-progress" : opts.status === "in_progress" ? "in-progress" : opts.status,
+        },
       });
     });
   }
 
   async close(id: string, reason?: string): Promise<void> {
-    this.withStore((taskStore) => {
-      taskStore.close(id, reason);
-      taskStore.reevaluateBlockedTasks();
+    void reason;
+    await this.withClient(async (client, projectId) => {
+      await client.tasks.close({ projectId, taskId: id });
     });
   }
 }
@@ -176,9 +206,8 @@ class BeadsPlanTaskClient implements PlanTaskClient {
 export function createPlanClient(
   projectPath: string,
 ): PlanTaskClient {
-  return selectTaskReadBackend(projectPath) === "native"
-    ? new NativePlanTaskClient(projectPath)
-    : new BeadsPlanTaskClient(projectPath);
+  // Always use native task store
+  return new NativePlanTaskClient(projectPath);
 }
 
 export const planCommand = new Command("plan")
@@ -221,9 +250,7 @@ export const planCommand = new Command("plan")
         dryRun?: boolean;
       },
     ) => {
-      const resolvedProjectPath = await resolveProjectPathFromOption(opts.project);
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, resolvedProjectPath);
-      const projectPath = await vcs.getRepoRoot(resolvedProjectPath);
+      const projectPath = await resolveRepoRootProjectPath(opts.project ? { project: opts.project } : {});
       const outputDir = isAbsolute(opts.outputDir)
         ? resolve(opts.outputDir)
         : resolve(projectPath, opts.outputDir);
@@ -241,23 +268,22 @@ export const planCommand = new Command("plan")
       }
 
       // Initialize planning task client
+      const projects = await listRegisteredProjects();
+      const project = projects.find((record) => record.path === projectPath);
+      if (!project) {
+        console.error(
+          chalk.red(
+            "No project registered for this directory. Run 'foreman init' first.",
+          ),
+        );
+        process.exitCode = 1;
+        return;
+      }
       const store = ForemanStore.forProject(projectPath);
       const seeds = createPlanClient(projectPath);
-      const dispatcher = new Dispatcher(seeds, store, projectPath);
+      const dispatcher = new Dispatcher(seeds, store, projectPath, null, { externalProjectId: project.id });
 
       try {
-        // Ensure project is registered
-        const project = store.getProjectByPath(projectPath);
-        if (!project) {
-          console.error(
-            chalk.red(
-              "No project registered for this directory. Run 'foreman init' first.",
-            ),
-          );
-          process.exitCode = 1;
-          return;
-        }
-
         // Validate --from-prd path
         if (opts.fromPrd) {
           const prdPath = isAbsolute(opts.fromPrd)
@@ -304,11 +330,11 @@ export const planCommand = new Command("plan")
           );
           console.log(
             chalk.dim(
-              "  1. Create an epic planning task with child planning tasks (native-first, beads fallback)",
+              "  1. Create an epic planning task with child planning tasks (native tasks only)",
             ),
           );
           console.log(chalk.dim("  2. Dispatch each step via Claude Code + Ensemble"));
-          console.log(chalk.dim("  3. Track progress in SQLite"));
+          console.log(chalk.dim("  3. Track progress in Postgres"));
           console.log(chalk.dim("  4. Suggest 'foreman sling trd <output-dir>/TRD.md' on completion"));
           return;
         }
@@ -428,7 +454,109 @@ export const planCommand = new Command("plan")
     },
   );
 
+planCommand
+  .command("prd")
+  .description("Run PRD planning through the Elixir orchestration server")
+  .argument("<description>", "Product description text or path to a description file")
+  .option("--project <path>", "Project path or registered name (default: current directory)")
+  .option("--output-dir <dir>", "Directory to save PRD output (default: ./docs)", "./docs")
+  .option("--provider <provider>", "Planning provider adapter", "pi_sdk")
+  .option("--run-id <id>", "Explicit planning run id")
+  .option("--command-id <id>", "Explicit server command id for idempotent retries")
+  .option("--no-auto-start", "Require an already-running Elixir server")
+  .action(async (description: string, opts: ServerPlanOptions, command: Command) => {
+    await runServerPlanningCommand("prd", description, mergedServerPlanOptions(opts, command));
+  });
+
+planCommand
+  .command("trd")
+  .description("Run TRD planning through the Elixir orchestration server")
+  .argument("<description>", "TRD description or path to an existing PRD/input file")
+  .option("--project <path>", "Project path or registered name (default: current directory)")
+  .option("--output-dir <dir>", "Directory to save TRD output (default: ./docs)", "./docs")
+  .option("--provider <provider>", "Planning provider adapter", "pi_sdk")
+  .option("--run-id <id>", "Explicit planning run id")
+  .option("--command-id <id>", "Explicit server command id for idempotent retries")
+  .option("--no-auto-start", "Require an already-running Elixir server")
+  .action(async (description: string, opts: ServerPlanOptions, command: Command) => {
+    await runServerPlanningCommand("trd", description, mergedServerPlanOptions(opts, command));
+  });
+
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+function mergedServerPlanOptions(opts: ServerPlanOptions, command: Command): ServerPlanOptions {
+  const parentOpts = command.parent?.opts<{ project?: string; outputDir?: string }>() ?? {};
+  const outputDirSource = command.getOptionValueSource("outputDir");
+
+  return {
+    ...opts,
+    project: opts.project ?? parentOpts.project,
+    outputDir: outputDirSource === "cli" ? opts.outputDir : (parentOpts.outputDir ?? opts.outputDir),
+  };
+}
+
+async function runServerPlanningCommand(
+  kind: "prd" | "trd",
+  description: string,
+  opts: ServerPlanOptions,
+): Promise<void> {
+  const projectPath = await resolveRepoRootProjectPath(opts.project ? { project: opts.project } : {});
+  const projects = await listRegisteredProjects();
+  const project = projects.find((record) => record.path === projectPath);
+
+  if (!project) {
+    console.error(chalk.red("No project registered for this directory. Run 'foreman init' first."));
+    process.exitCode = 1;
+    return;
+  }
+
+  const outputDir = isAbsolute(opts.outputDir)
+    ? resolve(opts.outputDir)
+    : resolve(projectPath, opts.outputDir);
+  const input = readPlanningInput(description, projectPath);
+  const commandId = opts.commandId ?? `plan-${kind}-${Date.now()}`;
+  const manager = new ElixirServerManager();
+  const status = opts.autoStart === false ? manager.status() : await manager.ensureRunning();
+
+  if (!status.running) {
+    console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start' or omit --no-auto-start."));
+    process.exitCode = 1;
+    return;
+  }
+
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const response = await client.sendCommand({
+    command_id: commandId,
+    command_type: `plan.${kind}`,
+    payload: {
+      kind,
+      project_id: project.id,
+      description: input,
+      output_dir: outputDir,
+      provider: opts.provider,
+      ...(opts.runId ? { run_id: opts.runId } : {}),
+      ...(kind === "trd" && existsSync(resolve(projectPath, description)) ? { from_prd: resolve(projectPath, description) } : {}),
+    },
+    metadata: { correlation_id: commandId, source: "foreman-cli-plan" },
+  });
+
+  if (!response.ok) {
+    console.error(chalk.red(`Planning command failed: ${response.error.message}`));
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(chalk.green(`✓ Planning ${kind.toUpperCase()} command accepted`));
+  console.log(chalk.dim(`Command: ${commandId}`));
+  console.log(chalk.dim(`Events: ${response.events.join(", ")}`));
+}
+
+function readPlanningInput(description: string, projectPath: string): string {
+  const resolvedPath = isAbsolute(description) ? resolve(description) : resolve(projectPath, description);
+  if (!existsSync(resolvedPath)) return description;
+  console.log(chalk.dim(`Reading description from: ${resolvedPath}`));
+  return readFileSync(resolvedPath, "utf-8");
+}
 
 function buildPipelineSteps(
   productDescription: string,

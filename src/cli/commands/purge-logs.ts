@@ -1,11 +1,14 @@
-import { Command } from "commander";
 import chalk from "chalk";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { ForemanStore } from "../../lib/store.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+import type { RegisteredProjectSummary } from "./project-task-support.js";
+import { resolveProjectContext } from "./project-context.js";
+import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice, printPurgeSummary } from "./cli-output.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -21,6 +24,30 @@ export interface PurgeLogsResult {
   skipped: number;
   errors: number;
   freedBytes: number;
+}
+
+interface PurgeStore {
+  getRun(id: string): Promise<import("../../lib/store.js").Run | null>;
+}
+
+type RegisteredProject = RegisteredProjectSummary;
+
+export interface PurgeLogsCommandContext {
+  projectPath: string;
+  localStore: ForemanStore;
+  registered?: RegisteredProject;
+  store: PurgeStore;
+}
+
+export async function resolvePurgeLogsCommandContext(): Promise<PurgeLogsCommandContext> {
+  const { projectPath, registered } = await resolveProjectContext();
+  const localStore = ForemanStore.forProject(projectPath);
+
+  const store: PurgeStore = registered
+    ? PostgresStore.forProject(registered.id)
+    : wrapLocalRunStore(localStore);
+
+  return { projectPath, localStore, registered, store };
 }
 
 // ── Constants ─────────────────────────────────────────────────────────
@@ -77,7 +104,7 @@ function humanBytes(bytes: number): string {
  */
 export async function purgeLogsAction(
   opts: PurgeLogsOpts,
-  store: ForemanStore,
+  store: PurgeStore,
   logsDir?: string,
 ): Promise<PurgeLogsResult> {
   const dryRun = opts.dryRun ?? false;
@@ -85,9 +112,7 @@ export async function purgeLogsAction(
   const days = opts.days ?? 7;
   const dir = logsDir ?? LOGS_DIR;
 
-  if (dryRun) {
-    console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-  }
+  printDryRunNotice(dryRun);
 
   // Cutoff: files/runs older than this timestamp are candidates
   const cutoffMs = deleteAll ? Infinity : Date.now() - days * 24 * 60 * 60 * 1000;
@@ -181,7 +206,7 @@ export async function purgeLogsAction(
     }
 
     // Check the run status in the DB
-    const run = store.getRun(runId);
+    const run = await store.getRun(runId);
 
     if (run && !TERMINAL_STATUSES.has(run.status)) {
       // Active run — never delete
@@ -234,74 +259,51 @@ export async function purgeLogsAction(
   }
 
   // 4. Summary
-  console.log();
-  const freedStr = humanBytes(result.freedBytes);
-
-  if (dryRun) {
-    console.log(
-      chalk.yellow(
-        `Dry run complete — ${result.deleted} log group(s) would be deleted (${freedStr}), ${result.skipped} skipped, ${result.errors} error(s).`,
-      ),
-    );
-    console.log(chalk.dim("Run without --dry-run to apply changes."));
-  } else {
-    const color = result.errors > 0 ? chalk.yellow : chalk.green;
-    console.log(
-      color(
-        `Done — ${result.deleted} log group(s) deleted (${freedStr}), ${result.skipped} skipped, ${result.errors} error(s).`,
-      ),
-    );
-  }
+  printPurgeSummary({
+    dryRun,
+    subject: "log group(s)",
+    verb: "deleted",
+    count: result.deleted,
+    skipped: result.skipped,
+    errors: result.errors,
+    detail: humanBytes(result.freedBytes),
+    dryRunHint: "Run without --dry-run to apply changes.",
+    warnOnErrors: true,
+  });
 
   return result;
 }
 
-// ── CLI Command ──────────────────────────────────────────────────────
+export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void> {
+  let context: PurgeLogsCommandContext;
+  try {
+    context = await resolvePurgeLogsCommandContext();
+  } catch {
+    console.error(chalk.red("Not in a git repository. Run from within a foreman project."));
+    process.exit(1);
+  }
 
-export const purgeLogsCommand = new Command("purge-logs")
-  .description(
-    "Remove old agent log files from ~/.foreman/logs/ based on a retention policy",
-  )
-  .option(
-    "--days <n>",
-    "Delete logs from runs older than N days (default: 7)",
-    (v) => {
-      const n = parseInt(v, 10);
-      if (isNaN(n) || n < 0) throw new Error("--days must be a non-negative integer");
-      return n;
-    },
-  )
-  .option("--dry-run", "Show what would be deleted without making any changes")
-  .option("--all", "Delete all terminal-status logs regardless of age (use with caution)")
-  .action(async (opts: { days?: number; dryRun?: boolean; all?: boolean }) => {
-    let projectPath: string;
-    try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getRepoRoot(process.cwd());
-    } catch {
-      console.error(
-        chalk.red("Not in a git repository. Run from within a foreman project."),
-      );
-      process.exit(1);
-    }
+  try {
+    const result = await purgeLogsAction(
+      {
+        days: opts.days ?? 7,
+        dryRun: opts.dryRun,
+        all: opts.all,
+      },
+      context.store,
+    );
+    context.localStore.close();
+    closeStoreIfPossible(context.store);
+    process.exit(result.errors > 0 ? 1 : 0);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(msg));
+    context.localStore.close();
+    closeStoreIfPossible(context.store);
+    process.exit(1);
+  }
+}
 
-    const store = ForemanStore.forProject(projectPath);
-
-    try {
-      const result = await purgeLogsAction(
-        {
-          days: opts.days ?? 7,
-          dryRun: opts.dryRun,
-          all: opts.all,
-        },
-        store,
-      );
-      store.close();
-      process.exit(result.errors > 0 ? 1 : 0);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(msg));
-      store.close();
-      process.exit(1);
-    }
-  });
+// The CLI command surface lives in purge.ts:
+//   foreman purge logs        (canonical)
+//   foreman purge-logs        (hidden, deprecated alias)

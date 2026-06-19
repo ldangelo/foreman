@@ -10,11 +10,11 @@
  *
  * @module src/cli/commands/project
  */
-
-import { Command } from "commander";
 import chalk from "chalk";
 import { resolve } from "node:path";
+import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { encrypt } from "../../lib/encryption.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -151,9 +151,18 @@ const addCommand = new Command("add")
   .option("--name <name>", "Project display name (default: repo name from GitHub)")
   .option("--default-branch <branch>", "Override the default git branch")
   .option("--status <status>", "Project status", "active")
+  .option("--jira-url <url>", "Jira Cloud API URL (e.g., https://your-domain.atlassian.net)")
+  .option("--jira-email <email>", "Jira account email")
+  .option("--jira-token <token>", "Jira API token (will be encrypted)")
+  .option("--jira-project <key>", "Jira project key", (val, prev) => { prev.push(val.toUpperCase()); return prev; }, [] as string[])
+  .option("--jira-start-status <status>", "Status that triggers workflow", (val, prev) => { prev.push(val); return prev; }, [] as string[])
+  .option("--jira-end-status <status>", "Status that completes workflow", (val, prev) => { prev.push(val); return prev; }, [] as string[])
+  .option("--jira-issue-type <type=workflow>", "Map issue type to workflow", (val, prev) => { const [type, workflow] = val.split("="); prev.push({ type, workflow }); return prev; }, [] as JiraIssueTypeMapping[])
+  .option("--jira-poll-interval <seconds>", "Poll interval in seconds (default: 60)")
+  .option("--jira-webhook-enabled", "Enable webhook-based triggers")
+  .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
   .action(async (githubUrl: string, opts) => {
     const client = getClient();
-
     try {
       const result = (await client.projects.add({
         githubUrl,
@@ -180,6 +189,15 @@ const addCommand = new Command("add")
       console.log(
         chalk.dim(`  Branch: ${result.default_branch ?? "main"}`)
       );
+      // Apply Jira configuration if provided
+      const jiraUpdates = await buildJiraUpdates(opts);
+      if (jiraUpdates) {
+        await client.projects.update({
+          id: result.id,
+          updates: { jira: jiraUpdates },
+        });
+        console.log(chalk.dim("  Jira: configured"));
+      }
     } catch (err) {
       handleDaemonError(err);
     }
@@ -244,13 +262,94 @@ const removeCommand = new Command("remove")
       handleDaemonError(err);
     }
   });
+// ---------------------------------------------------------------------------
+// foreman project edit
+// ---------------------------------------------------------------------------
+
+interface JiraIssueTypeMapping {
+  type: string;
+  workflow: string;
+}
+async function buildJiraUpdates(opts: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+  const jiraUpdates: Record<string, unknown> = {};
+  if (opts.jiraUrl) jiraUpdates.apiUrl = opts.jiraUrl;
+  if (opts.jiraEmail) jiraUpdates.email = opts.jiraEmail;
+  if (opts.jiraToken) jiraUpdates.apiToken = await encrypt(opts.jiraToken as string);
+  if (opts.jiraPollInterval) jiraUpdates.pollIntervalSeconds = Number(opts.jiraPollInterval);
+  if (opts.jiraWebhookEnabled !== undefined) jiraUpdates.webhookEnabled = true;
+  if (opts.jiraWebhookSecretEnv) jiraUpdates.webhookSecretEnvVar = opts.jiraWebhookSecretEnv;
+  // Build projects array if any project options provided
+  const projectKeys = (opts.jiraProject as string[] | undefined) ?? [];
+  const startStatuses = (opts.jiraStartStatus as string[] | undefined) ?? [];
+  const endStatuses = (opts.jiraEndStatus as string[] | undefined) ?? [];
+  const issueTypeMappings = (opts.jiraIssueType as JiraIssueTypeMapping[] | undefined) ?? [];
+  const projects: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < projectKeys.length; i++) {
+    const project: Record<string, unknown> = {
+      key: projectKeys[i],
+      startStatus: startStatuses[i] ? startStatuses[i].split(",").map((s: string) => s.trim()) : [],
+      endStatus: endStatuses[i] ? endStatuses[i].split(",").map((s: string) => s.trim()) : [],
+      issueTypeWorkflowMap: {} as Record<string, string>,
+    };
+    // Map issue type=workflow pairs for this project index
+    for (const mapping of issueTypeMappings) {
+      (project.issueTypeWorkflowMap as Record<string, string>)[mapping.type] = mapping.workflow;
+    }
+    projects.push(project);
+  }
+  if (projects.length > 0) {
+    jiraUpdates.projects = projects;
+  }
+  // Return undefined if no Jira options were provided
+  const hasUpdates = Object.keys(jiraUpdates).length > 0;
+  return hasUpdates ? jiraUpdates : undefined;
+}
+
+const editCommand = new Command("edit")
+  .description("Edit project settings")
+  .argument("<id>", "Project ID to edit")
+  .option("--name <name>", "Project display name")
+  .option("--status <status>", "Project status: active, paused, archived")
+  .option("--jira-url <url>", "Jira Cloud API URL (e.g., https://your-domain.atlassian.net)")
+  .option("--jira-email <email>", "Jira account email")
+  .option("--jira-token <token>", "Jira API token (will be encrypted)")
+  .option("--jira-project <key>", "Jira project key", (val, prev) => { prev.push(val.toUpperCase()); return prev; }, [] as string[])
+  .option("--jira-start-status <status>", "Status that triggers workflow", (val, prev) => { prev.push(val); return prev; }, [] as string[])
+  .option("--jira-end-status <status>", "Status that completes workflow", (val, prev) => { prev.push(val); return prev; }, [] as string[])
+  .option("--jira-issue-type <type=workflow>", "Map issue type to workflow", (val, prev) => { const [type, workflow] = val.split("="); prev.push({ type, workflow }); return prev; }, [] as JiraIssueTypeMapping[])
+  .option("--jira-poll-interval <seconds>", "Poll interval in seconds (default: 60)")
+  .option("--jira-webhook-enabled", "Enable webhook-based triggers")
+  .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
+  .action(async (projectId: string, opts) => {
+    const client = getClient();
+    try {
+      // Build Jira config updates if any Jira options provided
+      const jiraUpdates = await buildJiraUpdates(opts);
+      const updates: Record<string, unknown> = {};
+      if (opts.name) updates.name = opts.name;
+      if (opts.status) updates.status = opts.status;
+      if (jiraUpdates) updates.jira = jiraUpdates;
+      if (Object.keys(updates).length === 0) {
+        console.log(chalk.yellow("No updates provided. Use --help to see available options."));
+        return;
+      }
+      await client.projects.update({
+        id: projectId,
+        updates,
+      });
+      console.log(chalk.green(`✓ Project '${projectId}' updated.`));
+    } catch (err) {
+      handleDaemonError(err);
+    }
+  });
 
 // ---------------------------------------------------------------------------
 // Parent command
 // ---------------------------------------------------------------------------
 
 export const projectCommand = new Command("project")
-  .description("Manage projects via ForemanDaemon (list/add/remove)")
+  .description("Manage projects via ForemanDaemon (list/add/remove/edit)")
   .addCommand(addCommand)
   .addCommand(listCommand)
-  .addCommand(removeCommand);
+  .addCommand(removeCommand)
+  .addCommand(editCommand);

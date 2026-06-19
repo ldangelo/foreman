@@ -1,5 +1,14 @@
-import type Database from "better-sqlite3";
 import * as path from "node:path";
+
+interface Statement<T = unknown> {
+  get(...params: unknown[]): T;
+  all(...params: unknown[]): T[];
+  run(...params: unknown[]): unknown;
+}
+
+interface PatternDb {
+  prepare(sql: string): Statement;
+}
 
 /**
  * Conflict Pattern Learning (MQ-T065/MQ-T066).
@@ -9,9 +18,9 @@ import * as path from "node:path";
  * to skip doomed tiers and prefer fallback for problematic files.
  */
 export class ConflictPatterns {
-  private db: Database.Database;
+  private db: PatternDb;
 
-  constructor(db: Database.Database) {
+  constructor(db: PatternDb) {
     this.db = db;
   }
 

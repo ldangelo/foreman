@@ -1,13 +1,13 @@
 /**
  * Tests for the unified live monitoring features:
  *   - foreman status --live  (full dashboard TUI with br task counts)
- *   - foreman dashboard --simple  (compact single-project view with task counts)
  *   - renderLiveStatusHeader()  (task counts header for live mode)
- *   - renderSimpleDashboard()   (compact dashboard renderer)
- *   - fetchDashboardTaskCounts()  (br task counts for dashboard --simple)
+ *   - dashboard-state render helpers shared with status --live / watch
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import * as dashboardModule from "../dashboard-state.js";
+import type { ForemanStore } from "../../lib/store.js";
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 const {
@@ -29,6 +29,11 @@ const {
   MockForemanStore,
   mockPollDashboard,
   mockRenderDashboard,
+  mockListRegisteredProjects,
+  mockCreateTrpcClient,
+  mockProjectsStats,
+  mockProjectsListNeedsHuman,
+  mockRunsListActive,
 } = vi.hoisted(() => {
   const mockGetRepoRoot = vi.fn().mockResolvedValue("/mock/project");
   const mockCreateVcsBackend = vi.fn().mockResolvedValue({
@@ -69,8 +74,9 @@ const {
     this.listTasksByStatus = mockListTasksByStatus;
     this.getProject = vi.fn().mockReturnValue(null);
     this.close = vi.fn();
-  });
-  (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
+  }) as ReturnType<typeof vi.fn>& { forProject: ReturnType<typeof vi.fn>; forDashboard: ReturnType<typeof vi.fn> };
+  MockForemanStore.forProject = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
+  MockForemanStore.forDashboard = vi.fn((...args: unknown[]) => new MockForemanStore(...args));
 
   // Dashboard function mocks (used by status --live tests)
   const mockPollDashboard = vi.fn().mockReturnValue({
@@ -83,6 +89,24 @@ const {
     lastUpdated: new Date("2026-01-01T12:00:00Z"),
   });
   const mockRenderDashboard = vi.fn().mockReturnValue("Foreman Dashboard\n━━━\n\nNo projects.\n━━━\nLast updated: 12:00:00 PM");
+
+  const mockListRegisteredProjects = vi.fn().mockResolvedValue([]);
+  const mockProjectsStats = vi.fn();
+  const mockProjectsListNeedsHuman = vi.fn();
+  const mockRunsListActive = vi.fn();
+  const mockCreateTrpcClient = vi.fn(() => ({
+    projects: {
+      stats: mockProjectsStats,
+      listNeedsHuman: mockProjectsListNeedsHuman,
+    },
+    tasks: {
+      list: vi.fn().mockResolvedValue([]),
+    },
+    runs: {
+      listActive: mockRunsListActive,
+      listMessages: vi.fn().mockResolvedValue([]),
+    },
+  }));
 
   return {
     mockGetRepoRoot,
@@ -103,6 +127,11 @@ const {
     MockForemanStore,
     mockPollDashboard,
     mockRenderDashboard,
+    mockListRegisteredProjects,
+    mockCreateTrpcClient,
+    mockProjectsStats,
+    mockProjectsListNeedsHuman,
+    mockRunsListActive,
   };
 });
 
@@ -120,8 +149,19 @@ vi.mock("../../lib/store.js", () => ({
   ForemanStore: MockForemanStore,
 }));
 
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: mockCreateTrpcClient,
+}));
+
+vi.mock("../commands/project-task-support.js", () => ({
+  listRegisteredProjects: mockListRegisteredProjects,
+  requireProjectOrAllInMultiMode: vi.fn().mockResolvedValue(undefined),
+  resolveRepoRootProjectPath: vi.fn().mockResolvedValue("/mock/project"),
+}));
+
 vi.mock("../watch-ui.js", () => ({
   renderAgentCard: vi.fn().mockReturnValue("  ● seed-1 RUNNING"),
+  formatSuccessRate: vi.fn().mockReturnValue("--"),
   elapsed: vi.fn().mockReturnValue("5m 30s"),
 }));
 
@@ -141,15 +181,15 @@ afterEach(() => {
 });
 
 // ── Imports ─────────────────────────────────────────────────────────────────
-import { renderLiveStatusHeader } from "../commands/status.js";
+import { renderLiveStatusHeader, type StatusCounts } from "../commands/status.js";
+import { fetchDaemonStatusSnapshot, fetchStatusCounts } from "../commands/status.js";
+import { statusCommand } from "../commands/status.js";
 import {
-  renderSimpleDashboard,
-  fetchDashboardTaskCounts,
   renderProjectHeader,
   renderEventLine,
   type DashboardState,
-  type DashboardTaskCounts,
-} from "../commands/dashboard.js";
+} from "../dashboard-state.js";
+import { pollWatchData, pollInboxData } from "../commands/watch/WatchState.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -175,9 +215,149 @@ function makeDashboardState(overrides?: Partial<DashboardState>): DashboardState
   };
 }
 
-const ZERO_COUNTS: DashboardTaskCounts = {
+const ZERO_COUNTS: StatusCounts = {
   total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0,
 };
+
+// ── Tests: daemon-backed status helpers ────────────────────────────────────
+
+describe("daemon-backed status helpers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "test-project", path: "/mock/project/./" },
+    ]);
+    mockProjectsStats.mockResolvedValue({
+      tasks: {
+        backlog: 2,
+        ready: 3,
+        inProgress: 4,
+        approved: 0,
+        merged: 5,
+        closed: 6,
+        total: 20,
+      },
+      runs: { active: 1, pending: 0 },
+    });
+    mockProjectsListNeedsHuman.mockResolvedValue([{ status: "failed" }, { status: "stuck" }]);
+    mockRunsListActive.mockResolvedValue([
+      {
+        id: "run-1",
+        bead_id: "seed-1",
+        status: "running",
+        branch: "foreman/seed-1",
+        started_at: "2026-01-01T10:00:00Z",
+        queued_at: "2026-01-01T09:50:00Z",
+        created_at: "2026-01-01T09:45:00Z",
+      },
+    ]);
+
+    mockBrList.mockResolvedValue([]);
+    mockBrReady.mockResolvedValue([]);
+    mockHasNativeTasks.mockReturnValue(false);
+    mockListTasksByStatus.mockReturnValue([]);
+  });
+
+  it("fetchDaemonStatusSnapshot() matches registered projects by normalized path", async () => {
+    const snapshot = await fetchDaemonStatusSnapshot("/mock/project/../project");
+
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.projectId).toBe("proj-1");
+    expect(snapshot?.counts).toEqual({
+      total: 20,
+      ready: 3,
+      inProgress: 4,
+      completed: 11,
+      blocked: 2,
+    });
+    expect(mockCreateTrpcClient).toHaveBeenCalledTimes(1);
+    expect(mockProjectsStats).toHaveBeenCalledWith({ projectId: "proj-1" });
+  });
+
+  it("fetchStatusCounts() matches registered projects by normalized path", async () => {
+    const counts = await fetchStatusCounts("/mock/project/../project");
+
+    expect(counts).toEqual({
+      total: 20,
+      ready: 3,
+      inProgress: 4,
+      completed: 11,
+      blocked: 2,
+    });
+    expect(mockCreateTrpcClient).toHaveBeenCalledTimes(1);
+    expect(mockProjectsStats).toHaveBeenCalledWith({ projectId: "proj-1" });
+  });
+
+  it("keeps the local fallback when no registered project matches", async () => {
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "test-project", path: "/mock/project" },
+    ]);
+    mockHasNativeTasks.mockReturnValue(true);
+    mockListTasksByStatus.mockImplementation((statuses: string[]) => {
+      const rows = [{ id: "1", status: "blocked", title: "Task" }];
+      return rows.filter((row) => statuses.includes(row.status));
+    });
+
+    const counts = await fetchStatusCounts("/unregistered/project");
+
+    expect(counts).toEqual({
+      total: 1,
+      ready: 0,
+      inProgress: 0,
+      completed: 0,
+      blocked: 1,
+    });
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(mockProjectsStats).not.toHaveBeenCalled();
+  });
+
+  it("prefers daemon-backed dashboard state in --live mode", async () => {
+    const daemonState = makeDashboardState({ projects: [MOCK_PROJECT] });
+    const daemonSpy = vi.spyOn(dashboardModule, "fetchDaemonDashboardState").mockResolvedValue(daemonState);
+    const pollSpy = vi.spyOn(dashboardModule, "pollDashboard");
+    const renderSpy = vi.spyOn(dashboardModule, "renderDashboard").mockImplementationOnce(() => {
+      throw new Error("stop-live-loop");
+    });
+
+    try {
+      await expect(
+        statusCommand.parseAsync(["node", "foreman", "--live", "--project-path", "/mock/project"], { from: "node" }),
+      ).rejects.toThrow("stop-live-loop");
+
+      expect(pollSpy).not.toHaveBeenCalled();
+      expect(MockForemanStore.forProject).not.toHaveBeenCalled();
+      expect(renderSpy).toHaveBeenCalledWith(daemonState);
+    } finally {
+      renderSpy.mockRestore();
+      pollSpy.mockRestore();
+      daemonSpy.mockRestore();
+    }
+  });
+
+  it("falls back to pollDashboard() when the daemon snapshot is null", async () => {
+    const localState = makeDashboardState({ projects: [MOCK_PROJECT] });
+    const daemonSpy = vi.spyOn(dashboardModule, "fetchDaemonDashboardState").mockResolvedValue(null);
+    const pollSpy = vi.spyOn(dashboardModule, "pollDashboard").mockReturnValue(localState);
+    const renderSpy = vi.spyOn(dashboardModule, "renderDashboard").mockImplementationOnce(() => {
+      throw new Error("stop-live-loop");
+    });
+
+    try {
+      await expect(
+        statusCommand.parseAsync(["node", "foreman", "--live", "--project-path", "/mock/project"], { from: "node" }),
+      ).rejects.toThrow("stop-live-loop");
+
+      expect(MockForemanStore.forDashboard).toHaveBeenCalledWith("/mock/project");
+      expect(pollSpy).toHaveBeenCalledTimes(1);
+      expect(renderSpy).toHaveBeenCalledWith(localState);
+    } finally {
+      renderSpy.mockRestore();
+      pollSpy.mockRestore();
+      daemonSpy.mockRestore();
+    }
+  });
+});
 
 // ── Tests: renderLiveStatusHeader() ─────────────────────────────────────────
 
@@ -212,231 +392,6 @@ describe("renderLiveStatusHeader()", () => {
   it("renders as a single line (no newlines)", () => {
     const result = renderLiveStatusHeader(ZERO_COUNTS);
     expect(result).not.toContain("\n");
-  });
-});
-
-// ── Tests: fetchDashboardTaskCounts() ───────────────────────────────────────
-
-describe("fetchDashboardTaskCounts()", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
-      this.list = mockBrList;
-      this.ready = mockBrReady;
-      this.ensureBrInstalled = vi.fn().mockResolvedValue(undefined);
-    });
-    mockBrList.mockResolvedValue([]);
-    mockBrReady.mockResolvedValue([]);
-    mockHasNativeTasks.mockReturnValue(false);
-    mockListTasksByStatus.mockReturnValue([]);
-  });
-
-  it("returns zero counts when br returns empty lists", async () => {
-    const counts = await fetchDashboardTaskCounts("/mock/project");
-    expect(counts).toEqual({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
-  });
-
-  it("correctly counts in-progress, ready, completed, and blocked issues", async () => {
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") {
-        return [
-          { id: "c1", status: "closed", title: "Done 1" },
-          { id: "c2", status: "closed", title: "Done 2" },
-        ];
-      }
-      return [
-        { id: "1", status: "in_progress", title: "Active task" },
-        { id: "2", status: "open", title: "Ready task" },
-        { id: "3", status: "open", title: "Blocked task" },
-      ];
-    });
-    mockBrReady.mockResolvedValue([{ id: "2", status: "open", title: "Ready task" }]);
-
-    const counts = await fetchDashboardTaskCounts("/mock/project");
-    expect(counts.total).toBe(5);       // 3 open + 2 closed
-    expect(counts.inProgress).toBe(1);
-    expect(counts.ready).toBe(1);
-    expect(counts.completed).toBe(2);
-    expect(counts.blocked).toBe(1);     // open, not in_progress, not ready
-  });
-
-  it("returns zeros when br.list() throws", async () => {
-    mockBrList.mockRejectedValue(new Error("br not found"));
-    const counts = await fetchDashboardTaskCounts("/mock/project");
-    expect(counts).toEqual({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
-  });
-
-  it("handles br.ready() throwing gracefully", async () => {
-    // Return 1 open issue, 0 closed
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") return [];
-      return [{ id: "1", status: "open", title: "Task" }];
-    });
-    mockBrReady.mockRejectedValue(new Error("ready failed"));
-    const counts = await fetchDashboardTaskCounts("/mock/project");
-    // Should still return counts (ready = 0 due to failure)
-    expect(counts.total).toBe(1);
-    expect(counts.ready).toBe(0);
-  });
-
-  it("uses native task counts when native tasks exist", async () => {
-    mockHasNativeTasks.mockReturnValue(true);
-    mockListTasksByStatus.mockImplementation((statuses: string[]) => {
-      const rows = [
-        { id: "b1", status: "backlog" },
-        { id: "r1", status: "ready" },
-        { id: "p1", status: "in-progress" },
-        { id: "m1", status: "merged" },
-        { id: "c1", status: "closed" },
-        { id: "x1", status: "blocked" },
-        { id: "s1", status: "stuck" },
-      ];
-      return rows.filter((row) => statuses.includes(row.status));
-    });
-
-    const counts = await fetchDashboardTaskCounts("/mock/project");
-
-    expect(counts).toEqual({
-      total: 7,
-      ready: 1,
-      inProgress: 1,
-      completed: 2,
-      blocked: 3,
-    });
-    expect(MockBeadsRustClient).not.toHaveBeenCalled();
-  });
-});
-
-// ── Tests: renderSimpleDashboard() ───────────────────────────────────────────
-
-describe("renderSimpleDashboard()", () => {
-  it("shows 'Foreman Status' header (not 'Foreman Dashboard')", () => {
-    const state = makeDashboardState();
-    const result = renderSimpleDashboard(state, ZERO_COUNTS);
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).toContain("Foreman Status");
-    expect(plain).not.toContain("Foreman Dashboard");
-  });
-
-  it("shows task count section with all fields", () => {
-    const counts: DashboardTaskCounts = { total: 8, ready: 3, inProgress: 2, completed: 3, blocked: 0 };
-    const state = makeDashboardState();
-    const result = renderSimpleDashboard(state, counts);
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).toContain("Tasks");
-    expect(plain).toContain("Total:");
-    expect(plain).toContain("8");
-    expect(plain).toContain("Ready:");
-    expect(plain).toContain("3");
-    expect(plain).toContain("In Progress:");
-    expect(plain).toContain("2");
-    expect(plain).toContain("Completed:");
-  });
-
-  it("shows blocked line only when blocked > 0", () => {
-    const withBlocked: DashboardTaskCounts = { total: 5, ready: 1, inProgress: 1, completed: 2, blocked: 1 };
-    const noBlocked: DashboardTaskCounts = { total: 5, ready: 2, inProgress: 1, completed: 2, blocked: 0 };
-
-    const withResult = renderSimpleDashboard(makeDashboardState(), withBlocked)
-      .replace(/\x1b\[[0-9;]*m/g, "");
-    const noResult = renderSimpleDashboard(makeDashboardState(), noBlocked)
-      .replace(/\x1b\[[0-9;]*m/g, "");
-
-    expect(withResult).toContain("Blocked:");
-    expect(noResult).not.toContain("Blocked:");
-  });
-
-  it("shows 'no projects registered' when project list is empty", () => {
-    const state = makeDashboardState({ projects: [] });
-    const result = renderSimpleDashboard(state, ZERO_COUNTS);
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).toContain("No projects registered");
-  });
-
-  it("shows '(no agents running)' when project has no active runs", () => {
-    const state = makeDashboardState({
-      projects: [MOCK_PROJECT],
-      activeRuns: new Map([["proj-1", []]]),
-      metrics: new Map([["proj-1", { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] }]]),
-    });
-    const result = renderSimpleDashboard(state, ZERO_COUNTS, "proj-1");
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).toContain("no agents running");
-  });
-
-  it("does NOT show event timeline (unlike full dashboard)", () => {
-    const state = makeDashboardState({
-      projects: [MOCK_PROJECT],
-      events: new Map([["proj-1", [
-        { id: "e1", project_id: "proj-1", run_id: null, event_type: "complete" as const, details: null, created_at: "2026-01-01T10:00:00Z" },
-      ]]]),
-    });
-    const result = renderSimpleDashboard(state, ZERO_COUNTS, "proj-1");
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    // Simple view should not show RECENT EVENTS section
-    expect(plain).not.toContain("RECENT EVENTS");
-  });
-
-  it("shows cost section when totalCost > 0", () => {
-    const state = makeDashboardState({
-      projects: [MOCK_PROJECT],
-      activeRuns: new Map([["proj-1", []]]),
-      metrics: new Map([["proj-1", {
-        totalCost: 2.50,
-        totalTokens: 25000,
-        tasksByStatus: {},
-        costByRuntime: [],
-      }]]),
-    });
-    const result = renderSimpleDashboard(state, ZERO_COUNTS, "proj-1");
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).toContain("Costs");
-    expect(plain).toContain("$2.50");
-    expect(plain).toContain("25.0k");
-  });
-
-  it("omits cost section when totalCost is 0", () => {
-    const state = makeDashboardState({
-      projects: [MOCK_PROJECT],
-      activeRuns: new Map([["proj-1", []]]),
-      metrics: new Map([["proj-1", { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] }]]),
-    });
-    const result = renderSimpleDashboard(state, ZERO_COUNTS, "proj-1");
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).not.toContain("Costs");
-  });
-
-  it("shows tip suggesting 'foreman status --live'", () => {
-    const state = makeDashboardState({ projects: [MOCK_PROJECT] });
-    const result = renderSimpleDashboard(state, ZERO_COUNTS, "proj-1");
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).toContain("foreman status --live");
-  });
-
-  it("includes last-updated timestamp", () => {
-    const state = makeDashboardState();
-    const result = renderSimpleDashboard(state, ZERO_COUNTS);
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).toContain("Last updated:");
-  });
-
-  it("uses first project when no projectId is specified", () => {
-    const projects = [
-      { ...MOCK_PROJECT, id: "proj-1", name: "project-one" },
-      { ...MOCK_PROJECT, id: "proj-2", name: "project-two" },
-    ];
-    const state = makeDashboardState({
-      projects,
-      activeRuns: new Map([["proj-1", []], ["proj-2", []]]),
-      metrics: new Map([
-        ["proj-1", { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] }],
-        ["proj-2", { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] }],
-      ]),
-    });
-    const result = renderSimpleDashboard(state, ZERO_COUNTS);
-    // Should not throw and should show active agents for first project
-    const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
-    expect(plain).toContain("Active Agents");
   });
 });
 
@@ -482,5 +437,90 @@ describe("renderEventLine() regression", () => {
     const plain = result.replace(/\x1b\[[0-9;]*m/g, "");
     expect(plain).toContain("complete");
     expect(plain).toContain("ago");
+  });
+});
+
+describe("watch-state path normalization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreateTrpcClient.mockReset();
+    mockProjectsStats.mockReset();
+    mockRunsListActive.mockReset();
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "registered-project", path: "/mock/project/./" },
+    ]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("pollWatchData() matches the board summary on a normalized project path", async () => {
+    const tasksList = vi.fn().mockResolvedValue([
+      { id: "task-1", status: "backlog", priority: 1 },
+    ]);
+    mockCreateTrpcClient.mockReturnValue({
+      tasks: { list: tasksList },
+      projects: { stats: mockProjectsStats, listNeedsHuman: mockProjectsListNeedsHuman },
+      runs: { listActive: mockRunsListActive, listMessages: vi.fn().mockResolvedValue([]) },
+    });
+    mockProjectsStats.mockResolvedValue({
+      tasks: {
+        backlog: 2,
+        ready: 3,
+        inProgress: 4,
+        approved: 0,
+        merged: 5,
+        closed: 6,
+        total: 20,
+      },
+      runs: { active: 1, pending: 0 },
+    });
+    vi.spyOn(dashboardModule, "fetchDaemonDashboardState").mockResolvedValue(makeDashboardState({
+      projects: [MOCK_PROJECT],
+    }));
+
+    const state = await pollWatchData("/mock/project/../project");
+
+    expect(tasksList).toHaveBeenCalledWith({ projectId: "proj-1", limit: 1000 });
+    expect(mockProjectsStats).toHaveBeenCalledWith({ projectId: "proj-1" });
+    expect(state.board.total).toBe(1);
+  });
+
+  it("pollInboxData() matches a normalized project path and preserves explicit project selection", async () => {
+    const listMessages = vi.fn().mockResolvedValue([
+      { id: "msg-1", run_id: "run-1", step_key: null, stream: "agent", chunk: "hello", created_at: "2026-01-01T10:00:00Z" },
+    ]);
+    mockCreateTrpcClient.mockReturnValue({
+      tasks: { list: vi.fn() },
+      projects: { stats: mockProjectsStats, listNeedsHuman: mockProjectsListNeedsHuman },
+      runs: { listActive: mockRunsListActive, listMessages },
+    });
+
+    const store = {
+      getAllMessages: vi.fn().mockReturnValue([]),
+    } as unknown as ForemanStore;
+
+    const normalized = await pollInboxData(store, null, 5, ["run-1"], "/mock/project/../project");
+    const explicit = await pollInboxData(store, null, 5, ["run-1"], "/different/path", "registered-project");
+
+    expect(listMessages).toHaveBeenCalledTimes(2);
+    expect(normalized.messages).toHaveLength(1);
+    expect(explicit.messages).toHaveLength(1);
+  });
+
+  it("keeps local fallback behavior unchanged when no registered project matches", async () => {
+    mockListRegisteredProjects.mockResolvedValue([]);
+    const store = {
+      getAllMessages: vi.fn().mockReturnValue([
+        { id: "msg-1", run_id: "run-1", sender_agent_type: "agent", recipient_agent_type: "run", subject: "hello", body: "hello", read: 0, created_at: "2026-01-01T10:00:00Z", deleted_at: null },
+      ]),
+    } as unknown as ForemanStore;
+
+    const result = await pollInboxData(store, null, 5, ["run-1"], "/unregistered/project");
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(store.getAllMessages).toHaveBeenCalledWith("run-1");
+    expect(result.messages).toHaveLength(1);
   });
 });

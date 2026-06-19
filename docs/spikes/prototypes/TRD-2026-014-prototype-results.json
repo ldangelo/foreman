@@ -1,0 +1,502 @@
+{
+  "status": "pass",
+  "lifecycle": [
+    "create_task",
+    "approve_task",
+    "dispatch_simulated_worker",
+    "stream_status",
+    "complete_run",
+    "rebuild_read_model"
+  ],
+  "prototypes": {
+    "elixir_otp": {
+      "happy": {
+        "lifecycle": [
+          "create_task",
+          "approve_task",
+          "dispatch_simulated_worker",
+          "stream_status",
+          "complete_run",
+          "rebuild_read_model"
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "type": "TaskCreated",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 2,
+            "type": "TaskApproved",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 3,
+            "type": "WorkerDispatched",
+            "payload": {
+              "workerId": "elixir_otp-worker-1"
+            }
+          },
+          {
+            "sequence": 4,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_started"
+            }
+          },
+          {
+            "sequence": 5,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_output"
+            }
+          },
+          {
+            "sequence": 6,
+            "type": "RunCompleted",
+            "payload": {
+              "runId": "run-1"
+            }
+          }
+        ],
+        "projection": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [],
+          "lastStatus": "phase_output"
+        },
+        "rebuilt": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [],
+          "lastStatus": "phase_output"
+        }
+      },
+      "crash": {
+        "recoveryTimeline": [
+          "DOWN signal or heartbeat timeout observed by WorkerSupervisor",
+          "WorkerLost appended with last worker sequence",
+          "RecoverySupervisor reconciles event stream, OS process table, and worktree",
+          "PhaseServer requests replacement worker under DynamicSupervisor",
+          "WorkerRestarted appended and status projection exposes recovery timeline"
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "type": "TaskCreated",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 2,
+            "type": "TaskApproved",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 3,
+            "type": "WorkerDispatched",
+            "payload": {
+              "workerId": "elixir_otp-worker-1"
+            }
+          },
+          {
+            "sequence": 4,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_started"
+            }
+          },
+          {
+            "sequence": 5,
+            "type": "WorkerLost",
+            "payload": {
+              "via": "WorkerSupervisor",
+              "lastSequence": 4
+            }
+          },
+          {
+            "sequence": 6,
+            "type": "RecoveryStarted",
+            "payload": {
+              "via": "RecoverySupervisor"
+            }
+          },
+          {
+            "sequence": 7,
+            "type": "WorkerRestarted",
+            "payload": {
+              "via": "DynamicSupervisor"
+            }
+          },
+          {
+            "sequence": 8,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_recovered"
+            }
+          },
+          {
+            "sequence": 9,
+            "type": "RunCompleted",
+            "payload": {
+              "runId": "run-1"
+            }
+          }
+        ],
+        "projection": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [
+            "WorkerLost",
+            "RecoveryStarted",
+            "WorkerRestarted"
+          ],
+          "lastStatus": "phase_recovered"
+        },
+        "rebuilt": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [
+            "WorkerLost",
+            "RecoveryStarted",
+            "WorkerRestarted"
+          ],
+          "lastStatus": "phase_recovered"
+        }
+      }
+    },
+    "wolverine_marten": {
+      "happy": {
+        "lifecycle": [
+          "create_task",
+          "approve_task",
+          "dispatch_simulated_worker",
+          "stream_status",
+          "complete_run",
+          "rebuild_read_model"
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "type": "TaskCreated",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 2,
+            "type": "TaskApproved",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 3,
+            "type": "WorkerDispatched",
+            "payload": {
+              "workerId": "wolverine_marten-worker-1"
+            }
+          },
+          {
+            "sequence": 4,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_started"
+            }
+          },
+          {
+            "sequence": 5,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_output"
+            }
+          },
+          {
+            "sequence": 6,
+            "type": "RunCompleted",
+            "payload": {
+              "runId": "run-1"
+            }
+          }
+        ],
+        "projection": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [],
+          "lastStatus": "phase_output"
+        },
+        "rebuilt": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [],
+          "lastStatus": "phase_output"
+        }
+      },
+      "crash": {
+        "recoveryTimeline": [
+          "durable message remains in Wolverine inbox/outbox state",
+          "retry/error policy observes missing heartbeat or handler failure",
+          "saga/process state records retry intent",
+          "scheduled retry dispatches replacement Node/Pi worker adapter",
+          "Marten projection exposes recovery from event and message state"
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "type": "TaskCreated",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 2,
+            "type": "TaskApproved",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 3,
+            "type": "WorkerDispatched",
+            "payload": {
+              "workerId": "wolverine_marten-worker-1"
+            }
+          },
+          {
+            "sequence": 4,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_started"
+            }
+          },
+          {
+            "sequence": 5,
+            "type": "WorkerLost",
+            "payload": {
+              "via": "durable-message-retry",
+              "lastSequence": 4
+            }
+          },
+          {
+            "sequence": 6,
+            "type": "RecoveryStarted",
+            "payload": {
+              "via": "saga-scheduled-message"
+            }
+          },
+          {
+            "sequence": 7,
+            "type": "WorkerRestarted",
+            "payload": {
+              "via": "wolverine-handler"
+            }
+          },
+          {
+            "sequence": 8,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_recovered"
+            }
+          },
+          {
+            "sequence": 9,
+            "type": "RunCompleted",
+            "payload": {
+              "runId": "run-1"
+            }
+          }
+        ],
+        "projection": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [
+            "WorkerLost",
+            "RecoveryStarted",
+            "WorkerRestarted"
+          ],
+          "lastStatus": "phase_recovered"
+        },
+        "rebuilt": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [
+            "WorkerLost",
+            "RecoveryStarted",
+            "WorkerRestarted"
+          ],
+          "lastStatus": "phase_recovered"
+        }
+      }
+    },
+    "typescript_control": {
+      "happy": {
+        "lifecycle": [
+          "create_task",
+          "approve_task",
+          "dispatch_simulated_worker",
+          "stream_status",
+          "complete_run",
+          "rebuild_read_model"
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "type": "TaskCreated",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 2,
+            "type": "TaskApproved",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 3,
+            "type": "WorkerDispatched",
+            "payload": {
+              "workerId": "typescript_control-worker-1"
+            }
+          },
+          {
+            "sequence": 4,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_started"
+            }
+          },
+          {
+            "sequence": 5,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_output"
+            }
+          },
+          {
+            "sequence": 6,
+            "type": "RunCompleted",
+            "payload": {
+              "runId": "run-1"
+            }
+          }
+        ],
+        "projection": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [],
+          "lastStatus": "phase_output"
+        },
+        "rebuilt": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [],
+          "lastStatus": "phase_output"
+        }
+      },
+      "crash": {
+        "recoveryTimeline": [
+          "polling loop detects missing child process or heartbeat",
+          "custom recovery code writes WorkerLost event",
+          "custom dispatcher restarts child process",
+          "projection updates after bespoke retry path"
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "type": "TaskCreated",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 2,
+            "type": "TaskApproved",
+            "payload": {
+              "taskId": "task-1"
+            }
+          },
+          {
+            "sequence": 3,
+            "type": "WorkerDispatched",
+            "payload": {
+              "workerId": "typescript_control-worker-1"
+            }
+          },
+          {
+            "sequence": 4,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_started"
+            }
+          },
+          {
+            "sequence": 5,
+            "type": "WorkerLost",
+            "payload": {
+              "via": "polling-loop",
+              "lastSequence": 4
+            }
+          },
+          {
+            "sequence": 6,
+            "type": "RecoveryStarted",
+            "payload": {
+              "via": "custom-dispatcher"
+            }
+          },
+          {
+            "sequence": 7,
+            "type": "WorkerRestarted",
+            "payload": {
+              "via": "child_process"
+            }
+          },
+          {
+            "sequence": 8,
+            "type": "StatusStreamed",
+            "payload": {
+              "status": "phase_recovered"
+            }
+          },
+          {
+            "sequence": 9,
+            "type": "RunCompleted",
+            "payload": {
+              "runId": "run-1"
+            }
+          }
+        ],
+        "projection": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [
+            "WorkerLost",
+            "RecoveryStarted",
+            "WorkerRestarted"
+          ],
+          "lastStatus": "phase_recovered"
+        },
+        "rebuilt": {
+          "taskStatus": "approved",
+          "runStatus": "completed",
+          "recovery": [
+            "WorkerLost",
+            "RecoveryStarted",
+            "WorkerRestarted"
+          ],
+          "lastStatus": "phase_recovered"
+        }
+      }
+    }
+  },
+  "decision": "Elixir/OTP remains selected because native supervision best fits Foreman's local long-running worker/process recovery model."
+}

@@ -29,20 +29,21 @@ async function invokeRun(args: string[]): Promise<void> {
 }
 
 async function driveMergeQueueUntil(
-  harness: { drainMergeQueue: () => Promise<void>; getRunStatuses: () => Promise<string[]> },
+  harness: { drainMergeQueue: () => Promise<void> },
+  getStatuses: () => Promise<string[]>,
   predicate: (statuses: string[]) => boolean,
   timeoutMs = 10_000,
 ): Promise<string[]> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     await harness.drainMergeQueue();
-    const statuses = await harness.getRunStatuses();
+    const statuses = await getStatuses();
     if (predicate(statuses)) {
       return statuses;
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  return harness.getRunStatuses();
+  return getStatuses();
 }
 
 describe("full-run test runtime e2e", () => {
@@ -52,8 +53,8 @@ describe("full-run test runtime e2e", () => {
   afterEach(() => {
     process.chdir(originalCwd);
     delete process.env.FOREMAN_RUNTIME_MODE;
-    delete process.env.FOREMAN_TASK_STORE;
     delete process.env.FOREMAN_PHASE_RUNNER_MODULE;
+    delete process.env.FOREMAN_REGISTRY_BASE_DIR;
     if (tempHome) {
       rmSync(tempHome, { recursive: true, force: true });
       tempHome = undefined;
@@ -61,16 +62,17 @@ describe("full-run test runtime e2e", () => {
   });
 
   it("runs a detached native-task flow in test runtime without br installed", { timeout: 70_000 }, async () => {
-    const harness = createTempProjectHarness();
+    tempHome = mkdtempSync(join(tmpdir(), "foreman-no-br-home-"));
+    mkdirSync(join(tempHome, ".foreman"), { recursive: true });
+    process.env.HOME = tempHome;
+    process.env.FOREMAN_REGISTRY_BASE_DIR = join(tempHome, ".foreman");
+
+    const harness = await createTempProjectHarness();
     try {
-      tempHome = mkdtempSync(join(tmpdir(), "foreman-no-br-home-"));
-      mkdirSync(join(tempHome, ".foreman"), { recursive: true });
-      process.env.HOME = tempHome;
       process.env.FOREMAN_RUNTIME_MODE = "test";
-      process.env.FOREMAN_TASK_STORE = "native";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      await harness.seedTask({
+      const taskId = await harness.seedTask({
         title: "Full run deterministic happy path",
         scenario: {
           kind: "create",
@@ -84,6 +86,7 @@ describe("full-run test runtime e2e", () => {
       await harness.waitForTerminalRuns(1, 20_000);
       const statuses = await driveMergeQueueUntil(
         harness,
+        async () => [await harness.getTaskStatus(taskId) ?? "missing"],
         (values) => values.includes("merged"),
       );
 

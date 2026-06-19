@@ -8,6 +8,7 @@ import { MergeValidator } from "./merge-validator.js";
 import type { ConflictPatterns } from "./conflict-patterns.js";
 import { REPORT_FILES } from "../lib/archive-reports.js";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -102,7 +103,9 @@ export class ConflictResolver {
     private projectPath: string,
     private config: MergeQueueConfig,
     private vcs?: VcsBackend,
-  ) {}
+  ) {
+    this.vcs = vcs ?? VcsBackendFactory.createSync({ backend: "git" }, projectPath);
+  }
 
   /** Add to the running session cost total (for testing or external tracking). */
   addSessionCost(amount: number): void {
@@ -206,9 +209,12 @@ export class ConflictResolver {
     }
   }
 
-  private async gitMergeNoCommit(source: string): Promise<{ ok: boolean; conflicts: string[] }> {
+  private async gitMergeNoCommit(
+    source: string,
+    targetBranch: string,
+  ): Promise<{ ok: boolean; conflicts: string[] }> {
     if (this.vcs) {
-      const result = await this.vcs.mergeWithoutCommit(this.projectPath, source, "");
+      const result = await this.vcs.mergeWithoutCommit(this.projectPath, source, targetBranch);
       return { ok: result.success, conflicts: result.conflicts ?? [] };
     }
     const result = await this.gitTry(["merge", source, "--no-commit", "--no-ff"]);
@@ -471,7 +477,7 @@ export class ConflictResolver {
     // Ensure we are on the target branch
     await this.gitCheckoutBranch(targetBranch);
 
-    const mergeResult = await this.gitMergeNoCommit(branchName);
+    const mergeResult = await this.gitMergeNoCommit(branchName, targetBranch);
 
     if (mergeResult.ok) {
       // No conflicts — commit the merge
@@ -888,7 +894,7 @@ export class ConflictResolver {
 
     // ── Step 2: Re-start merge in --no-commit mode for per-file resolution ──
     await this.gitCheckoutBranch(targetBranch);
-    await this.gitMergeNoCommit(branchName);
+    await this.gitMergeNoCommit(branchName, targetBranch);
 
     // ── Step 3: Per-file cascade ──
     const ext = (f: string) => path.extname(f);
@@ -1005,13 +1011,13 @@ export class ConflictResolver {
    *
    * Runs the project test suite after a merge that used AI resolution
    * (Tier 3 or Tier 4). Skips for clean merges and deterministic-only
-   * resolution. On failure, reverts the merge commit with
-   * `git reset --hard HEAD~1`.
+   * resolution. On failure, rolls back the merge commit to a known pre-merge ref.
    */
   async runPostMergeTests(
     resolvedTiers: Map<string, number>,
     testCommand: string = "npm test",
     noTests: boolean = false,
+    beforeRef: string = "HEAD~1",
   ): Promise<PostMergeTestResult> {
     // Skip if --no-tests
     if (noTests) {
@@ -1056,7 +1062,11 @@ export class ConflictResolver {
       ).trim();
 
       // Revert the merge commit
-      await this.gitResetHard("HEAD~1");
+      if (this.vcs) {
+        await this.vcs.rollbackFailedMerge(this.projectPath, beforeRef);
+      } else {
+        await this.gitResetHard(beforeRef);
+      }
 
       return {
         passed: false,

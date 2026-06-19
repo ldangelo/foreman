@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-Foreman is migrating from the **beads-first architecture** (beads_rust `br` as the sole task store) to **native task management** (SQLite-backed tasks in `foreman.db`, multi-project support). During this transition, many documents describe the older system state. Readers need an immediate visual signal to distinguish archived design documents from current operating procedures.
+Foreman is migrating from the **beads-first architecture** (beads_rust `br` as the sole task store) to **native task management** (Postgres-backed tasks in `foreman.db`, multi-project support). During this transition, many documents describe the older system state. Readers need an immediate visual signal to distinguish archived design documents from current operating procedures.
 
 **This PRD defines a Historical Context Banner System** that injects standardized notices into archived documents while leaving active operator docs untouched.
 

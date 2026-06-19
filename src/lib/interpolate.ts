@@ -8,9 +8,9 @@ export interface TaskMeta {
   type: string;
   priority: number;
   /**
-   * Stable directory for phase artifacts (PRD, TRD, reports).
-   * Computed as join(worktreePath, 'docs', 'reports').
-   * Skills write artifacts here so they are versioned with the worktree.
+   * Stable directory for phase artifacts/reports.
+   * Defaults to Foreman's private report store under ~/.foreman/reports.
+   * Runtime artifacts are not written to the agent worktree by default.
    */
   projectReportsDir?: string;
 }

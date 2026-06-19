@@ -1,27 +1,58 @@
-import { access, stat, rm, readFile, readdir, writeFile, chmod } from "node:fs/promises";
-import { existsSync, realpathSync } from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
+import { access, stat, rm, readFile, readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { ForemanStore } from "../lib/store.js";
-import type { Run } from "../lib/store.js";
+import type { Project, Run } from "../lib/store.js";
 import { archiveWorktreeReports } from "../lib/archive-reports.js";
 import type { CheckResult, DoctorReport } from "./types.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn } from "./merge-queue.js";
+import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn, ReconcileResult } from "./merge-queue.js";
 import type { ITaskClient } from "../lib/task-client.js";
+import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
-import { VcsBackendFactory } from "../lib/vcs/index.js";
-import type { VcsBackend } from "../lib/vcs/interface.js";
+import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
 import { GhCli } from "../lib/gh-cli.js";
 import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
+import { JiraApiClient } from "../daemon/jira-api-client.js";
 
 const execFileAsync = promisify(execFile);
+
+type MaybePromise<T> = T | Promise<T>;
+type MergeQueueListStatus = Parameters<MergeQueue["list"]>[0];
+type MergeQueueUpdateStatus = Parameters<MergeQueue["updateStatus"]>[1];
+type MergeQueueUpdateExtra = Parameters<MergeQueue["updateStatus"]>[2];
+
+interface MergeQueueLike {
+  list(status?: MergeQueueListStatus): MaybePromise<MergeQueueEntry[]>;
+  missingFromQueue(): MaybePromise<Array<{ run_id: string; seed_id: string }>>;
+  updateStatus(
+    id: number,
+    status: MergeQueueUpdateStatus,
+    extra?: MergeQueueUpdateExtra,
+  ): MaybePromise<void>;
+  remove(id: number): MaybePromise<void>;
+  reEnqueue(id: number): MaybePromise<boolean>;
+}
+
+interface RunLookupLike {
+  getRun(id: string): MaybePromise<Run | null>;
+  getProjectByPath(path: string): MaybePromise<Project | null>;
+  getRunsByStatuses(
+    statuses: Parameters<ForemanStore["getRunsByStatuses"]>[0],
+    projectId?: string,
+  ): MaybePromise<ReturnType<ForemanStore["getRunsByStatuses"]>>;
+  getRunsByStatus(status: Run["status"], projectId?: string): MaybePromise<Run[]>;
+  getActiveRuns(projectId?: string): MaybePromise<Run[]>;
+  getRunsForSeed(seedId: string, projectId?: string): MaybePromise<Run[]>;
+  updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at">>): MaybePromise<void>;
+}
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -48,22 +79,14 @@ function isSDKBasedRun(sessionKey: string | null): boolean {
   return sessionKey?.startsWith("foreman:sdk:") ?? false;
 }
 
-function normalizeRuntimePath(path: string | null | undefined): string | null {
-  if (!path) return null;
-  const resolved = resolvePath(path);
-  if (!existsSync(resolved)) return resolved;
-  try {
-    return realpathSync.native?.(resolved) ?? realpathSync(resolved);
-  } catch {
-    return resolved;
-  }
-}
-
 // ── Doctor class ─────────────────────────────────────────────────────────
 
 export class Doctor {
   private mergeQueue?: MergeQueue;
+  private mergeQueueLike?: MergeQueueLike;
   private taskClient?: ITaskClient;
+  private backendType?: TaskClientBackend;
+  private runLookup?: RunLookupLike;
   private vcsBackendPromise?: Promise<VcsBackend>;
   /**
    * Injected execFile-like function used only by `isBranchMerged`.
@@ -78,15 +101,57 @@ export class Doctor {
     mergeQueue?: MergeQueue,
     taskClient?: ITaskClient,
     execFn?: ExecFileAsyncFn,
+    mergeQueueLike?: MergeQueueLike,
+    runLookup?: RunLookupLike,
+    backendType?: TaskClientBackend,
   ) {
     this.mergeQueue = mergeQueue;
+    this.mergeQueueLike = mergeQueueLike ?? mergeQueue;
     this.taskClient = taskClient;
+    this.backendType = backendType;
+    this.runLookup = runLookup;
     this.execFn = execFn ?? (execFileAsync as ExecFileAsyncFn);
+  }
+
+  private isNativeTaskBackend(): boolean {
+    return this.backendType === "native";
+  }
+
+  private getMergeQueueLike(): MergeQueueLike | null {
+    return this.mergeQueueLike ?? null;
+  }
+
+  private getRunStore(): RunLookupLike {
+    return this.runLookup ?? this.store;
   }
 
   private getVcsBackend(): Promise<VcsBackend> {
     this.vcsBackendPromise ??= VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
     return this.vcsBackendPromise;
+  }
+
+  private async getRunById(runId: string): Promise<Run | null> {
+    if (this.runLookup) {
+      return await Promise.resolve(this.runLookup.getRun(runId));
+    }
+    return this.store.getRun(runId);
+  }
+
+  private async reconcileMissingCompletedRuns(projectPath: string): Promise<ReconcileResult> {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
+      throw new Error("No merge queue configured");
+    }
+    const localQueue = this.mergeQueue;
+    if (!localQueue) {
+      throw new Error("No local merge queue configured");
+    }
+
+    if (this.runLookup) {
+      return await Promise.resolve((mergeQueue as unknown as { reconcile(repoPath: string): MaybePromise<ReconcileResult> }).reconcile(projectPath));
+    }
+
+    return await Promise.resolve(localQueue.reconcile(this.store.getDb(), projectPath));
   }
 
   private getNativeTaskCount(): number {
@@ -132,6 +197,14 @@ export class Doctor {
   // ── System checks ──────────────────────────────────────────────────
 
   async checkBrBinary(): Promise<CheckResult> {
+    if (this.isNativeTaskBackend()) {
+      return {
+        name: "br (beads_rust) CLI binary",
+        status: "pass",
+        message: "Native task backend active — br not required.",
+      };
+    }
+
     const brPath = join(homedir(), ".local", "bin", "br");
     try {
       await access(brPath);
@@ -157,6 +230,14 @@ export class Doctor {
   }
 
   async checkBvBinary(): Promise<CheckResult> {
+    if (this.isNativeTaskBackend()) {
+      return {
+        name: "bv (beads_viewer) CLI binary",
+        status: "pass",
+        message: "Native task backend active — bv not required.",
+      };
+    }
+
     const bvPath = join(homedir(), ".local", "bin", "bv");
     try {
       await access(bvPath);
@@ -485,7 +566,110 @@ export class Doctor {
       }
     }
   }
-
+  /**
+   * Check Jira API connectivity and authentication.
+   */
+  async checkJiraAuth(): Promise<CheckResult> {
+    const config = loadProjectConfig(this.projectPath);
+    const issueTracker = config?.issueTracker;
+    if (!issueTracker || issueTracker.backend !== "jira") {
+      return {
+        name: "Jira",
+        status: "skip",
+        message: "No Jira configuration found",
+      };
+    }
+    const { jira } = issueTracker;
+    // Decrypt the API token
+    let apiToken: string;
+    try {
+      const { decrypt } = await import("../lib/encryption.js");
+      apiToken = await decrypt(jira.apiToken);
+    } catch (err) {
+      return {
+        name: "Jira",
+        status: "fail",
+        message: `Failed to decrypt API token: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    try {
+      const client = new JiraApiClient({
+        apiUrl: jira.apiUrl,
+        email: jira.email,
+        apiToken,
+      });
+      await client.authenticate();
+      return {
+        name: "Jira",
+        status: "pass",
+        message: "Connected to Jira",
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("authentication failed") || msg.includes("401")) {
+        return {
+          name: "Jira",
+          status: "fail",
+          message: "Authentication failed. Check email and API token.",
+        };
+      }
+      if (msg.includes("403")) {
+        return {
+          name: "Jira",
+          status: "fail",
+          message: "Access forbidden. Check Jira permissions.",
+        };
+      }
+      return {
+        name: "Jira",
+        status: "fail",
+        message: `Connection failed: ${msg.slice(0, 200)}`,
+      };
+    }
+  }
+  /**
+   * Check Jira webhook endpoint configuration (TRD-032).
+   */
+  async checkJiraWebhook(): Promise<CheckResult> {
+    const config = loadProjectConfig(this.projectPath);
+    const issueTracker = config?.issueTracker;
+    if (!issueTracker || issueTracker.backend !== "jira") {
+      return {
+        name: "Jira Webhook",
+        status: "skip",
+        message: "No Jira configuration found",
+      };
+    }
+    const jiraConfig = issueTracker.jira;
+    if (!jiraConfig.webhookEnabled) {
+      return {
+        name: "Jira Webhook",
+        status: "skip",
+        message: "Webhook disabled (polling-only mode)",
+      };
+    }
+    const secretEnvVar = jiraConfig.webhookSecretEnvVar ?? "FOREMAN_JIRA_WEBHOOK_SECRET";
+    const secret = process.env[secretEnvVar];
+    if (!secret) {
+      return {
+        name: "Jira Webhook",
+        status: "warn",
+        message: `Webhook enabled but ${secretEnvVar} not set`,
+      };
+    }
+    if (!/^[a-f0-9]{64}$/i.test(secret)) {
+      return {
+        name: "Jira Webhook",
+        status: "warn",
+        message: "Webhook secret appears invalid (should be 64 hex chars)",
+      };
+    }
+    return {
+      name: "Jira Webhook",
+      status: "pass",
+      message: "Webhook endpoint configured at /webhooks/jira",
+    };
+  }
   /**
    * Check gh CLI authentication status.
    */
@@ -554,13 +738,13 @@ export class Doctor {
       };
     }
   }
-
-
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
     // TRD-028: Add Jujutsu binary and colocated mode checks.
     // TRD-067: Add daemon health, Postgres connectivity, and gh auth checks.
-    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult, poolCapacityResult] = await Promise.all([
+    // TRD-013: Add Jira connectivity check.
+    // TRD-032: Add Jira webhook endpoint check.
+    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult, poolCapacityResult, jiraResult, jiraWebhookResult] = await Promise.all([
       this.checkBrBinary(),
       this.checkBvBinary(),
       this.checkGitBinary(),
@@ -573,11 +757,15 @@ export class Doctor {
       this.checkPostgresConnectivity(),
       this.checkGhAuth(),
       this.checkPoolCapacity(),
+      this.checkJiraAuth(),
+      this.checkJiraWebhook(),
     ]);
     return [
       daemonResult,
       postgresResult,
       ghAuthResult,
+      jiraResult,
+      jiraWebhookResult,
       brResult,
       bvResult,
       gitResult,
@@ -593,7 +781,7 @@ export class Doctor {
   /**
    * Check for stale agent log files in ~/.foreman/logs/.
    * Warns when there are many log groups older than 7 days,
-   * encouraging the user to run `foreman purge-logs` or `foreman doctor --clean-logs`.
+   * encouraging the user to run `foreman purge logs` or `foreman doctor --clean-logs`.
    */
   async checkOldLogs(thresholdDays = 7, warnThreshold = 10): Promise<CheckResult> {
     const logsDir = join(homedir(), ".foreman", "logs");
@@ -661,7 +849,7 @@ export class Doctor {
       return {
         name: "old agent log files",
         status: "pass",
-        message: `${oldRunIds.size} log group(s) older than ${thresholdDays} days (${totalRunIds.size} total) — run 'foreman purge-logs' to clean up`,
+        message: `${oldRunIds.size} log group(s) older than ${thresholdDays} days (${totalRunIds.size} total) — run 'foreman purge logs' to clean up`,
       };
     }
 
@@ -669,7 +857,7 @@ export class Doctor {
       name: "old agent log files",
       status: "warn",
       message: `${oldRunIds.size} log group(s) older than ${thresholdDays} days (${totalRunIds.size} total)`,
-      details: "Run 'foreman purge-logs' or 'foreman doctor --clean-logs' to reclaim disk space",
+      details: "Run 'foreman purge logs' or 'foreman doctor --clean-logs' to reclaim disk space",
     };
   }
 
@@ -694,7 +882,7 @@ export class Doctor {
   }
 
   async checkProjectRegistered(): Promise<CheckResult> {
-    const project = this.store.getProjectByPath(this.projectPath);
+    const project = await Promise.resolve(this.getRunStore().getProjectByPath(this.projectPath));
     if (project) {
       return {
         name: "project registered in foreman",
@@ -710,58 +898,26 @@ export class Doctor {
   }
 
   async checkBeadsInitialized(): Promise<CheckResult> {
-    const beadsDir = join(this.projectPath, ".beads");
-    if (existsSync(beadsDir)) {
-      return {
-        name: "beads (.beads/) initialized",
-        status: "pass",
-        message: ".beads directory found",
-      };
-    }
-    if (this.getNativeTaskCount() > 0) {
-      return {
-        name: "beads (.beads/) initialized",
-        status: "skip",
-        message: "Native task store active — beads fallback not required",
-      };
-    }
+    // Native task store only — beads directory not required
     return {
       name: "beads (.beads/) initialized",
-      status: "fail",
-      message: `No .beads directory at ${beadsDir}. Run 'foreman init' first.`,
+      status: "skip",
+      message: "Native task backend active — beads not required",
     };
   }
 
   async checkTaskStoreMode(): Promise<CheckResult> {
     const nativeTaskCount = this.getNativeTaskCount();
-    const beadsIssueCount = await this.getBeadsIssueCount();
-
-    if (nativeTaskCount > 0 && beadsIssueCount > 0) {
-      return {
-        name: "task store mode",
-        status: "warn",
-        message: `Task store: native (${nativeTaskCount} tasks)`,
-        details: "Both native task store and beads data exist. Run 'foreman task import --from-beads' and then remove .beads/ to complete migration.",
-      };
-    }
-
-    if (nativeTaskCount > 0) {
-      return {
-        name: "task store mode",
-        status: "pass",
-        message: `Task store: native (${nativeTaskCount} tasks)`,
-      };
-    }
 
     return {
-      name: "task store mode",
+      name: "task store",
       status: "pass",
-      message: "Task store: beads (fallback)",
+      message: `Native task store active (${nativeTaskCount} tasks). Beads fallback has been removed — the native Postgres store is the only supported task store.`,
     };
   }
 
   /**
-   * Check that all required prompt files are installed in .foreman/prompts/.
+   * Check that all required prompt files are installed in ~/.foreman/prompts/.
    * With --fix, reinstalls missing prompts from bundled defaults.
    */
   async checkPrompts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
@@ -773,7 +929,7 @@ export class Doctor {
 
     if (problemCount === 0) {
       return {
-        name: "prompt templates (.foreman/prompts/)",
+        name: "prompt templates (~/.foreman/prompts/)",
         status: "pass",
         message: "All required prompt files are installed",
       };
@@ -784,7 +940,7 @@ export class Doctor {
 
     if (dryRun) {
       return {
-        name: "prompt templates (.foreman/prompts/)",
+        name: "prompt templates (~/.foreman/prompts/)",
         status: "fail",
         message:
           `${problemCount} prompt issue(s): ` +
@@ -804,14 +960,14 @@ export class Doctor {
         const stillStale = findStalePrompts(this.projectPath);
         if (stillMissing.length === 0 && stillStale.length === 0) {
           return {
-            name: "prompt templates (.foreman/prompts/)",
+            name: "prompt templates (~/.foreman/prompts/)",
             status: "fixed",
             message: `${problemCount} prompt issue(s)`,
             fixApplied: `Installed ${installed.length} prompt file(s) from bundled defaults`,
           };
         } else {
           return {
-            name: "prompt templates (.foreman/prompts/)",
+            name: "prompt templates (~/.foreman/prompts/)",
             status: "fail",
             message: `Prompt issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")}`,
           };
@@ -819,7 +975,7 @@ export class Doctor {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          name: "prompt templates (.foreman/prompts/)",
+          name: "prompt templates (~/.foreman/prompts/)",
           status: "fail",
           message: `Failed to reinstall prompts: ${msg}`,
         };
@@ -827,7 +983,7 @@ export class Doctor {
     }
 
     return {
-      name: "prompt templates (.foreman/prompts/)",
+      name: "prompt templates (~/.foreman/prompts/)",
       status: "fail",
       message:
         `${problemCount} prompt issue(s): ` +
@@ -900,93 +1056,12 @@ export class Doctor {
   }
 
   /**
-   * Check that all bundled workflow YAML files are installed in .foreman/workflows/
+   * Check that all bundled workflow YAML files are installed in ~/.foreman/workflows/
    * and that locally installed files have the required verdict/retry config fields.
    *
    * With --fix, reinstalls ALL workflow configs (including stale ones) from bundled
    * defaults using force=true so that outdated local copies are overwritten.
    */
-  private async detectDestructiveBdHookShims(): Promise<string[]> {
-    const hooksDir = join(this.projectPath, ".git", "hooks");
-    const canonicalBeadsDb = join(this.projectPath, ".beads", "beads.db");
-    const embeddedDoltDir = join(this.projectPath, ".beads", "embeddeddolt", "beads", ".dolt");
-
-    if (!existsSync(canonicalBeadsDb) || !existsSync(embeddedDoltDir)) {
-      return [];
-    }
-
-    const candidates = [
-      "pre-commit.orig",
-      "pre-push.orig",
-      "post-merge",
-      "post-checkout",
-      "prepare-commit-msg",
-    ];
-
-    const destructive: string[] = [];
-    for (const name of candidates) {
-      const hookPath = join(hooksDir, name);
-      if (!existsSync(hookPath)) continue;
-      try {
-        const content = await readFile(hookPath, "utf8");
-        if (content.includes("BEGIN BEADS INTEGRATION") && content.includes("bd hooks run")) {
-          destructive.push(hookPath);
-        }
-      } catch {
-        // Non-fatal: unreadable hooks are ignored here and may be caught by other checks.
-      }
-    }
-
-    return destructive;
-  }
-
-  async checkBeadsGitHooks(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
-    const { fix = false, dryRun = false } = opts;
-    const destructiveHooks = await this.detectDestructiveBdHookShims();
-
-    if (destructiveHooks.length === 0) {
-      return {
-        name: "beads git hooks",
-        status: "pass",
-        message: "No destructive bd hook shims detected",
-      };
-    }
-
-    const hookNames = destructiveHooks.map((path) => path.split("/").at(-1) ?? path).join(", ");
-
-    if (dryRun) {
-      return {
-        name: "beads git hooks",
-        status: "warn",
-        message: `Detected ${destructiveHooks.length} destructive bd hook shim(s): ${hookNames}. Would disable them (dry-run).`,
-        details: "These hooks export .beads/issues.jsonl from embedded Dolt instead of the canonical .beads/beads.db store.",
-      };
-    }
-
-    if (!fix) {
-      return {
-        name: "beads git hooks",
-        status: "warn",
-        message: `Detected ${destructiveHooks.length} destructive bd hook shim(s): ${hookNames}. Run 'foreman doctor --fix' to disable them.`,
-        details: "These hooks export .beads/issues.jsonl from embedded Dolt instead of the canonical .beads/beads.db store.",
-      };
-    }
-
-    const disabledHook = "#!/usr/bin/env sh\n# Disabled by foreman doctor: this repo uses br, and the installed bd hook layer\n# exports from embedded Dolt, which can clobber .beads/issues.jsonl.\nexit 0\n";
-
-    for (const hookPath of destructiveHooks) {
-      await writeFile(hookPath, disabledHook, "utf8");
-      await chmod(hookPath, 0o755);
-    }
-
-    return {
-      name: "beads git hooks",
-      status: "fixed",
-      message: `Disabled ${destructiveHooks.length} destructive bd hook shim(s): ${hookNames}`,
-      fixApplied: `Replaced ${destructiveHooks.length} destructive bd hook shim(s) with inert local shims`,
-    };
-  }
-
   async checkWorkflows(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
@@ -997,7 +1072,7 @@ export class Doctor {
 
     if (problemCount === 0) {
       return {
-        name: "workflow configs (.foreman/workflows/)",
+        name: "workflow configs (~/.foreman/workflows/)",
         status: "pass",
         message: "All required workflow config files are installed",
       };
@@ -1014,7 +1089,7 @@ export class Doctor {
 
     if (dryRun) {
       return {
-        name: "workflow configs (.foreman/workflows/)",
+        name: "workflow configs (~/.foreman/workflows/)",
         status: "fail",
         message: `${problemCount} workflow config issue(s): ${problemDesc}. Would reinstall (dry-run).`,
       };
@@ -1030,21 +1105,21 @@ export class Doctor {
         const stillStale = findStaleWorkflows(this.projectPath);
         if (stillMissing.length === 0 && stillStale.length === 0) {
           return {
-            name: "workflow configs (.foreman/workflows/)",
+            name: "workflow configs (~/.foreman/workflows/)",
             status: "fixed",
             message: `${problemCount} workflow config issue(s)`,
             fixApplied: `Reinstalled ${installed.length} workflow config(s) from bundled defaults`,
           };
         }
         return {
-          name: "workflow configs (.foreman/workflows/)",
+          name: "workflow configs (~/.foreman/workflows/)",
           status: "fail",
           message: `Workflow config issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")}`,
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          name: "workflow configs (.foreman/workflows/)",
+          name: "workflow configs (~/.foreman/workflows/)",
           status: "fail",
           message: `Failed to reinstall workflow configs: ${msg}`,
         };
@@ -1052,7 +1127,7 @@ export class Doctor {
     }
 
     return {
-      name: "workflow configs (.foreman/workflows/)",
+      name: "workflow configs (~/.foreman/workflows/)",
       status: "fail",
       message: `${problemCount} workflow config issue(s): ${problemDesc}. Run 'foreman init' or 'foreman doctor --fix' to reinstall.`,
     };
@@ -1065,7 +1140,6 @@ export class Doctor {
     results.push(await this.checkTaskStoreMode());
     results.push(await this.checkProjectRegistered());
     results.push(await this.checkBeadsInitialized());
-    results.push(await this.checkBeadsGitHooks(opts));
     results.push(await this.checkPrompts(opts));
     results.push(await this.checkPiSkills(opts));
     results.push(await this.checkWorkflows(opts));
@@ -1077,6 +1151,10 @@ export class Doctor {
   async checkOrphanedWorktrees(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
     const { fix = false, dryRun = false } = opts;
+    const runStore = this.getRunStore();
+    const project = this.runLookup
+      ? await Promise.resolve(runStore.getProjectByPath(this.projectPath))
+      : null;
 
     let worktrees;
     try {
@@ -1105,11 +1183,11 @@ export class Doctor {
 
     for (const wt of foremanWorktrees) {
       const seedId = wt.branch.slice("foreman/".length);
-      const runs = this.store.getRunsForSeed(seedId);
-      const normalizedWorktreePath = normalizeRuntimePath(wt.path);
+      const runs = project?.id
+        ? await Promise.resolve(runStore.getRunsForSeed(seedId, project.id))
+        : await Promise.resolve(runStore.getRunsForSeed(seedId));
       const activeRun = runs.find((r: Run) =>
-        ["pending", "running"].includes(r.status)
-        && normalizeRuntimePath(r.worktree_path) === normalizedWorktreePath,
+        ["pending", "running"].includes(r.status) && r.worktree_path === wt.path,
       );
       const completedRun = runs.find((r: Run) => r.status === "completed");
       const mergedRun = runs.find((r: Run) => r.status === "merged");
@@ -1262,10 +1340,11 @@ export class Doctor {
 
   async checkZombieRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const { fix = false, dryRun = false } = opts;
-    const project = this.store.getProjectByPath(this.projectPath);
+    const runStore = this.getRunStore();
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) return [];
 
-    const runningRuns = this.store.getRunsByStatus("running", project.id);
+    const runningRuns = await Promise.resolve(runStore.getRunsByStatus("running", project.id));
     if (runningRuns.length === 0) {
       return [
         {
@@ -1278,7 +1357,9 @@ export class Doctor {
 
     const results: CheckResult[] = [];
     for (const run of runningRuns) {
-      const currentRun = this.store.getRun(run.id);
+      const currentRun = "getRun" in runStore
+        ? await Promise.resolve(runStore.getRun(run.id))
+        : null;
       if (currentRun && (currentRun.status === "merged" || currentRun.status === "pr-created")) {
         results.push({
           name: `run: ${run.seed_id} [${run.agent_type}]`,
@@ -1287,7 +1368,6 @@ export class Doctor {
         });
         continue;
       }
-
       // Pi-based workers do not store a PID in session_key.
       // Liveness is detected only by stale timeouts, not PID checks.
       if (isSDKBasedRun(run.session_key)) {
@@ -1316,10 +1396,10 @@ export class Doctor {
             message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Would mark failed (dry-run).`,
           });
         } else if (fix) {
-          this.store.updateRun(run.id, {
+          await Promise.resolve(runStore.updateRun(run.id, {
             status: "failed",
             completed_at: new Date().toISOString(),
-          });
+          }));
           results.push({
             name: `run: ${run.seed_id} [${run.agent_type}]`,
             status: "fixed",
@@ -1341,7 +1421,8 @@ export class Doctor {
 
   async checkStalePendingRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
-    const project = this.store.getProjectByPath(this.projectPath);
+    const runStore = this.getRunStore();
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) {
       return {
         name: "stale pending runs",
@@ -1350,7 +1431,7 @@ export class Doctor {
       };
     }
 
-    const pendingRuns = this.store.getRunsByStatus("pending", project.id);
+    const pendingRuns = await Promise.resolve(runStore.getRunsByStatus("pending", project.id));
     const staleThresholdMs = PIPELINE_TIMEOUTS.staleRunHours * 60 * 60 * 1000;
     const now = Date.now();
 
@@ -1377,10 +1458,10 @@ export class Doctor {
 
     if (fix) {
       for (const run of staleRuns) {
-        this.store.updateRun(run.id, {
+        await Promise.resolve(runStore.updateRun(run.id, {
           status: "failed",
           completed_at: new Date().toISOString(),
-        });
+        }));
       }
       return {
         name: `stale pending runs (>${PIPELINE_TIMEOUTS.staleRunHours}h)`,
@@ -1447,7 +1528,8 @@ export class Doctor {
 
   async checkFailedStuckRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const { fix = false, dryRun = false } = opts;
-    const project = this.store.getProjectByPath(this.projectPath);
+    const runStore = this.getRunStore();
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) return [];
 
     const results: CheckResult[] = [];
@@ -1471,7 +1553,8 @@ export class Doctor {
     /**
      * For a set of runs (all failed or all stuck), filter out those that are
      * already resolved (seed closed or branch merged) and auto-mark them as
-     * completed in the store.  Returns the subset that still needs attention.
+     * merged in the store when fixing.  Returns the subset that still needs
+     * attention.
      */
     const filterAutoResolved = async (
       runs: import("../lib/store.js").Run[],
@@ -1482,7 +1565,9 @@ export class Doctor {
       for (const run of runs) {
         // If the bead/seed is already closed, the run record is stale.
         if (closedSeeds.has(run.seed_id)) {
-          this.store.updateRun(run.id, { status: "completed" });
+          if (fix && !dryRun) {
+            await Promise.resolve(runStore.updateRun(run.id, { status: "merged" }));
+          }
           autoResolvedCount++;
           continue;
         }
@@ -1490,7 +1575,9 @@ export class Doctor {
         // If the branch has already been merged, the run is done.
         const merged = await this.isBranchMerged(run.seed_id, defaultBranch);
         if (merged) {
-          this.store.updateRun(run.id, { status: "completed" });
+          if (fix && !dryRun) {
+            await Promise.resolve(runStore.updateRun(run.id, { status: "merged" }));
+          }
           autoResolvedCount++;
           continue;
         }
@@ -1501,8 +1588,8 @@ export class Doctor {
       return { unresolved, autoResolvedCount };
     };
 
-    const failedRuns = this.store.getRunsByStatus("failed", project.id);
-    const stuckRuns = this.store.getRunsByStatus("stuck", project.id);
+    const failedRuns = await Promise.resolve(runStore.getRunsByStatus("failed", project.id));
+    const stuckRuns = await Promise.resolve(runStore.getRunsByStatus("stuck", project.id));
 
     const { unresolved: unresolvedFailed, autoResolvedCount: failedResolved } =
       await filterAutoResolved(failedRuns);
@@ -1511,19 +1598,27 @@ export class Doctor {
 
     const totalResolved = failedResolved + stuckResolved;
     if (totalResolved > 0) {
-      results.push({
-        name: "failed/stuck runs (auto-resolved)",
-        status: "fixed",
-        message: `Auto-resolved ${totalResolved} run(s) whose branch was already merged or seed was already closed`,
-        fixApplied: `Marked ${totalResolved} run(s) as completed`,
-      });
+      if (fix && !dryRun) {
+        results.push({
+          name: "failed/stuck runs (auto-resolved)",
+          status: "fixed",
+          message: `Auto-resolved ${totalResolved} run(s) whose branch was already merged or seed was already closed`,
+          fixApplied: `Marked ${totalResolved} run(s) as merged`,
+        });
+      } else {
+        results.push({
+          name: "failed/stuck runs (auto-resolved)",
+          status: "warn",
+          message: `Found ${totalResolved} run(s) eligible for auto-resolution because their branch was already merged or seed was already closed${dryRun ? " (dry-run)" : ""}. Re-run with --fix to apply.`,
+        });
+      }
     }
 
     // ── Distinguish actionable vs. noise failures ─────────────────────────────
     // A failed run is "noise" (historical retry) if the same seed has a later
     // successful run (completed or merged).  These are not actionable.
     const { actionable: actionableFailed, historical: historicalFailed } =
-      this.partitionByHistoricalRetry(unresolvedFailed);
+      await this.partitionByHistoricalRetry(unresolvedFailed, runStore, project.id);
 
     // ── Age-based cleanup of historical-retry runs ────────────────────────────
     // Historical retries that are older than the retention threshold can be
@@ -1563,7 +1658,7 @@ export class Doctor {
       } else if (fix) {
         const allAged = [...agedHistoricalFailed, ...agedStuck];
         for (const run of allAged) {
-          this.store.updateRun(run.id, { status: "completed" });
+          await Promise.resolve(runStore.updateRun(run.id, { status: "completed" }));
         }
         results.push({
           name: `failed/stuck runs (aged, cleaned up)`,
@@ -1629,14 +1724,16 @@ export class Doctor {
    * Partition unresolved failed runs into "actionable" (seed has only failed runs)
    * and "historical" (seed has a later completed or merged run — noise from retries).
    */
-  private partitionByHistoricalRetry(
+  private async partitionByHistoricalRetry(
     runs: import("../lib/store.js").Run[],
-  ): { actionable: import("../lib/store.js").Run[]; historical: import("../lib/store.js").Run[] } {
+    runStore: RunLookupLike = this.getRunStore(),
+    projectId?: string,
+  ): Promise<{ actionable: import("../lib/store.js").Run[]; historical: import("../lib/store.js").Run[] }> {
     const actionable: import("../lib/store.js").Run[] = [];
     const historical: import("../lib/store.js").Run[] = [];
 
     for (const run of runs) {
-      const allSeedRuns = this.store.getRunsForSeed(run.seed_id);
+      const allSeedRuns = await Promise.resolve(runStore.getRunsForSeed(run.seed_id, projectId));
       const hasLaterSuccess = allSeedRuns.some(
         (r) =>
           ["completed", "merged"].includes(r.status) &&
@@ -1654,14 +1751,15 @@ export class Doctor {
 
   async checkRunStateConsistency(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const { fix = false, dryRun = false } = opts;
-    const project = this.store.getProjectByPath(this.projectPath);
+    const runStore = this.getRunStore();
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) return [];
 
     const results: CheckResult[] = [];
 
     // Check for runs with completed_at set but still in running/pending status.
     // Preserve terminal-success runs if a stale active snapshot happens to include them.
-    const activeRuns = this.store.getActiveRuns(project.id);
+    const activeRuns = await Promise.resolve(runStore.getActiveRuns(project.id));
     const inconsistentRuns = activeRuns.filter((r) =>
       r.completed_at !== null && r.status !== "merged" && r.status !== "pr-created"
     );
@@ -1681,7 +1779,7 @@ export class Doctor {
             message: `Run has completed_at set but status="${run.status}". Would mark as failed (dry-run).`,
           });
         } else if (fix) {
-          this.store.updateRun(run.id, { status: "failed" });
+          await Promise.resolve(runStore.updateRun(run.id, { status: "failed" }));
           results.push({
             name: `run state: ${run.seed_id} [${run.agent_type}]`,
             status: "fixed",
@@ -1702,10 +1800,10 @@ export class Doctor {
   }
 
   /**
-   * Check for bead status drift between SQLite and the br backend.
+   * Check for bead status drift between Postgres and the br backend.
    *
    * Calls syncBeadStatusOnStartup() to detect (and optionally fix) mismatches
-   * between the run status recorded in SQLite and the corresponding seed status
+   * between the run status recorded in Postgres and the corresponding seed status
    * in br.  Drift occurs when foreman was interrupted before a br update could
    * complete (e.g. after a crash, token exhaustion, or manual reset).
    *
@@ -1724,19 +1822,28 @@ export class Doctor {
   async checkBeadStatusSync(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
     const projectPath = opts.projectPath ?? this.projectPath;
+    const runStore = this.getRunStore();
+
+    if (this.isNativeTaskBackend()) {
+      return {
+        name: "bead status sync (Postgres ↔ br)",
+        status: "skip",
+        message: "Native task backend active — skipping bead status reconciliation",
+      };
+    }
 
     if (!this.taskClient) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "skip",
         message: "No task client configured — skipping bead status reconciliation",
       };
     }
 
-    const project = this.store.getProjectByPath(this.projectPath);
+    const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "skip",
         message: "No project registered — skipping bead status reconciliation",
       };
@@ -1745,14 +1852,14 @@ export class Doctor {
     let result: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
     try {
       // First pass: always run in dry-run mode to detect mismatches without side effects
-      result = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+      result = await syncBeadStatusOnStartup(runStore, this.taskClient, project.id, {
         dryRun: true,
         projectPath,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "fail",
         message: `Bead status sync failed: ${msg}`,
       };
@@ -1760,9 +1867,9 @@ export class Doctor {
 
     if (result.mismatches.length === 0) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "pass",
-        message: "SQLite and br bead statuses are in sync",
+        message: "Postgres and br bead statuses are in sync",
       };
     }
 
@@ -1774,7 +1881,7 @@ export class Doctor {
 
     if (dryRun) {
       return {
-        name: "bead status sync (SQLite ↔ br)",
+        name: "bead status sync (Postgres ↔ br)",
         status: "warn",
         message: `${result.mismatches.length} bead status mismatch(es) detected. Would fix (dry-run): ${mismatchList}${truncated}`,
         details: mismatchList + truncated,
@@ -1785,14 +1892,14 @@ export class Doctor {
       // Second pass: apply fixes
       let fixResult: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
       try {
-        fixResult = await syncBeadStatusOnStartup(this.store, this.taskClient, project.id, {
+        fixResult = await syncBeadStatusOnStartup(runStore, this.taskClient, project.id, {
           dryRun: false,
           projectPath,
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          name: "bead status sync (SQLite ↔ br)",
+          name: "bead status sync (Postgres ↔ br)",
           status: "fail",
           message: `Bead status sync (fix pass) failed: ${msg}`,
           details: mismatchList + truncated,
@@ -1803,8 +1910,8 @@ export class Doctor {
         ? ` (${fixResult.errors.length} error(s): ${fixResult.errors[0]})`
         : "";
       return {
-        name: "bead status sync (SQLite ↔ br)",
-        status: "fixed",
+        name: "bead status sync (Postgres ↔ br)",
+        status: fixResult.errors.length > 0 ? "warn" : "fixed",
         message: `${fixResult.mismatches.length} bead status mismatch(es) detected`,
         fixApplied: `Fixed ${fixResult.synced} seed status(es) in br${errSuffix}`,
         details: mismatchList + truncated,
@@ -1812,9 +1919,9 @@ export class Doctor {
     }
 
     return {
-      name: "bead status sync (SQLite ↔ br)",
+      name: "bead status sync (Postgres ↔ br)",
       status: "warn",
-      message: `${result.mismatches.length} bead status mismatch(es) detected between SQLite and br. Use --fix to repair: ${mismatchList}${truncated}`,
+      message: `${result.mismatches.length} bead status mismatch(es) detected between Postgres and br. Use --fix to repair: ${mismatchList}${truncated}`,
       details: mismatchList + truncated,
     };
   }
@@ -1921,11 +2028,12 @@ export class Doctor {
   async checkStaleMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "stale merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
-    const allEntries = this.mergeQueue.list();
+    const allEntries = await Promise.resolve(mergeQueue.list());
     const staleThresholdMs = 24 * 60 * 60 * 1000;
     const now = Date.now();
 
@@ -1951,10 +2059,10 @@ export class Doctor {
 
     if (fix) {
       for (const entry of staleEntries) {
-        this.mergeQueue.updateStatus(entry.id, "failed", {
+        await Promise.resolve(mergeQueue.updateStatus(entry.id, "failed", {
           error: "MQ-008: Stale entry auto-failed by doctor",
           completedAt: new Date().toISOString(),
-        });
+        }));
       }
       return {
         name: "stale merge queue entries (>24h)",
@@ -1977,11 +2085,12 @@ export class Doctor {
   async checkDuplicateMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "duplicate merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
-    const pending = this.mergeQueue.list("pending");
+    const pending = await Promise.resolve(mergeQueue.list("pending"));
     const branchCounts = new Map<string, MergeQueueEntry[]>();
     for (const entry of pending) {
       const existing = branchCounts.get(entry.branch_name) ?? [];
@@ -2014,7 +2123,7 @@ export class Doctor {
         const maxId = Math.max(...entries.map((e) => e.id));
         for (const entry of entries) {
           if (entry.id !== maxId) {
-            this.mergeQueue.remove(entry.id);
+            await Promise.resolve(mergeQueue.remove(entry.id));
             removed++;
           }
         }
@@ -2040,12 +2149,19 @@ export class Doctor {
   async checkOrphanedMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "orphaned merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
-    const allEntries = this.mergeQueue.list();
-    const orphaned = allEntries.filter((e) => !this.store.getRun(e.run_id));
+    const allEntries = await Promise.resolve(mergeQueue.list());
+    const orphaned = [] as MergeQueueEntry[];
+
+    for (const entry of allEntries) {
+      if (!(await this.getRunById(entry.run_id))) {
+        orphaned.push(entry);
+      }
+    }
 
     if (orphaned.length === 0) {
       return { name: "orphaned merge queue entries", status: "pass", message: "All entries reference existing runs" };
@@ -2061,7 +2177,7 @@ export class Doctor {
 
     if (fix) {
       for (const entry of orphaned) {
-        this.mergeQueue.remove(entry.id);
+        await Promise.resolve(mergeQueue.remove(entry.id));
       }
       return {
         name: "orphaned merge queue entries",
@@ -2094,7 +2210,8 @@ export class Doctor {
   } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return {
         name: "completed runs queued",
         status: "skip",
@@ -2102,7 +2219,7 @@ export class Doctor {
       };
     }
 
-    const missing = this.mergeQueue.missingFromQueue();
+    const missing = await Promise.resolve(mergeQueue.missingFromQueue());
 
     if (missing.length === 0) {
       return {
@@ -2125,10 +2242,7 @@ export class Doctor {
 
     if (fix && opts.projectPath) {
       try {
-        const result = await this.mergeQueue.reconcile(
-          this.store.getDb(),
-          opts.projectPath,
-        );
+        const result = await this.reconcileMissingCompletedRuns(opts.projectPath);
         return {
           name: "completed runs queued",
           status: "fixed",
@@ -2157,14 +2271,15 @@ export class Doctor {
   /**
    * Check for merge queue entries that are already resolved.
    *
-   * These are entries whose corresponding run is already terminal-successful
-   * (merged/completed/pr-created) or whose branch has already landed on the
+    * These are entries whose corresponding run is already terminal-successful
+    * (merged/pr-created) or whose branch has already landed on the
    * default branch. They should be removed rather than retried.
    */
   async checkResolvedMergeQueueEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "resolved merge queue entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
@@ -2179,12 +2294,12 @@ export class Doctor {
       // fall back to main
     }
 
-    const entries = this.mergeQueue.list();
+    const entries = await Promise.resolve(mergeQueue.list());
     const resolvedEntries: MergeQueueEntry[] = [];
 
     for (const entry of entries) {
-      const run = this.store.getRun(entry.run_id);
-      if (run && (run.status === "merged" || run.status === "completed" || run.status === "pr-created")) {
+      const run = await this.getRunById(entry.run_id);
+      if (run && (run.status === "merged" || run.status === "pr-created")) {
         resolvedEntries.push(entry);
         continue;
       }
@@ -2215,7 +2330,7 @@ export class Doctor {
 
     if (fix) {
       for (const entry of resolvedEntries) {
-        this.mergeQueue.remove(entry.id);
+        await Promise.resolve(mergeQueue.remove(entry.id));
       }
       return {
         name: "resolved merge queue entries",
@@ -2239,11 +2354,12 @@ export class Doctor {
   async checkStuckConflictFailedEntries(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
 
-    if (!this.mergeQueue) {
+    const mergeQueue = this.getMergeQueueLike();
+    if (!mergeQueue) {
       return { name: "stuck conflict/failed entries", status: "pass", message: "No merge queue configured (skipping)" };
     }
 
-    const allEntries = this.mergeQueue.list();
+    const allEntries = await Promise.resolve(mergeQueue.list());
     const stuckThresholdMs = 60 * 60 * 1000; // 1 hour
     const now = Date.now();
 
@@ -2270,7 +2386,7 @@ export class Doctor {
     if (fix) {
       let requeued = 0;
       for (const entry of stuckEntries) {
-        if (this.mergeQueue.reEnqueue(entry.id)) {
+        if (await Promise.resolve(mergeQueue.reEnqueue(entry.id))) {
           requeued++;
         }
       }
@@ -2567,7 +2683,7 @@ export class Doctor {
   async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
-    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, beadSyncResult] =
+    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, orphanedGlobalStoreResult, beadSyncResult] =
       await Promise.all([
         this.checkOrphanedWorktrees(opts),
         this.checkZombieRuns(opts),
@@ -2576,10 +2692,11 @@ export class Doctor {
         this.checkRunStateConsistency(opts),
         this.checkBlockedSeeds(),
         this.checkBrRecoveryArtifacts(opts),
+        this.checkOrphanedGlobalStoreRuns(opts),
         this.checkBeadStatusSync(opts),
       ]);
 
-    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, beadSyncResult);
+    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, orphanedGlobalStoreResult, beadSyncResult);
 
     // Merge queue checks (only when merge queue is configured)
     if (this.mergeQueue) {

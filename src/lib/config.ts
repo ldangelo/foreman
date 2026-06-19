@@ -56,6 +56,17 @@ function envNonNegativeInt(name: string, defaultValue: number): number {
   return parsed;
 }
 
+function envNonNegativeNumber(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  const parsed = parseFloat(raw);
+  if (isNaN(parsed) || parsed < 0) {
+    console.warn(`[foreman] Warning: invalid value for ${name}="${raw}", using default ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
 // ── Model defaults ───────────────────────────────────────────────────────
 
 /**
@@ -162,6 +173,14 @@ export const PIPELINE_LIMITS = {
    * Override via: FOREMAN_EMPTY_POLL_CYCLES=<n>
    */
   emptyPollCycles: envNonNegativeInt("FOREMAN_EMPTY_POLL_CYCLES", 20),
+  /** Maximum wall-clock runtime for one pipeline in milliseconds. 0 disables. */
+  maxPipelineWallClockMs: envNonNegativeInt("FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS", 0),
+  /** Maximum total SDK/tool calls recorded across one pipeline. 0 disables. */
+  maxPipelineToolCalls: envNonNegativeInt("FOREMAN_MAX_PIPELINE_TOOL_CALLS", 0),
+  /** Maximum total retry/review loop activations across one pipeline. 0 disables. */
+  maxPipelineReviewLoops: envNonNegativeInt("FOREMAN_MAX_PIPELINE_REVIEW_LOOPS", 0),
+  /** Maximum total pipeline cost in USD. 0 disables. */
+  maxPipelineCostUsd: envNonNegativeNumber("FOREMAN_MAX_PIPELINE_COST_USD", 0),
 } as const;
 
 /**
@@ -204,6 +223,23 @@ export const RATE_LIMIT_BACKOFF_CONFIG = {
   maxDelayMs: envInt("FOREMAN_RATE_LIMIT_MAX_DELAY_MS", 120_000),
   /** Number of rate limit retries before giving up */
   maxRetries: envNonNegativeInt("FOREMAN_RATE_LIMIT_MAX_RETRIES", 3),
+};
+
+/**
+ * Cooldown retry configuration for when a phase fails with a transient error
+ * and retryAfterCooldown is enabled in the workflow YAML.
+ *
+ * When a phase fails with a retryable error (e.g. rate limit) and the phase
+ * has retryAfterCooldown: true, the task is placed in "cooldown" status instead
+ * of being marked failed/stuck. The dispatcher will not re-dispatch until the
+ * cooldown period expires.
+ *
+ * Default cooldown is 300 seconds (5 minutes) unless overridden by
+ * cooldownSeconds in the workflow YAML phase config.
+ */
+export const COOLDOWN_RETRY_CONFIG = {
+  /** Default cooldown duration in seconds when retryAfterCooldown is enabled */
+  defaultCooldownSeconds: envInt("FOREMAN_COOLDOWN_DEFAULT_SECONDS", 300),
 };
 
 /**

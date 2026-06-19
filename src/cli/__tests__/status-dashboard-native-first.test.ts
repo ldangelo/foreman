@@ -1,3 +1,10 @@
+/**
+ * Characterization tests for native task store counts in status.
+ *
+ * These tests document that the status command reads task counts exclusively
+ * from the native Postgres task store. Beads fallback has been removed; the
+ * native store is the only supported source.
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -51,10 +58,9 @@ vi.mock("../../lib/store.js", () => ({
   },
 }));
 
-import { fetchDashboardTaskCounts } from "../commands/dashboard.js";
 import { fetchStatusCounts } from "../commands/status.js";
 
-describe("native-first task count regression targets", () => {
+describe("native task store counts (characterization)", () => {
   const projectPath = "/mock/project";
 
   beforeEach(() => {
@@ -69,8 +75,7 @@ describe("native-first task count regression targets", () => {
     vi.unstubAllEnvs();
   });
 
-  it("status native mode reads counts from the native task store without calling br", async () => {
-    vi.stubEnv("FOREMAN_TASK_STORE", "native");
+  it("status reads counts from the native task store without calling br", async () => {
     mockHasNativeTasks.mockReturnValue(true);
     mockListTasksByStatus.mockImplementation((statuses: string[]) => {
       if (
@@ -107,62 +112,19 @@ describe("native-first task count regression targets", () => {
     expect(mockBrReady).not.toHaveBeenCalled();
   });
 
-  it("status auto mode falls back to br when no native tasks exist", async () => {
-    vi.stubEnv("FOREMAN_TASK_STORE", "auto");
+  it("returns zero counts when native task store reports no tasks", async () => {
     mockHasNativeTasks.mockReturnValue(false);
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") return [{ id: "closed-1", status: "closed" }];
-      return [{ id: "open-1", status: "open" }, { id: "run-1", status: "in_progress" }];
-    });
-    mockBrReady.mockResolvedValue([{ id: "open-1", status: "open" }]);
 
     const counts = await fetchStatusCounts(projectPath);
 
     expect(counts).toEqual({
-      total: 3,
-      ready: 1,
-      inProgress: 1,
-      completed: 1,
+      total: 0,
+      ready: 0,
+      inProgress: 0,
+      completed: 0,
       blocked: 0,
     });
-    expect(mockBrList).toHaveBeenCalled();
-  });
-
-  it("dashboard native mode reads compact counts from the native task store before br fallback", async () => {
-    vi.stubEnv("FOREMAN_TASK_STORE", "native");
-    mockHasNativeTasks.mockReturnValue(true);
-    mockListTasksByStatus.mockImplementation((statuses: string[]) => {
-      if (
-        statuses.includes("ready")
-        && statuses.includes("in-progress")
-        && statuses.includes("closed")
-        && statuses.includes("blocked")
-      ) {
-        return [
-          { id: "t-ready", status: "ready" },
-          { id: "t-ready-2", status: "ready" },
-          { id: "t-running", status: "in-progress" },
-          { id: "t-done", status: "closed" },
-          { id: "t-blocked", status: "blocked" },
-        ];
-      }
-      if (statuses.includes("ready")) return [{ id: "t-ready" }, { id: "t-ready-2" }];
-      if (statuses.includes("in-progress")) return [{ id: "t-running" }];
-      if (statuses.includes("closed") || statuses.includes("merged")) return [{ id: "t-done" }];
-      if (statuses.includes("blocked") || statuses.includes("backlog")) return [{ id: "t-blocked" }];
-      return [];
-    });
-
-    const counts = await fetchDashboardTaskCounts(projectPath);
-
-    expect(counts).toEqual({
-      total: 5,
-      ready: 2,
-      inProgress: 1,
-      completed: 1,
-      blocked: 1,
-    });
     expect(mockBrList).not.toHaveBeenCalled();
-    expect(mockBrReady).not.toHaveBeenCalled();
   });
+
 });

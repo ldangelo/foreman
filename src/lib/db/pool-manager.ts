@@ -61,6 +61,43 @@ export class DatabaseError extends Error {
   }
 }
 
+/** Thrown when DATABASE_URL is malformed or missing required auth fields. */
+export class DatabaseConfigError extends Error {
+  readonly databaseUrl: string;
+
+  constructor(message: string, databaseUrl: string) {
+    super(message);
+    this.name = "DatabaseConfigError";
+    this.databaseUrl = databaseUrl;
+  }
+}
+
+function validateDatabaseUrl(databaseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch (cause: unknown) {
+    throw new DatabaseConfigError(
+      "Invalid DATABASE_URL. Expected a postgres:// or postgresql:// URL.",
+      databaseUrl,
+    );
+  }
+
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new DatabaseConfigError(
+      "Invalid DATABASE_URL. Expected a postgres:// or postgresql:// URL.",
+      databaseUrl,
+    );
+  }
+
+  if (parsed.username && parsed.password === "") {
+    throw new DatabaseConfigError(
+      `Invalid DATABASE_URL. User '${decodeURIComponent(parsed.username)}' is missing a password.`,
+      databaseUrl,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Default configuration
 // ---------------------------------------------------------------------------
@@ -147,8 +184,8 @@ export function initPool(overrides?: {
   if (_pool) {
     throw new Error("PoolManager already initialised. Call destroyPool() first.");
   }
-
   const databaseUrl = overrides?.databaseUrl ?? resolveDatabaseUrl();
+  validateDatabaseUrl(databaseUrl);
   const poolSize = overrides?.poolSize ?? DEFAULT_POOL_SIZE;
   const idleTimeoutMs = overrides?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   const connectionTimeoutMs =
@@ -172,6 +209,7 @@ export function initPool(overrides?: {
     max: poolSize,
     idleTimeoutMillis: idleTimeoutMs,
     connectionTimeoutMillis: connectionTimeoutMs,
+    allowExitOnIdle: true,
   };
 
   _config = config;
@@ -371,4 +409,5 @@ export const PoolManager = {
   isPoolInitialised,
   PoolExhaustedError,
   DatabaseError,
+  DatabaseConfigError,
 };

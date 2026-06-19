@@ -6,28 +6,39 @@ Workflow YAML files define the complete pipeline configuration for Foreman: whic
 
 | Location | Purpose |
 |----------|---------|
-| `.foreman/workflows/{name}.yaml` | Project-local overrides (highest priority) |
+| `~/.foreman/workflows/{name}.yaml` | Global overrides (highest priority) |
 | `src/defaults/workflows/{name}.yaml` | Bundled defaults (installed by `foreman init`) |
 
-Foreman ships with two bundled workflows:
-- **`default`** — Standard 5-phase pipeline (Explorer → Developer ⇄ QA → Reviewer → Finalize)
+Foreman ships with bundled workflows for common task types:
+- **`default`** — Standard pipeline with implementation, validation, PR creation, PR wait/review, and merge gates
+- **`quick`** — Fast variant of `default` without the explorer and reviewer phases (`developer ⇄ qa → finalize → PR gates → merge`). YAML-first replacement for the retired `--skip-explore`/`--skip-review` flags
+- **`task` / `feature` / `bug`** — Type-specific workflows with post-finalize PR phases (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`); PR wait requires a short stable-ready window, and merge re-waits if a late GitHub check appears
+- **`epic`** — Planning + implementation workflow (`prd → trd → implement → developer → qa → finalize`) followed by the same PR wait/review/merge gates
 - **`smoke`** — Lightweight fast-validation pipeline using cheaper models
 
 ## Workflow Selection
 
-Workflows are resolved per-bead:
-1. First `workflow:<name>` label on the bead (e.g. `workflow:smoke`)
-2. Bead type: `"smoke"` → smoke workflow, everything else → default workflow
+Workflows are resolved per task:
+1. `foreman run --workflow <name>` CLI override (applies to every task in that dispatch; fails fast if the workflow cannot be loaded)
+2. First `workflow:<name>` label on the task (e.g. `workflow:smoke`)
+3. `taskTypeWorkflowMap[task.type]` in project config
+4. `taskTypeWorkflowMap.default`
+5. File-existence fallback (`~/.foreman/workflows/<type>.yaml` or bundled defaults)
 
 ```bash
 # Dispatch with default workflow
 br create --title="Add user auth" --type=feature
 foreman run
 
+# Dispatch everything with the quick workflow (no explorer/reviewer phases)
+foreman run --workflow quick
+
 # Dispatch with smoke workflow
-br create --title="Smoke test" --type=task
-br update <id> --set-labels "workflow:smoke"
+foreman task create --title "Smoke test" --type task --label workflow:smoke
 foreman run
+
+# Directly run a workflow for a task regardless of current task state
+foreman run task <task-id> task --project <name> --no-watch
 ```
 
 ---
@@ -54,7 +65,7 @@ name: default
 
 ## VCS Configuration
 
-The optional top-level `vcs:` block overrides the project-level VCS configuration in `.foreman/config.yaml` for this specific workflow.
+The optional top-level `vcs:` block overrides the global VCS configuration in `~/.foreman/config.yaml` for this specific workflow.
 
 ### `vcs` (optional)
 
@@ -62,9 +73,9 @@ The optional top-level `vcs:` block overrides the project-level VCS configuratio
 |-------|------|---------|-------------|
 | `backend` | string | `'auto'` | VCS backend to use: `'git'`, `'jujutsu'`, or `'auto'` |
 
-> **Note:** Backend-specific sub-options (`git.useTown`, `jujutsu.minVersion`) are only available in the project-level `.foreman/config.yaml`, not in workflow YAML.
+> **Note:** Backend-specific sub-options (`git.useTown`, `jujutsu.minVersion`) are only available in the global `~/.foreman/config.yaml`, not in workflow YAML.
 
-**Resolution priority** (highest wins): workflow `vcs.backend` → project `.foreman/config.yaml` `vcs.backend` → auto-detection.
+**Resolution priority** (highest wins): workflow `vcs.backend` → global `~/.foreman/config.yaml` `vcs.backend` → auto-detection.
 
 ```yaml
 # Force git even if .jj/ is present
@@ -244,18 +255,18 @@ setupCache:
 
 ## Phases
 
-The `phases` array defines the ordered sequence of pipeline phases. Each phase runs an AI agent with a specific prompt, model, and set of constraints. **New phases require zero TypeScript changes** — just add a YAML entry and a prompt file.
+The `phases` array defines the ordered sequence of pipeline phases. Most phases run an AI agent with a prompt, model, and constraints. Builtin phases run deterministic TypeScript code instead. **New prompt phases require zero TypeScript changes** — just add a YAML entry and a prompt file.
 
 ### Phase Fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | *required* | Phase identifier (used in logs, mail, labels) |
-| `prompt` | string | — | Prompt file name in `.foreman/prompts/{workflow}/` |
+| `prompt` | string | — | Prompt file name in `~/.foreman/prompts/{workflow}/` |
 | `model` | string | — | Single model shorthand or full ID (deprecated, use `models`) |
 | `models` | map | — | Priority-based model overrides (see below) |
 | `maxTurns` | number | — | Maximum agent turns before timeout |
-| `artifact` | string | — | Expected output filename (e.g. `QA_REPORT.md`) |
+| `artifact` | string | — | Expected output path. Bundled workflows write phase reports under `{task.projectReportsDir}` (for example, `{task.projectReportsDir}/QA_REPORT.md`) so runtime reports stay outside repository commits. |
 | `skipIfArtifact` | string | — | Skip phase if this file already exists (resume from crash) |
 | `verdict` | boolean | `false` | Parse PASS/FAIL from artifact content |
 | `retryWith` | string | — | On verdict FAIL, loop back to this phase name |
@@ -263,6 +274,30 @@ The `phases` array defines the ordered sequence of pipeline phases. Each phase r
 | `mail` | object | — | Mail hook configuration (see below) |
 | `files` | object | — | File reservation configuration (see below) |
 | `builtin` | boolean | `false` | Phase implemented in TypeScript, not as agent prompt |
+
+### Documentation Phase
+
+Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `{task.projectReportsDir}/DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
+
+```yaml
+  - name: documentation
+    prompt: documentation.md
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+```
+
+### Finalize Phase
+
+Bundled workflows use a deterministic builtin `finalize` phase. It runs dependency install/typecheck, stages/restores workspace-safe files, commits, rebases when the target changed after QA, conditionally reruns tests, pushes `foreman/<task-id>`, and writes `FINALIZE_VALIDATION.md` plus `FINALIZE_REPORT.md`. Keep `artifact`, `verdict`, `retryWith`, and `retryOnFail` on the phase so validation failures still loop back through remediation.
+
+```yaml
+  - name: finalize
+    builtin: true
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+```
 
 ### Models
 
@@ -391,9 +426,9 @@ phases:
     models:
       default: haiku
       P0: sonnet
-    maxTurns: 30
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    maxTurns: 12
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -404,8 +439,8 @@ phases:
     models:
       default: sonnet
       P0: opus
-    maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    maxTurns: 50
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -419,7 +454,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 30
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -434,7 +469,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 20
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -474,9 +509,9 @@ phases:
     models:
       default: haiku
       P0: sonnet
-    maxTurns: 30
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    maxTurns: 12
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -487,8 +522,8 @@ phases:
     models:
       default: sonnet
       P0: opus
-    maxTurns: 80
-    artifact: DEVELOPER_REPORT.md
+    maxTurns: 50
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -501,7 +536,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 40
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -516,7 +551,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 20
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -556,8 +591,8 @@ phases:
     models:
       default: haiku
     maxTurns: 25
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -569,7 +604,7 @@ phases:
       default: sonnet
       P0: opus
     maxTurns: 60
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -582,7 +617,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 30
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -596,7 +631,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 20
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -633,8 +668,8 @@ phases:
     models:
       default: haiku
     maxTurns: 5
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -645,7 +680,7 @@ phases:
     models:
       default: haiku
     maxTurns: 5
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -655,7 +690,7 @@ phases:
     models:
       default: haiku
     maxTurns: 5
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -669,7 +704,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 5
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -695,7 +730,7 @@ phases:
 
 You can add custom phases beyond the default five. Each custom phase needs:
 1. A YAML entry in the workflow
-2. A prompt file in `.foreman/prompts/{workflow}/`
+2. A prompt file in `~/.foreman/prompts/{workflow}/`
 
 ```yaml
 phases:
@@ -704,7 +739,7 @@ phases:
     models:
       default: opus              # Security review benefits from best model
     maxTurns: 20
-    artifact: SECURITY_REPORT.md
+    artifact: "{task.projectReportsDir}/SECURITY_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -714,17 +749,17 @@ phases:
       onFail: developer
 ```
 
-The prompt file (`.foreman/prompts/default/security-scan.md`) defines the agent's instructions, using `{{seedId}}`, `{{seedTitle}}`, `{{seedDescription}}`, and other template variables.
+The prompt file (`~/.foreman/prompts/default/security-scan.md`) defines the agent's instructions, using `{{seedId}}`, `{{seedTitle}}`, `{{seedDescription}}`, and other template variables.
 
 ---
 
 ## Custom Workflows
 
-Create a new workflow by adding a YAML file to `.foreman/workflows/`:
+Create a new workflow by adding a YAML file to `~/.foreman/workflows/`:
 
 ```bash
 # Create a minimal workflow for documentation tasks
-cat > .foreman/workflows/docs.yaml << 'EOF'
+cat > ~/.foreman/workflows/docs.yaml << 'EOF'
 name: docs
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -736,7 +771,7 @@ phases:
     models:
       default: haiku
     maxTurns: 20
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true

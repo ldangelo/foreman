@@ -133,7 +133,7 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
     expect(cmds.commitCommand).not.toContain('jj new');
   });
 
-  it("returns jj git push with --allow-new for pushCommand", () => {
+  it("returns a jj git push bookmark command for pushCommand", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
       seedId: 'bd-test',
@@ -142,8 +142,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
       worktreePath: '/tmp/worktrees/bd-test',
     });
     expect(cmds.pushCommand).toContain('jj git push');
-    expect(cmds.pushCommand).toContain('--allow-new');
-    expect(cmds.pushCommand).toContain('foreman/bd-test');
+    expect(cmds.pushCommand).toContain('--bookmark foreman/bd-test');
+    expect(cmds.pushCommand).not.toContain('--allow-new');
   });
 
   it("returns jj rebase command with base branch for integrateTargetCommand", () => {
@@ -476,6 +476,55 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend sync operations (AC-T-020)", () =
     expect(typeof result.hasConflicts).toBe("boolean");
   });
 
+  it("rebaseBranch() rebases a bookmark onto a destination bookmark", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+
+    writeFileSync(join(repoPath, "base.txt"), "base");
+    execFileSync("jj", ["describe", "-m", "Base"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "base", "-r", "@"], { cwd: repoPath, stdio: "pipe" });
+
+    execFileSync("jj", ["new"], { cwd: repoPath, stdio: "pipe" });
+    writeFileSync(join(repoPath, "feature.txt"), "feature");
+    execFileSync("jj", ["describe", "-m", "Feature"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "feature", "-r", "@"], { cwd: repoPath, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repoPath);
+    const result = await backend.rebaseBranch(repoPath, "feature", "base");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+  });
+
+  it("restackBranch() restacks a bookmark onto a new destination", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+
+    writeFileSync(join(repoPath, "base.txt"), "base");
+    execFileSync("jj", ["describe", "-m", "Base"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "base", "-r", "@"], { cwd: repoPath, stdio: "pipe" });
+
+    execFileSync("jj", ["new"], { cwd: repoPath, stdio: "pipe" });
+    writeFileSync(join(repoPath, "feature.txt"), "feature");
+    execFileSync("jj", ["describe", "-m", "Feature"], { cwd: repoPath, stdio: "pipe" });
+    execFileSync("jj", ["bookmark", "create", "feature", "-r", "@"], { cwd: repoPath, stdio: "pipe" });
+
+    const backend = new JujutsuBackend(repoPath);
+    const result = await backend.restackBranch(repoPath, "feature", "ignored", "base");
+
+    expect(result.success).toBe(true);
+    expect(result.hasConflicts).toBe(false);
+  });
+
+  it("saveWorktreeState()/restoreWorktreeState() are harmless no-ops", async () => {
+    const repoPath = makeTempJjRepo();
+    tempDirs.push(repoPath);
+    const backend = new JujutsuBackend(repoPath);
+
+    await expect(backend.saveWorktreeState(repoPath)).resolves.toBe(false);
+    await expect(backend.restoreWorktreeState(repoPath)).resolves.toBeUndefined();
+  });
+
   // AC-T-020-3: abortRebase() calls jj undo ────────────────────────────────
 
   it("abortRebase() resolves without throwing (AC-T-020-3)", async () => {
@@ -519,7 +568,7 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend sync operations (AC-T-020)", () =
 
   // Push operations (AC-011-1, AC-011-2) ────────────────────────────────────
 
-  it("push() with allowNew:true pushes a bookmark to a local remote (AC-011-1, AC-011-2)", async () => {
+  it("push() with allowNew:true pushes a bookmark to a local remote on legacy and modern jj", async () => {
     const repoPath = makeTempJjRepo();
     const remotePath = realpathSync(
       mkdtempSync(join(tmpdir(), "foreman-jj-push-remote-")),
@@ -532,7 +581,6 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend sync operations (AC-T-020)", () =
       stdio: "pipe",
     });
 
-    // Create a commit and bookmark to push
     writeFileSync(join(repoPath, "hello.txt"), "hello world");
     execFileSync("jj", ["describe", "-m", "Hello"], {
       cwd: repoPath,
@@ -570,15 +618,11 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend sync operations (AC-T-020)", () =
       cwd: repoPath,
       stdio: "pipe",
     });
-    // First push with --allow-new to establish tracking
-    execFileSync(
-      "jj",
-      ["git", "push", "--bookmark", "my-branch", "--allow-new"],
-      { cwd: repoPath, stdio: "pipe" },
-    );
+    // First push establishes tracking; modern jj auto-tracks without --allow-new.
+    const backend = new JujutsuBackend(repoPath);
+    await backend.push(repoPath, "my-branch", { allowNew: true });
 
     // Second push without allowNew — bookmark already tracked, should succeed
-    const backend = new JujutsuBackend(repoPath);
     await expect(
       backend.push(repoPath, "my-branch", { allowNew: false }),
     ).resolves.toBeUndefined();
@@ -610,11 +654,8 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend sync operations (AC-T-020)", () =
       cwd: sourceRepo,
       stdio: "pipe",
     });
-    execFileSync(
-      "jj",
-      ["git", "push", "--bookmark", "main", "--allow-new"],
-      { cwd: sourceRepo, stdio: "pipe" },
-    );
+    const sourceBackend = new JujutsuBackend(sourceRepo);
+    await sourceBackend.push(sourceRepo, "main", { allowNew: true });
 
     // Consumer repo: add the same remote and pull
     const consumerRepo = makeTempJjRepo();

@@ -1,19 +1,36 @@
 import { describe, it, expect } from 'vitest';
 import { loadWorkflowConfig, resolveWorkflowName } from '../workflow-loader.js';
 import { join, dirname } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 // TRD-009: End-to-end integration test for bug.yaml workflow
-// Verifies that bug.yaml demonstrates all three new features:
-// 1. command: phase (TRD-005)
-// 2. bash: phase (TRD-004)
+// 1. workflow-scoped fix prompt (fix-issue.md)
+// 2. QA validation phase with developer remediation on failure
 // 3. merge: auto (TRD-002, TRD-007)
 // Also verifies type-based dispatch selects bug.yaml for bead type "bug" (TRD-006)
 
 const BUNDLED_WORKFLOWS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'defaults', 'workflows');
 
+function loadBundledBugWorkflow() {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(join(tmpdir(), 'foreman-bug-workflow-test-'));
+  process.env.HOME = tempHome;
+  try {
+    return loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    rmSync(tempHome, { recursive: true, force: true });
+  }
+}
+
 describe('TRD-009 bug.yaml workflow integration', () => {
-  const bugWorkflow = loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
+  const bugWorkflow = loadBundledBugWorkflow();
 
   describe('workflow metadata', () => {
     it('has name "bug"', () => {
@@ -25,26 +42,22 @@ describe('TRD-009 bug.yaml workflow integration', () => {
     });
   });
 
-  describe('TRD-005: command: phase (fix phase)', () => {
+  describe('workflow-scoped fix prompt (fix phase)', () => {
     const fixPhase = bugWorkflow.phases.find((p) => p.name === 'fix');
 
     it('fix phase exists', () => {
       expect(fixPhase).toBeDefined();
     });
 
-    it('fix phase has command: field', () => {
-      expect(fixPhase?.command).toBeDefined();
-    });
-
-    it('fix phase command contains task.* placeholder', () => {
-      expect(fixPhase?.command).toContain('{task.title}');
-      expect(fixPhase?.command).toContain('{task.description}');
+    it('fix phase has prompt: field', () => {
+      expect(fixPhase?.prompt).toBe('fix-issue.md');
+      expect(fixPhase?.command).toBeUndefined();
     });
 
     it('fix phase has all standard phase config (model, maxTurns, artifact, mail)', () => {
       expect(fixPhase?.models).toBeDefined();
       expect(fixPhase?.maxTurns).toBe(80);
-      expect(fixPhase?.artifact).toBe('DEVELOPER_REPORT.md');
+      expect(fixPhase?.artifact).toBe('{task.projectReportsDir}/DEVELOPER_REPORT.md');
       expect(fixPhase?.mail).toBeDefined();
     });
 
@@ -53,35 +66,31 @@ describe('TRD-009 bug.yaml workflow integration', () => {
     });
   });
 
-  describe('TRD-004: bash: phase (test phase)', () => {
-    const testPhase = bugWorkflow.phases.find((p) => p.name === 'test');
+  describe('QA validation phase', () => {
+    const qaPhase = bugWorkflow.phases.find((p) => p.name === 'qa');
 
-    it('test phase exists', () => {
-      expect(testPhase).toBeDefined();
+    it('qa phase exists', () => {
+      expect(qaPhase).toBeDefined();
     });
 
-    it('test phase has bash: field', () => {
-      expect(testPhase?.bash).toBeDefined();
+    it('qa phase uses qa prompt', () => {
+      expect(qaPhase?.prompt).toBe('qa.md');
     });
 
-    it('test phase bash command is npm run test:unit', () => {
-      expect(testPhase?.bash).toBe('npm run test:unit');
+    it('qa phase has artifact: QA_REPORT.md', () => {
+      expect(qaPhase?.artifact).toBe('{task.projectReportsDir}/QA_REPORT.md');
     });
 
-    it('test phase has artifact: TEST_RESULTS.md', () => {
-      expect(testPhase?.artifact).toBe('TEST_RESULTS.md');
+    it('qa phase has verdict: true', () => {
+      expect(qaPhase?.verdict).toBe(true);
     });
 
-    it('test phase has verdict: true', () => {
-      expect(testPhase?.verdict).toBe(true);
+    it('qa phase retries through generic developer remediation', () => {
+      expect(qaPhase?.retryWith).toBe('developer');
     });
 
-    it('test phase has retryWith: fix (cross-phase retry)', () => {
-      expect(testPhase?.retryWith).toBe('fix');
-    });
-
-    it('test phase has retryOnFail: 2', () => {
-      expect(testPhase?.retryOnFail).toBe(2);
+    it('qa phase has retryOnFail: 2', () => {
+      expect(qaPhase?.retryOnFail).toBe(2);
     });
   });
 
@@ -105,20 +114,22 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   });
 
   describe('phase ordering and finalize', () => {
-    it('phases are in order: fix → test → finalize', () => {
+    it('phases are in order: fix → developer remediation (retryOnly) → documentation → qa → cli-review → finalize → PR review → merge', () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      expect(names).toEqual(['fix', 'test', 'finalize']);
+      expect(names).toEqual(['fix', 'developer', 'documentation', 'qa', 'cli-review', 'finalize', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
+      expect(bugWorkflow.phases.find((p) => p.name === 'developer')?.retryOnly).toBe(true);
     });
 
-    it('finalize phase uses the bug-specific finalize prompt', () => {
+    it('finalize phase uses the deterministic builtin finalizer', () => {
       const finalize = bugWorkflow.phases.find((p) => p.name === 'finalize');
-      expect(finalize?.prompt).toBe('finalize-bug.md');
+      expect(finalize?.builtin).toBe(true);
+      expect(finalize?.prompt).toBeUndefined();
     });
 
-    it('finalize phase has verdict: true and retryWith: fix', () => {
+    it('finalize phase has verdict: true and retries through developer remediation', () => {
       const finalize = bugWorkflow.phases.find((p) => p.name === 'finalize');
       expect(finalize?.verdict).toBe(true);
-      expect(finalize?.retryWith).toBe('fix');
+      expect(finalize?.retryWith).toBe('developer');
     });
   });
 

@@ -10,7 +10,7 @@
 
 ## Overview
 
-**Overstory** (`ov` CLI, `@os-eco/overstory-cli`) is a multi-agent orchestration tool by the same author as seeds. It spawns worker agents in isolated git worktrees via tmux, coordinates them through a SQLite mail system, and merges results with tiered conflict resolution. It supports 8 runtimes (Claude, Pi, Gemini, Copilot, Codex, Cursor, Sapling, OpenCode) and is part of the os-eco ecosystem (overstory, seeds, mulch, canopy, sapling).
+**Overstory** (`ov` CLI, `@os-eco/overstory-cli`) is a multi-agent orchestration tool by the same author as seeds. It spawns worker agents in isolated git worktrees via tmux, coordinates them through a Postgres mail system, and merges results with tiered conflict resolution. It supports 8 runtimes (Claude, Pi, Gemini, Copilot, Codex, Cursor, Sapling, OpenCode) and is part of the os-eco ecosystem (overstory, seeds, mulch, canopy, sapling).
 
 **Foreman** is our AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to Claude agents in isolated git worktrees, and merges results back. Built with TypeScript, Claude Agent SDK, and seeds (sd) for task tracking.
 
@@ -21,7 +21,7 @@
 | **Agent isolation** | Git worktrees + tmux | Git worktrees + detached processes | Minor |
 | **Pipeline phases** | Role-based (9 roles) | TypeScript-orchestrated (4 phases) | Different approach, foreman's is fine |
 | **Task tracking** | Seeds/beads (pluggable) | Seeds (migrated) | Parity |
-| **Inter-agent messaging** | SQLite mail system | Report files only | **Gap** |
+| **Inter-agent messaging** | Postgres mail system | Report files only | **Gap** |
 | **Merge system** | FIFO queue + 4-tier conflict resolution | Basic merge + theirs strategy | **Gap** |
 | **Health monitoring** | 3-tier watchdog + `ov doctor` | Basic monitor + stuck detection | **Gap** |
 | **Observability** | dashboard, inspect, trace, replay, feed, logs, costs | status + monitor only | **Major gap** |
@@ -54,13 +54,13 @@ Orchestrator (multi-repo coordinator of coordinators)
 - **Monitor**: Tier 2 continuous fleet patrol (read-only)
 
 ### Inter-Agent Messaging
-- SQLite mail system (WAL mode, ~1-5ms per query)
+- Postgres mail system (WAL mode, ~1-5ms per query)
 - 8 typed protocol message types: `worker_done`, `merge_ready`, `dispatch`, `escalation`, etc.
 - Broadcast messaging with group addresses (`@all`, `@builders`, etc.)
 - Thread support, priority levels (low/normal/high/urgent), nudge mechanism
 
 ### Merge System
-- FIFO merge queue (SQLite-backed)
+- FIFO merge queue (Postgres-backed)
 - 4-tier conflict resolution: textual auto-merge -> AI resolver -> structured human review -> manual fallback
 
 ### Observability (9 commands)
@@ -106,7 +106,7 @@ Orchestrator (multi-repo coordinator of coordinators)
 | ID | Feature | Rationale |
 |---|---|---|
 | `foreman-cc6f` | Observability dashboard TUI | Biggest feature gap — overstory has 9 observability commands, foreman has 2 |
-| `foreman-3527` | Inter-agent messaging (SQLite mail) | Report files are one-way; messaging enables real-time coordination and escalation |
+| `foreman-3527` | Inter-agent messaging (Postgres mail) | Report files are one-way; messaging enables real-time coordination and escalation |
 | `foreman-ef3d` | 4-tier merge conflict resolution | Current merge is basic; AI-powered conflict resolution would catch more issues |
 | `foreman-dc29` | Checkpoint save/restore | Pipeline failures lose all progress; checkpoints enable smart resume |
 | `foreman-071f` | Per-phase cost breakdowns | Know which phases burn budget — haiku explorer vs sonnet developer |

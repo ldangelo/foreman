@@ -1,6 +1,6 @@
 /**
- * NativeTaskStore — wraps the native `tasks` SQLite table for use as a
- * task-tracking back-end inside the Dispatcher.
+ * NativeTaskStore — legacy task table adapter retained for compatibility.
+ * New task storage is Postgres-backed via the daemon.
  *
  * Implements methods for the full lifecycle of native tasks:
  *   - hasNativeTasks() — coexistence check (REQ-014)
@@ -22,8 +22,17 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { Database } from "better-sqlite3";
 import type { Issue } from "./task-client.js";
+import type { NativeTaskStatus } from "../orchestrator/types.js";
+
+type Database = {
+  prepare: (sql: string) => {
+    run: (...args: unknown[]) => any;
+    get: (...args: unknown[]) => any;
+    all: (...args: unknown[]) => any[];
+  };
+  transaction: (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => any;
+};
 
 // ── Priority helpers ─────────────────────────────────────────────────────
 
@@ -132,7 +141,7 @@ export interface TaskRow {
   description: string | null;
   type: string;
   priority: number;
-  status: string;
+  status: NativeTaskStatus;
   run_id: string | null;
   branch: string | null;
   external_id: string | null;
@@ -164,7 +173,7 @@ export interface UpdateTaskOptions {
   title?: string;
   description?: string | null;
   priority?: number;
-  status?: string;
+  status?: NativeTaskStatus;
   force?: boolean;
 }
 
@@ -237,10 +246,10 @@ function rowToIssue(row: TaskRow): Issue {
 // ── NativeTaskStore ──────────────────────────────────────────────────────
 
 /**
- * Provides read/write access to the `tasks` table inside the Foreman SQLite
+ * Provides read/write access to the `tasks` table inside the Foreman Postgres
  * database.  The `db` instance is obtained from `ForemanStore.getDb()`.
  *
- * Thread-safety: SQLite in WAL mode with busy_timeout=30 000 ms handles
+ * Thread-safety: Postgres in WAL mode with busy_timeout=30 000 ms handles
  * concurrent readers/writers; the claim() method uses a single synchronous
  * transaction so it is effectively atomic within the same process.
  */
@@ -273,7 +282,7 @@ export class NativeTaskStore {
   private tableExists(tableName: string): boolean {
     try {
       const row = this.db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .prepare("SELECT table_name AS name FROM information_schema.tables WHERE table_name = ?")
         .get(tableName) as { name?: string } | undefined;
       return row?.name === tableName;
     } catch {
@@ -724,7 +733,7 @@ export class NativeTaskStore {
             developer: 3,
             qa: 3,
             reviewer: 3,
-            finalize: 4,
+            finalize: 3,
             merged: 5,
             closed: 5,
             conflict: -1,
@@ -875,7 +884,7 @@ export class NativeTaskStore {
 
   /**
    * Update the phase of a task (used by pipeline-executor to record progress).
-   * No-op when taskId is null or undefined (beads fallback mode — REQ-020).
+   * No-op when taskId is null or undefined.
    */
   updatePhase(taskId: string | null | undefined, phase: string): void {
     if (!taskId) return;

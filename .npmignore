@@ -30,10 +30,10 @@ docs/
 # Scripts (build-time only)
 scripts/
 
-# SQLite state files
-*.sqlite3
-*.sqlite3-shm
-*.sqlite3-wal
+# Local state files
+*.db
+*.db-shm
+*.db-wal
 
 # Misc development files
 .env.example

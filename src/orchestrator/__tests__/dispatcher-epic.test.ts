@@ -1,13 +1,12 @@
 /**
  * dispatcher-epic.test.ts — Tests for TRD-006: epic bead dispatch logic.
  *
- * Verifies:
- *  1. Epic bead with children dispatches through epic path (epicTasks populated)
- *  2. Task bead dispatches through standard path (no epicTasks)
- *  3. Epic bead with 0 children auto-closes
- *  4. Epic counts as 1 agent slot regardless of child task count
+ * Verifies current native-task behavior:
+ *  1. Epic tasks dispatch as single-agent tasks
+ *  2. Task beads dispatch through standard path
+ *  3. Empty epics still dispatch as ordinary tasks
+ *  4. Epic counts as 1 agent slot
  */
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Dispatcher } from "../dispatcher.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
@@ -29,6 +28,8 @@ vi.mock("../../lib/vcs/index.js", async (importOriginal) => {
           branchName: "foreman/test",
         }),
       }),
+      resolveBackend: vi.fn((config: { backend: "git" | "jujutsu" | "auto" }) =>
+        config.backend === "auto" ? "git" : config.backend),
     },
   };
 });
@@ -61,6 +62,7 @@ vi.mock("../../lib/worktree-manager.js", () => ({
 vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
+  runWorkspaceHook: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../lib/workflow-loader.js", () => ({
@@ -135,6 +137,18 @@ function makeIssue(id: string, type: string, priority = "P2"): Issue {
   };
 }
 
+
+let currentReadyIssues: Issue[] = [];
+
+function nativeTaskFromIssue(issue: Issue) {
+  return {
+    id: issue.id, title: issue.title, description: issue.description ?? null, type: issue.type,
+    priority: Number(String(issue.priority ?? "2").replace(/^P/, "")) || 2, status: "ready",
+    run_id: null, branch: null, external_id: null, labels: issue.labels ?? [], parent: issue.parent ?? null,
+    created_at: issue.created_at, updated_at: issue.updated_at, approved_at: new Date().toISOString(), closed_at: null,
+  };
+}
+
 function makeStore(): ForemanStore {
   return {
     getActiveRuns: vi.fn().mockReturnValue([]),
@@ -143,8 +157,11 @@ function makeStore(): ForemanStore {
     getRunsByStatusesSince: vi.fn().mockReturnValue([]),
     getRunsForSeed: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-    hasNativeTasks: vi.fn().mockReturnValue(false),
-    getReadyTasks: vi.fn().mockReturnValue([]),
+    hasNativeTasks: vi.fn().mockReturnValue(true),
+    getReadyTasks: vi.fn(() => currentReadyIssues.map(nativeTaskFromIssue)),
+    getTaskByExternalId: vi.fn().mockReturnValue(null),
+    getTaskById: vi.fn((id: string) => currentReadyIssues.map(nativeTaskFromIssue).find((task) => task.id === id) ?? null),
+    claimTask: vi.fn().mockReturnValue(true),
     hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     createRun: vi.fn().mockReturnValue({ id: "run-1" }),
     updateRun: vi.fn(),
@@ -155,6 +172,11 @@ function makeStore(): ForemanStore {
 }
 
 function makeSeedsClient(overrides: Partial<ITaskClient> = {}): ITaskClient {
+  const ready = overrides.ready as unknown as { getMockImplementation?: () => (() => Promise<Issue[]>) | undefined } | undefined;
+  const impl = ready?.getMockImplementation?.();
+  if (impl) {
+    void impl().then((issues) => { currentReadyIssues = issues; });
+  }
   return {
     ready: vi.fn().mockResolvedValue([]),
     show: vi.fn().mockResolvedValue({ status: "open" }),
@@ -172,7 +194,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     vi.clearAllMocks();
   });
 
-  it("epic bead with children dispatches via epic path with epicTasks populated", async () => {
+  it("epic task dispatches as a single-agent task without child expansion", async () => {
     const epicIssue = makeIssue("epic-1", "epic");
     const seedsClient = makeSeedsClient({
       ready: vi.fn().mockResolvedValue([epicIssue]),
@@ -195,19 +217,14 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     expect(result.dispatched[0].seedId).toBe("epic-1");
     expect(result.skipped).toHaveLength(0);
 
-    // spawnAgent should have been called with epicTasks and epicId
+    // Native tasks do not expose child expansion to the worker.
     expect(spawnSpy).toHaveBeenCalledOnce();
     const callArgs = spawnSpy.mock.calls[0];
-    // Args: model, worktreePath, seedInfo, runId, telemetry, pipelineOpts, notifyUrl, vcsBackend, runtimeMode, targetBranch, epicTasks, epicId
-    const epicTasks = callArgs[10] as EpicTask[];
-    const epicId = callArgs[11] as string;
+    const epicTasks = callArgs[10] as EpicTask[] | undefined;
+    const epicId = callArgs[11] as string | undefined;
 
-    expect(epicTasks).toBeDefined();
-    expect(epicTasks).toHaveLength(3);
-    expect(epicTasks[0].seedId).toBe("child-1");
-    expect(epicTasks[1].seedId).toBe("child-2");
-    expect(epicTasks[2].seedId).toBe("child-3");
-    expect(epicId).toBe("epic-1");
+    expect(epicTasks).toBeUndefined();
+    expect(epicId).toBeUndefined();
   });
 
   it("task bead dispatches via standard path without epicTasks", async () => {
@@ -237,7 +254,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     expect(epicId).toBeUndefined();
   });
 
-  it("epic bead with 0 children auto-closes", async () => {
+  it("epic task with 0 children still dispatches as a normal task", async () => {
     const epicIssue = makeIssue("epic-empty", "epic");
     const closeFn = vi.fn().mockResolvedValue(undefined);
     const seedsClient = makeSeedsClient({
@@ -256,18 +273,10 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
 
     const result = await dispatcher.dispatch({ pipeline: true });
 
-    // Should be skipped (auto-closed), not dispatched
-    expect(result.dispatched).toHaveLength(0);
-    expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0].seedId).toBe("epic-empty");
-    expect(result.skipped[0].reason).toContain("auto-closed");
-    expect(result.skipped[0].reason).toContain("no children");
-
-    // close() should have been called
-    expect(closeFn).toHaveBeenCalledWith("epic-empty", expect.stringContaining("no children"));
-
-    // No worker should have been spawned
-    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.skipped).toHaveLength(0);
+    expect(closeFn).not.toHaveBeenCalled();
+    expect(spawnSpy).toHaveBeenCalledOnce();
   });
 
   it("epic counts as 1 agent slot regardless of child task count", async () => {
@@ -302,20 +311,17 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     // spawnAgent called twice
     expect(spawnSpy).toHaveBeenCalledTimes(2);
 
-    // Find the epic call — it should have epicTasks
+    // Native epic dispatch does not expand children into epicTasks.
     const epicCall = spawnSpy.mock.calls.find(c => (c[2] as { id: string }).id === "epic-big");
     expect(epicCall).toBeDefined();
-    const epicTasks = epicCall![10] as EpicTask[];
-    expect(epicTasks).toBeDefined();
-    expect(epicTasks).toHaveLength(3); // getTaskOrder mock returns 3
+    expect(epicCall![10]).toBeUndefined();
 
-    // Find the task call — it should NOT have epicTasks
     const taskCall = spawnSpy.mock.calls.find(c => (c[2] as { id: string }).id === "task-1");
     expect(taskCall).toBeDefined();
-    expect(taskCall![9]).toBeUndefined();
+    expect(taskCall![10]).toBeUndefined();
   });
 
-  it("feature bead with open children still skips (unchanged behavior)", async () => {
+  it("feature task with children dispatches under native task semantics", async () => {
     const featureIssue = makeIssue("feat-1", "feature");
     const seedsClient = makeSeedsClient({
       ready: vi.fn().mockResolvedValue([featureIssue]),
@@ -333,17 +339,49 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
 
     const result = await dispatcher.dispatch({ pipeline: true });
 
-    // Feature beads with open children are skipped, not dispatched
-    expect(result.dispatched).toHaveLength(0);
-    expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0].reason).toContain("organizational container");
-
-    // No worker spawned
-    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.skipped).toHaveLength(0);
+    expect(spawnSpy).toHaveBeenCalledOnce();
   });
 
-  it("epic with no actionable child tasks auto-closes", async () => {
-    // Override getTaskOrder to return empty for this test
+  it("native feature task dispatches instead of being treated as a container", async () => {
+    const featureIssue = {
+      id: "feat-native",
+      title: "feature feat-native",
+      description: null,
+      type: "feature",
+      priority: 2,
+      status: "ready",
+      run_id: null,
+      branch: null,
+      external_id: "github:test/repo#1",
+      labels: ["feature", "github:feature"],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      approved_at: null,
+      closed_at: null,
+    };
+    const seedsClient = makeSeedsClient();
+    const store = {
+      ...makeStore(),
+      hasNativeTasks: vi.fn().mockReturnValue(true),
+      getReadyTasks: vi.fn().mockReturnValue([featureIssue]),
+      claimTask: vi.fn().mockReturnValue(true),
+    } as unknown as ForemanStore;
+    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].seedId).toBe("feat-native");
+    expect(result.skipped).toHaveLength(0);
+    expect(spawnSpy).toHaveBeenCalledOnce();
+  });
+
+  it("epic with no actionable child tasks still dispatches natively", async () => {
     const { getTaskOrder } = await import("../task-ordering.js");
     vi.mocked(getTaskOrder).mockResolvedValueOnce([]);
 
@@ -359,12 +397,14 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     });
     const store = makeStore();
     const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
 
     const result = await dispatcher.dispatch({ pipeline: true });
 
-    expect(result.dispatched).toHaveLength(0);
-    expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0].reason).toContain("no actionable child tasks");
-    expect(closeFn).toHaveBeenCalledWith("epic-containers", expect.stringContaining("no actionable"));
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.skipped).toHaveLength(0);
+    expect(closeFn).not.toHaveBeenCalled();
+    expect(spawnSpy).toHaveBeenCalledOnce();
   });
 });

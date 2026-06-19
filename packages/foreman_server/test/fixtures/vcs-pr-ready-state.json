@@ -1,0 +1,15 @@
+{
+  "operation_id": "merge-pr-42",
+  "backend": "git",
+  "workspace_id": "ws-pr-42",
+  "status": "stable_ready",
+  "effects": [{ "action": "git_merge", "branch": "feature/pr-42", "target": "main" }],
+  "pr_gate_state": {
+    "pr_id": "42",
+    "run_id": "run-pr-42",
+    "checks": "success",
+    "review": "approved",
+    "stable_for_seconds": 45,
+    "url": "https://github.example/pr/42"
+  }
+}

@@ -10,10 +10,12 @@ describe("loadMergeConfig", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "foreman-config-test-"));
+    process.env["FOREMAN_HOME"] = tmpDir;
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("returns defaults when no config file exists", () => {
@@ -30,7 +32,7 @@ describe("loadMergeConfig", () => {
   });
 
   it("returns defaults when file has no mergeQueue key", () => {
-    const configDir = path.join(tmpDir, ".foreman");
+    const configDir = tmpDir;
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),
@@ -43,7 +45,7 @@ describe("loadMergeConfig", () => {
   });
 
   it("merges partial config with defaults (user overrides some values)", () => {
-    const configDir = path.join(tmpDir, ".foreman");
+    const configDir = tmpDir;
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),
@@ -74,7 +76,7 @@ describe("loadMergeConfig", () => {
   });
 
   it("returns defaults and warns on invalid JSON", () => {
-    const configDir = path.join(tmpDir, ".foreman");
+    const configDir = tmpDir;
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),
@@ -112,7 +114,7 @@ describe("loadMergeConfig", () => {
       testAfterMerge: "never",
     };
 
-    const configDir = path.join(tmpDir, ".foreman");
+    const configDir = tmpDir;
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),
@@ -125,7 +127,7 @@ describe("loadMergeConfig", () => {
   });
 
   it("handles nested partial overrides within tier2SafetyCheck", () => {
-    const configDir = path.join(tmpDir, ".foreman");
+    const configDir = tmpDir;
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),

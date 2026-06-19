@@ -2,11 +2,14 @@
  * `foreman board` — Terminal UI kanban board for managing Foreman tasks.
  *
  * Features:
- * - 6 status columns: backlog, ready, in_progress, review, blocked, closed
+ * - 5 status columns: backlog, ready, in_progress, needs_attention, closed
+ * - review tasks are routed to needs_attention column
  * - vim-style navigation: j/k (vertical), h/l (horizontal)
  * - Status cycling: s (forward), S (backward)
+ * - Mark as ready: R
  * - Close task: c / C (with reason)
  * - Edit in $EDITOR: e / E (full schema)
+ * - Copy selected task ID: y
  * - Task detail view: Enter
  * - Help overlay: ?
  * - Refresh: r
@@ -18,7 +21,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { Box, Spacer, Text, renderToString } from "ink";
 import { createElement } from "react";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -26,14 +29,17 @@ import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import * as yaml from "js-yaml";
-import { ForemanStore } from "../../lib/store.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import {
-  NativeTaskStore,
   priorityLabel,
   formatTaskIdDisplay,
   parsePriority,
   type TaskRow,
 } from "../../lib/task-store.js";
+import type { TaskNoteRow } from "../../lib/db/postgres-adapter.js";
 import { listRegisteredProjects, resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────────
@@ -43,18 +49,66 @@ export const BOARD_STATUSES = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
+
+export function normalizeStatusForBoard(status: string): BoardStatus | null {
+  const normalized = status.replace(/-/g, "_");
+  return BOARD_STATUSES.includes(normalized as BoardStatus) ? normalized as BoardStatus : null;
+}
+
+export function boardColumnForTaskStatus(status: string): BoardStatus {
+  const normalized = status.replace(/-/g, "_");
+  if (["open", "todo"].includes(normalized)) {
+    return "backlog";
+  }
+  if (["explorer", "developer", "qa", "reviewer", "finalize"].includes(normalized)) {
+    return "in_progress";
+  }
+  if (["failed", "stuck", "conflict", "blocked", "review"].includes(normalized)) {
+    return "needs_attention";
+  }
+  if (["merged", "completed", "done"].includes(normalized)) {
+    return "closed";
+  }
+  return normalizeStatusForBoard(status) ?? "needs_attention";
+}
+
+function boardStatusToStoreStatus(status: BoardStatus): string {
+  if (status === "in_progress") return "in-progress";
+  if (status === "needs_attention") return "blocked";
+  return status;
+}
+
+/**
+ * Convert a store status (hyphenated) to a board status (underscored).
+ * Returns the board status or null if not a valid board status.
+ */
+function storeStatusToBoardStatus(status: string): BoardStatus | null {
+  const normalized = status.replace(/-/g, "_");
+  return BOARD_STATUSES.includes(normalized as BoardStatus) ? normalized as BoardStatus : null;
+}
+
+/**
+ * Convert a user-entered status (underscore or hyphen variants) to a store-valid status.
+ * Handles in_progress → in-progress and needs_attention → blocked conversions.
+ */
+function normalizeStatusForStore(status: string): string {
+  const boardStatus = storeStatusToBoardStatus(status);
+  if (boardStatus) {
+    return boardStatusToStoreStatus(boardStatus);
+  }
+  // If not a valid board status, return as-is and let the API reject it
+  return status;
+}
 
 const STATUS_LABELS: Record<BoardStatus, string> = {
   backlog: "Backlog",
   ready: "Ready",
   in_progress: "In Progress",
-  review: "Review",
-  blocked: "Blocked",
+  needs_attention: "Needs Attention",
   closed: "Closed",
 };
 
@@ -75,6 +129,15 @@ const PRIORITY_COLORS: Record<number, { textColor: string; backgroundColor: stri
   4: { textColor: "white", backgroundColor: "blackBright" },
 };
 
+export interface BoardTaskNote {
+  id: string;
+  created_at: string;
+  phase: string | null;
+  kind: string;
+  author: string;
+  body: string;
+}
+
 export interface BoardTask {
   id: string;
   title: string;
@@ -87,12 +150,27 @@ export interface BoardTask {
   updated_at: string;
   approved_at: string | null;
   closed_at: string | null;
+  run_id?: string | null;
+  notes?: BoardTaskNote[];
 }
+
+type BoardContext =
+  | { backend: "node"; client: ReturnType<typeof createTrpcClient>; projectId: string; projectPath: string }
+  | { backend: "elixir"; client: ElixirServerClient; projectId: string; projectPath: string };
 
 export interface NavigationState {
   colIndex: number;       // 0-5 for status columns
   rowIndex: number;       // position within the column's task list
 }
+
+/** Sort modes for board columns. */
+export type SortMode = "updated" | "priority";
+
+/** Sort mode display labels. */
+export const SORT_MODE_LABELS: Record<SortMode, string> = {
+  updated: "Updated",
+  priority: "Priority",
+};
 
 export interface RenderState {
   tasks: Map<BoardStatus, BoardTask[]>;
@@ -103,63 +181,278 @@ export interface RenderState {
   showHelp: boolean;
   showDetail: boolean;
   detailTask: BoardTask | null;
+  detailNotesStatus: "idle" | "loading" | "loaded" | "error";
+  detailNotesError: string | null;
+  sortMode: SortMode;
+  refreshStatus?: "idle" | "refreshing" | "refreshed";
+  refreshSpinnerFrame?: number;
+  refreshedAt?: string | null;
 }
 
 // ── Board data loading ───────────────────────────────────────────────────────
 
-function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: NativeTaskStore } {
-  const store = ForemanStore.forProject(projectPath);
-  const project = store.getProjectByPath(projectPath);
-  const taskStore = new NativeTaskStore(store.getDb(), {
-    projectKey: project?.name ?? basename(projectPath),
-  });
-  return { store, taskStore };
+/**
+ * Sort tasks based on the selected sort mode.
+ * - "updated" (default): most recently updated first (descending updated_at)
+ * - "priority": P0 first (ascending priority), then by updated_at
+ */
+function parseTaskUpdatedAt(task: BoardTask): number {
+  const timestamp = Date.parse(task.updated_at);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+export function sortBoardTasks(tasks: BoardTask[], sortMode: SortMode): BoardTask[] {
+  const sorted = [...tasks];
+  if (sortMode === "priority") {
+    // Sort by priority ascending (P0 first), then by updated_at descending (most recent first)
+    sorted.sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+      }
+      return parseTaskUpdatedAt(b) - parseTaskUpdatedAt(a);
+    });
+  } else {
+    // Default: sort by updated_at descending (most recently updated first)
+    sorted.sort((a, b) => parseTaskUpdatedAt(b) - parseTaskUpdatedAt(a));
+  }
+  return sorted;
+}
+
+/**
+ * Sort all tasks in a column map based on the selected sort mode.
+ */
+export function sortBoardColumns(
+  taskMap: Map<BoardStatus, BoardTask[]>,
+  sortMode: SortMode,
+): Map<BoardStatus, BoardTask[]> {
+  const sorted = new Map<BoardStatus, BoardTask[]>();
+  for (const [status, tasks] of taskMap) {
+    sorted.set(status, sortBoardTasks(tasks, sortMode));
+  }
+  return sorted;
+}
+
+async function resolveBoardContext(projectPath: string): Promise<BoardContext> {
+  const projects = await listRegisteredProjects();
+  const resolvedProjectPath = resolve(projectPath);
+  const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
+  if (!project) {
+    throw new Error(`Project at '${projectPath}' is not registered.`);
+  }
+
+  if (foremanBackendMode() === "elixir") {
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    if (!status.running) {
+      throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+    }
+    const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    return { backend: "elixir", client, projectId: project.id, projectPath };
+  }
+
+  return {
+    backend: "node",
+    client: createTrpcClient(),
+    projectId: project.id,
+    projectPath,
+  };
 }
 
 /**
  * Load all tasks from the native task store, grouped by status.
  * Tasks with unknown statuses are placed in the rightmost column (closed).
+ * Failed, stuck, and conflict statuses route to needs_attention (not closed).
  */
-export function loadBoardTasks(projectPath: string): Map<BoardStatus, BoardTask[]> {
-  const { store, taskStore } = getTaskStore(projectPath);
-  try {
-    const db = store.getDb();
-    // Load all tasks ordered by priority and created_at
-    const rows = db.prepare(
-      "SELECT * FROM tasks ORDER BY priority ASC, created_at ASC",
-    ).all() as TaskRow[];
+function boardTaskFromRow(row: TaskRow): BoardTask {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    type: row.type,
+    priority: row.priority,
+    status: row.status,
+    external_id: row.external_id,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    approved_at: row.approved_at,
+    closed_at: row.closed_at,
+    run_id: row.run_id,
+  };
+}
 
-    const map = new Map<BoardStatus, BoardTask[]>();
-    for (const status of BOARD_STATUSES) {
-      map.set(status, []);
-    }
+function boardTaskFromElixir(row: ElixirTask): BoardTask {
+  const now = new Date().toISOString();
+  const id = row.task_id ?? row.id ?? "unknown";
+  return {
+    id,
+    title: row.title ?? id,
+    description: row.description ?? null,
+    type: row.type ?? row.task_type ?? "task",
+    priority: typeof row.priority === "number" ? row.priority : 2,
+    status: row.status ?? "backlog",
+    external_id: row.external_id ?? null,
+    created_at: row.created_at ?? row.updated_at ?? now,
+    updated_at: row.updated_at ?? row.created_at ?? now,
+    approved_at: row.approved_at ?? null,
+    closed_at: row.closed_at ?? null,
+    run_id: row.run_id ?? null,
+    notes: (row.annotations ?? []).map((note, index) => ({
+      id: `${id}-annotation-${index}`,
+      created_at: note.created_at ?? now,
+      phase: null,
+      kind: "note",
+      author: note.author ?? "unknown",
+      body: note.body,
+    })),
+  };
+}
 
-    for (const row of rows) {
-      // Normalize status: convert hyphens to underscores for matching
-      const normalizedStatus = row.status.replace(/-/g, "_") as BoardStatus;
-      const status = BOARD_STATUSES.includes(normalizedStatus)
-        ? normalizedStatus
-        : "closed";
-      const tasks = map.get(status)!;
-      tasks.push({
-        id: row.id,
-        title: row.title,
-        description: row.description,
-        type: row.type,
-        priority: row.priority,
-        status: row.status,
-        external_id: row.external_id,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        approved_at: row.approved_at,
-        closed_at: row.closed_at,
-      });
-    }
+export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStatus, BoardTask[]>> {
+  const context = await resolveBoardContext(projectPath);
+  const rows = context.backend === "elixir"
+    ? (await context.client.listTasks())
+        .filter((task) => !task.project_id || task.project_id === context.projectId)
+        .map(boardTaskFromElixir)
+    : (await context.client.tasks.list({ projectId: context.projectId, limit: 1000 }) as TaskRow[])
+        .map(boardTaskFromRow);
 
-    return map;
-  } finally {
-    store.close();
+  const map = new Map<BoardStatus, BoardTask[]>();
+  for (const status of BOARD_STATUSES) {
+    map.set(status, []);
   }
+
+  for (const row of rows) {
+    const status = boardColumnForTaskStatus(row.status);
+    map.get(status)!.push(row);
+  }
+
+  return map;
+}
+
+export async function loadBoardTask(projectPath: string, taskId: string): Promise<BoardTask | null> {
+  const context = await resolveBoardContext(projectPath);
+  if (context.backend === "elixir") {
+    const row = await context.client.getTask(taskId);
+    if (!row || (row.project_id && row.project_id !== context.projectId)) return null;
+    return boardTaskFromElixir(row);
+  }
+  const row = await context.client.tasks.get({ projectId: context.projectId, taskId }) as TaskRow | null;
+  return row ? boardTaskFromRow(row) : null;
+}
+
+interface BoardInboxMessageRow {
+  id: string;
+  run_id: string;
+  created_at: string;
+}
+
+interface BoardRunRow {
+  id: string;
+  seed_id?: string | null;
+  bead_id?: string | null;
+}
+
+export interface BoardInboxUpdateResult {
+  taskIds: string[];
+  newestId: string | null;
+}
+
+export async function pollBoardInboxTaskUpdates(
+  projectPath: string,
+  lastSeenId: string | null,
+  limit = 100,
+  cursorSeeded = lastSeenId !== null,
+): Promise<BoardInboxUpdateResult> {
+  const context = await resolveBoardContext(projectPath);
+  if (context.backend === "elixir") {
+    return { taskIds: [], newestId: lastSeenId };
+  }
+
+  const { client, projectId } = context;
+  const rows = await client.mail.listGlobal({ projectId, limit }) as BoardInboxMessageRow[];
+  const newestId = rows[rows.length - 1]?.id ?? null;
+
+  if (!cursorSeeded) {
+    return { taskIds: [], newestId };
+  }
+
+  const lastSeenIndex = lastSeenId ? rows.findIndex((row) => row.id === lastSeenId) : -1;
+  const newRows = lastSeenId && lastSeenIndex >= 0 ? rows.slice(lastSeenIndex + 1) : rows;
+  const runIds = [...new Set(newRows.map((row) => row.run_id).filter(Boolean))];
+  const taskIds = new Set<string>();
+
+  for (const runId of runIds) {
+    const run = await client.runs.get({ runId }) as BoardRunRow | null;
+    const taskId = run?.seed_id ?? run?.bead_id ?? null;
+    if (taskId) taskIds.add(taskId);
+  }
+
+  return { taskIds: [...taskIds], newestId };
+}
+
+export function applyBoardTaskUpdate(
+  taskMap: Map<BoardStatus, BoardTask[]>,
+  task: BoardTask | null,
+  taskId: string,
+  sortMode: SortMode,
+): Map<BoardStatus, BoardTask[]> {
+  const next = new Map<BoardStatus, BoardTask[]>();
+  for (const [status, tasks] of taskMap) {
+    next.set(status, tasks.filter((candidate) => candidate.id !== taskId));
+  }
+
+  if (task) {
+    const status = boardColumnForTaskStatus(task.status);
+    next.get(status)!.push(task);
+    next.set(status, sortBoardTasks(next.get(status)!, sortMode));
+  }
+
+  return next;
+}
+
+export async function refreshBoardTasksById(
+  projectPath: string,
+  taskMap: Map<BoardStatus, BoardTask[]>,
+  taskIds: Iterable<string>,
+  sortMode: SortMode,
+): Promise<Map<BoardStatus, BoardTask[]>> {
+  let next = taskMap;
+  for (const taskId of taskIds) {
+    const task = await loadBoardTask(projectPath, taskId);
+    next = applyBoardTaskUpdate(next, task, taskId, sortMode);
+  }
+  return next;
+}
+
+export async function loadBoardTaskNotes(projectPath: string, taskId: string): Promise<BoardTaskNote[]> {
+  const context = await resolveBoardContext(projectPath);
+  if (context.backend === "elixir") {
+    const task = await context.client.getTask(taskId);
+    return (task?.annotations ?? []).slice(-10).map((note, index) => ({
+      id: `${taskId}-annotation-${index}`,
+      created_at: note.created_at ?? new Date().toISOString(),
+      phase: null,
+      kind: "note",
+      author: note.author ?? "unknown",
+      body: note.body,
+    }));
+  }
+
+  const notes = await context.client.tasks.listNotes({
+    projectId: context.projectId,
+    taskId,
+    limit: 10,
+    newestFirst: true,
+  }) as TaskNoteRow[];
+
+  return [...notes].reverse().map((note) => ({
+    id: note.id,
+    created_at: note.created_at,
+    phase: note.phase,
+    kind: note.kind,
+    author: note.author,
+    body: note.body,
+  }));
 }
 
 // ── ANSI rendering helpers ────────────────────────────────────────────────────
@@ -325,7 +618,11 @@ function renderTaskCardView(
       h(
         Box,
         { width: "50%", minWidth: 0 },
-        h(Text, { color: metaTextColor, dimColor: !rowBackgroundColor, wrap: "truncate-end" }, task.type),
+        h(
+          Text,
+          { color: metaTextColor, dimColor: !rowBackgroundColor, wrap: "truncate-end" },
+          formatTaskIdDisplay(task.id),
+        ),
       ),
       h(
         Box,
@@ -410,11 +707,15 @@ function renderHelpOverlayView(width: number): ReturnType<typeof h> {
     ["j / k", "Move up / down in column"],
     ["h / l", "Move left / right between columns"],
     ["g / G", "Jump to first / last task"],
-    ["[1]…[6]", "Jump to column by number"],
+    ["[1]…[5]", "Jump to column by number"],
     ["s / S", "Cycle status forward / backward"],
+    ["o", "Toggle sort: updated / priority"],
+    ["R", "Mark task as ready"],
     ["c", "Close task"],
     ["C", "Close task with reason"],
     ["e / E", "Edit task in editor"],
+    ["y", "Copy selected task ID"],
+    ["n", "Create new task"],
     ["Enter", "Show task detail"],
     ["Esc", "Dismiss help / detail"],
     ["r", "Refresh board from store"],
@@ -444,9 +745,19 @@ function renderHelpOverlayView(width: number): ReturnType<typeof h> {
   );
 }
 
-function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof h> {
-  const panelWidth = Math.max(24, Math.min(64, width));
-  const fieldWidth = Math.max(8, Math.min(14, Math.floor(panelWidth * 0.28)));
+function renderTaskDetailView(
+  task: BoardTask,
+  width: number,
+  notesStatus: RenderState["detailNotesStatus"],
+  notesError: string | null,
+  terminalHeight?: number,
+): ReturnType<typeof h> {
+  // Use substantially more terminal real estate while never exceeding available width.
+  const availableWidth = Math.max(8, width - 4);
+  const preferredWidth = Math.max(50, Math.floor(width * 0.9));
+  const panelWidth = Math.min(preferredWidth, availableWidth);
+  const panelHeight = terminalHeight ? Math.max(8, terminalHeight - 2) : undefined;
+  const fieldWidth = Math.max(8, Math.min(16, Math.floor(panelWidth * 0.2)));
 
   const rows: Array<[string, string | null]> = [
     ["ID:", task.id],
@@ -462,7 +773,7 @@ function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof
   ];
 
   const children: Array<ReturnType<typeof h>> = [
-    h(Text, { key: "detail-title", color: "blue", bold: true }, "TASK DETAIL"),
+    h(Text, { key: "detail-title", color: "blue", bold: true }, `TASK DETAIL — ${task.status}`),
   ];
 
   if (task.description) {
@@ -474,17 +785,18 @@ function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof
         h(
           Box,
           { width: fieldWidth, minWidth: 0 },
-          h(Text, { bold: true, wrap: "truncate-end" }, "Description:"),
+          h(Text, { bold: true, wrap: "wrap" }, "Description:"),
         ),
         h(
           Box,
           { flexGrow: 1, minWidth: 0 },
-          h(Text, { wrap: "truncate-end" }, firstLine ?? ""),
+          h(Text, { wrap: "wrap" }, firstLine ?? ""),
         ),
       ),
     );
 
-    for (const [index, line] of rest.slice(0, 4).entries()) {
+    // Show all description lines with wrapping (no line limit)
+    for (const [index, line] of rest.entries()) {
       children.push(
         h(
           Box,
@@ -493,7 +805,7 @@ function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof
           h(
             Box,
             { flexGrow: 1, minWidth: 0 },
-            h(Text, { dimColor: true, wrap: "truncate-end" }, line),
+            h(Text, { dimColor: true, wrap: "wrap" }, line),
           ),
         ),
       );
@@ -512,24 +824,85 @@ function renderTaskDetailView(task: BoardTask, width: number): ReturnType<typeof
         h(
           Box,
           { width: fieldWidth, minWidth: 0 },
-          h(Text, { bold: true, wrap: "truncate-end" }, label),
+          h(Text, { bold: true, wrap: "wrap" }, label),
         ),
         h(
           Box,
           { flexGrow: 1, minWidth: 0 },
-          h(Text, { wrap: "truncate-end" }, value),
+          h(Text, { wrap: "wrap" }, value),
         ),
       ),
     );
   }
 
-  children.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
+  if (notesStatus === "loading") {
+    children.push(h(Text, { key: "notes-loading", dimColor: true }, "Notes: loading…"));
+  } else if (notesStatus === "error") {
+    children.push(
+      h(
+        Text,
+        { key: "notes-error", dimColor: true },
+        `Notes: unavailable${notesError ? ` (${notesError})` : ""}`,
+      ),
+    );
+  } else if (task.notes) {
+    if (task.notes.length === 0) {
+      children.push(h(Text, { key: "notes-empty", dimColor: true }, "Notes: none yet"));
+    } else {
+      children.push(h(Text, { key: "notes-title", bold: true }, "Notes:"));
+      // Show all notes with wrapping (no item limit)
+      for (const [noteIndex, note] of task.notes.entries()) {
+        const when = new Date(note.created_at).toLocaleString();
+        const phase = note.phase ? `${note.phase} ` : "";
+        children.push(
+          h(
+            Text,
+            { key: `note:${note.id}:meta`, dimColor: true, wrap: "wrap" },
+            `[${when} ${phase}${note.kind}] ${note.author}`,
+          ),
+        );
+        // Show all lines of note body with wrapping
+        for (const [lineIndex, line] of note.body.split("\n").entries()) {
+          children.push(
+            h(
+              Text,
+              { key: `note:${note.id}:body:${lineIndex}`, wrap: "wrap" },
+              line,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  const contentLimit = panelHeight ? Math.max(1, panelHeight - 3) : undefined;
+  const hasHiddenContent = contentLimit !== undefined && children.length > contentLimit;
+  const visibleChildren = hasHiddenContent ? children.slice(0, contentLimit) : children;
+
+  if (hasHiddenContent) {
+    visibleChildren.push(h(Text, { key: "detail-more", dimColor: true }, "↓ more content"));
+  }
+  visibleChildren.push(h(Text, { key: "detail-hint", dimColor: true }, "Press Enter or Esc to close"));
 
   return h(
     Box,
-    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth },
-    ...children,
+    { borderStyle: "round", borderColor: "blue", flexDirection: "column", width: panelWidth, height: panelHeight },
+    ...visibleChildren,
   );
+}
+
+const REFRESH_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function renderBoardStatusText(state: RenderState, totalTasks: number): string {
+  const base = `${totalTasks} task${totalTasks === 1 ? "" : "s"} · Sort: ${SORT_MODE_LABELS[state.sortMode]}`;
+  if (state.refreshStatus === "refreshing") {
+    const frame = REFRESH_SPINNER_FRAMES[(state.refreshSpinnerFrame ?? 0) % REFRESH_SPINNER_FRAMES.length];
+    return `${frame} refreshing… · ${base}`;
+  }
+  if (state.refreshStatus === "refreshed" && state.refreshedAt) {
+    return `✓ refreshed ${state.refreshedAt} · ${base}`;
+  }
+  return base;
 }
 
 function renderBoardFrame(
@@ -542,16 +915,13 @@ function renderBoardFrame(
   const totalTasks = state.totalTasks;
   const visibleStatuses = getVisibleStatuses(terminalWidth, state.nav.colIndex);
   const columnWidth = getColumnWidth(terminalWidth, visibleStatuses.length);
-  const reservedRows =
-    5
-    + (state.errorMessage ? 2 : 0)
-    + (state.showHelp ? 16 : 0)
-    + (state.showDetail && state.detailTask ? 14 : 0);
+
+  // Help overlay uses 16 rows; board footer uses 5 rows
+  const reservedRows = 5 + (state.errorMessage ? 2 : 0) + (state.showHelp ? 16 : 0);
   const columnHeight = Math.max(8, terminalHeight - reservedRows);
 
-  const tree = h(
-    Box,
-    { flexDirection: "column", width: terminalWidth },
+  // Build the board content (header + columns + footer)
+  const boardContent: Array<ReturnType<typeof h>> = [
     h(
       Box,
       { width: "100%", marginBottom: 1 },
@@ -559,8 +929,8 @@ function renderBoardFrame(
       h(Spacer, null),
       h(
         Text,
-        { dimColor: true },
-        `${totalTasks} task${totalTasks === 1 ? "" : "s"}`,
+        { dimColor: state.refreshStatus !== "refreshing", color: state.refreshStatus === "refreshing" ? "cyan" : undefined },
+        renderBoardStatusText(state, totalTasks),
       ),
     ),
     h(
@@ -595,21 +965,36 @@ function renderBoardFrame(
         );
       }),
     ),
-    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  s/S cycle status  c/C close  e/E edit  Enter detail  ? help  r refresh  q quit"),
-    state.errorMessage
-      ? h(
+    h(Text, { dimColor: true }, "j/k up/down  h/l left/right  o sort  s/S cycle status  R mark ready  c/C close  e/E edit  y copy id  n new  Enter detail  ? help  r refresh  q quit"),
+  ];
+
+  // Add error message if present
+  if (state.errorMessage) {
+    boardContent.push(
+      h(
         Box,
         { marginTop: 1 },
         h(Text, { color: "red", bold: true }, "ERROR "),
         h(Text, { color: "red", wrap: "truncate-end" }, state.errorMessage),
-      )
-      : null,
-    state.showHelp
-      ? h(Box, { marginTop: 1 }, renderHelpOverlayView(Math.max(24, terminalWidth - 2)))
-      : null,
-    state.showDetail && state.detailTask
-      ? h(Box, { marginTop: 1 }, renderTaskDetailView(state.detailTask, Math.max(24, terminalWidth - 2)))
-      : null,
+      ),
+    );
+  }
+
+  // When help is shown, render help overlay at bottom (existing behavior)
+  if (state.showHelp) {
+    const tree = h(
+      Box,
+      { flexDirection: "column", width: terminalWidth },
+      ...boardContent,
+      h(Box, { marginTop: 1 }, renderHelpOverlayView(Math.max(24, terminalWidth - 2))),
+    );
+    return renderToString(tree, { columns: terminalWidth });
+  }
+
+  const tree = h(
+    Box,
+    { flexDirection: "column", width: terminalWidth },
+    ...boardContent,
   );
 
   return renderToString(tree, { columns: terminalWidth });
@@ -633,6 +1018,17 @@ export function renderBoard(
   userVisibleLimit?: number,
   terminalHeight = getTerminalHeight(),
 ): string {
+  // When detail is shown, render it as a true overlay (full screen) on top of the board
+  // This gives the detail panel substantially more real estate than inline rendering
+  if (state.showDetail && state.detailTask) {
+    return `${CLEAR_SCREEN}${renderTaskDetail(
+      state.detailTask,
+      terminalWidth,
+      state.detailNotesStatus,
+      state.detailNotesError,
+      terminalHeight,
+    )}`;
+  }
   return `${CLEAR_SCREEN}${renderBoardFrame(state, projectName, terminalWidth, terminalHeight, userVisibleLimit)}`;
 }
 
@@ -646,8 +1042,14 @@ export function renderHelpOverlay(width: number): string {
 /**
  * Render the task detail panel (full metadata).
  */
-export function renderTaskDetail(task: BoardTask, width: number): string {
-  return renderToString(renderTaskDetailView(task, width), { columns: width });
+export function renderTaskDetail(
+  task: BoardTask,
+  width: number,
+  notesStatus: RenderState["detailNotesStatus"] = "idle",
+  notesError: string | null = null,
+  terminalHeight?: number,
+): string {
+  return renderToString(renderTaskDetailView(task, width, notesStatus, notesError, terminalHeight), { columns: width });
 }
 
 // ── Editor integration ───────────────────────────────────────────────────────
@@ -766,14 +1168,35 @@ export function editTaskInEditor(
  * Write a status change to the store.
  */
 export function applyStatusChange(projectPath: string, taskId: string, newStatus: string): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
+  throw new Error("applyStatusChange is now async; use applyStatusChangeAsync().");
+}
+
+async function sendElixirBoardCommand(
+  client: ElixirServerClient,
+  commandType: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const commandId = `board-${commandType}-${randomUUID()}`;
+  const response = await client.sendCommand({
+    command_id: commandId,
+    command_type: commandType,
+    payload,
+    metadata: { correlation_id: commandId, source: "foreman-board" },
+  });
+  if (!response.ok) throw new Error(response.error.message);
+}
+
+export async function applyStatusChangeAsync(projectPath: string, taskId: string, newStatus: string): Promise<string | null> {
   try {
-    taskStore.update(taskId, { status: newStatus });
+    const context = await resolveBoardContext(projectPath);
+    if (context.backend === "elixir") {
+      await sendElixirBoardCommand(context.client, "task.update", { project_id: context.projectId, task_id: taskId, status: newStatus });
+    } else {
+      await context.client.tasks.update({ projectId: context.projectId, taskId, updates: { status: newStatus } });
+    }
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
   }
 }
 
@@ -781,19 +1204,20 @@ export function applyStatusChange(projectPath: string, taskId: string, newStatus
  * Close a task (status → closed, optionally with a reason stored in closed_at).
  */
 export function closeTask(projectPath: string, taskId: string, reason?: string): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
+  throw new Error("closeTask is now async; use closeTaskAsync().");
+}
+
+export async function closeTaskAsync(projectPath: string, taskId: string, _reason?: string): Promise<string | null> {
   try {
-    taskStore.close(taskId);
-    if (reason) {
-      // Store reason in closed_at (we reuse this field; a real implementation might use a separate field)
-      const db = store.getDb();
-      db.prepare("UPDATE tasks SET closed_at = ? WHERE id = ?").run(reason, taskId);
+    const context = await resolveBoardContext(projectPath);
+    if (context.backend === "elixir") {
+      await sendElixirBoardCommand(context.client, "task.close", { project_id: context.projectId, task_id: taskId });
+    } else {
+      await context.client.tasks.close({ projectId: context.projectId, taskId });
     }
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
   }
 }
 
@@ -801,26 +1225,64 @@ export function closeTask(projectPath: string, taskId: string, reason?: string):
  * Save an edited task back to the store (title, description, priority, status).
  */
 export function saveEditedTask(projectPath: string, originalId: string, updated: BoardTask): string | null {
-  const { store, taskStore } = getTaskStore(projectPath);
+  throw new Error("saveEditedTask is now async; use saveEditedTaskAsync().");
+}
+
+export async function saveEditedTaskAsync(projectPath: string, originalId: string, updated: BoardTask): Promise<string | null> {
   try {
-    const db = store.getDb();
-    db.prepare(
-      `UPDATE tasks SET title = ?, description = ?, type = ?, priority = ?, status = ?, updated_at = ? WHERE id = ?`,
-    ).run(
-      updated.title,
-      updated.description ?? null,
-      updated.type,
-      updated.priority,
-      updated.status,
-      new Date().toISOString(),
-      originalId,
-    );
+    const context = await resolveBoardContext(projectPath);
+    const updates = {
+      title: updated.title,
+      description: updated.description ?? undefined,
+      priority: updated.priority,
+      status: updated.status,
+    };
+    if (context.backend === "elixir") {
+      await sendElixirBoardCommand(context.client, "task.update", { project_id: context.projectId, task_id: originalId, ...updates });
+    } else {
+      await context.client.tasks.update({
+        projectId: context.projectId,
+        taskId: originalId,
+        updates,
+      });
+    }
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
-  } finally {
-    store.close();
   }
+}
+
+/** Copy text to the system clipboard using the platform clipboard command. */
+export function copyToClipboard(text: string): string | null {
+  const candidates = process.platform === "darwin"
+    ? [{ command: "pbcopy", args: [] }]
+    : process.platform === "win32"
+      ? [{ command: "clip", args: [] }]
+      : [
+          { command: "wl-copy", args: [] },
+          { command: "xclip", args: ["-selection", "clipboard"] },
+          { command: "xsel", args: ["--clipboard", "--input"] },
+        ];
+
+  const errors: string[] = [];
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate.command, candidate.args, {
+      input: text,
+      encoding: "utf8",
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+
+    if (!result.error && result.status === 0) {
+      return null;
+    }
+
+    const message = result.error instanceof Error
+      ? result.error.message
+      : result.stderr?.trim() || `exit ${result.status ?? "unknown"}`;
+    errors.push(`${candidate.command}: ${message}`);
+  }
+
+  return `Failed to copy task ID to clipboard (${errors.join("; ")})`;
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -860,8 +1322,175 @@ const KEY_C = "C";
 const KEY_e = "e";
 const KEY_E = "E";
 const KEY_r = "r";
+const KEY_R = "R";
+const KEY_o = "o";
 const KEY_q = "q";
 const KEY_QUESTION = "?";
+const KEY_n = "n";
+const KEY_y = "y";
+
+// ── New task editor template ────────────────────────────────────────────────
+
+const NEW_TASK_TEMPLATE = `# Create a new Foreman task
+# Fields: id (optional, auto-generated if empty), title, description, type, priority, status
+# Lines starting with # are comments and will be ignored
+# Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog
+# Status: backlog, ready, in_progress, needs_attention, closed
+# Type: task, bug, feature, epic, chore, docs, question
+
+id:
+title:
+description:
+type: task
+priority: 2
+status: backlog
+`;
+
+/**
+ * Open the editor with a new task template and return the parsed content on success.
+ * On error or non-zero exit, returns null and sets errorMessage.
+ */
+export function createTaskInEditor(
+  onError: (msg: string) => void,
+): { id?: string; title: string; description: string | null; type: string; priority: number; status: string } | null {
+  const editor = resolveEditor();
+  const tmpFile = joinPath(tmpdir(), `foreman-task-new-${randomUUID()}.yaml`);
+
+  try {
+    writeFileSync(tmpFile, NEW_TASK_TEMPLATE.trim() + "\n", "utf8");
+  } catch (err) {
+    onError(`Failed to write temp file: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+
+  let exitCode = 0;
+  try {
+    exitCode = spawnSync(editor, [tmpFile], {
+      stdio: "inherit",
+      shell: true,
+    }).status ?? 0;
+  } catch (err) {
+    onError(`Failed to launch editor '${editor}': ${err instanceof Error ? err.message : String(err)}`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+
+  if (exitCode !== 0) {
+    onError(`Editor exited with code ${exitCode} — task not created.`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+
+  try {
+    const raw = readFileSync(tmpFile, "utf8");
+    const parsed = yaml.load(raw) as Record<string, unknown>;
+
+    // Validate required field: title
+    if (!parsed.title || typeof parsed.title !== "string" || parsed.title.trim().length === 0) {
+      onError("Title is required.");
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+      return null;
+    }
+
+    const VALID_TYPES = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+    const taskType = typeof parsed.type === "string" && VALID_TYPES.includes(parsed.type)
+      ? parsed.type
+      : "task";
+
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return {
+      id: typeof parsed.id === "string" && parsed.id.trim().length > 0 ? parsed.id.trim() : undefined,
+      title: String(parsed.title).trim(),
+      description: typeof parsed.description === "string" ? parsed.description : null,
+      type: taskType,
+      priority: typeof parsed.priority === "number" ? clamp(parsed.priority, 0, 4) : 2,
+      status: typeof parsed.status === "string" ? String(parsed.status) : "backlog",
+    };
+  } catch (err) {
+    onError(`Failed to parse YAML: ${err instanceof Error ? err.message : String(err)}`);
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    return null;
+  }
+}
+
+/**
+ * Create a new task via the tRPC API.
+ */
+export async function createTaskAsync(
+  projectPath: string,
+  taskData: { id?: string; title: string; description?: string | null; type?: string; priority?: number; status?: string },
+): Promise<{ taskId: string } | string> {
+  try {
+    const context = await resolveBoardContext(projectPath);
+    const taskId = taskData.id || `task-${randomUUID().slice(0, 8)}`;
+    if (context.backend === "elixir") {
+      await sendElixirBoardCommand(context.client, "task.create", {
+        project_id: context.projectId,
+        task_id: taskId,
+        title: taskData.title,
+        description: taskData.description ?? undefined,
+        task_type: taskData.type,
+        priority: taskData.priority,
+        status: taskData.status,
+      });
+      return { taskId };
+    }
+
+    const createInput: { projectId: string; id?: string; title: string; description?: string; type?: string; priority?: number; status?: string } = {
+      projectId: context.projectId,
+      title: taskData.title,
+    };
+    if (taskData.id) {
+      createInput.id = taskData.id;
+    }
+    if (taskData.description !== undefined) {
+      createInput.description = taskData.description ?? undefined;
+    }
+    if (taskData.type !== undefined) {
+      createInput.type = taskData.type;
+    }
+    if (taskData.priority !== undefined) {
+      createInput.priority = taskData.priority;
+    }
+    if (taskData.status !== undefined) {
+      createInput.status = taskData.status;
+    }
+    const created = await context.client.tasks.create(createInput) as { id: string };
+    return { taskId: created.id };
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+export const boardApi = {
+  createTaskInEditor,
+  createTaskAsync,
+  applyStatusChangeAsync,
+  loadTaskNotesAsync: loadBoardTaskNotes,
+  copyToClipboard,
+};
+
+function suspendRawMode(): void {
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+    try {
+      process.stdin.setRawMode(false);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function resumeRawMode(): void {
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+    try {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.setEncoding("utf8");
+    } catch {
+      // ignore
+    }
+  }
+}
 
 export interface KeyHandlerResult {
   nav: NavigationState;
@@ -878,22 +1507,32 @@ export interface KeyHandlerResult {
   promptForCloseReason: boolean;
   /** Close reason for C key */
   closeReason?: string;
+  /** New sort mode, if toggled */
+  sortMode?: SortMode;
+}
+
+export interface KeyHandlerCallbacks {
+  onDetailNotesLoaded?: (
+    taskId: string,
+    notes: BoardTaskNote[] | null,
+    error: string | null,
+  ) => void;
 }
 
 export type KeyHandler = (
   key: string,
   state: RenderState,
   projectPath: string,
-) => KeyHandlerResult;
+) => Promise<KeyHandlerResult>;
 
 /**
  * Create the key handler closure that captures projectPath.
  */
-export function createKeyHandler(projectPath: string): KeyHandler {
-  return function handleKey(
+export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallbacks = {}): KeyHandler {
+  return async function handleKey(
     key: string,
     state: RenderState,
-  ): KeyHandlerResult {
+  ): Promise<KeyHandlerResult> {
     const result: KeyHandlerResult = {
       nav: { ...state.nav },
       errorMessage: null,
@@ -919,7 +1558,6 @@ export function createKeyHandler(projectPath: string): KeyHandler {
       if (key === KEY_ESC || key === KEY_ENTER) {
         result.showDetail = false;
         result.detailTask = null;
-        result.needsRefresh = true;
       }
       return result;
     }
@@ -947,13 +1585,11 @@ export function createKeyHandler(projectPath: string): KeyHandler {
           ? BOARD_STATUSES.length - 1
           : result.nav.colIndex - 1;
         result.nav.rowIndex = 0;
-        result.needsRefresh = true;
         break;
       }
       case KEY_l: {
         result.nav.colIndex = (result.nav.colIndex + 1) % BOARD_STATUSES.length;
         result.nav.rowIndex = 0;
-        result.needsRefresh = true;
         break;
       }
       case KEY_g: {
@@ -965,12 +1601,11 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         result.nav.rowIndex = Math.max(0, currentTasks.length - 1);
         break;
       }
-      case "1": case "2": case "3": case "4": case "5": case "6": {
+      case "1": case "2": case "3": case "4": case "5": {
         const colIdx = parseInt(key, 10) - 1;
         if (colIdx >= 0 && colIdx < BOARD_STATUSES.length) {
           result.nav.colIndex = colIdx;
           result.nav.rowIndex = 0;
-          result.needsRefresh = true;
         }
         break;
       }
@@ -981,14 +1616,15 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
-        const currentStatusIdx = BOARD_STATUSES.indexOf(task.status as BoardStatus);
-        if (currentStatusIdx === -1) break;
+        const currentStatus = normalizeStatusForBoard(task.status);
+        if (!currentStatus) break;
 
+        const currentStatusIdx = BOARD_STATUSES.indexOf(currentStatus);
         const delta = key === KEY_s ? 1 : -1;
         const newStatusIdx = (currentStatusIdx + delta + BOARD_STATUSES.length) % BOARD_STATUSES.length;
         const newStatus = BOARD_STATUSES[newStatusIdx];
 
-        const err = applyStatusChange(projectPath, task.id, newStatus);
+        const err = await boardApi.applyStatusChangeAsync(projectPath, task.id, boardStatusToStoreStatus(newStatus));
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1003,7 +1639,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
-        const err = closeTask(projectPath, task.id);
+        const err = await closeTaskAsync(projectPath, task.id);
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1019,6 +1655,29 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         break;
       }
 
+      // ── Create new task ─────────────────────────────────────────────────────
+      case KEY_n: {
+        suspendRawMode();
+        try {
+          const newTask = boardApi.createTaskInEditor((msg) => {
+            result.errorMessage = msg;
+          });
+
+          if (newTask) {
+            const createErr = await boardApi.createTaskAsync(projectPath, newTask);
+            if (typeof createErr === "string") {
+              result.errorMessage = createErr;
+            } else {
+              result.flashTaskId = createErr.taskId;
+              result.needsRefresh = true;
+            }
+          }
+        } finally {
+          resumeRawMode();
+        }
+        break;
+      }
+
       // ── Edit in editor ──────────────────────────────────────────────────────
       case KEY_e:
       case KEY_E: {
@@ -1031,7 +1690,7 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         });
 
         if (updated && updated.id === task.id) {
-          const saveErr = saveEditedTask(projectPath, task.id, updated);
+          const saveErr = await saveEditedTaskAsync(projectPath, task.id, updated);
           if (saveErr) {
             result.errorMessage = saveErr;
           } else {
@@ -1042,14 +1701,56 @@ export function createKeyHandler(projectPath: string): KeyHandler {
         break;
       }
 
+      // ── Copy selected task ID ────────────────────────────────────────────────
+      case KEY_y: {
+        const task = getHighlightedTask(result.nav, state.tasks);
+        if (!task) break;
+
+        const err = boardApi.copyToClipboard(task.id);
+        if (err) {
+          result.errorMessage = err;
+        } else {
+          result.flashTaskId = task.id;
+        }
+        break;
+      }
+
       // ── Task detail ─────────────────────────────────────────────────────────
       case KEY_ENTER: {
         const task = getHighlightedTask(result.nav, state.tasks);
         if (task) {
           result.showDetail = true;
-          result.detailTask = task;
+          result.detailTask = { ...task };
+          void boardApi.loadTaskNotesAsync(projectPath, task.id)
+            .then((notes) => callbacks.onDetailNotesLoaded?.(task.id, notes, null))
+            .catch((err) => callbacks.onDetailNotesLoaded?.(task.id, null, err instanceof Error ? err.message : String(err)));
+        }
+        break;
+      }
+
+      // ── Mark task as ready ─────────────────────────────────────────────────
+      case KEY_R: {
+        const task = getHighlightedTask(result.nav, state.tasks);
+        if (!task) break;
+
+        if (task.status !== "backlog") {
+          result.errorMessage = "Task must be in backlog to mark as ready";
+          break;
+        }
+
+        const err = await boardApi.applyStatusChangeAsync(projectPath, task.id, "ready");
+        if (err) {
+          result.errorMessage = err;
+        } else {
+          result.flashTaskId = task.id;
           result.needsRefresh = true;
         }
+        break;
+      }
+
+      // ── Toggle sort mode ─────────────────────────────────────────────────────
+      case KEY_o: {
+        result.sortMode = state.sortMode === "updated" ? "priority" : "updated";
         break;
       }
 
@@ -1062,7 +1763,6 @@ export function createKeyHandler(projectPath: string): KeyHandler {
       // ── Help ────────────────────────────────────────────────────────────────
       case KEY_QUESTION: {
         result.showHelp = true;
-        result.needsRefresh = true;
         break;
       }
 
@@ -1122,46 +1822,173 @@ async function readLine(prompt: string): Promise<string> {
 /**
  * Run the interactive kanban board TUI loop.
  */
-export function runBoard(opts: BoardOptions): void {
+export async function runBoard(opts: BoardOptions): Promise<void> {
   const { projectPath, projectName, limit } = opts;
 
   let tasks: Map<BoardStatus, BoardTask[]>;
   try {
-    tasks = loadBoardTasks(projectPath);
+    tasks = await loadBoardTasks(projectPath);
   } catch (err) {
     console.error(chalk.red(`Failed to load tasks: ${err instanceof Error ? err.message : String(err)}`));
     return;
   }
 
   let nav: NavigationState = { colIndex: 0, rowIndex: 0 };
+  let sortMode: SortMode = "updated"; // Default: sort by updated_at (most recent first)
   let showHelp = false;
   let showDetail = false;
   let detailTask: BoardTask | null = null;
+  let detailNotesStatus: RenderState["detailNotesStatus"] = "idle";
+  let detailNotesError: string | null = null;
+  let detailNotesTaskId: string | null = null;
   let errorMessage: string | null = null;
   let flashTaskId: string | null = null;
+  let refreshStatus: RenderState["refreshStatus"] = "idle";
+  let refreshSpinnerFrame = 0;
+  let refreshedAt: string | null = null;
+  let refreshSpinnerTimer: NodeJS.Timeout | null = null;
+  let inboxMonitorTimer: NodeJS.Timeout | null = null;
+  let boardInboxLastSeenId: string | null = null;
+  let boardInboxCursorSeeded = false;
+  let inboxUpdateInFlight = false;
   let quit = false;
   let stdinRawMode = false;
+
+  // Apply default sorting (by updated_at descending)
+  tasks = sortBoardColumns(tasks, sortMode);
 
   // Normalize initial navigation
   normalizeNavRowIndex(nav, tasks);
 
-  const handleKey = createKeyHandler(projectPath);
+  const renderCurrentBoard = () => {
+    const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
+    const currentState: RenderState = {
+      tasks,
+      nav,
+      totalTasks,
+      errorMessage,
+      flashTaskId,
+      showHelp,
+      showDetail,
+      detailTask,
+      detailNotesStatus,
+      detailNotesError,
+      sortMode,
+      refreshStatus,
+      refreshSpinnerFrame,
+      refreshedAt,
+    };
 
-  // Render initial state
-  const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
-  let initialState: RenderState = {
-    tasks,
-    nav,
-    totalTasks,
-    errorMessage,
-    flashTaskId,
-    showHelp,
-    showDetail,
-    detailTask,
+    process.stdout.write(renderBoard(currentState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
   };
 
+  const stopRefreshSpinner = () => {
+    if (refreshSpinnerTimer) {
+      clearInterval(refreshSpinnerTimer);
+      refreshSpinnerTimer = null;
+    }
+  };
+
+  const stopInboxMonitor = () => {
+    if (inboxMonitorTimer) {
+      clearInterval(inboxMonitorTimer);
+      inboxMonitorTimer = null;
+    }
+  };
+
+  const startRefreshSpinner = () => {
+    stopRefreshSpinner();
+    refreshStatus = "refreshing";
+    refreshedAt = null;
+    refreshSpinnerFrame = 0;
+    renderCurrentBoard();
+    refreshSpinnerTimer = setInterval(() => {
+      refreshSpinnerFrame += 1;
+      renderCurrentBoard();
+    }, 120);
+  };
+
+  const handleKey = createKeyHandler(projectPath, {
+    onDetailNotesLoaded: (taskId, notes, error) => {
+      if (!showDetail || !detailTask || detailTask.id !== taskId || detailNotesTaskId !== taskId) {
+        return;
+      }
+
+      if (error) {
+        detailNotesStatus = "error";
+        detailNotesError = error;
+        detailTask = { ...detailTask, notes: [] };
+      } else {
+        detailNotesStatus = "loaded";
+        detailNotesError = null;
+        detailTask = { ...detailTask, notes: notes ?? [] };
+      }
+
+      renderCurrentBoard();
+    },
+  });
+
   process.stdout.write(HIDE_CURSOR);
-  process.stdout.write(renderBoard(initialState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
+  renderCurrentBoard();
+
+  try {
+    boardInboxLastSeenId = (await pollBoardInboxTaskUpdates(projectPath, null, 100, false)).newestId;
+  } catch {
+    boardInboxLastSeenId = null;
+  }
+  boardInboxCursorSeeded = true;
+
+  const processInboxTaskUpdates = async () => {
+    if (quit || inboxUpdateInFlight) return;
+    inboxUpdateInFlight = true;
+    try {
+      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorSeeded);
+      if (update.taskIds.length === 0) {
+        if (update.newestId) {
+          boardInboxLastSeenId = update.newestId;
+        }
+        return;
+      }
+
+      const refreshedTasks = await Promise.all(
+        update.taskIds.map(async (taskId) => ({ taskId, task: await loadBoardTask(projectPath, taskId) })),
+      );
+      let nextTasks = tasks;
+      for (const { taskId, task } of refreshedTasks) {
+        nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
+      }
+      tasks = nextTasks;
+      if (update.newestId) {
+        boardInboxLastSeenId = update.newestId;
+      }
+      normalizeNavRowIndex(nav, tasks);
+      flashTaskId = update.taskIds[0] ?? null;
+      refreshedAt = new Date().toLocaleTimeString();
+      refreshStatus = "refreshed";
+
+      if (detailTask && update.taskIds.includes(detailTask.id)) {
+        const refreshedDetail = getHighlightedTask(nav, tasks)?.id === detailTask.id
+          ? getHighlightedTask(nav, tasks)
+          : update.taskIds.includes(detailTask.id)
+            ? await loadBoardTask(projectPath, detailTask.id)
+            : null;
+        if (refreshedDetail) {
+          detailTask = { ...refreshedDetail, notes: detailTask.notes };
+        }
+      }
+
+      renderCurrentBoard();
+    } catch (err) {
+      errorMessage = `Inbox monitor failed: ${err instanceof Error ? err.message : String(err)}`;
+      renderCurrentBoard();
+    } finally {
+      inboxUpdateInFlight = false;
+    }
+  };
+
+  inboxMonitorTimer = setInterval(() => {
+    void processInboxTaskUpdates();
+  }, 2000);
 
   const attachRawMode = () => {
     if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
@@ -1208,9 +2035,15 @@ export function runBoard(opts: BoardOptions): void {
       showHelp,
       showDetail,
       detailTask,
+      detailNotesStatus,
+      detailNotesError,
+      sortMode,
+      refreshStatus,
+      refreshSpinnerFrame,
+      refreshedAt,
     };
 
-    const result = handleKey(normalizedKey, currentState, projectPath);
+    const result = await handleKey(normalizedKey, currentState, projectPath);
 
     if (result.promptForCloseReason) {
       const task = getHighlightedTask(nav, tasks);
@@ -1218,7 +2051,7 @@ export function runBoard(opts: BoardOptions): void {
         detachRawMode();
         try {
           const closeReason = await readLine("\nClose reason (optional, press Enter to skip): ");
-          const err = closeTask(projectPath, task.id, closeReason || undefined);
+          const err = await closeTaskAsync(projectPath, task.id, closeReason || undefined);
           if (!err) {
             result.flashTaskId = task.id;
             result.needsRefresh = true;
@@ -1239,13 +2072,38 @@ export function runBoard(opts: BoardOptions): void {
     errorMessage = result.errorMessage;
     flashTaskId = result.flashTaskId;
 
+    // Apply sort mode change (no reload needed, just re-sort in place)
+    if (result.sortMode !== undefined && result.sortMode !== sortMode) {
+      sortMode = result.sortMode;
+      tasks = sortBoardColumns(tasks, sortMode);
+      normalizeNavRowIndex(nav, tasks);
+    }
+
+    if (!showDetail) {
+      detailNotesStatus = "idle";
+      detailNotesError = null;
+      detailNotesTaskId = null;
+    } else if (normalizedKey === KEY_ENTER && detailTask) {
+      detailNotesStatus = "loading";
+      detailNotesError = null;
+      detailNotesTaskId = detailTask.id;
+    }
+
     // Refresh tasks if requested
     if (result.needsRefresh) {
+      startRefreshSpinner();
       try {
-        tasks = loadBoardTasks(projectPath);
+        tasks = await loadBoardTasks(projectPath);
+        tasks = sortBoardColumns(tasks, sortMode);
         normalizeNavRowIndex(nav, tasks);
+        refreshStatus = "refreshed";
+        refreshedAt = new Date().toLocaleTimeString();
       } catch (err) {
         errorMessage = `Failed to refresh: ${err instanceof Error ? err.message : String(err)}`;
+        refreshStatus = "idle";
+        refreshedAt = null;
+      } finally {
+        stopRefreshSpinner();
       }
       flashTaskId = null;
     }
@@ -1255,21 +2113,12 @@ export function runBoard(opts: BoardOptions): void {
     }
 
     // Re-render
-    const newState: RenderState = {
-      tasks,
-      nav,
-      totalTasks: [...tasks.values()].reduce((sum, t) => sum + t.length, 0),
-      errorMessage,
-      flashTaskId,
-      showHelp,
-      showDetail,
-      detailTask,
-    };
-
-    process.stdout.write(renderBoard(newState, projectName, getTerminalWidth(), limit, getTerminalHeight()));
+    renderCurrentBoard();
 
     if (quit) {
       process.stdout.write(SHOW_CURSOR + "\n");
+      stopRefreshSpinner();
+      stopInboxMonitor();
       detachRawMode();
       process.exit(0);
     }
@@ -1280,6 +2129,8 @@ export function runBoard(opts: BoardOptions): void {
   // Handle SIGINT gracefully
   const onSigint = () => {
     process.stdout.write(SHOW_CURSOR + "\n");
+    stopRefreshSpinner();
+    stopInboxMonitor();
     detachRawMode();
     process.exit(0);
   };

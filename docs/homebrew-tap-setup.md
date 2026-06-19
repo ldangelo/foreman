@@ -181,11 +181,11 @@ git push origin main
 - Trigger `update-homebrew-tap.yml` manually (see above) to recompute checksums
 - Alternatively, run: `brew install --debug foreman` to see which hash Homebrew computed
 
-### `better_sqlite3.node` not found at runtime
+### `pg.node` not found at runtime
 
 - The native addon must be in the same directory as the `foreman` binary
 - The formula installs both to `libexec/foreman/`, which is correct
-- If you're running a manually downloaded binary, keep `better_sqlite3.node` in the same directory as the binary
+- If you're running a manually downloaded binary, keep `pg.node` in the same directory as the binary
 
 ### Formula audit failures
 
@@ -210,9 +210,9 @@ Homebrew community standard for automated tap updates.
 
 ### Why `libexec/foreman/` instead of `bin/` directly?
 
-The `foreman` binary uses `import.meta.url` to locate `better_sqlite3.node`
+The `foreman` binary uses `import.meta.url` to locate `pg.node`
 at runtime. The binary must be co-located with the native addon. Homebrew's
 `bin/` directory is for user-facing executables, but we can't guarantee
-that `better_sqlite3.node` will be there too. `libexec/` is for private
+that `pg.node` will be there too. `libexec/` is for private
 binary files, and the thin shell wrapper in `bin/foreman` delegates to the
 real binary in `libexec/foreman/`.

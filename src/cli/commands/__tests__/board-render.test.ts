@@ -9,6 +9,8 @@ import {
   getVisibleTaskCapacity,
   getVisibleTaskWindow,
   renderBoard,
+  renderTaskDetail,
+  boardColumnForTaskStatus,
   type BoardStatus,
   type BoardTask,
   type RenderState,
@@ -19,8 +21,7 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 
@@ -28,8 +29,7 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
   backlog: "Backlog",
   ready: "Ready",
   in_progress: "In Progress",
-  review: "Review",
-  blocked: "Blocked",
+  needs_attention: "Needs Attention",
   closed: "Closed",
 };
 
@@ -98,6 +98,9 @@ describe("BoardRendering", () => {
       showHelp: false,
       showDetail: false,
       detailTask: null,
+      detailNotesStatus: "idle",
+      detailNotesError: null,
+      sortMode: "updated",
       ...overrides,
     };
   };
@@ -170,8 +173,8 @@ describe("BoardRendering", () => {
   });
 
   describe("Board Layout", () => {
-    it("should have 6 columns", () => {
-      expect(BOARD_STATUSES).toHaveLength(6);
+    it("should have 5 columns", () => {
+      expect(BOARD_STATUSES).toHaveLength(5);
     });
 
     it("should calculate column width correctly", () => {
@@ -188,7 +191,7 @@ describe("BoardRendering", () => {
       const numCols = BOARD_STATUSES.length;
       const colWidth = Math.max(MIN_COL_WIDTH, Math.floor((terminalWidth - 4) / numCols));
 
-      expect(colWidth).toBe(MIN_COL_WIDTH);
+      expect(colWidth).toBe(15); // 5 columns at 80 width: floor(76/5) = 15 > MIN_COL_WIDTH
     });
 
     it("should enforce max visible per column", () => {
@@ -222,12 +225,38 @@ describe("BoardRendering", () => {
       expect(getVisibleTaskCapacity(24, 20, 4)).toBe(4);
     });
 
-    it("should render six column jump labels without a merged column", () => {
-      const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 120));
+    it("should render active sort mode in the header", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { sortMode: "priority" }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("Sort: Priority");
+    });
+
+    it("should render five column jump labels without a merged column", () => {
+      const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 150));
 
       expect(output).toContain("[1] Backlog");
-      expect(output).toContain("[6] Closed");
+      expect(output).toContain("[5] Closed");
       expect(output).not.toContain("Merged");
+    });
+
+    it("should render task ids in every column card", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({
+          ready: [createTask("bd-1111", { title: "Ready task", status: "ready" })],
+          in_progress: [createTask("bd-2222", { title: "Doing task", status: "in_progress" })],
+          needs_attention: [createTask("bd-3333", { title: "Blocked task", status: "needs_attention" })],
+        }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("bd-1111");
+      expect(output).toContain("bd-2222");
+      expect(output).toContain("bd-3333");
     });
 
     it("should render aligned boxed columns for the task grid", () => {
@@ -236,7 +265,7 @@ describe("BoardRendering", () => {
           backlog: [createTask("bd-1", { title: "Implement task board layout" })],
         }),
         "Demo",
-        120,
+        150,
       ));
 
       const lines = output.split("\n");
@@ -244,9 +273,9 @@ describe("BoardRendering", () => {
       const gridLine = lines.find((line) => line.includes("│ Backlog (1)"));
 
       expect(borderLine).toBeDefined();
-      expect(borderLine?.match(/╭/g)).toHaveLength(6);
+      expect(borderLine?.match(/╭/g)).toHaveLength(5);
       expect(gridLine).toBeDefined();
-      expect(gridLine?.match(/│/g)?.length).toBeGreaterThanOrEqual(12);
+      expect(gridLine?.match(/│/g)?.length).toBeGreaterThanOrEqual(10);
     });
 
     it("should keep the selected task visible when navigating past the first page", () => {
@@ -322,6 +351,27 @@ describe("BoardRendering", () => {
       expect(state.totalTasks).toBe(4);
     });
 
+    it("should show refresh spinner text while reloading", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { refreshStatus: "refreshing", refreshSpinnerFrame: 1 }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("refreshing…");
+      expect(output).toContain("Sort: Updated");
+    });
+
+    it("should show refreshed timestamp after reload", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({}, { refreshStatus: "refreshed", refreshedAt: "11:45:00 AM" }),
+        "Demo",
+        150,
+      ));
+
+      expect(output).toContain("refreshed 11:45:00 AM");
+    });
+
     it("should pluralize task count correctly", () => {
       const singular = "1 task";
       const plural = `${2} tasks`;
@@ -368,19 +418,26 @@ describe("BoardRendering", () => {
         ["j / k", "Move up / down in column"],
         ["h / l", "Move left / right between columns"],
         ["g / G", "Jump to first / last task in column"],
-        ["[1]…[6]", "Jump to column by number"],
+        ["[1]…[5]", "Jump to column by number"],
         ["s / S", "Cycle status forward / backward"],
         ["c", "Close task (status → closed)"],
         ["C", "Close task with reason prompt"],
         ["e", "Edit task in $EDITOR (basic YAML)"],
         ["E", "Edit task in $EDITOR (full schema)"],
+        ["y", "Copy selected task ID"],
         ["Enter", "Show task detail panel"],
         ["Esc", "Dismiss detail / help overlay"],
         ["r", "Refresh board from store"],
         ["q", "Quit board"],
       ];
 
-      expect(rows).toHaveLength(13);
+      expect(rows).toHaveLength(14);
+    });
+
+    it("should render copy shortcut in the footer", () => {
+      const output = stripTerminalFormatting(renderBoard(createRenderState({}), "Demo", 150));
+
+      expect(output).toContain("y copy id");
     });
 
     it("should have panel width constraint", () => {
@@ -390,7 +447,52 @@ describe("BoardRendering", () => {
     });
   });
 
+  describe("boardColumnForTaskStatus", () => {
+    it("maps native workflow phase statuses to in_progress", () => {
+      for (const status of ["explorer", "developer", "qa", "reviewer", "finalize"]) {
+        expect(boardColumnForTaskStatus(status)).toBe("in_progress");
+      }
+    });
+
+    it("maps terminal/problem statuses to needs_attention or closed", () => {
+      expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("blocked")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("closed")).toBe("closed");
+      expect(boardColumnForTaskStatus("unknown")).toBe("closed");
+    });
+  });
+
   describe("Task Detail Panel", () => {
+    it("should render notes loading state", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 100, "loading", null));
+      expect(output).toContain("Notes: loading");
+    });
+
+    it("should render task notes when present", () => {
+      const task = createTask("bd-1234", {
+        notes: [
+          {
+            id: "note-1",
+            created_at: "2026-04-19T12:30:00Z",
+            phase: "developer",
+            kind: "progress",
+            author: "foreman",
+            body: "Implemented status normalization\nAdded tests",
+          },
+        ],
+      });
+
+      const output = stripTerminalFormatting(renderTaskDetail(task, 100, "loaded", null));
+
+      expect(output).toContain("Notes:");
+      // Note content is wrapped, so check for the parts that appear in the output
+      expect(output).toContain("developer");
+      expect(output).toContain("progress");
+      expect(output).toContain("foreman");
+      expect(output).toContain("Implemented status normalization");
+    });
+
     it("should display all task fields", () => {
       const task = createTask("bd-1234", {
         title: "Full Task",
@@ -412,6 +514,11 @@ describe("BoardRendering", () => {
       expect(task.priority).toBe(1);
       expect(task.status).toBe("in_progress");
       expect(task.external_id).toBe("EXT-123");
+
+      const output = stripTerminalFormatting(renderTaskDetail(task, 100, "idle", null));
+      expect(output).toContain("TASK DETAIL — in_progress");
+      expect(output).toContain("Status:");
+      expect(output).toContain("in_progress");
     });
 
     it("should handle null optional fields", () => {
@@ -426,6 +533,102 @@ describe("BoardRendering", () => {
       expect(task.external_id).toBeNull();
       expect(task.approved_at).toBeNull();
       expect(task.closed_at).toBeNull();
+    });
+
+    it("should render long title with wrapping", () => {
+      const longTitle = "This is a very long task title that exceeds typical width constraints and should wrap properly when rendered";
+      const task = createTask("bd-1234", { title: longTitle });
+      const output = stripTerminalFormatting(renderTaskDetail(task, 80, "idle", null));
+      // Title content should be present (wrapped across multiple lines)
+      // Check for segments that appear in the wrapped output
+      expect(output).toContain("This is a very long task");
+      expect(output).toContain("title that exceeds typical");
+      expect(output).toContain("constraints and should");
+      expect(output).toContain("wrap properly when rendered");
+    });
+
+    it("should render multi-line description with all lines", () => {
+      const multiLineDesc = "Line 1 of description\nLine 2 of description\nLine 3 of description\nLine 4 of description\nLine 5 of description";
+      const task = createTask("bd-1234", { description: multiLineDesc });
+      const output = stripTerminalFormatting(renderTaskDetail(task, 80, "idle", null));
+      expect(output).toContain("Line 1 of description");
+      expect(output).toContain("Line 2 of description");
+      expect(output).toContain("Line 3 of description");
+      expect(output).toContain("Line 4 of description");
+      expect(output).toContain("Line 5 of description");
+    });
+
+    it("should render multiple notes with all content", () => {
+      const task = createTask("bd-1234", {
+        notes: [
+          {
+            id: "note-1",
+            created_at: "2026-04-19T12:30:00Z",
+            phase: "developer",
+            kind: "progress",
+            author: "dev1",
+            body: "First note body line 1\nFirst note body line 2",
+          },
+          {
+            id: "note-2",
+            created_at: "2026-04-19T13:30:00Z",
+            phase: "qa",
+            kind: "comment",
+            author: "qa1",
+            body: "Second note body line 1\nSecond note body line 2\nSecond note body line 3",
+          },
+          {
+            id: "note-3",
+            created_at: "2026-04-19T14:30:00Z",
+            phase: "reviewer",
+            kind: "approval",
+            author: "reviewer1",
+            body: "Third note single line",
+          },
+        ],
+      });
+      const output = stripTerminalFormatting(renderTaskDetail(task, 80, "loaded", null));
+      // All notes should be present
+      expect(output).toContain("dev1");
+      expect(output).toContain("qa1");
+      expect(output).toContain("reviewer1");
+      // All note body content should be present
+      expect(output).toContain("First note body line 1");
+      expect(output).toContain("First note body line 2");
+      expect(output).toContain("Second note body line 1");
+      expect(output).toContain("Second note body line 2");
+      expect(output).toContain("Second note body line 3");
+      expect(output).toContain("Third note single line");
+    });
+
+    it("should use substantial panel width for wide terminals", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 120, "idle", null));
+      expect(output).toContain("TASK DETAIL");
+      expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeGreaterThanOrEqual(50);
+    });
+
+    it("should clamp panel width on narrow terminals", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 30, "idle", null));
+      expect(output).toContain("TASK DETAIL");
+      expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeLessThanOrEqual(30);
+    });
+
+    it("should prevent panel overflow on very narrow terminals", () => {
+      const task = createTask("bd-1234");
+      const output = stripTerminalFormatting(renderTaskDetail(task, 20, "idle", null));
+      expect(output).toContain("TASK DETAIL");
+      expect(output).toContain("bd-1234");
+
+      const maxLineLength = Math.max(...output.split("\n").map((line) => line.length));
+      expect(maxLineLength).toBeLessThanOrEqual(20);
     });
   });
 

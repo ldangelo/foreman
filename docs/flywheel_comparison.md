@@ -64,18 +64,18 @@
 | Feature | Foreman | Flywheel |
 |---------|---------|----------|
 | Session persistence | SDK session IDs, resume capability | CASS — unified search across 11+ AI tool histories |
-| Memory | SQLite run tracking + seeds | CASS Memory — 3-layer cognitive architecture (episodic, working, procedural) |
+| Memory | Postgres run tracking + seeds | CASS Memory — 3-layer cognitive architecture (episodic, working, procedural) |
 | Cross-session learning | None | Meta Skill — mines successful patterns from past sessions |
 | Skill discovery | None | Agents build capability libraries from past operations |
 
-**Takeaway**: Flywheel's memory and session systems are far more advanced. CASS provides cross-tool session search, and the three-layer memory architecture enables agents to learn and improve over time. Foreman tracks runs in SQLite but has no cross-session learning.
+**Takeaway**: Flywheel's memory and session systems are far more advanced. CASS provides cross-tool session search, and the three-layer memory architecture enables agents to learn and improve over time. Foreman tracks runs in Postgres but has no cross-session learning.
 
 ### Git & Infrastructure
 
 | Feature | Foreman | Flywheel |
 |---------|---------|----------|
 | Isolation | Git worktrees per task | File leases via Agent Mail |
-| Branch management | Auto-creates `foreman/<bead-id>` branches | Standard git workflow |
+| Branch management | Auto-creates `foreman/<task-id>` branches | Standard git workflow |
 | Merge | `foreman merge` command | Manual / RU for multi-repo sync |
 | Multi-repo | Not supported | RU — sync hundreds of repos at once |
 | Deployment | Local CLI tool | Flywheel Setup — zero-to-configured VPS in 30 min |
@@ -115,7 +115,7 @@ foreman CLI → dispatcher → agent-worker (detached)
                               ↓
                     Explorer → Developer ⇄ QA → Reviewer → Finalize
                               ↓
-                    Git worktree isolation + SQLite state + Seeds tracking
+                    Git worktree isolation + Postgres state + Seeds tracking
 ```
 - **Strength**: Single tool, predictable pipeline, built-in quality gates
 - **Weakness**: Less flexible, no cross-session learning, no safety guardrails

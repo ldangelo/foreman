@@ -1,9 +1,12 @@
 import { NativeTaskClient } from "./native-task-client.js";
+import { PostgresAdapter } from "./db/postgres-adapter.js";
+import { initPool, isPoolInitialised } from "./db/pool-manager.js";
+import { resolveProjectDatabaseUrl } from "./project-mail-client.js";
+import { ProjectRegistry } from "./project-registry.js";
 import { ForemanStore } from "./store.js";
 import type { ITaskClient } from "./task-client.js";
 
-export type TaskStoreMode = "native" | "beads" | "auto";
-export type TaskClientBackend = "native" | "beads";
+export type TaskClientBackend = "native";
 
 export interface TaskClientFactoryResult {
   backendType: TaskClientBackend;
@@ -11,8 +14,7 @@ export interface TaskClientFactoryResult {
 }
 
 export interface TaskClientFactoryOptions {
-  ensureBrInstalled?: boolean;
-  autoSelectNativeWhenAvailable?: boolean;
+  registeredProjectId?: string;
 }
 
 export interface TaskCounts {
@@ -21,10 +23,6 @@ export interface TaskCounts {
   inProgress: number;
   completed: number;
   blocked: number;
-}
-
-interface BeadsTaskClient extends ITaskClient {
-  ensureBrInstalled(): Promise<void>;
 }
 
 const NATIVE_TOTAL_STATUSES = [
@@ -47,112 +45,87 @@ const NATIVE_BLOCKED_STATUSES = [
   "blocked",
 ] as const;
 
-export function resolveTaskStoreMode(raw = process.env.FOREMAN_TASK_STORE): TaskStoreMode {
-  const normalized = raw?.trim().toLowerCase();
-  if (normalized === "native" || normalized === "beads") return normalized;
-  return "auto";
-}
-
-async function createBeadsFallbackClient(projectPath: string): Promise<BeadsTaskClient> {
-  const { BeadsRustClient } = await import("./beads-rust.js");
-  return new BeadsRustClient(projectPath) as BeadsTaskClient;
-}
-
-export function projectHasNativeTasks(projectPath: string): boolean {
-  const store = ForemanStore.forProject(projectPath);
-  try {
-    return typeof store.hasNativeTasks === "function" && store.hasNativeTasks();
-  } finally {
-    store.close();
-  }
-}
-
-export function selectTaskReadBackend(
+async function resolveRegisteredProject(
   projectPath: string,
-  opts?: { autoSelectNativeWhenAvailable?: boolean },
-): TaskClientBackend {
-  const taskStoreMode = resolveTaskStoreMode();
-  if (taskStoreMode === "native") return "native";
-  if (taskStoreMode === "beads") return "beads";
-
-  if (opts?.autoSelectNativeWhenAvailable === true) {
-    return "beads";
+  registeredProjectId?: string,
+): Promise<{ id: string; path: string } | null> {
+  const databaseUrl = resolveProjectDatabaseUrl(projectPath);
+  if (databaseUrl && !isPoolInitialised()) {
+    try {
+      initPool({ databaseUrl });
+    } catch {
+      // Best effort only — callers fall back to local behavior when the pool is unavailable.
+    }
   }
 
-  return projectHasNativeTasks(projectPath) ? "native" : "beads";
+  const registries = databaseUrl
+    ? [new ProjectRegistry({ pg: new PostgresAdapter() }), new ProjectRegistry()]
+    : [new ProjectRegistry()];
+
+  for (const registry of registries) {
+    try {
+      const projects = await registry.list();
+      if (registeredProjectId) {
+        const byId = projects.find((project) => project.id === registeredProjectId);
+        if (byId) {
+          return { id: byId.id, path: byId.path };
+        }
+        continue;
+      }
+
+      const byPath = projects.find((project) => project.path === projectPath);
+      if (byPath) {
+        return { id: byPath.id, path: byPath.path };
+      }
+    } catch {
+      // Keep falling back — local/unregistered mode should remain available.
+    }
+  }
+
+  return null;
 }
 
 export async function createTaskClient(
   projectPath: string,
   opts?: TaskClientFactoryOptions,
 ): Promise<TaskClientFactoryResult> {
-  const backendType = selectTaskReadBackend(projectPath, {
-    autoSelectNativeWhenAvailable: opts?.autoSelectNativeWhenAvailable,
-  });
-  if (backendType === "native") {
-    return {
-      backendType,
-      taskClient: new NativeTaskClient(projectPath),
-    };
-  }
-
-  const taskClient = await createBeadsFallbackClient(projectPath);
-  if (opts?.ensureBrInstalled) {
-    await taskClient.ensureBrInstalled();
-  }
-  return { backendType, taskClient };
-}
-
-async function fetchBeadsTaskCounts(projectPath: string): Promise<TaskCounts> {
-  const brClient = await createBeadsFallbackClient(projectPath);
-
-  let openIssues: Array<{ id: string; status: string }> = [];
-  try {
-    openIssues = await brClient.list();
-  } catch {
-    // br not initialized or unavailable — treat as empty
-  }
-
-  let closedIssues: Array<{ id: string; status: string }> = [];
-  try {
-    closedIssues = await brClient.list({ status: "closed" });
-  } catch {
-    // no closed issues
-  }
-
-  let readyIssues: Array<{ id: string }> = [];
-  try {
-    readyIssues = await brClient.ready();
-  } catch {
-    // ready() may fail independently; keep other counts
-  }
-
-  const readyIds = new Set(readyIssues.map((issue) => issue.id));
-  const inProgress = openIssues.filter((issue) => issue.status === "in_progress").length;
-  const completed = closedIssues.length;
-  const ready = readyIssues.length;
-  const blocked = openIssues.filter(
-    (issue) => issue.status !== "in_progress" && !readyIds.has(issue.id),
-  ).length;
-
+  const registered = await resolveRegisteredProject(projectPath, opts?.registeredProjectId);
   return {
-    total: openIssues.length + completed,
-    ready,
-    inProgress,
-    completed,
-    blocked,
+    backendType: "native",
+    taskClient: new NativeTaskClient(projectPath, { registeredProjectId: registered?.id }),
   };
 }
 
-function fetchNativeTaskCounts(projectPath: string): TaskCounts {
+async function fetchNativeTaskCounts(projectPath: string, registeredProjectId?: string): Promise<TaskCounts> {
+  const registered = await resolveRegisteredProject(projectPath, registeredProjectId);
+  if (registered) {
+    const adapter = new PostgresAdapter();
+    const [total, ready, inProgress, completed, blocked] = await Promise.all([
+      adapter.listTasks(registered.id, { status: [...NATIVE_TOTAL_STATUSES], limit: 1000 }),
+      adapter.listTasks(registered.id, { status: ["ready"], limit: 1000 }),
+      adapter.listTasks(registered.id, { status: ["in-progress"], limit: 1000 }),
+      adapter.listTasks(registered.id, { status: ["merged", "closed"], limit: 1000 }),
+      adapter.listTasks(registered.id, { status: [...NATIVE_BLOCKED_STATUSES], limit: 1000 }),
+    ]);
+
+    return {
+      total: total.length,
+      ready: ready.length,
+      inProgress: inProgress.length,
+      completed: completed.length,
+      blocked: blocked.length,
+    };
+  }
+
   const store = ForemanStore.forProject(projectPath);
+  const list = (statuses: string[]) => store.listTasksByStatus?.(statuses) ?? [];
   try {
     return {
-      total: store.listTasksByStatus([...NATIVE_TOTAL_STATUSES]).length,
-      ready: store.listTasksByStatus(["ready"]).length,
-      inProgress: store.listTasksByStatus(["in-progress"]).length,
-      completed: store.listTasksByStatus(["merged", "closed"]).length,
-      blocked: store.listTasksByStatus([...NATIVE_BLOCKED_STATUSES]).length,
+      total: list([...NATIVE_TOTAL_STATUSES]).length,
+      ready: list(["ready"]).length,
+      inProgress: list(["in-progress"]).length,
+      completed: list(["merged", "closed"]).length,
+      blocked: list([...NATIVE_BLOCKED_STATUSES]).length,
     };
   } finally {
     store.close();
@@ -160,7 +133,5 @@ function fetchNativeTaskCounts(projectPath: string): TaskCounts {
 }
 
 export async function fetchTaskCounts(projectPath: string): Promise<TaskCounts> {
-  return selectTaskReadBackend(projectPath) === "native"
-    ? fetchNativeTaskCounts(projectPath)
-    : fetchBeadsTaskCounts(projectPath);
+  return fetchNativeTaskCounts(projectPath);
 }

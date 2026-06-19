@@ -108,13 +108,13 @@ function makeTestWorkflow(retryOnFail = 1): WorkflowConfig {
 // ── Structural tests: default workflow YAML ───────────────────────────────────
 
 describe("default.yaml: finalize phase pre-push validation config", () => {
-  it("finalize phase has artifact: FINALIZE_VALIDATION.md", () => {
+  it("finalize phase writes validation under projectReportsDir", () => {
     const { load: yamlLoad } = require("js-yaml") as { load: (s: string) => unknown };
     const raw = yamlLoad(readFileSync(DEFAULT_WORKFLOW_YAML, "utf-8"));
     const config = validateWorkflowConfig(raw, "default");
     const finalize = config.phases.find((p) => p.name === "finalize");
     expect(finalize).toBeDefined();
-    expect(finalize?.artifact).toBe("FINALIZE_VALIDATION.md");
+    expect(finalize?.artifact).toBe("{task.projectReportsDir}/FINALIZE_VALIDATION.md");
   });
 
   it("finalize phase has verdict: true", () => {
@@ -227,6 +227,7 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-finalize-test-"));
+    process.env["FOREMAN_HOME"] = tmpDir;
     // Touch log file
     writeFileSync(join(tmpDir, "test.log"), "");
     // Install bundled prompts so buildPhasePrompt() can resolve them
@@ -235,6 +236,7 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("loops back to developer when finalize writes ## Verdict: FAIL", async () => {

@@ -1,7 +1,7 @@
 // ── Sling Executor ────────────────────────────────────────────────────────
 //
 // Native-write execution engine: creates task hierarchies in the Foreman
-// SQLite task store from a parsed SlingPlan.
+// Postgres task store from a parsed SlingPlan.
 
 import type {
   CreateTaskOptions,
@@ -67,7 +67,7 @@ type Awaitable<T> = T | Promise<T>;
 type DependencyType = "blocks" | "parent-child";
 
 interface NativeTaskWriter {
-  getByExternalId(externalId: string): TaskRow | null;
+  getByExternalId(externalId: string): Awaitable<TaskRow | null>;
   create(opts: CreateTaskOptions): Awaitable<TaskRow>;
   update(id: string, opts: UpdateTaskOptions): Awaitable<TaskRow>;
   close(id: string, reason?: string): Awaitable<void>;
@@ -156,7 +156,7 @@ async function upsertTask(
   createOpts: CreateTaskOptions,
   force: boolean,
 ): Promise<TaskRow> {
-  const existing = taskStore.getByExternalId(externalId);
+  const existing = await Promise.resolve(taskStore.getByExternalId(externalId));
   if (existing && !force) {
     result.skipped++;
     return existing;

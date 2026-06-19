@@ -2,6 +2,40 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Run } from "../../lib/store.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
 
+const {
+  mockPostgresGetRun,
+  mockPostgresListTasks,
+  mockPostgresUpdateTask,
+  mockPostgresUpdateTaskStatusForRun,
+  mockPostgresUpdateRun,
+  mockPostgresLogEvent,
+  MockPostgresAdapter,
+} = vi.hoisted(() => {
+  const mockPostgresGetRun = vi.fn().mockResolvedValue(null);
+  const mockPostgresListTasks = vi.fn().mockResolvedValue([]);
+  const mockPostgresUpdateTask = vi.fn().mockResolvedValue(undefined);
+  const mockPostgresUpdateTaskStatusForRun = vi.fn().mockResolvedValue(undefined);
+  const mockPostgresUpdateRun = vi.fn().mockResolvedValue(undefined);
+  const mockPostgresLogEvent = vi.fn().mockResolvedValue(undefined);
+  const MockPostgresAdapter = vi.fn(function (this: Record<string, unknown>) {
+    this.getRun = mockPostgresGetRun;
+    this.listTasks = mockPostgresListTasks;
+    this.updateTask = mockPostgresUpdateTask;
+    this.updateTaskStatusForRun = mockPostgresUpdateTaskStatusForRun;
+    this.updateRun = mockPostgresUpdateRun;
+    this.logEvent = mockPostgresLogEvent;
+  });
+  return {
+    mockPostgresGetRun,
+    mockPostgresListTasks,
+    mockPostgresUpdateTask,
+    mockPostgresUpdateTaskStatusForRun,
+    mockPostgresUpdateRun,
+    mockPostgresLogEvent,
+    MockPostgresAdapter,
+  };
+});
+
 // ── Module mocks ─────────────────────────────────────────────────────────────
 // NOTE: This suite intentionally retains lib/git.js mocks/imports as
 // compatibility coverage for the transitional refinery/shim surface.
@@ -16,6 +50,10 @@ vi.mock("../../lib/git.js", () => ({
   removeWorktree: vi.fn(),
   detectDefaultBranch: vi.fn().mockResolvedValue("main"),
   gitBranchExists: vi.fn().mockResolvedValue(false),
+}));
+
+vi.mock("../../lib/db/postgres-adapter.js", () => ({
+  PostgresAdapter: MockPostgresAdapter,
 }));
 
 // Mock task-backend-ops so closeSeed() / resetSeedToOpen() don't try to execute the real `br` binary.
@@ -80,14 +118,22 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     commitNoEdit: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
     pull: vi.fn().mockResolvedValue(undefined),
+    saveWorktreeState: vi.fn().mockResolvedValue(false),
+    restoreWorktreeState: vi.fn().mockResolvedValue(undefined),
     rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    rebaseBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
+    restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     abortRebase: vi.fn().mockResolvedValue(undefined),
     abortMerge: vi.fn().mockResolvedValue(undefined),
+    stageFiles: vi.fn().mockResolvedValue(undefined),
     /** merge() defaults to success — tests can override via overrides.merge */
     merge: vi.fn().mockResolvedValue({ success: true }),
+    mergeWithStrategy: vi.fn().mockResolvedValue({ success: true }),
+    rollbackFailedMerge: vi.fn().mockResolvedValue(undefined),
     mergeWithoutCommit: vi.fn().mockResolvedValue({ success: true }),
     resetHard: vi.fn().mockResolvedValue(undefined),
     getHeadId: vi.fn().mockResolvedValue("abc1234"),
+    resolveRef: vi.fn().mockResolvedValue("abc1234"),
     fetch: vi.fn().mockResolvedValue(undefined),
     diff: vi.fn().mockResolvedValue(""),
     getModifiedFiles: vi.fn().mockResolvedValue([]),
@@ -138,7 +184,29 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
   };
   const vcs = makeMockVcs(vcsOverrides);
   const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
-  return { store, seeds, refinery, vcs };
+  return { store, seeds, refinery, vcs, mockDb };
+}
+
+function makeRegisteredRefinery(
+  store: ReturnType<typeof makeMocks>["store"],
+  seeds: ReturnType<typeof makeMocks>["seeds"],
+  vcs: ReturnType<typeof makeMocks>["vcs"],
+  run: Run,
+  registeredProjectId = "proj-1",
+) {
+  const runLookup = {
+    getRun: vi.fn().mockResolvedValue(run),
+    getRunsByStatus: vi.fn().mockResolvedValue([run]),
+    getRunsByStatuses: vi.fn().mockResolvedValue([run]),
+    getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
+  };
+
+  const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs, {
+    runLookup: runLookup as any,
+    registeredProjectId,
+  });
+
+  return { refinery, runLookup };
 }
 
 // Helper to make execFile resolve with a stdout value
@@ -167,6 +235,10 @@ function mockExecFileFailure(message = "git error") {
 describe("Refinery.resolveConflict()", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPostgresListTasks.mockResolvedValue([]);
+    mockPostgresUpdateTask.mockResolvedValue(undefined);
+    mockPostgresUpdateRun.mockResolvedValue(undefined);
+    mockPostgresLogEvent.mockResolvedValue(undefined);
   });
 
   it("throws when run is not found", async () => {
@@ -206,11 +278,6 @@ describe("Refinery.resolveConflict()", () => {
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
-    // execFile is used by the promisified git() helper inside resolveConflict
-    // vitest doesn't auto-promisify, so we need to handle the promisified call
-    // The promisify(execFile) version calls with (cmd, args, opts) returning a promise
-    // We mock execFile but node's promisify wraps it - let's use a different approach
-    // by mocking the callback-style execFile that promisify wraps
     (execFile as any).mockImplementation(
       (_cmd: string, _args: string[], _opts: any, callback: Function) => {
         callback(null, { stdout: "", stderr: "" });
@@ -234,21 +301,14 @@ describe("Refinery.resolveConflict()", () => {
   });
 
   it("theirs strategy marks run as failed if git merge fails", async () => {
-    const { store, seeds, refinery } = makeMocks();
+    const { store, seeds, refinery, vcs } = makeMocks({
+      mergeWithStrategy: vi.fn().mockResolvedValue({ success: false, conflicts: ["README.md"] }),
+      abortMerge: vi.fn().mockResolvedValue(undefined),
+    });
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
-    (execFile as any).mockImplementation(
-      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
-        const err = new Error("CONFLICT (content): Merge conflict in README.md") as any;
-        err.stdout = "";
-        err.stderr = "CONFLICT (content): Merge conflict in README.md";
-        callback(err);
-      },
-    );
-
     // Provide targetBranch explicitly to avoid calling vcsBackend.detectDefaultBranch()
-    // (which would also fail since ALL execFile calls throw in this mock).
     const result = await refinery.resolveConflict("run-1", "theirs", { targetBranch: "main" });
 
     expect(result).toBe(false);
@@ -257,10 +317,7 @@ describe("Refinery.resolveConflict()", () => {
       expect.objectContaining({ status: "failed" }),
     );
 
-    // Ensure git merge --abort is called to leave the repo in a clean state
-    const calls: string[][] = (execFile as any).mock.calls.map((c: any[]) => c[1]);
-    const abortCall = calls.find((args) => Array.isArray(args) && args.includes("--abort"));
-    expect(abortCall).toBeDefined();
+    expect(vcs.abortMerge).toHaveBeenCalledWith("/tmp/project");
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
       expect.anything(), run.seed_id, expect.stringContaining("Merge failed"), "refinery",
     );
@@ -274,17 +331,14 @@ describe("Refinery.resolveConflict()", () => {
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
-    (execFile as any).mockImplementation(
-      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
-        callback(null, { stdout: "", stderr: "" });
-      },
-    );
-    (removeWorktree as any).mockResolvedValue(undefined);
-
     await refinery.resolveConflict("run-1", "theirs", { targetBranch: "develop", runTests: false });
 
-    // vcsBackend.checkoutBranch() is now used instead of raw execFile("git", ["checkout", ...])
-    expect(vcs.checkoutBranch).toHaveBeenCalledWith(expect.any(String), "develop");
+    expect(vcs.mergeWithStrategy).toHaveBeenCalledWith(
+      "/tmp/project",
+      "foreman/seed-abc",
+      "develop",
+      "theirs",
+    );
   });
 
   it("theirs strategy defaults to main when no targetBranch provided", async () => {
@@ -292,21 +346,21 @@ describe("Refinery.resolveConflict()", () => {
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
-    (execFile as any).mockImplementation(
-      (_cmd: string, _args: string[], _opts: any, callback: Function) => {
-        callback(null, { stdout: "", stderr: "" });
-      },
-    );
-    (removeWorktree as any).mockResolvedValue(undefined);
-
     await refinery.resolveConflict("run-1", "theirs", { runTests: false });
 
-    // vcsBackend.checkoutBranch() is used; default branch = "main" (from vcs.detectDefaultBranch mock)
-    expect(vcs.checkoutBranch).toHaveBeenCalledWith(expect.any(String), "main");
+    expect(vcs.mergeWithStrategy).toHaveBeenCalledWith(
+      "/tmp/project",
+      "foreman/seed-abc",
+      "main",
+      "theirs",
+    );
   });
 
   it("theirs strategy marks run as test-failed and reverts when tests fail after merge", async () => {
-    const { store, seeds, refinery } = makeMocks();
+    const { store, seeds, refinery, vcs } = makeMocks({
+      mergeWithStrategy: vi.fn().mockResolvedValue({ success: true }),
+      rollbackFailedMerge: vi.fn().mockResolvedValue(undefined),
+    });
     const run = makeRun({ id: "run-1", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
@@ -335,12 +389,7 @@ describe("Refinery.resolveConflict()", () => {
       expect.objectContaining({ status: "test-failed" }),
     );
 
-    // Ensure git reset --hard HEAD~1 was called to revert the merge
-    const calls: string[][] = (execFile as any).mock.calls.map((c: any[]) => c[1]);
-    const resetCall = calls.find(
-      (args) => Array.isArray(args) && args.includes("reset") && args.includes("--hard"),
-    );
-    expect(resetCall).toBeDefined();
+    expect(vcs.rollbackFailedMerge).toHaveBeenCalled();
     expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
       expect.anything(), run.seed_id, expect.stringContaining("tests failed"), "refinery",
     );
@@ -434,11 +483,33 @@ describe("Refinery.resolveConflict()", () => {
   });
 });
 
+describe("Refinery.mergeCompleted() mail handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPostgresListTasks.mockResolvedValue([]);
+    mockPostgresUpdateTask.mockResolvedValue(undefined);
+  });
+
+  it("does not throw when lifecycle mail sendMessage() returns rejected promises", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-mail-1", status: "completed" });
+    store.getRun.mockReturnValue(run);
+    store.sendMessage.mockRejectedValue(new Error("mail write failed"));
+
+    await expect(refinery.mergeCompleted({ runId: run.id, overrideRun: run, runTests: false })).resolves.toMatchObject({
+      merged: [{ runId: run.id, seedId: run.seed_id, branchName: "foreman/seed-abc" }],
+    });
+  });
+});
+
 // ── mergeCompleted() tests ────────────────────────────────────────────────────
 
 describe("Refinery.mergeCompleted()", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPostgresListTasks.mockResolvedValue([]);
+    mockPostgresUpdateTask.mockResolvedValue(undefined);
+    mockPostgresUpdateTaskStatusForRun.mockResolvedValue(undefined);
     // Default execFile mock for mergeCompleted tests:
     // - git log returns a non-empty commit list so the "no unique commits" guard passes.
     // - All other git/gh calls succeed with empty stdout.
@@ -479,6 +550,158 @@ describe("Refinery.mergeCompleted()", () => {
       run.id,
       expect.objectContaining({ status: "merged" }),
     );
+  });
+
+  it("uses injected async run lookup for registered mergeCompleted run reads", async () => {
+    const { store, seeds, vcs } = makeMocks();
+    const run = makeRun({ id: "run-lookup", seed_id: "seed-lookup" });
+    const runLookup = {
+      getRun: vi.fn().mockResolvedValue(run),
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getRunsByStatuses: vi.fn().mockResolvedValue([]),
+      getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
+    };
+    store.getRun.mockImplementation(() => {
+      throw new Error("local getRun should not be used");
+    });
+
+    const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs, {
+      runLookup,
+      registeredProjectId: "proj-1",
+    });
+
+    const report = await refinery.mergeCompleted({
+      runId: run.id,
+      runTests: false,
+      projectId: "proj-1",
+      seedId: run.seed_id,
+    });
+
+    expect(runLookup.getRun).toHaveBeenCalledWith("run-lookup");
+    expect(report.merged).toHaveLength(1);
+  });
+
+  it("closes registered native tasks via Postgres instead of the local tasks table", async () => {
+    const { store, seeds, vcs, mockDb } = makeMocks();
+    const run = makeRun({ id: "run-pg-task", seed_id: "seed-pg-task" });
+    const runLookup = {
+      getRun: vi.fn().mockResolvedValue(run),
+      getRunsByStatus: vi.fn().mockResolvedValue([run]),
+      getRunsByStatuses: vi.fn().mockResolvedValue([run]),
+      getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
+    };
+    mockPostgresListTasks.mockResolvedValue([{ id: "task-1" }]);
+
+    const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs, {
+      runLookup,
+      registeredProjectId: "proj-1",
+    });
+
+    await refinery.mergeCompleted({ runId: run.id, runTests: false, projectId: "proj-1", seedId: run.seed_id });
+
+    expect(mockPostgresListTasks).toHaveBeenCalledWith("proj-1", { runId: "run-pg-task", limit: 1 });
+    expect(mockPostgresUpdateTask).toHaveBeenCalledWith("proj-1", "task-1", { status: "merged" });
+    expect(mockDb.prepare).not.toHaveBeenCalled();
+  });
+
+  it("uses Postgres-first run updates and events for registered finalize PR writes", async () => {
+    const { store, seeds, vcs } = makeMocks();
+    const run = makeRun({ id: "run-registered-pr", seed_id: "seed-registered-pr" });
+    const { refinery } = makeRegisteredRefinery(store, seeds, vcs, run);
+
+    store.getRun.mockImplementation(() => {
+      throw new Error("local run lookup should not be used for registered writes");
+    });
+
+    const result = await refinery.ensurePullRequestForRun({
+      runId: run.id,
+      baseBranch: "main",
+      updateRunStatus: true,
+    });
+
+    expect(result.prUrl).toBe("foreman://pr/seed-registered-pr");
+    expect(mockPostgresLogEvent).toHaveBeenCalledWith(
+      "proj-1",
+      run.id,
+      "pr-created",
+      expect.any(String),
+    );
+    expect(mockPostgresUpdateRun).toHaveBeenCalledWith(
+      "proj-1",
+      run.id,
+      { status: "pr-created" },
+    );
+    expect(store.logEvent).not.toHaveBeenCalled();
+    expect(store.updateRun).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the local store when registered run persistence fails", async () => {
+    const { store, seeds, vcs } = makeMocks();
+    const run = makeRun({ id: "run-registered-fallback", seed_id: "seed-registered-fallback" });
+    const { refinery } = makeRegisteredRefinery(store, seeds, vcs, run);
+
+    mockPostgresLogEvent.mockRejectedValueOnce(new Error("pg event unavailable"));
+    mockPostgresUpdateRun.mockRejectedValueOnce(new Error("pg update unavailable"));
+
+    const result = await refinery.ensurePullRequestForRun({
+      runId: run.id,
+      baseBranch: "main",
+      updateRunStatus: true,
+    });
+
+    expect(result.prUrl).toBe("foreman://pr/seed-registered-fallback");
+    expect(store.logEvent).toHaveBeenCalledWith(
+      run.project_id,
+      "pr-created",
+      expect.objectContaining({ seedId: run.seed_id, existing: false }),
+      run.id,
+    );
+    expect(store.updateRun).toHaveBeenCalledWith(run.id, { status: "pr-created" });
+  });
+
+  it("keeps unregistered refinery writes local-only", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-local-pr", seed_id: "seed-local-pr" });
+    store.getRun.mockReturnValue(run);
+
+    const result = await refinery.ensurePullRequestForRun({
+      runId: run.id,
+      baseBranch: "main",
+      updateRunStatus: true,
+    });
+
+    expect(result.prUrl).toBe("foreman://pr/seed-local-pr");
+    expect(store.updateRun).toHaveBeenCalledWith(run.id, { status: "pr-created" });
+    expect(store.logEvent).toHaveBeenCalledWith(
+      run.project_id,
+      "pr-created",
+      expect.objectContaining({ seedId: run.seed_id, existing: false }),
+      run.id,
+    );
+    expect(mockPostgresUpdateRun).not.toHaveBeenCalled();
+    expect(mockPostgresLogEvent).not.toHaveBeenCalled();
+  });
+
+  it("preserves a registered pr-created run instead of downgrading it to failed", async () => {
+    const { store, seeds, vcs } = makeMocks();
+    const run = makeRun({ id: "run-registered-keep", seed_id: "seed-registered-keep" });
+    const { refinery } = makeRegisteredRefinery(store, seeds, vcs, run);
+    mockPostgresGetRun.mockResolvedValueOnce({ id: run.id, status: "pr-created" });
+
+    await (refinery as any).persistRunUpdate(run, { status: "failed" });
+
+    expect(mockPostgresUpdateRun).not.toHaveBeenCalled();
+    expect(store.updateRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves a local merged run instead of downgrading it to conflict", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-local-keep", seed_id: "seed-local-keep" });
+    store.getRun.mockReturnValue({ ...run, status: "merged" });
+
+    await (refinery as any).persistRunUpdate(run, { status: "conflict" });
+
+    expect(store.updateRun).not.toHaveBeenCalled();
   });
 
   it("uses branch: label from bead as target branch instead of default", async () => {
@@ -602,17 +825,23 @@ describe("Refinery.mergeCompleted()", () => {
   });
 
   it("adds failure note when rebase-conflict PR creation fails", async () => {
-    const { store, seeds, refinery } = makeMocks();
+    const { store, seeds, refinery } = makeMocks({
+      rebaseBranch: vi.fn().mockResolvedValue({
+        success: false,
+        hasConflicts: true,
+        conflictingFiles: ["src/index.ts"],
+      }),
+      getConflictingFiles: vi.fn().mockResolvedValue(["src/index.ts"]),
+      abortRebase: vi.fn().mockResolvedValue(undefined),
+    });
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
 
-    // Sequence of git calls:
-    //   1. git status --porcelain         → "" (autoCommitStateFiles: no dirty files)
-    //   2. git rebase main foreman/seed-abc → CONFLICT (rebase fails)
-    //   3. git diff --name-only --diff-filter=U → "src/index.ts" (real code conflict)
-    //   4. git rebase --abort             → success
-    //   5. git checkout main              → success (return to target branch)
-    //   6. git push (for PR creation)     → fails (gh not available)
+    // Sequence after VcsBackend migration:
+    //   1. rebaseBranch() → conflict result
+    //   2. abortRebase()  → success
+    //   3. push()         → success
+    //   4. gh pr create   → fails (gh not available)
     // → createPrForConflict returns null → addFailureNote must be called
     (execFile as any).mockImplementation(
       (cmd: string, args: string[], _opts: any, callback: Function) => {
@@ -621,15 +850,6 @@ describe("Refinery.mergeCompleted()", () => {
           err.stdout = "";
           err.stderr = "gh not available";
           callback(err);
-        } else if (Array.isArray(args) && args[0] === "rebase" && args.length > 1 && args[1] !== "--abort") {
-          // git rebase <target> <branch> — fail with conflict
-          const err = new Error("CONFLICT during rebase") as any;
-          err.stdout = "";
-          err.stderr = "CONFLICT during rebase";
-          callback(err);
-        } else if (Array.isArray(args) && args[0] === "diff" && args.includes("--diff-filter=U")) {
-          // git diff --name-only --diff-filter=U → real code conflict file
-          callback(null, { stdout: "src/index.ts\n", stderr: "" });
         } else if (cmd === "git" && Array.isArray(args) && args[0] === "log") {
           callback(null, { stdout: "abc1234 some commit\n", stderr: "" });
         } else {
@@ -743,6 +963,27 @@ describe("Refinery.mergeCompleted()", () => {
     );
   });
 
+  it("syncs registered native task status when merge marks run failed", async () => {
+    const { store, seeds, vcs } = makeMocks();
+    const run = makeRun({ id: "run-pg-fail", seed_id: "seed-pg-fail" });
+    const { refinery } = makeRegisteredRefinery(store, seeds, vcs, run);
+
+    (refinery as any).vcsBackend.mergeWithoutCommit = vi
+      .fn()
+      .mockRejectedValue(new Error("Unexpected git failure"));
+
+    const report = await refinery.mergeCompleted({
+      runId: run.id,
+      runTests: false,
+      projectId: "proj-1",
+      seedId: run.seed_id,
+    });
+
+    expect(report.unexpectedErrors).toHaveLength(1);
+    expect(mockPostgresUpdateRun).toHaveBeenCalledWith("proj-1", run.id, { status: "failed" });
+    expect(mockPostgresUpdateTaskStatusForRun).toHaveBeenCalledWith("proj-1", run.id, "failed");
+  });
+
   it("retries a previously-failed seed: finds run in test-failed state when seedId is specified", async () => {
     // Reproduces: "no completed run found for seed <seedid>" after a failed merge.
     // When --bead is supplied, getCompletedRuns() must also look in terminal failure
@@ -788,7 +1029,7 @@ describe("Refinery.mergeCompleted()", () => {
     const stuckRun = makeRun({ id: "run-new-stuck", seed_id: "seed-dup", status: "failed" });
 
     store.getRunsByStatus.mockReturnValue([]);
-    // SQLite returns stuck first (most recent created_at DESC)
+    // Postgres returns stuck first (most recent created_at DESC)
     store.getRunsByStatuses.mockReturnValue([stuckRun, completedRun]);
 
     (removeWorktree as any).mockResolvedValue(undefined);
@@ -923,8 +1164,8 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.merged).toHaveLength(1);
     // getRunsByStatuses should NOT be called when overrideRun is provided
     expect(store.getRunsByStatuses).not.toHaveBeenCalled();
-    // getRun should NOT be called when overrideRun is provided
-    expect(store.getRun).not.toHaveBeenCalled();
+    // getRunsByStatuses should stay bypassed when overrideRun is provided.
+    // store.getRun may still be consulted by later persistence helpers.
   });
 
   it("skips query and uses overrideRun even when seedId differs", async () => {
@@ -948,6 +1189,40 @@ describe("Refinery.mergeCompleted()", () => {
     // Should still merge because overrideRun bypasses seedId matching
     expect(report.merged).toHaveLength(1);
     expect(report.merged[0].seedId).toBe("seed-a");
+  });
+});
+
+describe("Refinery.createPRs()", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses the injected registered lookup for completed runs", async () => {
+    const { store, seeds, vcs } = makeMocks();
+    const run = makeRun({ id: "run-pr-registered", seed_id: "seed-pr-registered" });
+    const { refinery, runLookup } = makeRegisteredRefinery(store, seeds, vcs, run);
+
+    store.getRunsByStatus.mockImplementation(() => {
+      throw new Error("local getRunsByStatus should not be used");
+    });
+
+    const report = await refinery.createPRs({ projectId: "proj-1" });
+
+    expect(runLookup.getRunsByStatus).toHaveBeenCalledWith("completed", "proj-1");
+    expect(store.getRunsByStatus).not.toHaveBeenCalled();
+    expect(report.created).toHaveLength(1);
+  });
+
+  it("keeps local completed-run lookup unchanged", async () => {
+    const { store, refinery } = makeMocks();
+    const run = makeRun({ id: "run-pr-local", seed_id: "seed-pr-local" });
+    store.getRunsByStatus.mockReturnValue([run]);
+
+    const report = await refinery.createPRs();
+
+    expect(store.getRunsByStatus).toHaveBeenCalledWith("completed");
+    expect(store.getRunsByStatuses).not.toHaveBeenCalled();
+    expect(report.created).toHaveLength(1);
   });
 });
 
@@ -988,22 +1263,12 @@ describe("Refinery.resolveConflict() — bead close after merge", () => {
   });
 
   it("does NOT call closeSeed when resolveConflict git merge fails", async () => {
-    const { store, refinery } = makeMocks();
+    const { store, refinery } = makeMocks({
+      mergeWithStrategy: vi.fn().mockResolvedValue({ success: false, conflicts: ["README.md"] }),
+      abortMerge: vi.fn().mockResolvedValue(undefined),
+    });
     const run = makeRun({ id: "run-1", seed_id: "seed-mergefail", status: "conflict" });
     store.getRun.mockReturnValue(run);
-
-    (execFile as any).mockImplementation(
-      (_cmd: string, args: string[], _opts: any, callback: Function) => {
-        if (Array.isArray(args) && args.includes("merge") && !args.includes("--abort")) {
-          const err = new Error("Merge conflict") as any;
-          err.stdout = "";
-          err.stderr = "Merge conflict";
-          callback(err);
-        } else {
-          callback(null, { stdout: "", stderr: "" });
-        }
-      },
-    );
 
     const result = await refinery.resolveConflict("run-1", "theirs");
 
@@ -1172,9 +1437,9 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
       await expect(refinery.mergeCompleted({ runTests: false })).resolves.not.toThrow();
     });
 
-    it("still calls enqueueCloseSeed when using native task fallback", async () => {
+    it("still calls enqueueCloseSeed when no native task exists for the run", async () => {
       const { store, refinery } = makeMocksWithoutTask();
-      const run = makeRun({ id: "run-beads-only", seed_id: "seed-beads-only" });
+      const run = makeRun({ id: "run-no-task", seed_id: "seed-no-task" });
       store.getRunsByStatus.mockReturnValue([run]);
       (removeWorktree as any).mockResolvedValue(undefined);
 
@@ -1183,18 +1448,11 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
 
       await refinery.mergeCompleted({ runTests: false });
 
-      // enqueueCloseSeed should still be called for the bead
-      expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), "seed-beads-only", "refinery");
+      // enqueueCloseSeed should still be called for the seed
+      expect(enqueueCloseSeed).toHaveBeenCalledWith(expect.anything(), "seed-no-task", "refinery");
 
-      // syncBeadStatusAfterMerge should be called in the fallback path (no native task)
-      expect(syncBeadStatusAfterMerge).toHaveBeenCalledTimes(1);
-      expect(syncBeadStatusAfterMerge).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.anything(),
-        "run-beads-only",
-        "seed-beads-only",
-        expect.anything(),
-      );
+      // syncBeadStatusAfterMerge should NOT be called (beads fallback removed)
+      expect(syncBeadStatusAfterMerge).not.toHaveBeenCalled();
     });
   });
 

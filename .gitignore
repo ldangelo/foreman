@@ -1,3 +1,4 @@
+node_modules
 node_modules/
 dist/
 .devbox/
@@ -31,9 +32,12 @@ dist/
 # bv (beads viewer) local config and caches
 .bv/
 
-# br (beads_rust) shell history and bv lock
+# br (beads_rust) shell history and runtime files
 .beads/.br_history/
 .beads/.bv.lock
+.beads/*.lock
+.beads/*.db-wal
+.beads/*.db-shm
 
 # Backup files
 *.bak
@@ -42,6 +46,9 @@ dist/
 SessionLogs/
 SESSION_LOG.md
 RUN_LOG.md
+
+# Generated Refinery queue-entry logs
+docs/reports/queue-entry-*/
 
 # Claude Code local config and worktrees
 .claude/settings.local.json

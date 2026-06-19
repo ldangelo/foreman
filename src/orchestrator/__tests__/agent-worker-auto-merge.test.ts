@@ -24,19 +24,45 @@ describe("agent-worker.ts — merge queue handoff", () => {
     expect(source).toContain("createTaskClient");
   });
 
-  it("invokes immediate autoMerge after finalize enqueue for auto strategies", () => {
+  it("routes worker runtime task selection through the shared factory using native tasks only", () => {
+    expect(source).toContain("createTaskClient");
+    expect(source).not.toContain("forceBeadsFallback");
+  });
+
+  it("creates one shared runtime task client for epic QA hooks and status updates", () => {
+    expect(source).toContain("const { taskClient: runtimeTaskClient, backendType: runtimeTaskBackend } = await createTaskClient(");
+    expect(source).not.toContain("createEpicTaskClient(");
+  });
+
+  it("supports an explicit merge builtin that drains autoMerge", () => {
+    expect(source).toContain("async function runMergeBuiltinPhase");
+    expect(source).toContain('if (phase.name === "merge")');
     expect(source).toContain("await autoMerge(");
     expect(source).toContain("Immediate merge drain result: merged=");
+    expect(source).toContain("registeredProjectId,");
+    expect(source).toContain("readLookup: registeredAutoMergeReadStore");
   });
 
   it("enqueues merge intent with an explicit operation", () => {
     expect(source).toContain("operation: \"auto_merge\"");
     expect(source).toContain("const pr = await refinery.ensurePullRequestForRun");
+    expect(source).toContain("MERGE_REPORT.md");
   });
 
   it("publishes a PR and skips merge queue enqueue for non-auto strategies", () => {
     expect(source).toContain("mergeStrategy === \"auto\"");
     expect(source).toContain("Workflow merge strategy is ${mergeStrategy} — PR created, skipping merge queue enqueue");
+  });
+
+  it("keeps the mail helper fire-and-forget and non-throwing", () => {
+    expect(source).toContain("client.sendMessage(to, subject, JSON.stringify(body)).catch");
+    expect(source).toContain("log(`[agent-mail] send failed (non-fatal): ${msg}`);");
+  });
+
+  it("routes epic QA failure/pass hooks through the shared runtime task client", () => {
+    expect(source).toContain("if (!runtimeTaskClient.create) {");
+    expect(source).toContain("const bug = await runtimeTaskClient.create(`QA failure: ${taskTitle}`,");
+    expect(source).toContain("await runtimeTaskClient.close(bugBeadId, \"QA passed on retry\")");
   });
 });
 

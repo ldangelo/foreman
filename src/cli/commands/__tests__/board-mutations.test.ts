@@ -1,23 +1,26 @@
 /**
- * Tests for board mutations (status cycling, close, edit).
+ * Tests for board mutations: status cycling, close, edit, and create new task.
  *
  * @module src/cli/commands/__tests__/board-mutations.test
  */
 
-import { describe, it, expect, vi } from "vitest";
-import { createKeyHandler, type BoardStatus, type BoardTask, type RenderState } from "../board.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { boardApi, createKeyHandler, type BoardStatus, type BoardTask, type RenderState } from "../board.js";
 
 // Constants matching board.ts
 const BOARD_STATUSES: readonly BoardStatus[] = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 
 describe("BoardMutations", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // Helper to create a board task
   const createTask = (
     id: string,
@@ -55,9 +58,134 @@ describe("BoardMutations", () => {
       showHelp: false,
       showDetail: false,
       detailTask: null,
+      detailNotesStatus: "idle",
+      detailNotesError: null,
+      sortMode: "updated",
       ...overrides,
     };
   };
+
+  describe("Copy selected task ID (y key)", () => {
+    it("y should copy the selected task id to the clipboard", async () => {
+      const spy = vi.spyOn(boardApi, "copyToClipboard").mockReturnValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "ready" });
+      const state = createState({
+        ready: [task],
+      }, { nav: { colIndex: 1, rowIndex: 0 } });
+
+      const result = await handleKey("y", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("bd-1234");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.errorMessage).toBeNull();
+      expect(result.needsRefresh).toBe(false);
+    });
+
+    it("y should return early when no task is selected", async () => {
+      const spy = vi.spyOn(boardApi, "copyToClipboard").mockReturnValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        ready: [],
+      }, { nav: { colIndex: 1, rowIndex: 0 } });
+
+      const result = await handleKey("y", state, "/tmp/project");
+
+      expect(spy).not.toHaveBeenCalled();
+      expect(result.flashTaskId).toBeNull();
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("y should surface clipboard errors", async () => {
+      vi.spyOn(boardApi, "copyToClipboard").mockReturnValue("clipboard unavailable");
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "ready" });
+      const state = createState({
+        ready: [task],
+      }, { nav: { colIndex: 1, rowIndex: 0 } });
+
+      const result = await handleKey("y", state, "/tmp/project");
+
+      expect(result.errorMessage).toBe("clipboard unavailable");
+      expect(result.flashTaskId).toBeNull();
+    });
+  });
+
+  describe("Mark task as ready (R key)", () => {
+    it("R should return early when no task is selected", async () => {
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [],
+      });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(result.flashTaskId).toBeNull();
+      expect(result.needsRefresh).toBe(false);
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("R should mark selected task as ready", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "backlog" });
+      const state = createState({
+        backlog: [task],
+      });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234", "ready");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.needsRefresh).toBe(true);
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("R should show error when task is not in backlog", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "in_progress" });
+      const state = createState({
+        in_progress: [task],
+      }, { nav: { colIndex: 2, rowIndex: 0 } });
+
+      const result = await handleKey("R", state, "/tmp/project");
+
+      expect(spy).not.toHaveBeenCalled();
+      expect(result.errorMessage).toBe("Task must be in backlog to mark as ready");
+      expect(result.flashTaskId).toBeNull();
+      expect(result.needsRefresh).toBe(false);
+    });
+  });
+
+  describe("Task detail (Enter key)", () => {
+    it("opens detail immediately and loads notes in the background", async () => {
+      const notes = [{
+        id: "note-1",
+        created_at: "2026-04-19T12:30:00Z",
+        phase: "developer",
+        kind: "progress",
+        author: "foreman",
+        body: "Implemented status normalization",
+      }];
+      let resolveNotes!: (value: typeof notes) => void;
+      const notesPromise = new Promise<typeof notes>((resolve) => {
+        resolveNotes = resolve;
+      });
+      const spy = vi.spyOn(boardApi, "loadTaskNotesAsync").mockReturnValue(notesPromise);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234");
+      const state = createState({ backlog: [task] });
+
+      const result = await handleKey("\r", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234");
+      expect(result.showDetail).toBe(true);
+      expect(result.detailTask).toEqual(task);
+      expect(result.needsRefresh).toBe(false);
+      resolveNotes(notes);
+    });
+  });
 
   describe("Status Cycling (s/S keys)", () => {
     it("s should advance status to next in order", () => {
@@ -71,6 +199,22 @@ describe("BoardMutations", () => {
       expect(newStatus).toBe("ready");
     });
 
+    it("s should move selected ready task forward to store in-progress status", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "ready" });
+      const state = createState({
+        ready: [task],
+      }, { nav: { colIndex: 1, rowIndex: 0 } });
+
+      const result = await handleKey("s", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234", "in-progress");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.needsRefresh).toBe(true);
+      expect(result.errorMessage).toBeNull();
+    });
+
     it("S should retreat status to previous in order", () => {
       const task = createTask("bd-1234", { status: "ready" });
       const currentStatusIdx = BOARD_STATUSES.indexOf(task.status as BoardStatus);
@@ -80,6 +224,22 @@ describe("BoardMutations", () => {
 
       expect(task.status).toBe("ready");
       expect(newStatus).toBe("backlog");
+    });
+
+    it("S should move selected hyphenated in-progress task back to ready", async () => {
+      const spy = vi.spyOn(boardApi, "applyStatusChangeAsync").mockResolvedValue(null);
+      const handleKey = createKeyHandler("/tmp/project");
+      const task = createTask("bd-1234", { status: "in-progress" });
+      const state = createState({
+        in_progress: [task],
+      }, { nav: { colIndex: 2, rowIndex: 0 } });
+
+      const result = await handleKey("S", state, "/tmp/project");
+
+      expect(spy).toHaveBeenCalledWith("/tmp/project", "bd-1234", "ready");
+      expect(result.flashTaskId).toBe("bd-1234");
+      expect(result.needsRefresh).toBe(true);
+      expect(result.errorMessage).toBeNull();
     });
 
     it("s should wrap from closed to backlog", () => {
@@ -108,9 +268,8 @@ describe("BoardMutations", () => {
       const transitions: [BoardStatus, BoardStatus][] = [
         ["backlog", "ready"],
         ["ready", "in_progress"],
-        ["in_progress", "review"],
-        ["review", "blocked"],
-        ["blocked", "closed"],
+        ["in_progress", "needs_attention"],
+        ["needs_attention", "closed"],
         ["closed", "backlog"],
       ];
 
@@ -128,9 +287,8 @@ describe("BoardMutations", () => {
         ["backlog", "closed"],
         ["ready", "backlog"],
         ["in_progress", "ready"],
-        ["review", "in_progress"],
-        ["blocked", "review"],
-        ["closed", "blocked"],
+        ["needs_attention", "in_progress"],
+        ["closed", "needs_attention"],
       ];
 
       transitions.forEach(([from, to]) => {
@@ -162,7 +320,7 @@ describe("BoardMutations", () => {
     });
 
     it("C should also set status to closed", () => {
-      const task = createTask("bd-1234", { status: "review" });
+      const task = createTask("bd-1234", { status: "in_progress" });
       const closedStatus = "closed";
 
       const closedTask = { ...task, status: closedStatus };
@@ -187,13 +345,13 @@ describe("BoardMutations", () => {
       expect(closedTask.closed_at).toBe(reason);
     });
 
-    it("C should request a close reason instead of closing immediately", () => {
+    it("C should request a close reason instead of closing immediately", async () => {
       const handleKey = createKeyHandler("/tmp/project");
       const state = createState({
         backlog: [createTask("bd-1234", { status: "backlog" })],
       });
 
-      const result = handleKey("C", state, "/tmp/project");
+      const result = await handleKey("C", state, "/tmp/project");
 
       expect(result.promptForCloseReason).toBe(true);
       expect(result.needsRefresh).toBe(false);
@@ -336,6 +494,183 @@ describe("BoardMutations", () => {
     });
   });
 
+  describe("Create New Task (n key)", () => {
+    it("n key should trigger new task creation", async () => {
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
+        id: "bd-new",
+        title: "New Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      });
+      vi.spyOn(boardApi, "createTaskAsync").mockResolvedValue({ taskId: "bd-new" });
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({
+        backlog: [createTask("bd-1234")],
+      });
+
+      const result = await handleKey("n", state, "/tmp/project");
+
+      expect(result.needsRefresh).toBe(true);
+      expect(result.flashTaskId).toBe("bd-new");
+      expect(result.errorMessage).toBeNull();
+    });
+
+    it("new task template should have title as required field", () => {
+      // Simulate template validation
+      const validTask = {
+        id: "bd-new",
+        title: "My new task",
+        description: "A description",
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      expect(validTask.title.length).toBeGreaterThan(0);
+    });
+
+    it("new task template should require title", () => {
+      const invalidTask = {
+        id: "bd-new",
+        title: "",
+        description: "A description",
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      const isValid = invalidTask.title.trim().length > 0;
+      expect(isValid).toBe(false);
+    });
+
+    it("new task should default to backlog status", () => {
+      const task = {
+        id: "bd-new",
+        title: "New task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      expect(task.status).toBe("backlog");
+    });
+
+    it("new task should default to task type", () => {
+      const task = {
+        id: "bd-new",
+        title: "New task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      expect(task.type).toBe("task");
+    });
+
+    it("new task should default to priority 2", () => {
+      const task = {
+        id: "bd-new",
+        title: "New task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      };
+
+      expect(task.priority).toBe(2);
+    });
+
+    it("new task should accept valid types", () => {
+      const validTypes = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+
+      for (const type of validTypes) {
+        const task = { type };
+        expect(validTypes.includes(task.type)).toBe(true);
+      }
+    });
+
+    it("new task should reject invalid types", () => {
+      const validTypes = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+      const invalidType = "invalid";
+
+      expect(validTypes.includes(invalidType)).toBe(false);
+    });
+
+    it("new task should clamp priority to [0, 4]", () => {
+      const clamp = (value: number, min: number, max: number): number =>
+        Math.max(min, Math.min(max, value));
+
+      const priorities = [-1, 0, 2, 4, 5];
+      const expected = [0, 0, 2, 4, 4];
+
+      priorities.forEach((p, i) => {
+        expect(clamp(p, 0, 4)).toBe(expected[i]);
+      });
+    });
+
+    it("new task id should be auto-generated if empty", () => {
+      // Simulate auto-ID generation
+      const parsedId = "bd-auto-123";
+      const providedId = "";
+
+      const finalId = providedId.trim().length > 0 ? providedId.trim() : parsedId;
+      expect(finalId).toBe(parsedId);
+    });
+
+    it("blank id should result in undefined (not UUID) so server allocates compact ID", async () => {
+      // Track what createTaskAsync receives
+      let capturedTaskData: { id?: string; title: string } = { title: "" };
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
+        id: undefined, // blank id from YAML
+        title: "New Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      });
+      vi.spyOn(boardApi, "createTaskAsync").mockImplementation(async (_path, taskData) => {
+        capturedTaskData = taskData;
+        return { taskId: "foreman-abc12" };
+      });
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({ backlog: [] });
+
+      await handleKey("n", state, "/tmp/project");
+
+      // id should be undefined so the server allocates a compact project-prefixed ID
+      expect(capturedTaskData.id).toBeUndefined();
+    });
+
+    it("provided id should be passed through to createTaskAsync", async () => {
+      let capturedTaskData: { id?: string; title: string } = { title: "" };
+      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
+        id: "bd-custom-id",
+        title: "Custom Task",
+        description: null,
+        type: "task",
+        priority: 2,
+        status: "backlog",
+      });
+      vi.spyOn(boardApi, "createTaskAsync").mockImplementation(async (_path, taskData) => {
+        capturedTaskData = taskData;
+        return { taskId: "bd-custom-id" };
+      });
+
+      const handleKey = createKeyHandler("/tmp/project");
+      const state = createState({ backlog: [] });
+
+      await handleKey("n", state, "/tmp/project");
+
+      expect(capturedTaskData.id).toBe("bd-custom-id");
+    });
+  });
+
   describe("Editor Resolution", () => {
     it("should prefer EDITOR environment variable", () => {
       const editor = process.env.EDITOR ?? process.env.VISUAL;
@@ -367,8 +702,7 @@ describe("BoardMutations", () => {
         "backlog",
         "ready",
         "in_progress",
-        "review",
-        "blocked",
+        "needs_attention",
         "closed",
       ];
 

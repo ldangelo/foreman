@@ -63,7 +63,7 @@ Foreman today is a per-project tool: each invocation operates on the project in 
 This PRD transforms Foreman into a **self-contained, multi-project orchestration platform** by introducing three interlocking capabilities:
 
 1. **A global project registry** (`~/.foreman/projects.json`) that lets the operator register named project paths once and reference them from any directory.
-2. **A native task store** embedded in each project's existing SQLite database, replacing beads (`br`) and beads-viewer (`bv`) with workflow-aware task tracking that models the full pipeline lifecycle.
+2. **A native task store** embedded in each project's existing Postgres database, replacing beads (`br`) and beads-viewer (`bv`) with workflow-aware task tracking that models the full pipeline lifecycle.
 3. **A unified cross-project dashboard** that aggregates state across all registered projects, surfaces a "needs human" priority column, and allows dispatch operations without requiring `cd`.
 
 The result is a single interface -- `foreman dashboard` -- where the operator sees everything, approves work, and intervenes on failures across all projects simultaneously.
@@ -106,7 +106,7 @@ Every `foreman run`, `foreman reset`, and `foreman retry` command requires the o
 ### 3.1 Goals
 
 1. **Introduce a global project registry** at `~/.foreman/projects.json` with `foreman project add/list/remove` commands.
-2. **Build a native task store** into each project's existing `.foreman/foreman.db` SQLite database with workflow-aware statuses and a dependency graph.
+2. **Build a native task store** into each project's existing `.foreman/foreman.db` Postgres database with workflow-aware statuses and a dependency graph.
 3. **Replace `br` and `bv`** as the task management interface with `foreman task` subcommands and the enhanced `foreman dashboard`.
 4. **Add a "needs human" view** to the dashboard that surfaces `conflict`, `failed`, `stuck`, and awaiting-approval (`backlog`) tasks across all projects.
 5. **Enable cross-project dispatch** via `--project <name>` flags on `foreman run`, `foreman reset`, and `foreman retry`.
@@ -175,7 +175,7 @@ Operator                  beads (br)               Foreman
 | `bv` dashboard view | external binary | `foreman dashboard` cross-project view |
 | Per-project `foreman status` | `src/cli/commands/status.ts` | `foreman status --all` aggregation |
 
-### 5.3 Existing SQLite Schema
+### 5.3 Existing Postgres Schema
 
 The current `.foreman/foreman.db` has four tables: `runs`, `projects`, `merge_queue`, `messages`. The native task store adds two new tables (`tasks`, `task_dependencies`) to this existing database without modifying existing tables.
 
@@ -293,7 +293,7 @@ Foreman shall maintain a global project registry at `~/.foreman/projects.json` t
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 
-The system shall add a `tasks` table to each project's `.foreman/foreman.db` SQLite database. The schema shall support workflow-aware statuses aligned with the Foreman pipeline.
+The system shall add a `tasks` table to each project's `.foreman/foreman.db` Postgres database. The schema shall support workflow-aware statuses aligned with the Foreman pipeline.
 
 **Schema:**
 
@@ -321,7 +321,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 **Acceptance Criteria:**
 
 - AC-003.1: `foreman init` (and any path that creates `.foreman/foreman.db`) runs the `tasks` and `task_dependencies` DDL migrations idempotently. Running `foreman init` on an existing project with an existing database adds the new tables without modifying existing data.
-- AC-003.2: The `status` column is constrained to the enumerated values listed above. Attempting to insert or update with an unknown status value raises a SQLite constraint error that propagates as a typed `InvalidTaskStatusError` in TypeScript.
+- AC-003.2: The `status` column is constrained to the enumerated values listed above. Attempting to insert or update with an unknown status value raises a Postgres constraint error that propagates as a typed `InvalidTaskStatusError` in TypeScript.
 - AC-003.3: Task IDs use the compact `<project-id>-<5 hex>` format generated at creation time (for example `foreman-abc12`). The `id` field is immutable after creation.
 
 ---
@@ -499,32 +499,31 @@ The system shall provide `foreman task import --from-beads` to migrate existing 
 
 ---
 
-### REQ-014: Coexistence -- Fallback to Beads
+### REQ-014: Native Task Store (Mandatory)
 
-**Priority:** P1 (high)
+**Priority:** P0 (critical)
 **MoSCoW:** Must
 
-During the transition period, Foreman shall support coexistence: if a project has native tasks in its `tasks` table, Foreman uses the native store; if the `tasks` table is empty or absent, Foreman falls back to querying `br` for ready tasks. This allows incremental per-project migration.
+Foreman uses the native Postgres task store exclusively. The beads (`br`) fallback has been removed. All task operations (create, list, ready, dispatch, merge) use the native store.
 
 **Acceptance Criteria:**
 
-- AC-014.1: The dispatcher's `getReadyTasks()` method first checks whether the current project's database has a `tasks` table with one or more rows. If yes, it queries the native store. If the `tasks` table is absent or empty, it falls back to `BeadsRustClient.getReadyTasks()`. A debug-level log message records which path was taken.
-- AC-014.2: The fallback behavior is overridable: `FOREMAN_TASK_STORE=native` environment variable forces native store usage even if the table is empty. `FOREMAN_TASK_STORE=beads` forces beads fallback regardless of table contents.
-- AC-014.3: `foreman doctor` reports the task store mode for the current project: `"Task store: native (N tasks)"` or `"Task store: beads (fallback)"`. If both a non-empty native store and a non-empty `.beads/beads.jsonl` exist, `foreman doctor` emits a warning: `"Both native task store and beads data exist. Run 'foreman task import --from-beads' and then remove .beads/ to complete migration."`.
+- AC-014.1: The dispatcher's `getReadyTasks()` method queries the native store. No fallback to `BeadsRustClient` exists. A debug-level log records the query.
+- AC-014.2: `foreman doctor` reports the task store status: `"Native task store active (N tasks)"`. No beads fallback mode is reported.
 
 ---
 
-### REQ-015: Beads Deprecation Path
+### REQ-015: Beads Legacy Support
 
 **Priority:** P2 (medium)
 **MoSCoW:** Should
 
-The `BeadsRustClient` interface and `src/lib/beads-rust.ts` shall be marked deprecated and isolated to a compatibility shim. No new code shall depend on `BeadsRustClient` after this PRD is implemented.
+The `BeadsRustClient` interface and `src/lib/beads-rust.ts` are deprecated. The `foreman task import --from-beads` command provides a migration path from beads data to native tasks.
 
 **Acceptance Criteria:**
 
-- AC-015.1: `src/lib/beads-rust.ts` is annotated with `@deprecated` JSDoc tags on all exported symbols. The TypeScript strict-mode build emits no deprecation errors from within Foreman's own modules (internal usages are replaced with `NativeTaskStore` calls).
-- AC-015.2: `foreman doctor` emits an informational notice (not an error) when `br` binary is absent: `"beads (br) not found -- native task store active."` This replaces the current behavior of failing the doctor check when `br` is absent.
+- AC-015.1: `src/lib/beads-rust.ts` has `@deprecated` JSDoc tags on all exported symbols. No internal code (outside compatibility shim) uses `BeadsRustClient`.
+- AC-015.2: `foreman doctor` emits an informational notice when `br` binary is absent: `"beads (br) not found -- native task store active."` This is informational, not an error.
 
 ---
 
@@ -550,13 +549,13 @@ The `BeadsRustClient` interface and `src/lib/beads-rust.ts` shall be marked depr
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 
-The dispatcher shall query the local project's SQLite `tasks` table for ready tasks when the native task store is active, replacing the current `br ready` shell invocation. The dispatcher operates cwd-relative (same as today); the `--project` flag handles the cwd resolution before the dispatcher is invoked.
+The dispatcher queries the local project's Postgres `tasks` table for ready tasks. The `--project` flag handles the cwd resolution before the dispatcher is invoked.
 
 **Acceptance Criteria:**
 
-- AC-017.1: When the native task store is active, `dispatcher.getReadyTasks()` executes `SELECT * FROM tasks WHERE status = 'ready' ORDER BY priority ASC, created_at ASC` against the project's `foreman.db`. It does not invoke `execFileAsync` or any shell command to query beads.
-- AC-017.2: When the dispatcher claims a task for execution, it updates `status = 'in-progress'` and sets `run_id` to the newly created run ID atomically in the same SQLite transaction as run creation. This prevents double-dispatch if two foreman processes race.
-- AC-017.3: When the pipeline executor transitions between phases, it calls `taskStore.updatePhase(taskId, phaseName)` to update the task status to the current phase name. If `taskId` is null (beads fallback mode), this call is a no-op.
+- AC-017.1: `dispatcher.getReadyTasks()` executes `SELECT * FROM tasks WHERE status = 'ready' ORDER BY priority ASC, created_at ASC` against the project's `foreman.db`. It does not invoke `execFileAsync` or any shell command to query beads.
+- AC-017.2: When the dispatcher claims a task for execution, it updates `status = 'in-progress'` and sets `run_id` to the newly created run ID atomically in the same Postgres transaction as run creation. This prevents double-dispatch if two foreman processes race.
+- AC-017.3: When the pipeline executor transitions between phases, it calls `taskStore.updatePhase(taskId, phaseName)` to update the task status to the current phase name.
 
 ---
 
@@ -565,11 +564,11 @@ The dispatcher shall query the local project's SQLite `tasks` table for ready ta
 **Priority:** P1 (high)
 **MoSCoW:** Must
 
-The refinery shall close native tasks by updating their status to `merged` after a successful merge, replacing the current `syncBeadStatusAfterMerge()` call.
+The refinery closes native tasks by updating their status to `merged` after a successful merge.
 
 **Acceptance Criteria:**
 
-- AC-018.1: After a successful merge in `refinery.ts`, the refinery calls `taskStore.updateStatus(taskId, 'merged', { closedAt: new Date() })` for the task associated with the completed run. The `syncBeadStatusAfterMerge()` function is called only in beads fallback mode.
+- AC-018.1: After a successful merge in `refinery.ts`, the refinery calls `taskStore.updateStatus(taskId, 'merged', { closedAt: new Date() })` for the task associated with the completed run.
 - AC-018.2: If the task ID cannot be resolved from the run (e.g., the run was created before native task tracking was active), the refinery logs a debug warning and proceeds without error. Eventual consistency is acceptable -- a manual `foreman task update <id> --status merged` is the operator recovery path.
 
 ---
@@ -586,21 +585,22 @@ The unified dashboard shall refresh its aggregated view across all registered pr
 **Acceptance Criteria:**
 
 - AC-019.1: Dashboard refresh time (measured from refresh trigger to completed render) is less than 2000ms with 7 registered projects, each with up to 200 tasks and 10 active runs, on a machine with a standard SSD. This is validated by a benchmark test in `src/cli/__tests__/dashboard-performance.test.ts`.
-- AC-019.2: Each project's database is opened in read-only mode (`SQLITE_OPEN_READONLY`) during dashboard aggregation. Write contention from active agent processes does not block dashboard reads.
+- AC-019.2: Each project's database is opened in read-only mode (`POSTGRES_OPEN_READONLY`) during dashboard aggregation. Write contention from active agent processes does not block dashboard reads.
 
 ---
 
-### REQ-020: Backward Compatibility During Transition
+### REQ-020: Backward Compatibility
 
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 
-All existing `foreman` commands shall continue to work without modification during the coexistence period. Projects that have not run `foreman task import --from-beads` shall behave identically to today.
+All existing `foreman` commands continue to work with the native task store. The migration from beads data is provided via `foreman task import --from-beads`.
 
 **Acceptance Criteria:**
 
-- AC-020.1: A project with no `tasks` table (fresh install, or project that has not migrated) passes all existing integration tests without modification. The `foreman run`, `foreman status`, `foreman merge`, `foreman dashboard` (single-project mode), and `foreman doctor` commands all function as before.
+- AC-020.1: Projects with native tasks in the `tasks` table function normally. `foreman run`, `foreman status`, `foreman merge`, `foreman dashboard`, and `foreman doctor` commands all function as designed.
 - AC-020.2: The `foreman task` command group is additive -- no existing command is renamed or removed. `foreman status` retains its current behavior; `foreman status --all` is the new cross-project addition.
+- AC-020.3: The `FOREMAN_TASK_STORE` environment variable (accepted values: `beads`, `native`, `auto`) is accepted for backward compatibility but has no operational effect in native-only mode. When the system is running in native-only backend mode (the only supported mode), the environment variable is ignored and the native Postgres task store is always used. This ensures existing scripts and configurations continue to function without error.
 
 ---
 
@@ -615,7 +615,7 @@ All new modules introduced by this PRD shall comply with the project's TypeScrip
 
 - AC-021.1: `npx tsc --noEmit` passes with zero errors after all new modules are added. No `any` type escape hatches are used in `src/lib/task-store.ts`, `src/lib/project-registry.ts`, or any new CLI command modules.
 - AC-021.2: Unit test coverage for `src/lib/task-store.ts` and `src/lib/project-registry.ts` is >= 80% as measured by Vitest coverage. Integration test coverage for the cross-project dashboard aggregation path is >= 70%.
-- AC-021.3: The `task_dependencies` circular dependency check (a task cannot block itself, directly or transitively) is enforced at the `NativeTaskStore` layer with a typed `CircularDependencyError`, not at the SQLite constraint layer. Unit tests cover the cycle detection algorithm.
+- AC-021.3: The `task_dependencies` circular dependency check (a task cannot block itself, directly or transitively) is enforced at the `NativeTaskStore` layer with a typed `CircularDependencyError`, not at the Postgres constraint layer. Unit tests cover the cycle detection algorithm.
 
 ---
 
@@ -708,8 +708,8 @@ src/lib/
 
 | Risk | Probability | Impact | Mitigation |
 |------|-------------|--------|------------|
-| Big-bang beads replacement breaks existing workflows | Medium | High | Coexistence period (REQ-014) + per-project opt-in migration. Beads fallback remains until all projects migrated. |
-| SQLite write contention between agent workers and dashboard reads | Medium | Medium | Dashboard opens DBs read-only (AC-019.2). Agent writes use WAL mode (already configured). |
+| Beads data needs migration to native store | Medium | Medium | `foreman task import --from-beads` provides one-time migration. Beads data in `.beads/` can be archived after import. |
+| Postgres write contention between agent workers and dashboard reads | Medium | Medium | Dashboard opens DBs read-only (AC-019.2). Agent writes use WAL mode (already configured). |
 | Circular dependency introduced in task graph via import | Low | Medium | Cycle detection at `NativeTaskStore` layer with typed error (AC-021.3). Import performs cycle check before committing. |
 | Registered project path deleted; commands crash | Low | Low | Stale project checks on all cross-project paths (REQ-022). |
 | Dashboard refresh exceeds 2s with 7 projects | Low | Medium | Parallel read across project DBs; benchmark test gates release (AC-019.1). |
@@ -735,16 +735,16 @@ src/lib/
 | REQ-011 | "Needs Human" Panel | 3 | P0 | Must |
 | REQ-012 | Pipeline Phase Visibility | 2 | P1 | Must |
 | REQ-013 | Beads Import Command | 4 | P0 | Must |
-| REQ-014 | Coexistence -- Fallback to Beads | 3 | P1 | Must |
-| REQ-015 | Beads Deprecation Path | 2 | P2 | Should |
+| REQ-014 | Native Task Store (Mandatory) | 2 | P0 | Must |
+| REQ-015 | Beads Legacy Support | 2 | P2 | Should |
 | REQ-016 | `--project` Flag on Dispatch Commands | 3 | P0 | Must |
 | REQ-017 | Dispatcher Reads Native Task Store | 3 | P0 | Must |
 | REQ-018 | Refinery Closes Native Tasks Post-Merge | 2 | P1 | Must |
 | REQ-019 | Dashboard Refresh Performance | 2 | P1 | Must |
-| REQ-020 | Backward Compatibility During Transition | 2 | P0 | Must |
+| REQ-020 | Backward Compatibility | 3 | P0 | Must |
 | REQ-021 | TypeScript Strict Mode and Test Coverage | 3 | P1 | Must |
 | REQ-022 | Stale Project Handling | 3 | P2 | Should |
-| **Total** | | **62** | | |
+| **Total** | | **63** | | |
 
 ---
 
@@ -754,8 +754,6 @@ src/lib/
 |--------|--------|-------------|
 | Time to identify a task needing human attention (cross-project) | < 5 seconds from `foreman dashboard` open | Operator observation; dashboard "Needs Human" panel load time |
 | Dashboard refresh time (7 projects) | < 2 seconds | Automated benchmark (AC-019.1) |
-| Projects migrated from beads to native store (adoption) | 100% within 60 days of Sprint 5 release | `foreman doctor` reports across registered projects |
-| Reduction in context-switch events (operator survey) | >= 50% reduction in tmux window switches per work session | Operator self-report |
 | `br` invocations remaining in Foreman codebase post-implementation | 0 (outside compatibility shim) | `grep -r "BeadsRustClient" src/ --include="*.ts"` excluding `beads-rust.ts` |
 | Pipeline phase visibility in dashboard | All in-progress tasks show phase name (not generic "in-progress") | Dashboard screenshot at each phase transition |
 
@@ -789,8 +787,7 @@ src/lib/
 
 **Sprint 5 complete when:**
 - `foreman task import --from-beads` tested on real beads data
-- Coexistence fallback verified on a project with no native tasks
-- `foreman doctor` reflects native/beads mode correctly
+- `foreman doctor` reports native task store mode correctly
 - `BeadsRustClient` deprecated with no internal usages outside shim
 
 ---
@@ -801,7 +798,7 @@ All adversarial gaps identified during pre-publication review have been resolved
 
 | OQ | Question | Resolution | Incorporated In |
 |----|----------|------------|-----------------|
-| OQ-1 | How does the dispatcher know which task store to query? | Dispatcher reads from local project's SQLite (cwd-based); global dashboard aggregates read-only. | REQ-017, REQ-014 |
+| OQ-1 | How does the dispatcher know which task store to query? | Dispatcher reads from local project's Postgres (cwd-based); global dashboard aggregates read-only. | REQ-017, REQ-014 |
 | OQ-2 | What is the definition of "needs human"? | Any task with status `conflict`, `failed`, `stuck`, or `backlog` (awaiting approval). | REQ-011 |
 | OQ-3 | Does the native task store support a dependency graph? | Yes -- `task_dependencies` table with `blocks` and `parent-child` types. | REQ-004 |
 | OQ-4 | Big-bang beads replacement risk? | Coexistence period with per-project opt-in migration. Dispatcher falls back to beads if native store empty. | REQ-014, REQ-020 |

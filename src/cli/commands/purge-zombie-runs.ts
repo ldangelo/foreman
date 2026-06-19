@@ -1,10 +1,13 @@
-import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore, type Run } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
-import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
+import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice, printPurgeSummary } from "./cli-output.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -17,6 +20,12 @@ export interface PurgeZombieRunsResult {
   purged: number;
   skipped: number;
   errors: number;
+}
+
+interface PurgeZombieStore {
+  getProjectByPath(path: string): Promise<{ id: string; path: string } | null>;
+  getRunsByStatus(status: Run["status"], projectId: string): Promise<Run[]>;
+  deleteRun(runId: string): Promise<boolean>;
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -50,23 +59,21 @@ async function isBeadClosedOrGone(
 export async function purgeZombieRunsAction(
   opts: PurgeZombieRunsOpts,
   beadsClient: Pick<ITaskClient, "show">,
-  store: ForemanStore,
+  store: PurgeZombieStore,
   projectPath: string,
 ): Promise<PurgeZombieRunsResult> {
   const dryRun = opts.dryRun ?? false;
 
-  if (dryRun) {
-    console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-  }
+  printDryRunNotice(dryRun);
 
   // 1. Validate project exists
-  const project = store.getProjectByPath(projectPath);
+  const project = await store.getProjectByPath(projectPath);
   if (!project) {
     throw new Error("No project registered for this path. Run 'foreman init' first.");
   }
 
   // 2. Get all failed runs for this project
-  const failedRuns: Run[] = store.getRunsByStatus("failed", project.id);
+  const failedRuns: Run[] = await store.getRunsByStatus("failed", project.id);
 
   if (failedRuns.length === 0) {
     console.log(chalk.green("No failed runs found — nothing to purge."));
@@ -112,7 +119,7 @@ export async function purgeZombieRunsAction(
       );
       result.purged += 1;
     } else {
-      store.deleteRun(run.id);
+      await store.deleteRun(run.id);
       console.log(
         chalk.green(`  purged  run ${run.id} — bead ${run.seed_id} is closed/gone`),
       );
@@ -121,56 +128,48 @@ export async function purgeZombieRunsAction(
   }
 
   // 4. Summary
-  console.log();
-  if (dryRun) {
-    console.log(
-      chalk.yellow(
-        `Dry run complete — ${result.purged} zombie run(s) would be purged, ${result.skipped} skipped, ${result.errors} error(s).`,
-      ),
-    );
-  } else {
-    console.log(
-      chalk.green(
-        `Done — ${result.purged} zombie run(s) purged, ${result.skipped} skipped, ${result.errors} error(s).`,
-      ),
-    );
-  }
+  printPurgeSummary({
+    dryRun,
+    subject: "zombie run(s)",
+    verb: "purged",
+    count: result.purged,
+    skipped: result.skipped,
+    errors: result.errors,
+  });
 
   return result;
 }
 
-// ── CLI Command ─────────────────────────────────────────────────────────
+export async function purgeZombieRunsCommandAction(opts: PurgeZombieRunsOpts): Promise<number> {
+  let projectPath: string;
+  try {
+    projectPath = await resolveRepoRootProjectPath({});
+  } catch {
+    console.error(chalk.red("Not in a git repository. Run from within a foreman project."));
+    return 1;
+  }
 
-export const purgeZombieRunsCommand = new Command("purge-zombie-runs")
-  .description(
-    "Remove failed run records whose beads are already closed or no longer exist",
-  )
-  .option("--dry-run", "Show what would be purged without making any changes")
-  .action(async (opts: PurgeZombieRunsOpts) => {
-    let projectPath: string;
-    try {
-      const vcs = await VcsBackendFactory.create({ backend: "auto" }, process.cwd());
-      projectPath = await vcs.getRepoRoot(process.cwd());
-    } catch {
-      console.error(
-        chalk.red(
-          "Not in a git repository. Run from within a foreman project.",
-        ),
-      );
-      process.exit(1);
-    }
+  const localStore = ForemanStore.forProject(projectPath);
+  const registered = await findRegisteredProjectByPath(projectPath);
+  const store: PurgeZombieStore = registered
+    ? PostgresStore.forProject(registered.id)
+    : wrapLocalRunStore(localStore);
+  const { taskClient } = await createTaskClient(projectPath);
 
-    const store = ForemanStore.forProject(projectPath);
-    const { taskClient } = await createTaskClient(projectPath);
+  try {
+    const result = await purgeZombieRunsAction(opts, taskClient, store, projectPath);
+    localStore.close();
+    closeStoreIfPossible(store);
+    return result.errors > 0 ? 1 : 0;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(msg));
+    localStore.close();
+    closeStoreIfPossible(store);
+    return 1;
+  }
+}
 
-    try {
-      const result = await purgeZombieRunsAction(opts, taskClient, store, projectPath);
-      store.close();
-      process.exit(result.errors > 0 ? 1 : 0);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(msg));
-      store.close();
-      process.exit(1);
-    }
-  });
+// The CLI command surface lives in purge.ts:
+//   foreman purge runs           (canonical)
+//   foreman purge-zombie-runs    (hidden, deprecated alias)

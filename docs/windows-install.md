@@ -19,7 +19,7 @@ irm https://raw.githubusercontent.com/ldangelo/foreman/main/install.ps1 | iex
 The installer automatically:
 - Downloads the `foreman-win-x64.exe` binary from the [latest GitHub Release](https://github.com/ldangelo/foreman/releases/latest)
 - Installs to `%LOCALAPPDATA%\foreman\` (no admin required)
-- Places `better_sqlite3.node` alongside the binary (required side-car)
+- Places `pg.node` alongside the binary (required side-car)
 - Adds the install directory to your user `PATH`
 - Verifies the install with `foreman --version`
 
@@ -65,12 +65,12 @@ Unblock-File "$env:LOCALAPPDATA\foreman\foreman-win-x64.exe"
 ## Manual Installation
 
 1. Download `foreman-vX.Y.Z-win-x64.zip` from [GitHub Releases](https://github.com/ldangelo/foreman/releases/latest)
-2. Extract the zip — you'll find `foreman-win-x64.exe` and `better_sqlite3.node`
+2. Extract the zip — you'll find `foreman-win-x64.exe` and `pg.node`
 3. Copy **both files** to a directory in your PATH (e.g., `C:\Windows\System32` or a custom bin dir)
 4. Rename `foreman-win-x64.exe` to `foreman.exe`
 5. Open a new terminal and run `foreman --version`
 
-> **Important:** `better_sqlite3.node` must remain in the **same directory** as `foreman.exe`. Without it, the binary will fail at startup.
+> **Important:** `pg.node` must remain in the **same directory** as `foreman.exe`. Without it, the binary will fail at startup.
 
 ## Verify Checksums
 
@@ -106,8 +106,8 @@ $newPath = ($path -split ";" | Where-Object { $_ -notmatch "\\foreman" }) -join 
 - The installer doesn't require admin rights — it installs to `%LOCALAPPDATA%\foreman`
 - If using `FOREMAN_INSTALL`, ensure you have write access to that directory
 
-**Binary crashes on startup with "better_sqlite3 module not found"**
-- Ensure `better_sqlite3.node` is in the same directory as `foreman-win-x64.exe`
+**Binary crashes on startup with "pg module not found"**
+- Ensure `pg.node` is in the same directory as `foreman-win-x64.exe`
 - Re-run the installer to restore the side-car file
 
 **GitHub API rate limit hit**

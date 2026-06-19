@@ -70,13 +70,19 @@ export function getBeadsIssuesPathForWorkspace(
 }
 
 /**
- * Build a best-effort restore command that removes tracked Beads state churn
- * from the current workspace before finalize commits.
+ * Build a best-effort restore command that removes workspace-only state and
+ * diagnostic artifacts before finalize commits. The `node_modules` pattern is
+ * deliberately listed without a trailing slash because setup-cache uses a
+ * symlink, and Git's `node_modules/` ignore pattern does not ignore symlinks.
  */
 export function buildTrackedStateRestoreCommand(
   workspacePath: string,
   mainRepoRoot: string,
 ): string {
   const beadsPath = getBeadsIssuesPathForWorkspace(workspacePath, mainRepoRoot);
-  return `git restore --source=HEAD --staged --worktree -- ${beadsPath} 2>/dev/null || git restore --source=HEAD --worktree -- ${beadsPath} 2>/dev/null || true`;
+  return [
+    `git restore --source=HEAD --staged --worktree -- ${beadsPath} 2>/dev/null || git restore --source=HEAD --worktree -- ${beadsPath} 2>/dev/null || true`,
+    `git restore --source=HEAD --staged --worktree -- node_modules SESSION_LOG.md RUN_LOG.md DOCUMENTATION_REPORT.md DEVELOPER_REPORT.md QA_REPORT.md REVIEW.md FINALIZE_REPORT.md FINALIZE_VALIDATION.md 2>/dev/null || true`,
+    `git rm -r --cached --ignore-unmatch node_modules docs/reports SESSION_LOG.md RUN_LOG.md DOCUMENTATION_REPORT.md DEVELOPER_REPORT.md QA_REPORT.md REVIEW.md FINALIZE_REPORT.md FINALIZE_VALIDATION.md 2>/dev/null || true`,
+  ].join("\n");
 }

@@ -22,7 +22,7 @@ import {
   getHighspeedModel,
 } from "../lib/config.js";
 import { loadAndInterpolate } from "./template-loader.js";
-import { loadPrompt, PromptNotFoundError } from "../lib/prompt-loader.js";
+import { loadPrompt, PromptNotFoundError, expandCommandPlaceholders } from "../lib/prompt-loader.js";
 import { PI_PHASE_CONFIGS } from "./pi-rpc-spawn-strategy.js";
 
 export { PI_PHASE_CONFIGS };
@@ -216,7 +216,7 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
       maxBudgetUsd: getQaBudget(),
       permissionMode: "acceptEdits",
       reportFile: "QA_REPORT.md",
-      allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+      allowedTools: ["Bash", "Glob", "Grep", "Read", "TodoWrite", "Write"],
     },
     reviewer: {
       role: "reviewer",
@@ -341,7 +341,7 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
         maxBudgetUsd: 3.00,
         permissionMode: "acceptEdits",
         reportFile: "QA_REPORT.md",
-        allowedTools: ["Bash", "Edit", "Glob", "Grep", "Read", "TodoWrite", "Write"],
+        allowedTools: ["Bash", "Glob", "Grep", "Read", "TodoWrite", "Write"],
       },
       reviewer: {
         role: "reviewer",
@@ -447,6 +447,8 @@ export interface PromptLoaderOpts {
   projectRoot?: string;
   /** Workflow name (e.g. "default", "smoke"). Defaults to "default". */
   workflow?: string;
+  /** Prompt template name. Defaults to the phase name. */
+  promptName?: string;
 }
 
 /**
@@ -461,12 +463,14 @@ function resolvePrompt(
   legacyFilename: string,
   opts?: PromptLoaderOpts,
 ): string {
+  const promptName = opts?.promptName ?? phase;
   if (opts?.projectRoot) {
     const workflow = opts.workflow ?? "default";
-    return loadPrompt(phase, vars, workflow, opts.projectRoot);
+    return loadPrompt(promptName, vars, workflow, opts.projectRoot);
   }
   // Bundled fallback (backward compat / unit tests without project root)
-  return loadAndInterpolate(legacyFilename, vars as Record<string, string>);
+  const fallbackFilename = opts?.promptName ? `${opts.promptName}-prompt.md` : legacyFilename;
+  return loadAndInterpolate(fallbackFilename, vars as Record<string, string>);
 }
 
 export { PromptNotFoundError };
@@ -494,6 +498,7 @@ export function buildPhasePrompt(
     /** Absolute path to the worktree. Passed to finalize prompt so it can cd
      *  to the correct directory before running git commands. */
     worktreePath?: string;
+    reportDir?: string;
     // ── VCS command variables (TRD-026: finalize phase) ───────────────────
     /** Command to stage all changes (e.g. 'git add -A'). Empty for auto-staging backends. */
     vcsStageCommand?: string;
@@ -540,7 +545,7 @@ If it is missing, invoke and stop — do not proceed with implementation:
 Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     : "";
   const feedbackSection = context.feedbackContext
-    ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
+    ? `\n## Focused Repair Feedback\nAddress ONLY the issues below from the previous verification/review. Do not redesign unrelated code. Do not create temporary debug tests, console logs, or one-off debug files. Prefer the smallest patch that makes the reported verification pass. If you need to touch more than five source/test files, explain why in DEVELOPER_REPORT.md before doing so.\n${context.feedbackContext}\n`
     : "";
 
   const vars: Record<string, string> = {
@@ -555,6 +560,7 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     agentRole: phaseName,
     baseBranch: context.baseBranch ?? "main",
     worktreePath: context.worktreePath ?? "",
+    reportDir: context.reportDir ?? "",
     seedType: context.seedType ?? "",
     // VCS finalize command variables (TRD-026)
     vcsStageCommand: context.vcsStageCommand ?? "git add -A",
@@ -574,7 +580,9 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
 
   // Map phase names to legacy template filenames for bundled fallback.
   const legacyFilename = `${phaseName}-prompt.md`;
-  return resolvePrompt(phaseName, vars, legacyFilename, opts);
+  const resolved = resolvePrompt(phaseName, vars, legacyFilename, opts);
+  const cwd = context.worktreePath ?? process.cwd();
+  return expandCommandPlaceholders(resolved, cwd);
 }
 
 export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
@@ -607,7 +615,7 @@ export function developerPrompt(
     : `2. Explore the codebase to understand the relevant architecture`;
 
   const feedbackSection = feedbackContext
-    ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${feedbackContext}\n`
+    ? `\n## Focused Repair Feedback\nAddress ONLY the issues below from the previous verification/review. Do not redesign unrelated code. Do not create temporary debug tests, console logs, or one-off debug files. Prefer the smallest patch that makes the reported verification pass. If you need to touch more than five source/test files, explain why in DEVELOPER_REPORT.md before doing so.\n${feedbackContext}\n`
     : "";
 
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";

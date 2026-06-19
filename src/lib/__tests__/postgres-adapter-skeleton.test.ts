@@ -35,6 +35,17 @@ function makeMockPool(responses: Array<{ sqlPattern: RegExp; rows?: unknown[]; r
   };
 }
 
+function makeCapturePool(
+  onQuery: (text: string, params?: unknown[]) => { rows: unknown[]; rowCount: number }
+): PoolLike {
+  return {
+    query: async (text: string, params?: unknown[]) => onQuery(text, params) as never,
+    connect: vi.fn(),
+    end: vi.fn(),
+    on: vi.fn(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Project operations (implemented — use mock pool)
 // ---------------------------------------------------------------------------
@@ -269,7 +280,7 @@ describe("PostgresAdapter task operations", () => {
 
   it("listTasks returns rows from the database", async () => {
     const mockPool = makeMockPool([
-      { sqlPattern: /SELECT \* FROM tasks/, rows: [TASK_ROW] },
+      { sqlPattern: /SELECT t\.\*, r\.pr_state, r\.pr_url, r\.pr_head_sha/, rows: [{ ...TASK_ROW, pr_state: null, pr_url: null, pr_head_sha: null }] },
     ]);
     await initPool({ poolOverride: mockPool as PoolLike });
     try {
@@ -284,7 +295,7 @@ describe("PostgresAdapter task operations", () => {
 
   it("listTasks filters by status", async () => {
     const mockPool = makeMockPool([
-      { sqlPattern: /SELECT \* FROM tasks WHERE project_id = \$1 AND status IN/, rows: [TASK_ROW] },
+      { sqlPattern: /SELECT t\.\*, r\.pr_state, r\.pr_url, r\.pr_head_sha/, rows: [{ ...TASK_ROW, pr_state: null, pr_url: null, pr_head_sha: null }] },
     ]);
     await initPool({ poolOverride: mockPool as PoolLike });
     try {
@@ -390,6 +401,87 @@ describe("PostgresAdapter task operations", () => {
       await destroyPool();
     }
   });
+
+  it("addTaskNote inserts an append-only task note", async () => {
+    const note = {
+      id: "note-1",
+      project_id: PROJECT_ID,
+      task_id: TASK_ID,
+      run_id: RUN_ID,
+      phase: "developer",
+      author: "developer-foreman-test",
+      kind: "progress",
+      body: "Implemented changes",
+      metadata: { filesChanged: ["src/a.ts"] },
+      created_at: "2026-01-01T00:00:00Z",
+    };
+    const mockPool = makeMockPool([
+      { sqlPattern: /INSERT INTO task_notes/, rows: [note] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.addTaskNote(PROJECT_ID, TASK_ID, {
+        runId: RUN_ID,
+        phase: "developer",
+        author: "developer-foreman-test",
+        kind: "progress",
+        body: "Implemented changes",
+        metadata: { filesChanged: ["src/a.ts"] },
+      });
+      expect(result).toMatchObject(note);
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("listTaskNotes returns notes newest first by default", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /FROM task_notes/, rows: [{ id: "note-1", task_id: TASK_ID, body: "Done" }] },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listTaskNotes(PROJECT_ID, TASK_ID);
+      expect(result).toHaveLength(1);
+      expect(result[0].body).toBe("Done");
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("listTaskNotes falls back to pipeline events when no explicit notes exist", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /FROM task_notes/, rows: [] },
+      {
+        sqlPattern: /FROM events/,
+        rows: [{
+          id: "event-1",
+          project_id: PROJECT_ID,
+          task_id: TASK_ID,
+          run_id: "run-1",
+          event_type: "fail",
+          payload: { phase: "reviewer", reason: "Phase exceeded maxTurns (40)" },
+          created_at: "2026-01-01T00:00:00Z",
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool as PoolLike });
+    try {
+      const adapter = new PostgresAdapter();
+      const result = await adapter.listTaskNotes(PROJECT_ID, TASK_ID);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        id: "event-event-1",
+        kind: "failure",
+        author: "pipeline",
+        phase: "reviewer",
+        body: "reviewer failed: Phase exceeded maxTurns (40)",
+      });
+    } finally {
+      await destroyPool();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -397,133 +489,231 @@ describe("PostgresAdapter task operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter run operations", () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
-  it("createRun inserts and returns a run row", async () => {
-    const runRow = {
-      id: "run-1",
-      project_id: PROJECT_ID,
-      seed_id: "seed-1",
-      agent_type: "developer",
-      session_key: null,
-      worktree_path: "/tmp/wt",
-      status: "pending",
-      started_at: null,
-      completed_at: null,
-      created_at: new Date().toISOString(),
-      progress: null,
-      bead_id: "seed-1",
-      run_number: 1,
-      branch: "seed-1",
-      trigger: "bead",
-    };
-    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO runs/, rows: [runRow] }]);
+  it("createRun inserts a pending run row", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /INSERT INTO runs/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: "/tmp/worktree",
+          status: "pending",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: null,
+        }],
+      },
+    ]);
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
-      const result = await adapter.createRun(PROJECT_ID, "seed-1", "developer", { worktreePath: "/tmp/wt" });
-      expect(result).toEqual(runRow);
+      const result = await adapter.createRun(PROJECT_ID, "seed-1", "developer", {
+        worktreePath: "/tmp/worktree",
+      });
+      expect(result.id).toBe("run-1");
+      expect(result.status).toBe("pending");
     } finally {
       await destroyPool();
     }
   });
 
-  it("listRuns filters by project and status", async () => {
+  it("listRuns maps pipeline statuses back to legacy statuses", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /FROM runs[\s\S]+ORDER BY created_at DESC/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: null,
+          status: "success",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: null,
+          base_branch: null,
+          merge_strategy: null,
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.listRuns(PROJECT_ID, { status: ["completed"], limit: 5 });
+      expect(result).toHaveLength(1);
+      expect(result[0].status).toBe("completed");
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("getRun returns a mapped legacy run row", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /WHERE project_id = \$1 AND id = \$2 LIMIT 1/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: null,
+          status: "failure",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: null,
+          base_branch: null,
+          merge_strategy: null,
+        }],
+      },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.getRun(PROJECT_ID, "run-1");
+      expect(result?.id).toBe("run-1");
+      expect(result?.status).toBe("failed");
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("updateRun writes mapped status updates", async () => {
     let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /SELECT \* FROM runs/, rows: [] }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /UPDATE runs SET/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, params?: unknown[]) => {
       capturedSql = text;
-      return { rows: [], rowCount: 0 };
-    });
-    await initPool({ poolOverride: mockPool });
-    try {
-      const adapter = new PostgresAdapter();
-      await adapter.listRuns(PROJECT_ID, { status: ["running"], limit: 10 });
-      expect(capturedSql).toContain("project_id = $1");
-      expect(capturedSql).toContain("seed_id IS NOT NULL");
-      expect(capturedSql).toContain("status IN ($2)");
-      expect(capturedSql).toContain("LIMIT $3");
-    } finally {
-      await destroyPool();
-    }
-  });
-
-  it("getRun returns null when no matching run exists", async () => {
-    const mockPool = makeMockPool([{ sqlPattern: /SELECT \* FROM runs WHERE id = \$1/, rows: [] }]);
-    await initPool({ poolOverride: mockPool });
-    try {
-      const adapter = new PostgresAdapter();
-      const result = await adapter.getRun(PROJECT_ID, "run-missing");
-      expect(result).toBeNull();
-    } finally {
-      await destroyPool();
-    }
-  });
-
-  it("updateRun updates only the requested fields", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /UPDATE runs SET/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
+      capturedParams = params ?? [];
       return { rows: [], rowCount: 1 };
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
-      await adapter.updateRun(PROJECT_ID, "run-1", { status: "running", worktree_path: "/tmp/wt" });
-      expect(capturedSql).toContain("status = $1");
-      expect(capturedSql).toContain("worktree_path = $2");
-      expect(capturedSql).toContain("updated_at = now()");
+      await adapter.updateRun(PROJECT_ID, "run-1", { status: "completed" });
+      expect(capturedSql).toContain("UPDATE runs SET");
+      expect(capturedParams).toContain("success");
     } finally {
       await destroyPool();
     }
   });
 
-  it("listActiveRuns returns pending and running runs", async () => {
-    const rows = [
-      {
-        id: "run-1",
-        project_id: PROJECT_ID,
-        seed_id: "seed-1",
-        agent_type: "developer",
-        session_key: null,
-        worktree_path: null,
-        status: "running",
-        started_at: null,
-        completed_at: null,
-        created_at: new Date().toISOString(),
-        progress: null,
-      },
-    ];
-    const mockPool = makeMockPool([{ sqlPattern: /status IN \('pending', 'running'\)/, rows }]);
+  it("listActiveRuns excludes running runs whose task row is closed", async () => {
+    let sql = "";
+    const mockPool = makeCapturePool((text) => {
+      sql = text;
+      return { rows: [], rowCount: 0 };
+    });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       const result = await adapter.listActiveRuns(PROJECT_ID);
-      expect(result).toEqual(rows);
+      expect(sql).toContain("status IN ('pending','running')");
+      expect(sql).toContain("NOT EXISTS");
+      expect(sql).toContain("t.id = r.bead_id");
+      expect(sql).toContain("t.status IN ('closed','merged')");
+      expect(result).toHaveLength(0);
     } finally {
       await destroyPool();
     }
   });
 
-  it("hasActiveOrPendingRun returns true when a matching row exists", async () => {
-    const mockPool = makeMockPool([{ sqlPattern: /SELECT 1 AS present FROM runs/, rows: [{ present: 1 }] }]);
+  it("listActiveRuns excludes running runs whose task row is merged", async () => {
+    let sql = "";
+    const mockPool = makeCapturePool((text) => {
+      sql = text;
+      return { rows: [], rowCount: 0 };
+    });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
+      const result = await adapter.listActiveRuns(PROJECT_ID);
+      expect(sql).toContain("status IN ('pending','running')");
+      expect(sql).toContain("NOT EXISTS");
+      expect(sql).toContain("t.id = r.bead_id");
+      expect(sql).toContain("t.status IN ('closed','merged')");
+      expect(result).toHaveLength(0);
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("listActiveRuns returns running runs when no matching task row exists", async () => {
+    let sql = "";
+    const mockPool = makeCapturePool((text) => {
+      sql = text;
+      return {
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: null,
+          status: "running",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: null,
+          base_branch: null,
+          merge_strategy: null,
+        }],
+        rowCount: 1,
+      };
+    });
+    await initPool({ poolOverride: mockPool });
+    try {
+      const result = await adapter.listActiveRuns(PROJECT_ID);
+      expect(sql).toContain("status IN ('pending','running')");
+      expect(sql).toContain("NOT EXISTS");
+      expect(sql).toContain("t.id = r.bead_id");
+      expect(sql).toContain("t.status IN ('closed','merged')");
+      expect(result).toHaveLength(1);
+      expect(result[0].status).toBe("running");
+    } finally {
+      await destroyPool();
+    }
+  });
+
+  it("hasActiveOrPendingRun returns true when a matching run exists", async () => {
+    const mockPool = makeMockPool([
+      { sqlPattern: /SELECT 1 as found FROM runs/, rows: [{ found: 1 }] },
+    ]);
+    await initPool({ poolOverride: mockPool });
+    try {
       await expect(adapter.hasActiveOrPendingRun(PROJECT_ID, "seed-1")).resolves.toBe(true);
     } finally {
       await destroyPool();
     }
   });
 
-  it("updateRunProgress merges partial progress into existing JSON", async () => {
-    let calls: Array<{ text: string; params?: unknown[] }> = [];
-    const mockPool = makeMockPool([]);
+  it("updateRunProgress merges JSON progress through getRun and updateRun", async () => {
+    const calls: Array<{ text: string; params?: unknown[] }> = [];
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /WHERE project_id = \$1 AND id = \$2 LIMIT 1/,
+        rows: [{
+          id: "run-1",
+          project_id: PROJECT_ID,
+          seed_id: "seed-1",
+          agent_type: "developer",
+          session_key: null,
+          worktree_path: null,
+          status: "running",
+          started_at: null,
+          completed_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          progress: JSON.stringify({ costUsd: 1.5 }),
+          base_branch: null,
+          merge_strategy: null,
+        }],
+      },
+      { sqlPattern: /UPDATE runs SET/, rowCount: 1 },
+    ]);
     (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, params?: unknown[]) => {
       calls.push({ text, params });
-      if (/SELECT \* FROM runs WHERE id = \$1/.test(text)) {
+      if (/WHERE project_id = \$1 AND id = \$2 LIMIT 1/.test(text)) {
         return {
           rows: [{
             id: "run-1",
@@ -535,8 +725,10 @@ describe("PostgresAdapter run operations", () => {
             status: "running",
             started_at: null,
             completed_at: null,
-            created_at: new Date().toISOString(),
-            progress: JSON.stringify({ toolCalls: 2, currentPhase: "explorer" }),
+            created_at: "2026-01-01T00:00:00Z",
+            progress: JSON.stringify({ costUsd: 1.5 }),
+            base_branch: null,
+            merge_strategy: null,
           }],
           rowCount: 1,
         };
@@ -545,21 +737,16 @@ describe("PostgresAdapter run operations", () => {
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
-      await adapter.updateRunProgress(PROJECT_ID, "run-1", { phase: "developer", tokensIn: 42 });
-      const update = calls.find((call) => /UPDATE runs\s+SET progress = \$1/.test(call.text));
-      expect(update).toBeDefined();
-      expect(JSON.parse(String(update?.params?.[0]))).toEqual({
-        toolCalls: 2,
-        currentPhase: "developer",
-        tokensIn: 42,
-      });
+      await adapter.updateRunProgress(PROJECT_ID, "run-1", { phase: "developer" });
+      const updateCall = calls.find((call) => /UPDATE runs SET/.test(call.text));
+      expect(updateCall).toBeDefined();
+      expect(updateCall?.params).toContain(JSON.stringify({ costUsd: 1.5, phase: "developer" }));
     } finally {
       await destroyPool();
     }
   });
 
-  it("purgeOldRuns deletes only old terminal legacy runs", async () => {
+  it("purgeOldRuns deletes old terminal runs", async () => {
     let capturedSql = "";
     const mockPool = makeMockPool([{ sqlPattern: /DELETE FROM runs/, rows: [], rowCount: 3 }]);
     (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
@@ -568,16 +755,14 @@ describe("PostgresAdapter run operations", () => {
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       await expect(adapter.purgeOldRuns(PROJECT_ID, "2024-01-01")).resolves.toBe(3);
-      expect(capturedSql).toContain("seed_id IS NOT NULL");
-      expect(capturedSql).toContain("status IN ('failed', 'merged', 'test-failed', 'conflict')");
+      expect(capturedSql).toContain("status IN ('failure', 'success')");
     } finally {
       await destroyPool();
     }
   });
 
-  it("deleteRun deletes only project-scoped legacy runs", async () => {
+  it("deleteRun deletes a project-scoped run", async () => {
     let capturedSql = "";
     const mockPool = makeMockPool([{ sqlPattern: /DELETE FROM runs/, rows: [], rowCount: 1 }]);
     (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
@@ -586,10 +771,8 @@ describe("PostgresAdapter run operations", () => {
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       await expect(adapter.deleteRun(PROJECT_ID, "run-1")).resolves.toBe(true);
-      expect(capturedSql).toContain("project_id = $2");
-      expect(capturedSql).toContain("seed_id IS NOT NULL");
+      expect(capturedSql).toContain("project_id = $1");
     } finally {
       await destroyPool();
     }
@@ -601,28 +784,22 @@ describe("PostgresAdapter run operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter cost operations", () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
   it("recordCost inserts a cost row", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO costs/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO costs/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
       return { rows: [], rowCount: 1 };
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       await adapter.recordCost(PROJECT_ID, "run-1", {
         tokensIn: 1000,
         tokensOut: 500,
         cacheRead: 200,
         estimatedCost: 0.05,
       });
-      expect(capturedSql).toContain("INSERT INTO costs");
-      expect(capturedSql).toContain("tokens_in");
-      expect(capturedSql).toContain("estimated_cost");
+      expect(capturedParams).toEqual(["run-1", 1000, 500, 200, 0.05]);
     } finally {
       await destroyPool();
     }
@@ -634,41 +811,38 @@ describe("PostgresAdapter cost operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter event operations", () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
-  it("logEvent inserts an event row", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO events/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
-      return { rows: [], rowCount: 1 };
+  it("logEvent writes a pipeline event payload", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([
+      { sqlPattern: /INSERT INTO events/, rows: [{ id: "evt-1" }] },
+    ]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
+      return { rows: [{ id: "evt-1" }], rowCount: 1 };
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       await adapter.logEvent(PROJECT_ID, "run-1", "phase_start", "explorer started");
-      expect(capturedSql).toContain("INSERT INTO events");
-      expect(capturedSql).toContain("details");
+      expect(capturedParams[0]).toBe(PROJECT_ID);
+      expect(capturedParams[1]).toBe("run-1");
+      expect(capturedParams[3]).toBe("phase_start");
+      expect(capturedParams[4]).toBe(JSON.stringify({ details: "explorer started" }));
     } finally {
       await destroyPool();
     }
   });
 
-  it("logRateLimitEvent inserts a rate-limit row", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO rate_limit_events/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
+  it("logRateLimitEvent inserts a rate limit row", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO rate_limit_events/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
       return { rows: [], rowCount: 1 };
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
-      await adapter.logRateLimitEvent(PROJECT_ID, "run-1", "developer", "rate limit hit");
-      expect(capturedSql).toContain("INSERT INTO rate_limit_events");
-      expect(capturedSql).toContain("model");
-      expect(capturedSql).toContain("error");
+      await adapter.logRateLimitEvent(PROJECT_ID, "run-1", "claude-sonnet", "developer", "rate limit hit", 60);
+      expect(capturedParams).toEqual([PROJECT_ID, "run-1", "claude-sonnet", "developer", "rate limit hit", 60]);
     } finally {
       await destroyPool();
     }
@@ -680,123 +854,72 @@ describe("PostgresAdapter event operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter message operations", () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
-  it("sendMessage inserts a compatibility mail row", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO messages/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
-      return { rows: [], rowCount: 1 };
-    });
+  it("sendMessage inserts and returns the message row", async () => {
+    const mockPool = makeMockPool([
+      {
+        sqlPattern: /INSERT INTO agent_messages/,
+        rows: [{
+          id: "msg-1",
+          project_id: PROJECT_ID,
+          run_id: "run-1",
+          sender_agent_type: "developer",
+          recipient_agent_type: "reviewer",
+          subject: "phase-complete",
+          body: "Hello",
+          read: 0,
+          created_at: "",
+          deleted_at: null,
+        }],
+      },
+    ]);
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
-      await adapter.sendMessage(PROJECT_ID, "run-1", "developer", "Hello");
-      expect(capturedSql).toContain("INSERT INTO messages");
-      expect(capturedSql).toContain("sender_agent_type");
-      expect(capturedSql).toContain("recipient_agent_type");
-      expect(capturedSql).toContain("subject");
+      const result = await adapter.sendMessage(
+        PROJECT_ID,
+        "run-1",
+        "developer",
+        "reviewer",
+        "phase-complete",
+        "Hello",
+      );
+      expect(result.id).toBe("msg-1");
+      expect(result.recipient_agent_type).toBe("reviewer");
     } finally {
       await destroyPool();
     }
   });
 
-  it("markMessageRead updates a single message", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /UPDATE messages AS m/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
-      return { rows: [], rowCount: 1 };
-    });
+  it("markMessageRead returns true when a row was updated", async () => {
+    const mockPool = makeMockPool([{ sqlPattern: /SET read = 1/, rowCount: 1 }]);
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       await expect(adapter.markMessageRead(PROJECT_ID, "msg-1")).resolves.toBe(true);
-      expect(capturedSql).toContain("SET read = 1");
-      expect(capturedSql).toContain("project_id = $2");
     } finally {
       await destroyPool();
     }
   });
 
-  it("markAllMessagesRead updates run/recipient scoped messages", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /UPDATE messages AS m/, rows: [], rowCount: 2 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
+  it("markAllMessagesRead updates unread messages for an agent", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /recipient_agent_type = \$3/, rowCount: 2 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
       return { rows: [], rowCount: 2 };
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       await adapter.markAllMessagesRead(PROJECT_ID, "run-1", "developer");
-      expect(capturedSql).toContain("recipient_agent_type = $2");
-      expect(capturedSql).toContain("deleted_at IS NULL");
+      expect(capturedParams).toEqual([PROJECT_ID, "run-1", "developer"]);
     } finally {
       await destroyPool();
     }
   });
 
   it("deleteMessage soft-deletes a message", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /UPDATE messages AS m/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
-      return { rows: [], rowCount: 1 };
-    });
+    const mockPool = makeMockPool([{ sqlPattern: /SET deleted_at = now\(\)/, rowCount: 1 }]);
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       await expect(adapter.deleteMessage(PROJECT_ID, "msg-1")).resolves.toBe(true);
-      expect(capturedSql).toContain("SET deleted_at = now()");
-    } finally {
-      await destroyPool();
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Bead write queue
-// ---------------------------------------------------------------------------
-
-describe("PostgresAdapter bead write queue operations", () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
-  it("enqueueBeadWrite inserts a queued entry", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO bead_write_queue/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
-      return { rows: [], rowCount: 1 };
-    });
-    await initPool({ poolOverride: mockPool });
-    try {
-      const adapter = new PostgresAdapter();
-      await adapter.enqueueBeadWrite(PROJECT_ID, "sentinel", "upsert", { id: "1" });
-      expect(capturedSql).toContain("INSERT INTO bead_write_queue");
-      expect(capturedSql).toContain("project_id");
-      expect(capturedSql).toContain("payload");
-    } finally {
-      await destroyPool();
-    }
-  });
-
-  it("markBeadWriteProcessed timestamps a queued entry", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /UPDATE bead_write_queue/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
-      return { rows: [], rowCount: 1 };
-    });
-    await initPool({ poolOverride: mockPool });
-    try {
-      const adapter = new PostgresAdapter();
-      await expect(adapter.markBeadWriteProcessed(PROJECT_ID, "bw-1")).resolves.toBe(true);
-      expect(capturedSql).toContain("SET processed_at = now()");
-      expect(capturedSql).toContain("project_id = $2");
     } finally {
       await destroyPool();
     }
@@ -808,126 +931,68 @@ describe("PostgresAdapter bead write queue operations", () => {
 // ---------------------------------------------------------------------------
 
 describe("PostgresAdapter sentinel operations", () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-  afterEach(() => { vi.restoreAllMocks(); });
-
-  it("upsertSentinelConfig inserts and returns config rows", async () => {
-    const calls: Array<{ text: string; params?: unknown[] }> = [];
-    const row = {
-      id: 1,
-      project_id: PROJECT_ID,
-      branch: "main",
-      test_command: "npm test",
-      interval_minutes: 30,
-      failure_threshold: 2,
-      enabled: 1,
-      pid: 123,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    const mockPool = makeMockPool([]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, params?: unknown[]) => {
-      calls.push({ text, params });
-      if (/SELECT \* FROM sentinel_configs WHERE project_id = \$1/.test(text)) {
-        return { rows: calls.length === 1 ? [] : [row], rowCount: calls.length === 1 ? 0 : 1 };
-      }
+  it("upsertSentinelConfig writes the configured sentinel row", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO sentinel_configs/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
       return { rows: [], rowCount: 1 };
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
-      const result = await adapter.upsertSentinelConfig(PROJECT_ID, { pid: 123 });
-      expect(result).toEqual(row);
-      expect(calls.some((call) => /INSERT INTO sentinel_configs/.test(call.text))).toBe(true);
+      await adapter.upsertSentinelConfig(PROJECT_ID, {
+        branch: "dev",
+        test_command: "npm test",
+        interval_minutes: 5,
+        failure_threshold: 3,
+        enabled: 1,
+        pid: 1234,
+      });
+      expect(capturedParams[0]).toBe(PROJECT_ID);
+      expect(capturedParams[1]).toBe("dev");
+      expect(capturedParams[2]).toBe("npm test");
     } finally {
       await destroyPool();
     }
   });
 
-  it("getSentinelConfig returns null when missing", async () => {
-    const mockPool = makeMockPool([{ sqlPattern: /SELECT \* FROM sentinel_configs WHERE project_id = \$1/, rows: [] }]);
-    await initPool({ poolOverride: mockPool });
-    try {
-      const adapter = new PostgresAdapter();
-      await expect(adapter.getSentinelConfig(PROJECT_ID)).resolves.toBeNull();
-    } finally {
-      await destroyPool();
-    }
-  });
-
-  it("recordSentinelRun inserts a run row", async () => {
-    let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO sentinel_runs/, rows: [], rowCount: 1 }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
+  it("recordSentinelRun inserts the run payload", async () => {
+    let capturedParams: unknown[] = [];
+    const mockPool = makeMockPool([{ sqlPattern: /INSERT INTO sentinel_runs/, rowCount: 1 }]);
+    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, params?: unknown[]) => {
+      capturedParams = params ?? [];
       return { rows: [], rowCount: 1 };
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
       await adapter.recordSentinelRun(PROJECT_ID, {
         id: "sr-1",
         branch: "main",
-        commit_hash: null,
         status: "running",
         test_command: "npm test",
-        output: null,
-        started_at: new Date().toISOString(),
-        completed_at: null,
+        started_at: "2026-01-01T00:00:00Z",
       });
-      expect(capturedSql).toContain("INSERT INTO sentinel_runs");
-      expect(capturedSql).toContain("failure_count");
+      expect(capturedParams[0]).toBe("sr-1");
+      expect(capturedParams[1]).toBe(PROJECT_ID);
+      expect(capturedParams[2]).toBe("main");
     } finally {
       await destroyPool();
     }
   });
 
-  it("updateSentinelRun updates provided fields only", async () => {
+  it("updateSentinelRun updates provided fields", async () => {
     let capturedSql = "";
-    const mockPool = makeMockPool([{ sqlPattern: /UPDATE sentinel_runs AS sr/, rows: [], rowCount: 1 }]);
+    const mockPool = makeMockPool([{ sqlPattern: /UPDATE sentinel_runs SET/, rowCount: 1 }]);
     (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
       capturedSql = text;
       return { rows: [], rowCount: 1 };
     });
     await initPool({ poolOverride: mockPool });
     try {
-      const adapter = new PostgresAdapter();
-      await adapter.updateSentinelRun(PROJECT_ID, "sr-1", { status: "failed", failure_count: 2 });
+      await adapter.updateSentinelRun(PROJECT_ID, "sr-1", { status: "done", failure_count: 1 });
+      expect(capturedSql).toContain("UPDATE sentinel_runs SET");
       expect(capturedSql).toContain("status = $1");
       expect(capturedSql).toContain("failure_count = $2");
-      expect(capturedSql).toContain("project_id = $4");
-    } finally {
-      await destroyPool();
-    }
-  });
-
-  it("getSentinelRuns scopes by project and applies limit", async () => {
-    let capturedSql = "";
-    const rows = [{
-      id: "sr-1",
-      project_id: PROJECT_ID,
-      branch: "main",
-      commit_hash: null,
-      status: "passed",
-      test_command: "npm test",
-      output: null,
-      failure_count: 0,
-      started_at: new Date().toISOString(),
-      completed_at: null,
-    }];
-    const mockPool = makeMockPool([{ sqlPattern: /SELECT \* FROM sentinel_runs/, rows }]);
-    (mockPool.query as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
-      capturedSql = text;
-      return { rows, rowCount: 1 };
-    });
-    await initPool({ poolOverride: mockPool });
-    try {
-      const adapter = new PostgresAdapter();
-      const result = await adapter.getSentinelRuns(PROJECT_ID, 5);
-      expect(result).toEqual(rows);
-      expect(capturedSql).toContain("project_id = $1");
-      expect(capturedSql).toContain("ORDER BY started_at DESC");
-      expect(capturedSql).toContain("LIMIT $2");
     } finally {
       await destroyPool();
     }

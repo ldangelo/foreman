@@ -1,9 +1,11 @@
 /**
- * `foreman task` CLI commands — manage native tasks in the Foreman SQLite store.
+ * `foreman task` CLI commands — manage daemon-backed tasks in the Foreman task store.
  *
  * Sub-commands:
  *   foreman task create --title <text> [--description <text>] [--type <type>]
  *                        [--priority <level>]
+ *   foreman task create --from-text "<description>" [--type <type>] [--priority <level>]
+ *                        [--parent <id>] [--dry-run] [--no-llm] [--model <model>]
  *   foreman task list [--status <status>] [--all]
  *   foreman task show <id>
  *   foreman task update <id> [--title <text>] [--description <text>]
@@ -18,25 +20,197 @@
  */
 
 import { Command } from "commander";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
-import { basename, join } from "node:path";
+import { join, resolve } from "node:path";
 import chalk from "chalk";
-import { ForemanStore, type Run } from "../../lib/store.js";
-import {
-  NativeTaskStore,
-  parsePriority,
-  priorityLabel,
-  formatTaskIdDisplay,
-  TaskNotFoundError,
-  InvalidStatusTransitionError,
-  CircularDependencyError,
-  type TaskRow,
-  type DependencyRow,
-} from "../../lib/task-store.js";
+import type { TaskDependencyRow as DependencyRow, TaskNoteRow, TaskRow } from "../../lib/db/postgres-adapter.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
-import { createTrpcClient } from "../../lib/trpc-client.js";
-import { listRegisteredProjects } from "./project-task-support.js";
+import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
+import type { RegisteredProjectSummary } from "./project-task-support.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
+import type { PrState } from "../../lib/pr-state.js";
+import { ForemanStore } from "../../lib/store.js";
+import type { RunProgress } from "../../lib/store.js";
+import { elapsed } from "../watch-ui.js";
+import { createTasksFromText } from "./create-from-text.js";
+
+// ── Run Activity Helpers ──────────────────────────────────────────────────────
+
+/** Threshold in ms after which a running agent is considered potentially stuck. */
+const STUCK_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
+
+interface RunActivityInfo {
+  runId: string | null;
+  status: string;
+  currentPhase: string | null;
+  lastActivity: string | null;
+  lastActivityElapsed: string | null;
+  isStuck: boolean;
+  isStale: boolean;  // no recent tool calls despite running
+  toolCalls: number;
+  costUsd: number;
+  turns: number;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+/**
+ * Fetch live run activity information for a task.
+ * 
+ * For registered projects (daemon-backed): uses tRPC to query the Postgres store
+ * via the Foreman daemon's Unix socket. Falls back to Postgres for unregistered projects.
+ */
+async function fetchRunActivity(
+  projectPath: string,
+  runId: string | null,
+  projectId?: string,
+): Promise<RunActivityInfo | null> {
+  if (!runId) return null;
+
+  // Try daemon tRPC first (for registered projects)
+  if (projectId) {
+    try {
+      const client = createTrpcClient();
+      const [run, progressData] = await Promise.all([
+        client.runs.get({ runId }) as Promise<{ id: string; status: string; started_at?: string; finished_at?: string } | null>,
+        client.runs.getProgress({ runId }) as Promise<RunProgress | null>,
+      ]);
+
+      if (!run) return null;
+
+      const now = Date.now();
+      const lastActivityMs = progressData?.lastActivity
+        ? new Date(progressData.lastActivity).getTime()
+        : null;
+      const isStuck = run.status === "running" &&
+        lastActivityMs !== null &&
+        (now - lastActivityMs) > STUCK_THRESHOLD_MS;
+      const isStale = run.status === "running" &&
+        (progressData?.toolCalls ?? 0) > 0 &&
+        lastActivityMs !== null &&
+        (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2;
+
+      return {
+        runId: run.id,
+        status: run.status,
+        currentPhase: progressData?.currentPhase ?? null,
+        lastActivity: progressData?.lastActivity ?? null,
+        lastActivityElapsed: progressData?.lastActivity
+          ? elapsed(progressData.lastActivity)
+          : null,
+        isStuck,
+        isStale,
+        toolCalls: progressData?.toolCalls ?? 0,
+        costUsd: progressData?.costUsd ?? 0,
+        turns: progressData?.turns ?? 0,
+        startedAt: run.started_at ?? null,
+        completedAt: run.finished_at ?? null,
+      };
+    } catch {
+      // Daemon unavailable or run not found — fall through to Postgres
+    }
+  }
+
+  // Fallback: use Postgres store (for unregistered projects or daemon unavailability)
+  const store = ForemanStore.forProject(projectPath);
+  try {
+    const run = store.getRun(runId);
+    if (!run) return null;
+
+    const progress = store.getRunProgress(runId);
+    const now = Date.now();
+
+    // Detect stuck: running but no activity for > STUCK_THRESHOLD_MS
+    const lastActivityMs = progress?.lastActivity
+      ? new Date(progress.lastActivity).getTime()
+      : null;
+    const isStuck = run.status === "running" &&
+      lastActivityMs !== null &&
+      (now - lastActivityMs) > STUCK_THRESHOLD_MS;
+
+    // Detect stale: has tool calls but no recent activity
+    const isStale = run.status === "running" &&
+      (progress?.toolCalls ?? 0) > 0 &&
+      lastActivityMs !== null &&
+      (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2; // half threshold
+
+    return {
+      runId: run.id,
+      status: run.status,
+      currentPhase: progress?.currentPhase ?? null,
+      lastActivity: progress?.lastActivity ?? null,
+      lastActivityElapsed: progress?.lastActivity
+        ? elapsed(progress.lastActivity)
+        : null,
+      isStuck,
+      isStale,
+      toolCalls: progress?.toolCalls ?? 0,
+      costUsd: progress?.costUsd ?? 0,
+      turns: progress?.turns ?? 0,
+      startedAt: run.started_at,
+      completedAt: run.completed_at,
+    };
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * Render a human-readable status line for a run's activity state.
+ */
+function renderRunStatusLine(activity: RunActivityInfo): string {
+  const parts: string[] = [];
+
+  // Status with color coding
+  if (activity.isStuck) {
+    parts.push(chalk.red("⚠ STUCK"));
+  } else if (activity.status === "running") {
+    parts.push(chalk.green("● RUNNING"));
+  } else if (activity.status === "failed" || activity.status === "test-failed") {
+    parts.push(chalk.red("✗ FAILED"));
+  } else if (activity.status === "completed") {
+    parts.push(chalk.cyan("✓ COMPLETED"));
+  } else if (activity.status === "merged") {
+    parts.push(chalk.green("⊕ MERGED"));
+  } else if (activity.status === "stuck") {
+    parts.push(chalk.yellow("⚠ STUCK"));
+  } else if (activity.status === "conflict") {
+    parts.push(chalk.yellow("⊘ CONFLICT"));
+  } else {
+    parts.push(chalk.dim(activity.status.toUpperCase()));
+  }
+
+  // Current phase
+  if (activity.currentPhase) {
+    const phaseColors: Record<string, (s: string) => string> = {
+      explorer:  chalk.cyan,
+      developer: chalk.green,
+      qa:        chalk.yellow,
+      reviewer:  chalk.magenta,
+      finalize:  chalk.blue,
+    };
+    const colorFn = phaseColors[activity.currentPhase] ?? chalk.white;
+    parts.push(chalk.dim("│") + " " + colorFn(activity.currentPhase));
+  }
+
+  // Last activity time
+  if (activity.lastActivityElapsed) {
+    parts.push(chalk.dim("│") + " " + chalk.dim("last activity") + " " + chalk.white(activity.lastActivityElapsed));
+  }
+
+  // Tool call count
+  if (activity.toolCalls > 0) {
+    parts.push(chalk.dim("│") + " " + chalk.dim(`${activity.toolCalls} tools`));
+  }
+
+  // Cost
+  if (activity.costUsd > 0) {
+    parts.push(chalk.dim("│") + " $" + activity.costUsd.toFixed(4));
+  }
+
+  return parts.join(" ");
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -46,49 +220,148 @@ const COL_TITLE = 40;
 const COL_TYPE = 10;
 const COL_PRI = 14;
 const COL_STATUS = 14;
-const COL_PR = 15;
 const COL_GAP = "  ";
+const COMPACT_TASK_ID_SUFFIX_HEX_LENGTH = 5;
 
-// ── tRPC task helpers ─────────────────────────────────────────────────────
+const TASK_STATUS_ORDER: Record<string, number> = {
+  backlog: 0,
+  blocked: 0,
+  ready: 1,
+  "in-progress": 2,
+  review: 2,
+  explorer: 3,
+  developer: 3,
+  qa: 3,
+  reviewer: 3,
+  finalize: 4,
+  merged: 5,
+  closed: 5,
+  conflict: -1,
+  failed: -1,
+  stuck: -1,
+};
 
-/** Try to resolve a projectId from the project flag, then attempt tRPC call.
- * Falls back to NativeTaskStore on daemon errors.
- */
-async function withTaskTrpc<T>(
-  opts: { project?: string },
-  fn: (client: ReturnType<typeof createTrpcClient>, projectId: string) => Promise<T>,
-  fallback: () => Promise<T>,
-): Promise<T> {
-  if (!opts.project) return fallback();
-  try {
-    const projects = await listRegisteredProjects();
-    const record = projects.find((project) => project.id === opts.project || project.name === opts.project);
-    if (!record) return fallback();
-    const client = createTrpcClient();
-    return fn(client, record.id);
-  } catch {
-    return fallback();
+const ALL_TASK_STATUSES = Object.keys(TASK_STATUS_ORDER);
+const VALID_TASK_TYPES = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+
+interface TaskProjectContext {
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  client: TrpcClient;
+}
+
+function normalizeTaskIdPrefix(raw: string | null | undefined): string {
+  const normalized = (raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized.length > 0 ? normalized : "task";
+}
+
+function allocateTaskId(projectKey: string, existingIds: Set<string>): string {
+  const prefix = normalizeTaskIdPrefix(projectKey);
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const candidate = `${prefix}-${randomBytes(3).toString("hex").slice(0, COMPACT_TASK_ID_SUFFIX_HEX_LENGTH)}`;
+    if (!existingIds.has(candidate)) {
+      existingIds.add(candidate);
+      return candidate;
+    }
+  }
+  throw new Error(`Unable to allocate a unique task ID for prefix '${prefix}'.`);
+}
+
+function parsePriority(input: string): number {
+  const normalized = input.trim().toLowerCase();
+  if (/^[0-4]$/.test(normalized)) return Number(normalized);
+  switch (normalized) {
+    case "critical":
+    case "p0":
+      return 0;
+    case "high":
+    case "p1":
+      return 1;
+    case "medium":
+    case "p2":
+      return 2;
+    case "low":
+    case "p3":
+      return 3;
+    case "backlog":
+    case "p4":
+      return 4;
+    default:
+      throw new RangeError(`Invalid priority '${input}'.`);
   }
 }
 
-function handleTaskDaemonError(err: unknown): void {
-  const msg = err instanceof Error ? err.message : String(err);
-  if (
-    msg.includes("ECONNREFUSED") ||
-    msg.includes("ENOENT") ||
-    msg.includes("connect") ||
-    msg.includes("socket")
-  ) {
-    console.error(
-      chalk.yellow(
-        "Daemon unavailable. Falling back to local task store."
-      )
-    );
-  } else {
-    console.error(
-      chalk.red(`Daemon error: ${msg}`)
+function priorityLabel(priority: number): string {
+  switch (priority) {
+    case 0:
+      return "critical";
+    case 1:
+      return "high";
+    case 2:
+      return "medium";
+    case 3:
+      return "low";
+    case 4:
+      return "backlog";
+    default:
+      return String(priority);
+  }
+}
+
+function formatTaskIdDisplay(taskId: string): string {
+  return taskId.length <= 16 ? taskId : `${taskId.slice(0, 8)}…`;
+}
+
+async function resolveTaskProjectContext(
+  opts: { project?: string; projectPath?: string },
+): Promise<TaskProjectContext> {
+  const projectPath = resolve(await resolveProjectPathFromOptions(opts));
+  const record = await findRegisteredProjectByPath(projectPath, {
+    normalizePaths: true,
+    initPool: false,
+  });
+  if (!record) {
+    throw new Error(
+      `Project at '${projectPath}' is not registered with the daemon. Run 'foreman project list' to see registered projects.`,
     );
   }
+
+  return {
+    projectId: record.id,
+    projectName: record.name,
+    projectPath,
+    client: createTrpcClient(),
+  };
+}
+
+async function listAllTasks(client: TrpcClient, projectId: string): Promise<TaskRow[]> {
+  return await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+}
+
+function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
+  const exact = rows.find((row) => row.id === taskIdOrPrefix);
+  if (exact) {
+    return exact.id;
+  }
+  const matches = rows.filter((row) => row.id.startsWith(taskIdOrPrefix));
+  if (matches.length === 0) {
+    throw new Error(`Task '${taskIdOrPrefix}' not found.`);
+  }
+  if (matches.length > 1) {
+    throw new Error(`Ambiguous task ID prefix '${taskIdOrPrefix}'.`);
+  }
+  return matches[0].id;
+}
+
+function isBackwardStatusTransition(fromStatus: string, toStatus: string): boolean {
+  const fromOrder = TASK_STATUS_ORDER[fromStatus] ?? 0;
+  const toOrder = TASK_STATUS_ORDER[toStatus] ?? 0;
+  return toOrder >= 0 && fromOrder > toOrder;
 }
 
 function pad(str: string, width: number): string {
@@ -144,62 +417,43 @@ function statusChalk(status: string): string {
   }
 }
 
-type TaskRowWithRunPr = TaskRow & {
-  run_pr_state?: Run["pr_state"];
-  run_pr_url?: string | null;
-  run_pr_head_sha?: string | null;
-};
-
-export type TaskPrDisplayState = "none" | "draft" | "open" | "merged" | "closed" | "head-mismatch";
-
-export function resolveTaskPrDisplayState(
-  run: Pick<Run, "pr_state" | "pr_head_sha"> | null,
-  branchHeadSha?: string | null,
-): TaskPrDisplayState {
-  if (!run?.pr_state) return "none";
-  if (branchHeadSha && run.pr_head_sha && branchHeadSha !== run.pr_head_sha) {
-    return "head-mismatch";
-  }
-  return run.pr_state;
-}
-
-function readBranchHeadSha(projectPath: string, branch: string | null): string | null {
-  if (!branch) return null;
-  try {
-    return execSync(`git rev-parse ${branch}`, { cwd: projectPath, stdio: ["ignore", "pipe", "ignore"] })
-      .toString()
-      .trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function formatPrDisplay(state: TaskPrDisplayState): string {
-  switch (state) {
-    case "draft":
-      return "draft";
+/**
+ * Render a PR state badge for display in task list.
+ */
+function renderPrBadge(prState: PrState | undefined): string {
+  if (!prState) return chalk.dim("—");
+  switch (prState.status) {
+    case "none":
+      return chalk.dim("no PR");
     case "open":
-      return "open";
+      return chalk.green(`#${prState.number}`);
     case "merged":
-      return "merged";
+      if (prState.isStale) {
+        return chalk.yellow(`#${prState.number} (stale)`);
+      }
+      return chalk.cyan(`#${prState.number}`);
     case "closed":
-      return "closed";
-    case "head-mismatch":
-      return "head-mismatch";
+      return chalk.dim(`#${prState.number} (closed)`);
+    case "error":
+      return chalk.red("?");
     default:
-      return "none";
+      return chalk.dim("—");
   }
 }
 
-function printTaskTable(rows: TaskRowWithRunPr[], projectPath: string): void {
+function printTaskTable(rows: TaskRow[], prStates?: Map<string, PrState>): void {
   if (rows.length === 0) {
     console.log(chalk.dim("No tasks found."));
     return;
   }
 
+  const idWidth = Math.max(COL_ID, ...rows.map((row) => row.id.length));
+  const showPr = prStates !== undefined;
+
   // Header
+  const prHeader = showPr ? COL_GAP + chalk.bold(pad("PR", 12)) : "";
   console.log(
-    chalk.bold(pad("ID", COL_ID)) +
+    chalk.bold(pad("ID", idWidth)) +
       COL_GAP +
       chalk.bold(pad("TITLE", COL_TITLE)) +
       COL_GAP +
@@ -207,20 +461,122 @@ function printTaskTable(rows: TaskRowWithRunPr[], projectPath: string): void {
       COL_GAP +
       chalk.bold(pad("PRIORITY", COL_PRI)) +
       COL_GAP +
-      chalk.bold(pad("STATUS", COL_STATUS)) +
-      COL_GAP +
-      chalk.bold("PR"),
+      chalk.bold("STATUS") +
+      prHeader,
   );
-  console.log("─".repeat(COL_ID + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + COL_PR + (COL_GAP.length * 5)));
+
+  const prColWidth = 12;
+  const separatorLen = idWidth + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + (COL_GAP.length * 4) + (showPr ? prColWidth + COL_GAP.length : 0);
+  console.log("─".repeat(separatorLen));
 
   for (const t of rows) {
-    const shortId = formatTaskIdDisplay(t.id);
-    const prState = resolveTaskPrDisplayState(
-      { pr_state: t.run_pr_state ?? null, pr_head_sha: t.run_pr_head_sha ?? null },
-      readBranchHeadSha(projectPath, t.branch),
-    );
+    const prState = prStates?.get(t.id);
+    const prBadge = renderPrBadge(prState);
+    const prCell = showPr ? COL_GAP + pad(prBadge, prColWidth) : "";
     console.log(
-      renderColumn(shortId, COL_ID, chalk.dim) +
+      chalk.dim(t.id.padEnd(idWidth)) +
+        COL_GAP +
+        renderColumn(t.title, COL_TITLE) +
+        COL_GAP +
+        renderColumn(t.type, COL_TYPE, chalk.dim) +
+        COL_GAP +
+        renderColumn(priorityLabel(t.priority), COL_PRI, (text) => colorPriority(text, t.priority)) +
+        COL_GAP +
+        renderColumn(t.status, COL_STATUS, statusChalk) +
+        prCell,
+    );
+  }
+}
+
+/**
+ * Render a run status badge for the task table.
+ */
+function renderRunStatusBadge(activity: RunActivityInfo | null): string {
+  if (!activity) return chalk.dim("—");
+
+  if (activity.isStuck) {
+    return chalk.red("⚠ stuck");
+  }
+  if (activity.isStale) {
+    return chalk.yellow("⚡ stale");
+  }
+  if (activity.status === "running" && activity.currentPhase) {
+    const phaseColors: Record<string, (s: string) => string> = {
+      explorer:  (s: string) => chalk.cyan(s),
+      developer: (s: string) => chalk.green(s),
+      qa:        (s: string) => chalk.yellow(s),
+      reviewer:  (s: string) => chalk.magenta(s),
+      finalize:  (s: string) => chalk.blue(s),
+    };
+    const colorFn = phaseColors[activity.currentPhase] ?? ((s: string) => s);
+    return colorFn(activity.currentPhase);
+  }
+  switch (activity.status) {
+    case "running":
+      return chalk.green("● run");
+    case "completed":
+      return chalk.cyan("✓ done");
+    case "merged":
+      return chalk.green("⊕ merged");
+    case "failed":
+    case "test-failed":
+      return chalk.red("✗ fail");
+    case "stuck":
+      return chalk.red("⚠ stuck");
+    case "conflict":
+      return chalk.yellow("⊘ conflict");
+    default:
+      return chalk.dim(activity.status);
+  }
+}
+
+/**
+ * Render task table with an additional RUN STATUS column.
+ * Used for --show-run and --stuck views to display live run activity.
+ */
+function printTaskTableWithRunStatus(
+  rows: TaskRow[],
+  runActivityMap: Map<string, RunActivityInfo | null>,
+  prStates?: Map<string, PrState>,
+): void {
+  if (rows.length === 0) {
+    console.log(chalk.dim("No tasks found."));
+    return;
+  }
+
+  const idWidth = Math.max(COL_ID, ...rows.map((row) => row.id.length));
+  const showPr = prStates !== undefined;
+  const runColWidth = 10;
+
+  // Header
+  const prHeader = showPr ? COL_GAP + chalk.bold(pad("PR", 12)) : "";
+  console.log(
+    chalk.bold(pad("ID", idWidth)) +
+      COL_GAP +
+      chalk.bold(pad("TITLE", COL_TITLE)) +
+      COL_GAP +
+      chalk.bold(pad("TYPE", COL_TYPE)) +
+      COL_GAP +
+      chalk.bold(pad("PRIORITY", COL_PRI)) +
+      COL_GAP +
+      chalk.bold("STATUS") +
+      COL_GAP +
+      chalk.bold(pad("RUN", runColWidth)) +
+      prHeader,
+  );
+
+  const prColWidth = 12;
+  const separatorLen = idWidth + COL_TITLE + COL_TYPE + COL_PRI + COL_STATUS + runColWidth + (COL_GAP.length * 5) + (showPr ? prColWidth + COL_GAP.length : 0);
+  console.log("─".repeat(separatorLen));
+
+  for (const t of rows) {
+    const activity = runActivityMap.get(t.id) ?? null;
+    const prState = prStates?.get(t.id);
+    const prBadge = renderPrBadge(prState);
+    const prCell = showPr ? COL_GAP + pad(prBadge, prColWidth) : "";
+    const runBadge = renderRunStatusBadge(activity);
+    console.log(
+      chalk.dim(t.id.padEnd(idWidth)) +
         COL_GAP +
         renderColumn(t.title, COL_TITLE) +
         COL_GAP +
@@ -230,18 +586,10 @@ function printTaskTable(rows: TaskRowWithRunPr[], projectPath: string): void {
         COL_GAP +
         renderColumn(t.status, COL_STATUS, statusChalk) +
         COL_GAP +
-        renderColumn(formatPrDisplay(prState), COL_PR, chalk.dim),
+        renderColumn(runBadge, runColWidth, (s) => s) +
+        prCell,
     );
   }
-}
-
-function getTaskStore(projectPath: string): { store: ForemanStore; taskStore: NativeTaskStore } {
-  const store = ForemanStore.forProject(projectPath);
-  const project = store.getProjectByPath(projectPath);
-  const taskStore = new NativeTaskStore(store.getDb(), {
-    projectKey: project?.name ?? basename(projectPath),
-  });
-  return { store, taskStore };
 }
 
 type ImportedBeadStatus = "open" | "in_progress" | "closed";
@@ -377,221 +725,247 @@ function summarizeImportPreview(records: PreparedImportRecord[]): void {
   console.log();
 }
 
-export function performBeadsImport(
+export async function performBeadsImport(
   projectPath: string,
   opts: { dryRun?: boolean } = {},
-): TaskImportResult {
+): Promise<TaskImportResult> {
   const jsonlPath = resolveBeadsImportPath(projectPath);
   const beads = parseBeadsJsonl(jsonlPath);
-  const { store, taskStore } = getTaskStore(projectPath);
+  const { client, projectId, projectName } = await resolveTaskProjectContext({ projectPath });
+  const now = new Date().toISOString();
+  const existingRows = await listAllTasks(client, projectId);
+  const existingIds = new Set(existingRows.map((row) => row.id));
 
-  try {
-    const db = store.getDb();
-    const now = new Date().toISOString();
-    const existingRows = db.prepare("SELECT id, title, external_id FROM tasks").all() as Array<{
-      id: string;
-      title: string;
-      external_id: string | null;
-    }>;
+  const existingByExternalId = new Map<string, string>();
+  for (const row of existingRows) {
+    if (row.external_id) {
+      existingByExternalId.set(row.external_id, row.id);
+    }
+  }
 
-    const existingByExternalId = new Map<string, string>();
-    const existingByTitle = new Map<string, string>();
-    for (const row of existingRows) {
-      if (row.external_id) {
-        existingByExternalId.set(row.external_id, row.id);
-      }
-      if (!existingByTitle.has(row.title)) {
-        existingByTitle.set(row.title, row.id);
-      }
+  const beadToNativeId = new Map<string, string>();
+  const prepared: PreparedImportRecord[] = [];
+  let duplicateSkips = 0;
+  let unsupportedStatusSkips = 0;
+
+  for (const bead of beads) {
+    const mappedStatus = mapImportedBeadStatus(bead.status);
+    if (!mappedStatus) {
+      unsupportedStatusSkips += 1;
+      continue;
     }
 
-    const beadToNativeId = new Map<string, string>();
-    const prepared: PreparedImportRecord[] = [];
-    let duplicateSkips = 0;
-    let unsupportedStatusSkips = 0;
+    const existingId = existingByExternalId.get(bead.id);
+    if (existingId) {
+      duplicateSkips += 1;
+      beadToNativeId.set(bead.id, existingId);
+      continue;
+    }
+
+    const priority = normalizeImportedBeadPriority(bead);
+    const createdAt = bead.created_at ?? now;
+    const updatedAt = bead.updated_at ?? createdAt;
+    const approvedAt = mappedStatus === "ready" ? updatedAt : null;
+    const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
+    const record: PreparedImportRecord = {
+      nativeId: allocateTaskId(projectName, existingIds),
+      bead,
+      type: normalizeImportedBeadType(bead),
+      priority,
+      status: mappedStatus,
+      createdAt,
+      updatedAt,
+      approvedAt,
+      closedAt,
+    };
+
+    prepared.push(record);
+    beadToNativeId.set(bead.id, record.nativeId);
+  }
+
+  if (!opts.dryRun) {
+    for (const record of prepared) {
+      await client.tasks.create({
+        projectId,
+        id: record.nativeId,
+        title: record.bead.title,
+        description: record.bead.description ?? undefined,
+        type: record.type,
+        priority: record.priority,
+        status: record.status,
+        externalId: record.bead.id,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        approvedAt: record.approvedAt ?? undefined,
+        closedAt: record.closedAt ?? undefined,
+      });
+    }
 
     for (const bead of beads) {
-      const mappedStatus = mapImportedBeadStatus(bead.status);
-      if (!mappedStatus) {
-        unsupportedStatusSkips += 1;
-        continue;
+      const fromTaskId = beadToNativeId.get(bead.id);
+      if (!fromTaskId || !Array.isArray(bead.dependencies)) continue;
+
+      for (const dependency of bead.dependencies) {
+        const dependencyType = dependency.type === "parent-child" ? "parent-child" : "blocks";
+        const blockerId = dependency.depends_on_id
+          ? beadToNativeId.get(dependency.depends_on_id)
+          : null;
+
+        if (!blockerId) continue;
+        await client.tasks.addDependency({
+          projectId,
+          fromTaskId: blockerId,
+          toTaskId: fromTaskId,
+          type: dependencyType,
+        });
       }
-
-      const existingId = existingByExternalId.get(bead.id) ?? existingByTitle.get(bead.title);
-      if (existingId) {
-        duplicateSkips += 1;
-        beadToNativeId.set(bead.id, existingId);
-        continue;
-      }
-
-      const priority = normalizeImportedBeadPriority(bead);
-      const createdAt = bead.created_at ?? now;
-      const updatedAt = bead.updated_at ?? createdAt;
-      const approvedAt = mappedStatus === "ready" ? updatedAt : null;
-      const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
-      const record: PreparedImportRecord = {
-        nativeId: taskStore.allocateTaskId(),
-        bead,
-        type: normalizeImportedBeadType(bead),
-        priority,
-        status: mappedStatus,
-        createdAt,
-        updatedAt,
-        approvedAt,
-        closedAt,
-      };
-
-      prepared.push(record);
-      beadToNativeId.set(bead.id, record.nativeId);
     }
-
-    if (!opts.dryRun) {
-      const insertTask = db.prepare(
-        `INSERT INTO tasks
-           (id, title, description, type, priority, status, external_id, created_at, updated_at, approved_at, closed_at)
-         VALUES (?, ?, ?, ?, ?, 'backlog', ?, ?, ?, NULL, NULL)`,
-      );
-      const updateImportedTask = db.prepare(
-        `UPDATE tasks
-            SET status = ?,
-                created_at = ?,
-                updated_at = ?,
-                approved_at = ?,
-                closed_at = ?
-          WHERE id = ?`,
-      );
-      const insertDependency = db.prepare(
-        `INSERT OR IGNORE INTO task_dependencies (from_task_id, to_task_id, type)
-         VALUES (?, ?, ?)`,
-      );
-
-      const transaction = db.transaction(() => {
-        for (const record of prepared) {
-          insertTask.run(
-            record.nativeId,
-            record.bead.title,
-            record.bead.description ?? null,
-            record.type,
-            record.priority,
-            record.bead.id,
-            record.createdAt,
-            record.updatedAt,
-          );
-
-          updateImportedTask.run(
-            record.status,
-            record.createdAt,
-            record.updatedAt,
-            record.approvedAt,
-            record.closedAt,
-            record.nativeId,
-          );
-        }
-
-        for (const bead of beads) {
-          const fromTaskId = beadToNativeId.get(bead.id);
-          if (!fromTaskId || !Array.isArray(bead.dependencies)) continue;
-
-          for (const dependency of bead.dependencies) {
-            const dependencyType = dependency.type === "parent-child" ? "parent-child" : "blocks";
-            const blockerId = dependency.depends_on_id
-              ? beadToNativeId.get(dependency.depends_on_id)
-              : null;
-
-            if (!blockerId) continue;
-            if (taskStore.hasCyclicDependency(fromTaskId, blockerId)) {
-              throw new CircularDependencyError(fromTaskId, blockerId);
-            }
-
-            insertDependency.run(fromTaskId, blockerId, dependencyType);
-          }
-        }
-      });
-
-      transaction();
-    }
-
-    return {
-      imported: prepared.length,
-      duplicateSkips,
-      unsupportedStatusSkips,
-      jsonlPath,
-      preview: prepared,
-    };
-  } finally {
-    store.close();
   }
+
+  return {
+    imported: prepared.length,
+    duplicateSkips,
+    unsupportedStatusSkips,
+    jsonlPath,
+    preview: prepared,
+  };
 }
 
 // ── foreman task create ───────────────────────────────────────────────────────
 
 const createCommand = new Command("create")
-  .description("Create a new task in backlog status")
-  .requiredOption("--title <text>", "Task title")
+  .description("Create a new task in backlog status, or generate task(s) from natural language with --from-text")
+  .option("--title <text>", "Task title (required unless --from-text is used)")
   .option("--description <text>", "Optional task description")
   .option(
     "--type <type>",
     "Task type: task, bug, feature, epic, chore, docs, question (default: task)",
-    "task",
   )
   .option(
     "--priority <level>",
     "Priority: 0-4 or critical/high/medium/low/backlog (default: medium)",
-    "medium",
   )
+  .option(
+    "--from-text <description>",
+    "Create task(s) from a natural-language description (or file path) using an LLM — replaces 'foreman bead'",
+  )
+  .option("--parent <id>", "Parent task ID (only with --from-text)")
+  .option("--dry-run", "Show what would be created without creating tasks (only with --from-text)")
+  .option("--no-llm", "Skip LLM parsing — create a single task with the text as title (only with --from-text)")
+  .option("--model <model>", "Claude model to use for parsing (only with --from-text)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     async (opts: {
-      title: string;
+      title?: string;
       description?: string;
-      type: string;
-      priority: string;
+      type?: string;
+      priority?: string;
+      fromText?: string;
+      parent?: string;
+      dryRun?: boolean;
+      llm: boolean; // false when --no-llm is passed
+      model?: string;
       project?: string;
       projectPath?: string;
     }) => {
-      const projectPath = await resolveProjectPathFromOptions(opts);
+      // ── Natural-language path (--from-text), shared with 'foreman bead' ──
+      if (opts.fromText !== undefined) {
+        const incompatible: string[] = [];
+        if (opts.title !== undefined) incompatible.push("--title");
+        if (opts.description !== undefined) incompatible.push("--description");
+        if (opts.project !== undefined) incompatible.push("--project");
+        if (incompatible.length > 0) {
+          console.error(
+            chalk.red(
+              `Error: --from-text cannot be combined with ${incompatible.join(", ")} — the description text drives title/description, and the LLM path runs against a project directory (use --project-path).`,
+            ),
+          );
+          process.exit(1);
+        }
+
+        await createTasksFromText(
+          opts.fromText,
+          {
+            type: opts.type,
+            priority: opts.priority,
+            parent: opts.parent,
+            dryRun: opts.dryRun,
+            llm: opts.llm,
+            model: opts.model,
+          },
+          opts.projectPath ? resolve(opts.projectPath) : undefined,
+        );
+        return;
+      }
+
+      // ── Structured path ───────────────────────────────────────────────
+      const fromTextOnly: string[] = [];
+      if (opts.parent !== undefined) fromTextOnly.push("--parent");
+      if (opts.dryRun) fromTextOnly.push("--dry-run");
+      if (opts.model !== undefined) fromTextOnly.push("--model");
+      if (opts.llm === false) fromTextOnly.push("--no-llm");
+      if (fromTextOnly.length > 0) {
+        console.error(
+          chalk.red(`Error: ${fromTextOnly.join(", ")} require(s) --from-text.`),
+        );
+        process.exit(1);
+      }
+
+      if (opts.title === undefined) {
+        console.error(
+          chalk.red(`Error: --title is required (or use --from-text "<description>" for natural-language creation).`),
+        );
+        process.exit(1);
+      }
+      const title: string = opts.title;
+      const typeInput = opts.type ?? "task";
+      const priorityInput = opts.priority ?? "medium";
 
       let priority: number;
       try {
-        priority = parsePriority(opts.priority);
+        priority = parsePriority(priorityInput);
       } catch {
         console.error(
           chalk.red(
-            `Error: Invalid priority '${opts.priority}'. Use 0-4 or: critical, high, medium, low, backlog`,
+            `Error: Invalid priority '${priorityInput}'. Use 0-4 or: critical, high, medium, low, backlog`,
           ),
         );
         process.exit(1);
       }
 
-      const validTypes = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
-      if (!validTypes.includes(opts.type)) {
+      if (!VALID_TASK_TYPES.includes(typeInput)) {
         console.error(
           chalk.red(
-            `Error: Invalid type '${opts.type}'. Valid types: ${validTypes.join(", ")}`,
+            `Error: Invalid type '${typeInput}'. Valid types: ${VALID_TASK_TYPES.join(", ")}`,
           ),
         );
         process.exit(1);
       }
 
       try {
-        const { taskStore } = getTaskStore(projectPath);
-        const task = taskStore.create({
-          title: opts.title,
-          description: opts.description ?? null,
-          type: opts.type,
+        const { client, projectId, projectName } = await resolveTaskProjectContext(opts);
+        const existingIds = new Set((await listAllTasks(client, projectId)).map((task) => task.id));
+        const taskId = allocateTaskId(projectName, existingIds);
+        const task = await client.tasks.create({
+          projectId,
+          id: taskId,
+          title,
+          description: opts.description,
+          type: typeInput,
           priority,
         });
+        const createdTask = task as TaskRow;
 
         console.log(
-          chalk.green(`✓ Task created`) + chalk.dim(` [${task.id}]`),
+          chalk.green(`✓ Task created`) + chalk.dim(` [${createdTask.id}]`),
         );
-        console.log(`  Title:    ${task.title}`);
-        console.log(`  Type:     ${task.type}`);
-        console.log(`  Priority: ${priorityLabel(task.priority)}`);
-        console.log(`  Status:   ${task.status}`);
+        console.log(`  Title:    ${createdTask.title}`);
+        console.log(`  Type:     ${createdTask.type}`);
+        console.log(`  Priority: ${priorityLabel(createdTask.priority)}`);
+        console.log(`  Status:   ${createdTask.status}`);
         console.log(
-          chalk.dim(`\n  Run 'foreman task approve ${task.id}' to make it ready for dispatch.`),
+          chalk.dim(`\n  Run 'foreman task approve ${createdTask.id}' to make it ready for dispatch.`),
         );
       } catch (err) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
@@ -603,53 +977,61 @@ const createCommand = new Command("create")
 // ── foreman task list ─────────────────────────────────────────────────────────
 
 const listCommand = new Command("list")
-  .description("List tasks in the native task store")
-  .option("--status <status>", "Filter by status (e.g. ready, backlog, in-progress)")
+  .description("List tasks from the daemon-backed task store")
+  .option("--status <status>", "Filter by task status (e.g. ready, backlog, in-progress)")
+  .option("--run-status <status>", "Filter by run status (e.g. running, stuck, failed, completed)")
   .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
   .option("--all", "Include closed and merged tasks (excluded by default)")
+  .option("--show-pr", "Show GitHub PR state for each task")
+  .option("--show-run", "Show run status column for each task")
+  .option("--stuck", "Show only tasks with stuck or stale runs")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (opts: { status?: string; type?: string; all?: boolean; project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
+  .action(async (opts: { status?: string; runStatus?: string; type?: string; all?: boolean; showPr?: boolean; showRun?: boolean; stuck?: boolean; project?: string; projectPath?: string }) => {
     try {
-      const { store, taskStore } = getTaskStore(projectPath);
-
-      if (!taskStore.hasNativeTasks() && !opts.status) {
-        console.log(
-          chalk.dim("No tasks in native store. Use 'foreman task create' to add tasks."),
-        );
-        return;
-      }
-
-      const db = store.getDb();
-      let sql = `SELECT t.*, r.pr_state AS run_pr_state, r.pr_url AS run_pr_url, r.pr_head_sha AS run_pr_head_sha
-        FROM tasks t
-        LEFT JOIN runs r ON r.id = t.run_id`;
-      const params: string[] = [];
-      const conditions: string[] = [];
+      const { client, projectId, projectPath } = await resolveTaskProjectContext(opts);
+      let rows = await listAllTasks(client, projectId);
 
       if (opts.status) {
-        conditions.push("status = ?");
-        params.push(opts.status);
+        rows = rows.filter((row) => row.status === opts.status);
       } else if (!opts.all) {
-        // By default, exclude closed/merged tasks
-        conditions.push("status NOT IN ('closed', 'merged')");
+        rows = rows.filter((row) => row.status !== "closed" && row.status !== "merged");
       }
 
       if (opts.type) {
-        conditions.push("type = ?");
-        params.push(opts.type);
+        rows = rows.filter((row) => row.type === opts.type);
       }
 
-      if (conditions.length > 0) {
-        sql += " WHERE " + conditions.join(" AND ");
-      }
-      sql += " ORDER BY priority ASC, created_at ASC";
+      rows = [...rows].sort(
+        (a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at),
+      );
 
-      const rows = (
-        params.length > 0 ? db.prepare(sql).all(...params) : db.prepare(sql).all()
-      ) as TaskRowWithRunPr[];
+      // Fetch run activity for tasks with run_ids (when filtering by run status or --stuck)
+      const runActivityMap = new Map<string, RunActivityInfo | null>();
+      const needsRunActivity = opts.runStatus || opts.stuck || opts.showRun;
+      if (needsRunActivity) {
+        const fetches = rows.map(async (task) => {
+          const activity = task.run_id ? await fetchRunActivity(projectPath, task.run_id) : null;
+          runActivityMap.set(task.id, activity);
+        });
+        await Promise.all(fetches);
+      }
+
+      // Filter by run status if specified
+      if (opts.runStatus) {
+        rows = rows.filter((row) => {
+          const activity = runActivityMap.get(row.id);
+          return activity?.status === opts.runStatus;
+        });
+      }
+
+      // Filter to stuck/stale runs only
+      if (opts.stuck) {
+        rows = rows.filter((row) => {
+          const activity = runActivityMap.get(row.id);
+          return activity?.isStuck || activity?.isStale || activity?.status === "stuck";
+        });
+      }
 
       if (rows.length === 0) {
         if (opts.status && opts.type) {
@@ -658,6 +1040,10 @@ const listCommand = new Command("list")
           console.log(chalk.dim(`No tasks with status '${opts.status}'.`));
         } else if (opts.type) {
           console.log(chalk.dim(`No tasks with type '${opts.type}'.`));
+        } else if (opts.runStatus) {
+          console.log(chalk.dim(`No tasks with run status '${opts.runStatus}'.`));
+        } else if (opts.stuck) {
+          console.log(chalk.dim(`No stuck or stale tasks found.`));
         } else {
           console.log(
             chalk.dim("No tasks found. Use 'foreman task create' to add tasks."),
@@ -666,17 +1052,55 @@ const listCommand = new Command("list")
         return;
       }
 
-      const label = opts.status
-        ? opts.type
-          ? `Tasks (status: ${opts.status}, type: ${opts.type})`
-          : `Tasks (status: ${opts.status})`
-        : opts.type
-          ? `Tasks (type: ${opts.type})`
-          : opts.all
-            ? `All Tasks`
-            : `Active Tasks`;
-      console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
-      printTaskTable(rows, projectPath);
+      // Fetch PR states if --show-pr is specified
+      let prStates: Map<string, PrState> | undefined;
+      if (opts.showPr) {
+        prStates = new Map<string, PrState>();
+        await Promise.all(
+          rows.map(async (task) => {
+            try {
+              const prState = await client.tasks.getPrState({ projectId, taskId: task.id }) as PrState;
+              prStates!.set(task.id, prState);
+            } catch {
+              // PR state fetch failed - leave as undefined
+            }
+          })
+        );
+      }
+
+      // Run status summary for stuck runs
+      if (opts.stuck && rows.length > 0) {
+        const stuckCount = rows.filter((row) => {
+          const activity = runActivityMap.get(row.id);
+          return activity?.isStuck || activity?.status === "stuck";
+        }).length;
+        const staleCount = rows.length - stuckCount;
+        console.log(chalk.bold(`\n  Stuck/Stale Tasks (${rows.length})\n`));
+        if (stuckCount > 0) {
+          console.log(chalk.red(`  ⚠ ${stuckCount} stuck (no activity > 15min)`));
+        }
+        if (staleCount > 0) {
+          console.log(chalk.yellow(`  ⚡ ${staleCount} stale (reduced activity)`));
+        }
+        console.log();
+        printTaskTableWithRunStatus(rows, runActivityMap, prStates);
+      } else {
+        const label = opts.status
+          ? opts.type
+            ? `Tasks (status: ${opts.status}, type: ${opts.type})`
+            : `Tasks (status: ${opts.status})`
+          : opts.type
+            ? `Tasks (type: ${opts.type})`
+            : opts.all
+              ? `All Tasks`
+              : `Active Tasks`;
+        console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
+        if (opts.showRun) {
+          printTaskTableWithRunStatus(rows, runActivityMap, prStates);
+        } else {
+          printTaskTable(rows, prStates);
+        }
+      }
       console.log();
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
@@ -689,15 +1113,15 @@ const listCommand = new Command("list")
 const showCommand = new Command("show")
   .description("Show details of a specific task")
   .argument("<id>", "Task ID (or short prefix)")
+  .option("--verbose", "Show detailed run activity information")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
+  .action(async (id: string, opts: { verbose?: boolean; project?: string; projectPath?: string }) => {
     try {
-      const { store, taskStore } = getTaskStore(projectPath);
-      const resolvedId = taskStore.resolveTaskId(id);
-      const task = taskStore.get(resolvedId);
+      const { client, projectId, projectName, projectPath } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
+      const task = await client.tasks.get({ projectId, taskId: resolvedId }) as TaskRow | null;
       if (!task) {
         console.error(chalk.red(`Error: Task '${id}' not found.`));
         process.exit(1);
@@ -713,12 +1137,6 @@ const showCommand = new Command("show")
       }
       if (task.run_id) {
         console.log(`  Run ID:      ${task.run_id}`);
-        const run = store.getRun(task.run_id);
-        const prState = resolveTaskPrDisplayState(run, readBranchHeadSha(projectPath, task.branch));
-        console.log(`  PR State:    ${prState}`);
-        if (run?.pr_url) {
-          console.log(`  PR URL:      ${run.pr_url}`);
-        }
       }
       if (task.branch) {
         console.log(`  Branch:      ${task.branch}`);
@@ -734,10 +1152,146 @@ const showCommand = new Command("show")
       if (task.closed_at) {
         console.log(`  Closed:      ${new Date(task.closed_at).toLocaleString()}`);
       }
+      if (task.run_id) {
+        console.log(chalk.bold("\n  Logs:"));
+        console.log(`    Summary:    foreman logs ${task.id} --project ${projectName}`);
+        console.log(`    Follow:     foreman logs ${task.id} --project ${projectName} --follow`);
+        console.log(chalk.dim(`    Raw:        ~/.foreman/logs/${task.run_id}.log`));
+      }
+
+      // ── Live Run Activity Section ─────────────────────────────────────────
+      // Fetch current run state from the Postgres store (mirrors dashboard data)
+      // Only shown for tasks with an active run_id to avoid unnecessary DB access
+      if (task.run_id) {
+        const activity = await fetchRunActivity(projectPath, task.run_id);
+        if (activity) {
+          console.log(chalk.bold("\n  Run Activity:"));
+
+          // Status line with color-coded indicators
+          const statusLine = renderRunStatusLine(activity);
+          console.log(`    ${statusLine}`);
+
+          // Stuck/warning alert
+          if (activity.isStuck) {
+            console.log();
+            console.log(chalk.red(`    ⚠ WARNING: This run appears STUCK.`) + chalk.dim(` No activity for > 15 minutes.`));
+            console.log(chalk.dim(`    Check logs: ~/.foreman/logs/${activity.runId}.log`));
+            console.log(chalk.dim(`    Stuck runs can be reset with: foreman task reset ${task.id}`));
+          }
+
+          // Phase timeline for completed/failed runs
+          if (opts.verbose && activity.currentPhase) {
+            console.log();
+            console.log(chalk.dim(`    Current phase: ${activity.currentPhase}`));
+          }
+
+          // Tool/progress stats for verbose or active runs
+          if (opts.verbose || activity.status === "running") {
+            if (activity.toolCalls > 0) {
+              console.log(`    Tools used: ${chalk.cyan(String(activity.toolCalls))}`);
+            }
+            if (activity.turns > 0) {
+              console.log(`    Turns:      ${chalk.cyan(String(activity.turns))}`);
+            }
+            if (activity.costUsd > 0) {
+              console.log(`    Cost:       $${activity.costUsd.toFixed(4)}`);
+            }
+            if (activity.lastActivity) {
+              console.log(`    Last activity: ${new Date(activity.lastActivity).toLocaleString()}`);
+            }
+            if (activity.startedAt) {
+              console.log(`    Started:    ${new Date(activity.startedAt).toLocaleString()}`);
+            }
+            if (activity.completedAt) {
+              console.log(`    Completed:  ${new Date(activity.completedAt).toLocaleString()}`);
+            }
+          }
+
+          // Terminal failure summary
+          if (activity.status === "failed" || activity.status === "test-failed") {
+            console.log();
+            console.log(chalk.red(`    ✗ This run FAILED.`) + chalk.dim(` Check logs for details:`));
+            console.log(chalk.dim(`    ~/.foreman/logs/${activity.runId}.log`));
+            console.log(chalk.dim(`    To retry: foreman task retry ${task.id}`));
+          }
+
+          // Success/completion summary
+          if (activity.status === "completed" || activity.status === "merged") {
+            console.log();
+            console.log(chalk.green(`    ✓ Run completed successfully.`) + chalk.dim(` Waiting for merge.`));
+          }
+        } else if (opts.verbose) {
+          // Task has run_id but no run found (may be cleaned up)
+          console.log(chalk.dim(`\n  Run Activity: run ${task.run_id} not found (may have been cleaned up)`));
+        }
+      }
+
+      // Show PR state
+      try {
+        const prState = await client.tasks.getPrState({ projectId, taskId: task.id }) as PrState;
+        if (prState) {
+          console.log(chalk.bold("\n  Pull Request:"));
+          console.log(`    Status:     ${renderPrBadge(prState)}`);
+          if (prState.url) {
+            console.log(`    URL:        ${prState.url}`);
+          }
+          if (prState.number) {
+            console.log(`    Number:     #${prState.number}`);
+          }
+          if (prState.headSha) {
+            console.log(`    PR Head:    ${chalk.dim(prState.headSha.slice(0, 12))}`);
+          }
+          if (prState.currentHeadSha) {
+            console.log(`    Branch Head: ${chalk.dim(prState.currentHeadSha.slice(0, 12))}`);
+          }
+          if (prState.isStale) {
+            console.log(chalk.yellow(`    ⚠ Stale:    PR merged but branch has been updated since`));
+          }
+          if (prState.error) {
+            console.log(chalk.red(`    Error:      ${prState.error}`));
+          }
+        }
+      } catch {
+        // PR state fetch failed - don't show anything
+      }
+
+      // Show notes timeline
+      try {
+        const notes = [...await client.tasks.listNotes({
+          projectId,
+          taskId: task.id,
+          limit: 25,
+          newestFirst: true,
+        }) as TaskNoteRow[]].reverse();
+        console.log(chalk.bold("\n  Notes:"));
+        if (notes.length === 0) {
+          console.log(chalk.dim("    (none yet)"));
+        } else {
+          for (const note of notes) {
+            const when = new Date(note.created_at).toLocaleString();
+            const phase = note.phase ? ` ${note.phase}` : "";
+            console.log(chalk.dim(`    [${when}${phase} ${note.kind}] ${note.author}`));
+            for (const line of note.body.split("\n")) {
+              console.log(`    ${line}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.log(chalk.bold("\n  Notes:"));
+        console.log(chalk.dim(`    unavailable: ${err instanceof Error ? err.message : String(err)}`));
+      }
 
       // Show dependencies
-      const outgoing = taskStore.getDependencies(task.id, "outgoing");
-      const incoming = taskStore.getDependencies(task.id, "incoming");
+      const outgoing = await client.tasks.listDependencies({
+        projectId,
+        taskId: task.id,
+        direction: "outgoing",
+      }) as DependencyRow[];
+      const incoming = await client.tasks.listDependencies({
+        projectId,
+        taskId: task.id,
+        direction: "incoming",
+      }) as DependencyRow[];
 
       if (incoming.length > 0) {
         console.log(chalk.bold("\n  Blocked by:"));
@@ -759,6 +1313,35 @@ const showCommand = new Command("show")
     }
   });
 
+// ── foreman task note ─────────────────────────────────────────────────────────
+
+const noteCommand = new Command("note")
+  .description("Append a note to a task")
+  .argument("<id>", "Task ID (or short prefix)")
+  .requiredOption("--body <text>", "Note body")
+  .option("--kind <kind>", "Note kind: progress, issue, blocker, review, qa, final, failure, manual, system", "manual")
+  .option("--author <name>", "Note author", "user")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action(async (id: string, opts: { body: string; kind: string; author: string; project?: string; projectPath?: string }) => {
+    try {
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
+      await client.tasks.addNote({
+        projectId,
+        taskId: resolvedId,
+        author: opts.author,
+        kind: opts.kind as "progress" | "issue" | "blocker" | "review" | "qa" | "final" | "failure" | "manual" | "system",
+        body: opts.body,
+      });
+      console.log(chalk.green(`✓ Note added to '${formatTaskIdDisplay(resolvedId)}'.`));
+    } catch (err) {
+      console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
+  });
+
 // ── foreman task approve ──────────────────────────────────────────────────────
 
 const approveCommand = new Command("approve")
@@ -767,15 +1350,11 @@ const approveCommand = new Command("approve")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
     try {
-      const { taskStore } = getTaskStore(projectPath);
-      const resolvedId = taskStore.resolveTaskId(id);
-      taskStore.approve(resolvedId);
-
-      // Check what status it transitioned to
-      const task = taskStore.get(resolvedId);
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
+      const task = await client.tasks.approve({ projectId, taskId: resolvedId }) as TaskRow | null;
       if (task?.status === "ready") {
         console.log(
           chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' approved and ready for dispatch.`),
@@ -787,19 +1366,6 @@ const approveCommand = new Command("approve")
         }
       }
     } catch (err) {
-      if (err instanceof TaskNotFoundError) {
-        console.error(chalk.red(`Error: Task '${id}' not found.`));
-        process.exit(1);
-      }
-      if (err instanceof InvalidStatusTransitionError) {
-        console.error(
-          chalk.red(
-            `Error: Task '${formatTaskIdDisplay(err.taskId)}' cannot be approved — it is currently '${err.fromStatus}'.`,
-          ),
-        );
-        console.error(chalk.dim("  Only 'backlog' tasks can be approved."));
-        process.exit(1);
-      }
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
     }
@@ -829,8 +1395,6 @@ const updateCommand = new Command("update")
       project?: string;
       projectPath?: string;
     }) => {
-      const projectPath = await resolveProjectPathFromOptions(opts);
-
       const updateOpts: {
         title?: string;
         description?: string | null;
@@ -867,9 +1431,36 @@ const updateCommand = new Command("update")
       }
 
       try {
-        const { taskStore } = getTaskStore(projectPath);
-        const resolvedId = taskStore.resolveTaskId(id);
-        const task = taskStore.update(resolvedId, updateOpts);
+        const { client, projectId } = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(client, projectId);
+        const resolvedId = resolveTaskId(rows, id);
+
+        if (updateOpts.status !== undefined && !updateOpts.force) {
+          const current = rows.find((row) => row.id === resolvedId);
+          if (current && isBackwardStatusTransition(current.status, updateOpts.status)) {
+            console.error(
+              chalk.red(
+                `Error: Task '${formatTaskIdDisplay(resolvedId)}' cannot transition from '${current.status}' to '${updateOpts.status}'.`,
+              ),
+            );
+            console.error(chalk.dim("  Use --force to override this check."));
+            process.exit(1);
+          }
+        }
+
+        const task = await client.tasks.update({
+          projectId,
+          taskId: resolvedId,
+          updates: {
+            title: updateOpts.title,
+            description: updateOpts.description ?? undefined,
+            priority: updateOpts.priority,
+            status: updateOpts.status,
+          },
+        }) as TaskRow | null;
+        if (!task) {
+          throw new Error(`Task '${resolvedId}' not found.`);
+        }
 
         console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' updated.`));
         console.log(`  Title:    ${task.title}`);
@@ -880,21 +1471,6 @@ const updateCommand = new Command("update")
           console.log(`  Description: ${task.description}`);
         }
       } catch (err) {
-        if (err instanceof TaskNotFoundError) {
-          console.error(chalk.red(`Error: Task '${id}' not found.`));
-          process.exit(1);
-        }
-        if (err instanceof InvalidStatusTransitionError) {
-          console.error(
-            chalk.red(
-              `Error: Task '${formatTaskIdDisplay(err.taskId)}' cannot transition from '${err.fromStatus}' to '${err.toStatus}'.`,
-            ),
-          );
-          console.error(
-            chalk.dim("  Use --force to override this check."),
-          );
-          process.exit(1);
-        }
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
         process.exit(1);
       }
@@ -909,19 +1485,14 @@ const closeCommand = new Command("close")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
     try {
-      const { taskStore } = getTaskStore(projectPath);
-      const resolvedId = taskStore.resolveTaskId(id);
-      taskStore.close(resolvedId);
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
+      await client.tasks.close({ projectId, taskId: resolvedId });
 
       console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' closed.`));
     } catch (err) {
-      if (err instanceof TaskNotFoundError) {
-        console.error(chalk.red(`Error: Task '${id}' not found.`));
-        process.exit(1);
-      }
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
     }
@@ -930,7 +1501,7 @@ const closeCommand = new Command("close")
 // ── foreman task import ───────────────────────────────────────────────────────
 
 const importCommand = new Command("import")
-  .description("Import legacy beads JSONL data into the native task store")
+  .description("Import legacy beads JSONL data into the daemon-backed task store")
   .requiredOption("--from-beads", "Import tasks from .beads/issues.jsonl or .beads/beads.jsonl")
   .option("--dry-run", "Preview the first 5 mappings without writing to the database")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -939,19 +1510,19 @@ const importCommand = new Command("import")
     const projectPath = await resolveProjectPathFromOptions(opts);
 
     try {
-      const result = performBeadsImport(projectPath, { dryRun: opts.dryRun });
+      const result = await performBeadsImport(projectPath, { dryRun: opts.dryRun });
       if (opts.dryRun) {
         summarizeImportPreview(result.preview);
         console.log(
           chalk.green(
-            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
           ),
         );
         return;
       }
       console.log(
         chalk.green(
-          `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id/title${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
+            `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
         ),
       );
       console.log(chalk.dim(`  Source: ${result.jsonlPath}`));
@@ -976,8 +1547,6 @@ const depAddCommand = new Command("add")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
-      const projectPath = await resolveProjectPathFromOptions(opts);
-
       if (opts.type !== "blocks" && opts.type !== "parent-child") {
         console.error(
           chalk.red(`Error: Invalid type '${opts.type}'. Use 'blocks' or 'parent-child'.`),
@@ -986,10 +1555,16 @@ const depAddCommand = new Command("add")
       }
 
       try {
-        const { taskStore } = getTaskStore(projectPath);
-        const resolvedFromId = taskStore.resolveTaskId(fromId);
-        const resolvedToId = taskStore.resolveTaskId(toId);
-        taskStore.addDependency(resolvedFromId, resolvedToId, opts.type as "blocks" | "parent-child");
+        const { client, projectId } = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(client, projectId);
+        const resolvedFromId = resolveTaskId(rows, fromId);
+        const resolvedToId = resolveTaskId(rows, toId);
+        await client.tasks.addDependency({
+          projectId,
+          fromTaskId: resolvedFromId,
+          toTaskId: resolvedToId,
+          type: opts.type as "blocks" | "parent-child",
+        });
         const verb = opts.type === "blocks" ? "blocks" : "is parent of";
         console.log(
           chalk.green(
@@ -997,11 +1572,7 @@ const depAddCommand = new Command("add")
           ),
         );
       } catch (err) {
-        if (err instanceof TaskNotFoundError) {
-          console.error(chalk.red(`Error: Task '${err.taskId}' not found.`));
-          process.exit(1);
-        }
-        if (err instanceof CircularDependencyError) {
+        if (err instanceof Error && err.message.includes("circular dependency")) {
           console.error(
             chalk.red(`Error: Adding this dependency would create a circular dependency.`),
           );
@@ -1019,14 +1590,21 @@ const depListCommand = new Command("list")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
     try {
-      const { taskStore } = getTaskStore(projectPath);
-      const resolvedId = taskStore.resolveTaskId(id);
+      const { client, projectId } = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(client, projectId);
+      const resolvedId = resolveTaskId(rows, id);
 
-      const blockedBy = taskStore.getDependencies(resolvedId, "incoming") as DependencyRow[];
-      const blocking = taskStore.getDependencies(resolvedId, "outgoing") as DependencyRow[];
+      const blockedBy = await client.tasks.listDependencies({
+        projectId,
+        taskId: resolvedId,
+        direction: "incoming",
+      }) as DependencyRow[];
+      const blocking = await client.tasks.listDependencies({
+        projectId,
+        taskId: resolvedId,
+        direction: "outgoing",
+      }) as DependencyRow[];
 
       if (blockedBy.length === 0 && blocking.length === 0) {
         console.log(chalk.dim(`Task '${formatTaskIdDisplay(resolvedId)}' has no dependencies.`));
@@ -1066,13 +1644,17 @@ const depRemoveCommand = new Command("remove")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
-      const projectPath = await resolveProjectPathFromOptions(opts);
-
       try {
-        const { taskStore } = getTaskStore(projectPath);
-        const resolvedFromId = taskStore.resolveTaskId(fromId);
-        const resolvedToId = taskStore.resolveTaskId(toId);
-        taskStore.removeDependency(resolvedFromId, resolvedToId, opts.type as "blocks" | "parent-child");
+        const { client, projectId } = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(client, projectId);
+        const resolvedFromId = resolveTaskId(rows, fromId);
+        const resolvedToId = resolveTaskId(rows, toId);
+        await client.tasks.removeDependency({
+          projectId,
+          fromTaskId: resolvedFromId,
+          toTaskId: resolvedToId,
+          type: opts.type as "blocks" | "parent-child",
+        });
         console.log(
           chalk.green(
             `✓ Dependency removed: '${formatTaskIdDisplay(resolvedFromId)}' → '${formatTaskIdDisplay(resolvedToId)}'.`,
@@ -1094,11 +1676,12 @@ const depCommand = new Command("dep")
 // ── Parent command ────────────────────────────────────────────────────────────
 
 export const taskCommand = new Command("task")
-  .description("Manage native tasks in the Foreman SQLite store")
+  .description("Manage daemon-backed tasks in Foreman")
   .addCommand(createCommand)
   .addCommand(listCommand)
   .addCommand(showCommand)
   .addCommand(importCommand)
+  .addCommand(noteCommand)
   .addCommand(approveCommand)
   .addCommand(updateCommand)
   .addCommand(closeCommand)

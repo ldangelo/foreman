@@ -12,8 +12,7 @@ const BOARD_STATUSES: readonly BoardStatus[] = [
   "backlog",
   "ready",
   "in_progress",
-  "review",
-  "blocked",
+  "needs_attention",
   "closed",
 ] as const;
 
@@ -59,7 +58,7 @@ describe("BoardPerformance", () => {
       const tasks = createTasksMapWithCount(33);
       const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
 
-      expect(totalTasks).toBe(198); // 33 * 6 = 198
+      expect(totalTasks).toBe(165); // 33 * 5 = 165
 
       // Simulate render timing
       const start = performance.now();
@@ -82,10 +81,10 @@ describe("BoardPerformance", () => {
     });
 
     it("should handle large task lists efficiently", () => {
-      const tasks = createTasksMapWithCount(100); // 600 total tasks
+      const tasks = createTasksMapWithCount(100); // 500 total tasks
       const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
 
-      expect(totalTasks).toBe(600);
+      expect(totalTasks).toBe(500);
 
       const start = performance.now();
 
@@ -102,7 +101,7 @@ describe("BoardPerformance", () => {
       const end = performance.now();
       const duration = end - start;
 
-      expect(processed).toBe(30); // 6 columns * 5 visible = 30
+      expect(processed).toBe(25); // 5 columns * 5 visible = 25
       expect(duration).toBeLessThan(100); // Should be very fast
     });
 
@@ -110,31 +109,35 @@ describe("BoardPerformance", () => {
       const smallTasks = createTasksMapWithCount(10);
       const largeTasks = createTasksMapWithCount(1000);
 
-      // Simulate navigation (finding task at position)
-      const start = performance.now();
-      let found = false;
-      for (const [status, tasks] of smallTasks) {
-        if (tasks[0]) {
-          found = true;
-          break;
+      const measureNavigation = (tasksByStatus: Map<BoardStatus, BoardTask[]>, iterations: number) => {
+        let foundCount = 0;
+        let probes = 0;
+        for (let i = 0; i < iterations; i++) {
+          for (const tasks of tasksByStatus.values()) {
+            probes++;
+            if (tasks[0]) {
+              foundCount++;
+              break;
+            }
+          }
         }
-      }
-      const smallDuration = performance.now() - start;
+        return {
+          foundCount,
+          probes,
+        };
+      };
 
-      const start2 = performance.now();
-      found = false;
-      for (const [status, tasks] of largeTasks) {
-        if (tasks[0]) {
-          found = true;
-          break;
-        }
-      }
-      const largeDuration = performance.now() - start2;
+      const iterations = 10_000;
+      const small = measureNavigation(smallTasks, iterations);
+      const large = measureNavigation(largeTasks, iterations);
 
-      // Navigation should be constant time (just array index)
-      expect(found).toBe(true);
-      expect(smallDuration).toBeLessThan(1);
-      expect(largeDuration).toBeLessThan(1);
+      // Navigation should remain effectively constant time because it only checks
+      // the first entry in each status bucket; larger buckets should not cause
+      // materially more work even when each bucket contains many more tasks.
+      expect(small.foundCount).toBe(iterations);
+      expect(large.foundCount).toBe(iterations);
+      expect(small.probes).toBe(iterations);
+      expect(large.probes).toBe(iterations);
     });
   });
 
@@ -145,7 +148,7 @@ describe("BoardPerformance", () => {
       const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
 
       // Verify we have the right count
-      expect(totalTasks).toBe(600);
+      expect(totalTasks).toBe(500);
 
       // Clear the map to allow GC
       tasks.clear();

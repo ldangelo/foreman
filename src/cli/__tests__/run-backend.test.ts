@@ -149,63 +149,44 @@ describe("TRD-007: run.ts backend selection via FOREMAN_TASK_BACKEND", () => {
     vi.unstubAllEnvs();
   });
 
-  // ── br backend ──────────────────────────────────────────────────────────
+  // ── native backend ──────────────────────────────────────────────────────
 
-  describe("when FOREMAN_TASK_BACKEND='br'", () => {
+  describe("when legacy FOREMAN_TASK_BACKEND='br'", () => {
     beforeEach(() => {
       mockGetTaskBackend.mockReturnValue("br");
     });
 
-    it("returns a BeadsRustClient as taskClient", async () => {
+    it("returns the native task client", async () => {
       const result = await createTaskClients(PROJECT_PATH);
 
-      expect(MockBeadsRustClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockBeadsRustClient).toHaveBeenCalledTimes(1);
+      expect(MockBeadsRustClient).not.toHaveBeenCalled();
       expect(result.taskClient).toBeDefined();
     });
 
-    it("calls ensureBrInstalled() to verify binary exists", async () => {
+    it("does not verify the br binary", async () => {
       await createTaskClients(PROJECT_PATH);
 
-      expect(mockEnsureBrInstalled).toHaveBeenCalledTimes(1);
+      expect(mockEnsureBrInstalled).not.toHaveBeenCalled();
     });
 
-    it("also instantiates BvClient with the same projectPath", async () => {
-      await createTaskClients(PROJECT_PATH);
-
-      expect(MockBvClient).toHaveBeenCalledWith(PROJECT_PATH);
-      expect(MockBvClient).toHaveBeenCalledTimes(1);
-    });
-
-    it("returns a non-null bvClient", async () => {
+    it("does not instantiate BvClient", async () => {
       const result = await createTaskClients(PROJECT_PATH);
 
-      expect(result.bvClient).not.toBeNull();
+      expect(MockBvClient).not.toHaveBeenCalled();
+      expect(result.bvClient).toBeNull();
     });
 
-  });
-
-  // ── br backend with missing binary ──────────────────────────────────────
-
-  describe("when FOREMAN_TASK_BACKEND='br' and br binary is missing", () => {
-    beforeEach(() => {
-      mockGetTaskBackend.mockReturnValue("br");
+    it("ignores missing br binary errors", async () => {
       mockEnsureBrInstalled.mockRejectedValue(
         new Error(
           "br (beads_rust) CLI not found at /home/user/.local/bin/br. Install via: cargo install beads_rust",
         ),
       );
-    });
 
-    it("throws an error when br binary is not found", async () => {
-      await expect(createTaskClients(PROJECT_PATH)).rejects.toThrow(
-        /br.*not found|beads_rust/i,
-      );
-    });
-
-    it("does not instantiate BvClient if br binary check fails", async () => {
-      await expect(createTaskClients(PROJECT_PATH)).rejects.toThrow();
-
+      await expect(createTaskClients(PROJECT_PATH)).resolves.toMatchObject({
+        backendType: "native",
+        bvClient: null,
+      });
       expect(MockBvClient).not.toHaveBeenCalled();
     });
   });

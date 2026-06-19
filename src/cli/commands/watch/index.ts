@@ -30,37 +30,64 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore } from "../../../lib/store.js";
 import { loadDashboardConfig } from "../../../lib/project-config.js";
+import { resolveRepoRootProjectPath } from "../project-task-support.js";
 import {
   type WatchState,
   initialWatchState,
   type WatchOptions,
   pollWatchData,
   pollInboxData,
+  pollPipelineEvents,
   handleWatchKey,
   nextPanel,
 } from "./WatchState.js";
 import { renderWatch } from "./render.js";
 import { approveTask, retryTask } from "./actions.js";
+import { printDeprecationNotice } from "../cli-output.js";
+
+/**
+ * `foreman dashboard` is a deprecated alias of `foreman watch`. When the
+ * command was invoked via the alias (detected from argv), print a one-line
+ * deprecation notice. Exported for testing.
+ *
+ * Only argv[2] — the command token in `node foreman <command> ...` — is
+ * checked, so option values like `foreman watch --project dashboard` never
+ * trigger a false positive. (Commander reports the canonical name, not the
+ * alias, at action time, so argv inspection is required; a global flag placed
+ * before the command would merely skip the notice, which is harmless.)
+ */
+export function maybePrintDashboardAliasNotice(argv: readonly string[] = process.argv): void {
+  if (argv[2] === "dashboard") {
+    printDeprecationNotice("foreman dashboard", "foreman watch");
+  }
+}
 
 export const watchCommand = new Command("watch")
-  .description("Single-pane unified dashboard: agents, board, and inbox")
+  .alias("dashboard")
+  .description("Single-pane unified dashboard: agents, board, inbox, and pipeline events")
   .option("--refresh <ms>", "Refresh interval in milliseconds (default: 5000; min: 1000)", "")
   .option("--inbox-limit <n>", "Max inbox messages shown (default: 5)", "")
   .option("--inbox-poll <ms>", "Inbox-only poll interval in ms (default: 2000)", "")
+  .option("--events-limit <n>", "Max pipeline events shown (default: 5)", "")
   .option("--no-watch", "One-shot snapshot, no polling")
   .option("--no-board", "Hide board summary panel")
   .option("--no-inbox", "Hide inbox panel")
+  .option("--no-events", "Hide pipeline events panel")
   .option("--project <id>", "Filter to specific project ID")
   .action(async (opts: {
     refresh: string;
     "inbox-limit": string;
     "inbox-poll": string;
+    "events-limit": string;
     watch: boolean;
     board: boolean;
     inbox: boolean;
+    events: boolean;
     project?: string;
   }) => {
-    const projectPath = process.cwd();
+    maybePrintDashboardAliasNotice();
+
+    const projectPath = await resolveRepoRootProjectPath({ project: opts.project });
 
     // Load config
     const config = loadDashboardConfig(projectPath);
@@ -80,9 +107,14 @@ export const watchCommand = new Command("watch")
       ? Math.max(500, parseInt(opts["inbox-poll"], 10) || 2000)
       : 2000;
 
+    const eventsLimit = opts["events-limit"]
+      ? Math.max(1, parseInt(opts["events-limit"], 10) || 5)
+      : 5;
+
     const noWatch = opts.watch === false;
     const noBoard = opts.board === false;
     const noInbox = opts.inbox === false;
+    const noEvents = opts.events === false;
     const projectId = opts.project;
 
     // Options object for poll functions
@@ -90,14 +122,16 @@ export const watchCommand = new Command("watch")
       refreshMs,
       inboxLimit,
       inboxPollMs,
+      eventsLimit,
       noWatch,
       noBoard,
       noInbox,
+      noEvents,
       projectId,
     };
 
-    // Store
-    const store = ForemanStore.forProject(projectPath);
+    // Postgres-backed store is only still needed for inbox fallback.
+    const store = noInbox ? null : ForemanStore.forProject(projectPath);
 
     // SIGWINCH handler for resize
     let winchOccurred = false;
@@ -116,7 +150,7 @@ export const watchCommand = new Command("watch")
       detached = true;
       process.stdout.write("\x1b[?25h\n"); // restore cursor
       console.log(chalk.dim("  Detached."));
-      store.close();
+      store?.close();
       process.exit(0);
     };
     process.on("SIGINT", onSigint);
@@ -155,26 +189,30 @@ export const watchCommand = new Command("watch")
         if (task) {
           if (key === "a" || key === "A") {
             if (task.status === "backlog") {
-              const ok = approveTask(task.id, projectPath);
-              if (!ok) {
-                state.errorMessage = "Failed to approve task";
-              }
+              void approveTask(task.id, projectPath).then((ok) => {
+                if (!ok) {
+                  state.errorMessage = "Failed to approve task";
+                }
+                wakeAndRender();
+              });
             } else {
               state.errorMessage = "Task must be in backlog to approve";
+              wakeAndRender();
             }
-            wakeAndRender();
             return;
           }
           if (key === "r" || key === "R") {
             if (task.status === "failed" || task.status === "stuck" || task.status === "conflict") {
-              const ok = retryTask(task.id, projectPath);
-              if (!ok) {
-                state.errorMessage = "Failed to retry task";
-              }
+              void retryTask(task.id, projectPath).then((ok) => {
+                if (!ok) {
+                  state.errorMessage = "Failed to retry task";
+                }
+                wakeAndRender();
+              });
             } else {
               state.errorMessage = "Task must be failed or stuck to retry";
+              wakeAndRender();
             }
-            wakeAndRender();
             return;
           }
         }
@@ -204,7 +242,7 @@ export const watchCommand = new Command("watch")
       // ── One-shot mode ─────────────────────────────────────────────────
       if (noWatch) {
         const pollStart = Date.now();
-        const result = await pollWatchData(store, projectPath, projectId);
+        const result = await pollWatchData(projectPath, projectId);
         state.lastPollMs = pollStart;
         state.dashboard = result.dashboard;
         state.agents = result.agents;
@@ -213,7 +251,7 @@ export const watchCommand = new Command("watch")
 
         if (!noInbox) {
           const runIds = result.agents.map(e => e.run.id);
-          const inboxResult = await pollInboxData(store, null, inboxLimit, runIds);
+          const inboxResult = await pollInboxData(store!, null, inboxLimit, runIds, projectPath, projectId);
           state.inbox = {
             messages: inboxResult.messages,
             totalCount: inboxResult.totalCount,
@@ -222,9 +260,21 @@ export const watchCommand = new Command("watch")
           };
         }
 
+        // One-shot: poll pipeline events
+        if (!noEvents) {
+          const runIds = result.agents.map(e => e.run.id);
+          const eventsResult = await pollPipelineEvents(store!, null, eventsLimit, runIds, projectPath, projectId);
+          state.events = {
+            events: eventsResult.events,
+            totalCount: eventsResult.totalCount,
+            newestTimestamp: eventsResult.events[0]?.createdAt ?? null,
+            oldestTimestamp: eventsResult.events[eventsResult.events.length - 1]?.createdAt ?? null,
+          };
+        }
+
         console.log(renderWatch(state));
-        store.close();
-        return;
+          store?.close();
+          return;
       }
 
       // ── Live mode ─────────────────────────────────────────────────────
@@ -238,7 +288,7 @@ export const watchCommand = new Command("watch")
       // Initial poll
       {
         const pollStart = Date.now();
-        const result = await pollWatchData(store, projectPath, projectId);
+        const result = await pollWatchData(projectPath, projectId);
         state.lastPollMs = pollStart;
         state.dashboard = result.dashboard;
         state.agents = result.agents;
@@ -249,7 +299,7 @@ export const watchCommand = new Command("watch")
       // Initial inbox poll
       if (!noInbox) {
         const runIds = state.agents.map(e => e.run.id);
-        const inboxResult = await pollInboxData(store, null, inboxLimit, runIds);
+          const inboxResult = await pollInboxData(store!, null, inboxLimit, runIds, projectPath, projectId);
         state.inbox = {
           messages: inboxResult.messages,
           totalCount: inboxResult.totalCount,
@@ -259,7 +309,18 @@ export const watchCommand = new Command("watch")
         state.inboxLastSeenId = inboxResult.newestId;
       }
 
-      let inboxSleepResolve: (() => void) | null = null;
+      // Initial events poll
+      if (!noEvents) {
+        const runIds = state.agents.map(e => e.run.id);
+        const eventsResult = await pollPipelineEvents(store!, null, eventsLimit, runIds, projectPath, projectId);
+        state.events = {
+          events: eventsResult.events,
+          totalCount: eventsResult.totalCount,
+          newestTimestamp: eventsResult.events[0]?.createdAt ?? null,
+          oldestTimestamp: eventsResult.events[eventsResult.events.length - 1]?.createdAt ?? null,
+        };
+        state.eventsLastSeenId = eventsResult.newestId;
+      }
 
       // Main poll loop
       while (!detached) {
@@ -286,7 +347,7 @@ export const watchCommand = new Command("watch")
 
         // Full data poll
         const pollStart = Date.now();
-        const result = await pollWatchData(store, projectPath, projectId);
+          const result = await pollWatchData(projectPath, projectId);
         state.lastPollMs = pollStart;
         state.dashboard = result.dashboard;
         state.agents = result.agents;
@@ -299,7 +360,7 @@ export const watchCommand = new Command("watch")
         // Inbox-only fast poll
         if (!noInbox) {
           const runIds = result.agents.map(e => e.run.id);
-          const inboxResult = await pollInboxData(store, state.inboxLastSeenId, inboxLimit, runIds);
+          const inboxResult = await pollInboxData(store!, state.inboxLastSeenId, inboxLimit, runIds, projectPath, projectId);
 
           if (inboxResult.messages.length > 0) {
             // Prepend new messages (they come in reverse chronological order)
@@ -326,6 +387,36 @@ export const watchCommand = new Command("watch")
             state.inboxLastSeenId = inboxResult.newestId;
           }
         }
+
+        // Events fast poll
+        if (!noEvents) {
+          const runIds = result.agents.map(e => e.run.id);
+          const eventsResult = await pollPipelineEvents(store!, state.eventsLastSeenId, eventsLimit, runIds, projectPath, projectId);
+
+          if (eventsResult.events.length > 0) {
+            // Prepend new events (they come in reverse chronological order)
+            const existingEvents = state.events?.events ?? [];
+            const newEntries = eventsResult.events.map((entry) => ({
+              ...entry,
+              isNew: state.eventsLastSeenId !== null && entry.id !== state.eventsLastSeenId,
+            }));
+
+            // Merge: new entries at top, capped at eventsLimit total
+            const merged = [...newEntries, ...existingEvents].slice(0, eventsLimit);
+
+            state.events = {
+              events: merged,
+              totalCount: eventsResult.totalCount,
+              newestTimestamp: newEntries[0]?.createdAt ?? state.events?.newestTimestamp ?? null,
+              oldestTimestamp: merged[merged.length - 1]?.createdAt ?? null,
+            };
+          }
+
+          // Update last seen
+          if (eventsResult.newestId) {
+            state.eventsLastSeenId = eventsResult.newestId;
+          }
+        }
       }
     } finally {
       process.stdout.write("\x1b[?25h"); // restore cursor
@@ -336,6 +427,6 @@ export const watchCommand = new Command("watch")
         try { process.stdin.setRawMode(false); } catch { /* ignore */ }
         process.stdin.pause();
       }
-      store.close();
+      store?.close();
     }
   });

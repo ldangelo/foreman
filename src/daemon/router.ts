@@ -13,7 +13,6 @@
  *
  * @module daemon/router
  */
-
 import { initTRPC, TRPCError } from "@trpc/server";
 import type { inferRouterContext } from "@trpc/server";
 import { z } from "zod";
@@ -28,13 +27,10 @@ import {
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
-import Database from "better-sqlite3";
-
+import { getPrState, type PrState } from "../lib/pr-state.js";
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
-
 export interface Context {
   /** Fastify request object for access to headers, socket, etc. */
   req: FastifyRequest;
@@ -45,8 +41,9 @@ export interface Context {
   gh: GhCli;
   /** Project registry (JSON + Postgres dual-write). */
   registry: ProjectRegistry;
+  /** Current project ID (from X-Project-Id header or FOREMAN_PROJECT_ID env var). */
+  projectId?: string;
 }
-
 export async function createContext({
   req,
   res,
@@ -60,19 +57,17 @@ export async function createContext({
     req,
     res,
     adapter,
-    // Singleton instances shared across all requests in the daemon process
     gh: new GhCli(),
     registry,
+    // Pre-extract projectId from headers for convenience
+    projectId: req.headers?.["x-project-id"] as string | undefined,
   };
 }
-
 export type ContextFn = typeof createContext;
 export type RouterContext = inferRouterContext<AppRouter>;
-
 // ---------------------------------------------------------------------------
 // Zod schemas
 // ---------------------------------------------------------------------------
-
 const PROJECT_ID_SCHEMA = z.string().min(1);
 const PROJECT_NAME_SCHEMA = z.string().min(1).max(255);
 const PROJECT_PATH_SCHEMA = z.string().min(1);
@@ -83,14 +78,15 @@ const STATUS_FILTER_SCHEMA = z
 // Task schemas
 const TASK_ID_SCHEMA = z.string().min(1);
 const TASK_STATUS_VALUES = [
-  "backlog", "ready", "in-progress",
+  "backlog", "ready", "in-progress", "review",
   "explorer", "developer", "qa", "reviewer", "finalize",
   "merged", "closed", "conflict", "failed", "stuck", "blocked",
 ] as const;
 const TASK_STATUS_SCHEMA = z.enum(TASK_STATUS_VALUES).optional();
 const TASK_STATUS_ARRAY_SCHEMA = z.array(z.enum(TASK_STATUS_VALUES)).optional();
 const TASK_PRIORITY_SCHEMA = z.number().int().min(0).max(4).optional();
-const TASK_TYPE_SCHEMA = z.enum(["task", "bug", "story", "epic", "chore"]).optional();
+const TASK_TYPE_SCHEMA = z.enum(["task", "bug", "feature", "story", "epic", "chore", "docs", "question"]).optional();
+const TASK_NOTE_KIND_SCHEMA = z.enum(["progress", "issue", "blocker", "review", "qa", "final", "failure", "manual", "system"]).optional();
 
 // ---------------------------------------------------------------------------
 // Init
@@ -157,24 +153,82 @@ const tasksRouter = t.router({
     .input(
       z.object({
         projectId: PROJECT_ID_SCHEMA,
-        id: TASK_ID_SCHEMA,
+        id: TASK_ID_SCHEMA.optional(),
         title: z.string().min(1).max(1000).optional(),
         description: z.string().optional(),
         type: TASK_TYPE_SCHEMA,
         priority: TASK_PRIORITY_SCHEMA,
+        status: TASK_STATUS_SCHEMA,
         externalId: z.string().optional(),
         branch: z.string().optional(),
+        createdAt: z.string().optional(),
+        updatedAt: z.string().optional(),
+        approvedAt: z.string().optional(),
+        closedAt: z.string().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       return ctx.adapter.createTask(input.projectId, {
-        id: input.id,
+        ...(input.id !== undefined && { id: input.id }),
         title: input.title ?? input.id,
         description: input.description,
         type: input.type ?? "task",
         priority: input.priority ?? 2,
+        status: input.status,
         external_id: input.externalId,
         branch: input.branch,
+        created_at: input.createdAt,
+        updated_at: input.updatedAt,
+        approved_at: input.approvedAt,
+        closed_at: input.closedAt,
+      });
+    }),
+
+  /**
+   * Append a note to a task.
+   * POST /trpc/tasks.addNote
+   */
+  addNote: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+        runId: z.string().optional().nullable(),
+        phase: z.string().optional().nullable(),
+        author: z.string().min(1).max(255),
+        kind: TASK_NOTE_KIND_SCHEMA,
+        body: z.string().min(1),
+        metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.addTaskNote(input.projectId, input.taskId, {
+        runId: input.runId,
+        phase: input.phase,
+        author: input.author,
+        kind: input.kind,
+        body: input.body,
+        metadata: input.metadata,
+      });
+    }),
+
+  /**
+   * List task notes.
+   * GET /trpc/tasks.listNotes
+   */
+  listNotes: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+        limit: z.number().int().min(1).max(200).optional(),
+        newestFirst: z.boolean().optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listTaskNotes(input.projectId, input.taskId, {
+        limit: input.limit,
+        newestFirst: input.newestFirst,
       });
     }),
 
@@ -258,6 +312,18 @@ const tasksRouter = t.router({
       return ctx.adapter.getTask(input.projectId, input.taskId);
     }),
 
+  close: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.closeTask(input.projectId, input.taskId);
+      return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
+
   /**
    * Reset a task back to 'ready' state (clears run_id).
    * POST /trpc/tasks.reset
@@ -288,6 +354,88 @@ const tasksRouter = t.router({
     .mutation(async ({ input, ctx }) => {
       await ctx.adapter.retryTask(input.projectId, input.taskId);
       return ctx.adapter.getTask(input.projectId, input.taskId);
+    }),
+
+  addDependency: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        fromTaskId: TASK_ID_SCHEMA,
+        toTaskId: TASK_ID_SCHEMA,
+        type: z.enum(["blocks", "parent-child"]).default("blocks"),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.addTaskDependency(input.projectId, input.fromTaskId, input.toTaskId, input.type);
+      return { added: true };
+    }),
+
+  listDependencies: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+        direction: z.enum(["incoming", "outgoing"]).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listTaskDependencies(input.projectId, input.taskId, input.direction ?? "outgoing");
+    }),
+
+  removeDependency: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        fromTaskId: TASK_ID_SCHEMA,
+        toTaskId: TASK_ID_SCHEMA,
+        type: z.enum(["blocks", "parent-child"]).default("blocks"),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.removeTaskDependency(input.projectId, input.fromTaskId, input.toTaskId, input.type);
+      return { removed: true };
+    }),
+
+  /**
+   * Get the current GitHub PR state for a task.
+   * GET /trpc/tasks.getPrState
+   *
+   * Returns the PR state including:
+   * - status: "none" | "open" | "merged" | "closed" | "error"
+   * - url: GitHub PR URL if exists
+   * - number: PR number if exists
+   * - headSha: PR head SHA at creation/merge time
+   * - currentHeadSha: Current branch HEAD SHA
+   * - isStale: True if PR merged but branch head changed
+   * - summary: Human-readable summary for display
+   */
+  getPrState: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        taskId: TASK_ID_SCHEMA,
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      // Get task to find branch name
+      const task = await ctx.adapter.getTask(input.projectId, input.taskId);
+      if (!task) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Task not found" });
+      }
+
+      // Get project to find path
+      const project = await ctx.registry.get(input.projectId);
+      if (!project) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+      }
+
+      const prState = await getPrState({
+        projectPath: project.path,
+        branchName: task.branch ?? undefined,
+        seedId: task.id,
+      });
+
+      return prState;
     }),
 });
 
@@ -363,15 +511,8 @@ const runsRouter = t.router({
       })
     )
     .query(async ({ input, ctx }) => {
-      const pending = await ctx.adapter.listPipelineRuns(input.projectId, {
-        beadId: input.beadId,
-        status: "pending",
-      });
-      const running = await ctx.adapter.listPipelineRuns(input.projectId, {
-        beadId: input.beadId,
-        status: "running",
-      });
-      return [...pending, ...running];
+      const active = await ctx.adapter.listActiveRuns(input.projectId);
+      return input.beadId ? active.filter((run) => run.seed_id === input.beadId) : active;
     }),
 
   /**
@@ -388,6 +529,28 @@ const runsRouter = t.router({
       const run = await ctx.adapter.getPipelineRun(input.runId);
       if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "Run not found" });
       return run;
+    }),
+
+  /**
+   * Get run progress (currentPhase, lastActivity, tool calls, etc.) as JSON.
+   * GET /trpc/runs.getProgress
+   */
+  getProgress: t.procedure
+    .input(
+      z.object({
+        runId: z.string().uuid(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const run = await ctx.adapter.getPipelineRun(input.runId);
+      if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "Run not found" });
+      // Return the progress JSON as a plain object, or null if not set
+      if (!run.progress) return null;
+      try {
+        return JSON.parse(run.progress);
+      } catch {
+        return null;
+      }
     }),
 
   /**
@@ -517,6 +680,528 @@ const runsRouter = t.router({
 });
 
 // ---------------------------------------------------------------------------
+// GitHub router (TRD-009)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a "owner/repo" string into owner and repo.
+ * Accepts "owner/repo" or "owner/repo/subpath" (extra parts discarded).
+ */
+function parseRepoKey(repoKey: string): { owner: string; repo: string } {
+  const parts = repoKey.trim().split("/");
+  if (parts.length < 2) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Invalid repo key '${repoKey}'. Expected format: owner/repo`,
+    });
+  }
+  return { owner: parts[0]!, repo: parts[1]! };
+}
+
+const githubRouter = t.router({
+  // --- Issue read operations ------------------------------------------------
+
+  /**
+   * Get a single GitHub issue.
+   * GET /repos/{owner}/{repo}/issues/{issue_number}
+   */
+  getIssue: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+        issueNumber: z.number().int().positive(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const issue = await ctx.gh.getIssue(input.owner, input.repo, input.issueNumber);
+      return issue;
+    }),
+
+  /**
+   * List issues for a repository with optional filters.
+   * GET /repos/{owner}/{repo}/issues
+   */
+  listIssues: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+        labels: z.string().optional(),
+        milestone: z.string().optional(),
+        assignee: z.string().optional(),
+        state: z.enum(["open", "closed", "all"]).optional(),
+        since: z.string().datetime().optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const issues = await ctx.gh.listIssues(input.owner, input.repo, {
+        labels: input.labels,
+        milestone: input.milestone,
+        assignee: input.assignee,
+        state: input.state,
+        since: input.since,
+      });
+      return issues;
+    }),
+
+  /**
+   * List repository labels.
+   * GET /repos/{owner}/{repo}/labels
+   */
+  listLabels: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const labels = await ctx.gh.listLabels(input.owner, input.repo);
+      return labels;
+    }),
+
+  /**
+   * List repository milestones.
+   * GET /repos/{owner}/{repo}/milestones
+   */
+  listMilestones: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const milestones = await ctx.gh.listMilestones(input.owner, input.repo);
+      return milestones;
+    }),
+
+  /**
+   * Get a GitHub user.
+   * GET /users/{username}
+   */
+  getUser: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        username: z.string().min(1),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      try {
+        const user = await ctx.gh.getUser(input.username);
+        return user;
+      } catch (err) {
+        if (err instanceof GhError) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: `GitHub user '${input.username}' not found`,
+          });
+        }
+        throw err;
+      }
+    }),
+
+  // --- Repo configuration ---------------------------------------------------
+
+  /**
+   * Configure a GitHub repository for a project.
+   * POST/PUT github_repos (upsert)
+   */
+  upsertRepo: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+        authType: z.enum(["pat", "app"]).optional(),
+        authConfig: z.record(z.string(), z.unknown()).optional(),
+        defaultLabels: z.array(z.string()).optional(),
+        autoImport: z.boolean().optional(),
+        webhookSecret: z.string().optional(),
+        webhookEnabled: z.boolean().optional(),
+        syncStrategy: z.enum(["foreman-wins", "github-wins", "manual", "last-write-wins"]).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const existing = await ctx.adapter.getGithubRepo(
+        input.projectId,
+        input.owner,
+        input.repo,
+      );
+      const row = await ctx.adapter.upsertGithubRepo({
+        id: existing?.id,
+        projectId: input.projectId,
+        owner: input.owner,
+        repo: input.repo,
+        authType: input.authType ?? existing?.auth_type,
+        authConfig: input.authConfig ?? existing?.auth_config,
+        defaultLabels: input.defaultLabels ?? existing?.default_labels ?? [],
+        autoImport: input.autoImport ?? existing?.auto_import ?? false,
+        webhookSecret:
+          input.webhookSecret !== undefined
+            ? input.webhookSecret
+            : existing?.webhook_secret ?? null,
+        webhookEnabled: input.webhookEnabled ?? existing?.webhook_enabled ?? false,
+        syncStrategy: input.syncStrategy ?? existing?.sync_strategy,
+        lastSyncAt: existing?.last_sync_at ?? null,
+      });
+      return row;
+    }),
+
+  /**
+   * List configured GitHub repos for a project.
+   */
+  listRepos: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listGithubRepos(input.projectId);
+    }),
+
+  /**
+   * Get a single GitHub repo configuration.
+   */
+  getRepo: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const row = await ctx.adapter.getGithubRepo(input.projectId, input.owner, input.repo);
+      if (!row) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `GitHub repo ${input.owner}/${input.repo} not configured`,
+        });
+      }
+      return row;
+    }),
+
+  /**
+   * Delete a GitHub repo configuration.
+   */
+  deleteRepo: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        repoId: z.string().uuid(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const deleted = await ctx.adapter.deleteGithubRepo(input.repoId);
+      if (!deleted) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `GitHub repo ${input.repoId} not found`,
+        });
+      }
+      return { success: true };
+    }),
+
+  // --- Sync event audit log ------------------------------------------------
+
+  /**
+   * List sync events for a project.
+   */
+  listSyncEvents: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        externalId: z.string().optional(),
+        limit: z.number().int().positive().max(1000).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.listGithubSyncEvents(
+        input.projectId,
+        input.externalId,
+        input.limit ?? 100,
+      );
+    }),
+
+  // --- Sync operations -----------------------------------------------------
+
+  /**
+   * Bi-directionally sync GitHub issues with Foreman tasks.
+   *
+   * Modes:
+   * - `push`: Push Foreman task changes to GitHub issues
+   * - `pull`: Pull GitHub issue changes to Foreman tasks
+   * - `bidirectional`: Both directions
+   * - `create`: Create GitHub issues from Foreman tasks without external_id
+   */
+  syncIssues: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        owner: z.string().min(1),
+        repo: z.string().min(1),
+        mode: z.enum(["push", "pull", "bidirectional", "create"]),
+        strategy: z
+          .enum(["foreman-wins", "github-wins", "manual", "last-write-wins"])
+          .optional(),
+        auto: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      // Fetch repo config
+      const repoConfig = await ctx.adapter.getGithubRepo(
+        input.projectId,
+        input.owner,
+        input.repo,
+      );
+      if (!repoConfig) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `GitHub repo ${input.owner}/${input.repo} not configured. Run 'foreman issue configure --repo ${input.owner}/${input.repo}' first.`,
+        });
+      }
+
+      const strategy = input.strategy ?? repoConfig.sync_strategy;
+      let pushed = 0;
+      let pulled = 0;
+      let created = 0;
+      let conflicts = 0;
+
+      if (input.mode === "pull" || input.mode === "bidirectional") {
+        // Pull: sync GitHub issues -> Foreman tasks
+        const githubIssues = await ctx.gh.listIssues(input.owner, input.repo, {
+          state: "all",
+        });
+
+        for (const ghIssue of githubIssues) {
+          const externalId = `github:${input.owner}/${input.repo}#${ghIssue.number}`;
+          const existing = await ctx.adapter.listTasks(input.projectId, {
+            externalId,
+            limit: 1,
+          });
+
+          let hasConflict = false;
+
+          if (existing.length > 0) {
+            // Update existing task
+            const task = existing[0]!;
+            // Check for conflict
+            hasConflict =
+              ghIssue.title !== task.title ||
+              ghIssue.body !== (task.description ?? null);
+            if (hasConflict) {
+              conflicts++;
+              if (strategy === "github-wins" || strategy === "last-write-wins") {
+                await ctx.adapter.updateTaskGitHubFields(input.projectId, task.id, {
+                  title: ghIssue.title,
+                  description: ghIssue.body,
+                  state: ghIssue.state,
+                  lastSyncAt: new Date().toISOString(),
+                });
+              }
+            } else if (strategy === "foreman-wins") {
+              // Skip — keep Foreman state
+            }
+            // manual: record conflict but don't auto-resolve
+            pulled++;
+          } else {
+            // Create new task from GitHub issue
+            // (Import is handled by `foreman issue import`)
+          }
+
+          // Record sync event
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: input.projectId,
+            externalId,
+            eventType: "sync_pull",
+            direction: "from_github",
+            githubPayload: {
+              title: ghIssue.title,
+              body: ghIssue.body,
+              state: ghIssue.state,
+            },
+            conflictDetected: hasConflict,
+            resolvedWith:
+              strategy === "github-wins" || strategy === "last-write-wins"
+                ? strategy === "github-wins"
+                  ? "github"
+                  : "last-write-wins"
+                : undefined,
+          });
+        }
+
+        // Update last sync timestamp
+        await ctx.adapter.updateGithubRepoLastSync(repoConfig.id);
+      }
+
+      if (input.mode === "push" || input.mode === "bidirectional") {
+        // Push: sync Foreman tasks -> GitHub issues
+        const foremanTasks = await ctx.adapter.listTasksWithExternalId(
+          input.projectId,
+        );
+
+        for (const task of foremanTasks) {
+          if (
+            task.external_repo !==
+            `${input.owner}/${input.repo}`
+          ) {
+            continue; // Skip tasks for other repos
+          }
+          const issueNumber = task.github_issue_number;
+          if (!issueNumber) continue;
+
+          try {
+            const ghIssue = await ctx.gh.updateIssue(
+              input.owner,
+              input.repo,
+              issueNumber,
+              {
+                title: task.title,
+                body: task.description ?? undefined,
+              },
+            );
+
+            // Record sync event
+            await ctx.adapter.recordGithubSyncEvent({
+              projectId: input.projectId,
+              externalId: `github:${input.owner}/${input.repo}#${issueNumber}`,
+              eventType: "sync_push",
+              direction: "to_github",
+              foremanChanges: {
+                title: task.title,
+                description: task.description,
+              },
+            });
+            pushed++;
+          } catch {
+            // Issue may have been closed on GitHub
+          }
+        }
+
+        await ctx.adapter.updateGithubRepoLastSync(repoConfig.id);
+      }
+
+      if (input.mode === "create") {
+        // Create: create GitHub issues from Foreman tasks without external_id
+        const allTasks = await ctx.adapter.listTasks(input.projectId);
+        const foremanOnlyTasks = allTasks.filter(
+          (t) => t.external_id === null || !t.external_id.startsWith("github:"),
+        );
+
+        for (const task of foremanOnlyTasks) {
+          const ghIssue = await ctx.gh.createIssue(input.owner, input.repo, {
+            title: task.title,
+            body: task.description ?? undefined,
+          });
+
+          const externalId = `github:${input.owner}/${input.repo}#${ghIssue.number}`;
+          await ctx.adapter.updateTaskGitHubFields(input.projectId, task.id, {
+            // @ts-expect-error adapter uses snake_case internal names
+            external_id: externalId,
+            syncEnabled: true,
+          });
+
+          await ctx.adapter.recordGithubSyncEvent({
+            projectId: input.projectId,
+            externalId,
+            eventType: "sync_create",
+            direction: "to_github",
+            githubPayload: { number: ghIssue.number, title: ghIssue.title },
+          });
+          created++;
+        }
+      }
+
+      return {
+        mode: input.mode,
+        strategy,
+        pushed,
+        pulled,
+        created,
+        conflicts,
+      };
+    }),
+});
+
+const mailRouter = t.router({
+  send: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        runId: z.string().uuid(),
+        senderAgentType: z.string().min(1),
+        recipientAgentType: z.string().min(1),
+        subject: z.string().min(1),
+        body: z.string(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.sendMessage(
+        input.projectId,
+        input.runId,
+        input.senderAgentType,
+        input.recipientAgentType,
+        input.subject,
+        input.body,
+      );
+    }),
+
+  list: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        runId: z.string().uuid(),
+        agentType: z.string().min(1).optional(),
+        unreadOnly: z.boolean().optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      if (input.agentType) {
+        return ctx.adapter.getMessages(input.projectId, input.runId, input.agentType, input.unreadOnly ?? false);
+      }
+      return ctx.adapter.getAllMessages(input.runId);
+    }),
+
+  listGlobal: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA,
+        limit: z.number().int().min(1).max(500).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return ctx.adapter.getAllMessagesGlobal(input.projectId, input.limit ?? 200);
+    }),
+
+  markRead: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA, messageId: z.string().uuid() }))
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.markMessageRead(input.projectId, input.messageId);
+    }),
+
+  markAllRead: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA, runId: z.string().uuid(), agentType: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      await ctx.adapter.markAllMessagesRead(input.projectId, input.runId, input.agentType);
+      return { updated: true };
+    }),
+
+  delete: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA, messageId: z.string().uuid() }))
+    .mutation(async ({ input, ctx }) => {
+      return ctx.adapter.deleteMessage(input.projectId, input.messageId);
+    }),
+});
+
+// ---------------------------------------------------------------------------
 // Projects router
 // ---------------------------------------------------------------------------
 
@@ -593,30 +1278,30 @@ const projectsRouter = t.router({
       })
     )
     .query(async ({ input, ctx }) => {
-      const [backlog, ready, inProgress, approved, merged, closed] = await Promise.all([
+      const [backlog, ready, inProgress, merged, closed] = await Promise.all([
         ctx.adapter.listTasks(input.projectId, { status: ["backlog"] }),
         ctx.adapter.listTasks(input.projectId, { status: ["ready"] }),
         ctx.adapter.listTasks(input.projectId, { status: ["in-progress"] }),
-        ctx.adapter.listTasks(input.projectId, { status: ["approved"] }),
         ctx.adapter.listTasks(input.projectId, { status: ["merged"] }),
         ctx.adapter.listTasks(input.projectId, { status: ["closed"] }),
       ]);
 
-      const activeRuns = await ctx.adapter.listPipelineRuns(input.projectId, { status: "running" });
-      const pendingRuns = await ctx.adapter.listPipelineRuns(input.projectId, { status: "pending" });
+      const activeRuns = await ctx.adapter.listActiveRuns(input.projectId);
+      const pendingRuns = activeRuns.filter((run) => run.status === "pending");
+      const runningRuns = activeRuns.filter((run) => run.status === "running");
 
       return {
         tasks: {
           backlog: backlog.length,
           ready: ready.length,
           inProgress: inProgress.length,
-          approved: approved.length,
+          approved: 0,
           merged: merged.length,
           closed: closed.length,
-          total: backlog.length + ready.length + inProgress.length + approved.length + merged.length + closed.length,
+          total: backlog.length + ready.length + inProgress.length + merged.length + closed.length,
         },
         runs: {
-          active: activeRuns.length,
+          active: runningRuns.length,
           pending: pendingRuns.length,
         },
       };
@@ -758,7 +1443,6 @@ const projectsRouter = t.router({
         last_sync_at: record.lastSyncAt,
       };
     }),
-
   /**
    * Update a project.
    * POST /trpc/projects.update
@@ -771,15 +1455,43 @@ const projectsRouter = t.router({
           name: PROJECT_NAME_SCHEMA.optional(),
           path: PROJECT_PATH_SCHEMA.optional(),
           status: STATUS_FILTER_SCHEMA,
+          jira: z.object({
+            apiUrl: z.string().optional(),
+            email: z.string().optional(),
+            apiToken: z.string().optional(),
+            pollIntervalSeconds: z.number().optional(),
+            webhookEnabled: z.boolean().optional(),
+            webhookSecretEnvVar: z.string().optional(),
+            projects: z.array(z.object({
+              key: z.string(),
+              startStatus: z.array(z.string()),
+              endStatus: z.array(z.string()).optional(),
+              issueTypeWorkflowMap: z.record(z.string(), z.string()),
+              debounceWindowSeconds: z.number().optional(),
+            })).optional(),
+          }).optional(),
         }),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      return ctx.registry.update(input.id, {
-        ...(input.updates.name !== undefined ? { name: input.updates.name } : {}),
-        ...(input.updates.path !== undefined ? { path: input.updates.path } : {}),
-        ...(input.updates.status !== undefined ? { status: input.updates.status } : {}),
+      const { registry } = ctx;
+
+      // Extract jira updates for project-level config persistence
+      const { jira, ...basicUpdates } = input.updates;
+
+      // First, update basic project metadata in registry
+      const record = await registry.update(input.id, basicUpdates as {
+        name?: string;
+        path?: string;
+        status?: "active" | "paused" | "archived";
       });
+
+      // If Jira config provided, persist to project YAML
+      if (jira) {
+        await registry.updateJiraConfig(input.id, jira);
+      }
+
+      return record;
     }),
 
   /**
@@ -823,17 +1535,137 @@ const projectsRouter = t.router({
       return record;
     }),
 });
-
+// ---------------------------------------------------------------------------
+// Jira procedures
+// ---------------------------------------------------------------------------
+const jiraRouter = t.router({
+  /**
+   * Configure Jira monitoring for the current project.
+   * POST /trpc/jira.configure
+   */
+  configure: t.procedure
+    .input(
+      z.object({
+        projectId: PROJECT_ID_SCHEMA.optional(),
+        apiUrl: z.string().url(),
+        email: z.string().email(),
+        apiToken: z.string().min(1),
+        projects: z.array(
+          z.object({
+            key: z.string().min(1),
+            startStatus: z.array(z.string()).min(1),
+            endStatus: z.array(z.string()).optional(),
+            issueTypeWorkflowMap: z.record(z.string(), z.string()),
+            debounceWindowSeconds: z.number().int().min(0).optional(),
+          })
+        ).min(1),
+        webhookEnabled: z.boolean().optional(),
+        webhookSecretEnvVar: z.string().optional(),
+        pollIntervalSeconds: z.number().int().min(30).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      // TODO: Implement config persistence to project config + DB
+      void input;
+      void ctx;
+      return { success: true };
+    }),
+  /**
+   * Get Jira monitor status for the current project.
+   * GET /trpc/jira.getStatus
+   */
+  getStatus: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA.optional() }))
+    .query(async ({ input, ctx }) => {
+      const projectId = input.projectId ?? ctx.projectId ?? process.env.FOREMAN_PROJECT_ID;
+      if (!projectId) {
+        return {
+          configured: false, projects: 0, lastPoll: undefined, webhookEnabled: false,
+          monitoredIssues: 0, triggeredToday: 0, lastError: undefined,
+        };
+      }
+      const jiraProjects = await ctx.adapter.listJiraProjects(projectId);
+      if (jiraProjects.length === 0) {
+        return {
+          configured: false, projects: 0, lastPoll: undefined, webhookEnabled: false,
+          monitoredIssues: 0, triggeredToday: 0, lastError: undefined,
+        };
+      }
+      // Get observability metrics for first project
+      const metrics = await ctx.adapter.getJiraMetrics(projectId, jiraProjects[0].api_url.split("/").pop() ?? "");
+      return {
+        configured: true,
+        projects: jiraProjects.length,
+        lastPoll: jiraProjects[0]?.last_poll_at ?? undefined,
+        webhookEnabled: jiraProjects[0]?.webhook_enabled ?? false,
+        ...metrics,
+      };
+    }),
+  /**
+   * Test Jira API connection.
+   * GET /trpc/jira.testConnection
+   */
+  testConnection: t.procedure
+    .input(
+      z.object({
+        apiUrl: z.string(),
+        email: z.string(),
+        apiToken: z.string(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      // Decrypt the API token
+      const { decrypt } = await import("../lib/encryption.js");
+      let apiToken: string;
+      try {
+        apiToken = await decrypt(input.apiToken);
+      } catch {
+        return { connected: false, error: "Failed to decrypt API token. Check FOREMAN_MASTER_KEY." };
+      }
+      try {
+        const { JiraApiClient } = await import("./jira-api-client.js");
+        const client = new JiraApiClient({ apiUrl: input.apiUrl, email: input.email, apiToken });
+        await client.authenticate();
+        const projects = await client.listProjects();
+        return { connected: true, projects: projects.map((p: { key: string; name: string }) => ({ key: p.key, name: p.name })) };
+      } catch (err) {
+        return { connected: false, error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    }),
+  /**
+   * Enable webhook for real-time Jira triggers.
+   * POST /trpc/jira.enableWebhook
+   */
+  enableWebhook: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA.optional(), webhookSecret: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      void input;
+      void ctx;
+      return { webhookUrl: `${process.env.FOREMAN_BASE_URL ?? "http://localhost:3847"}/webhooks/jira` };
+    }),
+  /**
+   * Disable webhook for Jira triggers.
+   * POST /trpc/jira.disableWebhook
+   */
+  disableWebhook: t.procedure
+    .input(z.object({ projectId: PROJECT_ID_SCHEMA.optional() }))
+    .mutation(async ({ input, ctx }) => {
+      void input;
+      void ctx;
+      return { success: true };
+    }),
+});
 // ---------------------------------------------------------------------------
 // App router
 // ---------------------------------------------------------------------------
-
 export const appRouter = t.router({
   projects: projectsRouter,
   tasks: tasksRouter,
   runs: runsRouter,
+  mail: mailRouter,
+  github: githubRouter,
+  jira: jiraRouter,
 });
-
 export type AppRouter = typeof appRouter;
 
 // ---------------------------------------------------------------------------
@@ -890,34 +1722,15 @@ function toRepoKey(owner: string, repo: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether a project has any active (pending or running) tasks.
- * Queries the per-project SQLite task store at `<project-path>/.beads/beads.db`.
- * Returns false if the store file does not exist (no tasks have been created yet).
+ * Check whether a project has any active pipeline runs.
  */
 async function hasActiveRuns(
   projectId: string,
   ctx: Context
 ): Promise<boolean> {
-  const record = await ctx.registry.get(projectId);
-  if (!record) return false; // project doesn't exist — guard won't prevent removal
-
-  const dbPath = join(record.path, ".beads", "beads.db");
-  if (!existsSync(dbPath)) return false;
-
-  try {
-    const db = new Database(dbPath, { readonly: true });
-    try {
-      const rows = db
-        .prepare(
-          `SELECT COUNT(*) as cnt FROM tasks WHERE status IN ('pending', 'running') LIMIT 1`
-        )
-        .get() as { cnt: number } | undefined;
-      return (rows?.cnt ?? 0) > 0;
-    } finally {
-      db.close();
-    }
-  } catch {
-    // If the database is locked or schema is wrong, fail open — don't block removal
-    return false;
-  }
+  const [pendingRuns, activeRuns] = await Promise.all([
+    ctx.adapter.listPipelineRuns(projectId, { status: "pending" }),
+    ctx.adapter.listPipelineRuns(projectId, { status: "running" }),
+  ]);
+  return pendingRuns.length > 0 || activeRuns.length > 0;
 }

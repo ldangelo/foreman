@@ -15,7 +15,7 @@
 
 import { writeFileSync, renameSync, existsSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -23,10 +23,13 @@ import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { enqueueSetBeadStatus } from "./task-backend-ops.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
+import { resolveArtifactPath } from "../lib/report-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface FinalizeConfig {
+  /** External/daemon project id when merge queue writes should go to Postgres. */
+  projectId?: string;
   /** Run ID (used when enqueuing to the merge queue). */
   runId: string;
   /** Seed identifier, e.g. "bd-ytzv". */
@@ -55,6 +58,7 @@ export interface FinalizeConfig {
 export interface FinalizeResult {
   success: boolean;
   retryable: boolean;
+  recommendedRecovery?: "clean-replay-from-main";
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -64,12 +68,12 @@ export interface FinalizeResult {
  * debugging.  Non-fatal — any rename error is silently swallowed.
  */
 export function rotateReport(worktreePath: string, filename: string): void {
-  const p = join(worktreePath, filename);
+  const p = resolveArtifactPath(worktreePath, filename);
   if (!existsSync(p)) return;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const ext = filename.endsWith(".md") ? ".md" : "";
   const base = ext ? filename.slice(0, -3) : filename;
-  const rotated = join(worktreePath, `${base}.${stamp}${ext}`);
+  const rotated = join(dirname(p), `${base}.${stamp}${ext}`);
   try {
     renameSync(p, rotated);
   } catch {
@@ -96,7 +100,7 @@ function log(msg: string): void {
  */
 export async function finalize(config: FinalizeConfig, logFile: string, vcs: VcsBackend): Promise<FinalizeResult> {
   const { seedId, seedTitle, worktreePath } = config;
-  // `storeProjectPath` is used only to open the SQLite store for the merge
+  // `storeProjectPath` is used only to open the Postgres store for the merge
   // queue — it must never be undefined, so we infer it from the workspace path
   // when the caller didn't pass projectPath explicitly.
   const storeProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
@@ -224,15 +228,16 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
     }
 
     try {
-      const enqueueStore = ForemanStore.forProject(storeProjectPath);
-      const enqueueResult = enqueueToMergeQueue({
-        db: enqueueStore.getDb(),
+      const enqueueStore = config.projectId ? undefined : ForemanStore.forProject(storeProjectPath);
+      const enqueueResult = await enqueueToMergeQueue({
+        ...(enqueueStore ? { db: enqueueStore.getDb() } : {}),
+        projectId: config.projectId,
         seedId,
         runId: config.runId,
         worktreePath,
         getFilesModified: () => modifiedFiles,
       });
-      enqueueStore.close();
+      enqueueStore?.close();
 
       if (enqueueResult.success) {
         log(`[FINALIZE] Enqueued to merge queue (pre-push)`);
@@ -259,6 +264,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // seed to open — preventing the infinite re-dispatch loop described in bd-zwtr.
   let pushSucceeded = false;
   let pushRetryable = true; // default: transient failures may be retried
+  let recommendedRecovery: FinalizeResult["recommendedRecovery"];
   if (!branchVerified) {
     log(`[FINALIZE] Skipping push (branch verification failed)`);
     report.push(`## Push`, `- Status: SKIPPED (branch verification failed)`, "");
@@ -296,23 +302,25 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
             const detail = conflictList ? `conflicts in: ${conflictList}` : "rebase conflict";
             log(`[FINALIZE] Rebase failed: ${detail}`);
             await appendFile(logFile, `[FINALIZE] Rebase conflict: ${detail}\n`);
-            report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${detail.slice(0, 300)}`, "");
+            report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${detail.slice(0, 300)}`, `- Recommended recovery: clean replay from current main`, "");
             report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
             // Abort any partial rebase to leave the worktree clean
             try { await vcs.abortRebase(worktreePath); } catch { /* already clean */ }
             // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
             pushRetryable = false;
+            recommendedRecovery = "clean-replay-from-main";
           }
         } catch (rebaseErr: unknown) {
           const rebaseMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
           log(`[FINALIZE] Rebase failed: ${rebaseMsg.slice(0, 200)}`);
           await appendFile(logFile, `[FINALIZE] Rebase error: ${rebaseMsg}\n`);
-          report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, "");
+          report.push(`## Rebase`, `- Status: FAILED`, `- Error: ${rebaseMsg.slice(0, 300)}`, `- Recommended recovery: clean replay from current main`, "");
           report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
           // Abort any partial rebase to leave the worktree clean
           try { await vcs.abortRebase(worktreePath); } catch { /* already clean */ }
           // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
           pushRetryable = false;
+          recommendedRecovery = "clean-replay-from-main";
         }
 
         // Retry push only if rebase succeeded. A post-rebase push failure is treated
@@ -351,7 +359,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // On push failure the bead stays in_progress (caller resets to open via resetSeedToOpen).
   if (pushSucceeded) {
     // Queue the status update instead of calling br directly — prevents
-    // SQLite contention with concurrent agent-workers (all br writes go
+    // Postgres contention with concurrent agent-workers (all br writes go
     // through the dispatcher's sequential drain).
     try {
       const statusStore = ForemanStore.forProject(storeProjectPath);
@@ -377,5 +385,5 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
     // Non-fatal — finalize report is for debugging
   }
 
-  return { success: pushSucceeded, retryable: pushRetryable };
+  return { success: pushSucceeded, retryable: pushRetryable, recommendedRecovery };
 }

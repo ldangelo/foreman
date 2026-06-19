@@ -4,15 +4,18 @@
  * CLI wrapper for the Refinery Agent daemon and single-pass modes.
  */
 
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { ForemanStore } from "../lib/store.js";
+import { PostgresStore } from "../lib/postgres-store.js";
 import { MergeQueue } from "./merge-queue.js";
+import { PostgresMergeQueue } from "./postgres-merge-queue.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
-import { RefineryAgent, type RefineryAgentConfig } from "./refinery-agent.js";
+import { RefineryAgent, wrapLocalRefineryQueue, type RefineryAgentConfig } from "./refinery-agent.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath } from "../cli/commands/project-task-support.js";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 
-const DEFAULT_LOG_DIR = "docs/reports";
+const DEFAULT_LOG_DIR = getForemanHomePath("logs", "refinery");
 
 interface CliOptions {
   daemon: boolean;
@@ -47,7 +50,7 @@ function parseCliArgs(args: string[]): CliOptions {
   };
 }
 
-export function printRefineHelp(): void {
+function printHelp(): void {
   console.log(`
 foreman refine — Refinery Agent for merge queue processing
 
@@ -59,7 +62,7 @@ OPTIONS
   --once, -o            Process queue once and exit
   --poll-interval MS    Poll interval in milliseconds (default: 60000)
   --max-fix-iterations N  Max fix attempts per entry (default: 2)
-  --log-dir PATH        Directory for agent logs (default: docs/reports)
+  --log-dir PATH        Directory for agent logs (default: ~/.foreman/logs/refinery)
   --help, -h            Show this help message
 
 EXAMPLES
@@ -73,44 +76,52 @@ EXAMPLES
   foreman refine --once --max-fix-iterations 3
 
 ENVIRONMENT
-  FOREMAN_USE_REFINERY_AGENT   Enable the experimental Refinery Agent (set to true)
+  FOREMAN_USE_REFINERY_AGENT   Enable agent (default: false, use legacy)
 `);
 }
 
 /**
- * Main command implementation shared by the standalone runner and commander.
+ * Main CLI entry point.
  */
-export async function runRefineryAgentCommand(opts: CliOptions): Promise<number> {
+export async function runRefineCli(args: string[]): Promise<number> {
+  const opts = parseCliArgs(args);
+
   if (opts.help) {
-    printRefineHelp();
+    printHelp();
     return 0;
   }
 
+  // Check feature flag
   const useAgent = process.env.FOREMAN_USE_REFINERY_AGENT === "true";
   if (!useAgent) {
-    console.error("[refine] The Refinery Agent command is experimental and currently disabled.");
-    console.error("[refine] Re-run with FOREMAN_USE_REFINERY_AGENT=true to enable it.");
+    console.log("[refine] FOREMAN_USE_REFINERY_AGENT is not set to 'true'");
+    console.log("[refine] Set FOREMAN_USE_REFINERY_AGENT=true to enable the agent");
+    console.log("[refine] Falling back to legacy refinery (not implemented in this version)");
     return 1;
   }
 
-  const projectPath = process.cwd();
+  // Get project path
+  const projectPath = await resolveRepoRootProjectPath({});
 
   // Create store and VCS backend
-  const store = new ForemanStore();
-  const db = store.getDb();
-  const mergeQueue = new MergeQueue(db);
+  const store = ForemanStore.forProject(projectPath);
+  const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
+  const mergeQueue = registered
+    ? new PostgresMergeQueue(registered.id)
+    : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
   const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const runLookup = registered ? PostgresStore.forProject(registered.id) : undefined;
 
   // Agent config
   const agentConfig: Partial<RefineryAgentConfig> = {
     pollIntervalMs: opts.pollInterval,
     maxFixIterations: opts.maxFixIterations,
-    logDir: join(projectPath, opts.logDir),
+    logDir: isAbsolute(opts.logDir) ? opts.logDir : join(projectPath, opts.logDir),
     projectPath,
   };
 
   // Create agent
-  const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath, agentConfig);
+  const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath, agentConfig, runLookup);
 
   // Handle signals
   const shutdown = (): void => {
@@ -148,35 +159,15 @@ export async function runRefineryAgentCommand(opts: CliOptions): Promise<number>
   }
 
   // No mode specified
-  printRefineHelp();
+  printHelp();
   return 1;
 }
 
-/**
- * Standalone CLI entry point.
- */
-export async function runRefineCli(args: string[]): Promise<number> {
-  return runRefineryAgentCommand(parseCliArgs(args));
-}
-
-function isCliEntrypoint(): boolean {
-  try {
-    const invokedPath = process.argv[1];
-    if (!invokedPath) {
-      return false;
-    }
-    return resolve(invokedPath) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-}
-
-if (isCliEntrypoint()) {
-  const args = process.argv.slice(2);
-  runRefineCli(args)
-    .then((code) => process.exit(code))
-    .catch((err) => {
-      console.error("[refine] Fatal error:", err);
-      process.exit(2);
-    });
-}
+// CLI runner
+const args = process.argv.slice(2);
+runRefineCli(args)
+  .then((code) => process.exit(code))
+  .catch((err) => {
+    console.error("[refine] Fatal error:", err);
+    process.exit(2);
+  });

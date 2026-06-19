@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,7 +9,20 @@ import { readFileSync } from "node:fs";
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 90_000 });
+  return runTsxModule(CLI, args, { cwd, timeout: 30_000 });
+}
+
+function registerProjectInHomeRegistry(homeDir: string, projectPath: string, projectName: string): void {
+  const registryDir = join(homeDir, ".foreman", "projects");
+  mkdirSync(registryDir, { recursive: true });
+  writeFileSync(
+    join(registryDir, "projects.json"),
+    JSON.stringify({
+      version: 1,
+      projects: [{ name: projectName, path: projectPath, addedAt: new Date().toISOString() }],
+    }, null, 2) + "\n",
+    "utf-8",
+  );
 }
 
 describe("CLI smoke tests", () => {
@@ -28,23 +41,48 @@ describe("CLI smoke tests", () => {
     tempDirs.length = 0;
   });
 
-  it("--help exits 0 and shows all commands including dashboard, bead, and refine", async () => {
+  it("--help exits 0 and shows the consolidated command surface", async () => {
     const tmp = makeTempDir();
     const result = await run(["--help"], tmp);
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout;
-    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "monitor", "dashboard", "bead", "refine"]) {
+    for (const cmd of ["init", "plan", "sling", "run", "status", "merge", "watch", "purge", "task", "logs", "server"]) {
       expect(output).toContain(cmd);
     }
-  }, 90_000);
+
+    // 'foreman dashboard' survives only as an alias of watch
+    expect(output).toContain("watch|dashboard");
+    expect(output).not.toMatch(/^\s+dashboard[\s|]/m);
+
+    expect(output).toContain("Domain groups:");
+    expect(output).toContain("Setup/health:");
+    expect(output).toContain("Tasks/views:");
+    expect(output).toContain("legacy dashboard -> watch");
+    expect(output).toContain("legacy bead -> task create --from-text");
+
+    // Deprecated spellings are hidden from help but still parse
+    expect(output).not.toMatch(/^\s+bead[\s|]/m);
+    expect(output).not.toMatch(/^\s+purge-logs[\s|]/m);
+    expect(output).not.toMatch(/^\s+purge-zombie-runs[\s|]/m);
+  }, 30_000);
+
+  it("hidden deprecated spellings still parse (bead, purge-logs, purge-zombie-runs, dashboard)", async () => {
+    const tmp = makeTempDir();
+
+    // --help on hidden commands exits 0, proving they remain registered
+    for (const args of [["bead", "--help"], ["purge-logs", "--help"], ["purge-zombie-runs", "--help"], ["dashboard", "--help"], ["purge", "--help"]]) {
+      const result = await run(args, tmp);
+      expect(result.exitCode).toBe(0);
+    }
+  }, 30_000);
 
   it("--version prints version number", async () => {
     const pkgPath = path.resolve(__dirname, "../../../package.json");
     const expected = (JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string }).version;
     const { program } = await import("../index.js");
     expect(program.version()).toBe(expected);
-  }, 90_000);
+  }, 30_000);
 
   it("status without init shows error", async () => {
     const tmp = makeTempDir();
@@ -55,7 +93,7 @@ describe("CLI smoke tests", () => {
     expect(
       result.exitCode !== 0 || output.toLowerCase().includes("error") || output.includes("init")
     ).toBe(true);
-  }, 90_000);
+  }, 30_000);
 
   it("sling trd with nonexistent file shows error", async () => {
     const tmp = makeTempDir();
@@ -65,7 +103,7 @@ describe("CLI smoke tests", () => {
     expect(
       result.exitCode !== 0 || output.toLowerCase().includes("not found") || output.toLowerCase().includes("error")
     ).toBe(true);
-  }, 90_000);
+  }, 30_000);
 
   it("plan --dry-run shows pipeline steps", async () => {
     const tmp = makeTempDir();
@@ -82,12 +120,21 @@ describe("CLI smoke tests", () => {
     store.registerProject("test-project", tmp);
     store.close();
 
-    const result = await run(["plan", "--dry-run", "test-description"], tmp);
+    registerProjectInHomeRegistry(tmp, tmp, "test-project");
+
+    const result = await runTsxModule(CLI, ["plan", "--dry-run", "test-description"], {
+      cwd: tmp,
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        HOME: tmp,
+      },
+    });
 
     const output = result.stdout + result.stderr;
     expect(output).toContain("Create PRD");
     expect(output).toContain("Create TRD");
-  }, 90_000);
+  }, 30_000);
 
   it("run --dry-run without init shows error", async () => {
     const tmp = makeTempDir();
@@ -98,7 +145,7 @@ describe("CLI smoke tests", () => {
     expect(
       result.exitCode !== 0 || output.toLowerCase().includes("error") || output.includes("init")
     ).toBe(true);
-  }, 90_000);
+  }, 30_000);
 
   it("doctor --help shows usage", async () => {
     const tmp = makeTempDir();
@@ -109,7 +156,7 @@ describe("CLI smoke tests", () => {
     expect(result.stdout).toContain("--fix");
     expect(result.stdout).toContain("--dry-run");
     expect(result.stdout).toContain("--json");
-  }, 90_000);
+  }, 30_000);
 
   it("doctor --json outputs valid JSON outside git repo", async () => {
     const tmp = makeTempDir();
@@ -118,30 +165,5 @@ describe("CLI smoke tests", () => {
 
     // Should exit 1 (not a git repo)
     expect(result.exitCode).toBe(1);
-  }, 180_000);
-
-  it("refine --help shows usage", async () => {
-    const tmp = makeTempDir();
-    const result = await run(["refine", "--help"], tmp);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("foreman refine");
-    expect(result.stdout).toContain("--once");
-    expect(result.stdout).toContain("--daemon");
-  }, 90_000);
-
-  it("refine --once fails with truthful experimental gating message when disabled", async () => {
-    const tmp = makeTempDir();
-    const result = await runTsxModule(CLI, ["refine", "--once"], {
-      cwd: tmp,
-      timeout: 90_000,
-      env: { FOREMAN_USE_REFINERY_AGENT: "false" },
-    });
-
-    const output = result.stdout + result.stderr;
-    expect(result.exitCode).toBe(1);
-    expect(output).toContain("experimental");
-    expect(output).toContain("FOREMAN_USE_REFINERY_AGENT=true");
-    expect(output).not.toContain("not implemented in this version");
-  }, 90_000);
+  }, 30_000);
 });

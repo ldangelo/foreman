@@ -1,0 +1,28 @@
+{
+  "run_id": "run-recovery-fixture",
+  "phase_id": "developer",
+  "worker_id": "worker-1",
+  "last_heartbeat_at": "2000-01-01T00:00:00Z",
+  "heartbeat_age_seconds": 120,
+  "heartbeat": {
+    "run_id": "run-recovery-fixture",
+    "phase_id": "developer",
+    "worker_id": "worker-1",
+    "session_id": "stale-session"
+  },
+  "external_state": {
+    "worker_alive": false,
+    "worktree_exists": true,
+    "branch_exists": true
+  },
+  "checkpoint": {
+    "id": "checkpoint-1",
+    "phase_id": "developer",
+    "safe": true,
+    "idempotent": true
+  },
+  "restart_policy": {
+    "allow_restart": true
+  },
+  "expected_recovery_action": "restart_phase"
+}

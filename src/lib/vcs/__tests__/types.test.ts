@@ -208,7 +208,7 @@ describe('FinalizeCommands type', () => {
     const cmds: FinalizeCommands = {
       stageCommand: '',    // jj auto-stages
       commitCommand: 'jj commit -m "feat: implement task"',
-      pushCommand: 'jj git push --allow-new',
+      pushCommand: 'jj git push --bookmark foreman/bd-deoi',
       integrateTargetCommand: 'jj rebase -d main',
       branchVerifyCommand: 'jj bookmark list',
       cleanCommand: 'jj workspace forget foreman-bd-deoi',

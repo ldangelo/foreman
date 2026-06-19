@@ -3,12 +3,12 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
-import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
+import { execFileSync, spawnSync } from "node:child_process";
+import type { ExecResult } from "../../test-support/tsx-subprocess.js";
 import { resolveProjectTarget } from "../../lib/project-targeting.js";
 import { ProjectNotFoundError } from "../../lib/project-registry.js";
 
@@ -19,7 +19,32 @@ async function run(
   cwd: string,
   extraEnv?: Record<string, string>,
 ): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000, env: extraEnv });
+  const registryBaseDir = extraEnv?.HOME ? join(extraEnv.HOME, ".foreman") : undefined;
+  const result = spawnSync("npx", ["tsx", CLI, ...args], {
+    cwd,
+    timeout: 60_000,
+    env: {
+      PATH: process.env.PATH,
+      HOME: extraEnv?.HOME,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
+      TSX_DISABLE_IPC: "1",
+      NO_COLOR: "1",
+      FOREMAN_HOME: undefined,
+      FOREMAN_TASK_STORE: undefined,
+      FOREMAN_TASK_BACKEND: undefined,
+      DATABASE_URL: undefined,
+      FOREMAN_REGISTRY_BASE_DIR: registryBaseDir,
+    },
+    encoding: "utf8",
+  });
+
+  return {
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    exitCode: result.status ?? 1,
+  };
 }
 
 describe("foreman reset --project flag", () => {
@@ -37,14 +62,31 @@ describe("foreman reset --project flag", () => {
     return dir;
   }
 
+  function initGitRepo(dir: string): void {
+    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir, stdio: "ignore" });
+  }
+
   function setupRegistryWithProject(registryDir: string, projectPath: string, projectName: string): void {
     mkdirSync(registryDir, { recursive: true });
     writeFileSync(
       join(registryDir, "projects.json"),
-      JSON.stringify({
-        version: 1,
-        projects: [{ name: projectName, path: projectPath, addedAt: new Date().toISOString() }],
-      }, null, 2) + "\n",
+      JSON.stringify([
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          name: projectName,
+          path: projectPath,
+          githubUrl: "",
+          repoKey: null,
+          defaultBranch: "main",
+          status: "active",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastSyncAt: null,
+        },
+      ], null, 2) + "\n",
       "utf-8",
     );
   }
@@ -58,23 +100,24 @@ describe("foreman reset --project flag", () => {
 
   it("reset --project <registered-name> resolves project path correctly", async () => {
     const tmpBase = makeTempDir();
-    const projectDir = mkProject(tmpBase, "my-project");
+    const targetDir = mkProject(tmpBase, "target-project");
+    const cwdDir = mkProject(tmpBase, "cwd-repo");
 
-    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
-    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+    initGitRepo(targetDir);
+    initGitRepo(cwdDir);
+    writeFileSync(join(targetDir, ".env"), "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/foreman\n", "utf-8");
 
     const registryDir = join(tmpBase, ".foreman", "projects");
-    setupRegistryWithProject(registryDir, projectDir, "my-project");
+    setupRegistryWithProject(registryDir, targetDir, "my-project");
 
-    const result = await run(["reset", "--project", "my-project"], projectDir, {
+    const result = await run(["reset", "--project", "my-project"], cwdDir, {
       ...process.env,
       HOME: tmpBase,
     });
 
-    expect(result.stdout + result.stderr).not.toContain("not found in registry");
-  });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout + result.stderr).not.toContain("No project registered for this path");
+  }, 60_000);
 
   it("reset --project <unknown-name> exits with error", async () => {
     const tmpBase = makeTempDir();
@@ -111,34 +154,40 @@ describe("foreman reset --project flag", () => {
     const tmpBase = makeTempDir();
     const projectDir = mkProject(tmpBase, "my-project");
 
-    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
-    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+    initGitRepo(projectDir);
+    writeFileSync(join(projectDir, ".env"), "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/foreman\n", "utf-8");
 
-    const result = await run(["reset"], projectDir);
-    expect(result.stdout + result.stderr).not.toContain("not found in registry");
+    const registryDir = join(tmpBase, ".foreman", "projects");
+    setupRegistryWithProject(registryDir, realpathSync(projectDir), "my-project");
+
+    const result = await run(["reset"], projectDir, { ...process.env, HOME: tmpBase });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout + result.stderr).not.toContain("No project registered for this path");
   });
 
 
   it("reset --project-path <absolute-path> resolves project path correctly", async () => {
     const tmpBase = makeTempDir();
-    const projectDir = mkProject(tmpBase, "my-project");
+    const targetDir = mkProject(tmpBase, "my-project");
+    const cwdDir = mkProject(tmpBase, "cwd-repo");
 
-    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
-    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+    initGitRepo(targetDir);
+    initGitRepo(cwdDir);
+    writeFileSync(join(targetDir, ".env"), "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/foreman\n", "utf-8");
 
-    const result = await run(["reset", "--project-path", projectDir], projectDir, {
+    const registryDir = join(tmpBase, ".foreman", "projects");
+    setupRegistryWithProject(registryDir, targetDir, "my-project");
+
+    const result = await run(["reset", "--project-path", targetDir], cwdDir, {
       ...process.env,
       HOME: tmpBase,
     });
 
     const output = result.stdout + result.stderr;
+    expect(result.exitCode).toBe(0);
     expect(output).not.toContain("`--project-path` must be an absolute path.");
-    expect(output).not.toContain("not found. Run 'foreman project list'");
-  });
+    expect(output).not.toContain("No project registered for this path");
+  }, 60_000);
 
   it("reset --project-path <relative-path> exits with error", async () => {
     const tmpBase = makeTempDir();

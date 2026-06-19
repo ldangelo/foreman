@@ -4,40 +4,51 @@
 
 > The foreman doesn't write the code — they manage the crew that does.
 
-Multi-agent coding orchestrator. Decomposes development work into parallelizable tasks, dispatches them to AI coding agents in isolated git worktrees, and automatically merges results back — all driven by a real-time pipeline and inter-agent messaging.
+**What it does:** Foreman is a multi-agent coding orchestrator. It coordinates multiple AI coding agents to work in parallel on the same codebase using git worktrees for isolation, orchestrating a 5-phase pipeline (Explorer → Developer ↔ QA → Reviewer → Finalize) with automatic merging, inter-agent messaging, and progress tracking.
+
+Foreman decomposes development work into parallelizable tasks, dispatches them to AI coding agents in isolated git worktrees, and automatically merges results back — all tracked through a PostgreSQL-backed daemon for multi-project aggregation.
 
 ## Why Foreman?
 
 You already have AI coding agents. What you don't have is a way to run several of them simultaneously on the same codebase without them stepping on each other. Foreman solves this:
 
-- **Work decomposition** — PRD → TRD → native tasks (with beads compatibility fallback)
+- **Work decomposition** — PRD → TRD → native tasks (PostgreSQL-backed via daemon, PostgreSQL for standalone)
 - **Git isolation** — each agent gets its own worktree (zero conflicts during development)
 - **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
 - **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
-- **Built-in messaging** — SQLite-backed inter-agent messaging with native `send_mail` tool, phase lifecycle notifications, and file reservations
+- **Persistent daemon** — ForemanDaemon optionally runs in background to serve tRPC over Unix socket + HTTP, sharing a Postgres pool across all CLI invocations
+- **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations; PostgreSQL or Postgres-backed depending on daemon mode
+- **Native task storage** — PostgreSQL-backed tasks for daemon and standalone workflows
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
-- **Progress tracking** — every task, agent, and phase tracked in SQLite, with beads fallback where needed
+- **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
+- **Progress tracking** — every task, agent, and phase tracked in PostgreSQL
+
+> **Note:** Foreman uses PostgreSQL when the daemon is running (for multi-project aggregation) and for standalone development. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
 
 ## Architecture
 
 ```
 Foreman CLI / Dispatcher
   │
-  ├─ per task: agent-worker.ts (detached process)
+  ├─ ForemanDaemon (optional persistent background process)
+  │    ├─ tRPC router over Unix socket + HTTP
+  │    │    Procedures: projects, tasks, runs, events, messages
+  │    ├─ Postgres pool (PoolManager singleton) — shared across CLI invocations
+  │    └─ Fastify web server (optional HTTP port)
+  │
+  ├─ per task: agent-worker.ts (detached child process)
   │    └─ Pi SDK (in-process)
   │       createAgentSession() → session.prompt()
   │       Tools: read, write, edit, bash, grep, find, ls, send_mail
   │
   ├─ Pipeline Executor (workflow YAML-driven)
-  │    Phases defined in .foreman/workflows/*.yaml
+  │    Phases defined in ~/.foreman/workflows/*.yaml
   │    Model selection, retries, mail hooks, artifacts — all YAML config
-  │    Per-phase trace artifacts → docs/reports/{seedId}/{PHASE}_TRACE.{md,json}
+  │    Per-phase reports/traces → ~/.foreman/reports/... (outside repo commits)
   │
-  ├─ Messaging (SQLite, .foreman/foreman.db — no external server)
-  │    send_mail tool: agents call directly as a native Pi SDK tool
-  │    Lifecycle: phase-started, phase-complete, agent-error
-  │    Coordination: branch-ready, merge-complete, task-closed
-  │    File reservations: prevent concurrent worktree conflicts
+  ├─ TrpcClient (CLI → daemon transport)
+  │    Unix socket: ~/.foreman/daemon.sock
+  │    httpBatchLink → type-safe procedure calls
   │
   └─ Refinery + autoMerge
        Triggers immediately after finalize phase
@@ -45,32 +56,56 @@ Foreman CLI / Dispatcher
        T3/T4: AI conflict resolution via Pi session
 ```
 
-**Pipeline phases** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 30 turns, read-only) — codebase analysis → `EXPLORER_REPORT.md`
-2. **Developer** (Sonnet, 80 turns, read+write) — implementation + tests
-3. **QA** (Sonnet, 30 turns, read+bash) — test verification → `QA_REPORT.md`
-4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
-5. **Finalize** — git add/commit/push, native task merge/close update (or beads fallback)
+### Elixir Backend Migration Roles
 
-Dev ↔ QA retries up to 2x before proceeding to Review.
+TRD-2026-014 adds an Elixir/OTP orchestration server alongside the existing Node CLI and Node/Pi workers. The target split is:
+
+- **Node CLI**: parses operator commands, starts or locates the Elixir server, sends authenticated JSON commands/reads, renders projection responses, and keeps deprecated aliases pointing at replacements.
+- **Elixir server**: owns durable commands, append-only events, CQRS projections, run/phase actors, scheduler capacity, automatic 5-second scheduler ticks that claim dispatchable `ready` tasks and launch the Node/Pi worker bridge, VCS/PR state machines, inbox/debug/attach views, recovery, doctor/metrics, and authorization audit events.
+- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/logs/artifacts back to Elixir, and receives scoped project/run environment metadata.
+
+See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) for the migration architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
+
+**ForemanDaemon lifecycle:**
+- `foreman daemon start` — validates Postgres, starts Fastify + Unix socket listener
+- `foreman daemon stop` — clean shutdown (release pool, close socket)
+- `foreman daemon status` — PID, socket path, health endpoint
+- Auto-restart on unexpected exit (detected via `foreman doctor`)
+
+> **Note:** Foreman uses PostgreSQL via `DATABASE_URL`. The daemon owns the shared Postgres pool and exposes a tRPC layer for CLI commands, avoiding per-invocation connection overhead and enabling multi-project aggregation.
+
+**Pipeline phases** (orchestrated by TypeScript, not AI):
+1. **Explorer** (Haiku, 12 turns, read-only) — concise developer handoff → `EXPLORER_REPORT.md`
+2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — implementation only; QA/finalize own tests
+3. **QA** (Sonnet, 30 turns, read+bash) — targeted test verification only → `QA_REPORT.md`
+4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
+5. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
+6. **Finalize** — git add/commit/push, native task merge/close update
+
+Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs before finalization so fixes/features do not merge without an explicit documentation decision.
 
 ## Dispatch Flow
 
-The following diagram shows the full lifecycle of a task from `foreman run` to merged branch:
+The following diagram shows the full lifecycle of a task from `foreman run` to merged branch (daemon is optional — shown if running):
 
 ```mermaid
 flowchart TD
+    subgraph DAEMON["foreman daemon start"]
+        DA[Initialize PoolManager → Postgres]
+        DB[Start Fastify + Unix socket: ~/.foreman/daemon.sock]
+        DC[Health check endpoint responds]
+        DA --> DB --> DC
+    end
+
     subgraph CLI["foreman run"]
         A[User runs foreman run] --> B[Dispatcher.dispatch]
-        B --> C{Check agent slots\navailable?}
-        C -- No slots --> DONE[Return: skipped]
-        C -- Slots open --> D[native ready tasks or br fallback]
+        B --> C{daemon reachable?}
+        C -- No --> DAEMON_ERR[Error: start daemon first]
+        C -- Yes --> D[dependency-unblocked native ready tasks]
         D --> E{selectStrategy}
-        E -- bv available --> F[bv.robotTriage → score + sort by AI recommendation]
-        E -- br available --> G[br ready → sort by priority P0→P4]
-        E -- native only --> H[native ready → sort by priority]
+        E -- AI triage available --> F[score + sort by AI recommendation]
+        E -- default --> H[sort by priority P0→P4]
         F --> I[For each task...]
-        G --> I
         H --> I
         I --> J{Skip checks}
         J -- already active --> SKIP[Skip: already running]
@@ -84,7 +119,7 @@ flowchart TD
         K --> L[resolveBaseBranch\nstack on dependency branch?]
         L --> M[createWorktree\ngit worktree add foreman/task-id]
         M --> N[Write TASK.md\ninto worktree]
-        N --> O[store.createRun → SQLite]
+        N --> O[daemon: store.createRun → Postgres]
         O --> P[update task status → in_progress]
         P --> Q[spawnAgent]
     end
@@ -96,43 +131,43 @@ flowchart TD
         S --> U[Write config.json\nto temp file]
         T --> U
         U --> V[spawn agent-worker.ts\nas detached child process]
-        V --> W[store.updateRun → running]
+        V --> W[daemon: store.updateRun → running]
     end
 
     subgraph WORKER["agent-worker process (detached)"]
         W --> X[Read + delete config.json]
-        X --> Y[Open SQLite store\nOpen ~/.foreman/logs/runId.log]
-        Y --> Z[Init SqliteMailClient\n.foreman/foreman.db]
+        X --> Y[Open worktree log\nOpen ~/.foreman/logs/runId.log]
+        Y --> Z[Init PostgresMailClient\n(daemon-backed Postgres mail)]
         Z --> AA{pipeline mode?}
         AA -- No --> AB[Single agent via Pi RPC]
         AA -- Yes --> AC[runPipeline]
     end
 
     subgraph PIPELINE["Pipeline phases"]
-        AC --> P1
+        AC --> P1A
 
-        subgraph P1["Phase 1: Explorer (Haiku, 30 turns, read-only)"]
+        subgraph P1["Phase 1: Explorer (Haiku, 12 turns, read-only)"]
             P1A[Register agent-mail identity] --> P1B[Run SDK query\nexplorerPrompt]
             P1B --> P1C[Write EXPLORER_REPORT.md]
             P1C --> P1D[Write EXPLORER_TRACE.{md,json}]
             P1D --> P1E[Mail report to developer inbox]
         end
 
-        P1 --> P1_ok{success?}
+        P1A --> P1_ok{success?}
         P1_ok -- No --> STUCK[markStuck → task reset to open\nexponential backoff]
-        P1_ok -- Yes --> P2
+        P1_ok -- Yes --> P2A
 
-        subgraph P2["Phase 2: Developer (Sonnet, 80 turns, read+write)"]
+        subgraph P2["Phase 2: Developer (Sonnet, 50 turns default / 60 turns feature, read+write)"]
             P2A[Reserve worktree files via Agent Mail] --> P2B[Run SDK query\ndeveloperPrompt + explorer context]
             P2B --> P2C[Write DEVELOPER_REPORT.md]
             P2C --> P2D[Write DEVELOPER_TRACE.{md,json}]
             P2D --> P2E[Release file reservations]
         end
 
-        P2 --> P2_ok{success?}
+        P2A --> P2_ok{success?}
         P2_ok -- No --> STUCK
 
-        P2_ok -- Yes --> P3
+        P2_ok -- Yes --> P3A
 
         subgraph P3["Phase 3: QA (Sonnet, 30 turns, read+bash)"]
             P3A[Run SDK query\nqaPrompt + dev report]
@@ -141,12 +176,12 @@ flowchart TD
             P3C --> P3D[Parse verdict: PASS / FAIL]
         end
 
-        P3 --> P3_ok{QA verdict?}
+        P3D --> P3_ok{QA verdict?}
         P3_ok -- FAIL, retries left --> RETRY[Increment devRetries\nPass QA feedback to dev]
-        RETRY --> P2
-        P3_ok -- FAIL, max retries --> P4
+        RETRY --> P2A
+        P3_ok -- FAIL, max retries --> P4A
 
-        P3_ok -- PASS --> P4
+        P3_ok -- PASS --> P4A
 
         subgraph P4["Phase 4: Reviewer (Sonnet, 20 turns, read-only)"]
             P4A[Run SDK query\nreviewerPrompt]
@@ -156,11 +191,11 @@ flowchart TD
             P4D -- Yes --> FAIL_REV[Mark pipeline FAILED_REVIEW]
         end
 
-        P4D -- No --> P5
+        P4D -- No --> P5A
 
         subgraph P5["Phase 5: Finalize"]
             P5A[git add, commit, push\nforeman/task-id branch]
-            P5A --> P5B[native task merge/close or br fallback]
+            P5A --> P5B[native task merge/close]
             P5B --> P5C[Enqueue to MergeQueue\nmail branch-ready to merge-agent]
         end
     end
@@ -180,6 +215,7 @@ flowchart TD
 
 | Decision | Outcome |
 |---|---|
+| **Daemon check** | `foreman run` requires daemon reachable — prompts to start if not |
 | **Backoff check** | Task recently failed/stuck → exponential delay before retry |
 | **Dependency stacking** | Task depends on open task → worktree branches from that dependency's branch |
 | **Pi vs SDK** | `pi` binary on PATH → JSONL RPC protocol; otherwise Claude SDK `query()` |
@@ -191,10 +227,12 @@ flowchart TD
 ## Prerequisites
 
 - **Node.js 20+**
-- **[beads_rust](https://github.com/Dicklesworthstone/beads_rust)** (`br`) — compatibility fallback for legacy task flows
+- **PostgreSQL 15+** — required only when running the daemon (`foreman daemon start`); optional otherwise
   ```bash
-  cargo install beads_rust
-  # or: download binary to ~/.local/bin/br
+  # macOS
+  brew install postgresql@15
+  # Linux
+  sudo apt install postgresql-15
   ```
 - **[Pi](https://pi.dev)** _(installed as npm dependency)_ — agent runtime via `@mariozechner/pi-coding-agent` SDK. No separate binary needed.
 - **Anthropic API key** — `export ANTHROPIC_API_KEY=sk-ant-...` or log in via Pi: `pi /login`
@@ -269,14 +307,12 @@ If you prefer not to use Docker for Postgres, override `DATABASE_URL` in your sh
 irm https://raw.githubusercontent.com/ldangelo/foreman/main/install.ps1 | iex
 ```
 
-### Verify installation
+### Verification
 
 ```bash
 foreman --version
-foreman doctor              # Check dependencies (br, API key, etc.)
+foreman doctor              # Check installation and dependencies
 ```
-
-> **Migration note:** `br` is still recommended during the transition period for compatibility/fallback flows. Native-task projects can use most Foreman paths without it, but keeping `br` installed avoids surprises on legacy paths.
 
 ## Quick Start
 
@@ -285,25 +321,30 @@ foreman doctor              # Check dependencies (br, API key, etc.)
 cd ~/your-project
 foreman init --name my-project
 
-# 2. Create or import tasks
+# 2. Start the Foreman daemon (validates Postgres, starts tRPC)
+foreman daemon start
+
+# 3. Create or import tasks
 foreman task create "Add user auth" --type feature --priority 1
 foreman task create "Write auth tests" --type task --priority 2
 # or migrate an existing beads project
 foreman task import --from-beads
 
-# 3. Dispatch agents to ready tasks
+# 4. Dispatch agents to ready tasks
 foreman run
 
-# 4. Monitor progress
+# 5. Monitor progress
 foreman status
 
-# 5. Merge completed branches (runs automatically in foreman run loop)
+# 6. Merge completed branches (runs automatically in foreman run loop)
 foreman merge
 ```
 
+> **Note:** The daemon is required for full multi-project orchestration. Without it, Foreman uses project-level PostgreSQL for single-project development.
+
 ## Messaging
 
-Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are stored in SQLite (`.foreman/foreman.db`) — no external server, no HTTP, no additional dependencies.
+Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are stored in **PostgreSQL** for standalone development or **PostgreSQL** (via ForemanDaemon) for multi-project aggregation.
 
 ### How agents send messages
 
@@ -429,9 +470,11 @@ For common problems and solutions, see **[Troubleshooting Guide](docs/troublesho
 
 ### `foreman init`
 Initialize Foreman in a project directory. Registers the project and sets up `.foreman/`.
+Use `--wizard` for interactive setup that writes `.foreman/config.yaml` with VCS, workflow, and issue-tracker settings.
 
 ```bash
 foreman init --name "my-project"
+foreman init --wizard
 ```
 
 ### `foreman run`
@@ -442,6 +485,7 @@ foreman run                              # Dispatch to all ready tasks
 foreman run --project my-project         # Dispatch without cd into a registered project
 foreman run --task task-abc              # Dispatch one specific task
 foreman run --max-agents 3               # Limit concurrent agents
+foreman run --yes                        # Auto-confirm run prompts for non-interactive use
 foreman run --model claude-opus-4-6      # Override model for all agents
 foreman run --no-tests                   # Skip test suite in merge step
 foreman run --dry-run                    # Preview without dispatching
@@ -450,11 +494,11 @@ foreman run --dry-run                    # Preview without dispatching
 Each agent gets:
 - Its own git worktree (branch: `foreman/<task-id>`)
 - A `TASK.md` with task instructions, phase prompts, and task context
-- Native task status updates (or `br` fallback for legacy projects)
+- Native task status updates in PostgreSQL
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across projects from the dashboard/status surfaces.
+Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events by default in Postgres-backed Elixir mode.
 
 ```bash
 foreman status
@@ -464,20 +508,32 @@ foreman status --live                    # Full dashboard TUI with event stream
 ```
 
 ### `foreman board`
-Terminal UI kanban board for managing Foreman tasks. Six status columns with vim-style navigation.
+Terminal UI kanban board for managing Foreman tasks. Five status columns with vim-style navigation. Press `y` to copy the selected task ID. `open`/`backlog` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention. The board monitors agent inbox messages and updates only task cards tied to changed runs; press `r` for a full manual reload with a `refreshing…` spinner and `refreshed <time>` confirmation.
 
 ```bash
 foreman board                             # Launch interactive kanban board
 foreman board --project my-project        # Board for a specific project
 ```
 
-### `foreman dashboard`
-Multi-project dashboard with run progress, metrics, and human-attention tasks.
+### `foreman mcp`
+Run Foreman's MCP server for agent/tool integrations. Supports local stdio clients and HTTP clients for future remote Foreman deployments.
 
 ```bash
-foreman dashboard                         # Multi-project overview
-foreman dashboard --simple                # Compact single-project view with task counts
-foreman dashboard --project my-project    # Single project deep dive
+foreman mcp --transport stdio
+foreman mcp --transport http --host 127.0.0.1 --port 4777
+foreman mcp --transport http --host 0.0.0.0 --mcp-auth-token "$FOREMAN_MCP_AUTH_TOKEN"
+```
+
+Tools cover one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, inbox messages, lifecycle events, and debug timelines through the Elixir backend only. In Pi, the project extension also adds slash commands such as `/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick`. See [`docs/mcp-server.md`](docs/mcp-server.md).
+
+### `foreman watch`
+Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
+
+```bash
+foreman watch                             # Live unified dashboard
+foreman watch --no-watch                  # One-shot snapshot, no polling
+foreman watch --project <id>              # Filter to a specific project
+foreman status --watch                    # Compact refreshing status view
 ```
 
 Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths still work for direct one-off targeting.
@@ -506,10 +562,26 @@ foreman plan "Build a user auth system with OAuth2"
 foreman plan docs/description.md              # From file
 foreman plan --from-prd docs/PRD.md "unused"  # Skip to TRD
 foreman plan --prd-only "Build a REST API"    # Stop after PRD
+foreman plan prd "Build a REST API"           # Server-backed PRD planning
+foreman plan trd docs/PRD.md                   # Server-backed TRD planning
 ```
 
+`plan prd` and `plan trd` send `plan.prd` / `plan.trd` commands to the local Elixir orchestration server and auto-start it by default.
+
+### Migration and coexistence
+Import a legacy TypeScript-era migration payload into the Elixir event store:
+
+```bash
+foreman import --to-elixir --file migration.json
+foreman import --to-elixir --from-node --project foreman  # snapshot current Node/Postgres project into Elixir
+```
+
+The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. While migration is incomplete, set `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` to delegate supported commands (`run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`) to the legacy TS CLI.
+
+Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; `foreman board` reads and writes task state through Elixir after importing project state. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+
 ### `foreman sling trd`
-Parse a TRD and create a native task hierarchy (or compatibility beads when explicitly requested).
+Parse a TRD and create a native task hierarchy.
 
 ```bash
 foreman sling trd docs/TRD.md           # Parse and create tasks
@@ -517,8 +589,37 @@ foreman sling trd docs/TRD.md --dry-run # Preview without creating
 foreman sling trd docs/TRD.md --auto    # Skip confirmation
 ```
 
+### `foreman daemon`
+Manage the ForemanDaemon background process (Postgres-backed state).
+
+```bash
+foreman daemon start          # Start daemon in background (validates Postgres)
+foreman daemon stop           # Stop running daemon
+foreman daemon status         # Show PID, socket path, health
+foreman daemon restart        # Stop + start
+```
+
+> Most legacy Node-backed commands (`foreman task`, `foreman status`, `foreman inbox`, etc.) require the daemon to be running. Start it once with `foreman daemon start`. After Elixir cutover, `foreman daemon start|restart` is blocked by default; use `foreman server start` instead. Set `FOREMAN_BACKEND=node` only for explicit legacy daemon operation.
+
+### `foreman server`
+Manage the experimental Elixir orchestration server.
+
+```bash
+foreman server doctor        # Auto-start and validate DB, projections, workers, VCS, providers, integrations
+foreman server start         # Start local Elixir server
+foreman server status        # Show PID/URL and health
+foreman server stop          # Stop local Elixir server
+```
+
+The Elixir server scheduler automatically ticks every 5 seconds, claims dispatchable `ready` tasks within global/project capacity, and launches the Node/Pi worker bridge. `foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines. Troubleshoot Elixir-backed status issues by checking the durable event first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
+
+Security controls for the Elixir server:
+- Worker startup scopes environment to `FOREMAN_PROJECT_ID`, `FOREMAN_RUN_ID`, allowed base variables, and explicit project/run secret maps. Forbidden host secrets such as `FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, and `DATABASE_*` are stripped before worker launch metadata is recorded.
+- Binding the HTTP server beyond loopback requires `FOREMAN_SERVER_AUTH_TOKEN`; protected API calls must send `Authorization: Bearer <token>`.
+- Destructive command-router actions such as `task.close`, `task.block`, and `task.update` append `AuthorizationChecked` and `AuditRecorded` events after the command executes.
+
 ### `foreman doctor`
-Check environment health: br binary, Pi binary, Agent Mail server, SQLite integrity.
+Check environment health: Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth.
 
 ```bash
 foreman doctor
@@ -526,17 +627,18 @@ foreman doctor --fix                    # Auto-fix recoverable issues
 ```
 
 ### `foreman inbox`
-View inter-agent messages from pipeline runs.
+View inter-agent messages from pipeline runs. Routes through ForemanDaemon.
 
 ```bash
 foreman inbox                            # Latest run's messages
 foreman inbox --task task-abc           # Messages for a specific task
 foreman inbox --all                     # All runs
 foreman inbox --all --watch             # Live stream across all runs
+foreman inbox send --from qa --to developer --subject fix-needed  # Send a message (--run-id or FOREMAN_RUN_ID)
 ```
 
 ### `foreman worktree`
-Manage git worktrees created for active tasks.
+Manage git worktrees created for active tasks. Agent worktrees live under `~/.foreman/worktrees/<projectId>/...`; refinery merge integration worktrees live under `~/.foreman/integration/<projectId>/<targetBranch>` and are reset before each merge attempt.
 
 ```bash
 foreman worktree list                    # List active worktrees
@@ -545,7 +647,7 @@ foreman worktree clean --all             # Remove all including active ones
 ```
 
 ### `foreman sentinel`
-QA sentinel for continuous testing on the main branch.
+QA sentinel for continuous testing on the main branch. Sentinel run history is stored in `sentinel_runs`, with start/pass/fail events recorded for observability.
 
 ```bash
 foreman sentinel run-once               # Run tests once and exit
@@ -555,7 +657,7 @@ foreman sentinel status                  # Show sentinel status
 ```
 
 ### `foreman reset`
-Reset failed/stuck runs: kill agents, remove worktrees, reset tasks to a dispatchable state.
+Reset failed/stuck runs: kill agents, remove worktrees, reset tasks to a dispatchable state. For focused repair after a phase failure, use `--preserve-worktree` or `--retry-failed-phase` to keep the branch/worktree intact.
 
 ```bash
 foreman reset                           # Reset failed/stuck runs
@@ -563,6 +665,7 @@ foreman reset --project my-project      # Reset runs in a registered project wit
 foreman reset --all                     # Reset ALL active runs
 foreman reset --detect-stuck            # Detect stuck runs first, then reset
 foreman reset --detect-stuck --timeout 20  # Stuck after 20 minutes
+foreman reset --task task-abc --preserve-worktree  # Keep branch/worktree for repair
 ```
 
 ### `foreman retry`
@@ -600,9 +703,142 @@ foreman attach --follow <id>            # Follow log output
 foreman attach --kill <id>              # Kill a running agent
 ```
 
+## GitHub Integration
+
+Foreman integrates with GitHub for bi-directional issue tracking, webhook-driven automation, pull request workflows, and release automation.
+
+### Features
+
+- **Bi-directional issue sync** — Push and pull GitHub issues as Foreman tasks via `foreman issue sync`
+- **Real-time webhooks** — Issue and pull request events stream to ForemanDaemon via `POST /webhook`
+- **Auto-import rules** — Issues with `foreman` or `foreman:dispatch` label can be imported directly into Foreman
+- **Priority mapping** — `foreman:priority:0-4` labels map GitHub issues onto Foreman task priorities
+- **PR visibility** — Pull request events and merge outcomes are recorded alongside task and run state
+- **Release automation** — Conventional commits and GitHub Actions drive release tagging and binary publishing
+
+### Label Conventions
+
+GitHub labels drive Foreman behavior:
+
+| Label | Effect |
+|---|---|
+| `foreman` | Mark issue for Foreman-aware handling and import |
+| `foreman:dispatch` | Import as `ready` status — immediately dispatchable |
+| `foreman:skip` | Skip webhook auto-import |
+| `foreman:priority:0` | P0 — critical (priority 0) |
+| `foreman:priority:1` | P1 — high priority |
+| `foreman:priority:2` | P2 — medium (default) |
+| `foreman:priority:3` | P3 — low priority |
+| `foreman:priority:4` | P4 — backlog |
+| `github:{name}` | Mirrored from GitHub; `{name}` is the original GitHub label |
+
+### CLI Commands
+
+```bash
+# View and manage GitHub configuration
+foreman issue configure                          # Configure repo sync + credentials
+foreman issue labels <repo>                     # List available labels
+foreman issue milestones <repo>                 # List milestones
+
+# Sync issues
+foreman issue import <repo>                     # Import all open issues
+foreman issue import <repo> --milestone "v1.0" # Filter by milestone
+foreman issue import <repo> --labels "bug,enhancement"
+foreman issue import <repo> --dry-run           # Preview without creating
+foreman issue sync <repo>                       # Bi-directional sync
+foreman issue sync <repo> --create              # Create missing issues on GitHub
+
+# Webhook management
+foreman issue webhook --enable <repo>           # Enable webhook + generate secret
+foreman issue webhook --disable <repo>          # Disable webhook
+foreman issue webhook --status <repo>           # Show webhook status
+
+# Status and linking
+foreman issue status <repo>                     # Show linked issue status
+foreman issue link <repo>#<number>              # Link task to GitHub issue
+foreman issue view <repo>#<number>              # View single issue details
+```
+
+### Webhooks
+
+Foreman includes a built-in webhook handler (`src/daemon/webhook-handler.ts`) that receives GitHub events and routes them through ForemanDaemon.
+
+Webhooks use **HMAC-SHA256** signature verification. The daemon rejects payloads with invalid signatures:
+
+```bash
+export FOREMAN_WEBHOOK_SECRET=<your-secret>     # Set in daemon environment
+```
+
+The webhook secret is auto-generated when enabling via `foreman issue webhook --enable` and stored in the `github_repos` table.
+
+#### Webhook event handling
+
+| Event | Action |
+|---|---|
+| `issues.opened` | Create Foreman task from issue (body → description, labels → task labels) |
+| `issues.closed` | Close Foreman task; record sync event |
+| `issues.reopened` | Reopen Foreman task |
+| `issues.labeled` | Add `github:{label}` to task labels |
+| `issues.unlabeled` | Remove `github:{label}` from task labels |
+| `pull_request.closed` + merged | Record merge metadata against the task/run |
+| `push` | Record sync activity and support active branch/worktree reconciliation |
+
+### Pull Requests and Branches
+
+Foreman worktrees and GitHub issues are linked through Foreman-managed task and run metadata.
+
+- Pull request activity is tracked per run, not just by branch name
+- Merged PR state must match the current branch head before a task is treated as merged
+- Historical PRs for older branch heads should not be treated as proof that the current run landed
+
+Commit messages can append `Fixes #{issue_number}` so merging a PR closes the linked GitHub issue when appropriate.
+
+### GitHub Actions and Releases
+
+Foreman can trigger and be triggered by GitHub Actions workflows:
+
+```yaml
+# .github/workflows/foreman-trigger.yml
+name: Trigger Foreman Task
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  foreman-task:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Foreman task from PR
+        run: |
+          foreman task create "Review PR: ${{ github.event.pull_request.title }}" \
+            --type task \
+            --priority 1 \
+            --labels "pr-review,github-automation"
+```
+
+Foreman can also post pipeline status back to GitHub checks:
+
+```bash
+export GITHUB_TOKEN=ghp_...        # GitHub personal access token
+export GITHUB_REPOSITORY=owner/repo
+
+# Foreman can post:
+# - checkrun status for pipeline phases
+# - final commit status after merge
+```
+
+For release tagging and version bumps, use conventional commits and the release workflows described in [Semantic Versioning & Conventional Commits](#semantic-versioning--conventional-commits).
+
 ## Task Tracking
 
-Foreman uses **native tasks** stored in the SQLite store (`.foreman/foreman.db`). Tasks are created, tracked, and closed entirely within Foreman.
+Foreman supports one runtime task store: **native tasks** backed by PostgreSQL (via the daemon or direct standalone access).
+
+### Native tasks
+
+Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures (when daemon is running) or directly via PostgreSQL.
 
 ```bash
 # Native task lifecycle
@@ -610,33 +846,21 @@ foreman task create "Implement feature X" --type feature --priority 1
 foreman task list
 foreman task approve task-123
 foreman task update task-123 --status in-progress
+foreman task update task-123 --status review     # branch/PR is awaiting review or merge
 foreman task close task-123
 foreman task dep add task-tests task-feature   # tests depend on feature
 foreman task dep list task-123                 # show dependencies
 ```
 
-For projects using [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for backward compatibility:
+All task operations route through `TrpcClient` → daemon's Postgres store when daemon is running; otherwise they use direct PostgreSQL access via ForemanStore. Native status `review` means the pipeline has finished and the branch/PR is waiting for review or merge; phase status `reviewer` is reserved for an actively running reviewer agent.
+
+For projects with existing [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) data, import it once into native tasks:
 
 ```bash
-# View ready tasks (legacy/fallback path)
-br ready
-
-# Create tasks directly in beads
-br create --title "Implement feature X" --type feature --priority 1
-br create --title "Fix bug Y" --type bug --priority 0
-
-# Work lifecycle
-br update task-abc --status=in_progress
-br close task-abc --reason="Completed"
-
-# Dependencies
-br dep add task-tests task-feature    # tests depend on feature
-
-# Sync with git
-br sync --flush-only               # Export DB to JSONL before committing
+foreman task import --from-beads
 ```
 
-Set `FOREMAN_TASK_STORE=native|beads|auto` to force or inspect task-store selection behavior.
+`FOREMAN_TASK_STORE=native` is accepted for backward compatibility but has no operational effect — the native Postgres task store is always used.
 
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
 
@@ -651,11 +875,12 @@ Workflows define:
 - **Setup cache** — symlink dependency directories from a shared cache
 - **Phase sequence** — which agents run in what order
 - **Model selection** — per-phase models with priority-based overrides
-- **Retry loops** — QA/Reviewer failure → Developer retry with feedback
+- **Retry loops** — QA/Reviewer/PR-review failure → Developer retry with feedback
+- **PR gates** — create-pr, pr-wait, prepare-pr-review, pr-review, and merge phases for review-aware workflows; PR readiness must remain stable briefly and merge re-waits on late pending checks
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 ```yaml
-# .foreman/workflows/default.yaml (project-local override)
+# ~/.foreman/workflows/default.yaml (global override)
 name: default
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -669,7 +894,7 @@ phases:
     models:
       default: sonnet
       P0: opus
-    maxTurns: 80
+    maxTurns: 50
   - name: qa
     prompt: qa.md
     verdict: true
@@ -677,21 +902,62 @@ phases:
     retryOnFail: 2
 ```
 
+Direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks:
+
+```bash
+foreman run task <task-id> <workflow-path> --project <name> --no-watch
+```
+
+**Key behaviors:**
+
+- **Bypasses state gating** — runs regardless of task status (ready, backlog, closed, failed, etc.)
+- **Preserves safety mechanisms** — worktree and run locking still apply
+- **Explicit workflow** — specify the workflow as a positional argument (e.g., `task`, `quick`, `~/.foreman/workflows/custom.yaml`)
+
+**When to use:**
+- Re-running a completed/closed task with a different workflow
+- Testing a new workflow configuration on an existing task
+- Debugging with specific phases or models
+- Recovery scenarios where normal dispatch isn't available
+
+**Example:**
+
+```bash
+# Run a closed task with the task workflow
+foreman run task foreman-12345 task --project my-project --no-watch
+
+# Run with a custom workflow path
+foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml --target-branch main
+
+# Dry run to preview
+foreman run task foreman-12345 task --dry-run
+```
+
+The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.
+
 ### Environment variables
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...          # Required (or use `pi /login` for OAuth)
 export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5)
+export FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS=0  # Per-run wall-clock budget; 0 disables
+export FOREMAN_MAX_PIPELINE_COST_USD=0       # Per-run cost budget; 0 disables
+export FOREMAN_MAX_PIPELINE_TOOL_CALLS=0     # Per-run tool-call budget; 0 disables
+export FOREMAN_MAX_PIPELINE_REVIEW_LOOPS=0   # Per-run retry/review loop budget; 0 disables
 ```
 
 ### Storage locations
 
 | Path | Contents |
 |---|---|
-| `.beads/` | legacy/compatibility beads_rust task database (JSONL, git-tracked) |
-| `.foreman/foreman.db` | SQLite: runs, merge_queue, projects |
-| `.foreman-worktrees/` | Git worktrees for active agents |
-| `~/.foreman/logs/` | Per-run agent logs |
+| `.foreman/` | Project-level config, workflow assets, and runtime metadata |
+| `.beads/` | Legacy beads_rust task data for one-time import (JSONL, git-tracked) |
+| `~/.foreman/daemon.sock` | ForemanDaemon Unix socket (tRPC over HTTP) — optional |
+| `~/.foreman/daemon.pid` | Daemon process ID — optional |
+| `~/.foreman/logs/` | Per-run agent logs + daemon stdout/stderr |
+| `DATABASE_URL` | PostgreSQL connection string — only required when running daemon |
+
+**Storage model:** Foreman stores application state in PostgreSQL through the daemon/tRPC layer or direct standalone access. Native PostgreSQL tasks are the only supported runtime task store; beads_rust data is import-only legacy input.
 
 ## Project Structure
 
@@ -703,20 +969,30 @@ foreman/
 │   │       ├── run.ts              # Main dispatch + merge loop
 │   │       ├── status.ts           # Status display
 │   │       ├── merge.ts            # Manual merge trigger
+│   │       ├── daemon.ts           # Daemon lifecycle management
 │   │       └── doctor.ts           # Health checks
+│   ├── daemon/                     # ForemanDaemon (optional background process)
+│   │   ├── index.ts                # Entry point: PoolManager, Fastify, socket
+│   │   ├── router.ts               # tRPC procedures (projects, tasks, runs, mail)
+│   │   └── webhook-handler.ts      # GitHub webhook receiver
 │   ├── orchestrator/               # Core orchestration engine
 │   │   ├── dispatcher.ts           # Task → agent spawning strategies
 │   │   ├── pi-rpc-spawn-strategy.ts  # Pi RPC spawn (primary)
 │   │   ├── agent-worker.ts         # Claude SDK pipeline (fallback)
-│   │   ├── agent-mail-client.ts    # Agent Mail HTTP wrapper
 │   │   ├── refinery.ts             # Merge + test + cleanup
-│   │   ├── conflict-resolver.ts    # T1-T4 conflict resolution
+│   │   ├── conflict-resolver.ts     # T1-T4 conflict resolution
 │   │   ├── roles.ts                # Phase prompts + tool configs
 │   │   └── sentinel.ts             # Background health monitor
 │   └── lib/
-│       ├── beads-rust.ts           # compatibility br CLI wrapper
-│       ├── git.ts                  # Git worktree management
-│       └── store.ts                # SQLite state store
+│       ├── daemon-manager.ts       # Daemon PID/socket lifecycle
+│       ├── trpc-client.ts           # Unix socket → daemon tRPC transport
+│       ├── db/
+│       │   ├── pool-manager.ts     # Postgres pool singleton (daemon only)
+│       │   └── postgres-adapter.ts # Postgres DB operations (daemon only)
+│       ├── store.ts                # Project-level PostgreSQL store (default)
+│       ├── postgres-store.ts       # Postgres-backed store (daemon mode)
+│       ├── beads-rust.ts           # Compatibility br CLI wrapper
+│       └── git.ts                  # Git worktree management
 ├── packages/
 │   └── foreman-pi-extensions/      # Pi extension package
 │       ├── src/tool-gate.ts        # Block disallowed tools per phase
@@ -731,7 +1007,7 @@ foreman/
 
 Foreman can be distributed as a standalone executable for all 5 platforms — no Node.js required. Binaries are compiled via [pkg](https://github.com/yao-pkg/pkg) which embeds the CJS bundle + Node.js runtime.
 
-> **Note:** `better_sqlite3.node` (native addon) is a _side-car_ file that must stay in the same directory as the binary. It cannot be embedded inside the executable.
+> **Note:** Standalone binaries bundle the daemon. Make sure PostgreSQL is available on the target system.
 
 ### Quick Build
 
@@ -753,29 +1029,14 @@ tsx scripts/compile-binary.ts --target darwin-arm64
 dist/binaries/
   darwin-arm64/
     foreman-darwin-arm64      # macOS Apple Silicon
-    better_sqlite3.node       # side-car native addon
   darwin-x64/
     foreman-darwin-x64        # macOS Intel
-    better_sqlite3.node
   linux-x64/
     foreman-linux-x64         # Linux x86-64
-    better_sqlite3.node
   linux-arm64/
     foreman-linux-arm64       # Linux ARM64 (e.g. AWS Graviton)
-    better_sqlite3.node
   win-x64/
     foreman-win-x64.exe       # Windows x64
-    better_sqlite3.node
-```
-
-### Cross-Platform Compilation
-
-`better_sqlite3.node` differs per platform. The prebuilt binaries for all 5 targets are committed to `scripts/prebuilds/`. To refresh them from the better-sqlite3 GitHub Releases:
-
-```bash
-npm run prebuilds:download          # Download for all targets
-npm run prebuilds:download:force    # Re-download even if present
-npm run prebuilds:status            # Check what's available
 ```
 
 ### Semantic Versioning & Conventional Commits

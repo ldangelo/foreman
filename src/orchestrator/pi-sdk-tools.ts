@@ -9,8 +9,11 @@ import { Type, type Static } from "@mariozechner/pi-ai";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { SqliteMailClient } from "../lib/sqlite-mail-client.js";
-import type { ForemanStore } from "../lib/store.js";
+import type { AgentMailClient } from "../lib/agent-mail-client.js";
+import type { ForemanStore, RunProgress, Run } from "../lib/store.js";
+
+// Narrow interface for run status queries (getRun + getRunProgress)
+export type RunStatusReader = Pick<ForemanStore, "getRun" | "getRunProgress">;
 
 const execFileAsync = promisify(execFile);
 
@@ -23,14 +26,14 @@ const SendMailParams = Type.Object({
 });
 
 /**
- * Create a send-mail ToolDefinition that uses the given SqliteMailClient.
+ * Create a send-mail ToolDefinition that uses the given NullAgentMailClient.
  *
  * The agent calls this tool with { to, subject, body } and the mail is
- * sent directly via the SQLite mail client — no bash command, no skill
+ * sent directly via the configured mail client — no bash command, no skill
  * expansion, no prompt interpretation required.
  */
 export function createSendMailTool(
-  mailClient: SqliteMailClient,
+  mailClient: AgentMailClient,
   _agentRole: string,
 ): ToolDefinition {
   return {
@@ -75,7 +78,7 @@ const GetRunStatusParams = Type.Object({
  * Used by the troubleshooter agent to understand why a run failed and what
  * phase it was in when it stopped making progress.
  */
-export function createGetRunStatusTool(store: ForemanStore): ToolDefinition {
+export function createGetRunStatusTool(store: RunStatusReader): ToolDefinition {
   return {
     name: "get_run_status",
     label: "Get Run Status",

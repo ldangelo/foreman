@@ -2,7 +2,7 @@
  * SentinelAgent — continuous testing agent for main/master branch.
  *
  * Runs the test suite on the specified branch on a configurable schedule.
- * Records results in SQLite and creates br bug tasks on repeated failures.
+ * Records results in Postgres and creates br bug tasks on repeated failures.
  */
 
 import { execFile } from "node:child_process";
@@ -11,7 +11,9 @@ import { randomUUID } from "node:crypto";
 import type { ForemanStore } from "../lib/store.js";
 import type { Issue } from "../lib/task-client.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
-import { GitBackend } from "../lib/vcs/git-backend.js";
+import { VcsBackendFactory } from "../lib/vcs/index.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
+import type { SentinelConfigRow, SentinelRunRow } from "../lib/store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -44,6 +46,17 @@ interface SentinelTaskClient {
   ): Promise<Issue>;
 }
 
+interface SentinelStore {
+  close(): void;
+  isOpen(): boolean;
+  logEvent(projectId: string, eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail", data: Record<string, unknown>): void | Promise<void>;
+  recordSentinelRun(run: Omit<SentinelRunRow, "failure_count"> & { failure_count?: number }): void | Promise<void>;
+  updateSentinelRun(id: string, updates: Partial<Pick<SentinelRunRow, "status" | "output" | "completed_at" | "failure_count">>): void | Promise<void>;
+  upsertSentinelConfig(projectId: string, config: Partial<Omit<SentinelConfigRow, "id" | "project_id" | "created_at" | "updated_at">>): SentinelConfigRow | void | Promise<void>;
+  getSentinelConfig(projectId: string): SentinelConfigRow | null | Promise<SentinelConfigRow | null>;
+  getSentinelRuns(projectId: string, limit?: number): SentinelRunRow[] | Promise<SentinelRunRow[]>;
+}
+
 /**
  * Continuous testing agent that monitors a branch on a schedule.
  *
@@ -54,24 +67,27 @@ interface SentinelTaskClient {
  *   agent.stop();
  */
 export class SentinelAgent {
-  private store: ForemanStore;
+  private store: SentinelStore;
   private seeds: SentinelTaskClient;
   private projectId: string;
   private projectPath: string;
+  private vcsBackend?: Pick<VcsBackend, "resolveRef">;
   private running = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveFailures = 0;
 
   constructor(
-    store: ForemanStore,
+    store: SentinelStore,
     seeds: SentinelTaskClient,
     projectId: string,
     projectPath: string,
+    vcsBackend?: Pick<VcsBackend, "resolveRef">,
   ) {
     this.store = store;
     this.seeds = seeds;
     this.projectId = projectId;
     this.projectPath = projectPath;
+    this.vcsBackend = vcsBackend;
   }
 
   /**
@@ -82,15 +98,9 @@ export class SentinelAgent {
     const startedAt = new Date().toISOString();
     const startMs = Date.now();
 
-    // Log start event
-    this.store.logEvent(this.projectId, "sentinel-start", {
-      runId,
-      branch: opts.branch,
-      testCommand: opts.testCommand,
-    });
-
-    // Insert a running record so status is visible immediately
-    this.store.recordSentinelRun({
+    // Insert a running record so status is visible immediately. Sentinel events
+    // reference sentinel_runs(id), so the run row must exist before logging.
+    await this.store.recordSentinelRun({
       id: runId,
       project_id: this.projectId,
       branch: opts.branch,
@@ -100,6 +110,13 @@ export class SentinelAgent {
       output: null,
       started_at: startedAt,
       completed_at: null,
+    });
+
+    // Log start event
+    await this.store.logEvent(this.projectId, "sentinel-start", {
+      runId,
+      branch: opts.branch,
+      testCommand: opts.testCommand,
     });
 
     let commitHash: string | null = null;
@@ -132,7 +149,7 @@ export class SentinelAgent {
     // run exited while runOnce was in-flight — the run record is lost but that's
     // acceptable since the process is shutting down anyway).
     if (this.store.isOpen()) {
-      this.store.updateSentinelRun(runId, {
+      await this.store.updateSentinelRun(runId, {
         status,
         output: output.slice(0, 50_000), // cap at 50 KB
         completed_at: completedAt,
@@ -154,7 +171,7 @@ export class SentinelAgent {
 
     // Log result event
     const eventType = status === "passed" ? "sentinel-pass" : "sentinel-fail";
-    this.store.logEvent(this.projectId, eventType, {
+    await this.store.logEvent(this.projectId, eventType, {
       runId,
       branch: opts.branch,
       commitHash,
@@ -236,7 +253,8 @@ export class SentinelAgent {
   // ── Private helpers ──────────────────────────────────────────────────
 
   private async resolveCommit(branch: string): Promise<string | null> {
-    const backend = new GitBackend(this.projectPath);
+    const backend = this.vcsBackend
+      ?? await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
     for (const ref of [`origin/${branch}`, branch]) {
       try {
         return await backend.resolveRef(this.projectPath, ref);
@@ -294,22 +312,29 @@ export class SentinelAgent {
       `on branch \`${branch}\`.\n\n` +
       `**Commit:** ${commitHash ?? "unknown"}\n\n` +
       `**Test output (truncated):**\n\`\`\`\n${output.slice(0, 2_000)}\n\`\`\``;
-
     try {
-      // Check for an existing open bead with the same title to avoid duplicates.
-      // Filter by label to narrow the search to sentinel-created beads only.
-      const existingBeads = await this.seeds.list({
+      // Check for an existing open issue with the same title to avoid duplicates.
+      // Filter by label to narrow the search to sentinel-created issues only.
+      const existingIssues = await this.seeds.list({
         status: "open",
         label: "kind:sentinel",
       });
-      const duplicate = existingBeads.find((b) => b.title === title);
+      const duplicate = existingIssues.find((b) => b.title === title);
       if (duplicate) {
         console.log(
-          `[sentinel] Skipping duplicate bead creation — open bead ${duplicate.id} already exists for "${title}"`,
+          `[sentinel] Found existing issue ${duplicate.id} for "${title}"`,
         );
+        // If the task client supports claim(), transition it to in-progress
+        if ("claim" in this.seeds && typeof this.seeds.claim === "function") {
+          try {
+            const claimed = await this.seeds.claim(duplicate.id);
+            console.log(`[sentinel] Claimed issue — now status: ${claimed.status}`);
+          } catch (err) {
+            console.log(`[sentinel] Could not claim issue (may already be in-progress): ${err}`);
+          }
+        }
         return;
       }
-
       await this.seeds.create(title, {
         type: "bug",
         priority: "P0",

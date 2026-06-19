@@ -14,7 +14,7 @@ const {
   };
 
   const mockCreateTaskClient = vi.fn().mockResolvedValue({
-    backendType: "beads",
+    backendType: "native",
     taskClient: sentinelTaskClient,
   });
 
@@ -34,7 +34,7 @@ describe("createSentinelTaskClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateTaskClient.mockResolvedValue({
-      backendType: "beads",
+      backendType: "native",
       taskClient: sentinelTaskClient,
     });
   });
@@ -43,12 +43,10 @@ describe("createSentinelTaskClient", () => {
     vi.unstubAllEnvs();
   });
 
-  it("uses the shared task-client helper and forces the compatibility fallback path", async () => {
+  it("uses the shared task-client helper for native tasks", async () => {
     const taskClient = await createSentinelTaskClient("/mock/project");
 
-    expect(mockCreateTaskClient).toHaveBeenCalledWith("/mock/project", {
-      autoSelectNativeWhenAvailable: false,
-    });
+    expect(mockCreateTaskClient).toHaveBeenCalledWith("/mock/project");
     expect(taskClient).toBe(sentinelTaskClient);
   });
 });

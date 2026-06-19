@@ -17,29 +17,17 @@
  *                                   functions delegated from pre-VcsBackend era.
  *   src/orchestrator/refinery.ts — Contains `gitSpecial()` helper for
  *                                   specialized merge operations not exposed
- *                                   by VcsBackend (git stash, git reset --hard,
- *                                   git rebase --onto, etc.). Justified with
- *                                   inline comments.
+ *                                   by VcsBackend (git apply/index helpers,
+ *                                   etc.). Justified with inline comments.
  *   src/orchestrator/doctor.ts   — Health check / diagnostic tool. Uses git
  *                                   for version checks, config reads, and
  *                                   worktree prune operations.
  *
  * --- Known Violations (TODO: migrate in TRD-016) ---
  * The following files contain direct git calls that should be migrated to
- * VcsBackend but are tracked as known exceptions until TRD-016 is resolved:
+ * VcsBackend but are tracked as known exceptions until TRD-016 is resolved.
  *
- *   src/orchestrator/sentinel.ts   — `resolveCommit()` uses
- *                                    execFileAsync("git", ["rev-parse", ref]).
- *                                    Should migrate to a VcsBackend.resolveRef()
- *                                    method or getHeadId() equivalent.
- *
- *   src/orchestrator/merge-queue.ts — Branch validation uses
- *                                     execFileAsync("git", ["rev-parse", "--verify", ...]).
- *                                     Should use VcsBackend.branchExists().
- *
- *   src/orchestrator/agent-worker.ts — Merge-queue enqueue uses
- *                                      execFileSync("git", ["diff", "--name-only", ...]).
- *                                      Should use VcsBackend.diff() or getModifiedFiles().
+ * Currently empty — remove/add entries here as real exceptions change.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -103,6 +91,11 @@ const ALWAYS_ALLOWED: string[] = [
   // WorktreeManager — manages ~/.foreman/worktrees/<project-id>/ path (distinct from
   // VcsBackend's .foreman-worktrees/ path). Uses direct git for path-specific control.
   "lib/worktree-manager.ts",
+  // PR state service — uses git rev-parse and gh pr view for PR state tracking
+  "lib/pr-state.ts",
+  // Registered checkout sync — manages the daemon-owned clone before dispatch using
+  // git-specific restore/reset semantics not exposed by VcsBackend.
+  "lib/registered-project-checkout.ts",
 ];
 
 /**
@@ -111,19 +104,7 @@ const ALWAYS_ALLOWED: string[] = [
  * TODO(TRD-016): Remove each entry as it is migrated to VcsBackend.
  * See: https://github.com/Fortium/foreman/issues/TRD-016
  */
-const KNOWN_VIOLATIONS: Record<string, string> = {
-  // resolveCommit() calls execFileAsync("git", ["rev-parse", ref]).
-  // Needs: VcsBackend.resolveRef() or equivalent method.
-  "orchestrator/sentinel.ts": "TRD-016: resolveCommit() → VcsBackend.resolveRef()",
-
-  // Branch validation calls execFileAsync("git", ["rev-parse", "--verify", ...]).
-  // Needs: migrate to VcsBackend.branchExists().
-  "orchestrator/merge-queue.ts": "TRD-016: branch check → VcsBackend.branchExists()",
-
-  // Enqueue diff calls execFileSync("git", ["diff", "--name-only", ...]).
-  // Needs: migrate to VcsBackend.diff() or getModifiedFiles().
-  "orchestrator/agent-worker.ts": "TRD-016: diff for enqueue → VcsBackend.diff()",
-};
+const KNOWN_VIOLATIONS: Record<string, string> = {};
 
 /** Test files are allowed to use direct git calls for test infrastructure. */
 function isTestFile(relPath: string): boolean {

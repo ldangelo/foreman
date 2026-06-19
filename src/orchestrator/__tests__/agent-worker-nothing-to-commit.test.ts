@@ -71,6 +71,16 @@ describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)
     expect(block).toContain("reused worktree");
   });
 
+  it("skips PR creation and stops the pipeline successfully when a post-finalize branch has no changes", () => {
+    const idx = source.indexOf("async function runCreatePrBuiltinPhase");
+    expect(idx).toBeGreaterThan(-1);
+    const block = source.slice(idx, idx + 3500);
+    expect(block).toContain("hasChangesAgainstBase");
+    expect(block).toContain("no_changes_against_base");
+    expect(block).toContain("runtimeTaskClient.close");
+    expect(block).toContain("stopPipelineSuccess: true");
+  });
+
   it("only treats nothing_to_commit as success for verification beads when no prior commits", () => {
     const idx = source.indexOf('errorDetail === "nothing_to_commit"');
     const block = source.slice(idx, idx + 2200);

@@ -19,22 +19,32 @@ foreman init           # Initialize project + beads
 foreman run            # Dispatch ready tasks to agents
 foreman run --bead X   # Dispatch specific task
 foreman status         # Show tasks + active agents
-foreman dashboard      # Live dashboard UI
-foreman monitor        # Check agent health
+foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
 foreman reset          # Clean up failed/stuck runs
+foreman reset --detect-stuck  # Detect + reset stuck runs (replaces 'foreman monitor')
+foreman reset --task X --preserve-worktree  # Reset state but keep repair worktree/branch
 foreman retry <seed>   # Re-run a failed pipeline phase
 foreman stop           # Gracefully stop all agents
 foreman doctor         # Health checks (br, Pi, DB integrity)
 foreman debug <id>     # AI-powered execution analysis (Opus)
 foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
+foreman plan prd|trd X # Server-backed PRD/TRD planning
+foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
+foreman server doctor # Elixir default backend; scheduler ticks every 5s and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
-foreman inbox          # Agent mail inbox viewer
+foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead')
+foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
+foreman purge runs     # Remove stale failed run records
+foreman inbox          # Agent mail + selected-run lifecycle events
+foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
+foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
+# In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
 
 # br (beads_rust) task tracking
 br ready               # Unblocked tasks
@@ -50,7 +60,7 @@ br close <id>          # Complete
 ```
 CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
                       |              |
-                   SQLite         Pi SDK (in-process)
+                   PostgreSQL         Pi SDK (in-process)
                    (state)        createAgentSession()
                       |              |
                    br (beads_rust)   Pipeline Executor
@@ -60,8 +70,21 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
                                   (merge queue → dev branch)
 ```
 
+TRD-2026-014 Elixir migration split:
+
+```
+Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker
+   |                              |                                  |
+   |                              |                                  └─ Pi SDK phases, ordered events/heartbeats/logs/artifacts
+   |                              └─ commands, events, projections, run/phase actors, recovery, VCS/PR, doctor/metrics, audits
+   └─ command parsing, auto-start, projection rendering, legacy alias/deprecation warnings
+```
+
+See `docs/guides/elixir-backend-architecture.md` for the operator architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
+
 **Key modules:**
-- `src/cli/commands/` — 21 CLI commands (including `debug` for AI-powered analysis)
+
+- `src/cli/commands/` — 26 CLI commands (including `debug` for AI-powered analysis)
 - `src/orchestrator/pipeline-executor.ts` — generic workflow YAML-driven phase executor
 - `src/orchestrator/pi-sdk-runner.ts` — Pi SDK wrapper (`createAgentSession` + `session.prompt()`)
 - `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (native `send_mail` tool)
@@ -69,12 +92,13 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 - `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
 - `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
 - `src/orchestrator/auto-merge.ts` — immediate post-pipeline merge trigger
-- `src/lib/store.ts` — SQLite state (runs, progress, messages)
-- `src/lib/sqlite-mail-client.ts` — Agent Mail (SQLite-backed, no external server)
+- `src/lib/store.ts` — PostgreSQL state (runs, progress, messages)
+- `src/lib/postgres-mail-client.ts` — Agent Mail (Postgres-backed)
 - `src/lib/workflow-loader.ts` — YAML workflow config parser
 - `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
 
 **Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
+
 - Phase sequence, models, retries, mail hooks, artifacts all defined in YAML
 - No hardcoded phase names in the executor — new phases need only YAML + prompt file
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
@@ -82,9 +106,10 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 - `send_mail` registered as a native Pi SDK tool — agents call it directly, no bash commands
 
 **Default pipeline phases:**
-1. **Explorer** (Haiku) — read-only codebase analysis → EXPLORER_REPORT.md
-2. **Developer** (Sonnet) — implementation + tests → DEVELOPER_REPORT.md
-3. **QA** (Sonnet) — test verification → QA_REPORT.md (verdict: PASS/FAIL)
+
+1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
+2. **Developer** (Sonnet) — implementation only; QA/finalize own tests → DEVELOPER_REPORT.md
+3. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
 5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
 
@@ -142,6 +167,7 @@ vcs:
 - **Input validation at boundaries only**
 - **TDD** use test driven development for all modifications, when adding features create a test first, prove it fails and then make the tests work, afterwards refine/simplify the tests and code for maintainability.
 - **TDD** use test driven development for all modifications, when fixing bugs write a test first that exposes the bug, prove it fails and then make the tests work, afterwards refine/simplify the tests and code for maintainability.
+- **Documentation gate** — every fix/feature must consider updates to `CLAUDE.md`, `AGENTS.md`, `README.md`, the Foreman User Guide (`docs/user-guide.md`), and the CLI Reference (`docs/cli-reference.md`) before finalization. Update only docs affected by real behavior, workflow, command, setup, troubleshooting, or operator-expectation changes.
 
 ## Workflow YAML Configuration
 
@@ -156,9 +182,9 @@ phases:
     models:
       default: haiku
       P0: opus
-    maxTurns: 30
-    artifact: EXPLORER_REPORT.md
-    skipIfArtifact: EXPLORER_REPORT.md
+    maxTurns: 12
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -169,7 +195,7 @@ phases:
     models:
       default: sonnet
       P0: opus
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true            # parse PASS/FAIL from artifact
     retryWith: developer     # on FAIL, loop back to developer
     retryOnFail: 2           # max retry count
@@ -199,9 +225,10 @@ phases:
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
 - **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
 - **Auto-reset on failure**: `markStuck()` resets bead to open when pipeline fails (rate limits); marks failed for permanent errors
-- **Agent Mail is SQLite-backed**: Messages stored in `.foreman/foreman.db` (shared across all workers), not a separate mail.db
-- **SESSION_LOG.md excluded from commits**: Causes merge conflicts when multiple pipelines run concurrently; finalize prompt runs `git reset HEAD SESSION_LOG.md` after `git add -A`
+- **Agent Mail is PostgreSQL-backed**: Messages stored in Postgres (shared across all workers), not a separate mail database
+- **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, and `.beads/issues.jsonl` after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
+- **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
 
 ## Debugging & Recovery
 
@@ -221,6 +248,8 @@ foreman retry <seed>   # Re-run a specific pipeline phase
 # Agent logs (streamed during run)
 ls ~/.foreman/logs/    # One .log file per runId
 cat ~/.foreman/logs/<runId>.log
+foreman purge logs     # Remove old log files (retention policy)
+foreman purge runs     # Remove stale failed run records
 
 # Mail inspection
 foreman inbox --all --watch  # Live stream all mail across all runs
@@ -237,6 +266,7 @@ npx tsc --noEmit       # Type-check without building
 ```
 
 **Common failure modes:**
+
 - Agent stuck in Developer phase → `foreman retry <seed>` or `foreman reset --bead <bead>`
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
@@ -343,6 +373,7 @@ Agent worker logs are automatically written to `~/.foreman/logs/<runId>.log` and
 This project uses [Mulch](https://github.com/jayminwest/mulch) for structured expertise management.
 
 **At the start of every session**, run:
+
 ```bash
 mulch prime
 ```
@@ -352,6 +383,7 @@ Use `mulch prime --files src/foo.ts` to load only records relevant to specific f
 
 **Before completing your task**, review your work for insights worth preserving — conventions discovered,
 patterns applied, failures encountered, or decisions made — and record them:
+
 ```bash
 mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
 ```
@@ -365,65 +397,20 @@ Mulch write commands use file locking and atomic writes — multiple agents can 
 ### Before You Finish
 
 1. Discover what to record:
+
    ```bash
    mulch learn
    ```
+
 2. Store insights from this work session:
+
    ```bash
    mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
    ```
+
 3. Validate and commit:
+
    ```bash
    mulch sync
    ```
 <!-- mulch:end -->
-
-<!-- seeds:start -->
-## Issue Tracking (Seeds)
-<!-- seeds-onboard-v:1 -->
-
-This project uses [Seeds](https://github.com/jayminwest/seeds) for git-native issue tracking.
-
-**At the start of every session**, run:
-```
-sd prime
-```
-
-This injects session context: rules, command reference, and workflows.
-
-**Quick reference:**
-- `sd ready` — Find unblocked work
-- `sd create --title "..." --type task --priority 2` — Create issue
-- `sd update <id> --status in_progress` — Claim work
-- `sd close <id>` — Complete work
-- `sd dep add <id> <depends-on>` — Add dependency between issues
-- `sd sync` — Sync with git (run before pushing)
-
-### Before You Finish
-1. Close completed issues: `sd close <id>`
-2. File issues for remaining work: `sd create --title "..."`
-3. Sync and push: `sd sync && git push`
-<!-- seeds:end -->
-
-<!-- canopy:start -->
-## Prompt Management (Canopy)
-<!-- canopy-onboard-v:1 -->
-
-This project uses [Canopy](https://github.com/jayminwest/canopy) for git-native prompt management.
-
-**At the start of every session**, run:
-```
-cn prime
-```
-
-This injects prompt workflow context: commands, conventions, and common workflows.
-
-**Quick reference:**
-- `cn list` — List all prompts
-- `cn render <name>` — View rendered prompt (resolves inheritance)
-- `cn emit --all` — Render prompts to files
-- `cn update <name>` — Update a prompt (creates new version)
-- `cn sync` — Stage and commit .canopy/ changes
-
-**Do not manually edit emitted files.** Use `cn update` to modify prompts, then `cn emit` to regenerate.
-<!-- canopy:end -->

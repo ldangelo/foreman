@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 
 export interface MergeQueueConfig {
   tier2SafetyCheck: {
@@ -96,8 +97,8 @@ function deepMerge(
   return result;
 }
 
-export function loadMergeConfig(projectPath: string): MergeQueueConfig {
-  const configPath = path.join(projectPath, ".foreman", "config.json");
+export function loadMergeConfig(_projectPath: string): MergeQueueConfig {
+  const configPath = getForemanHomePath("config.json");
 
   let fileContents: string;
   try {

@@ -2,20 +2,29 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
-import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { resolveProjectContext } from "./project-context.js";
+import { wrapLocalRunStore } from "./local-store-adapter.js";
+import { printDryRunNotice } from "./cli-output.js";
 import { ForemanStore } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { existsSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
-import { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
+import { getSeedRetryTargetStatus, mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 import { deleteWorkerConfigFile } from "../../orchestrator/dispatcher.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
+import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import type { StateMismatch } from "../../lib/run-status.js";
 import { getWorkspaceRoot } from "../../lib/workspace-paths.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../../lib/project-config.js";
+import { GhCli } from "../../lib/gh-cli.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 // Re-export for callers that import these from this module (backward compatibility).
 export { mapRunStatusToSeedStatus } from "../../lib/run-status.js";
 export type { StateMismatch } from "../../lib/run-status.js";
@@ -27,6 +36,164 @@ export type { StateMismatch } from "../../lib/run-status.js";
 export type IShowUpdateClient = Pick<ITaskClient, "show" | "update"> & {
   resetToReady?: ITaskClient["resetToReady"];
 };
+
+interface ResetRunStore {
+  getRunsByStatus(status: Run["status"], projectId: string): Promise<Run[]>;
+  getActiveRuns(projectId: string): Promise<Run[]>;
+  getRunsForSeed(seedId: string, projectId: string): Promise<Run[]>;
+  updateRun(runId: string, updates: Partial<Pick<Run, "status" | "completed_at">>): Promise<void>;
+  logEvent(projectId: string, eventType: "stuck", data: Record<string, unknown>, runId?: string): Promise<void>;
+}
+
+interface ResetMergeQueue {
+  list(): Promise<Array<{ id: number; seed_id: string; status: string }>>;
+  remove(id: number): Promise<void>;
+  missingFromQueue(): Promise<Array<{ run_id: string; seed_id: string }>>;
+}
+
+function wrapLocalMergeQueue(queue: MergeQueue): ResetMergeQueue {
+  return {
+    list: async () => queue.list(),
+    remove: async (id) => queue.remove(id),
+    missingFromQueue: async () => queue.missingFromQueue(),
+  };
+}
+
+// ── Orphan-worktree sweep ─────────────────────────────────────────────────────
+
+/** Minimal VCS surface used by the orphan-worktree sweep. */
+export interface OrphanSweepVcs {
+  removeWorkspace(repoPath: string, workspacePath: string): Promise<void>;
+  deleteBranch(
+    repoPath: string,
+    branchName: string,
+    options?: { force?: boolean },
+  ): Promise<{ deleted: boolean }>;
+}
+
+export interface OrphanSweepResult {
+  worktreesRemoved: number;
+  branchesDeleted: number;
+}
+
+/**
+ * Remove orphaned worktree directories under the project's workspace root.
+ *
+ * A directory is an orphan when it does NOT belong to a truly active run
+ * (status `pending` or `running`). "failed" and "stuck" are terminal states —
+ * their agents have stopped, so their worktrees are safe to remove.
+ *
+ * IMPORTANT: the active keep-set is read from the SAME store the rest of the
+ * reset flow uses (the async {@link ResetRunStore} — Postgres-backed for
+ * registered projects). Reading the local synchronous store here would make
+ * live Postgres-backed active runs invisible to the keep-set and cause their
+ * worktrees to be destroyed as "orphans".
+ */
+export async function cleanOrphanWorktrees(
+  store: Pick<ResetRunStore, "getRunsByStatus">,
+  vcs: OrphanSweepVcs,
+  projectPath: string,
+  worktreesDir: string,
+  projectId: string,
+  opts?: {
+    readdir?: (dir: string) => string[];
+    logger?: (msg: string) => void;
+  },
+): Promise<OrphanSweepResult> {
+  const log = opts?.logger ?? ((msg: string) => console.log(msg));
+  const readdir =
+    opts?.readdir ??
+    ((dir: string) => {
+      try {
+        return readdirSync(dir);
+      } catch {
+        // Directory may have been removed already
+        return [];
+      }
+    });
+
+  let worktreesRemoved = 0;
+  let branchesDeleted = 0;
+
+  // Paths that still have truly active runs (pending or running) — keep these.
+  // "failed" and "stuck" are terminal states: their agents have stopped, so
+  // their worktrees are safe to remove during cleanup.
+  const activeStatuses = ["pending", "running"] as const;
+  const activeRunGroups = await Promise.all(
+    activeStatuses.map((s) => store.getRunsByStatus(s, projectId)),
+  );
+  const activeRuns = activeRunGroups.flat();
+  const activeWorktreePaths = new Set(
+    activeRuns.map((r) => (r.worktree_path ? resolve(r.worktree_path) : null)).filter(Boolean),
+  );
+
+  for (const entry of readdir(worktreesDir)) {
+    const fullPath = resolve(worktreesDir, entry);
+    // Skip if this worktree belongs to an active run (may still be in use)
+    if (activeWorktreePaths.has(fullPath)) continue;
+
+    log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
+    try {
+      await vcs.removeWorkspace(projectPath, fullPath);
+      worktreesRemoved++;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
+        log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
+      }
+    }
+    // Delete the corresponding branch if it exists
+    const orphanBranch = `foreman/${entry}`;
+    try {
+      const delResult = await vcs.deleteBranch(projectPath, orphanBranch, { force: true });
+      if (delResult.deleted) {
+        branchesDeleted++;
+        log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);
+      }
+    } catch {
+      // Branch may not exist — skip silently
+    }
+  }
+
+  return { worktreesRemoved, branchesDeleted };
+}
+
+// ── GitHub Issue Link unlinking (TRD-043) ─────────────────────────────────────
+
+/**
+ * Attempt to unlink a task's GitHub issue from any associated PR.
+ * Called when a task is reset to "ready" — the previous PR branch is discarded.
+ *
+ * Silently ignores errors (non-fatal — the unlink is a best-effort cleanup).
+ */
+async function unlinkGitHubIssueIfNeeded(
+  seedId: string,
+  store: ForemanStore | PostgresStore,
+): Promise<void> {
+  try {
+    // ForemanStore.getTaskById is sync; PostgresStore.getTaskById is async
+    const task = await ("getTaskById" in store
+      ? (store as ForemanStore).getTaskById(seedId)
+      : null) as { external_id: string | null } | null;
+
+    if (!task) return;
+    const externalId = task.external_id ?? "";
+    if (!externalId.startsWith("github:")) return;
+
+    // Parse external_id: github:{owner}/{repo}#{issue_number}
+    const match = externalId.match(/^github:([^/]+)\/([^#]+)#(\d+)$/);
+    if (!match) return;
+    const [, owner, repo, issueNum] = match;
+    const issueNumber = parseInt(issueNum, 10);
+
+    // We don't have the PR number stored — use "connected" as the relation key.
+    // GitHub issue links use "connected" as the default relation name.
+    const gh = new GhCli();
+    await gh.unlinkIssueFromPullRequest(owner, repo, issueNumber, "connected");
+  } catch {
+    // Non-fatal: log and continue
+  }
+}
 
 // ── Stale-branch detection types ─────────────────────────────────────────────
 
@@ -202,9 +369,9 @@ async function getDefaultExecFileAsync(): Promise<ExecFileAsyncFn> {
  * re-processed by the refinery.
  */
 export async function detectAndHandleStaleBranches(
-  store: Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns" | "updateRun">,
+  store: Pick<ResetRunStore, "getRunsByStatus" | "getActiveRuns" | "updateRun">,
   seeds: IShowUpdateClient,
-  mergeQueue: MergeQueue,
+  mergeQueue: ResetMergeQueue,
   projectPath: string,
   projectId: string,
   skipSeedIds: ReadonlySet<string>,
@@ -216,10 +383,10 @@ export async function detectAndHandleStaleBranches(
   const dryRun = opts?.dryRun ?? false;
   const execFn = opts?.execFileAsync;
 
-  const completedRuns = store.getRunsByStatus("completed", projectId);
+  const completedRuns = await store.getRunsByStatus("completed", projectId);
 
   // Build a set of seed IDs that have active (pending/running) dispatched runs.
-  const activeRuns = store.getActiveRuns(projectId);
+  const activeRuns = await store.getActiveRuns(projectId);
   const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
   // Deduplicate by seed_id: keep the most recently created run per seed.
@@ -252,7 +419,7 @@ export async function detectAndHandleStaleBranches(
   }
 
   // Snapshot MQ entries once so we don't call list() in a tight loop.
-  const mqEntries = mergeQueue.list();
+  const mqEntries = await mergeQueue.list();
   const activeMqSeedIds = new Set(
     mqEntries
       .filter((e) => e.status === "pending" || e.status === "merging")
@@ -315,12 +482,12 @@ export async function detectAndHandleStaleBranches(
         }
 
         // Mark the run as reset regardless of action.
-        store.updateRun(run.id, { status: "reset", completed_at: new Date().toISOString() });
+        await store.updateRun(run.id, { status: "reset", completed_at: new Date().toISOString() });
 
         // Remove any MQ entries for this seed (conflict/failed ones).
         const seedMqEntries = mqEntries.filter((e) => e.seed_id === run.seed_id);
         for (const entry of seedMqEntries) {
-          mergeQueue.remove(entry.id);
+          await mergeQueue.remove(entry.id);
         }
       } else {
         if (action === "close") closed++;
@@ -366,7 +533,7 @@ export interface MismatchResult {
  * (unless dryRun is true).
  */
 export async function detectAndFixMismatches(
-  store: Pick<ForemanStore, "getRunsByStatus" | "getActiveRuns">,
+  store: Pick<ResetRunStore, "getRunsByStatus" | "getActiveRuns">,
   seeds: IShowUpdateClient,
   projectId: string,
   resetSeedIds: ReadonlySet<string>,
@@ -376,14 +543,14 @@ export async function detectAndFixMismatches(
 
   // Check terminal run statuses not already handled by the reset loop
   const checkStatuses = ["completed", "merged", "pr-created", "conflict", "test-failed"] as const;
-  const terminalRuns = checkStatuses.flatMap((s) => store.getRunsByStatus(s, projectId));
+  const terminalRuns = (await Promise.all(checkStatuses.map((s) => store.getRunsByStatus(s, projectId)))).flat();
 
   // Short-circuit: nothing to check, skip the extra DB read for active runs.
   if (terminalRuns.length === 0) return { mismatches: [], fixed: 0, errors: [] };
 
   // Build a set of seed IDs that have active (pending/running) runs.
   // We skip those to avoid clobbering seeds that were just dispatched.
-  const activeRuns = store.getActiveRuns(projectId);
+  const activeRuns = await store.getActiveRuns(projectId);
   const activeSeedIds = new Set(activeRuns.map((r) => r.seed_id));
 
   // Deduplicate by seed_id: keep the most recently created run per seed
@@ -459,7 +626,7 @@ export interface StuckDetectionResult {
  * be picked up by the main reset loop).
  */
 export async function detectStuckRuns(
-  store: Pick<ForemanStore, "getActiveRuns" | "updateRun" | "logEvent">,
+  store: Pick<ResetRunStore, "getActiveRuns" | "updateRun" | "logEvent">,
   projectId: string,
   opts?: {
     stuckTimeoutMinutes?: number;
@@ -470,7 +637,7 @@ export async function detectStuckRuns(
   const dryRun = opts?.dryRun ?? false;
 
   // Only look at "running" (not pending/failed/stuck — those are handled elsewhere)
-  const activeRuns = store.getActiveRuns(projectId).filter((r) => r.status === "running");
+  const activeRuns = (await store.getActiveRuns(projectId)).filter((r) => r.status === "running");
 
   const stuck: Run[] = [];
   const errors: string[] = [];
@@ -485,8 +652,8 @@ export async function detectStuckRuns(
 
         if (elapsedMinutes > stuckTimeout) {
           if (!dryRun) {
-            store.updateRun(run.id, { status: "stuck" });
-            store.logEvent(
+            await store.updateRun(run.id, { status: "stuck" });
+            await store.logEvent(
               run.project_id,
               "stuck",
               { seedId: run.seed_id, elapsedMinutes: Math.round(elapsedMinutes), detectedBy: "timeout" },
@@ -517,37 +684,6 @@ export interface ResetSeedResult {
   error?: string;
 }
 
-const RETRY_READY_STATUSES = new Set([
-  "backlog",
-  "ready",
-  "in-progress",
-  "blocked",
-  "conflict",
-  "failed",
-  "stuck",
-  "explorer",
-  "developer",
-  "qa",
-  "reviewer",
-  "finalize",
-]);
-
-function getResetTargetStatus(currentStatus: string): "open" | "ready" | null {
-  if (currentStatus === "open" || currentStatus === "ready") {
-    return currentStatus === "ready" ? "ready" : "open";
-  }
-
-  if (currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged") {
-    return null;
-  }
-
-  if (RETRY_READY_STATUSES.has(currentStatus)) {
-    return "ready";
-  }
-
-  return "open";
-}
-
 /**
  * Reset a single seed back to a retryable status.
  *
@@ -559,6 +695,29 @@ function getResetTargetStatus(currentStatus: string): "open" | "ready" | null {
  * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
  *   is skipped — the returned `action` accurately reflects what would happen.
  */
+async function syncElixirResetToReady(seedId: string): Promise<void> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const commandId = `reset-${seedId}-${Date.now()}`;
+  const response = await client.sendCommand({
+    command_id: commandId,
+    command_type: "task.update",
+    payload: {
+      task_id: seedId,
+      status: "ready",
+      run_id: null,
+      failure_reason: null,
+      failure_output: null,
+    },
+    metadata: { source: "foreman-reset", correlation_id: commandId },
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
+}
+
 export async function resetSeedToOpen(
   seedId: string,
   seeds: IShowUpdateClient,
@@ -567,7 +726,7 @@ export async function resetSeedToOpen(
   const dryRun = opts?.dryRun ?? false;
   try {
     const seedDetail = await seeds.show(seedId);
-    const targetStatus = getResetTargetStatus(seedDetail.status);
+    const targetStatus = getSeedRetryTargetStatus(seedDetail.status, { command: "reset" });
 
     if (targetStatus == null) {
       return { action: "skipped-closed", seedId, previousStatus: seedDetail.status };
@@ -596,7 +755,8 @@ export async function resetSeedToOpen(
 
 export const resetCommand = new Command("reset")
   .description("Reset failed/stuck runs: kill agents, remove worktrees, and reset tasks to a retryable status")
-  .option("--bead <id>", "Reset a specific bead by ID (clears all runs for that bead, including stale pending ones)")
+  .option("--task <id>", "Reset a specific task by ID (clears all runs for that task, including stale pending ones)")
+  .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
   .option("--detect-stuck", "Run stuck detection first, adding newly-detected stuck runs to the reset list")
   .option(
@@ -605,13 +765,16 @@ export const resetCommand = new Command("reset")
     String(PIPELINE_LIMITS.stuckDetectionMinutes),
   )
   .option("--dry-run", "Show what would be reset without doing it")
+  .option("--preserve-worktree", "Keep worktree and branch when resetting task state for focused repair")
+  .option("--retry-failed-phase", "Preserve worktree and reset only task/run state so the next dispatch can repair the failed phase")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts, cmd) => {
     const dryRun = opts.dryRun as boolean | undefined;
     const all = opts.all as boolean | undefined;
     const detectStuck = opts.detectStuck as boolean | undefined;
-    const beadFilter = opts.bead as string | undefined;
+    const beadFilter = (opts.task ?? opts.bead) as string | undefined;
+    const preserveWorktree = Boolean(opts.preserveWorktree || opts.retryFailedPhase);
     const timeoutMinutes = parseInt(opts.timeout as string, 10);
 
     if (isNaN(timeoutMinutes)) {
@@ -629,29 +792,37 @@ export const resetCommand = new Command("reset")
     try {
       // Require --project in multi-project mode
       await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
-      const projectPath = await resolveRepoRootProjectPath(opts);
+      const { projectPath, registered } = await resolveProjectContext(opts, {
+        matchProjectFlagByIdOrName: true,
+      });
       const vcs = await VcsBackendFactory.create({ backend: 'auto' }, projectPath);
       // Save current branch so we can restore it after worktree/branch cleanup,
       // which can change HEAD as a side effect of git worktree remove / branch -D.
       let originalBranch: string | undefined;
       try { originalBranch = await vcs.getCurrentBranch(projectPath); } catch { /* ignore */ }
 
-      const { taskClient } = await createTaskClient(projectPath);
+      const { taskClient, backendType } = await createTaskClient(projectPath, {
+        registeredProjectId: registered?.id,
+      });
       const seeds: IShowUpdateClient = taskClient;
       const store = ForemanStore.forProject(projectPath);
+      const helperStore: ResetRunStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(store);
       const project = store.getProjectByPath(projectPath);
+      const runtimeProjectId = registered?.id ?? project?.id;
 
-      if (!project) {
+      if (!registered && !project) {
         console.error(chalk.red("No project registered for this path. Run 'foreman init' first."));
         process.exit(1);
       }
 
-      const mergeQueue = new MergeQueue(store.getDb());
+      const mergeQueue: ResetMergeQueue = registered
+        ? new PostgresMergeQueue(registered.id)
+        : wrapLocalMergeQueue(new MergeQueue(store.getDb()));
 
       // Optional: run stuck detection first, mark newly-stuck runs in the store
       if (detectStuck) {
         console.log(chalk.bold("Detecting stuck runs...\n"));
-        const detectionResult = await detectStuckRuns(store, project.id, {
+        const detectionResult = await detectStuckRuns(helperStore, runtimeProjectId!, {
           stuckTimeoutMinutes: timeoutMinutes,
           dryRun,
         });
@@ -684,7 +855,7 @@ export const resetCommand = new Command("reset")
 
       if (beadFilter) {
         // --seed: get ALL runs for this seed regardless of status, so stale pending/running are included
-        runs = store.getRunsForSeed(beadFilter, project.id);
+          runs = await helperStore.getRunsForSeed(beadFilter, runtimeProjectId!);
         if (runs.length === 0) {
           console.log(chalk.yellow(`No runs found for bead ${beadFilter}.\n`));
         } else {
@@ -694,12 +865,10 @@ export const resetCommand = new Command("reset")
         const statuses = all
           ? ["pending", "running", "failed", "stuck", "conflict", "test-failed"] as const
           : ["failed", "stuck", "conflict", "test-failed"] as const;
-        runs = statuses.flatMap((s) => store.getRunsByStatus(s, project.id));
+          runs = (await Promise.all(statuses.map((s) => helperStore.getRunsByStatus(s, runtimeProjectId!)))).flat();
       }
 
-      if (dryRun) {
-        console.log(chalk.yellow("(dry run — no changes will be made)\n"));
-      }
+      printDryRunNotice(dryRun);
 
       if (!beadFilter && runs.length === 0) {
         console.log(chalk.yellow("No active runs to reset.\n"));
@@ -720,7 +889,7 @@ export const resetCommand = new Command("reset")
       const closedPrSeeds = new Set<string>();
 
       for (const run of runs) {
-        const pid = extractPid(run.session_key);
+        const pid = getWorkerPid(run);
         const branchName = `foreman/${run.seed_id}`;
 
         console.log(`  ${chalk.cyan(run.seed_id)} ${chalk.dim(`[${run.agent_type}]`)} status=${run.status}`);
@@ -760,8 +929,12 @@ export const resetCommand = new Command("reset")
 
         // 2. Remove the worktree
         if (run.worktree_path) {
-          console.log(`    ${chalk.yellow("remove")} worktree ${run.worktree_path}`);
-          if (!dryRun) {
+          if (preserveWorktree) {
+            console.log(`    ${chalk.dim("preserve")} worktree ${run.worktree_path}`);
+          } else {
+            console.log(`    ${chalk.yellow("remove")} worktree ${run.worktree_path}`);
+          }
+          if (!dryRun && !preserveWorktree) {
             try {
               await archiveWorktreeReports(projectPath, run.worktree_path, run.seed_id).catch(() => {});
               await vcs.removeWorkspace(projectPath, run.worktree_path);
@@ -780,8 +953,12 @@ export const resetCommand = new Command("reset")
         }
 
         // 3. Delete the branch — switch to main first if it is currently checked out
-        console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
-        if (!dryRun) {
+        if (preserveWorktree) {
+          console.log(`    ${chalk.dim("preserve")} branch ${branchName}`);
+        } else {
+          console.log(`    ${chalk.yellow("delete")} branch ${branchName}`);
+        }
+        if (!dryRun && !preserveWorktree) {
           const { execFile } = await import("node:child_process");
           const { promisify } = await import("node:util");
           try {
@@ -825,7 +1002,7 @@ export const resetCommand = new Command("reset")
         //    doctor that this run was intentionally cleared (not an active failure).
         console.log(`    ${chalk.yellow("mark")} run as reset`);
         if (!dryRun) {
-          store.updateRun(run.id, {
+          await helperStore.updateRun(run.id, {
             status: "reset",
             completed_at: new Date().toISOString(),
           });
@@ -838,12 +1015,12 @@ export const resetCommand = new Command("reset")
         }
 
         // 5b. Remove merge queue entries for this seed
-        const mqEntries = mergeQueue.list().filter((e) => e.seed_id === run.seed_id);
+        const mqEntries = (await mergeQueue.list()).filter((e) => e.seed_id === run.seed_id);
         if (mqEntries.length > 0) {
           console.log(`    ${chalk.yellow("remove")} ${mqEntries.length} merge queue entry(ies)`);
           if (!dryRun) {
             for (const entry of mqEntries) {
-              mergeQueue.remove(entry.id);
+                await mergeQueue.remove(entry.id);
               mqEntriesRemoved++;
             }
           }
@@ -856,6 +1033,16 @@ export const resetCommand = new Command("reset")
       // 5. Reset seeds to a retryable status
       for (const seedId of seedIds) {
         const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!beadFilter });
+        if (!dryRun && runtimeProjectId && (result.action === "reset" || result.action === "already-open") && result.targetStatus === "ready") {
+          try {
+            await syncElixirResetToReady(seedId);
+            console.log(`  ${chalk.yellow("sync")} Elixir projection ${chalk.cyan(seedId)} → ready`);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            errors.push(`Failed to sync Elixir reset for ${seedId}: ${msg}`);
+            console.log(`    ${chalk.red("error")} syncing Elixir projection: ${msg}`);
+          }
+        }
         switch (result.action) {
           case "skipped-closed":
             console.log(
@@ -872,6 +1059,8 @@ export const resetCommand = new Command("reset")
               `  ${chalk.yellow("reset")} bead ${chalk.cyan(seedId)} → ${result.targetStatus ?? "retryable"}`,
             );
             seedsReset++;
+            // TRD-043: unlink from GitHub PR if this task has an associated issue
+            await unlinkGitHubIssueIfNeeded(seedId, store as ForemanStore);
             break;
           case "not-found":
             console.log(`    ${chalk.dim("skip")} bead ${seedId} no longer exists`);
@@ -887,7 +1076,7 @@ export const resetCommand = new Command("reset")
       //     have been removed or were never queued, so they can never be merged.
       //     Leaving them as "completed" triggers the MQ-011 doctor warning.
       if (!dryRun) {
-        const unqueuedCompleted = mergeQueue.missingFromQueue();
+        const unqueuedCompleted = await mergeQueue.missingFromQueue();
         for (const entry of unqueuedCompleted) {
           store.updateRun(entry.run_id, { status: "reset", completed_at: new Date().toISOString() });
           runsMarkedFailed++;
@@ -916,65 +1105,35 @@ export const resetCommand = new Command("reset")
       }
 
       // 6b. Clean up orphaned worktrees — directories in .foreman-worktrees/ that either have
-      //     no SQLite run record OR only have completed/merged runs (finalize should remove them
+      //     no Postgres run record OR only have completed/merged runs (finalize should remove them
       //     but sometimes fails to do so)
-      if (!dryRun) {
+      if (!dryRun && !preserveWorktree) {
         const worktreesDir = getWorkspaceRoot(projectPath);
         if (existsSync(worktreesDir)) {
-          // Paths that still have truly active runs (pending or running) — keep these.
-          // "failed" and "stuck" are terminal states: their agents have stopped, so
-          // their worktrees are safe to remove during cleanup. Including them in the
-          // "active" set was the bug: it prevented orphaned worktrees from being
-          // cleaned up when a run had no worktree_path recorded in the DB.
-          const activeStatuses = ["pending", "running"] as const;
-          const activeRuns = activeStatuses.flatMap((s) => store.getRunsByStatus(s, project.id));
-          const activeWorktreePaths = new Set(activeRuns.map((r) => r.worktree_path).filter(Boolean));
-
-          let entries: string[] = [];
-          try {
-            entries = readdirSync(worktreesDir);
-          } catch {
-            // Directory may have been removed already
-          }
-
-          for (const entry of entries) {
-            const fullPath = `${worktreesDir}/${entry}`;
-            // Skip if this worktree belongs to an active run (may still be in use)
-            if (activeWorktreePaths.has(fullPath)) continue;
-
-            console.log(`  ${chalk.yellow("orphan")} worktree ${fullPath}`);
-            try {
-              await vcs.removeWorkspace(projectPath, fullPath);
-              worktreesRemoved++;
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
-              if (!msg.includes("is not a working tree") && !msg.includes("doesn't exist")) {
-                console.log(`    ${chalk.red("error")} removing orphaned worktree: ${msg}`);
-              }
-            }
-            // Delete the corresponding branch if it exists
-            const orphanBranch = `foreman/${entry}`;
-            try {
-              const delResult = await vcs.deleteBranch(projectPath, orphanBranch, { force: true });
-              if (delResult.deleted) {
-                branchesDeleted++;
-                console.log(`    ${chalk.yellow("delete")} orphan branch ${orphanBranch}`);
-              }
-            } catch {
-              // Branch may not exist — skip silently
-            }
-          }
+          // Read the active keep-set from helperStore (the same Postgres-backed
+          // store the rest of the reset flow uses for registered projects). Using
+          // the local `store` here was the bug: live Postgres-backed active runs
+          // were invisible, so their worktrees could be destroyed as "orphans".
+          const sweep = await cleanOrphanWorktrees(
+            helperStore,
+            vcs,
+            projectPath,
+            worktreesDir,
+            runtimeProjectId!,
+          );
+          worktreesRemoved += sweep.worktreesRemoved;
+          branchesDeleted += sweep.branchesDeleted;
         }
       }
 
       // 6c. Purge all remaining conflict/failed merge queue entries (catches seeds not
       //     in this reset batch that are still clogging the queue)
       if (!dryRun) {
-        const staleEntries = mergeQueue.list().filter(
+        const staleEntries = (await mergeQueue.list()).filter(
           (e) => e.status === "conflict" || e.status === "failed",
         );
         for (const entry of staleEntries) {
-          mergeQueue.remove(entry.id);
+          await mergeQueue.remove(entry.id);
           mqEntriesRemoved++;
         }
         if (staleEntries.length > 0) {
@@ -982,56 +1141,68 @@ export const resetCommand = new Command("reset")
         }
       }
 
-      // 7. Detect and fix seed/run state mismatches for terminal runs
-      console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
-      const mismatchResult = await detectAndFixMismatches(store, seeds, project.id, seedIds, { dryRun });
+      let mismatchResult: MismatchResult = { mismatches: [], fixed: 0, errors: [] };
+      let staleResult: StaleBranchDetectionOutput = { results: [], closed: 0, reset: 0, errors: [] };
 
-      if (mismatchResult.mismatches.length > 0) {
-        for (const m of mismatchResult.mismatches) {
-          const action = dryRun
-            ? chalk.yellow("(would fix)")
-            : chalk.green("fixed");
-          console.log(
-            `  ${chalk.yellow("mismatch")} ${chalk.cyan(m.seedId)}: ` +
-            `run=${m.runStatus}, bead=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
-          );
-        }
-      } else {
-        console.log(chalk.dim("  No mismatches found."));
-      }
+      if (backendType !== "native") {
+        // 7. Detect and fix seed/run state mismatches for terminal runs
+        console.log(chalk.bold("\nChecking for bead/run state mismatches..."));
+        const detectedMismatches = await detectAndFixMismatches(helperStore, seeds, runtimeProjectId!, seedIds, { dryRun });
+        mismatchResult.mismatches = detectedMismatches.mismatches;
+        mismatchResult.fixed = detectedMismatches.fixed;
+        mismatchResult.errors = detectedMismatches.errors;
 
-      // 8. Detect and handle stale branches for completed (review) runs.
-      //    This covers beads stuck in 'review' status from failed merge attempts.
-      console.log(chalk.bold("\nChecking for stale / already-merged review branches..."));
-      const staleResult = await detectAndHandleStaleBranches(
-        store,
-        seeds,
-        mergeQueue,
-        projectPath,
-        project.id,
-        seedIds, // skip seeds already handled by the main reset loop
-        { dryRun },
-      );
-
-      for (const r of staleResult.results) {
-        if (r.action === "skip") continue;
-        if (r.action === "error") {
-          console.log(`  ${chalk.red("error")} ${chalk.cyan(r.seedId)}: ${r.error ?? r.reason}`);
-        } else if (r.action === "close") {
-          console.log(
-            `  ${dryRun ? chalk.yellow("(would close)") : chalk.green("close")} ` +
-            `bead ${chalk.cyan(r.seedId)} — ${r.reason}`,
-          );
+        if (mismatchResult.mismatches.length > 0) {
+          for (const m of mismatchResult.mismatches) {
+            const action = dryRun
+              ? chalk.yellow("(would fix)")
+              : chalk.green("fixed");
+            console.log(
+              `  ${chalk.yellow("mismatch")} ${chalk.cyan(m.seedId)}: ` +
+              `run=${m.runStatus}, bead=${m.actualSeedStatus} → ${m.expectedSeedStatus} ${action}`,
+            );
+          }
         } else {
-          console.log(
-            `  ${dryRun ? chalk.yellow("(would reset)") : chalk.yellow("reset")} ` +
-            `bead ${chalk.cyan(r.seedId)} → open — ${r.reason}`,
-          );
+          console.log(chalk.dim("  No mismatches found."));
         }
-      }
 
-      if (staleResult.results.filter((r) => r.action !== "skip" && r.action !== "error").length === 0) {
-        console.log(chalk.dim("  No stale review branches found."));
+        // 8. Detect and handle stale branches for completed (review) runs.
+        //    This covers beads stuck in 'review' status from failed merge attempts.
+        console.log(chalk.bold("\nChecking for stale / already-merged review branches..."));
+        const detectedStale = await detectAndHandleStaleBranches(
+          helperStore,
+          seeds,
+          mergeQueue,
+          projectPath,
+          runtimeProjectId!,
+          seedIds, // skip seeds already handled by the main reset loop
+          { dryRun },
+        );
+        staleResult.results = detectedStale.results;
+        staleResult.closed = detectedStale.closed;
+        staleResult.reset = detectedStale.reset;
+        staleResult.errors = detectedStale.errors;
+
+        for (const r of staleResult.results) {
+          if (r.action === "skip") continue;
+          if (r.action === "error") {
+            console.log(`  ${chalk.red("error")} ${chalk.cyan(r.seedId)}: ${r.error ?? r.reason}`);
+          } else if (r.action === "close") {
+            console.log(
+              `  ${dryRun ? chalk.yellow("(would close)") : chalk.green("close")} ` +
+              `bead ${chalk.cyan(r.seedId)} — ${r.reason}`,
+            );
+          } else {
+            console.log(
+              `  ${dryRun ? chalk.yellow("(would reset)") : chalk.yellow("reset")} ` +
+              `bead ${chalk.cyan(r.seedId)} → open — ${r.reason}`,
+            );
+          }
+        }
+
+        if (staleResult.results.filter((r) => r.action !== "skip" && r.action !== "error").length === 0) {
+          console.log(chalk.dim("  No stale review branches found."));
+        }
       }
 
       // Summary
@@ -1096,6 +1267,10 @@ function extractPid(sessionKey: string | null): number | null {
   if (!sessionKey) return null;
   const m = sessionKey.match(/pid-(\d+)/);
   return m ? parseInt(m[1], 10) : null;
+}
+
+export function getWorkerPid(run: Run): number | null {
+  return extractPid(run.session_key);
 }
 
 function isAlive(pid: number): boolean {

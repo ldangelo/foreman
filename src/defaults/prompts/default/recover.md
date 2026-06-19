@@ -16,6 +16,9 @@ codebase and should make fixes, run tests, and commit changes when appropriate.
 
 {{runSummary}}
 
+## Recommended Recovery
+{{recoveryRecommendation}}
+
 ## Test Output (if available)
 ```
 {{testOutput}}
@@ -48,7 +51,7 @@ The test suite failed after merging a branch. Follow this diagnosis tree in orde
 #### Step 1 — Run the tests and capture output
 
 ```bash
-cd {{projectRoot}} && npm test 2>&1 | tail -100
+cd {{projectRoot}} && set -o pipefail && npm test 2>&1 | tee /tmp/test-output.log
 ```
 
 Read the output carefully. Identify:
@@ -65,8 +68,7 @@ shows unexpected counts.
 
 Fix:
 ```bash
-sqlite3 {{projectRoot}}/.beads/beads.db "DELETE FROM blocked_issues_cache;"
-cd {{projectRoot}} && npm test 2>&1 | tail -50
+cd {{projectRoot}} && set -o pipefail && npm test 2>&1 | tee /tmp/test-output.log
 ```
 
 If tests pass after clearing the cache, commit nothing — the cache is regenerated automatically.
@@ -85,9 +87,8 @@ br show <blocking-bead-id>
 Fix: If the blocking bead's branch is merged into dev but `br` still shows it open/blocking:
 ```bash
 br close --force <blocking-bead-id>
-sqlite3 {{projectRoot}}/.beads/beads.db "DELETE FROM blocked_issues_cache;"
 br sync --flush-only
-cd {{projectRoot}} && npm test 2>&1 | tail -50
+cd {{projectRoot}} && set -o pipefail && npm test 2>&1 | tee /tmp/test-output.log
 ```
 
 **C) Test with wrong expectations (test bug)**
@@ -219,6 +220,70 @@ After any reset, report what was found and what action was taken.
 
 ---
 
+### PLAYBOOK: `finalize-conflict`
+
+Finalize failed because the branch drifted too far from the remote or current mainline and a normal rebase/push path could not complete cleanly.
+
+#### Step 1 — Confirm the failure is deterministic finalize drift
+
+Look for evidence in the reports/logs:
+- `FINALIZE_REPORT.md` mentions rebase failure or diverged history
+- the recovery recommendation says `clean-replay-from-main`
+- the worktree contains the intended source changes, but finalize could not land them safely
+
+#### Step 2 — Identify the intended source changes only
+
+Read `DEVELOPER_REPORT.md`, `QA_REPORT.md`, `REVIEW.md`, and the git diff carefully. Separate:
+- intended source/test changes that should be preserved
+- generated artifacts or pipeline noise that must be discarded
+
+Do **not** carry forward files like:
+- `TEST_RESULTS.md`
+- `ACTIVITY_LOG.json`
+- `SESSION_LOG.md`
+- `docs/reports/...`
+- `.beads/...`
+- other generated run artifacts
+
+#### Step 3 — Rebuild from current main
+
+Create a fresh recovery branch from current `main` and replay only the intended source changes onto it.
+
+Preferred workflow:
+```bash
+cd {{projectRoot}}
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+git checkout -b fix/{{beadId}}-clean-replay
+```
+
+Then reapply only the relevant source/test changes from the failed worktree.
+
+#### Step 4 — Re-validate on the clean branch
+
+Run the smallest relevant validation first, then broader validation as needed:
+```bash
+cd {{projectRoot}}
+npx tsc --noEmit
+set -o pipefail && npm test 2>&1 | tee /tmp/test-output.log
+npm run build
+```
+
+#### Step 5 — Commit and push the clean replay
+
+If validation passes:
+```bash
+cd {{projectRoot}}
+git add <intended-files-only>
+git commit -m "fix: replay {{beadId}} cleanly from current main"
+git push -u origin HEAD
+```
+
+If the work is too entangled to replay safely, stop and report exactly which files or conflicts prevent a clean replay.
+
+---
+
 ### PLAYBOOK: `stale-blocked`
 
 Some beads are stuck in BLOCKED state even though their dependencies are resolved.
@@ -245,7 +310,6 @@ br show <blocking-bead-id>
 For each case where the blocker bead is CLOSED but the blocked bead is still BLOCKED:
 ```bash
 br close --force <blocked-bead-id>
-sqlite3 {{projectRoot}}/.beads/beads.db "DELETE FROM blocked_issues_cache;"
 ```
 
 #### Step 4 — Sync and dispatch

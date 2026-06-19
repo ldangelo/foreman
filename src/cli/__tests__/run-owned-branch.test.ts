@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -76,8 +76,9 @@ describe("isIgnorableControllerPath", () => {
   it("ignores runtime state paths", () => {
     expect(isIgnorableControllerPath(".omx/state/ralph.json")).toBe(true);
     expect(isIgnorableControllerPath(".beads/issues.jsonl")).toBe(true);
+    expect(isIgnorableControllerPath(".beads/last-touched")).toBe(true);
     expect(isIgnorableControllerPath(".foreman/log.txt")).toBe(true);
-    expect(isIgnorableControllerPath("storage.sqlite3-wal")).toBe(true);
+    expect(isIgnorableControllerPath("storage.runtime-wal")).toBe(true);
   });
 });
 
@@ -128,8 +129,9 @@ describe("collectRuntimeAssetIssues", () => {
   function makeProject(): string {
     const dir = mkdtempSync(join(tmpdir(), "foreman-run-assets-"));
     tempDirs.push(dir);
-    mkdirSync(join(dir, ".foreman", "prompts", "default"), { recursive: true });
-    mkdirSync(join(dir, ".foreman", "workflows"), { recursive: true });
+    process.env["FOREMAN_HOME"] = dir;
+    mkdirSync(join(dir, "prompts", "default"), { recursive: true });
+    mkdirSync(join(dir, "workflows"), { recursive: true });
     return dir;
   }
 
@@ -138,17 +140,31 @@ describe("collectRuntimeAssetIssues", () => {
       rmSync(dir, { recursive: true, force: true });
     }
     tempDirs.length = 0;
+    delete process.env["FOREMAN_HOME"];
   });
 
-  it("flags stale project-local prompts before dispatch", () => {
+  it("flags stale global prompts before dispatch", () => {
     const projectRoot = makeProject();
     writeFileSync(
-      join(projectRoot, ".foreman", "prompts", "default", "developer.md"),
+      join(projectRoot, "prompts", "default", "developer.md"),
       "# stale prompt without new placeholders",
       "utf8",
     );
 
     const issues = collectRuntimeAssetIssues(projectRoot, {});
     expect(issues.some((issue) => issue.includes("stale prompts"))).toBe(true);
+  });
+
+  it("auto-installs missing bundled workflows instead of blocking dispatch", () => {
+    const projectRoot = makeProject();
+
+    const issues = collectRuntimeAssetIssues(projectRoot, {});
+
+    // Missing bundled workflows must not block `foreman run` — they are
+    // installed on the fly so newly added bundled workflows (e.g. quick.yaml)
+    // do not break existing ~/.foreman/workflows/ installs.
+    expect(issues.some((issue) => issue.includes("missing workflows"))).toBe(false);
+    expect(existsSync(join(projectRoot, "workflows", "quick.yaml"))).toBe(true);
+    expect(existsSync(join(projectRoot, "workflows", "default.yaml"))).toBe(true);
   });
 });

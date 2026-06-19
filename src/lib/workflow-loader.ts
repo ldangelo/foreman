@@ -2,8 +2,9 @@
  * Workflow configuration loader.
  *
  * Loads and validates workflow YAML files from:
- *   1. <projectRoot>/.foreman/workflows/{name}.yaml  (project-local override)
- *   2. Bundled defaults in src/defaults/workflows/{name}.yaml
+ *   1. Explicit absolute or project-relative YAML path
+ *   2. ~/.foreman/workflows/{name}.yaml              (global override)
+ *   3. Bundled defaults in src/defaults/workflows/{name}.yaml
  *
  * Workflow files define the ordered phase sequence for a pipeline run,
  * along with per-phase configuration (model, maxTurns, retryOnFail, etc.).
@@ -42,9 +43,11 @@ import {
   copyFileSync,
   readdirSync,
 } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as yamlLoad } from "js-yaml";
+import { getForemanHomePath } from "./foreman-paths.js";
+import type { SandboxConfig } from "./project-config.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -105,6 +108,12 @@ export interface WorkflowPhaseFiles {
   leaseSecs?: number;
 }
 
+/** Per-phase tool configuration. */
+export interface WorkflowPhaseTools {
+  /** SDK/Pi tool names allowed for this phase. Overrides the role default allowlist. */
+  allowed?: string[];
+}
+
 /** Per-phase configuration in a workflow YAML. */
 export interface WorkflowPhaseConfig {
   /** Phase name: "explorer" | "developer" | "qa" | "reviewer" | "finalize" | custom */
@@ -132,11 +141,18 @@ export interface WorkflowPhaseConfig {
   models?: Record<string, string>;
   /** Maximum turns. Overrides the role's default maxTurns. */
   maxTurns?: number;
+  /** Optional timeout override in seconds for bash phases. */
+  timeoutSecs?: number;
   /**
    * Skip this phase if the named artifact already exists in the worktree.
    * Used for resume-from-crash semantics (e.g., "EXPLORER_REPORT.md").
    */
   skipIfArtifact?: string;
+  /**
+   * Skip this phase during normal sequential execution; run it only when a
+   * failing verdict phase jumps to it via retryWith.
+   */
+  retryOnly?: boolean;
   /** Expected output artifact filename (e.g. "EXPLORER_REPORT.md"). */
   artifact?: string;
   /** Parse PASS/FAIL verdict from the artifact. */
@@ -151,10 +167,28 @@ export interface WorkflowPhaseConfig {
    * When retryWith is set, the executor loops back retryOnFail times.
    */
   retryOnFail?: number;
+  /**
+   * When true and this phase fails with a retryable/transient error (e.g. rate limit),
+   * the task is placed in cooldown state instead of being marked failed/stuck.
+   * The dispatcher will not re-dispatch the task until the cooldown period expires.
+   * Use for phases that frequently hit transient limits (e.g. cli-review with CodeRabbit).
+   *
+   * @default false
+   */
+  retryAfterCooldown?: boolean;
+  /**
+   * Cooldown duration in seconds when retryAfterCooldown is enabled.
+   * If only retryAfterCooldown is set (no cooldownSeconds), uses the default (300s).
+   *
+   * @default 300
+   */
+  cooldownSeconds?: number;
   /** Mail hooks for this phase. */
   mail?: WorkflowPhaseMail;
   /** File reservation config for this phase. */
   files?: WorkflowPhaseFiles;
+  /** Tool allowlist override for this phase. */
+  tools?: WorkflowPhaseTools;
   /**
    * When true, this phase is implemented as a built-in TypeScript function
    * rather than an SDK agent call. Currently only "finalize" uses this.
@@ -196,6 +230,9 @@ export interface OnFailureConfig {
 
 /** Valid onError strategies for workflow-level error handling. */
 export type OnErrorStrategy = "stop" | "continue";
+
+/** Workflow-level sandbox configuration for container isolation. */
+export type WorkflowSandboxConfig = SandboxConfig;
 
 /** A loaded, validated workflow configuration. */
 export interface WorkflowConfig {
@@ -284,17 +321,35 @@ export interface WorkflowConfig {
    */
   merge?: "auto" | "pr" | "none";
   /**
-   * Pull request publication policy for this workflow.
+   * Per-workflow PR timing policy. Controls when and whether GitHub PRs are created.
    *
-   * - `draft-after-developer`: publish a draft PR after developer phase
-   * - `create-at-finalize`: publish/open the PR only after finalize
-   * - `never`: never create a PR automatically
+   * - `'draft-after-developer'`: PR is created in draft state after the developer phase
+   *   completes, then promoted to open (or merged) at finalize (default)
+   * - `'create-at-finalize'`: PR is created (open, not draft) only at finalize phase completion
+   * - `'never'`: no PR is created; merge:auto merges the branch directly via refinery
    *
-   * @default { timing: 'create-at-finalize' }
+   * @default 'draft-after-developer'
    */
   pr?: {
+    /** When to create the PR. */
     timing?: "draft-after-developer" | "create-at-finalize" | "never";
   };
+  /**
+   * Optional sandbox configuration for container isolation.
+   * When present, overrides project-level sandbox config.
+   * Useful for workflow-specific sandbox settings (e.g., untrusted code).
+   *
+   * @example
+   * ```yaml
+   * sandbox:
+   *   backend: docker
+   *   image: ubuntu:22.04
+   *   limits:
+   *     cpu: "1"
+   *     memory: "2g"
+   * ```
+   */
+  sandbox?: WorkflowSandboxConfig;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -308,7 +363,18 @@ const BUNDLED_WORKFLOWS_DIR = join(
 );
 
 /** Known workflow names with bundled defaults. */
-export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = ["default", "smoke", "epic"];
+export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = [
+  "default",
+  "quick",
+  "smoke",
+  "epic",
+  "bug",
+  "task",
+  "feature",
+  "chore",
+  "docs",
+  "question",
+];
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
@@ -427,14 +493,35 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     }
 
     if (typeof p["maxTurns"] === "number") phase.maxTurns = p["maxTurns"];
+    if (typeof p["timeoutSecs"] === "number") phase.timeoutSecs = p["timeoutSecs"];
     if (typeof p["skipIfArtifact"] === "string") phase.skipIfArtifact = p["skipIfArtifact"];
+    if (typeof p["retryOnly"] === "boolean") phase.retryOnly = p["retryOnly"];
     if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
     if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
+    if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
+    if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
     if (typeof p["bash"] === "string") phase.bash = p["bash"];
     if (typeof p["command"] === "string") phase.command = p["command"];
+
+    if (isRecord(p["tools"])) {
+      const toolsRaw = p["tools"];
+      const allowedRaw = toolsRaw["allowed"];
+      if (allowedRaw !== undefined) {
+        if (!Array.isArray(allowedRaw)) {
+          throw new WorkflowConfigError(workflowName, `phases[${i}].tools.allowed must be an array of strings`);
+        }
+        const allowed = allowedRaw.map((tool, toolIndex) => {
+          if (typeof tool !== "string" || !tool.trim()) {
+            throw new WorkflowConfigError(workflowName, `phases[${i}].tools.allowed[${toolIndex}] must be a non-empty string`);
+          }
+          return tool;
+        });
+        phase.tools = { allowed };
+      }
+    }
 
     // Exactly one of bash, command, or prompt must be set (unless builtin: true)
     const hasPrompt = typeof p["prompt"] === "string";
@@ -613,20 +700,98 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     }
   }
 
-  // ── Parse optional PR timing policy ──────────────────────────────────────
-  if (raw["pr"] !== undefined) {
-    if (!isRecord(raw["pr"])) {
-      throw new WorkflowConfigError(workflowName, "pr must be an object");
+  // ── Parse optional pr.timing ───────────────────────────────────────────
+  if (isRecord(raw["pr"])) {
+    const prRaw = raw["pr"];
+    config.pr = {};
+    if (typeof prRaw["timing"] === "string") {
+      const timing = prRaw["timing"];
+      if (timing === "draft-after-developer" || timing === "create-at-finalize" || timing === "never") {
+        config.pr.timing = timing;
+      } else {
+        throw new WorkflowConfigError(
+          workflowName,
+          `pr.timing must be 'draft-after-developer', 'create-at-finalize', or 'never' (got: ${timing})`,
+        );
+      }
     }
-    const timing = raw["pr"]["timing"];
-    if (timing === undefined) {
-      config.pr = { timing: "create-at-finalize" };
-    } else if (timing === "draft-after-developer" || timing === "create-at-finalize" || timing === "never") {
-      config.pr = { timing };
-    } else {
+  }
+
+  // ── Parse optional sandbox block (Backlog-011: Container Sandboxing) ───
+  if ("sandbox" in raw && !isRecord(raw["sandbox"])) {
+    throw new WorkflowConfigError(workflowName, "'sandbox' must be an object");
+  }
+
+  if (isRecord(raw["sandbox"])) {
+    const sandboxRaw = raw["sandbox"];
+    const sandboxConfig: WorkflowSandboxConfig = {};
+
+    if ("backend" in sandboxRaw) {
+      const backend = sandboxRaw["backend"];
+      if (backend !== undefined && backend !== "docker" && backend !== "podman" && backend !== "auto") {
+        throw new WorkflowConfigError(
+          workflowName,
+          `'sandbox.backend' must be 'docker', 'podman', or 'auto' (got: ${String(backend)})`,
+        );
+      }
+      sandboxConfig.backend = backend as "docker" | "podman" | "auto" | undefined;
+    }
+
+    if ("image" in sandboxRaw) {
+      if (typeof sandboxRaw["image"] !== "string" || !sandboxRaw["image"].trim()) {
+        throw new WorkflowConfigError(workflowName, "'sandbox.image' must be a non-empty string");
+      }
+      sandboxConfig.image = sandboxRaw["image"] as string;
+    }
+
+    if ("limits" in sandboxRaw && !isRecord(sandboxRaw["limits"])) {
+      throw new WorkflowConfigError(workflowName, "'sandbox.limits' must be an object");
+    }
+
+    if (isRecord(sandboxRaw["limits"])) {
+      const limitsRaw = sandboxRaw["limits"];
+      sandboxConfig.limits = {};
+      if ("cpu" in limitsRaw && (typeof limitsRaw["cpu"] !== "string" || !limitsRaw["cpu"].trim())) {
+        throw new WorkflowConfigError(workflowName, "'sandbox.limits.cpu' must be a non-empty string");
+      }
+      sandboxConfig.limits.cpu = limitsRaw["cpu"] as string | undefined;
+      if ("memory" in limitsRaw && (typeof limitsRaw["memory"] !== "string" || !limitsRaw["memory"].trim())) {
+        throw new WorkflowConfigError(workflowName, "'sandbox.limits.memory' must be a non-empty string");
+      }
+      sandboxConfig.limits.memory = limitsRaw["memory"] as string | undefined;
+      if ("cpuset" in limitsRaw && (typeof limitsRaw["cpuset"] !== "string" || !limitsRaw["cpuset"].trim())) {
+        throw new WorkflowConfigError(workflowName, "'sandbox.limits.cpuset' must be a non-empty string");
+      }
+      sandboxConfig.limits.cpuset = limitsRaw["cpuset"] as string | undefined;
+      if ("memorySwap" in limitsRaw && (typeof limitsRaw["memorySwap"] !== "string" || !limitsRaw["memorySwap"].trim())) {
+        throw new WorkflowConfigError(workflowName, "'sandbox.limits.memorySwap' must be a non-empty string");
+      }
+      sandboxConfig.limits.memorySwap = limitsRaw["memorySwap"] as string | undefined;
+    }
+
+    if ("network" in sandboxRaw && typeof sandboxRaw["network"] !== "boolean") {
+      throw new WorkflowConfigError(workflowName, "'sandbox.network' must be a boolean");
+    }
+    sandboxConfig.network = sandboxRaw["network"] as boolean | undefined;
+
+    if ("cleanup" in sandboxRaw) {
+      const cleanup = sandboxRaw["cleanup"];
+      if (cleanup !== undefined && cleanup !== "remove" && cleanup !== "keep") {
+        throw new WorkflowConfigError(
+          workflowName,
+          `'sandbox.cleanup' must be 'remove' or 'keep' (got: ${String(cleanup)})`,
+        );
+      }
+      sandboxConfig.cleanup = cleanup as "remove" | "keep" | undefined;
+    }
+
+    config.sandbox = sandboxConfig;
+
+    const hostPhases = config.phases.filter((phase) => !phase.bash).map((phase) => phase.name);
+    if (hostPhases.length > 0) {
       throw new WorkflowConfigError(
         workflowName,
-        `pr.timing must be 'draft-after-developer', 'create-at-finalize', or 'never' (got: ${String(timing)})`,
+        `sandbox is only supported for bash phases; host-executed phases are not isolated: ${hostPhases.join(", ")}`,
       );
     }
   }
@@ -640,7 +805,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
  * Load and validate a workflow config.
  *
  * Resolution order:
- *   1. <projectRoot>/.foreman/workflows/{name}.yaml  (project-local override)
+ *   1. ~/.foreman/workflows/{name}.yaml              (global override)
  *   2. Bundled default: src/defaults/workflows/{name}.yaml
  *
  * @param workflowName - Workflow name (e.g. "default", "smoke").
@@ -651,16 +816,30 @@ export function loadWorkflowConfig(
   workflowName: string,
   projectRoot: string,
 ): WorkflowConfig {
-  // Tier 1: project-local override
-  const localPath = join(projectRoot, ".foreman", "workflows", `${workflowName}.yaml`);
-  if (existsSync(localPath)) {
+  const directPath = workflowName.endsWith(".yaml") || workflowName.endsWith(".yml")
+    ? isAbsolute(workflowName) ? workflowName : join(projectRoot, workflowName)
+    : null;
+  if (directPath && existsSync(directPath)) {
     try {
-      const raw = yamlLoad(readFileSync(localPath, "utf-8"));
-      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: localPath };
+      const raw = yamlLoad(readFileSync(directPath, "utf-8"));
+      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: directPath };
     } catch (err) {
       if (err instanceof WorkflowConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
-      throw new WorkflowConfigError(workflowName, `failed to parse ${localPath}: ${msg}`);
+      throw new WorkflowConfigError(workflowName, `failed to parse ${directPath}: ${msg}`);
+    }
+  }
+
+  // Tier 1: global override
+  const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
+  if (existsSync(globalPath)) {
+    try {
+      const raw = yamlLoad(readFileSync(globalPath, "utf-8"));
+      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: globalPath };
+    } catch (err) {
+      if (err instanceof WorkflowConfigError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new WorkflowConfigError(workflowName, `failed to parse ${globalPath}: ${msg}`);
     }
   }
 
@@ -669,7 +848,7 @@ export function loadWorkflowConfig(
   if (existsSync(bundledPath)) {
     try {
       const raw = yamlLoad(readFileSync(bundledPath, "utf-8"));
-      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: bundledPath };
+    return { ...validateWorkflowConfig(raw, workflowName), sourcePath: bundledPath };
     } catch (err) {
       if (err instanceof WorkflowConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
@@ -679,7 +858,7 @@ export function loadWorkflowConfig(
 
   throw new WorkflowConfigError(
     workflowName,
-    `no workflow config found at ${localPath} or bundled defaults`,
+    `no workflow config found at ${globalPath} or bundled defaults`,
   );
 }
 
@@ -694,7 +873,16 @@ export function getBundledWorkflowPath(workflowName: string): string | null {
 }
 
 /**
- * Install bundled workflow configs to <projectRoot>/.foreman/workflows/.
+ * Returns true when a workflow YAML exists either in ~/.foreman/workflows/
+ * or in the bundled defaults directory.
+ */
+export function hasWorkflowConfig(workflowName: string): boolean {
+  const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
+  return existsSync(globalPath) || getBundledWorkflowPath(workflowName) !== null;
+}
+
+/**
+ * Install bundled workflow configs to ~/.foreman/workflows/.
  *
  * Copies all bundled workflow YAML files. Existing files are skipped unless
  * force=true.
@@ -704,13 +892,13 @@ export function getBundledWorkflowPath(workflowName: string): string | null {
  * @returns Summary of installed/skipped files.
  */
 export function installBundledWorkflows(
-  projectRoot: string,
+  _projectRoot: string,
   force: boolean = false,
 ): { installed: string[]; skipped: string[] } {
   const installed: string[] = [];
   const skipped: string[] = [];
 
-  const destDir = join(projectRoot, ".foreman", "workflows");
+  const destDir = getForemanHomePath("workflows");
   mkdirSync(destDir, { recursive: true });
 
   let files: string[];
@@ -735,15 +923,66 @@ export function installBundledWorkflows(
 }
 
 /**
+ * List all workflow names available to the loader: bundled defaults plus any
+ * YAML files installed in ~/.foreman/workflows/. Sorted and deduplicated.
+ */
+export function listAvailableWorkflows(): string[] {
+  const names = new Set<string>();
+
+  try {
+    for (const file of readdirSync(BUNDLED_WORKFLOWS_DIR)) {
+      if (file.endsWith(".yaml") || file.endsWith(".yml")) {
+        names.add(file.replace(/\.ya?ml$/, ""));
+      }
+    }
+  } catch {
+    // Bundled workflows directory missing (e.g. partial install) — non-fatal
+  }
+
+  try {
+    for (const file of readdirSync(getForemanHomePath("workflows"))) {
+      if (file.endsWith(".yaml") || file.endsWith(".yml")) {
+        names.add(file.replace(/\.ya?ml$/, ""));
+      }
+    }
+  } catch {
+    // ~/.foreman/workflows/ not created yet — non-fatal
+  }
+
+  return [...names].sort();
+}
+
+/**
+ * Ensure all bundled workflows are installed in ~/.foreman/workflows/.
+ *
+ * Installs any missing bundled workflow YAML (never overwrites existing
+ * files), then returns the names that are still missing (e.g. when the
+ * bundled defaults directory is unavailable). Used by the `foreman run`
+ * preflight so that newly added bundled workflows (e.g. quick.yaml) are
+ * installed on the fly instead of blocking dispatch for existing installs.
+ *
+ * @param projectRoot - Absolute path to the project root.
+ * @returns Array of workflow names still missing after the install attempt.
+ */
+export function ensureBundledWorkflowsInstalled(projectRoot: string): string[] {
+  try {
+    installBundledWorkflows(projectRoot, false);
+  } catch {
+    // Install failure (e.g. read-only home) — fall through to report missing
+  }
+  return findMissingWorkflows(projectRoot);
+}
+
+/**
  * Find missing workflow config files for a project.
  *
  * @param projectRoot - Absolute path to the project root.
  * @returns Array of missing workflow names (e.g. ["default", "smoke"]).
  */
-export function findMissingWorkflows(projectRoot: string): string[] {
+export function findMissingWorkflows(_projectRoot: string): string[] {
   const missing: string[] = [];
   for (const name of BUNDLED_WORKFLOW_NAMES) {
-    const p = join(projectRoot, ".foreman", "workflows", `${name}.yaml`);
+    const p = getForemanHomePath("workflows", `${name}.yaml`);
     if (!existsSync(p)) {
       missing.push(name);
     }
@@ -766,10 +1005,10 @@ export function findMissingWorkflows(projectRoot: string): string[] {
  * @param projectRoot - Absolute path to the project root.
  * @returns Array of stale workflow names (present but outdated).
  */
-export function findStaleWorkflows(projectRoot: string): string[] {
+export function findStaleWorkflows(_projectRoot: string): string[] {
   const stale: string[] = [];
   for (const name of BUNDLED_WORKFLOW_NAMES) {
-    const localPath = join(projectRoot, ".foreman", "workflows", `${name}.yaml`);
+    const localPath = getForemanHomePath("workflows", `${name}.yaml`);
     if (!existsSync(localPath)) continue; // missing, not stale
 
     const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${name}.yaml`);
@@ -840,18 +1079,32 @@ export function findStaleWorkflows(projectRoot: string): string[] {
  * Resolve the workflow name for a seed/bead.
  *
  * Resolution order:
- *  1. `workflow:<name>` label — explicit override
- *  2. `{seedType}.yaml` in bundled workflows directory
- *  3. "default"
+ *  1. `workflowOverride` — explicit override (e.g. `foreman run --workflow <name>`)
+ *  2. `workflow:<name>` label on the task
+ *  3. `taskTypeWorkflowMap[seedType]` — explicit config mapping
+ *  4. `taskTypeWorkflowMap["default"]` — fallback for unknown types
+ *  5. `{seedType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
+ *  6. "default" (hard fallback)
  *
- * This removes the old hardcoded "smoke" → "smoke" and "epic" → "epic" mappings,
- * replacing them with a general file-existence check. Both smoke.yaml and epic.yaml
- * exist in defaults/workflows/ so this is backward-compatible.
+ * When `taskTypeWorkflowMap` is not provided (undefined), steps 3–4 are skipped
+ * and the resolution falls back to the file-existence check (backward compatible).
+ *
+ * The explicit override is trusted as-is — callers (the CLI) validate it
+ * against loadable workflows before dispatch.
  */
 export function resolveWorkflowName(
   seedType: string,
   labels?: string[],
+  taskTypeWorkflowMap?: Record<string, string>,
+  workflowOverride?: string,
 ): string {
+  // 0. Explicit override (e.g. `foreman run --workflow quick`) — top priority
+  const override = workflowOverride?.trim();
+  if (override) {
+    return override;
+  }
+
+  // 1. workflow:<name> label override
   if (labels) {
     for (const label of labels) {
       if (label.startsWith("workflow:")) {
@@ -859,13 +1112,33 @@ export function resolveWorkflowName(
       }
     }
   }
-  // TRD-006: type-based resolution — check if a workflow file exists for the seed type
+
+  // 2. Explicit taskTypeWorkflowMap mapping
+  if (taskTypeWorkflowMap) {
+    const mappedWorkflow = taskTypeWorkflowMap[seedType];
+    if (mappedWorkflow && hasWorkflowConfig(mappedWorkflow)) {
+      return mappedWorkflow;
+    }
+    // 3. Default fallback from config mapping
+    const defaultWorkflow = taskTypeWorkflowMap["default"];
+    if (defaultWorkflow && hasWorkflowConfig(defaultWorkflow)) {
+      return defaultWorkflow;
+    }
+  }
+
+  // 4. File-existence fallback (backward compatible with pre-config behavior)
   if (seedType) {
+    const globalPath = getForemanHomePath("workflows", `${seedType}.yaml`);
+    if (existsSync(globalPath)) {
+      return seedType;
+    }
     const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${seedType}.yaml`);
     if (existsSync(bundledPath)) {
       return seedType;
     }
   }
+
+  // 5. Hard fallback to default
   return "default";
 }
 

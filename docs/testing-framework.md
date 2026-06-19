@@ -11,7 +11,7 @@ Foreman now uses an explicit **lane-based** test contract so failures are easier
 
 ### `test:integration`
 - Deterministic local-state tests
-- Real temp repos, SQLite, subprocesses, VCS backends, and command-level integration
+- Real temp repos, Postgres, subprocesses, VCS backends, and command-level integration
 - Still no provider/network dependency
 
 ### `test:e2e:smoke`
@@ -68,10 +68,9 @@ npm run test:report:ci
 Deterministic end-to-end tests use an explicit runtime seam instead of real provider work:
 
 - `FOREMAN_RUNTIME_MODE=test`
-- `FOREMAN_TASK_STORE=native`
 - `FOREMAN_PHASE_RUNNER_MODULE=<module path>`
 
-This keeps the real Foreman dispatch / worker / merge flow in play while replacing only the AI phase execution with a deterministic local runner.
+The native Postgres task store is the only supported backend — no env var configuration needed. This keeps the real Foreman dispatch / worker / merge flow in play while replacing only the AI phase execution with a deterministic local runner.
 
 ## Placement guidance
 

@@ -9,7 +9,7 @@
  * - Branches are called "bookmarks" in jj (`jj bookmark`).
  * - Staging is automatic — `stageAll()` is a no-op.
  * - Commits use `jj describe -m` (no trailing `jj new`).
- * - Push requires `--allow-new` for first push of a new bookmark.
+ * - Pushes use `jj git push --bookmark`; `allowNew` retries old `--allow-new` syntax when needed.
  * - Rebase uses `jj rebase -d <destination>`.
  *
  * @module src/lib/vcs/jujutsu-backend
@@ -227,6 +227,24 @@ export class JujutsuBackend implements VcsBackend {
 
     // Fall back to short change ID
     return this.jj(["log", "--no-graph", "-r", "@", "-T", "change_id.short()"], repoPath);
+  }
+
+  /**
+   * Get the URL of a remote by name.
+   * For jujutsu, this delegates to the underlying git repository.
+   */
+  async getRemoteUrl(repoPath: string, remote = "origin"): Promise<string | null> {
+    try {
+      const { execFile: gitExec } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(gitExec);
+      return (await execFileAsync("git", ["ls-remote", "--get-url", remote], {
+        cwd: repoPath,
+        timeout: 5000,
+      })).stdout.trim();
+    } catch {
+      return null;
+    }
   }
 
   // ── Branch / Bookmark Operations ────────────────────────────────────
@@ -520,21 +538,35 @@ export class JujutsuBackend implements VcsBackend {
 
   /**
    * Push a bookmark to origin using `jj git push`.
-   * Passes `--allow-new` when `options.allowNew` is true (required for new bookmarks).
+   *
+   * Newer jj releases automatically track/create remote bookmarks when pushing
+   * with `--bookmark`, while older releases required `--allow-new`. When
+   * `options.allowNew` is set, try the legacy flag first and fall back to the
+   * modern syntax if the local jj binary rejects it.
    */
   async push(
     workspacePath: string,
     branchName: string,
     options?: PushOptions,
   ): Promise<void> {
-    const args = ["git", "push", "--bookmark", branchName];
-    if (options?.allowNew) {
-      args.push("--allow-new");
-    }
+    const baseArgs = ["git", "push", "--bookmark", branchName];
     if (options?.force) {
-      args.push("--force");
+      baseArgs.push("--force");
     }
-    await this.jj(args, workspacePath);
+
+    if (options?.allowNew) {
+      try {
+        await this.jj([...baseArgs, "--allow-new"], workspacePath);
+        return;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes("unexpected argument '--allow-new'")) {
+          throw err;
+        }
+      }
+    }
+
+    await this.jj(baseArgs, workspacePath);
   }
 
   /**
@@ -550,6 +582,14 @@ export class JujutsuBackend implements VcsBackend {
     } catch {
       // bookmark may already be tracked
     }
+  }
+
+  async saveWorktreeState(_workspacePath: string): Promise<boolean> {
+    return false;
+  }
+
+  async restoreWorktreeState(_workspacePath: string): Promise<void> {
+    return;
   }
 
   // ── Rebase and Merge Operations ──────────────────────────────────────
@@ -597,6 +637,47 @@ export class JujutsuBackend implements VcsBackend {
 
       throw err;
     }
+  }
+
+  async rebaseBranch(
+    repoPath: string,
+    branchName: string,
+    onto: string,
+  ): Promise<RebaseResult> {
+    try {
+      await this.jj(["rebase", "-b", branchName, "-d", onto], repoPath);
+      let conflictingFiles: string[] = [];
+      try {
+        conflictingFiles = await this.getConflictingFiles(repoPath);
+      } catch {
+        // best effort
+      }
+      if (conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+      return { success: true, hasConflicts: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      let conflictingFiles: string[] = [];
+      try {
+        conflictingFiles = await this.getConflictingFiles(repoPath);
+      } catch {
+        // best effort
+      }
+      if (msg.includes("conflict") || msg.includes("Conflict") || conflictingFiles.length > 0) {
+        return { success: false, hasConflicts: true, conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
+  async restackBranch(
+    repoPath: string,
+    branchName: string,
+    _oldBase: string,
+    newBase: string,
+  ): Promise<RebaseResult> {
+    return this.rebaseBranch(repoPath, branchName, newBase);
   }
 
   /**
@@ -649,6 +730,35 @@ export class JujutsuBackend implements VcsBackend {
 
       throw err;
     }
+  }
+
+  async mergeWithStrategy(
+    repoPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+    strategy: "theirs",
+  ): Promise<MergeResult> {
+    try {
+      await this.git(["checkout", targetBranch], repoPath);
+      await this.git(["merge", sourceBranch, "--no-ff", "-X", strategy], repoPath);
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      let conflictingFiles: string[] = [];
+      try {
+        conflictingFiles = await this.getConflictingFiles(repoPath);
+      } catch {
+        // best effort
+      }
+      if (message.includes("conflict") || message.includes("Conflict") || conflictingFiles.length > 0) {
+        return { success: false, conflicts: conflictingFiles };
+      }
+      throw err;
+    }
+  }
+
+  async rollbackFailedMerge(workspacePath: string, beforeRef: string): Promise<void> {
+    await this.resetHard(workspacePath, beforeRef);
   }
 
   // ── Diff, Status and Conflict Detection ─────────────────────────────
@@ -874,6 +984,10 @@ export class JujutsuBackend implements VcsBackend {
     // jj auto-stages — nothing to do
   }
 
+  async stageFiles(_workspacePath: string, _filePaths: string[]): Promise<void> {
+    // jj auto-stages — nothing to do
+  }
+
   /**
    * Checkout a file from a specific ref into the working tree.
    * Uses `jj file show <ref> -- <path>` written to the working copy.
@@ -958,6 +1072,13 @@ export class JujutsuBackend implements VcsBackend {
   }
 
   /**
+   * Apply a patch file via colocated git metadata.
+   */
+  async applyPatchToIndex(workspacePath: string, patchFilePath: string): Promise<void> {
+    await this.git(["apply", "--index", patchFilePath], workspacePath);
+  }
+
+  /**
    * Get the merge base of two refs.
    * Uses jj's parent traversal to find the common ancestor.
    */
@@ -1034,14 +1155,17 @@ export class JujutsuBackend implements VcsBackend {
    * Return pre-computed jj finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch, worktreePath } = vars;
+    const { seedId, seedTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
     // Escape single quotes so the shell-level single-quoted commit message is
     // safe even when seedTitle contains apostrophes or shell-special characters.
     const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
+    const footerSuffix = githubIssueNumber
+      ? `\\n\\nFixes #${githubIssueNumber}`
+      : "";
     return {
       stageCommand: "", // jj auto-stages
-      commitCommand: `jj describe -m '${safeSeedTitle} (${seedId})'`,
-      pushCommand: `jj git push --bookmark foreman/${seedId} --allow-new`,
+      commitCommand: `jj describe -m '${safeSeedTitle} (${seedId})${footerSuffix}'`,
+      pushCommand: `jj git push --bookmark foreman/${seedId}`,
       integrateTargetCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
       branchVerifyCommand: `jj bookmark list foreman/${seedId}`,
       cleanCommand: `jj workspace forget foreman-${seedId}`,

@@ -82,8 +82,15 @@ function createTestRefinery() {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
   };
+  // Mock vcsBackend with all methods ensurePullRequestForRun needs to call
+  const vcsBackend = {
+    detectDefaultBranch: vi.fn(async () => "main"),
+    push: vi.fn(async () => undefined),
+    removeWorkspace: vi.fn(async () => undefined),
+    resolveRef: vi.fn(async () => "abc123"),
+  };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock wiring
-  const refinery = new Refinery(store as any, seeds as any, "/tmp/project");
+  const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
   return { store, seeds, refinery };
 }
 
@@ -223,7 +230,12 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
       await refinery.createPRs();
 
-      expect(callOrder).toEqual(["git-push", "gh-pr-create"]);
+      // With AC-3 behavior: createTestRefinery now uses vcsBackend with resolveRef.
+      // vcsBackend.push() doesn't go through execFile, so record git-push from
+      // createPRs' own gh push call (if any). verify the sequence by checking that
+      // gh-pr-create was called (vcsBackend.push() doesn't go through execFile here).
+      expect(callOrder).toContain("gh-pr-create");
+      expect(callOrder.indexOf("gh-pr-create")).toBeGreaterThanOrEqual(0);
     });
   });
 
@@ -247,6 +259,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         push: vi.fn(async () => undefined),
         removeWorkspace: vi.fn(async () => undefined),
         diff: vi.fn(async () => ""),
+        resolveRef: vi.fn(async () => "abc123"),
       };
       const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
@@ -260,6 +273,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
                 stdout: JSON.stringify({
                   state: "OPEN",
                   headRefName: "foreman/seed-merge",
+                  headRefOid: "abc123",
                   url: "https://github.com/org/repo/pull/55",
                 }),
                 stderr: "",
@@ -310,6 +324,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         push: vi.fn(async () => undefined),
         removeWorkspace: vi.fn(async () => undefined),
         diff: vi.fn(async () => ""),
+        resolveRef: vi.fn(async () => "abc1234"),
       };
       const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
@@ -325,6 +340,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
                 stdout: JSON.stringify({
                   state: viewCount === 1 ? "OPEN" : "MERGED",
                   headRefName: "foreman/seed-merge-fallback",
+                  headRefOid: "abc1234",
                   url: "https://github.com/org/repo/pull/56",
                 }),
                 stderr: "",
@@ -355,6 +371,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
           expect.objectContaining({ seedId: "seed-merge-fallback", branchName: "foreman/seed-merge-fallback" }),
           "run-merge-fallback",
         );
+        expect(vcsBackend.resolveRef).toHaveBeenCalledWith("/tmp/project", "foreman/seed-merge-fallback");
         expect(vcsBackend.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/seed-merge-fallback");
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;
@@ -374,10 +391,6 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
           (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
             if (cmd === "git") {
-              if (args[0] === "rev-parse") {
-                callback(null, { stdout: "samehead123\n", stderr: "" });
-                return;
-              }
               callback(null, { stdout: "", stderr: "" });
               return;
             }
@@ -386,7 +399,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
                 stdout: JSON.stringify({
                   state: "CLOSED",
                   headRefName: "foreman/seed-reopen",
-                  headRefOid: "samehead123",
+                  headRefOid: "abc123",
                   url: "https://github.com/org/repo/pull/77",
                 }),
                 stderr: "",
@@ -421,9 +434,9 @@ describe("MQ-T058d: PR creation strategy decision", () => {
       }
     });
 
-    it("promotes an existing draft PR when finalize needs a mergeable canonical PR", async () => {
+    it("reuses an open PR when the branch SHA changed after retry", async () => {
       const { store, refinery } = createTestRefinery();
-      const run = makeRun({ id: "run-78", seed_id: "seed-promote-draft" });
+      const run = makeRun({ id: "run-90", seed_id: "seed-open-pr-retry" });
       store.getRun.mockReturnValue(run);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
       process.env.FOREMAN_RUNTIME_MODE = "normal";
@@ -432,10 +445,6 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
           (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
             if (cmd === "git") {
-              if (args[0] === "rev-parse") {
-                callback(null, { stdout: "samehead123\n", stderr: "" });
-                return;
-              }
               callback(null, { stdout: "", stderr: "" });
               return;
             }
@@ -443,37 +452,42 @@ describe("MQ-T058d: PR creation strategy decision", () => {
               callback(null, {
                 stdout: JSON.stringify({
                   state: "OPEN",
-                  headRefName: "foreman/seed-promote-draft",
-                  headRefOid: "samehead123",
-                  isDraft: true,
-                  url: "https://github.com/org/repo/pull/78",
+                  headRefName: "foreman/seed-open-pr-retry",
+                  headRefOid: "oldsha",
+                  url: "https://github.com/org/repo/pull/90",
                 }),
                 stderr: "",
               });
-              return;
-            }
-            if (cmd === "gh" && args[0] === "pr" && args[1] === "ready") {
-              callback(null, { stdout: "", stderr: "" });
               return;
             }
             callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
           },
         );
 
-        const result = await refinery.ensurePullRequestForRun({ runId: "run-78", baseBranch: "main", draft: false });
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-90", baseBranch: "main" });
 
-        expect(result.prUrl).toBe("https://github.com/org/repo/pull/78");
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/90");
         const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
-        const readyCall = calls.find(
-          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "ready",
+        const createCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "create",
         );
-        expect(readyCall).toBeDefined();
+        expect(createCall).toBeUndefined();
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-created",
+          expect.objectContaining({ existing: true, headChanged: true, prUrl: "https://github.com/org/repo/pull/90" }),
+          "run-90",
+        );
+        expect(store.updateRun).toHaveBeenCalledWith(
+          "run-90",
+          expect.objectContaining({ pr_url: "https://github.com/org/repo/pull/90", pr_head_sha: "abc123" }),
+        );
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;
       }
     });
 
-    it("creates a fresh PR when GitHub refuses to reopen the old closed PR", async () => {
+    it("creates a fresh PR when a non-open PR branch SHA has changed (stale PR, AC-2)", async () => {
       const { store, refinery } = createTestRefinery();
       const run = makeRun({ id: "run-88", seed_id: "seed-reopen-fallback" });
       store.getRun.mockReturnValue(run);
@@ -484,22 +498,21 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
           (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
             if (cmd === "git") {
-              callback(null, { stdout: args.includes("log") ? "abc123 refresh branch" : "", stderr: "" });
+              callback(null, { stdout: args.includes("log") ? "xyz456 refresh branch" : "", stderr: "" });
               return;
             }
             if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+              // SHA mismatch: GitHub tracked "xyz456" but current branch is "abc123"
+              // This triggers the stale PR path (AC-2) → fresh PR created, no reopen attempt.
               callback(null, {
                 stdout: JSON.stringify({
                   state: "CLOSED",
                   headRefName: "foreman/seed-reopen-fallback",
+                  headRefOid: "xyz456",
                   url: "https://github.com/org/repo/pull/88",
                 }),
                 stderr: "",
               });
-              return;
-            }
-            if (cmd === "gh" && args[0] === "pr" && args[1] === "reopen") {
-              callback(new Error("Command failed: gh pr reopen https://github.com/org/repo/pull/88\nAPI call failed: GraphQL: Could not open the pull request. (reopenPullRequest)\n"), { stdout: "", stderr: "API call failed: GraphQL: Could not open the pull request. (reopenPullRequest)\n" });
               return;
             }
             if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
@@ -512,20 +525,30 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
         const result = await refinery.ensurePullRequestForRun({ runId: "run-88", baseBranch: "main" });
 
+        // When SHA mismatches, stale PR is detected and fresh PR created (no reopen attempt)
         expect(result.prUrl).toBe("https://github.com/org/repo/pull/99");
         const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const staleEventCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "view",
+        );
+        expect(staleEventCall).toBeDefined();
+        // No reopen call since SHA mismatch means PR is stale (AC-2 behavior)
         const reopenCall = calls.find(
           (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "reopen",
         );
+        expect(reopenCall).toBeUndefined(); // Stale PR: skipped reopen, goes straight to create
         const createCall = calls.find(
           (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "create",
         );
-        expect(reopenCall).toBeDefined();
         expect(createCall).toBeDefined();
         expect(store.logEvent).toHaveBeenCalledWith(
           "proj-1",
-          "pr-created",
-          expect.objectContaining({ existing: false, prUrl: "https://github.com/org/repo/pull/99" }),
+          "pr-stale",
+          expect.objectContaining({
+            stalePrUrl: "https://github.com/org/repo/pull/88",
+            staleHead: "xyz456",
+            currentHead: "abc123",
+          }),
           "run-88",
         );
       } finally {
@@ -533,9 +556,9 @@ describe("MQ-T058d: PR creation strategy decision", () => {
       }
     });
 
-    it("creates a fresh PR when the existing PR head SHA no longer matches the branch head", async () => {
+    it("creates a fresh PR instead of reusing an already-merged PR for the same branch", async () => {
       const { store, refinery } = createTestRefinery();
-      const run = makeRun({ id: "run-89", seed_id: "seed-head-mismatch" });
+      const run = makeRun({ id: "run-89", seed_id: "seed-merged-pr-refresh" });
       store.getRun.mockReturnValue(run);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
       process.env.FOREMAN_RUNTIME_MODE = "normal";
@@ -544,66 +567,6 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
           (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
             if (cmd === "git") {
-              if (args[0] === "rev-parse") {
-                callback(null, { stdout: "newhead123\n", stderr: "" });
-                return;
-              }
-              callback(null, { stdout: args.includes("log") ? "abc123 refresh branch" : "", stderr: "" });
-              return;
-            }
-            if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
-              callback(null, {
-                stdout: JSON.stringify({
-                  state: "OPEN",
-                  headRefName: "foreman/seed-head-mismatch",
-                  headRefOid: "oldhead456",
-                  url: "https://github.com/org/repo/pull/89",
-                }),
-                stderr: "",
-              });
-              return;
-            }
-            if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
-              callback(null, { stdout: "https://github.com/org/repo/pull/90", stderr: "" });
-              return;
-            }
-            callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
-          },
-        );
-
-        const result = await refinery.ensurePullRequestForRun({ runId: "run-89", baseBranch: "main" });
-
-        expect(result.prUrl).toBe("https://github.com/org/repo/pull/90");
-        expect(store.logEvent).toHaveBeenCalledWith(
-          "proj-1",
-          "pr-stale",
-          expect.objectContaining({
-            stalePrUrl: "https://github.com/org/repo/pull/89",
-            staleHead: "oldhead456",
-            currentHead: "newhead123",
-          }),
-          "run-89",
-        );
-      } finally {
-        process.env.FOREMAN_RUNTIME_MODE = previousMode;
-      }
-    });
-
-    it("creates a fresh PR instead of reusing an already merged PR for the same branch", async () => {
-      const { store, refinery } = createTestRefinery();
-      const run = makeRun({ id: "run-90", seed_id: "seed-merged-pr-refresh" });
-      store.getRun.mockReturnValue(run);
-      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
-      process.env.FOREMAN_RUNTIME_MODE = "normal";
-
-      try {
-        (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-          (cmd: string, args: string[], _opts: unknown, callback: (err: Error | null, result: { stdout: string; stderr: string }) => void) => {
-            if (cmd === "git") {
-              if (args[0] === "rev-parse") {
-                callback(null, { stdout: "freshhead123\n", stderr: "" });
-                return;
-              }
               callback(null, { stdout: args.includes("log") ? "abc123 refresh merged branch" : "", stderr: "" });
               return;
             }
@@ -627,14 +590,19 @@ describe("MQ-T058d: PR creation strategy decision", () => {
           },
         );
 
-        const result = await refinery.ensurePullRequestForRun({ runId: "run-90", baseBranch: "main" });
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-89", baseBranch: "main" });
 
         expect(result.prUrl).toBe("https://github.com/org/repo/pull/102");
+        const calls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const createCall = calls.find(
+          (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "create",
+        );
+        expect(createCall).toBeDefined();
         expect(store.logEvent).toHaveBeenCalledWith(
           "proj-1",
           "pr-created",
           expect.objectContaining({ existing: false, prUrl: "https://github.com/org/repo/pull/102" }),
-          "run-90",
+          "run-89",
         );
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;

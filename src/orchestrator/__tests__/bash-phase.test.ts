@@ -1,13 +1,44 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { interpolateTaskPlaceholders } from '../../lib/interpolate.js';
 
+const { mockCreateSandboxProvider, mockProvider } = vi.hoisted(() => {
+  const mockProvider = {
+    createSandbox: vi.fn().mockResolvedValue({ id: 'sandbox-1', workdir: '/workspace', mounts: [] }),
+    runInSandbox: vi.fn().mockResolvedValue({ exitCode: 0, stdout: 'sandbox ok', stderr: '' }),
+    destroySandbox: vi.fn().mockResolvedValue(undefined),
+  };
+  return {
+    mockProvider,
+    mockCreateSandboxProvider: vi.fn().mockResolvedValue(mockProvider),
+  };
+});
+
 // runBashPhase integration tests require execFile; we test the critical
 // non-execFile behaviors here: artifact writing and placeholder interpolation.
 // execFile smoke test is covered by TRD-004 manual verification.
+
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn(),
+  execSync: vi.fn(),
+}));
+
+vi.mock('../../lib/sandbox-providers/index.js', () => ({
+  SandboxProviderFactory: {
+    create: mockCreateSandboxProvider,
+  },
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeFileSync: vi.fn(actual.writeFileSync),
+  };
+});
 
 describe('bash phase artifact writing', () => {
   let tmpDir: string;
@@ -122,5 +153,106 @@ describe('bash phase exit code handling', () => {
 
   it('timeout exit code is 124', () => {
     expect(124).toBe(124); // standard timeout exit code
+  });
+});
+
+describe('runBashPhase sandbox execution', () => {
+  beforeEach(() => {
+    mockCreateSandboxProvider.mockClear();
+    mockProvider.createSandbox.mockClear();
+    mockProvider.runInSandbox.mockClear();
+    mockProvider.destroySandbox.mockClear();
+  });
+
+  it('rejects inherited project sandbox for host-executed phases', async () => {
+    const { applyEffectiveSandboxConfig } = await import('../pipeline-executor.js');
+    const tmpDir = mkdtempSync(join(tmpdir(), 'sandbox-project-config-'));
+    const prevForemanHome = process.env.FOREMAN_HOME;
+    process.env.FOREMAN_HOME = tmpDir;
+    writeFileSync(join(tmpDir, 'config.yaml'), 'sandbox:\n  backend: docker\n', 'utf8');
+    try {
+      expect(() => applyEffectiveSandboxConfig({
+        config: { projectPath: tmpDir },
+        workflowConfig: { name: 'prompted', phases: [{ name: 'developer', prompt: 'developer.md' }] },
+      } as never)).toThrow(/Sandbox is only supported for bash phases/);
+    } finally {
+      if (prevForemanHome === undefined) delete process.env.FOREMAN_HOME;
+      else process.env.FOREMAN_HOME = prevForemanHome;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs bash command inside sandbox when sandbox config is provided', async () => {
+    const { runBashPhase } = await import('../pipeline-executor.js');
+
+    const result = await runBashPhase('echo ok', undefined, '/tmp/worktree', undefined, 30_000, {
+      backend: 'docker',
+      image: 'ubuntu:22.04',
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockCreateSandboxProvider).toHaveBeenCalledWith({
+      backend: 'docker',
+      image: 'ubuntu:22.04',
+      limits: undefined,
+      network: undefined,
+      cleanup: undefined,
+    });
+    expect(mockProvider.createSandbox).toHaveBeenCalledWith('/tmp/worktree', 'ubuntu:22.04', expect.objectContaining({
+      network: undefined,
+    }));
+    expect(mockProvider.runInSandbox).toHaveBeenCalledWith('sandbox-1', ['/bin/sh', '-c', 'echo ok'], {
+      cwd: '/workspace',
+      timeoutMs: 30_000,
+    });
+    expect(mockProvider.destroySandbox).toHaveBeenCalledWith('sandbox-1');
+  });
+
+  it('preserves sandbox when cleanup is keep', async () => {
+    const { runBashPhase } = await import('../pipeline-executor.js');
+
+    await runBashPhase('echo ok', undefined, '/tmp/worktree', undefined, 30_000, {
+      backend: 'docker',
+      image: 'ubuntu:22.04',
+      cleanup: 'keep',
+    });
+
+    expect(mockProvider.createSandbox).toHaveBeenCalled();
+    expect(mockProvider.runInSandbox).toHaveBeenCalled();
+    expect(mockProvider.destroySandbox).not.toHaveBeenCalled();
+  });
+});
+
+describe('runBashPhase timeout override', () => {
+  it('uses the default 120s timeout when none is provided', async () => {
+    const { runBashPhase } = await import('../pipeline-executor.js');
+    const { execFile } = await import('node:child_process');
+    const mockExecFile = vi.mocked(execFile);
+
+    mockExecFile.mockImplementationOnce((command, args, options, callback) => {
+      expect(command).toBe('/bin/sh');
+      expect(options?.timeout).toBe(120_000);
+      if (!callback) throw new Error('expected callback');
+      callback(null, { stdout: 'ok', stderr: '' } as never, '' as never);
+      return { on: vi.fn() } as never;
+    });
+
+    await runBashPhase('echo ok', undefined, tmpdir());
+  });
+
+  it('uses the provided timeout override for bash phases', async () => {
+    const { runBashPhase } = await import('../pipeline-executor.js');
+    const { execFile } = await import('node:child_process');
+    const mockExecFile = vi.mocked(execFile);
+
+    mockExecFile.mockImplementationOnce((command, args, options, callback) => {
+      expect(command).toBe('/bin/sh');
+      expect(options?.timeout).toBe(180_000);
+      if (!callback) throw new Error('expected callback');
+      callback(null, { stdout: 'ok', stderr: '' } as never, '' as never);
+      return { on: vi.fn() } as never;
+    });
+
+    await runBashPhase('echo ok', undefined, tmpdir(), undefined, 180_000);
   });
 });

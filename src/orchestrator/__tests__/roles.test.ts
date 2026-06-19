@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ROLE_CONFIGS,
   buildRoleConfigs,
@@ -196,6 +199,29 @@ describe("buildPhasePrompt — worktreePath propagation", () => {
       seedDescription: "desc",
     });
     expect(prompt).not.toContain("{{worktreePath}}");
+  });
+
+  it("can load a workflow-scoped prompt whose file differs from the phase name", () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "foreman-phase-prompt-"));
+    try {
+      const promptDir = join(projectRoot, ".foreman", "prompts", "task");
+      mkdirSync(promptDir, { recursive: true });
+      writeFileSync(join(promptDir, "fix-issue.md"), "fix {{seedId}} {{agentRole}} {{seedTitle}}", "utf8");
+
+      const prompt = buildPhasePrompt("fix", {
+        seedId: "foreman-12345",
+        seedTitle: "Native task store",
+        seedDescription: "desc",
+      }, {
+        projectRoot,
+        workflow: "task",
+        promptName: "fix-issue",
+      });
+
+      expect(prompt).toBe("fix foreman-12345 fix Native task store");
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -612,12 +638,12 @@ describe("tool enforcement guards", () => {
     expect(allowedTools).toContain("TaskStop");
   });
 
-  it("qa can run tests (Bash) and edit test files", () => {
+  it("qa can run tests and write reports without edit access", () => {
     const { allowedTools } = ROLE_CONFIGS.qa;
     expect(allowedTools).toContain("Bash");
     expect(allowedTools).toContain("Read");
     expect(allowedTools).toContain("Write");
-    expect(allowedTools).toContain("Edit");
+    expect(allowedTools).not.toContain("Edit");
   });
 
   it("qa cannot spawn agents", () => {

@@ -13,7 +13,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join, basename } from "node:path";
+import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 
 export interface WorktreeInfo {
@@ -22,6 +22,7 @@ export interface WorktreeInfo {
   branchName: string;
   path: string;
   exists: boolean;
+  created?: boolean;
 }
 
 export interface CreateWorktreeOptions {
@@ -56,6 +57,150 @@ export class WorktreeManager {
   }
 
   /**
+   * Find the git repository root by searching:
+   * 1. Up from the given path
+   * 2. In sibling directories with the project name
+   *
+   * Returns null if no .git directory is found.
+   */
+  #findGitRepo(startPath: string): string | null {
+    // 1. Search upward from the given path
+    let dir = startPath;
+    for (let i = 0; i < 20; i++) {
+      if (existsSync(join(dir, ".git"))) {
+        return dir;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+
+    // 2. Search sibling directories that might contain the git repo
+    // Common pattern: ~/.foreman/projects/<store>/ -> ~/Development/Fortium/<repo>
+    // Extract project name from the store path (e.g., "foreman-849f2" -> "foreman")
+    const storeName = startPath.match(/[^\\/]+$/)?.[0];
+    if (storeName) {
+      // Extract the base project name (e.g., "foreman-849f2" -> "foreman", "ensemble-42e5a" -> "ensemble")
+      const projectName = storeName.replace(/-\w+$/, "");
+      
+      // Go up from the store path to find the home directory, stopping at root
+      const homeDir = homedir();
+      let checkDir = dirname(startPath);
+      while (checkDir !== "/" && checkDir !== dirname(homeDir)) {
+        const parent = dirname(checkDir);
+        if (parent === checkDir) break;
+        checkDir = parent;
+        // Stop when we reach home or above
+        if (checkDir === homeDir || checkDir === dirname(homeDir)) {
+          break;
+        }
+      }
+      
+      // First, look for a directory with the project name at the checkDir level
+      const candidate = join(checkDir, projectName);
+      if (existsSync(join(candidate, ".git"))) {
+        return candidate;
+      }
+      
+      // If not found, look in sibling directories of checkDir (e.g., ~/Development/Fortium/foreman)
+      const checkDirContents = readdirSync(checkDir).filter(d => !d.startsWith("."));
+      for (const sibling of checkDirContents) {
+        const siblingPath = join(checkDir, sibling);
+        // Check if the sibling has a subdirectory with the project name
+        if (existsSync(join(siblingPath, projectName, ".git"))) {
+          return join(siblingPath, projectName);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  #resolveStartPoint(repoPath: string, baseBranch?: string): string {
+    if (!baseBranch) return "HEAD";
+
+    try {
+      execFileSync("git", ["fetch", "origin", baseBranch, "--prune"], {
+        cwd: repoPath,
+        stdio: "pipe",
+      });
+    } catch {
+      try {
+        execFileSync("git", ["fetch", "origin", "--prune"], {
+          cwd: repoPath,
+          stdio: "pipe",
+        });
+      } catch {
+        // Offline/local-only repos are valid in tests and development. Fall back
+        // to local refs; worktree creation will report a clear error if missing.
+      }
+    }
+
+    const remoteRef = `origin/${baseBranch}`;
+    try {
+      execFileSync("git", ["rev-parse", "--verify", remoteRef], {
+        cwd: repoPath,
+        stdio: "pipe",
+      });
+      this.#refreshLocalBaseBranch(repoPath, baseBranch, remoteRef);
+      return remoteRef;
+    } catch {
+      return baseBranch;
+    }
+  }
+
+  #refreshLocalBaseBranch(repoPath: string, baseBranch: string, remoteRef: string): void {
+    try {
+      execFileSync("git", ["rev-parse", "--verify", remoteRef], { cwd: repoPath, stdio: "pipe" });
+    } catch {
+      return;
+    }
+
+    let currentBranch: string | undefined;
+    try {
+      currentBranch = execFileSync("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+        cwd: repoPath,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    } catch {
+      currentBranch = undefined;
+    }
+
+    try {
+      if (currentBranch === baseBranch) {
+        if (!this.#hasTrackedChanges(repoPath)) {
+          execFileSync("git", ["reset", "--hard", remoteRef], { cwd: repoPath, stdio: "pipe" });
+        }
+      } else {
+        execFileSync("git", ["branch", "-f", baseBranch, remoteRef], { cwd: repoPath, stdio: "pipe" });
+      }
+    } catch {
+      // Best-effort only. Worktree creation still uses origin/<baseBranch>, so
+      // a locked/dirty local branch cannot make new worktrees stale.
+    }
+  }
+
+  #hasTrackedChanges(repoPath: string): boolean {
+    try {
+      execFileSync("git", ["diff", "--quiet"], { cwd: repoPath, stdio: "pipe" });
+      execFileSync("git", ["diff", "--cached", "--quiet"], { cwd: repoPath, stdio: "pipe" });
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  #pruneWorktrees(repoPath: string): void {
+    try {
+      execFileSync("git", ["worktree", "prune"], { cwd: repoPath, stdio: "pipe" });
+    } catch {
+      // Best-effort cleanup only. Worktree creation below will surface any
+      // remaining git errors with task-specific context.
+    }
+  }
+
+  /**
    * Get the worktree directory for a specific project+bead.
    */
   getWorktreePath(projectId: string, beadId: string): string {
@@ -85,27 +230,43 @@ export class WorktreeManager {
     const branchName = `foreman/${beadId}`;
     const worktreePath = this.getWorktreePath(projectId, beadId);
 
+    // Resolve the actual git repo path. The provided repoPath may be a store
+    // directory rather than the git repo root. Search up the tree for .git.
+    const resolvedRepoPath = this.#findGitRepo(repoPath) ?? repoPath;
+    const startPoint = this.#resolveStartPoint(resolvedRepoPath, baseBranch);
+
     // Ensure parent directory exists
     mkdirSync(this.getProjectRoot(projectId), { recursive: true, mode: 0o700 });
 
+    // Remove stale worktree registrations before creating/attaching. A reset can
+    // delete the workspace directory while git still believes the branch is
+    // checked out at the old path; without pruning, `git branch -f` refuses to
+    // reset that branch and daemon dispatch silently skips the task.
+    this.#pruneWorktrees(resolvedRepoPath);
+
     // If worktree already exists — reuse it with rebase
     if (existsSync(worktreePath)) {
-      await this._rebaseWorktree(worktreePath, baseBranch ?? "HEAD");
-      return { projectId, beadId, branchName, path: worktreePath, exists: true };
+      await this._rebaseWorktree(worktreePath, startPoint);
+      return { projectId, beadId, branchName, path: worktreePath, exists: true, created: false };
     }
 
-    // Branch may exist without a worktree — try to attach worktree
+    // Branch may exist without a worktree — reset it to the clean start point
+    // before attaching. A stale leftover branch must not inherit old internal
+    // state when dispatch is intended to start fresh.
     try {
-      execFileSync("git", ["worktree", "add", "-b", branchName, worktreePath, baseBranch ?? "HEAD"], {
-        cwd: repoPath,
+      execFileSync("git", ["worktree", "add", "-b", branchName, worktreePath, startPoint], {
+        cwd: resolvedRepoPath,
         stdio: "pipe",
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("already exists")) {
-        // Branch exists, just attach worktree
+        execFileSync("git", ["branch", "-f", branchName, startPoint], {
+          cwd: resolvedRepoPath,
+          stdio: "pipe",
+        });
         execFileSync("git", ["worktree", "add", worktreePath, branchName], {
-          cwd: repoPath,
+          cwd: resolvedRepoPath,
           stdio: "pipe",
         });
       } else if (msg.includes("fatal")) {
@@ -115,7 +276,7 @@ export class WorktreeManager {
       }
     }
 
-    return { projectId, beadId, branchName, path: worktreePath, exists: true };
+    return { projectId, beadId, branchName, path: worktreePath, exists: true, created: true };
   }
 
   /**

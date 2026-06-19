@@ -4,15 +4,7 @@
 # Foreman — AI-powered multi-agent engineering orchestrator
 #
 # This formula installs Foreman as a standalone binary. The release archive
-# contains two files that must reside in the same directory:
-#   - foreman-{platform}-{arch}   (the compiled pkg binary)
-#   - better_sqlite3.node         (native SQLite addon side-car)
-#
-# The binary detects better_sqlite3.node via import.meta.url resolution:
-#   resolveBundledNativeBinding() looks for better_sqlite3.node in the same
-#   directory as the binary file itself (src/lib/store.ts).
-#
-# Both files are installed to libexec/foreman/ so they remain co-located.
+# contains the platform-specific Foreman binary.
 # A thin shell wrapper in bin/ delegates to the real binary.
 #
 # Usage after installation:
@@ -63,8 +55,7 @@ class Foreman < Formula
       Hardware::CPU.arm? ? "foreman-linux-arm64" : "foreman-linux-x64"
     end
 
-    # Install the binary and its native addon side-car into libexec/foreman/
-    # so they remain co-located (required by resolveBundledNativeBinding()).
+    # Install the binary into libexec/foreman/.
     libexec_dir = libexec/"foreman"
     libexec_dir.mkpath
 
@@ -72,8 +63,6 @@ class Foreman < Formula
     cp binary_name, libexec_dir/"foreman"
     chmod 0755, libexec_dir/"foreman"
 
-    # Install the SQLite native addon alongside the binary
-    cp "better_sqlite3.node", libexec_dir/"better_sqlite3.node"
 
     # Create a thin wrapper in bin/ that delegates to the real binary.
     # Using a shell wrapper (not a symlink) ensures import.meta.url in the

@@ -87,11 +87,15 @@ function setupExecFile(options: {
 describe("ConflictResolver.runPostMergeTests", () => {
   let resolver: ConflictResolver;
   let config: MergeQueueConfig;
+  let mockVcs: { rollbackFailedMerge: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
     config = { ...DEFAULT_MERGE_CONFIG };
-    resolver = new ConflictResolver("/test/project", config);
+    mockVcs = {
+      rollbackFailedMerge: vi.fn().mockResolvedValue(undefined),
+    };
+    resolver = new ConflictResolver("/test/project", config, mockVcs as any);
   });
 
   describe("skipping conditions", () => {
@@ -215,19 +219,7 @@ describe("ConflictResolver.runPostMergeTests", () => {
       expect(result.output).toBeDefined();
       expect(result.output).toContain("FAIL");
 
-      // Verify git reset --hard HEAD~1 was called
-      const gitCalls = execFileMock.mock.calls.filter(
-        (call) => call[0] === "git",
-      );
-      const resetCall = gitCalls.find((call) => {
-        const args = call[1] as string[];
-        return (
-          args.includes("reset") &&
-          args.includes("--hard") &&
-          args.includes("HEAD~1")
-        );
-      });
-      expect(resetCall).toBeDefined();
+      expect(mockVcs.rollbackFailedMerge).toHaveBeenCalledWith("/test/project", "HEAD~1");
     });
 
     it("should truncate output to 2000 characters on failure", async () => {

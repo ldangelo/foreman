@@ -22,6 +22,7 @@ let mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 vi.mock("../../lib/setup.js", () => ({
   installDependencies: vi.fn().mockResolvedValue(undefined),
   runSetupWithCache: vi.fn().mockResolvedValue(undefined),
+  runWorkspaceHook: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../lib/vcs/git-backend.js", () => ({
@@ -44,6 +45,8 @@ vi.mock("../../lib/vcs/index.js", () => ({
       detectDefaultBranch: async (path: string) => mockDetectDefaultBranch(path),
       branchExists: async (_path: string, branch: string) => branch !== "wzplklnookuz" && branch !== "HEAD",
     })),
+    resolveBackend: vi.fn((config: { backend: "git" | "jujutsu" | "auto" }) =>
+      config.backend === "auto" ? "jujutsu" : config.backend),
   },
 }));
 
@@ -87,6 +90,29 @@ function makeIssue(id: string, parent?: string, labels?: string[]): Issue {
   };
 }
 
+
+let currentReadyIssues: Issue[] = [];
+
+function nativeTaskFromIssue(issue: Issue) {
+  return {
+    id: issue.id,
+    title: issue.title,
+    description: issue.description ?? null,
+    type: issue.type,
+    priority: Number(String(issue.priority ?? "2").replace(/^P/, "")) || 2,
+    status: "ready",
+    run_id: null,
+    branch: null,
+    external_id: null,
+    labels: issue.labels ?? [],
+    parent: issue.parent ?? null,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at,
+    approved_at: new Date().toISOString(),
+    closed_at: null,
+  };
+}
+
 function makeStore(overrides: Partial<ForemanStore> = {}): ForemanStore {
   return {
     getActiveRuns: vi.fn().mockReturnValue([] as Run[]),
@@ -98,13 +124,25 @@ function makeStore(overrides: Partial<ForemanStore> = {}): ForemanStore {
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
     getRunsForSeed: vi.fn().mockReturnValue([]),
-    hasNativeTasks: vi.fn().mockReturnValue(false),
-    getReadyTasks: vi.fn().mockReturnValue([]),
+    hasNativeTasks: vi.fn().mockReturnValue(true),
+    getReadyTasks: vi.fn(() => currentReadyIssues.map(nativeTaskFromIssue)),
+    getTaskByExternalId: vi.fn().mockReturnValue(null),
+    getTaskById: vi.fn((id: string) => currentReadyIssues.map(nativeTaskFromIssue).find((task) => task.id === id) ?? null),
+    claimTask: vi.fn().mockReturnValue(true),
+    updateTaskLabels: vi.fn(),
     ...overrides,
   } as unknown as ForemanStore;
 }
 
 function makeTaskClient(issues: Issue[], detailLabels?: Record<string, string[]>) {
+  const existingIds = new Set(issues.map((issue) => issue.id));
+  const detailIssues = Object.keys(detailLabels ?? {})
+    .filter((id) => !existingIds.has(id))
+    .map((id) => makeIssue(id, undefined, detailLabels?.[id]));
+  currentReadyIssues = [
+    ...issues.map((issue) => ({ ...issue, labels: detailLabels?.[issue.id] ?? issue.labels })),
+    ...detailIssues,
+  ];
   return {
     ready: vi.fn().mockResolvedValue(issues),
     list: vi.fn().mockResolvedValue(issues),
@@ -141,9 +179,7 @@ describe("Dispatcher — branch label auto-labeling", () => {
     await dispatcher.dispatch({ dryRun: true });
 
     // update() should have been called with branch:installer label
-    expect(taskClient.update).toHaveBeenCalledWith("seed-001", {
-      labels: ["branch:installer"],
-    });
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("seed-001", ["branch:installer"]);
   });
 
   it("does NOT add branch label when on default branch (main)", async () => {
@@ -158,9 +194,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
     await dispatcher.dispatch({ dryRun: true });
 
     // update() should NOT have been called with a branch label
-    const updateCalls = vi.mocked(taskClient.update).mock.calls;
-    const branchLabelCalls = updateCalls.filter(([, opts]) =>
-      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    const updateCalls = vi.mocked((store.updateTaskLabels as any)).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, labels]: [string, string[]]) =>
+      labels.some((label: string) => label.startsWith("branch:")),
     );
     expect(branchLabelCalls).toHaveLength(0);
   });
@@ -176,9 +212,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
     await dispatcher.dispatch({ dryRun: true });
 
-    const updateCalls = vi.mocked(taskClient.update).mock.calls;
-    const branchLabelCalls = updateCalls.filter(([, opts]) =>
-      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    const updateCalls = vi.mocked((store.updateTaskLabels as any)).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, labels]: [string, string[]]) =>
+      labels.some((label: string) => label.startsWith("branch:")),
     );
     expect(branchLabelCalls).toHaveLength(0);
   });
@@ -194,9 +230,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
     await dispatcher.dispatch({ dryRun: true });
 
-    const updateCalls = vi.mocked(taskClient.update).mock.calls;
-    const branchLabelCalls = updateCalls.filter(([, opts]) =>
-      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    const updateCalls = vi.mocked((store.updateTaskLabels as any)).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, labels]: [string, string[]]) =>
+      labels.some((label: string) => label.startsWith("branch:")),
     );
     expect(branchLabelCalls).toHaveLength(0);
   });
@@ -210,9 +246,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
     await dispatcher.dispatch({ dryRun: true });
 
-    const updateCalls = vi.mocked(taskClient.update).mock.calls;
-    const branchLabelCalls = updateCalls.filter(([, opts]) =>
-      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    const updateCalls = vi.mocked((store.updateTaskLabels as any)).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, labels]: [string, string[]]) =>
+      labels.some((label: string) => label.startsWith("branch:")),
     );
     expect(branchLabelCalls).toHaveLength(0);
   });
@@ -226,9 +262,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
     await dispatcher.dispatch({ dryRun: true });
 
-    const updateCalls = vi.mocked(taskClient.update).mock.calls;
-    const branchLabelCalls = updateCalls.filter(([, opts]) =>
-      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    const updateCalls = vi.mocked((store.updateTaskLabels as any)).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, labels]: [string, string[]]) =>
+      labels.some((label: string) => label.startsWith("branch:")),
     );
     expect(branchLabelCalls).toHaveLength(0);
   });
@@ -250,9 +286,7 @@ describe("Dispatcher — branch label auto-labeling", () => {
     await dispatcher.dispatch({ dryRun: true });
 
     // Child should inherit branch:feature-x from parent
-    expect(taskClient.update).toHaveBeenCalledWith("child-001", {
-      labels: ["branch:feature-x"],
-    });
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("child-001", ["branch:feature-x"]);
   });
 
   it("does NOT inherit branch: label when parent targets default branch", async () => {
@@ -270,9 +304,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
     await dispatcher.dispatch({ dryRun: true });
 
-    const updateCalls = vi.mocked(taskClient.update).mock.calls;
-    const branchLabelCalls = updateCalls.filter(([, opts]) =>
-      opts.labels?.some((l: string) => l.startsWith("branch:")),
+    const updateCalls = vi.mocked((store.updateTaskLabels as any)).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, labels]: [string, string[]]) =>
+      labels.some((label: string) => label.startsWith("branch:")),
     );
     expect(branchLabelCalls).toHaveLength(0);
   });
@@ -285,8 +319,63 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
     await dispatcher.dispatch({ dryRun: true });
 
-    expect(taskClient.update).toHaveBeenCalledWith("seed-001", {
-      labels: expect.arrayContaining(["workflow:smoke", "branch:installer"]),
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("seed-001", expect.arrayContaining(["workflow:smoke", "branch:installer"]));
+  });
+
+  // ── assumeDefaultBranch (daemon background dispatch) ─────────────────────────
+
+  it("does NOT auto-label with the checked-out feature branch when assumeDefaultBranch is set", async () => {
+    // Repo is checked out on a feature branch ("installer"), but the daemon must
+    // treat the project as being on its default branch.
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+
+    const seed = makeIssue("seed-001");
+    const taskClient = makeTaskClient([seed]);
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true, assumeDefaultBranch: true });
+
+    const updateCalls = vi.mocked((store.updateTaskLabels as any)).mock.calls;
+    const branchLabelCalls = updateCalls.filter(([, labels]: [string, string[]]) =>
+      labels.some((label: string) => label.startsWith("branch:")),
+    );
+    expect(branchLabelCalls).toHaveLength(0);
+    // Must not even inspect the developer's checked-out branch.
+    expect(mockGetCurrentBranch).not.toHaveBeenCalled();
+  });
+
+  it("interactive default (assumeDefaultBranch unset) still auto-labels on a feature branch", async () => {
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+
+    const seed = makeIssue("seed-001");
+    const taskClient = makeTaskClient([seed]);
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true });
+
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("seed-001", ["branch:installer"]);
+  });
+
+  it("still inherits parent branch label when assumeDefaultBranch is set", async () => {
+    // Even though the daemon ignores the checked-out branch, explicit parent
+    // branch-label inheritance must continue to work.
+    mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
+    mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
+
+    const childSeed = makeIssue("child-001", "parent-001");
+    const taskClient = makeTaskClient([childSeed], {
+      "parent-001": ["branch:feature-x"],
+      "child-001": [],
     });
+    const store = makeStore();
+    const dispatcher = new Dispatcher(taskClient, store, "/tmp");
+
+    await dispatcher.dispatch({ dryRun: true, assumeDefaultBranch: true });
+
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("child-001", ["branch:feature-x"]);
   });
 });

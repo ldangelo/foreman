@@ -51,7 +51,7 @@ Based on the failure context and diagnostics, apply the appropriate fix:
 2. Read the failing test files to understand what they expect
 3. Read the source files the tests cover to understand what changed
 4. Apply targeted fixes (don't refactor — fix the exact failure)
-5. Re-run the failing tests: `cd {{worktreePath}} && npm test 2>&1 | tail -50`
+5. Re-run the failing tests: `cd {{worktreePath}} && set -o pipefail && npm test 2>&1 | tee /tmp/test-output.log`
 6. If tests pass, commit and push:
    ```bash
    cd {{worktreePath}}
@@ -75,7 +75,7 @@ Based on the failure context and diagnostics, apply the appropriate fix:
    ```bash
    cd {{worktreePath}}
    git add -A
-   git rebase --continue 2>&1
+   GIT_EDITOR=true git rebase --continue 2>&1
    # If rebase --continue fails, check git status again
    ```
 5. Then retry finalize:
@@ -85,7 +85,36 @@ Based on the failure context and diagnostics, apply the appropriate fix:
 
 **Escalate if:** Conflicts involve complex logic changes where intent is unclear, or rebase --continue fails repeatedly.
 
-### Failure Mode 3: `push_failed` — Git push to remote failed
+### Failure Mode 3: `pr_merge_conflict` — GitHub PR reports merge conflicts
+
+**Symptoms:** `pr-wait` failed with `PR has merge conflicts`, `mergeable=CONFLICTING`, or `mergeStateStatus=DIRTY` in `PR_WAIT_REPORT.md`.
+
+**Fix strategy:**
+1. Inspect the PR state:
+   ```bash
+   cd {{worktreePath}}
+   gh pr view --json number,url,baseRefName,headRefName,mergeable,mergeStateStatus
+   ```
+2. Update the PR branch with the base branch:
+   ```bash
+   git fetch origin
+   git checkout foreman/{{beadId}}
+   git rebase origin/{{baseBranch}} 2>&1 || true
+   ```
+3. If conflicts occur, resolve them by preserving the task's intended change plus current `{{baseBranch}}` updates. Then:
+   ```bash
+   git add -A
+   GIT_EDITOR=true git rebase --continue 2>&1
+   ```
+4. Validate focused tests/build for touched areas.
+5. Push the resolved branch:
+   ```bash
+   git push --force-with-lease origin foreman/{{beadId}}
+   ```
+
+**Escalate if:** The conflict cannot be resolved without product/design input, or rebasing repeatedly reintroduces conflicts.
+
+### Failure Mode 4: `push_failed` — Git push to remote failed
 
 **Symptoms:** Finalize reported push failed (not a conflict — auth or network)
 
@@ -104,7 +133,7 @@ Based on the failure context and diagnostics, apply the appropriate fix:
 
 **Escalate if:** Authentication errors, permission errors, or 3 consecutive push failures.
 
-### Failure Mode 4: `nothing_to_commit` — Work already on target branch
+### Failure Mode 5: `nothing_to_commit` — Work already on target branch
 
 **Symptoms:** Finalize found nothing to commit but work is done (prior pipeline run committed it)
 
@@ -124,7 +153,7 @@ Based on the failure context and diagnostics, apply the appropriate fix:
    ```
 4. If work IS merged: close the bead using `close_bead` tool with reason "Work already merged into {{baseBranch}}"
 
-### Failure Mode 5: Stuck with no clear cause
+### Failure Mode 6: Stuck with no clear cause
 
 **Symptoms:** Run is stuck but no obvious error in artifacts or git state
 

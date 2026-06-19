@@ -1,0 +1,15 @@
+{
+  "source": "jira",
+  "site": "fortium.atlassian.net",
+  "external_id": "FORE-123",
+  "project_id": "foreman",
+  "event_type": "transitioned",
+  "transition_id": "31",
+  "occurred_at": "2026-06-16T22:00:00Z",
+  "external_link": "https://fortium.atlassian.net/browse/FORE-123",
+  "title": "Jira transitioned: FORE-123",
+  "payload": {
+    "from": "To Do",
+    "to": "Ready"
+  }
+}

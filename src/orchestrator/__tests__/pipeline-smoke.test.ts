@@ -144,7 +144,7 @@ describe("smoke workflow: structural invariants", () => {
 
   it("smoke workflow finalize phase has artifact/verdict/retry wiring", () => {
     const content = readFileSync(SMOKE_WORKFLOW, "utf-8");
-    expect(content).toContain("artifact: FINALIZE_VALIDATION.md");
+    expect(content).toContain('artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"');
     expect(content).toContain("verdict: true");
     expect(content).toContain("retryWith: developer");
     expect(content).toContain("retryOnFail: 1");
@@ -176,12 +176,14 @@ describe("loadPrompt(): unified resolution chain", () => {
 
   beforeEach(() => {
     tmpProject = mkdtempSync(join(tmpdir(), "foreman-promptloader-test-"));
+    process.env["FOREMAN_HOME"] = tmpProject;
     // Install bundled prompts so the loader can find them
     installBundledPrompts(tmpProject, true);
   });
 
   afterEach(() => {
     rmSync(tmpProject, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
   });
 
   it("loadPrompt resolves smoke explorer prompt when installed", async () => {
@@ -198,12 +200,12 @@ describe("loadPrompt(): unified resolution chain", () => {
     expect(result).toContain("x"); // seedId interpolated
   });
 
-  it("loadPrompt project-local override takes precedence over bundled installed", async () => {
+  it("loadPrompt global override takes precedence over bundled installed", async () => {
     const { loadPrompt } = await import("../../lib/prompt-loader.js");
     // Write a custom override
-    const overridePath = join(tmpProject, ".foreman", "prompts", "default", "explorer.md");
+    const overridePath = join(tmpProject, "prompts", "default", "explorer.md");
     const { writeFileSync, mkdirSync } = await import("node:fs");
-    mkdirSync(join(tmpProject, ".foreman", "prompts", "default"), { recursive: true });
+    mkdirSync(join(tmpProject, "prompts", "default"), { recursive: true });
     writeFileSync(overridePath, "# Custom override: {{seedId}}");
     const result = loadPrompt("explorer", { seedId: "override-test" }, "default", tmpProject);
     expect(result).toBe("# Custom override: override-test");

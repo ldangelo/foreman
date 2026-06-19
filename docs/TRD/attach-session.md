@@ -28,7 +28,7 @@ Dispatcher.spawnWorkerProcess()
   v
 Agent Worker (runs inside tmux session)
   |-- SDK query() loop (unchanged)
-  |-- Progress updates to SQLite (unchanged)
+  |-- Progress updates to Postgres (unchanged)
   |-- On exit: tmux session persists for post-mortem review
   |
   v
@@ -200,7 +200,7 @@ interface SessionHealthCheck {
 | Doctor -> TmuxClient | Internal | `listForemanSessions()`, `hasSession()`, `killSession()` |
 | Reset -> TmuxClient | Internal | `listForemanSessions()`, `killSession()` |
 | Run CLI -> Dispatcher | Internal | `--attach`/`--no-attach` flags passed through |
-| Store -> SQLite | Outbound | `ALTER TABLE runs ADD COLUMN tmux_session TEXT` |
+| Store -> Postgres | Outbound | `ALTER TABLE runs ADD COLUMN tmux_session TEXT` |
 
 ### 1.6 Error Code System
 
@@ -247,7 +247,7 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 | AT-T008 | Implement `getTmuxVersion(): Promise<string | null>` method. Execute `tmux -V` and parse output (e.g., `tmux 3.4` -> `"3.4"`). Return null if tmux unavailable. Used by doctor to check version compatibility (>= 3.0) | 1h | AT-T001 | `src/lib/tmux.ts` | [x] |
 | AT-T009 | Write unit tests for TmuxClient: mock `execFile` calls for all methods. Test `isAvailable()` with tmux present/missing/disabled via env var. Test `tmuxSessionName()` sanitization (colons, periods, spaces, empty). Test `createSession()` success/failure paths. Test `killSession()` success/not-found. Test `hasSession()` true/false. Test `capturePaneOutput()` parsing and empty session. Test `listForemanSessions()` filtering and parsing. Test `getTmuxVersion()` parsing | 5h | AT-T001 through AT-T008 | `src/lib/__tests__/tmux.test.ts` | [x] |
 
-#### Story 1.2: SQLite Schema Migration
+#### Story 1.2: Postgres Schema Migration
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
@@ -372,7 +372,7 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 
 | Sprint | Focus | Tasks | Est. Hours | Key Deliverables |
 |--------|-------|-------|-----------|--------------------|
-| 1 | Foundation | AT-T001 to AT-T012 | 23h | TmuxClient utility module, SQLite migration, session name convention |
+| 1 | Foundation | AT-T001 to AT-T012 | 23h | TmuxClient utility module, Postgres migration, session name convention |
 | 2 | Core Spawning | AT-T013 to AT-T017 | 16h | SpawnStrategy interface with TmuxSpawnStrategy + DetachedSpawnStrategy |
 | 3 | Attachment Experience | AT-T018 to AT-T026 | 25h | Interactive attach, follow mode, --kill, enhanced listing |
 | 4 | Smart Dispatch | AT-T027 to AT-T030 | 10h | --attach/--no-attach flags, TTY-aware auto-attach |
@@ -455,7 +455,7 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 - [ ] AC-1.1: `spawnWorkerProcess()` creates a tmux session named `foreman-<seedId>` when tmux is available
 - [ ] AC-1.2: Worker process (tsx agent-worker.ts) runs as the sole command in the tmux session
 - [ ] AC-1.3: File-descriptor logging (`~/.foreman/logs/<runId>.{out,err}`) continues to work inside tmux
-- [ ] AC-1.4: `tmux_session` is stored in the SQLite `runs` table
+- [ ] AC-1.4: `tmux_session` is stored in the Postgres `runs` table
 - [ ] AC-1.5: Completed worker leaves tmux session alive for post-mortem review
 - [ ] AC-1.6: Stale sessions with same name are killed before creating new ones
 
@@ -567,7 +567,7 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 - Works with tmux >= 3.0 (macOS Homebrew default, Ubuntu 20.04+)
 - macOS and Linux support (primary: macOS via Homebrew)
 - Existing workflows preserved when tmux unavailable
-- SQLite schema change applied via idempotent migration
+- Postgres schema change applied via idempotent migration
 - No changes to `agent-worker.ts` (sessions persist naturally)
 
 ---

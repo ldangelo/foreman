@@ -10,12 +10,12 @@
  * @module lib/trpc-client
  */
 
-import { httpBatchLink } from "@trpc/client";
-import { createTRPCUntypedClient } from "@trpc/client";
+import { httpBatchLink, createTRPCUntypedClient } from "@trpc/client";
 import * as http from "node:http";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { appRouter } from "../daemon/router.js";
+import type { appRouter } from "../daemon/router.js";
+import { foremanBackendMode } from "./backend-mode.js";
 
 /** AppRouter type — use `typeof appRouter` to extract. */
 export type AppRouter = typeof appRouter;
@@ -193,6 +193,10 @@ export interface TrpcClient {
   readonly tasks: TRPCTasksClient;
   /** Typed proxy to the daemon's runs/events/messages procedures. */
   readonly runs: TRPCRunsClient;
+  /** Typed proxy to the daemon's agent mail procedures. */
+  readonly mail: TRPCMailClient;
+  /** Typed proxy to the daemon's Jira issue tracker procedures (PRD-2026-013). */
+  readonly jira: TRPCJiraClient;
 }
 
 /** Tasks sub-router client. */
@@ -206,13 +210,18 @@ export interface TRPCTasksClient {
   get(input: { projectId: string; taskId: string }): Promise<unknown>;
   create(input: {
     projectId: string;
-    id: string;
+    id?: string;
     title?: string;
     description?: string;
     type?: string;
     priority?: number;
+    status?: string;
     externalId?: string;
     branch?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    approvedAt?: string;
+    closedAt?: string;
   }): Promise<unknown>;
   update(input: {
     projectId: string;
@@ -228,10 +237,46 @@ export interface TRPCTasksClient {
     };
   }): Promise<unknown>;
   delete(input: { projectId: string; taskId: string }): Promise<unknown>;
+  addNote(input: {
+    projectId: string;
+    taskId: string;
+    runId?: string | null;
+    phase?: string | null;
+    author: string;
+    kind?: "progress" | "issue" | "blocker" | "review" | "qa" | "final" | "failure" | "manual" | "system";
+    body: string;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<unknown>;
+  listNotes(input: {
+    projectId: string;
+    taskId: string;
+    limit?: number;
+    newestFirst?: boolean;
+  }): Promise<unknown>;
   claim(input: { projectId: string; taskId: string; runId: string }): Promise<unknown>;
   approve(input: { projectId: string; taskId: string }): Promise<unknown>;
+  close(input: { projectId: string; taskId: string }): Promise<unknown>;
   reset(input: { projectId: string; taskId: string }): Promise<unknown>;
   retry(input: { projectId: string; taskId: string }): Promise<unknown>;
+  addDependency(input: {
+    projectId: string;
+    fromTaskId: string;
+    toTaskId: string;
+    type?: "blocks" | "parent-child";
+  }): Promise<unknown>;
+  listDependencies(input: {
+    projectId: string;
+    taskId: string;
+    direction?: "incoming" | "outgoing";
+  }): Promise<unknown>;
+  removeDependency(input: {
+    projectId: string;
+    fromTaskId: string;
+    toTaskId: string;
+    type?: "blocks" | "parent-child";
+  }): Promise<unknown>;
+  /** Get the current GitHub PR state for a task. */
+  getPrState(input: { projectId: string; taskId: string }): Promise<unknown>;
 }
 
 /** Projects sub-router client. */
@@ -254,6 +299,21 @@ export interface TRPCProjectsClient {
         name?: string;
         path?: string;
         status?: "active" | "paused" | "archived";
+        jira?: {
+          apiUrl?: string;
+          email?: string;
+          apiToken?: string;
+          pollIntervalSeconds?: number;
+          webhookEnabled?: boolean;
+          webhookSecretEnvVar?: string;
+          projects?: Array<{
+            key: string;
+            startStatus?: string[];
+            endStatus?: string[];
+            issueTypeWorkflowMap?: Record<string, string>;
+            debounceWindowSeconds?: number;
+          }>;
+        };
       };
     },
   ): Promise<unknown>;
@@ -284,6 +344,7 @@ export interface TRPCRunsClient {
   }): Promise<unknown>;
   listActive(input: { projectId: string; beadId?: string }): Promise<unknown>;
   get(input: { runId: string }): Promise<unknown>;
+  getProgress(input: { runId: string }): Promise<unknown>;
   updateStatus(input: {
     runId: string;
     status: string;
@@ -313,6 +374,58 @@ export interface TRPCRunsClient {
   listMessages(input: { runId: string; stepKey?: string }): Promise<unknown>;
 }
 
+/** Agent mail sub-router client (TRD-036). */
+export interface TRPCMailClient {
+  send(input: {
+    projectId: string;
+    runId: string;
+    senderAgentType: string;
+    recipientAgentType: string;
+    subject: string;
+    body: string;
+  }): Promise<unknown>;
+  list(input: {
+    projectId: string;
+    runId: string;
+    agentType?: string;
+    unreadOnly?: boolean;
+  }): Promise<unknown>;
+  listGlobal(input: { projectId: string; limit?: number }): Promise<unknown>;
+  markRead(input: { projectId: string; messageId: string }): Promise<unknown>;
+  markAllRead(input: { projectId: string; runId: string; agentType: string }): Promise<unknown>;
+  delete(input: { projectId: string; messageId: string }): Promise<unknown>;
+}
+
+/** Jira issue tracker sub-router client (PRD-2026-013). */
+export interface TRPCJiraClient {
+  configure(input: {
+    apiUrl: string;
+    email: string;
+    apiToken: string;
+    projects: Array<{
+      key: string;
+      startStatus: string[];
+      endStatus?: string[];
+      issueTypeWorkflowMap: Record<string, string>;
+      debounceWindowSeconds?: number;
+    }>;
+    webhookEnabled: boolean;
+    webhookSecretEnvVar?: string;
+    pollIntervalSeconds?: number;
+  }): Promise<unknown>;
+  getStatus(input?: { projectId?: string }): Promise<unknown>;
+  testConnection(input: {
+    apiUrl: string;
+    email: string;
+    apiToken: string;
+  }): Promise<unknown>;
+  enableWebhook(input: {
+    projectId?: string;
+    webhookSecret: string;
+  }): Promise<unknown>;
+  disableWebhook(input?: { projectId?: string }): Promise<unknown>;
+}
+
 /**
  * Create a tRPC client that connects to ForemanDaemon.
  *
@@ -323,6 +436,12 @@ export interface TRPCRunsClient {
 export function createTrpcClient(
   options: TrpcClientOptions = {},
 ): TrpcClient {
+  if (!options.httpUrl && !options.socketPath && foremanBackendMode() === "elixir") {
+    throw new Error(
+      "Elixir backend parity gap: this command still uses the legacy Node daemon tRPC API. Use an Elixir-routed command or set FOREMAN_BACKEND=node for explicit legacy operation.",
+    );
+  }
+
   const socketPath = options.socketPath ?? DEFAULT_SOCKET_PATH;
 
   // Build the Unix-socket URL for httpBatchLink.
@@ -357,22 +476,45 @@ export function createTrpcClient(
       create: (input) => untypedClient.mutation("tasks.create", input),
       update: (input) => untypedClient.mutation("tasks.update", input),
       delete: (input) => untypedClient.mutation("tasks.delete", input),
+      addNote: (input) => untypedClient.mutation("tasks.addNote", input),
+      listNotes: (input) => untypedClient.query("tasks.listNotes", input),
       claim: (input) => untypedClient.mutation("tasks.claim", input),
       approve: (input) => untypedClient.mutation("tasks.approve", input),
+      close: (input) => untypedClient.mutation("tasks.close", input),
       reset: (input) => untypedClient.mutation("tasks.reset", input),
       retry: (input) => untypedClient.mutation("tasks.retry", input),
+      addDependency: (input) => untypedClient.mutation("tasks.addDependency", input),
+      listDependencies: (input) => untypedClient.query("tasks.listDependencies", input),
+      removeDependency: (input) => untypedClient.mutation("tasks.removeDependency", input),
+      getPrState: (input) => untypedClient.query("tasks.getPrState", input),
     },
     runs: {
       create: (input) => untypedClient.mutation("runs.create", input),
       list: (input) => untypedClient.query("runs.list", input),
       listActive: (input) => untypedClient.query("runs.listActive", input),
       get: (input) => untypedClient.query("runs.get", input),
+      getProgress: (input) => untypedClient.query("runs.getProgress", input),
       updateStatus: (input) => untypedClient.mutation("runs.updateStatus", input),
       finalize: (input) => untypedClient.mutation("runs.finalize", input),
       logEvent: (input) => untypedClient.mutation("runs.logEvent", input),
       listEvents: (input) => untypedClient.query("runs.listEvents", input),
       sendMessage: (input) => untypedClient.mutation("runs.sendMessage", input),
       listMessages: (input) => untypedClient.query("runs.listMessages", input),
+    },
+    mail: {
+      send: (input) => untypedClient.mutation("mail.send", input),
+      list: (input) => untypedClient.query("mail.list", input),
+      listGlobal: (input) => untypedClient.query("mail.listGlobal", input),
+      markRead: (input) => untypedClient.mutation("mail.markRead", input),
+      markAllRead: (input) => untypedClient.mutation("mail.markAllRead", input),
+      delete: (input) => untypedClient.mutation("mail.delete", input),
+    },
+    jira: {
+      configure: (input) => untypedClient.mutation("jira.configure", input),
+      getStatus: (input) => untypedClient.query("jira.getStatus", input),
+      testConnection: (input) => untypedClient.query("jira.testConnection", input),
+      enableWebhook: (input) => untypedClient.mutation("jira.enableWebhook", input),
+      disableWebhook: (input) => untypedClient.mutation("jira.disableWebhook", input),
     },
   };
 }

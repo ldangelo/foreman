@@ -15,10 +15,12 @@ setupCache:
 phases:
   - name: explorer
     prompt: explorer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
     models:
       default: haiku
     maxTurns: 5
-    artifact: EXPLORER_REPORT.md
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: EXPLORER_REPORT.md
     mail:
       onStart: true
@@ -27,20 +29,38 @@ phases:
 
   - name: developer
     prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: haiku
     maxTurns: 5
-    artifact: DEVELOPER_REPORT.md
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
       onComplete: true
 
+  - name: documentation
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
   - name: qa
     prompt: qa.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     models:
       default: haiku
     maxTurns: 5
-    artifact: QA_REPORT.md
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -51,10 +71,12 @@ phases:
 
   - name: reviewer
     prompt: reviewer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
     models:
       default: sonnet
     maxTurns: 5
-    artifact: REVIEW.md
+    artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -65,11 +87,9 @@ phases:
       forwardArtifactTo: foreman
 
   - name: finalize
-    prompt: finalize.md
-    models:
-      default: haiku
-    maxTurns: 10
-    artifact: FINALIZE_VALIDATION.md
+    builtin: true
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
     retryOnFail: 1

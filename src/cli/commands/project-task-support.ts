@@ -1,23 +1,36 @@
 import chalk from "chalk";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { resolveProjectPath } from "../../lib/project-path.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { initPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
 
 export interface RegisteredProjectSummary {
   id: string;
   name: string;
   path: string;
+  githubUrl?: string;
+  defaultBranch?: string;
 }
 
 export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
   try {
     const client = createTrpcClient();
-    const projects = await client.projects.list() as Array<{ id: string; name: string; path: string }>;
+    const projects = await client.projects.list() as Array<{
+      id: string;
+      name: string;
+      path: string;
+      githubUrl?: string;
+      defaultBranch?: string;
+    }>;
     return projects.map((project) => ({
       id: project.id,
       name: project.name,
       path: project.path,
+      githubUrl: project.githubUrl,
+      defaultBranch: project.defaultBranch,
     }));
   } catch {
     const registry = new ProjectRegistry();
@@ -26,8 +39,19 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
       id: record.id,
       name: record.name,
       path: record.path,
+      githubUrl: record.githubUrl,
+      defaultBranch: record.defaultBranch,
     }));
   }
+}
+
+export function ensureCliPostgresPool(projectPath: string): void {
+  if (isPoolInitialised()) return;
+  const dotEnvPath = join(projectPath, ".env");
+  const databaseUrl = existsSync(dotEnvPath)
+    ? readFileSync(dotEnvPath, "utf8").match(/^\s*DATABASE_URL=(.+)\s*$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, "")
+    : undefined;
+  initPool(databaseUrl ? { databaseUrl } : undefined);
 }
 
 export async function resolveProjectPathFromOptions(
@@ -62,7 +86,41 @@ export async function resolveRepoRootProjectPath(
 
   const cwd = process.cwd();
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, cwd);
-  return vcs.getRepoRoot(cwd);
+  const repoRoot = await vcs.getRepoRoot(cwd);
+
+  // Check if the cwd's git origin URL matches a registered project by GitHub URL.
+  // This ensures commands like `foreman run` use the project's multi-project store
+  // when run from within a registered project's repo.
+  try {
+    const projects = await listRegisteredProjects();
+    const projectsByRemoteKey = new Map<string, RegisteredProjectSummary>();
+    for (const project of projects) {
+      if (!project.githubUrl) continue;
+      const value = project.githubUrl.trim().replace(/\.git$/, "");
+      projectsByRemoteKey.set(value, project);
+      projectsByRemoteKey.set(value.replace(/^https:\/\/github\.com\//, ""), project);
+    }
+    if (projectsByRemoteKey.size > 0) {
+      try {
+        const rawUrl = await vcs.getRemoteUrl(repoRoot, "origin");
+        if (rawUrl) {
+          const normalizedUrl = rawUrl.trim().replace(/\.git$/, "");
+          const remoteUrl = normalizedUrl.replace(/^git@([^:]+):/, "https://$1/");
+          const remoteKey = remoteUrl.replace(/^https:\/\/github\.com\//, "");
+          const registered = projectsByRemoteKey.get(remoteUrl) ?? projectsByRemoteKey.get(remoteKey);
+          if (registered) {
+            return registered.path;
+          }
+        }
+      } catch {
+        // VCS unavailable or no origin remote — fall through
+      }
+    }
+  } catch {
+    // Registry unavailable — fall through to repo root
+  }
+
+  return repoRoot;
 }
 
 // ── Multi-project mode detection (TRD-041/042) ───────────────────────────────

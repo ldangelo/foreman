@@ -42,6 +42,9 @@ describe("pi observability trace", () => {
     expect(getForbiddenVcsAction("git commit -m 'x'", "fix")).toBe("git commit");
     expect(getForbiddenVcsAction("npm test && git push origin head", "test")).toBe("git push");
     expect(getForbiddenVcsAction("git commit -m 'x'", "finalize")).toBeUndefined();
+    expect(getForbiddenVcsAction("git commit -m 'x'", "pr-review")).toBe("git commit");
+    expect(getForbiddenVcsAction("git push", "finalize")).toBeUndefined();
+    expect(getForbiddenVcsAction("git push", "pr-review")).toBe("git push");
     expect(getForbiddenVcsAction("git status", "fix")).toBeUndefined();
   });
 
@@ -70,7 +73,7 @@ describe("pi observability trace", () => {
     expect(trace.commandHonored).toBe(true);
   });
 
-  it("writes json and markdown trace artifacts under docs/reports/<seed>", async () => {
+  it("writes json and markdown trace artifacts under Foreman reports", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
     const trace = createPhaseTrace({
       runId: "run-789",
@@ -89,10 +92,54 @@ describe("pi observability trace", () => {
     const json = JSON.parse(await readFile(paths.jsonPath, "utf-8")) as { phase: string; seedId: string };
     const markdown = await readFile(paths.markdownPath, "utf-8");
 
-    expect(paths.relativeJsonPath).toBe("docs/reports/foreman-56b46/FIX_TRACE.json");
+    expect(paths.relativeJsonPath).toContain(".foreman/reports/runs/run-789/foreman-56b46/FIX_TRACE.json");
     expect(json.phase).toBe("fix");
     expect(json.seedId).toBe("foreman-56b46");
     expect(markdown).toContain("# FIX Trace — foreman-56b46");
     expect(markdown).toContain("DEVELOPER_REPORT.md");
+  });
+
+  it("sanitizes absolute worktree paths in trace artifacts", async () => {
+    const worktreePath = join(tmpdir(), "foreman-trace-sanitize-test", "worktrees", "foreman-abc123");
+    const trace = createPhaseTrace({
+      runId: "run-sanitize",
+      seedId: "foreman-sanitize",
+      phase: "developer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath,
+      rawPrompt: "Implement the feature",
+      expectedArtifact: "docs/reports/foreman-sanitize/DEVELOPER_REPORT.md",
+    });
+
+    // Simulate a tool call that would contain the absolute path
+    trace.toolCalls.push({
+      toolCallId: "tool-1",
+      toolName: "bash",
+      startedAt: new Date().toISOString(),
+      argsPreview: `Reading file at ${worktreePath}/src/index.ts`,
+      updateCount: 0,
+    });
+    trace.toolCalls[0].resultPreview = `Wrote ${worktreePath}/docs/reports/foreman-sanitize/DEVELOPER_REPORT.md`;
+
+    finalizePhaseTrace(trace, { success: true, finalMessage: "Done." });
+
+    const paths = await writePhaseTrace(trace);
+    const json = await readFile(paths.jsonPath, "utf-8");
+    const markdown = await readFile(paths.markdownPath, "utf-8");
+
+    // Verify absolute path is NOT present in artifacts
+    expect(json).not.toContain(worktreePath);
+    expect(markdown).not.toContain(worktreePath);
+
+    // Verify placeholder IS present
+    expect(json).toContain("<worktree>");
+    expect(markdown).toContain("<worktree>");
+
+    // Verify trace metadata is still correct
+    const parsed = JSON.parse(json) as { phase: string; seedId: string; worktreePath: string };
+    expect(parsed.phase).toBe("developer");
+    expect(parsed.seedId).toBe("foreman-sanitize");
+    expect(parsed.worktreePath).toBe("<worktree>");
   });
 });

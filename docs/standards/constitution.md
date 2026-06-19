@@ -33,7 +33,7 @@ No feature is considered started until a failing test exists. No feature is cons
 - **Web Framework:** Hono 4.x with @hono/node-server
 - **CLI Framework:** Commander 14.x
 - **WebSocket:** ws 8.x
-- **Database:** better-sqlite3 12.x
+- **Database:** pg 12.x
 
 ### Testing
 - **Unit/Integration Testing:** Vitest 4.x
@@ -61,6 +61,8 @@ No feature is considered started until a failing test exists. No feature is cons
 - [ ] Documentation updated
 - [ ] No linting errors
 - [ ] TypeScript compiles with zero errors (`tsc --noEmit`)
+
+> **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize, which waits for CodeRabbit analysis and requires a PASS verdict before merging.
 
 ### Security Requirements
 - [ ] Input validation at all entry points (CLI args, HTTP routes, WebSocket messages)

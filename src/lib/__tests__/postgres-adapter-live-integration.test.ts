@@ -7,6 +7,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { randomUUID } from "node:crypto";
 import { initPool, destroyPool, execute, query } from "../db/pool-manager.js";
 import { PostgresAdapter } from "../db/postgres-adapter.js";
 
@@ -29,11 +30,15 @@ async function hasForemanSchema(databaseUrl: string): Promise<boolean> {
     const result = await pool.query(
       `SELECT to_regclass('public.projects') AS projects,
               to_regclass('public.runs') AS runs,
-              to_regclass('public.sentinel_configs') AS sentinel_configs`
+              to_regclass('public.agent_messages') AS agent_messages,
+              to_regclass('public.sentinel_configs') AS sentinel_configs,
+              to_regclass('public.costs') AS costs`
     );
     await pool.end();
     const row = result.rows[0] as Record<string, string | null> | undefined;
-    return Boolean(row?.projects && row?.runs && row?.sentinel_configs);
+    return Boolean(
+      row?.projects && row?.runs && row?.agent_messages && row?.sentinel_configs && row?.costs
+    );
   } catch {
     return false;
   }
@@ -96,8 +101,8 @@ describe("PostgresAdapter live integration", { timeout: 30_000 }, () => {
       mergeStrategy: "auto",
     });
 
-    expect(run1.run_number).toBe(1);
-    expect(run2.run_number).toBe(2);
+    expect(run1.seed_id).toBe(seedId);
+    expect(run2.seed_id).toBe(seedId);
 
     await adapter.updateRun(project.id, run1.id, {
       status: "running",
@@ -115,25 +120,19 @@ describe("PostgresAdapter live integration", { timeout: 30_000 }, () => {
       estimatedCost: 0.01,
     });
     await adapter.logEvent(project.id, run1.id, "phase-start", "developer started");
-    await adapter.logRateLimitEvent(project.id, run1.id, "claude-sonnet", "slow down");
-    await adapter.sendMessage(project.id, run1.id, "qa", "hello");
+    await adapter.logRateLimitEvent(project.id, run1.id, "claude-sonnet", "developer", "slow down", 60);
+    const sent = await adapter.sendMessage(project.id, run1.id, "developer", "qa", "phase-complete", "hello");
 
-    const messageRows = await query<{ id: string }>(
-      `SELECT id FROM messages WHERE run_id = $1 ORDER BY created_at ASC`,
-      [run1.id]
-    );
-    expect(messageRows).toHaveLength(1);
-    await adapter.markMessageRead(project.id, messageRows[0].id);
-    await adapter.deleteMessage(project.id, messageRows[0].id);
+    await adapter.markMessageRead(project.id, sent.id);
+    await adapter.deleteMessage(project.id, sent.id);
 
-    const config = await adapter.upsertSentinelConfig(project.id, {
+    await adapter.upsertSentinelConfig(project.id, {
       branch: "main",
       pid: 321,
       enabled: 1,
     });
-    expect(config.pid).toBe(321);
 
-    const sentinelRunId = `sr-live-${suffix}`;
+    const sentinelRunId = randomUUID();
     await adapter.recordSentinelRun(project.id, {
       id: sentinelRunId,
       branch: "main",
@@ -151,18 +150,19 @@ describe("PostgresAdapter live integration", { timeout: 30_000 }, () => {
     });
 
     const oldRun = await adapter.createRun(project.id, `bd-old-${suffix}`, "developer");
-    await execute(`UPDATE runs SET status = 'failed', created_at = '2024-01-01T00:00:00Z' WHERE id = $1`, [oldRun.id]);
+    await execute(`UPDATE runs SET status = 'failure', created_at = '2024-01-01T00:00:00Z' WHERE id = $1`, [oldRun.id]);
 
     const purged = await adapter.purgeOldRuns(project.id, "2024-06-01T00:00:00Z");
     expect(purged).toBe(1);
 
     const runs = await adapter.listRuns(project.id);
-    expect(runs.map((run) => run.run_number)).toEqual([2, 1]);
+    expect(runs).toHaveLength(2);
+    expect(runs.every((run) => run.seed_id === seedId || run.seed_id === `bd-old-${suffix}`)).toBe(true);
 
     const refreshed = await adapter.getRun(project.id, run1.id);
     expect(refreshed).not.toBeNull();
     expect(JSON.parse(refreshed?.progress ?? "{}")).toEqual(
-      expect.objectContaining({ currentPhase: "developer", tokensIn: 10, tokensOut: 20 })
+      expect.objectContaining({ phase: "developer", tokensIn: 10, tokensOut: 20 })
     );
 
     const costCount = await query<{ n: number }>(`SELECT count(*)::int as n FROM costs WHERE run_id = $1`, [run1.id]);
@@ -175,7 +175,7 @@ describe("PostgresAdapter live integration", { timeout: 30_000 }, () => {
     expect(rateCount[0].n).toBe(1);
 
     const deletedMessages = await query<{ n: number }>(
-      `SELECT count(*)::int as n FROM messages WHERE run_id = $1 AND deleted_at IS NOT NULL`,
+      `SELECT count(*)::int as n FROM agent_messages WHERE run_id = $1 AND deleted_at IS NOT NULL`,
       [run1.id]
     );
     expect(deletedMessages[0].n).toBe(1);

@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -9,40 +9,56 @@ import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
+import type { Run } from "../../lib/store.js";
+import { PostgresStore } from "../../lib/postgres-store.js";
+import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
+import { isIgnorableControllerPath } from "../../lib/controller-paths.js";
+import { syncRegisteredProjectCheckout } from "../../lib/registered-project-checkout.js";
 import type { ProjectConfig } from "../../lib/project-config.js";
-import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
 import { findMissingPrompts, findStalePrompts } from "../../lib/prompt-loader.js";
-import { findMissingWorkflows, findStaleWorkflows } from "../../lib/workflow-loader.js";
+import {
+  ensureBundledWorkflowsInstalled,
+  findStaleWorkflows,
+  listAvailableWorkflows,
+  loadWorkflowConfig,
+} from "../../lib/workflow-loader.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
+import type { DispatcherOverrides } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
-import { syncBeadStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
+import { wrapPostgresSentinelStore } from "./sentinel.js";
+import { syncTaskStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 export { autoMerge } from "../../orchestrator/auto-merge.js";
 export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-merge.js";
-import { RefineryAgent } from "../../orchestrator/refinery-agent.js";
+import { runTaskCommand, skipFlagsDeprecationWarning } from "./run-task.js";
+import { RefineryAgent, wrapLocalRefineryQueue, type RunLookup } from "../../orchestrator/refinery-agent.js";
+import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
 /**
  * Result returned by createTaskClients.
- * Contains the task client to pass to Dispatcher and an optional BvClient.
+ * Contains the task client to pass to Dispatcher.
+ * The native Postgres task store is the only supported backend (TRD-024).
  */
 export interface TaskClientResult {
   taskClient: ITaskClient;
-  bvClient: BvClient | null;
-  backendType: "beads" | "native";
+  bvClient: null;  // Always null — BvClient was for beads backend which is removed
+  backendType: "native";
 }
 
 interface SentinelStartupTaskClient extends ITaskClient {
@@ -64,29 +80,140 @@ export function resolveRuntimeMode(value?: string): RuntimeMode {
   return raw === "test" ? "test" : "normal";
 }
 
+function createRegisteredDispatcherOverrides(projectId: string, daemonStore: PostgresStore): DispatcherOverrides {
+  const pg = new PostgresAdapter();
+
+  return {
+    externalProjectId: projectId,
+    getRecentFailureCount: async (_projectId: string, since: string) => {
+      const statuses: Array<"failed" | "stuck" | "conflict" | "test-failed"> = [
+        "failed",
+        "stuck",
+        "conflict",
+        "test-failed",
+      ];
+      const runs = (await Promise.all(
+        statuses.map((status) => pg.listPipelineRuns(projectId, { status, limit: 1000 })),
+      )).flat();
+      return runs.filter((run) => run.created_at >= since).length;
+    },
+    getActiveSeedIds: async () => {
+      const activeRuns = await daemonStore.getActiveRuns(projectId);
+      return activeRuns.map((run) => run.seed_id);
+    },
+    getActiveAgentCount: async () => {
+      const activeRuns = await daemonStore.getActiveRuns(projectId);
+      return activeRuns.length;
+    },
+    hasActiveOrPendingRun: async (seedId: string) => {
+      const runs = await pg.listPipelineRuns(projectId, { beadId: seedId, limit: 20 });
+      return runs.some((run) => ["pending", "running", "success"].includes(run.status));
+    },
+    getRunsByStatus: async (status, overrideProjectId) => await daemonStore.getRunsByStatus(status, overrideProjectId),
+    getRunsForSeed: async (seedId, overrideProjectId) => await daemonStore.getRunsForSeed(seedId, overrideProjectId),
+    getRun: async (runId) => await daemonStore.getRun(runId),
+    getActiveRuns: async (overrideProjectId) => await daemonStore.getActiveRuns(overrideProjectId),
+    nativeTaskOps: {
+      hasNativeTasks: async () => pg.hasNativeTasks(projectId),
+      getReadyTasks: async () => await pg.listDispatchableReadyTasks(projectId, 1000) as never,
+      getTaskByExternalId: async (externalId: string) => await pg.getTaskByExternalId(projectId, externalId) as never,
+      getTaskById: async (taskId: string) => await pg.getTask(projectId, taskId) as never,
+      claimTask: async (taskId: string, runId: string) => await pg.claimTask(projectId, taskId, runId),
+    },
+    runOps: {
+      createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+        const createdAt = new Date().toISOString();
+        const existing = await pg.listPipelineRuns(projectId, { beadId: seedId });
+        await pg.createPipelineRun({
+          id: runId,
+          projectId,
+          beadId: seedId,
+          runNumber: existing.length + 1,
+          branch: branchName,
+          trigger: "bead",
+          agentType,
+          worktreePath: worktreePath ?? undefined,
+          baseBranch: baseBranch ?? undefined,
+          mergeStrategy: mergeStrategy ?? undefined,
+        });
+        const run: Run = {
+          id: runId,
+          project_id: projectId,
+          seed_id: seedId,
+          agent_type: agentType,
+          session_key: null,
+          worktree_path: worktreePath,
+          status: "pending",
+          started_at: null,
+          completed_at: null,
+          created_at: createdAt,
+          progress: null,
+          tmux_session: null,
+          base_branch: baseBranch ?? null,
+          merge_strategy: mergeStrategy ?? "auto",
+        };
+        return run;
+      },
+      updateRun: async (runId, updates) => {
+        const patch: {
+          status?: string;
+          sessionKey?: string;
+          worktreePath?: string;
+          startedAt?: string;
+          finishedAt?: string;
+        } = {};
+        if (updates.status) patch.status = updates.status;
+        if (updates.session_key !== undefined) patch.sessionKey = updates.session_key ?? undefined;
+        if (updates.worktree_path !== undefined) patch.worktreePath = updates.worktree_path ?? undefined;
+        if (updates.started_at) patch.startedAt = updates.started_at;
+        if (updates.completed_at) patch.finishedAt = updates.completed_at;
+        if (Object.keys(patch).length > 0) {
+          await pg.updatePipelineRun(runId, patch);
+        }
+      },
+      sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
+        await pg.sendMessage(projectId, runId, senderAgentType, recipientAgentType, subject, body);
+      },
+      logEvent: async (runId, _projectId, eventType, payload) => {
+        const mappedEventType = eventType === "complete"
+          ? "run:success"
+          : eventType === "fail"
+            ? "run:failure"
+            : eventType === "restart" || eventType === "dispatch"
+              ? "run:queued"
+              : null;
+        if (!mappedEventType) return;
+        await pg.recordPipelineEvent({
+          projectId,
+          runId,
+          taskId: payload.seedId as string | undefined,
+          eventType: mappedEventType,
+          payload,
+        });
+      },
+    },
+  };
+}
+
 /**
  * Instantiate the br task-tracking client(s).
  *
  * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
- * the binary exists, plus a BvClient for graph-aware triage.
- *
- * Throws if the br binary cannot be found.
+ * plus a BvClient for graph-aware triage.
  */
 export async function createTaskClients(
   projectPath: string,
-  runtimeMode: RuntimeMode = resolveRuntimeMode(),
+  _runtimeMode: RuntimeMode = resolveRuntimeMode(),
+  registeredProjectId?: string,
 ): Promise<TaskClientResult> {
-  // In normal mode: auto-detect (pass undefined so selectTaskReadBackend uses
-  // projectHasNativeTasks). In test mode: force beads (pass true to override).
-  const autoSelectNative = runtimeMode === "test" ? true : undefined;
+  // Always use native task store
   const { taskClient, backendType } = await createTaskClient(projectPath, {
-    ensureBrInstalled: true,
-    autoSelectNativeWhenAvailable: autoSelectNative,
+    registeredProjectId,
   });
 
   return {
     taskClient,
-    bvClient: backendType === "beads" ? new BvClient(projectPath) : null,
+    bvClient: null,  // BvClient only used for beads backend
     backendType,
   };
 }
@@ -95,12 +222,21 @@ export async function createTaskClients(
  * Run the Refinery Agent to process the merge queue.
  * Replaces the legacy autoMerge() with an agentic approach.
  */
-async function runRefineryMerge(store: ForemanStore, projectPath: string): Promise<{ merged: number; conflicts: number; failed: number }> {
+async function runRefineryMerge(
+  store: ForemanStore,
+  projectPath: string,
+  taskClient: ITaskClient,
+  runLookup: RunLookup,
+  registeredProject?: RegisteredProjectSummary | null,
+): Promise<{ merged: number; conflicts: number; failed: number }> {
+  const registered = registeredProject ?? null;
+
   try {
-    const db = store.getDb();
-    const mergeQueue = new MergeQueue(db);
+    const mergeQueue = registered
+      ? new PostgresMergeQueue(registered.id)
+      : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
     const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-    const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath);
+    const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath, {}, runLookup);
     const results = await agent.processOnce();
 
     return {
@@ -108,9 +244,13 @@ async function runRefineryMerge(store: ForemanStore, projectPath: string): Promi
       conflicts: results.filter((r) => r.action === "escalated").length,
       failed: results.filter((r) => r.action === "error" || r.action === "skipped").length,
     };
-  } catch {
-    // Fallback to legacy autoMerge if RefineryAgent fails (e.g., in test environments)
-    return autoMerge({ store, taskClient: undefined as never, projectPath });
+  } catch (err) {
+    if (registered) {
+      throw err;
+    }
+
+    // Fallback to legacy autoMerge only for local/unregistered projects.
+    return autoMerge({ store, taskClient, projectPath });
   }
 }
 
@@ -133,15 +273,7 @@ async function promptYesNo(question: string): Promise<boolean> {
 
 const FOREMAN_OWNED_BRANCH = "foreman-controller";
 
-export function isIgnorableControllerPath(path: string): boolean {
-  return path === ".beads/issues.jsonl"
-    || path.startsWith(".omx/")
-    || path.startsWith(".foreman/")
-    || path.startsWith("SessionLogs/")
-    || path === "SESSION_LOG.md"
-    || path === "RUN_LOG.md"
-    || path.startsWith("storage.sqlite3");
-}
+export { isIgnorableControllerPath } from "../../lib/controller-paths.js";
 
 function withCommonBinaryPath(): NodeJS.ProcessEnv {
   const home = process.env.HOME ?? "/home/nobody";
@@ -261,6 +393,11 @@ async function createRunVcsBackend(projectPath: string): Promise<VcsBackend> {
   return VcsBackendFactory.create(vcsConfig, projectPath);
 }
 
+async function resolveRunRegisteredProject(projectPath: string) {
+  const projects = await listRegisteredProjects();
+  return projects.find((project) => project.path === projectPath) ?? null;
+}
+
 export function collectRuntimeAssetIssues(
   projectPath: string,
   projectCfg?: ProjectConfig | null,
@@ -279,7 +416,11 @@ export function collectRuntimeAssetIssues(
 
   const missingPrompts = findMissingPrompts(projectPath);
   const stalePrompts = findStalePrompts(projectPath);
-  const missingWorkflows = findMissingWorkflows(projectPath);
+  // Auto-install any missing bundled workflows (e.g. newly added bundled
+  // workflows like quick.yaml on existing installs) instead of blocking
+  // dispatch. Only workflows still missing after the install attempt are
+  // reported as preflight issues.
+  const missingWorkflows = ensureBundledWorkflowsInstalled(projectPath);
   const staleWorkflows = findStaleWorkflows(projectPath);
 
   if (missingPrompts.length > 0) {
@@ -379,6 +520,34 @@ export async function checkBranchMismatch(
   return false;
 }
 
+// ── Workflow Override Validation ─────────────────────────────────────
+
+/**
+ * Validate a `--workflow <name>` override before dispatch.
+ *
+ * Fails fast when the named workflow cannot be loaded (not bundled, not in
+ * ~/.foreman/workflows/, not a valid YAML path), returning an error message
+ * that lists the available workflow names.
+ */
+export function validateWorkflowOverride(
+  workflowName: string,
+  projectPath: string,
+): { ok: true } | { ok: false; message: string } {
+  try {
+    loadWorkflowConfig(workflowName, projectPath);
+    return { ok: true };
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const available = listAvailableWorkflows();
+    return {
+      ok: false,
+      message:
+        `Cannot load workflow '${workflowName}': ${reason}\n` +
+        `Available workflows: ${available.join(", ")}`,
+    };
+  }
+}
+
 // ── Run Command ──────────────────────────────────────────────────────
 
 export const runCommand = new Command("run")
@@ -391,14 +560,17 @@ export const runCommand = new Command("run")
   .option("--resume", "Resume stuck/rate-limited runs from a previous dispatch")
   .option("--resume-failed", "Also resume failed runs (not just stuck/rate-limited)")
   .option("--no-pipeline", "Skip the explorer/qa/reviewer pipeline — run as single worker agent")
-  .option("--skip-explore", "Skip the explorer phase in the pipeline")
-  .option("--skip-review", "Skip the reviewer phase in the pipeline")
-  .option("--bead <id>", "Dispatch only this specific bead (must be ready)")
+  .option("--workflow <name>", "Run all dispatched tasks with this workflow (overrides workflow:<name> labels and task-type mapping)")
+  .addOption(new Option("--skip-explore", "(deprecated) No effect — use --workflow quick or a custom workflow").hideHelp())
+  .addOption(new Option("--skip-review", "(deprecated) No effect — use --workflow quick or a custom workflow").hideHelp())
+  .option("--task <id>", "Dispatch only this specific task by ID (must be ready)")
+  .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .option("--runtime-mode <mode>", "Runtime mode: normal|test (test uses deterministic phase-runner seams)")
+  .option("--yes", "Answer yes to run confirmation prompts (for non-interactive dispatch)")
   .action(async (opts) => {
     const maxAgents = parseInt(opts.maxAgents, 10);
     const model = opts.model as ModelSelection | undefined;
@@ -408,11 +580,20 @@ export const runCommand = new Command("run")
     const watch = opts.watch as boolean;
     const telemetry = opts.telemetry as boolean | undefined;
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
-    const skipExplore = opts.skipExplore as boolean | undefined;
-    const skipReview = opts.skipReview as boolean | undefined;
-    const beadFilter = opts.bead as string | undefined;
+    const workflowOverride = (opts.workflow as string | undefined)?.trim() || undefined;
+    const beadFilter = (opts.bead ?? opts.task) as string | undefined;
+
+    // Deprecated no-op flags retained for backwards compatibility
+    const deprecationWarning = skipFlagsDeprecationWarning({
+      skipExplore: opts.skipExplore as boolean | undefined,
+      skipReview: opts.skipReview as boolean | undefined,
+    });
+    if (deprecationWarning) {
+      console.warn(chalk.yellow(`[foreman] ${deprecationWarning}`));
+    }
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
     const runtimeMode = resolveRuntimeMode(opts.runtimeMode as string | undefined);
+    const assumeYes = opts.yes === true;
 
     // P1: Parse stagger delay for preventing thundering herd on Haiku quotas
     // Accept formats like "30s", "1m", "2m30s"
@@ -449,7 +630,32 @@ export const runCommand = new Command("run")
       // Require --project in multi-project mode
       await requireProjectOrAllInMultiMode(opts.project, false);
       const projectPath = await resolveRepoRootProjectPath(opts);
+      const registered = await resolveRunRegisteredProject(projectPath);
+      if (registered) {
+        try {
+          syncRegisteredProjectCheckout({
+            projectId: registered.id,
+            projectPath,
+            defaultBranch: registered.defaultBranch,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(chalk.yellow(`[Foreman] Registered checkout sync warning: ${msg}`));
+        }
+      }
       const projectCfg = loadProjectConfig(projectPath);
+
+      // ── Workflow override validation ────────────────────────────────────
+      // Fail fast when --workflow names a workflow that cannot be loaded.
+      if (workflowOverride) {
+        const validation = validateWorkflowOverride(workflowOverride, projectPath);
+        if (!validation.ok) {
+          console.error(chalk.red(`\nError: ${validation.message}\n`));
+          process.exit(1);
+        }
+        console.log(chalk.dim(`[foreman] Workflow override: ${workflowOverride}`));
+      }
+
       if (!dryRun && !resume && !resumeFailed) {
         const assetIssues = collectRuntimeAssetIssues(projectPath, projectCfg);
         if (assetIssues.length > 0) {
@@ -481,12 +687,13 @@ export const runCommand = new Command("run")
       }
 
       let taskClient: ITaskClient;
-      let bvClient: BvClient | null = null;
-      let backendType: "beads" | "native" = "beads";
+      let backendType: "native" = "native";
+      if (registered) {
+        ensureCliPostgresPool(projectPath);
+      }
       try {
-        const clients = await createTaskClients(projectPath, runtimeMode);
+        const clients = await createTaskClients(projectPath, runtimeMode, registered?.id);
         taskClient = clients.taskClient;
-        bvClient = clients.bvClient;
         backendType = clients.backendType;
       } catch (clientErr: unknown) {
         const message = clientErr instanceof Error ? clientErr.message : String(clientErr);
@@ -494,21 +701,35 @@ export const runCommand = new Command("run")
         process.exit(1);
       }
       const store = ForemanStore.forProject(projectPath);
-      const project = store.getProjectByPath(projectPath);
-      const dispatcher = new Dispatcher(taskClient, store, projectPath, bvClient);
+      const daemonStore = registered
+        ? (() => {
+            return PostgresStore.forProject(registered.id);
+          })()
+        : null;
+      const project = registered ?? store.getProjectByPath(projectPath);
+      const dispatcher = new Dispatcher(
+        taskClient,
+        store,
+        projectPath,
+        null,  // BvClient removed — native task store only
+        registered && daemonStore ? createRegisteredDispatcherOverrides(registered.id, daemonStore) : undefined,
+      );
 
       // ── Sentinel Auto-Start ──────────────────────────────────────────────
       // If sentinel.enabled=1 in the DB config, start the sentinel agent
       // automatically alongside foreman run. Non-fatal — if anything fails,
       // log a warning and continue without sentinel.
       let sentinelAgent: SentinelAgent | null = null;
-      if (!dryRun && backendType === "beads") {
+      if (!dryRun) {
         try {
           if (project) {
-            const sentinelConfig = store.getSentinelConfig(project.id);
+            const sentinelStore = registered
+              ? wrapPostgresSentinelStore(daemonStore ?? PostgresStore.forProject(registered.id), registered.id)
+              : store;
+            const sentinelConfig = await sentinelStore.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
               const sentinelTaskClient = taskClient as SentinelStartupTaskClient;
-              sentinelAgent = new SentinelAgent(store, sentinelTaskClient, project.id, projectPath);
+              sentinelAgent = new SentinelAgent(sentinelStore, sentinelTaskClient, project.id, projectPath, startupVcs);
               sentinelAgent.start(
                 {
                   branch: sentinelConfig.branch,
@@ -558,7 +779,7 @@ export const runCommand = new Command("run")
       // Non-fatal — stale files waste disk space but do not affect correctness.
       if (!dryRun) {
         try {
-          const purged = await purgeOrphanedWorkerConfigs(store);
+          const purged = await purgeOrphanedWorkerConfigs(daemonStore ?? store);
           if (purged > 0) {
             console.log(chalk.dim(`[startup] Purged ${purged} orphaned worker config file(s).`));
           }
@@ -567,26 +788,27 @@ export const runCommand = new Command("run")
         }
       }
 
-      // ── Startup Bead Sync ────────────────────────────────────────────────
-      // Reconcile br seed statuses against SQLite run statuses before dispatching.
+      // ── Startup Task Sync ────────────────────────────────────────────────
+      // Reconcile native task statuses against run state before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
-      if (!dryRun && project && backendType === "beads") {
+      // The legacy br/bead sync is intentionally not run in native-only mode.
+      if (!dryRun && project) {
         try {
-          const syncResult = await syncBeadStatusOnStartup(store, taskClient, project.id, { projectPath });
-          if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {
+          const taskSyncResult = await syncTaskStatusOnStartup(daemonStore ?? store, project.id);
+          if (taskSyncResult.synced > 0 || taskSyncResult.mismatches.length > 0) {
             console.log(
               chalk.dim(
-                `[startup] Reconciled ${syncResult.synced} bead(s), ` +
-                `${syncResult.mismatches.length} mismatch(es) detected`
+                `[startup] Reconciled ${taskSyncResult.synced} task(s), ` +
+                `${taskSyncResult.mismatches.length} mismatch(es) detected`
               )
             );
           }
-          for (const err of syncResult.errors) {
-            console.warn(chalk.yellow(`[startup] Sync warning: ${err}`));
+          for (const err of taskSyncResult.errors) {
+            console.warn(chalk.yellow(`[startup] Task sync warning: ${err}`));
           }
         } catch (syncErr: unknown) {
           const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
-          console.warn(chalk.yellow(`[startup] Bead sync failed (non-fatal): ${msg}`));
+          console.warn(chalk.yellow(`[startup] Task sync failed (non-fatal): ${msg}`));
         }
       }
 
@@ -647,7 +869,7 @@ export const runCommand = new Command("run")
               `Agent work will be branched from and merged into ${chalk.green(cb)}.\n` +
               `Continue? [Y/n] `,
             );
-            const confirmed = await promptYesNo(question);
+            const confirmed = assumeYes ? true : await promptYesNo(question);
             if (!confirmed) {
               console.log(
                 chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),
@@ -675,12 +897,11 @@ export const runCommand = new Command("run")
             const newResult = await dispatcher.dispatch({
               maxAgents,
               model,
-            dryRun,
-            telemetry,
-            pipeline,
-            runtimeMode,
-            skipExplore,
-            skipReview,
+              dryRun,
+              telemetry,
+              pipeline,
+              runtimeMode,
+              workflow: workflowOverride,
               seedId: beadFilter,
               notifyUrl,
               targetBranch,
@@ -731,7 +952,7 @@ export const runCommand = new Command("run")
         if (watch && result.resumed.length > 0) {
           const runIds = result.resumed.map((t) => t.runId);
           // Resume mode is a one-shot recovery action — no continuous auto-dispatch needed.
-          const { detached } = await watchRunsInk(store, runIds, { notificationBus });
+            const { detached } = await watchRunsInk(daemonStore ?? store, runIds, { notificationBus });
           if (detached) {
             await stopSentinel();
             store.close();
@@ -755,7 +976,8 @@ export const runCommand = new Command("run")
       // re-processing merge work after every batch.
       if (!dryRun && project) {
         try {
-          const startupMerge = await runRefineryMerge(store, projectPath);
+          const runLookup: RunLookup = registered && daemonStore ? daemonStore : store;
+          const startupMerge = await runRefineryMerge(store, projectPath, taskClient, runLookup, registered);
           if (startupMerge.merged > 0) {
             console.log(chalk.green(`[startup] Merged ${startupMerge.merged} previously completed branch(es).`));
           }
@@ -789,8 +1011,7 @@ export const runCommand = new Command("run")
           telemetry,
           pipeline,
           runtimeMode,
-          skipExplore,
-          skipReview,
+          workflow: workflowOverride,
           seedId: beadFilter,
           notifyUrl,
           targetBranch,
@@ -839,10 +1060,10 @@ export const runCommand = new Command("run")
                 `No new tasks dispatched — waiting for ${result.activeAgents} active agent(s) to finish…`
               )
             );
-            const activeRuns = store.getActiveRuns();
+            const activeRuns = await (daemonStore ?? store).getActiveRuns();
             const runIds = activeRuns.map((r) => r.id);
             if (runIds.length > 0) {
-              const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
+              const { detached } = await watchRunsInk(daemonStore ?? store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
               if (detached) {
                 userDetached = true;
                 break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
@@ -902,7 +1123,7 @@ export const runCommand = new Command("run")
         // Watch mode: wait for this batch to finish, then loop to check for more
         if (watch) {
           const runIds = result.dispatched.map((t) => t.runId);
-          const { detached } = await watchRunsInk(store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
+          const { detached } = await watchRunsInk(daemonStore ?? store, runIds, { notificationBus, ...(makeAutoDispatchFn ? { autoDispatch: makeAutoDispatchFn } : {}) });
           if (detached) {
             userDetached = true;
             break; // User hit Ctrl+C — exit dispatch loop, agents continue in background
@@ -926,3 +1147,6 @@ export const runCommand = new Command("run")
       await notifyServer.stop().catch(() => { /* ignore cleanup errors */ });
     }
   });
+
+// Add task subcommand for direct workflow execution
+runCommand.addCommand(runTaskCommand);

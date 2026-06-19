@@ -27,6 +27,10 @@ const {
   mockMergeQueueDequeue,
   mockMergeQueueUpdateStatus,
   MockMergeQueue,
+  mockPostgresMergeQueueReconcile,
+  mockPostgresMergeQueueDequeue,
+  mockPostgresMergeQueueUpdateStatus,
+  MockPostgresMergeQueue,
   mockRefineryMergeCompleted,
   mockRefineryEnsurePullRequest,
   MockRefinery,
@@ -61,6 +65,15 @@ const {
     this.reconcile = mockMergeQueueReconcile;
     this.dequeue = mockMergeQueueDequeue;
     this.updateStatus = mockMergeQueueUpdateStatus;
+  });
+
+  const mockPostgresMergeQueueReconcile = vi.fn().mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
+  const mockPostgresMergeQueueDequeue = vi.fn().mockReturnValue(null);
+  const mockPostgresMergeQueueUpdateStatus = vi.fn();
+  const MockPostgresMergeQueue = vi.fn(function (this: Record<string, unknown>) {
+    this.reconcile = mockPostgresMergeQueueReconcile;
+    this.dequeue = mockPostgresMergeQueueDequeue;
+    this.updateStatus = mockPostgresMergeQueueUpdateStatus;
   });
 
   const mockRefineryMergeCompleted = vi.fn().mockResolvedValue({
@@ -101,6 +114,10 @@ const {
     mockMergeQueueDequeue,
     mockMergeQueueUpdateStatus,
     MockMergeQueue,
+    mockPostgresMergeQueueReconcile,
+    mockPostgresMergeQueueDequeue,
+    mockPostgresMergeQueueUpdateStatus,
+    MockPostgresMergeQueue,
     mockRefineryMergeCompleted,
     mockRefineryEnsurePullRequest,
     MockRefinery,
@@ -124,6 +141,9 @@ vi.mock("../merge-queue.js", () => ({
   MergeQueue: MockMergeQueue,
   RETRY_CONFIG: { maxRetries: 3, initialDelayMs: 60_000, maxDelayMs: 3_600_000, backoffMultiplier: 2 },
 }));
+vi.mock("../postgres-merge-queue.js", () => ({
+  PostgresMergeQueue: MockPostgresMergeQueue,
+}));
 vi.mock("../refinery.js", () => ({ Refinery: MockRefinery }));
 vi.mock("../../lib/project-config.js", () => ({
   loadProjectConfig: vi.fn().mockReturnValue(null),
@@ -144,20 +164,35 @@ import { autoMerge, syncBeadStatusAfterMerge, type AutoMergeOpts } from "../auto
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+type AutoMergeStoreMock = {
+  close: ReturnType<typeof vi.fn>;
+  getProjectByPath: ReturnType<typeof vi.fn>;
+  getDb: ReturnType<typeof vi.fn>;
+  getRun: ReturnType<typeof vi.fn>;
+  getRunsByStatuses: ReturnType<typeof vi.fn>;
+  getTaskById: ReturnType<typeof vi.fn>;
+  updateTaskStatus: ReturnType<typeof vi.fn>;
+  sendMessage: ReturnType<typeof vi.fn>;
+};
+
 function makeStore(overrides: Partial<{
   getProjectByPath: ReturnType<typeof vi.fn>;
   getDb: ReturnType<typeof vi.fn>;
   getRun: ReturnType<typeof vi.fn>;
   getRunsByStatuses: ReturnType<typeof vi.fn>;
-}> = {}): ReturnType<typeof vi.fn> {
+  getTaskById: ReturnType<typeof vi.fn>;
+  updateTaskStatus: ReturnType<typeof vi.fn>;
+}> = {}): AutoMergeStoreMock {
   return {
     close: vi.fn(),
     getProjectByPath: overrides.getProjectByPath ?? mockGetProjectByPath,
     getDb: overrides.getDb ?? mockGetDb,
     getRun: overrides.getRun ?? mockGetRun,
     getRunsByStatuses: overrides.getRunsByStatuses ?? mockGetRunsByStatuses,
+    getTaskById: overrides.getTaskById ?? vi.fn().mockResolvedValue(null),
+    updateTaskStatus: overrides.updateTaskStatus ?? vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(),
-  } as unknown as ReturnType<typeof vi.fn>;
+  };
 }
 
 function makeTaskClient(overrides: Partial<{
@@ -193,6 +228,9 @@ function resetMocks(): void {
   mockMergeQueueReconcile.mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   mockMergeQueueDequeue.mockReturnValue(null);
   mockMergeQueueUpdateStatus.mockReturnValue(undefined);
+  mockPostgresMergeQueueReconcile.mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
+  mockPostgresMergeQueueDequeue.mockReturnValue(null);
+  mockPostgresMergeQueueUpdateStatus.mockReturnValue(undefined);
   mockRefineryMergeCompleted.mockResolvedValue({
     merged: [],
     conflicts: [],
@@ -288,6 +326,81 @@ describe("autoMerge() — project registered, empty queue", () => {
   });
 });
 
+describe("autoMerge() — registered read seam", () => {
+  beforeEach(resetMocks);
+
+  it("uses injected registered lookup/queue without rediscovering the local project", async () => {
+    const readLookup = {
+      getRun: vi.fn().mockResolvedValue(null),
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getRunsByStatuses: vi.fn().mockResolvedValue([]),
+      getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
+    };
+    const localProjectLookup = vi.fn(() => {
+      throw new Error("local getProjectByPath should not be used");
+    });
+    const store = makeStore({
+      getProjectByPath: localProjectLookup,
+    });
+
+    await autoMerge(makeOpts({
+      store: store as never,
+      registeredProjectId: "proj-1",
+      readLookup,
+    }));
+
+    expect(localProjectLookup).not.toHaveBeenCalled();
+    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1");
+    expect(MockMergeQueue).not.toHaveBeenCalled();
+    expect(MockRefinery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "/mock/project",
+      expect.anything(),
+      expect.objectContaining({ registeredProjectId: "proj-1", runLookup: readLookup }),
+    );
+  });
+
+  it("uses the injected read lookup for registered retry counting instead of local store reads", async () => {
+    const entry = { id: 1, seed_id: "bd-test-001", run_id: "run-001" };
+    const readLookup = {
+      getRun: vi.fn().mockResolvedValue({ id: "run-001", seed_id: "bd-test-001", project_id: "proj-1", merge_strategy: "auto" }),
+      getRunsByStatus: vi.fn().mockResolvedValue([]),
+      getRunsByStatuses: vi.fn().mockResolvedValue([
+        { id: "run-old", seed_id: "bd-test-001", status: "test-failed" },
+      ]),
+      getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
+    };
+    const localProjectLookup = vi.fn(() => {
+      throw new Error("local getProjectByPath should not be used");
+    });
+    const localRunsByStatuses = vi.fn(() => {
+      throw new Error("local getRunsByStatuses should not be used");
+    });
+    const store = makeStore({
+      getProjectByPath: localProjectLookup,
+      getRunsByStatuses: localRunsByStatuses,
+    });
+    mockPostgresMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
+    mockRefineryMergeCompleted.mockResolvedValueOnce({
+      merged: [],
+      conflicts: [],
+      testFailures: [{ seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "failed" }],
+      unexpectedErrors: [],
+      prsCreated: [],
+    });
+
+    await autoMerge(makeOpts({
+      store: store as never,
+      registeredProjectId: "proj-1",
+      readLookup,
+    }));
+
+    expect(readLookup.getRunsByStatuses).toHaveBeenCalledWith(["test-failed"], "proj-1");
+    expect(localRunsByStatuses).not.toHaveBeenCalled();
+  });
+});
+
 // ── autoMerge() — merge outcomes ────────────────────────────────────────────
 
 describe("autoMerge() — merge outcomes", () => {
@@ -318,6 +431,38 @@ describe("autoMerge() — merge outcomes", () => {
     expect(result.conflicts).toBe(0);
     expect(result.failed).toBe(0);
     expect(mockMergeQueueUpdateStatus).toHaveBeenCalledWith(1, "merged", expect.any(Object));
+  });
+
+  it("returns target outcome separately from stale queue failures", async () => {
+    const targetEntry = makeEntry(1);
+    const staleEntry = makeEntry(2);
+    mockMergeQueueDequeue
+      .mockReturnValueOnce(targetEntry)
+      .mockReturnValueOnce(staleEntry)
+      .mockReturnValue(null);
+    mockRefineryMergeCompleted
+      .mockResolvedValueOnce({
+        merged: [{ seedId: targetEntry.seed_id }],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [],
+        prsCreated: [],
+      })
+      .mockResolvedValueOnce({
+        merged: [],
+        conflicts: [],
+        testFailures: [],
+        unexpectedErrors: [{ seedId: staleEntry.seed_id, error: "stale PR create failure" }],
+        prsCreated: [],
+      });
+
+    const result = await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+      runId: targetEntry.run_id,
+    }));
+
+    expect(result).toMatchObject({ merged: 1, conflicts: 0, failed: 1 });
+    expect(result.target).toEqual({ runId: targetEntry.run_id, merged: 1, conflicts: 0, failed: 0 });
   });
 
   it("increments conflictCount when report.conflicts is non-empty", async () => {
@@ -437,7 +582,7 @@ describe("autoMerge() — merge outcomes", () => {
       const entry = makeEntry(1);
       // Simulate the run that was just updated in the agent-worker before calling autoMerge.
       // This is the race condition fix: by passing the run directly, we bypass the getRun()
-      // query that might fail due to SQLite WAL timing issues.
+      // query that might fail due to Postgres WAL timing issues.
       const completedRun = {
         id: entry.run_id,
         seed_id: entry.seed_id,
@@ -580,6 +725,67 @@ describe("autoMerge() — merge outcomes", () => {
         expect.objectContaining({ runId: entry.run_id })
       );
     });
+
+    it("scopes optsRunId and overrideRun to the matching dequeued entry only", async () => {
+      const firstEntry = makeEntry(1);
+      const secondEntry = makeEntry(2);
+      const firstRun = {
+        id: firstEntry.run_id,
+        seed_id: firstEntry.seed_id,
+        status: "completed" as const,
+        project_id: "proj-1",
+        agent_type: "worker",
+        session_key: null,
+        worktree_path: null,
+        started_at: null,
+        progress: null,
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      } as import("../../lib/store.js").Run;
+      const secondRun = {
+        id: secondEntry.run_id,
+        seed_id: secondEntry.seed_id,
+        status: "completed" as const,
+        project_id: "proj-1",
+        agent_type: "worker",
+        session_key: null,
+        worktree_path: null,
+        started_at: null,
+        progress: null,
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      } as import("../../lib/store.js").Run;
+
+      mockMergeQueueDequeue
+        .mockReturnValueOnce(firstEntry)
+        .mockReturnValueOnce(secondEntry)
+        .mockReturnValue(null);
+      mockGetRun.mockImplementation((id: string) => (id === secondRun.id ? secondRun : null));
+      mockRefineryMergeCompleted
+        .mockResolvedValueOnce({ merged: [{ seedId: firstEntry.seed_id }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] })
+        .mockResolvedValueOnce({ merged: [{ seedId: secondEntry.seed_id }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] });
+      MockRefinery.mockImplementationOnce(function (this: Record<string, unknown>) {
+        this.mergeCompleted = mockRefineryMergeCompleted;
+        this.ensurePullRequestForRun = mockRefineryEnsurePullRequest;
+      });
+
+      await autoMerge(makeOpts({
+        store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: mockGetRun }) as never,
+        overrideRun: firstRun,
+        runId: firstEntry.run_id,
+      }));
+
+      expect(mockRefineryMergeCompleted).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ runId: firstEntry.run_id, overrideRun: firstRun })
+      );
+      expect(mockRefineryMergeCompleted).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ runId: secondEntry.run_id })
+      );
+      expect(mockRefineryMergeCompleted.mock.calls[1][0]).not.toHaveProperty("overrideRun");
+      expect(mockGetRun).toHaveBeenCalledWith(secondEntry.run_id);
+    });
   });
 
   it("handles multiple queue entries correctly", async () => {
@@ -667,19 +873,30 @@ describe("syncBeadStatusAfterMerge()", () => {
     expect(mockSetBeadStatus).not.toHaveBeenCalled();
   });
 
-  it("enqueues status update instead of calling br directly", async () => {
+  it("updates status through the native task store", async () => {
     const store = makeStore({
       getRun: vi.fn().mockReturnValue({ id: "run-1", status: "merged" }),
+      updateTaskStatus: vi.fn().mockResolvedValue(undefined),
     });
     const taskClient = makeTaskClient();
 
     await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).toHaveBeenCalledWith(
-      expect.anything(), "bd-x", "closed", "auto-merge",
-    );
-    // Should NOT call taskClient.update directly (avoids SQLITE_BUSY)
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "closed");
+    // Should NOT call taskClient.update directly (avoids backend lock contention)
     expect(taskClient.update).not.toHaveBeenCalled();
+  });
+
+  it("does not downgrade a task already closed by refinery back to review", async () => {
+    const store = makeStore({
+      getRun: vi.fn().mockReturnValue({ id: "run-1", status: "completed" }),
+      getTaskById: vi.fn().mockResolvedValue({ id: "bd-x", status: "closed" }),
+    });
+    const taskClient = makeTaskClient();
+
+    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+
+    expect(store.updateTaskStatus).not.toHaveBeenCalled();
   });
 
   it("calls addNotesToBead with the failure reason when failureReason is provided", async () => {
@@ -731,7 +948,7 @@ describe("syncBeadStatusAfterMerge()", () => {
 
     await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "bd-x", "blocked", "auto-merge");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
   });
 
   it("maps test-failed run status to blocked", async () => {
@@ -742,7 +959,7 @@ describe("syncBeadStatusAfterMerge()", () => {
 
     await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "bd-x", "blocked", "auto-merge");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
   });
 
   it("maps failed run status to failed", async () => {
@@ -753,7 +970,7 @@ describe("syncBeadStatusAfterMerge()", () => {
 
     await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).toHaveBeenCalledWith(expect.anything(), "bd-x", "failed", "auto-merge");
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "failed");
   });
 
   it("always enqueues notes even when called with a failure reason", async () => {
@@ -771,8 +988,7 @@ describe("syncBeadStatusAfterMerge()", () => {
       "Merge conflict in foo.ts",
     );
 
-    // Both status and notes should be enqueued
-    expect(mockSetBeadStatus).toHaveBeenCalled();
+    expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
     expect(mockAddNotesToBead).toHaveBeenCalledWith(expect.anything(), "bd-x", "Merge conflict in foo.ts", "auto-merge");
   });
 });

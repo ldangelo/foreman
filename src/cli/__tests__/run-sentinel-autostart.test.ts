@@ -25,6 +25,15 @@ const {
   mockGetProjectByPath,
   mockGetSentinelConfig,
   mockGetRunsByStatuses,
+  mockListRegisteredProjects,
+  mockEnsureCliPostgresPool,
+  mockResolveRepoRootProjectPath,
+  mockRequireProjectOrAllInMultiMode,
+  mockPostgresStoreForProject,
+  mockWrapPostgresSentinelStore,
+  mockSyncBeadStatusOnStartup,
+  mockSyncTaskStatusOnStartup,
+  mockPurgeOrphanedWorkerConfigs,
   MockForemanStore,
   mockWatchRunsInk,
   mockSentinelStart,
@@ -49,6 +58,16 @@ const {
   const mockGetProjectByPath = vi.fn().mockReturnValue(null);
   const mockGetSentinelConfig = vi.fn().mockReturnValue(null);
   const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
+  const mockListRegisteredProjects = vi.fn().mockResolvedValue([]);
+  const mockEnsureCliPostgresPool = vi.fn();
+  const mockResolveRepoRootProjectPath = vi.fn().mockResolvedValue("/mock/project");
+  const mockRequireProjectOrAllInMultiMode = vi.fn().mockResolvedValue(undefined);
+
+  const mockPostgresStoreForProject = vi.fn();
+  const mockWrapPostgresSentinelStore = vi.fn();
+  const mockSyncBeadStatusOnStartup = vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
+  const mockSyncTaskStatusOnStartup = vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
+  const mockPurgeOrphanedWorkerConfigs = vi.fn().mockResolvedValue(0);
 
   const MockForemanStore = vi.fn(function (this: Record<string, unknown>) {
     this.close = vi.fn();
@@ -93,6 +112,15 @@ const {
     mockSentinelStop,
     mockSentinelIsRunning,
     MockSentinelAgent,
+    mockListRegisteredProjects,
+    mockEnsureCliPostgresPool,
+    mockResolveRepoRootProjectPath,
+    mockRequireProjectOrAllInMultiMode,
+    mockPostgresStoreForProject,
+    mockWrapPostgresSentinelStore,
+    mockSyncBeadStatusOnStartup,
+    mockSyncTaskStatusOnStartup,
+    mockPurgeOrphanedWorkerConfigs,
     mockVcsCreate,
   };
 });
@@ -118,10 +146,14 @@ vi.mock("../../lib/prompt-loader.js", () => ({
 vi.mock("../../lib/workflow-loader.js", () => ({
   findMissingWorkflows: () => [],
   findStaleWorkflows: () => [],
+  ensureBundledWorkflowsInstalled: () => [],
+  listAvailableWorkflows: () => ["default", "quick"],
+  loadWorkflowConfig: () => ({ name: "default", phases: [] }),
 }));
 vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
-vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher }));
+vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher, purgeOrphanedWorkerConfigs: mockPurgeOrphanedWorkerConfigs }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
+vi.mock("../../lib/postgres-store.js", () => ({ PostgresStore: { forProject: mockPostgresStoreForProject } }));
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
     create: (...args: unknown[]) => mockVcsCreate(...args),
@@ -139,6 +171,17 @@ vi.mock("../watch-ui.js", () => ({
   watchRunsInk: (...args: unknown[]) => mockWatchRunsInk(...args),
 }));
 vi.mock("../../orchestrator/sentinel.js", () => ({ SentinelAgent: MockSentinelAgent }));
+vi.mock("../../orchestrator/task-backend-ops.js", () => ({
+  syncBeadStatusOnStartup: (...args: unknown[]) => mockSyncBeadStatusOnStartup(...args),
+  syncTaskStatusOnStartup: (...args: unknown[]) => mockSyncTaskStatusOnStartup(...args),
+}));
+vi.mock("../commands/sentinel.js", () => ({ wrapPostgresSentinelStore: mockWrapPostgresSentinelStore }));
+vi.mock("../commands/project-task-support.js", () => ({
+  ensureCliPostgresPool: (...args: unknown[]) => mockEnsureCliPostgresPool(...args),
+  listRegisteredProjects: (...args: unknown[]) => mockListRegisteredProjects(...args),
+  resolveRepoRootProjectPath: (...args: unknown[]) => mockResolveRepoRootProjectPath(...args),
+  requireProjectOrAllInMultiMode: (...args: unknown[]) => mockRequireProjectOrAllInMultiMode(...args),
+}));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockReturnValue(false),
   PiRpcSpawnStrategy: vi.fn(),
@@ -207,6 +250,26 @@ describe("sentinel auto-start in foreman run", () => {
     mockWatchRunsInk.mockResolvedValue({ detached: false });
     mockGetActiveRuns.mockReturnValue([]);
     mockGetProjectByPath.mockReturnValue(null);
+    mockListRegisteredProjects.mockResolvedValue([]);
+    mockEnsureCliPostgresPool.mockImplementation(() => {});
+    mockResolveRepoRootProjectPath.mockResolvedValue("/mock/project");
+    mockRequireProjectOrAllInMultiMode.mockResolvedValue(undefined);
+    mockPostgresStoreForProject.mockReturnValue({
+      close: vi.fn(),
+      isOpen: vi.fn(() => true),
+      logEvent: vi.fn().mockResolvedValue(undefined),
+      recordSentinelRun: vi.fn().mockResolvedValue(undefined),
+      updateSentinelRun: vi.fn().mockResolvedValue(undefined),
+      upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
+      getSentinelConfig: vi.fn().mockResolvedValue(null),
+      getSentinelRuns: vi.fn().mockResolvedValue([]),
+    });
+    mockWrapPostgresSentinelStore.mockImplementation((store: Record<string, unknown>, projectId: string) => ({
+      ...store,
+      projectId,
+    }));
+    mockSyncBeadStatusOnStartup.mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
+    mockPurgeOrphanedWorkerConfigs.mockResolvedValue(0);
     mockVcsCreate.mockResolvedValue({
       getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
       detectDefaultBranch: vi.fn().mockResolvedValue("main"),
@@ -240,6 +303,7 @@ describe("sentinel auto-start in foreman run", () => {
       expect.anything(), // brClient
       MOCK_PROJECT.id,
       "/mock/project",
+      expect.anything(), // vcs backend
     );
     expect(mockSentinelStart).toHaveBeenCalledOnce();
     expect(mockSentinelStart).toHaveBeenCalledWith(
@@ -251,6 +315,89 @@ describe("sentinel auto-start in foreman run", () => {
       },
       expect.any(Function), // onResult callback
     );
+  });
+
+  it("uses the wrapped Postgres sentinel store for registered projects", async () => {
+    mockGetProjectByPath.mockReturnValue(null);
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "registered-proj", path: "/mock/project", name: "project" },
+    ]);
+    const postgresConfig = {
+      ...MOCK_SENTINEL_CONFIG,
+      branch: "release",
+      test_command: "pnpm test",
+    };
+    const postgresStore = {
+      close: vi.fn(),
+      isOpen: vi.fn(() => true),
+      logEvent: vi.fn().mockResolvedValue(undefined),
+      recordSentinelRun: vi.fn().mockResolvedValue(undefined),
+      updateSentinelRun: vi.fn().mockResolvedValue(undefined),
+      upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
+      getSentinelConfig: vi.fn().mockResolvedValue(postgresConfig),
+      getSentinelRuns: vi.fn().mockResolvedValue([]),
+    };
+    mockPostgresStoreForProject.mockReturnValue(postgresStore);
+
+    await invokeRun(["--no-watch"]);
+
+    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/mock/project");
+    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("registered-proj");
+    expect(mockWrapPostgresSentinelStore).toHaveBeenCalledWith(postgresStore, "registered-proj");
+    expect(mockPurgeOrphanedWorkerConfigs).toHaveBeenCalledWith(postgresStore);
+    expect(mockGetSentinelConfig).not.toHaveBeenCalled();
+
+    const wrappedStore = mockWrapPostgresSentinelStore.mock.results[0]?.value;
+    expect(MockSentinelAgent).toHaveBeenCalledWith(
+      wrappedStore,
+      expect.anything(),
+      "registered-proj",
+      "/mock/project",
+      expect.anything(),
+    );
+    expect(mockSentinelStart).toHaveBeenCalledWith(
+      {
+        branch: "release",
+        testCommand: "pnpm test",
+        intervalMinutes: 30,
+        failureThreshold: 2,
+      },
+      expect.any(Function),
+    );
+  });
+
+  it("uses the daemon Postgres store for startup native task sync on registered projects", async () => {
+    mockGetProjectByPath.mockReturnValue(null);
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "registered-proj", path: "/mock/project", name: "project" },
+    ]);
+    const postgresStore = {
+      close: vi.fn(),
+      isOpen: vi.fn(() => true),
+      logEvent: vi.fn().mockResolvedValue(undefined),
+      recordSentinelRun: vi.fn().mockResolvedValue(undefined),
+      updateSentinelRun: vi.fn().mockResolvedValue(undefined),
+      upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
+      getSentinelConfig: vi.fn().mockResolvedValue(null),
+      getSentinelRuns: vi.fn().mockResolvedValue([]),
+      getRunsByStatuses: vi.fn().mockResolvedValue([]),
+    };
+    mockPostgresStoreForProject.mockReturnValue(postgresStore);
+
+    await invokeRun(["--no-watch"]);
+
+    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/mock/project");
+    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("registered-proj");
+    expect(mockSyncBeadStatusOnStartup).not.toHaveBeenCalled();
+    expect(mockSyncTaskStatusOnStartup).toHaveBeenCalledWith(postgresStore, "registered-proj");
+  });
+
+  it("uses the local store for startup worker cleanup when no registered project exists", async () => {
+    mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
+
+    await invokeRun(["--no-watch"]);
+
+    expect(mockPurgeOrphanedWorkerConfigs).toHaveBeenCalledWith(MockForemanStore.mock.results[0]?.value);
   });
 
   it("does NOT start SentinelAgent when sentinel.enabled=0", async () => {

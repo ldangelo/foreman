@@ -9,19 +9,24 @@
  */
 
 import chalk from "chalk";
+import { resolve } from "node:path";
 import { ForemanStore } from "../../../lib/store.js";
-import type { Run, RunProgress, Message } from "../../../lib/store.js";
+import type { Run, RunProgress, Message, EventType } from "../../../lib/store.js";
 import type { BoardTask } from "../board.js";
-import { pollDashboard, type DashboardState } from "../dashboard.js";
-import { loadBoardTasks, type BoardStatus } from "../board.js";
+import { fetchDaemonDashboardState, type DashboardState } from "../../dashboard-state.js";
+import { type BoardStatus } from "../board.js";
 import { fetchTaskCounts } from "../../../lib/task-client-factory.js";
+import { createTrpcClient } from "../../../lib/trpc-client.js";
+import { listRegisteredProjects } from "../project-task-support.js";
 
 // ── Panel focus ─────────────────────────────────────────────────────────
 
-export type PanelId = "agents" | "board" | "inbox";
+export type PanelId = "agents" | "board" | "inbox" | "events";
 
 export function nextPanel(current: PanelId): PanelId {
-  return current === "agents" ? "board" : current === "board" ? "inbox" : "agents";
+  const order: PanelId[] = ["agents", "board", "inbox", "events"];
+  const idx = order.indexOf(current);
+  return order[(idx + 1) % order.length];
 }
 
 // ── Watch options ─────────────────────────────────────────────────────────
@@ -30,9 +35,11 @@ export interface WatchOptions {
   refreshMs: number;       // Main poll interval (default: 5000)
   inboxLimit: number;     // Max messages shown (default: 5)
   inboxPollMs: number;    // Inbox-only poll interval (default: 2000)
+  eventsLimit: number;    // Max pipeline events shown (default: 5)
   noWatch: boolean;       // One-shot snapshot mode
   noBoard: boolean;       // Hide board panel
   noInbox: boolean;       // Hide inbox panel
+  noEvents: boolean;      // Hide events panel
   projectId?: string;     // Filter to specific project
 }
 
@@ -62,6 +69,24 @@ export interface InboxState {
   oldestTimestamp: string | null;
 }
 
+// ── Pipeline event types ───────────────────────────────────────────────
+
+export interface PipelineEventEntry {
+  id: string;
+  eventType: EventType;
+  runId: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+  isNew: boolean;  // true if arrived since last render
+}
+
+export interface EventsState {
+  events: PipelineEventEntry[];
+  totalCount: number;
+  newestTimestamp: string | null;
+  oldestTimestamp: string | null;
+}
+
 // ── Watch state ──────────────────────────────────────────────────────────
 
 export interface WatchState {
@@ -70,12 +95,14 @@ export interface WatchState {
   agents: AgentEntry[];
   board: BoardSummary | null;
   inbox: InboxState | null;
+  events: EventsState | null;
   taskCounts: { total: number; ready: number; inProgress: number; completed: number; blocked: number } | null;
 
   // Time
   lastPollMs: number;  // monotonic timestamp of last full poll
   lastInboxPollMs: number;
   inboxLastSeenId: string | null;  // Most recently seen message ID
+  eventsLastSeenId: string | null; // Most recently seen event ID
 
   // UI
   focusedPanel: PanelId;
@@ -88,6 +115,7 @@ export interface WatchState {
   agentsOffline: boolean;
   boardOffline: boolean;
   inboxOffline: boolean;
+  eventsOffline: boolean;
 }
 
 // ── Initial state ────────────────────────────────────────────────────────
@@ -98,10 +126,12 @@ export function initialWatchState(): WatchState {
     agents: [],
     board: null,
     inbox: null,
+    events: null,
     taskCounts: null,
     lastPollMs: 0,
     lastInboxPollMs: 0,
     inboxLastSeenId: null,
+    eventsLastSeenId: null,
     focusedPanel: "agents",
     expandedAgentIndices: new Set(),
     selectedTaskIndex: -1,
@@ -110,6 +140,7 @@ export function initialWatchState(): WatchState {
     agentsOffline: false,
     boardOffline: false,
     inboxOffline: false,
+    eventsOffline: false,
   };
 }
 
@@ -122,19 +153,67 @@ export interface PollResult {
   taskCounts: { total: number; ready: number; inProgress: number; completed: number; blocked: number };
 }
 
+async function loadBoardSummary(
+  projectPath: string,
+  projectId?: string,
+): Promise<BoardSummary> {
+  const projects = await listRegisteredProjects();
+  const normalizedProjectPath = resolve(projectPath);
+  const project = projectId
+    ? projects.find((record) => record.id === projectId || record.name === projectId)
+    : projects.find((record) => resolve(record.path) === normalizedProjectPath);
+
+  if (!project) {
+    return { counts: createEmptyCounts(), total: 0, ready: 0, needsAttention: [] };
+  }
+
+  const client = createTrpcClient();
+  const rows = await client.tasks.list({ projectId: project.id, limit: 1000 }) as Array<BoardTask>;
+  const counts = createEmptyCounts();
+  const needsAttention: BoardTask[] = [];
+
+  for (const row of rows) {
+    const normalizedStatus = row.status.replace(/-/g, "_");
+    let status: BoardStatus;
+    if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
+      status = "needs_attention";
+    } else if (BOARD_STATUS_SET.has(normalizedStatus as BoardStatus)) {
+      status = normalizedStatus as BoardStatus;
+    } else {
+      status = "closed";
+    }
+    counts[status] += 1;
+    if (NEEDS_ATTENTION_STATUSES.has(normalizedStatus)) {
+      needsAttention.push({
+        ...row,
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+      } as BoardTask);
+    }
+  }
+
+  return {
+    counts,
+    total: countsTotal(counts),
+    ready: counts.ready,
+    needsAttention: needsAttention.sort((a, b) => a.priority - b.priority),
+  };
+}
+
 /**
  * Poll all data sources for the main display.
  * Returns null for unavailable sources (graceful degradation).
  */
 export async function pollWatchData(
-  store: ForemanStore,
   projectPath: string,
   projectId?: string,
 ): Promise<PollResult> {
   // Dashboard state
   let dashboard: DashboardState;
   try {
-    dashboard = pollDashboard(store, projectId);
+    dashboard = await fetchDaemonDashboardState(projectPath, projectId)
+      ?? { projects: [], activeRuns: new Map(), completedRuns: new Map(), progresses: new Map(), metrics: new Map(), events: new Map(), lastUpdated: new Date() };
   } catch {
     dashboard = { projects: [], activeRuns: new Map(), completedRuns: new Map(), progresses: new Map(), metrics: new Map(), events: new Map(), lastUpdated: new Date() };
   }
@@ -157,10 +236,7 @@ export async function pollWatchData(
   // Board summary
   let board: BoardSummary;
   try {
-    const boardTasks = loadBoardTasks(projectPath);
-    const counts = createBoardCounts(boardTasks);
-    const needsAttention = collectNeedsAttention(boardTasks);
-    board = { counts, total: countsTotal(counts), ready: counts.ready, needsAttention };
+    board = await loadBoardSummary(projectPath, projectId);
   } catch {
     board = { counts: createEmptyCounts(), total: 0, ready: 0, needsAttention: [] };
   }
@@ -168,7 +244,22 @@ export async function pollWatchData(
   // Task counts
   let taskCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
   try {
-    taskCounts = await fetchTaskCounts(projectPath);
+    const currentProject = dashboard.projects[0];
+    if (currentProject) {
+      const client = createTrpcClient();
+      const stats = await client.projects.stats({ projectId: currentProject.id }) as {
+        tasks: { total: number; ready: number; inProgress: number; merged: number; closed: number; backlog: number };
+      };
+      taskCounts = {
+        total: stats.tasks.total,
+        ready: stats.tasks.ready,
+        inProgress: stats.tasks.inProgress,
+        completed: stats.tasks.merged + stats.tasks.closed,
+        blocked: stats.tasks.backlog,
+      };
+    } else {
+      taskCounts = await fetchTaskCounts(projectPath);
+    }
   } catch {
     // ignore
   }
@@ -185,8 +276,52 @@ export async function pollInboxData(
   lastSeenId: string | null,
   inboxLimit: number,
   runIds: string[],
+  projectPath?: string,
+  projectId?: string,
 ): Promise<{ messages: InboxEntry[]; totalCount: number; newestId: string | null }> {
   try {
+    if (projectPath) {
+      try {
+        const projects = await listRegisteredProjects();
+        const normalizedProjectPath = resolve(projectPath);
+        const project = projectId
+          ? projects.find((record) => record.id === projectId || record.name === projectId)
+          : projects.find((record) => resolve(record.path) === normalizedProjectPath);
+        if (project) {
+          const client = createTrpcClient();
+          const messageLists = await Promise.all(
+            runIds.map((runId) => client.runs.listMessages({ runId }) as Promise<Array<{ id: string; run_id: string; step_key: string | null; stream: string; chunk: string; created_at: string }>>),
+          );
+
+          const allMessages: Message[] = messageLists
+            .flat()
+            .map((msg) => ({
+              id: msg.id,
+              run_id: msg.run_id,
+              sender_agent_type: msg.stream,
+              recipient_agent_type: msg.step_key ?? "run",
+              subject: (msg.chunk || "").trim().slice(0, 60) || msg.stream,
+              body: msg.chunk,
+              read: 0,
+              created_at: msg.created_at,
+              deleted_at: null,
+            }));
+
+          allMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          const totalCount = allMessages.length;
+          const recent = allMessages.slice(0, inboxLimit);
+          const newestId = recent[0]?.id ?? null;
+          const messages: InboxEntry[] = recent.map((msg, i) => ({
+            message: msg,
+            isNew: lastSeenId !== null && i === 0 && msg.id !== lastSeenId,
+          }));
+          return { messages, totalCount, newestId };
+        }
+      } catch {
+        // Fall through to legacy local-store inbox path.
+      }
+    }
+
     const allMessages: Message[] = [];
     for (const runId of runIds) {
       const msgs = store.getAllMessages(runId);
@@ -211,6 +346,108 @@ export async function pollInboxData(
   }
 }
 
+// ── Pipeline events polling ─────────────────────────────────────────────
+
+interface DaemonPipelineEventRow {
+  id: string;
+  run_id: string | null;
+  event_type: string;
+  details: string | null;
+  created_at: string;
+}
+
+/**
+ * Poll pipeline events for the events panel.
+ * Returns events + total count for watched runIds.
+ */
+export async function pollPipelineEvents(
+  store: ForemanStore,
+  lastSeenId: string | null,
+  eventsLimit: number,
+  runIds: string[],
+  projectPath?: string,
+  projectId?: string,
+): Promise<{ events: PipelineEventEntry[]; totalCount: number; newestId: string | null }> {
+  try {
+    if (projectPath) {
+      try {
+        const projects = await listRegisteredProjects();
+        const normalizedProjectPath = resolve(projectPath);
+        const project = projectId
+          ? projects.find((record) => record.id === projectId || record.name === projectId)
+          : projects.find((record) => resolve(record.path) === normalizedProjectPath);
+        if (project) {
+          const client = createTrpcClient();
+          // Fetch events for all runIds
+          const eventLists = await Promise.all(
+            runIds.map((runId) => client.runs.listEvents({ runId }) as Promise<DaemonPipelineEventRow[]>),
+          );
+
+          const allEvents: PipelineEventEntry[] = eventLists
+            .flat()
+            .map((row) => ({
+              id: row.id,
+              eventType: row.event_type as EventType,
+              runId: row.run_id,
+              details: row.details ? JSON.parse(row.details) : null,
+              createdAt: row.created_at,
+              isNew: lastSeenId !== null && row.id === lastSeenId,
+            }));
+
+          // Sort by created_at descending (most recent first)
+          allEvents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+          const totalCount = allEvents.length;
+          const recent = allEvents.slice(0, eventsLimit);
+          const newestId = recent[0]?.id ?? null;
+
+          // Mark first event as "new" if it's new since lastSeenId
+          const events: PipelineEventEntry[] = recent.map((e, i) => ({
+            ...e,
+            isNew: lastSeenId !== null && i === 0 && e.id !== lastSeenId,
+          }));
+
+          return { events, totalCount, newestId };
+        }
+      } catch {
+        // Fall through to legacy local-store path.
+      }
+    }
+
+    // Legacy local-store path
+    const allEvents: PipelineEventEntry[] = [];
+    for (const runId of runIds) {
+      const rows = store.getRunEvents(runId);
+      for (const row of rows) {
+        allEvents.push({
+          id: row.id,
+          eventType: row.event_type,
+          runId: row.run_id,
+          details: row.details ? JSON.parse(row.details) : null,
+          createdAt: row.created_at,
+          isNew: lastSeenId !== null && row.id === lastSeenId,
+        });
+      }
+    }
+
+    // Sort by created_at descending
+    allEvents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const totalCount = allEvents.length;
+    const recent = allEvents.slice(0, eventsLimit);
+    const newestId = recent[0]?.id ?? null;
+
+    const events: PipelineEventEntry[] = recent.map((e, i) => ({
+      ...e,
+      isNew: lastSeenId !== null && i === 0 && e.id !== lastSeenId,
+    }));
+
+    return { events, totalCount, newestId };
+  } catch {
+    return { events: [], totalCount: 0, newestId: null };
+  }
+}
+
 // ── Board helpers ─────────────────────────────────────────────────────────
 
 function createEmptyCounts(): Record<BoardStatus, number> {
@@ -218,37 +455,18 @@ function createEmptyCounts(): Record<BoardStatus, number> {
     backlog: 0,
     ready: 0,
     in_progress: 0,
-    review: 0,
-    blocked: 0,
+    needs_attention: 0,
     closed: 0,
   };
 }
 
-function createBoardCounts(tasks: Map<BoardStatus, BoardTask[]>): Record<BoardStatus, number> {
-  const counts = createEmptyCounts();
-  for (const [status, taskList] of tasks) {
-    counts[status] = taskList.length;
-  }
-  return counts;
-}
+const BOARD_STATUS_SET = new Set<BoardStatus>(["backlog", "ready", "in_progress", "needs_attention", "closed"]);
 
 function countsTotal(counts: Record<BoardStatus, number>): number {
   return Object.values(counts).reduce((sum, n) => sum + n, 0);
 }
 
-const NEEDS_ATTENTION_STATUSES = new Set(["conflict", "failed", "stuck", "backlog"]);
-
-function collectNeedsAttention(tasks: Map<BoardStatus, BoardTask[]>): BoardTask[] {
-  const result: BoardTask[] = [];
-  for (const [, taskList] of tasks) {
-    for (const task of taskList) {
-      if (NEEDS_ATTENTION_STATUSES.has(task.status)) {
-        result.push(task);
-      }
-    }
-  }
-  return result.sort((a, b) => a.priority - b.priority);
-}
+const NEEDS_ATTENTION_STATUSES = new Set(["conflict", "failed", "stuck", "blocked", "review"]);
 
 // ── Key handling ──────────────────────────────────────────────────────────
 

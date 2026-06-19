@@ -88,8 +88,8 @@ const VCSBACKEND_MEMBERS: string[] = [
 ];
 
 /**
- * Project-level VCS configuration options that must be documented.
- * All options come from `.foreman/config.yaml`.
+ * Foreman-wide VCS configuration options that must be documented.
+ * All options come from `~/.foreman/config.yaml`.
  */
 const PROJECT_CONFIG_OPTIONS: Array<{ key: string; description: string }> = [
   { key: "vcs.backend", description: "Backend selector (git | jujutsu | auto)" },
@@ -99,7 +99,7 @@ const PROJECT_CONFIG_OPTIONS: Array<{ key: string; description: string }> = [
 
 /**
  * Workflow-level VCS configuration options that must be documented.
- * These options live in `.foreman/workflows/*.yaml`.
+ * These options live in `~/.foreman/workflows/*.yaml`.
  */
 const WORKFLOW_CONFIG_OPTIONS: Array<{ key: string; description: string }> = [
   { key: "vcs:", description: "Top-level workflow VCS block" },
@@ -271,7 +271,7 @@ describe("AC-T-035: Documentation Completeness — VcsBackend", () => {
 
       it("documents configuration precedence (workflow > project > auto)", () => {
         expect(configDoc).toContain("Workflow YAML");
-        expect(configDoc).toContain(".foreman/config.yaml");
+        expect(configDoc).toContain("~/.foreman/config.yaml");
         expect(configDoc).toContain("Auto-detection");
       });
     });

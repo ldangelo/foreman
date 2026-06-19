@@ -1,7 +1,7 @@
 /**
  * Heartbeat manager — Periodic observability events during active pipeline phases.
  *
- * Writes structured heartbeat events to the SQLite events table every N seconds
+ * Writes structured heartbeat events to the Postgres events table every N seconds
  * (default: 60s), capturing turn count, tool call breakdown, files changed,
  * cost estimates, and last activity for operator visibility.
  *
@@ -11,7 +11,7 @@
  * @module src/orchestrator/heartbeat-manager
  */
 
-import type { ForemanStore } from "../lib/store.js";
+import type { ProgressEventStore } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -59,12 +59,19 @@ export interface HeartbeatData {
   projectId: string;
 }
 
+/**
+ * Optional heartbeat event writer used by registered worker execution.
+ */
+export interface HeartbeatEventWriter {
+  logEvent?: (eventType: "heartbeat", data: Record<string, unknown>) => Promise<void> | void;
+}
+
 // ── HeartbeatManager ─────────────────────────────────────────────────────
 
 /**
  * Manages periodic heartbeat events during an active pipeline phase.
  *
- * Tracks session statistics and writes heartbeat events to the SQLite store
+ * Tracks session statistics and writes heartbeat events to the Postgres store
  * at configured intervals. The manager is non-blocking and handles store
  * write failures gracefully.
  *
@@ -87,7 +94,8 @@ export interface HeartbeatData {
  */
 export class HeartbeatManager {
   private config: Required<HeartbeatConfig>;
-  private store: ForemanStore;
+  private store: ProgressEventStore;
+  private eventWriter?: HeartbeatEventWriter;
   private projectId: string;
   private runId: string;
   private vcs: VcsBackend;
@@ -101,16 +109,19 @@ export class HeartbeatManager {
   private phaseStartFiles: string[] = [];
   /** HEAD commit at the start of the phase. */
   private phaseStartHead: string = "";
+  /** Seed ID attached to heartbeat events for task attribution. */
+  private seedId = "";
   /** Whether the heartbeat has fired at least once this phase. */
   private hasFired = false;
 
   constructor(
     config: HeartbeatConfig,
-    store: ForemanStore,
+    store: ProgressEventStore,
     projectId: string,
     runId: string,
     vcs: VcsBackend,
     worktreePath: string,
+    eventWriter?: HeartbeatEventWriter,
   ) {
     this.config = {
       enabled: config.enabled ?? true,
@@ -121,6 +132,7 @@ export class HeartbeatManager {
     this.runId = runId;
     this.vcs = vcs;
     this.worktreePath = worktreePath;
+    this.eventWriter = eventWriter;
   }
 
   /**
@@ -231,7 +243,7 @@ export class HeartbeatManager {
     }
 
     const heartbeatData: HeartbeatData = {
-      seedId: "",  // Will be filled by caller
+      seedId: this.seedId,
       phase: this.currentPhase,
       turns: stats.turns,
       toolCalls: stats.toolCalls,
@@ -247,14 +259,17 @@ export class HeartbeatManager {
     };
 
     try {
-      this.store.logEvent(this.projectId, "heartbeat", heartbeatData as unknown as Record<string, unknown>, this.runId);
+      if (this.eventWriter?.logEvent) {
+        await Promise.resolve(this.eventWriter.logEvent("heartbeat", heartbeatData as unknown as Record<string, unknown>));
+      } else {
+        this.store.logEvent(this.projectId, "heartbeat", heartbeatData as unknown as Record<string, unknown>, this.runId);
+      }
       this.hasFired = true;
     } catch (err) {
       // Fail-safe: log and continue
       console.error(
-        `[HeartbeatManager] store.logEvent failed: ${err instanceof Error ? err.message : String(err)}`,
+        `[HeartbeatManager] heartbeat event write failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
       );
-      throw err; // Re-throw so caller knows, but don't crash the session
     }
   }
 
@@ -278,9 +293,7 @@ export class HeartbeatManager {
    * Called by the pipeline executor after dispatch.
    */
   setSeedId(seedId: string): void {
-    // Seed ID is stored in the heartbeat data passed to fireHeartbeat
-    // This method exists for API completeness but the actual seedId comes
-    // from the pipeline context when fireHeartbeat is called.
+    this.seedId = seedId;
   }
 }
 
@@ -301,11 +314,12 @@ export class HeartbeatManager {
  */
 export function createHeartbeatManager(
   config: HeartbeatConfig | undefined,
-  store: ForemanStore,
+  store: ProgressEventStore,
   projectId: string,
   runId: string,
   vcs: VcsBackend,
   worktreePath: string,
+  eventWriter?: HeartbeatEventWriter,
 ): HeartbeatManager | null {
   // If config is explicitly disabled, return null
   if (config?.enabled === false) {
@@ -319,5 +333,6 @@ export function createHeartbeatManager(
     runId,
     vcs,
     worktreePath,
+    eventWriter,
   );
 }

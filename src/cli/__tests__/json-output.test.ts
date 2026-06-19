@@ -1,5 +1,5 @@
 /**
- * Tests for --json output flag on status, monitor, and merge --list commands.
+ * Tests for --json output flag on status and merge --list commands.
  *
  * Verifies:
  * - JSON output is valid and parseable when --json flag is passed
@@ -17,6 +17,8 @@ const {
   mockBrList,
   mockBrReady,
   mockEnsureBrInstalled,
+  mockCreateTaskClient,
+  mockFetchTaskCounts,
   MockBeadsRustClient,
   mockGetProjectByPath,
   mockGetActiveRuns,
@@ -24,18 +26,24 @@ const {
   mockGetRunsByStatusSince,
   mockGetRunProgress,
   mockGetDb,
+  mockGetRecentOutcomeCounts,
+  mockGetRunsForSeed,
   MockForemanStore,
-  mockCheckAll,
-  MockMonitor,
+  MockPostgresStore,
   mockReconcile,
   mockList,
   MockMergeQueue,
 } = vi.hoisted(() => {
+  const mockCreateTaskClient = vi.fn().mockResolvedValue({ taskClient: { kind: "task-client" }, backendType: "native" });
+  const mockFetchTaskCounts = vi.fn().mockResolvedValue({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
   const mockGetRepoRoot = vi.fn().mockResolvedValue("/mock/project");
   const mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
   const mockCreateVcsBackend = vi.fn().mockResolvedValue({
     name: "git",
     getRepoRoot: mockGetRepoRoot,
+    getCurrentBranch: vi.fn().mockResolvedValue("main"),
+    checkoutBranch: vi.fn().mockResolvedValue(undefined),
+    getRemoteUrl: vi.fn().mockResolvedValue(null),
     detectDefaultBranch: mockDetectDefaultBranch,
   });
 
@@ -56,6 +64,8 @@ const {
   const mockGetRunsByStatusSince = vi.fn().mockReturnValue([]);
   const mockGetRunProgress = vi.fn().mockReturnValue(null);
   const mockGetDb = vi.fn().mockReturnValue({});
+  const mockGetRecentOutcomeCounts = vi.fn().mockReturnValue({ merged: 0, failed: 0, stuck: 0 });
+  const mockGetRunsForSeed = vi.fn().mockReturnValue([]);
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.getProjectByPath = mockGetProjectByPath;
     this.getActiveRuns = mockGetActiveRuns;
@@ -65,16 +75,17 @@ const {
     this.getDb = mockGetDb;
     this.close = vi.fn();
     this.getSuccessRate = vi.fn(() => ({ rate: null, merged: 0, failed: 0 }));
+    this.getRecentOutcomeCounts = mockGetRecentOutcomeCounts;
+    this.getRunsForSeed = mockGetRunsForSeed;
+  });
+  const MockPostgresStore = vi.fn(function MockPostgresStoreImpl(this: Record<string, unknown>) {
+    this.getRun = vi.fn();
+    this.getRunsByStatus = vi.fn();
+    this.getRunsByStatuses = vi.fn();
+    this.getRunsByBaseBranch = vi.fn();
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
-
-  // Monitor mocks
-  const mockCheckAll = vi.fn().mockResolvedValue({ active: [], completed: [], stuck: [], failed: [] });
-  const MockMonitor = vi.fn(function MockMonitorImpl(this: Record<string, unknown>) {
-    this.checkAll = mockCheckAll;
-    this.recoverStuck = vi.fn().mockResolvedValue(true);
-  });
 
   // MergeQueue mocks
   const mockReconcile = vi.fn().mockResolvedValue({ enqueued: 0 });
@@ -94,6 +105,8 @@ const {
     mockBrList,
     mockBrReady,
     mockEnsureBrInstalled,
+    mockCreateTaskClient,
+    mockFetchTaskCounts,
     MockBeadsRustClient,
     mockGetProjectByPath,
     mockGetActiveRuns,
@@ -101,9 +114,10 @@ const {
     mockGetRunsByStatusSince,
     mockGetRunProgress,
     mockGetDb,
+    mockGetRecentOutcomeCounts,
+    mockGetRunsForSeed,
     MockForemanStore,
-    mockCheckAll,
-    MockMonitor,
+    MockPostgresStore,
     mockReconcile,
     mockList,
     MockMergeQueue,
@@ -120,12 +134,21 @@ vi.mock("../../lib/beads-rust.js", () => ({
   BeadsRustClient: MockBeadsRustClient,
 }));
 
+vi.mock("../../lib/task-client-factory.js", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/task-client-factory.js")>("../../lib/task-client-factory.js");
+  return {
+    ...actual,
+    createTaskClient: mockCreateTaskClient,
+    fetchTaskCounts: mockFetchTaskCounts,
+  };
+});
+
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: MockForemanStore,
 }));
 
-vi.mock("../../orchestrator/monitor.js", () => ({
-  Monitor: MockMonitor,
+vi.mock("../../lib/postgres-store.js", () => ({
+  PostgresStore: MockPostgresStore,
 }));
 
 vi.mock("../../orchestrator/merge-queue.js", () => ({
@@ -187,7 +210,6 @@ afterEach(() => {
 
 // ── Imports ─────────────────────────────────────────────────────────────────
 import { statusCommand } from "../commands/status.js";
-import { monitorCommand } from "../commands/monitor.js";
 import { mergeCommand } from "../commands/merge.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -234,6 +256,14 @@ const MOCK_PROJECT = {
 describe("foreman status --json", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCreateVcsBackend.mockResolvedValue({
+      name: "git",
+      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      checkoutBranch: vi.fn().mockResolvedValue(undefined),
+      getRemoteUrl: vi.fn().mockResolvedValue(null),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;
       this.ready = mockBrReady;
@@ -241,6 +271,7 @@ describe("foreman status --json", () => {
     });
     mockBrList.mockResolvedValue([]);
     mockBrReady.mockResolvedValue([]);
+    mockFetchTaskCounts.mockResolvedValue({ total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
     mockGetProjectByPath.mockReturnValue(null);
     mockGetActiveRuns.mockReturnValue([]);
     mockGetMetrics.mockReturnValue({ totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] });
@@ -274,17 +305,14 @@ describe("foreman status --json", () => {
     expect(typeof tasks.stuck).toBe("number");
   });
 
-  it("reflects correct task counts from br backend", async () => {
-    mockBrList.mockImplementation(async (opts?: { status?: string }) => {
-      if (opts?.status === "closed") {
-        return [{ id: "c1", status: "closed", title: "Done" }];
-      }
-      return [
-        { id: "1", status: "in_progress", title: "Active" },
-        { id: "2", status: "open", title: "Pending" },
-      ];
+  it("reflects correct native task counts", async () => {
+    mockFetchTaskCounts.mockResolvedValue({
+      total: 3,
+      ready: 1,
+      inProgress: 1,
+      completed: 1,
+      blocked: 0,
     });
-    mockBrReady.mockResolvedValue([{ id: "2", status: "open" }]);
 
     const { stdout } = await runCommand(statusCommand, ["--json"]);
     const { tasks } = JSON.parse(stdout);
@@ -359,11 +387,7 @@ describe("foreman status --json", () => {
 
   it("outputs failed and stuck counts from last 24h in tasks section", async () => {
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
-    mockGetRunsByStatusSince.mockImplementation((_status: string) => {
-      if (_status === "failed") return [{ id: "r1" }, { id: "r2" }];
-      if (_status === "stuck") return [{ id: "r3" }];
-      return [];
-    });
+    mockGetRecentOutcomeCounts.mockReturnValue({ merged: 0, failed: 2, stuck: 1 });
 
     const { stdout } = await runCommand(statusCommand, ["--json"]);
     const { tasks } = JSON.parse(stdout);
@@ -373,94 +397,19 @@ describe("foreman status --json", () => {
   });
 });
 
-// ── Tests: foreman monitor --json ─────────────────────────────────────────────
-
-describe("foreman monitor --json", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
-      this.list = mockBrList;
-      this.ready = mockBrReady;
-      this.ensureBrInstalled = mockEnsureBrInstalled;
-    });
-    MockMonitor.mockImplementation(function MockMonitorImpl(this: Record<string, unknown>) {
-      this.checkAll = mockCheckAll;
-      this.recoverStuck = vi.fn().mockResolvedValue(true);
-    });
-    mockCheckAll.mockResolvedValue({ active: [], completed: [], stuck: [], failed: [] });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
-  });
-
-  it("outputs valid JSON when --json flag is passed", async () => {
-    const { stdout } = await runCommand(monitorCommand, ["--json"]);
-    expect(() => JSON.parse(stdout)).not.toThrow();
-  });
-
-  it("output contains active, completed, stuck, and failed arrays", async () => {
-    const { stdout } = await runCommand(monitorCommand, ["--json"]);
-    const data = JSON.parse(stdout);
-    expect(Array.isArray(data.active)).toBe(true);
-    expect(Array.isArray(data.completed)).toBe(true);
-    expect(Array.isArray(data.stuck)).toBe(true);
-    expect(Array.isArray(data.failed)).toBe(true);
-  });
-
-  it("reflects run data from monitor.checkAll()", async () => {
-    const mockRun = {
-      id: "run-1", project_id: "proj-1", seed_id: "bd-abc", agent_type: "claude-sonnet-4-6",
-      session_key: null, worktree_path: null, status: "running", started_at: "2026-03-17T10:00:00Z",
-      completed_at: null, created_at: "2026-03-17T10:00:00Z", progress: null,    };
-    mockCheckAll.mockResolvedValue({
-      active: [mockRun],
-      completed: [],
-      stuck: [],
-      failed: [],
-    });
-
-    const { stdout } = await runCommand(monitorCommand, ["--json"]);
-    const data = JSON.parse(stdout);
-
-    expect(data.active).toHaveLength(1);
-    expect(data.active[0].seed_id).toBe("bd-abc");
-    expect(data.completed).toHaveLength(0);
-    expect(data.stuck).toHaveLength(0);
-    expect(data.failed).toHaveLength(0);
-  });
-
-  it("does not output deprecation warning when --json flag is passed", async () => {
-    const { stderr } = await runCommand(monitorCommand, ["--json"]);
-    expect(stderr).not.toContain("deprecated");
-  });
-
-  it("does not output formatted header text when --json flag is passed", async () => {
-    const { stdout } = await runCommand(monitorCommand, ["--json"]);
-    expect(stdout).not.toContain("Checking agent status");
-    expect(stdout).not.toContain("Active (");
-  });
-
-  it("sanity: outputs human-readable text (not JSON) when --json is omitted", async () => {
-    const { stdout } = await runCommand(monitorCommand, []);
-    // Formatted path should contain status header text, not a JSON object
-    expect(stdout).toContain("Checking agent status");
-    expect(() => JSON.parse(stdout)).toThrow();
-  });
-
-  it("emits a stderr warning (not silently skip) when --json and --recover are both passed", async () => {
-    mockCheckAll.mockResolvedValue({ active: [], completed: [], stuck: [
-      { id: "run-1", seed_id: "bd-stuck", agent_type: "claude-sonnet-4-6", started_at: null, status: "stuck" },
-    ], failed: [] });
-
-    const { stderr } = await runCommand(monitorCommand, ["--json", "--recover"]);
-    expect(stderr).toContain("--recover is ignored when --json is used");
-  });
-});
-
 // ── Tests: foreman merge --list --json ────────────────────────────────────────
 
 describe("foreman merge --list --json", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCreateVcsBackend.mockResolvedValue({
+      name: "git",
+      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      checkoutBranch: vi.fn().mockResolvedValue(undefined),
+      getRemoteUrl: vi.fn().mockResolvedValue(null),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;
       this.ready = mockBrReady;

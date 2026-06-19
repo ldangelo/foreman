@@ -113,6 +113,20 @@ describe("spawnWorkerProcess strategy selection", () => {
     // FOREMAN_SMOKE_TEST must NOT be injected (bypass was removed)
     expect(opts?.env?.FOREMAN_SMOKE_TEST).toBeUndefined();
   });
+
+  it("injects a test worker guard for workers spawned from test runtime", async () => {
+    const testConfig: WorkerConfig = {
+      ...baseConfig,
+      env: { ...baseConfig.env, FOREMAN_RUNTIME_MODE: "test" },
+    };
+
+    await spawnWorkerProcess(testConfig);
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    const opts = (mockSpawn.mock.calls[0] as unknown[])[2] as { env?: Record<string, string> } | undefined;
+    expect(opts?.env?.FOREMAN_WORKER_TEST_GUARD).toBe("1");
+    expect(opts?.env?.FOREMAN_WORKER_PARENT_PID).toBe(String(process.pid));
+  });
 });
 
 describe("DetachedSpawnStrategy interface", () => {
@@ -131,6 +145,7 @@ describe("DetachedSpawnStrategy interface", () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const opts = (mockSpawn.mock.calls[0] as unknown[])[2] as Record<string, unknown> | undefined;
     expect(opts?.detached).toBe(true);
+    expect(result.pid).toBe(12345);
     expect(result).toBeDefined();
   });
 });

@@ -1,35 +1,38 @@
-import Database from "better-sqlite3";
 import { mkdirSync, existsSync, realpathSync } from "node:fs";
-import { join, dirname, resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import type { NativeTaskStatus } from "../orchestrator/types.js";
 
-/**
- * Resolve the path to the better-sqlite3 native addon when running from a
- * bundled context (i.e. `dist/foreman-bundle.js`).
- *
- * During development / `npm run build`, the addon is resolved by the bindings
- * module via node_modules, so no special handling is needed. But when the CLI
- * is run as a standalone bundle (esbuild output), node_modules may not exist,
- * so we look for `better_sqlite3.node` placed alongside the bundle by the
- * postbundle copy step in scripts/bundle.ts.
- *
- * @returns Absolute path to better_sqlite3.node, or undefined (use default loader).
- */
-function resolveBundledNativeBinding(): string | undefined {
-  try {
-    // import.meta.url is available in ESM. In a bundled context this resolves
-    // to the bundle file's path (e.g. /path/to/dist/foreman-bundle.js).
-    const selfDir = dirname(fileURLToPath(import.meta.url));
-    const candidate = join(selfDir, "better_sqlite3.node");
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  } catch {
-    // Swallow — fileURLToPath / import.meta.url unavailable in some edge cases
-  }
-  return undefined;
+type LocalStoreRunResult = { changes: number; lastInsertRowid?: number | bigint };
+
+type LocalStoreStatement = {
+  run: (...args: unknown[]) => LocalStoreRunResult;
+  get: (...args: unknown[]) => any;
+  all: (...args: unknown[]) => any[];
+};
+
+type LocalStoreDatabase = {
+  prepare: (...args: unknown[]) => LocalStoreStatement;
+  exec: (...args: unknown[]) => void;
+  pragma: (...args: unknown[]) => unknown;
+  transaction: (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown;
+  close: () => void;
+};
+
+function createDisabledLocalStoreDb(): LocalStoreDatabase {
+  const noopRun = (): LocalStoreRunResult => ({ changes: 0 });
+  const noopGet = (): undefined => undefined;
+  const noopAll = (): any[] => [];
+
+  return {
+    prepare: () => ({ run: noopRun, get: noopGet, all: noopAll }),
+    exec: () => undefined,
+    pragma: () => 0,
+    transaction: (fn) => (...args: unknown[]) => fn(...args),
+    close: () => undefined,
+    open: true,
+  } as LocalStoreDatabase & { open: boolean };
 }
 
 function normalizeProjectPath(path: string): string {
@@ -43,6 +46,30 @@ function normalizeProjectPath(path: string): string {
   } catch {
     return resolved;
   }
+}
+
+function parseTaskLabels(labels: unknown): string[] | null {
+  if (labels === null || labels === undefined || labels === "") return null;
+  if (Array.isArray(labels)) return labels.filter((label): label is string => typeof label === "string");
+  if (typeof labels !== "string") return null;
+  try {
+    const parsed = JSON.parse(labels) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((label): label is string => typeof label === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeNativeTask(row: NativeTask | undefined): NativeTask | null {
+  if (!row) return null;
+  return {
+    ...row,
+    labels: parseTaskLabels(row.labels),
+  };
+}
+
+function normalizeNativeTasks(rows: NativeTask[]): NativeTask[] {
+  return rows.map((row) => normalizeNativeTask(row)).filter((row): row is NativeTask => row !== null);
 }
 
 // ── Interfaces ──────────────────────────────────────────────────────────
@@ -63,7 +90,7 @@ export interface Run {
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
-  status: "pending" | "running" | "completed" | "failed" | "stuck" | "merged" | "conflict" | "test-failed" | "pr-created" | "reset";
+  status: "pending" | "running" | "completed" | "failed" | "stuck" | "cooldown" | "merged" | "conflict" | "test-failed" | "pr-created" | "reset";
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -74,12 +101,33 @@ export interface Run {
   base_branch?: string | null;
   /** Per-run merge strategy: 'auto' (refinery), 'pr' (gh pr create), or 'none' (skip). */
   merge_strategy?: "auto" | "pr" | "none" | null;
-  /** Canonical PR URL for this run, if one has been published. */
+  /**
+   * HEAD SHA at the time this run's PR was created.
+   * Used for PR identity (AC-1): PR reuse requires matching head SHA.
+   * Captured at finalize start in pipeline-executor.
+   */
+  commit_sha?: string | null;
+  /**
+   * Canonical PR URL for this run (null = no PR yet).
+   * Set by Refinery.ensurePullRequestForRun() after PR creation.
+   */
   pr_url?: string | null;
-  /** Canonical PR state tracked for this run. */
+  /**
+   * GitHub PR state: 'none' | 'draft' | 'open' | 'merged' | 'closed'.
+   * Used for task list PR state surfacing (AC-4).
+   */
   pr_state?: "none" | "draft" | "open" | "merged" | "closed" | null;
-  /** Branch head SHA captured when the canonical PR was created or reused. */
+  /**
+   * Branch HEAD SHA when the PR was last updated.
+   * Used to detect head mismatch (AC-2): PR must be recreated when SHA changes.
+   */
   pr_head_sha?: string | null;
+  /**
+   * ISO timestamp when the task's cooldown period ends.
+   * Set when a phase fails with a retryable error and retryAfterCooldown is enabled.
+   * The dispatcher skips this task until the cooldown period expires.
+   */
+  cooldown_until?: string | null;
 }
 
 export interface Cost {
@@ -119,7 +167,8 @@ export type EventType =
   | "worktree-rebased"
   | "worktree-rebase-failed"
   | "phase-start"
-  | "phase-complete";
+  | "phase-complete"
+  | "cooldown";
 
 export interface Event {
   id: string;
@@ -179,37 +228,15 @@ export interface Message {
   recipient_agent_type: string;
   subject: string;
   body: string;
-  read: number; // 0 = unread, 1 = read (SQLite boolean)
+  read: number; // 0 = unread, 1 = read (Postgres boolean)
   created_at: string;
   deleted_at: string | null;
-}
-
-/**
- * Represents a pending bead write operation in the serialized write queue.
- *
- * Operations are inserted by agent-workers, refinery, pipeline-executor, and
- * auto-merge, then drained and executed sequentially by the dispatcher.
- * This eliminates concurrent br CLI invocations that cause SQLite contention.
- */
-export interface BeadWriteEntry {
-  /** Unique entry ID (UUID). */
-  id: string;
-  /** Source of the write (e.g. "agent-worker", "refinery", "pipeline-executor"). */
-  sender: string;
-  /** Operation type: "close-seed" | "reset-seed" | "mark-failed" | "add-notes" | "add-labels". */
-  operation: string;
-  /** JSON-encoded payload specific to the operation. */
-  payload: string;
-  /** ISO timestamp when the entry was inserted. */
-  created_at: string;
-  /** ISO timestamp when the entry was processed (null = pending). */
-  processed_at: string | null;
 }
 
 // ── Native Task interfaces ───────────────────────────────────────────────
 
 /**
- * A task row from the native SQLite `tasks` table (PRD-2026-006 REQ-003).
+ * A task row from the native Postgres `tasks` table (PRD-2026-006 REQ-003).
  * Matches the TASKS_SCHEMA column definitions.
  */
 export interface NativeTask {
@@ -218,10 +245,13 @@ export interface NativeTask {
   description: string | null;
   type: string;
   priority: number;
-  status: string;
+  status: NativeTaskStatus;
   run_id: string | null;
   branch: string | null;
   external_id: string | null;
+  labels?: string[] | null;
+  parent?: string | null;
+  parentId?: string | null;
   created_at: string;
   updated_at: string;
   approved_at: string | null;
@@ -278,10 +308,13 @@ export interface NativeTask {
   description: string | null;
   type: string;
   priority: number;   // 0=P0 (critical) … 4=P4 (backlog)
-  status: string;
+  status: NativeTaskStatus;
   run_id: string | null;
   branch: string | null;
   external_id: string | null;
+  labels?: string[] | null;
+  parent?: string | null;
+  parentId?: string | null;
   created_at: string;
   updated_at: string;
   approved_at: string | null;
@@ -416,24 +449,6 @@ CREATE INDEX IF NOT EXISTS idx_merge_costs_date ON merge_costs (recorded_at);
 
 `;
 
-// Bead write queue DDL — project-scoped serialized write queue for br operations.
-// Agent-workers, refinery, pipeline-executor, and auto-merge enqueue writes here.
-// The dispatcher drains this table sequentially, executing br CLI commands one at a
-// time, eliminating concurrent SQLite lock contention on .beads/beads.jsonl.
-const BEAD_WRITE_QUEUE_SCHEMA = `
-CREATE TABLE IF NOT EXISTS bead_write_queue (
-  id TEXT PRIMARY KEY,
-  sender TEXT NOT NULL,
-  operation TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  processed_at TEXT DEFAULT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_bead_write_queue_pending
-  ON bead_write_queue (processed_at, created_at);
-`;
-
 // Messages table DDL — kept separate so it can be applied after pre-flight migrations
 // that drop any incompatible legacy messages table.
 const MESSAGES_SCHEMA = `
@@ -472,14 +487,15 @@ CREATE TABLE IF NOT EXISTS tasks (
   run_id      TEXT REFERENCES runs(id),
   branch      TEXT,
   external_id TEXT UNIQUE,
+  labels      TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   approved_at TEXT,
   closed_at   TEXT,
   CHECK (status IN (
-    'backlog', 'ready', 'in-progress',
+    'backlog', 'ready', 'in-progress', 'review',
     'explorer', 'developer', 'qa', 'reviewer', 'finalize',
-    'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked'
+    'merged', 'closed', 'conflict', 'failed', 'stuck', 'blocked', 'cooldown'
   ))
 );
 
@@ -533,9 +549,6 @@ const MIGRATIONS = [
   `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
   `ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL`,
   `ALTER TABLE runs ADD COLUMN merge_strategy TEXT DEFAULT 'auto'`,
-  `ALTER TABLE runs ADD COLUMN pr_url TEXT DEFAULT NULL`,
-  `ALTER TABLE runs ADD COLUMN pr_state TEXT DEFAULT NULL`,
-  `ALTER TABLE runs ADD COLUMN pr_head_sha TEXT DEFAULT NULL`,
   `CREATE TABLE IF NOT EXISTS sentinel_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL UNIQUE,
@@ -575,6 +588,10 @@ const MIGRATIONS = [
     updated_at TEXT NOT NULL
   )`,
   `ALTER TABLE runs ADD COLUMN base_branch TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN commit_sha TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN pr_url TEXT DEFAULT NULL`,
+  `ALTER TABLE runs ADD COLUMN pr_state TEXT DEFAULT 'none'`,
+  `ALTER TABLE runs ADD COLUMN pr_head_sha TEXT DEFAULT NULL`,
   // Rate limit events table migration (P2: per-model rate limit tracking)
   `CREATE TABLE IF NOT EXISTS rate_limit_events (
     id          TEXT PRIMARY KEY,
@@ -591,6 +608,10 @@ const MIGRATIONS = [
     ON rate_limit_events (model, recorded_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_rate_limit_events_project
     ON rate_limit_events (project_id, recorded_at DESC)`,
+  // Task labels column for branch label auto-labeling (TRD-015)
+  `ALTER TABLE tasks ADD COLUMN labels TEXT DEFAULT NULL`,
+  // Cooldown retry column for retryAfterCooldown workflow phase option
+  `ALTER TABLE runs ADD COLUMN cooldown_until TEXT DEFAULT NULL`,
 ];
 
 // One-time destructive migrations that cannot be made idempotent via failure
@@ -634,15 +655,15 @@ function normalizeLegacyTaskStatus(status: string): string {
   return status;
 }
 
-function tasksTableNeedsClosedStatusMigration(db: Database.Database): boolean {
+function tasksTableNeedsClosedStatusMigration(db: LocalStoreDatabase): boolean {
   const row = db.prepare(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
+    "SELECT sql FROM information_schema.tables WHERE table_name = 'tasks'",
   ).get() as { sql: string | null } | undefined;
   const schemaSql = row?.sql;
   return typeof schemaSql === "string" && !schemaSql.includes("'closed'");
 }
 
-function migrateLegacyTasksTable(db: Database.Database): void {
+function migrateLegacyTasksTable(db: LocalStoreDatabase): void {
   const taskRows = db
     .prepare(
       `SELECT id, title, description, type, priority, status, run_id, branch,
@@ -713,14 +734,147 @@ function migrateLegacyTasksTable(db: Database.Database): void {
 
 // ── Store ───────────────────────────────────────────────────────────────
 
+/**
+ * Narrow interface for run-related store operations.
+ * Covers create, read, update, and query operations for pipeline runs.
+ */
+export type RunStore = Pick<ForemanStore,
+  | "createRun"
+  | "updateRun"
+  | "getRun"
+  | "getActiveRuns"
+  | "getRunsByStatus"
+  | "getRunsByStatuses"
+  | "getRunsByStatusSince"
+  | "getRunsByStatusesSince"
+  | "purgeOldRuns"
+  | "deleteRun"
+  | "getRunsForSeed"
+  | "hasActiveOrPendingRun"
+  | "getRunsByBaseBranch"
+  | "getRunEvents"
+>;
+
+/**
+ * Narrow interface for project-related store operations.
+ * Covers project registration, lookup, and updates.
+ */
+export type ProjectStore = Pick<ForemanStore,
+  | "registerProject"
+  | "getProject"
+  | "getProjectByPath"
+  | "listProjects"
+  | "updateProject"
+>;
+
+/**
+ * Narrow interface for progress and event logging.
+ * Covers run progress tracking and event emission.
+ */
+export type ProgressEventStore = Pick<ForemanStore,
+  | "updateRunProgress"
+  | "getRunProgress"
+  | "logEvent"
+  | "getEvents"
+>;
+
+/**
+ * Narrow interface for inter-agent messaging.
+ * Covers message sending, retrieval, and management.
+ */
+export type MailStore = Pick<ForemanStore,
+  | "sendMessage"
+  | "getMessages"
+  | "getAllMessages"
+  | "getAllMessagesGlobal"
+  | "markMessageRead"
+  | "markAllMessagesRead"
+  | "deleteMessage"
+  | "getMessage"
+>;
+
+/**
+ * Narrow interface for native task management.
+ * Covers task CRUD operations and claiming.
+ */
+export type TaskStore = Pick<ForemanStore,
+  | "listTasksByStatus"
+  | "updateTaskStatus"
+  | "hasNativeTasks"
+  | "getTaskById"
+  | "getTaskByExternalId"
+  | "getReadyTasks"
+  | "claimTask"
+>;
+
+/**
+ * Narrow interface for sentinel configuration and runs.
+ * Covers CI/sentinel integration for branch monitoring.
+ */
+export type SentinelStore = Pick<ForemanStore,
+  | "upsertSentinelConfig"
+  | "getSentinelConfig"
+  | "recordSentinelRun"
+  | "updateSentinelRun"
+  | "getSentinelRuns"
+>;
+
+/**
+ * Narrow interface for cost tracking and metrics.
+ * Covers cost recording, aggregation, and success rate calculations.
+ */
+export type CostMetricsStore = Pick<ForemanStore,
+  | "recordCost"
+  | "getCosts"
+  | "getCostBreakdown"
+  | "getPhaseMetrics"
+  | "getRecentOutcomeCounts"
+  | "getSuccessRate"
+  | "getMetrics"
+  | "logRateLimitEvent"
+  | "getRateLimitCountsByModel"
+  | "getRecentRateLimitEvents"
+>;
+
+/**
+ * Narrow interface for dashboard read operations.
+ * Covers all read-only methods needed by pollDashboard() and readProjectRegistry().
+ * The CLI uses this interface so pure read functions don't need the full store type.
+ */
+export type DashboardReadStore = Pick<ForemanStore,
+  | "listProjects"
+  | "getProject"
+  | "getActiveRuns"
+  | "getRunsByStatus"
+  | "getRunProgress"
+  | "getMetrics"
+  | "getEvents"
+  | "getSuccessRate"
+  | "listTasksByStatus"
+  | "close"
+>;
+
+/**
+ * Narrow read-only interface for the status command.
+ * Covers project lookup, active runs, progress, metrics, success rate, and recent outcomes.
+ */
+export type StatusReadStore = Pick<ForemanStore,
+  | "getProjectByPath"
+  | "getActiveRuns"
+  | "getRunProgress"
+  | "getRunsForSeed"
+  | "getRecentOutcomeCounts"
+  | "getSuccessRate"
+  | "getMetrics"
+>;
+
 export class ForemanStore {
-  private db: Database.Database;
+  private db: LocalStoreDatabase;
 
   /**
-   * Create a ForemanStore backed by a project-local SQLite database.
+   * Create a disabled ForemanStore compatibility object for a project.
    *
-   * The database is stored at `<projectPath>/.foreman/foreman.db`, keeping
-   * all state scoped to the project rather than the user's home directory.
+   * Current state access should go through the Postgres-backed daemon APIs.
    *
    * @param projectPath - Absolute path to the project root directory.
    */
@@ -729,40 +883,43 @@ export class ForemanStore {
   }
 
   /**
+   * Create a DashboardReadStore for a project.
+   *
+   * Returns a disabled local-store compatibility handle typed as DashboardReadStore.
+   * Use this factory when you only need read-only dashboard operations
+   * (pollDashboard, readProjectRegistry) and don't need write access.
+   *
+   * @param projectPath - Absolute path to the project root directory.
+   * @returns A DashboardReadStore instance for the project.
+   */
+  static forDashboard(projectPath: string): DashboardReadStore {
+    return new ForemanStore(join(projectPath, ".foreman", "foreman.db")) as DashboardReadStore;
+  }
+
+  /**
    * Open the project database in READONLY mode for safe concurrent dashboard reads.
    *
-   * Returns a raw better-sqlite3 `Database` instance opened with `{ readonly: true }`.
-   * The caller is responsible for calling `.close()` when done.
+   * Returns a disabled local-store compatibility handle.
+   * Postgres-backed dashboard reads should use the daemon APIs.
    *
    * This is intentionally a static factory that bypasses the normal ForemanStore
    * constructor (which runs migrations and writes to the DB) — the dashboard reads
    * should never write to a project's database.
    *
    * @param projectPath - Absolute path to the project root directory.
-   * @returns A readonly better-sqlite3 Database (throws if DB does not exist).
+   * @returns A disabled local-store compatibility handle.
    */
-  static openReadonly(projectPath: string): Database.Database {
-    const dbPath = join(projectPath, ".foreman", "foreman.db");
-    const nativeBinding = resolveBundledNativeBinding();
-    const db = nativeBinding
-      ? new Database(dbPath, { readonly: true, nativeBinding })
-      : new Database(dbPath, { readonly: true });
-    return db;
+  static openReadonly(_projectPath: string): LocalStoreDatabase {
+    return createDisabledLocalStoreDb();
   }
 
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? join(homedir(), ".foreman", "foreman.db");
     mkdirSync(join(resolvedPath, ".."), { recursive: true });
 
-    // When running from a bundle (dist/foreman-bundle.js), use the native
-    // addon copied by the postbundle step rather than relying on node_modules.
-    const nativeBinding = resolveBundledNativeBinding();
-    this.db = nativeBinding
-      ? new Database(resolvedPath, { nativeBinding })
-      : new Database(resolvedPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
-    this.db.pragma("busy_timeout = 30000");
+    this.db = createDisabledLocalStoreDb();
+    return;
+
     this.db.exec(SCHEMA);
 
     // Run idempotent migrations (errors are silently ignored — they indicate
@@ -788,10 +945,6 @@ export class ForemanStore {
     // been dropped first, allowing a clean re-creation.
     this.db.exec(MESSAGES_SCHEMA);
 
-    // Apply bead write queue schema. Uses CREATE TABLE IF NOT EXISTS so it is
-    // safe to apply on every startup for both new and existing databases.
-    this.db.exec(BEAD_WRITE_QUEUE_SCHEMA);
-
     // Apply native task management schemas (PRD-2026-006 REQ-003, REQ-004).
     // Both use CREATE TABLE IF NOT EXISTS — safe to run on every startup.
     this.db.exec(TASKS_SCHEMA);
@@ -806,7 +959,7 @@ export class ForemanStore {
   }
 
   /** Expose the underlying database for modules that need direct access (e.g. MergeQueue). */
-  getDb(): Database.Database {
+  getDb(): LocalStoreDatabase {
     return this.db;
   }
 
@@ -831,13 +984,14 @@ export class ForemanStore {
     if (statuses.length === 0) return [];
     try {
       const placeholders = statuses.map(() => "?").join(", ");
-      return this.db
+      const rows = this.db
         .prepare(
           `SELECT * FROM tasks WHERE status IN (${placeholders})
            ORDER BY priority ASC, updated_at ASC
            LIMIT ?`
         )
         .all(...statuses, limit) as NativeTask[];
+      return normalizeNativeTasks(rows);
     } catch {
       // tasks table may not exist on older project databases
       return [];
@@ -852,10 +1006,28 @@ export class ForemanStore {
    * @param newStatus - Target status (must be in TASKS_SCHEMA CHECK constraint).
    */
   updateTaskStatus(taskId: string, newStatus: string): void {
+    // Normalize legacy 'in_progress' (underscore) to native 'in-progress' (hyphen)
+    // before writing to the database CHECK constraint.
+    const normalizedStatus = newStatus === "in_progress" ? "in-progress" : newStatus;
     const now = new Date().toISOString();
     this.db
       .prepare(`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`)
-      .run(newStatus, now, taskId);
+      .run(normalizedStatus, now, taskId);
+  }
+
+  /**
+   * Update task labels via a short-lived write.
+   * Used by dispatcher for branch label auto-labeling.
+   *
+   * @param taskId - Task UUID to update.
+   * @param labels - New labels array.
+   */
+  updateTaskLabels(taskId: string, labels: string[]): void {
+    const now = new Date().toISOString();
+    const labelsJson = JSON.stringify(labels);
+    this.db
+      .prepare(`UPDATE tasks SET labels = ?, updated_at = ? WHERE id = ?`)
+      .run(labelsJson, now, taskId);
   }
 
   // ── Projects ────────────────────────────────────────────────────────
@@ -947,14 +1119,11 @@ export class ForemanStore {
       tmux_session: null,
       base_branch: opts?.baseBranch ?? null,
       merge_strategy: opts?.mergeStrategy ?? 'auto',
-      pr_url: null,
-      pr_state: null,
-      pr_head_sha: null,
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch, merge_strategy, pr_url, pr_state, pr_head_sha)
-         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch, @merge_strategy, @pr_url, @pr_state, @pr_head_sha)`
+        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch, merge_strategy)
+         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch, @merge_strategy)`
       )
       .run(run);
     return run;
@@ -962,7 +1131,7 @@ export class ForemanStore {
 
   updateRun(
     id: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy" | "pr_url" | "pr_state" | "pr_head_sha">>
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "base_branch" | "merge_strategy" | "commit_sha" | "pr_url" | "pr_state" | "pr_head_sha" | "cooldown_until">>
   ): void {
     const fields: string[] = [];
     const values: Record<string, unknown> = { id };
@@ -1645,61 +1814,6 @@ export class ForemanStore {
     );
   }
 
-  // ── Bead Write Queue ─────────────────────────────────────────────────
-
-  /**
-   * Enqueue a bead write operation for sequential processing by the dispatcher.
-   *
-   * Called by agent-workers, refinery, pipeline-executor, and auto-merge
-   * instead of invoking the br CLI directly. The dispatcher drains this queue
-   * and executes br commands one at a time, eliminating SQLite lock contention.
-   *
-   * @param sender - Human-readable source identifier (e.g. "agent-worker", "refinery")
-   * @param operation - Operation type: "close-seed" | "reset-seed" | "mark-failed" | "add-notes" | "add-labels"
-   * @param payload - Operation-specific data (will be JSON-stringified)
-   */
-  enqueueBeadWrite(sender: string, operation: string, payload: unknown): void {
-    const entry: BeadWriteEntry = {
-      id: randomUUID(),
-      sender,
-      operation,
-      payload: JSON.stringify(payload),
-      created_at: new Date().toISOString(),
-      processed_at: null,
-    };
-    this.db
-      .prepare(
-        `INSERT INTO bead_write_queue (id, sender, operation, payload, created_at, processed_at)
-         VALUES (@id, @sender, @operation, @payload, @created_at, @processed_at)`
-      )
-      .run(entry);
-  }
-
-  /**
-   * Retrieve all pending (unprocessed) bead write entries in insertion order.
-   * Returns entries where processed_at IS NULL, ordered by created_at ASC.
-   */
-  getPendingBeadWrites(): BeadWriteEntry[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM bead_write_queue
-         WHERE processed_at IS NULL
-         ORDER BY created_at ASC, rowid ASC`
-      )
-      .all() as BeadWriteEntry[];
-  }
-
-  /**
-   * Mark a bead write entry as processed by setting its processed_at timestamp.
-   * @returns true if the entry was found and updated, false otherwise.
-   */
-  markBeadWriteProcessed(id: string): boolean {
-    const result = this.db
-      .prepare("UPDATE bead_write_queue SET processed_at = ? WHERE id = ?")
-      .run(new Date().toISOString(), id);
-    return result.changes > 0;
-  }
-
   // ── Sentinel ─────────────────────────────────────────────────────────
 
   upsertSentinelConfig(
@@ -1959,10 +2073,10 @@ export class ForemanStore {
    */
   getTaskById(id: string): NativeTask | null {
     try {
-      return (
-        (this.db
+      return normalizeNativeTask(
+        this.db
           .prepare("SELECT * FROM tasks WHERE id = ? LIMIT 1")
-          .get(id) as NativeTask | undefined) ?? null
+          .get(id) as NativeTask | undefined,
       );
     } catch {
       return null;
@@ -1977,10 +2091,10 @@ export class ForemanStore {
    */
   getTaskByExternalId(externalId: string): NativeTask | null {
     try {
-      return (
-        (this.db
+      return normalizeNativeTask(
+        this.db
           .prepare("SELECT * FROM tasks WHERE external_id = ? LIMIT 1")
-          .get(externalId) as NativeTask | undefined) ?? null
+          .get(externalId) as NativeTask | undefined,
       );
     } catch {
       return null;
@@ -1994,18 +2108,19 @@ export class ForemanStore {
    * ORDER BY priority ASC, created_at ASC".
    */
   getReadyTasks(): NativeTask[] {
-    return this.db
+    const rows = this.db
       .prepare(
         `SELECT * FROM tasks
          WHERE status = 'ready'
          ORDER BY priority ASC, created_at ASC`,
       )
       .all() as NativeTask[];
+    return normalizeNativeTasks(rows);
   }
 
   /**
    * Atomically claim a task by transitioning its status from 'ready' to 'in-progress'
-   * and recording the associated run_id in a single SQLite transaction.
+   * and recording the associated run_id in a single Postgres transaction.
    *
    * Implements REQ-017 AC-017.2: the UPDATE is atomic — if two concurrent dispatcher
    * instances attempt to claim the same task, exactly one succeeds (the WHERE clause

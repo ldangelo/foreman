@@ -1,0 +1,151 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const localGetRun = vi.fn();
+const localUpdateRun = vi.fn();
+const localClose = vi.fn();
+const pgGetRun = vi.fn();
+const pgUpdateRun = vi.fn();
+const pgUpdateTaskStatusForRun = vi.fn();
+const pgClose = vi.fn();
+const localForProject = vi.fn(() => ({ getRun: localGetRun, updateRun: localUpdateRun, close: localClose }));
+const pgForProject = vi.fn(() => ({
+  getRun: pgGetRun,
+  updateRun: pgUpdateRun,
+  updateTaskStatusForRun: pgUpdateTaskStatusForRun,
+  close: pgClose,
+}));
+const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+vi.mock("../../lib/store.js", () => ({
+  ForemanStore: {
+    forProject: localForProject,
+  },
+}));
+
+vi.mock("../../lib/postgres-store.js", () => ({
+  PostgresStore: {
+    forProject: pgForProject,
+  },
+}));
+
+const { updateTerminalRunStatus } = await import("../agent-worker-run-status.js");
+
+describe("updateTerminalRunStatus", () => {
+  beforeEach(() => {
+    localGetRun.mockReset();
+    localUpdateRun.mockReset();
+    localClose.mockReset();
+    pgGetRun.mockReset();
+    pgUpdateRun.mockReset();
+    pgUpdateTaskStatusForRun.mockReset();
+    pgClose.mockReset();
+    localForProject.mockClear();
+    pgForProject.mockClear();
+    warnSpy.mockClear();
+    localGetRun.mockReturnValue(null);
+    pgGetRun.mockResolvedValue(null);
+  });
+
+  it("uses Postgres first for registered terminal updates and skips local fallback on success", async () => {
+    await updateTerminalRunStatus({
+      runId: "run-1",
+      projectId: "proj-1",
+      projectPath: "/tmp/project",
+      updates: { status: "completed", completed_at: "2026-04-25T00:00:00.000Z" },
+    });
+
+    expect(pgForProject).toHaveBeenCalledWith("proj-1");
+    expect(pgUpdateRun).toHaveBeenCalledWith("run-1", {
+      status: "completed",
+      completed_at: "2026-04-25T00:00:00.000Z",
+    });
+    expect(localForProject).not.toHaveBeenCalled();
+    expect(localUpdateRun).not.toHaveBeenCalled();
+    expect(pgClose).toHaveBeenCalled();
+    expect(localClose).not.toHaveBeenCalled();
+  });
+
+  it.each(["failed", "merged"] as const)(
+    "syncs registered task status when a run reaches '%s'",
+    async (status) => {
+      await updateTerminalRunStatus({
+        runId: `run-${status}`,
+        projectId: `proj-${status}`,
+        projectPath: `/tmp/project-${status}`,
+        updates: { status, completed_at: "2026-04-25T00:01:00.000Z" },
+      });
+
+      expect(pgUpdateRun).toHaveBeenCalledWith(`run-${status}`, {
+        status,
+        completed_at: "2026-04-25T00:01:00.000Z",
+      });
+      expect(pgUpdateTaskStatusForRun).toHaveBeenCalledWith(`run-${status}`, status);
+      expect(localForProject).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a registered pr-created run instead of downgrading it to failed", async () => {
+    pgGetRun.mockResolvedValueOnce({ id: "run-keep", status: "pr-created" });
+
+    await updateTerminalRunStatus({
+      runId: "run-keep",
+      projectId: "proj-keep",
+      projectPath: "/tmp/project-keep",
+      updates: { status: "failed", completed_at: "2026-04-25T00:01:00.000Z" },
+    });
+
+    expect(pgUpdateRun).not.toHaveBeenCalled();
+    expect(pgUpdateTaskStatusForRun).not.toHaveBeenCalled();
+    expect(localForProject).not.toHaveBeenCalled();
+  });
+
+  it("preserves a local merged run instead of downgrading it to stuck", async () => {
+    localGetRun.mockReturnValueOnce({ id: "run-keep-local", status: "merged" });
+
+    await updateTerminalRunStatus({
+      runId: "run-keep-local",
+      projectPath: "/tmp/local-project",
+      updates: { status: "stuck", completed_at: "2026-04-25T00:02:00.000Z" },
+    });
+
+    expect(localUpdateRun).not.toHaveBeenCalled();
+  });
+
+  it("falls back to local store when Postgres update fails and stays non-fatal", async () => {
+    pgUpdateRun.mockRejectedValueOnce(new Error("pg down"));
+
+    await expect(updateTerminalRunStatus({
+      runId: "run-3",
+      projectId: "proj-3",
+      projectPath: "/tmp/project-3",
+      updates: { status: "failed", completed_at: "2026-04-25T00:01:00.000Z" },
+    })).resolves.toBeUndefined();
+
+    expect(pgForProject).toHaveBeenCalledWith("proj-3");
+    expect(localForProject).toHaveBeenCalledWith("/tmp/project-3");
+    expect(localUpdateRun).toHaveBeenCalledWith("run-3", {
+      status: "failed",
+      completed_at: "2026-04-25T00:01:00.000Z",
+    });
+    expect(pgUpdateTaskStatusForRun).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(pgClose).toHaveBeenCalled();
+    expect(localClose).toHaveBeenCalled();
+  });
+
+  it("uses local store only when projectId is absent", async () => {
+    await updateTerminalRunStatus({
+      runId: "run-3",
+      projectPath: "/tmp/local-project",
+      updates: { status: "stuck", completed_at: "2026-04-25T00:02:00.000Z" },
+    });
+
+    expect(pgForProject).not.toHaveBeenCalled();
+    expect(localForProject).toHaveBeenCalledWith("/tmp/local-project");
+    expect(localUpdateRun).toHaveBeenCalledWith("run-3", {
+      status: "stuck",
+      completed_at: "2026-04-25T00:02:00.000Z",
+    });
+    expect(localClose).toHaveBeenCalled();
+  });
+});

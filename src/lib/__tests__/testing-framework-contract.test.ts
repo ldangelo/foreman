@@ -74,23 +74,18 @@ describe("testing framework package scripts", () => {
 });
 
 describe("testing framework workflows", () => {
-  it("ci workflow uploads PR-required JSON test reports", () => {
+  it("ci workflow skips duplicate JSON report generation", () => {
     const steps = getAllSteps(CI_WORKFLOW_PATH);
-    const reportIdx = steps.findIndex((step) =>
-      step.run?.includes("npm run test:report:ci"),
-    );
-    const uploadIdx = steps.findIndex((step) =>
-      step.uses?.startsWith("actions/upload-artifact"),
-    );
-
-    expect(reportIdx).toBeGreaterThanOrEqual(0);
-    expect(uploadIdx).toBeGreaterThan(reportIdx);
+    expect(steps.some((step) => step.run?.includes("npm run test:report:ci"))).toBe(false);
+    expect(steps.some((step) => step.uses?.startsWith("actions/upload-artifact"))).toBe(false);
   });
 
-  it("ci workflow runs the PR-required aggregate lane", () => {
+  it("ci workflow runs the full CI suite (unit + integration + e2e)", () => {
     const steps = getAllSteps(CI_WORKFLOW_PATH);
     expect(steps.some((step) => step.run?.includes("npm run test:ci"))).toBe(true);
-    expect(steps.some((step) => step.run?.includes("npm run test:e2e:full-run"))).toBe(false);
+    expect(steps.some((step) => step.run?.includes("npm run test:unit"))).toBe(false);
+    expect(steps.some((step) => step.run?.includes("npm run test:integration"))).toBe(false);
+    expect(steps.some((step) => step.run?.includes("npm run test:e2e"))).toBe(false);
   });
 
   it("system workflow stays opt-in or scheduled and runs only the system lane", () => {

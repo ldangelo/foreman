@@ -11,11 +11,11 @@ import { tmpdir } from "node:os";
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockEnqueueBeadWrite } = vi.hoisted(() => ({
+const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockUpdateTaskStatus } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
   mockAppendFile: vi.fn().mockResolvedValue(undefined),
-  mockEnqueueBeadWrite: vi.fn(),
+  mockUpdateTaskStatus: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -30,13 +30,13 @@ vi.mock("../agent-worker-enqueue.js", () => ({
   enqueueToMergeQueue: mockEnqueueToMergeQueue,
 }));
 
-// Mock ForemanStore so we don't need a real SQLite database
+// Mock ForemanStore so we don't need a real Postgres database
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: {
     forProject: vi.fn(() => ({
       getDb: vi.fn(() => ({})),
       close: vi.fn(),
-      enqueueBeadWrite: mockEnqueueBeadWrite,
+      updateTaskStatus: mockUpdateTaskStatus,
     })),
   },
 }));
@@ -160,6 +160,7 @@ describe("finalize() — push succeeds", () => {
     writeFileSync(logFile, "");
 
     mockExecFileSync.mockReset();
+    mockUpdateTaskStatus.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
 
     // tsc succeeds by default (mockExecFileSync does nothing)
@@ -182,15 +183,7 @@ describe("finalize() — push succeeds", () => {
 
   it("sets bead to 'review' status after successful push (not closing it)", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001" }), logFile, mockVcs);
-    // Verify enqueueBeadWrite was called with "set-status" and the correct seedId/status
-    const reviewCall = mockEnqueueBeadWrite.mock.calls.find(
-      (call) =>
-        Array.isArray(call) &&
-        call[1] === "set-status" &&
-        call[2]?.status === "review" &&
-        call[2]?.seedId === "bd-test-001",
-    );
-    expect(reviewCall).toBeDefined();
+    expect(mockUpdateTaskStatus).toHaveBeenCalledWith("bd-test-001", "review");
   });
 
   it("does NOT call br close after push succeeds (bead lifecycle fix)", async () => {
@@ -220,6 +213,14 @@ describe("finalize() — push succeeds", () => {
   it("enqueues to merge queue when push succeeds", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
+  });
+
+  it("does not pass db to enqueueToMergeQueue on the Postgres path", async () => {
+    await finalize(makeConfig({ worktreePath: tmpDir, projectId: "proj-123" }), logFile, mockVcs);
+
+    expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
+    expect(mockEnqueueToMergeQueue.mock.calls[0][0]).not.toHaveProperty("db");
+    expect(mockEnqueueToMergeQueue.mock.calls[0][0].projectId).toBe("proj-123");
   });
 
   it("uses vcs.stageAll and vcs.commit for the commit step", async () => {
@@ -267,7 +268,6 @@ describe("finalize() — push FAILS", () => {
 
     mockExecFileSync.mockReset();
     mockEnqueueToMergeQueue.mockReset().mockReturnValue({ success: true });
-    mockEnqueueBeadWrite.mockReset();
 
     mockVcs = makeMockVcs({
       push: vi.fn().mockRejectedValue(new Error("remote: Permission to repo denied.")),
@@ -307,17 +307,6 @@ describe("finalize() — push FAILS", () => {
   it("does not throw even when push fails", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     expect(result.success).toBe(false);
-  });
-
-  it("does NOT set bead to review when push fails (bead stays in_progress for caller to reset)", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
-    const reviewCall = mockEnqueueBeadWrite.mock.calls.find(
-      (call) =>
-        Array.isArray(call) &&
-        call[1] === "set-status" &&
-        call[2]?.status === "review",
-    );
-    expect(reviewCall).toBeUndefined();
   });
 });
 
@@ -627,6 +616,15 @@ describe("finalize() — non-fast-forward push: rebase FAILS → deterministic f
     expect(result.retryable).toBe(false);
   });
 
+  it("recommends clean replay from main when rebase fails deterministically", async () => {
+    const vcs = makeMockVcs({
+      push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
+      rebase: vi.fn().mockResolvedValue({ success: false, hasConflicts: true, conflictingFiles: ["src/foo.ts"] }),
+    });
+    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(result.recommendedRecovery).toBe("clean-replay-from-main");
+  });
+
   it("calls vcs.abortRebase to clean up partial rebase when rebase returns success=false", async () => {
     const vcs = makeMockVcs({
       push: vi.fn().mockRejectedValue(new Error("rejected: non-fast-forward")),
@@ -656,6 +654,7 @@ describe("finalize() — non-fast-forward push: rebase FAILS → deterministic f
     expect(content).toContain("## Rebase");
     expect(content).toContain("Status: FAILED");
     expect(content).toContain("rebase could not resolve diverged history");
+    expect(content).toContain("Recommended recovery: clean replay from current main");
   });
 
   it("does not throw even when rebase fails", async () => {
