@@ -12,10 +12,10 @@
  * This replaces the ~450-line hardcoded runPipeline() in agent-worker.ts.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { execFile, execSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, execSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { dirname, join, basename } from "node:path";
 import type { WorkflowConfig, WorkflowPhaseConfig, WorkflowSandboxConfig } from "../lib/workflow-loader.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type { ProjectHooksConfig } from "../lib/project-config.js";
@@ -409,7 +409,7 @@ function sleep(ms: number): Promise<void> {
 
 function findDebugArtifacts(root: string, max = 20): string[] {
   try {
-    const output = execSync("git status --porcelain", { cwd: root, encoding: "utf8" });
+    const output = execSync("git status --porcelain", { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
     return output
       .split("\n")
       .map((line) => line.slice(3).trim())
@@ -469,6 +469,7 @@ function isGeneratedWorkflowArtifact(filePath: string): boolean {
   return (
     name.endsWith("_REPORT.md") ||
     name.endsWith("_SESSION_SUMMARY.md") ||
+    /^.+\.attempt-\d+\.md$/.test(name) ||
     name === "SESSION_LOG.md" ||
     name === "RUN_LOG.md" ||
     name === "FINALIZE_VALIDATION.md" ||
@@ -477,6 +478,155 @@ function isGeneratedWorkflowArtifact(filePath: string): boolean {
     name === "AGENTS.md" ||
     name === "BLOCKED.md"
   );
+}
+
+function phaseAttemptArtifactName(filename: string, attempt: number): string {
+  const name = basename(filename);
+  const ext = name.endsWith(".md") ? ".md" : "";
+  const base = ext ? name.slice(0, -3) : name;
+  return `${base}.attempt-${attempt}${ext}`;
+}
+
+function writeRetrySummary(reportDir: string, attempts: Array<{ phase: string; artifact: string; attempt: number; preservedPath: string }>): void {
+  const lines = ["# Retry Attempt Summary", ""];
+  for (const attempt of attempts) {
+    lines.push(`- ${attempt.phase} attempt ${attempt.attempt}: ${basename(attempt.preservedPath)}`);
+  }
+  lines.push("");
+  try {
+    writeFileSync(join(reportDir, "RETRY_ATTEMPTS.md"), lines.join("\n"), "utf8");
+  } catch {
+    // Non-fatal: report preservation must not fail the run.
+  }
+}
+
+export function preservePhaseArtifactAttempt(args: {
+  worktreePath: string;
+  artifact: string;
+  phaseName: string;
+  attempt: number;
+  attempts: Array<{ phase: string; artifact: string; attempt: number; preservedPath: string }>;
+}): string | null {
+  const source = resolveArtifactPath(args.worktreePath, args.artifact);
+  if (!existsSync(source)) return null;
+
+  const target = join(dirname(source), phaseAttemptArtifactName(args.artifact, args.attempt));
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(source, target);
+    args.attempts.push({
+      phase: args.phaseName,
+      artifact: args.artifact,
+      attempt: args.attempt,
+      preservedPath: target,
+    });
+    writeRetrySummary(dirname(source), args.attempts);
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+function gitChangedFiles(worktreePath: string): string[] | null {
+  try {
+    execSync("git rev-parse --is-inside-work-tree", { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const output = execSync("git diff --name-only", { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return output.split("\n").map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+function extractClaimedPaths(report: string): string[] {
+  const candidates = new Set<string>();
+  const pathPattern = /(?:`([^`]+)`|\b((?:src|docs|packages|test|tests|scripts|bin|README|AGENTS|CLAUDE|package|tsconfig|vite)[\w./-]*(?:\.[\w.-]+)?))/g;
+  for (const match of report.matchAll(pathPattern)) {
+    const raw = (match[1] ?? match[2] ?? "").trim();
+    if (!raw || raw.includes(" ") || raw.startsWith("http")) continue;
+    if (/^(npm|npx|git|mix|cd|node|bin\/foreman)$/.test(raw)) continue;
+    if (!/[./]/.test(raw) && !/^(README|AGENTS|CLAUDE|package|tsconfig|vite)/.test(raw)) continue;
+    candidates.add(raw.replace(/^\.\//, ""));
+  }
+  return [...candidates];
+}
+
+export interface DeveloperGateResult {
+  ok: boolean;
+  reasons: string[];
+  changedFiles: string[];
+  claimedFiles: string[];
+  typecheckRun: boolean;
+  typecheckPassed?: boolean;
+  typecheckOutput?: string;
+}
+
+export function validateDeveloperCompletion(worktreePath: string, reportPath: string, taskDescription = ""): DeveloperGateResult {
+  const reasons: string[] = [];
+  const rawChangedFiles = gitChangedFiles(worktreePath);
+  if (rawChangedFiles === null) {
+    return { ok: true, reasons: [], changedFiles: [], claimedFiles: [], typecheckRun: false };
+  }
+  const changedFiles = rawChangedFiles.filter((file) => !isGeneratedWorkflowArtifact(file));
+  const report = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
+  if (!report) reasons.push(`Developer report missing: ${reportPath}`);
+  if (report && !/self-check evidence/i.test(report)) {
+    reasons.push("Developer report missing Self-Check Evidence section.");
+  }
+  if (changedFiles.length === 0) {
+    reasons.push("No implementation diff found after Developer phase.");
+  }
+
+  const claimedFiles = report ? extractClaimedPaths(report) : [];
+  const missingClaimed = claimedFiles.filter((file) => !existsSync(join(worktreePath, file)));
+  if (missingClaimed.length > 0) {
+    reasons.push(`Developer report claims missing files: ${missingClaimed.join(", ")}`);
+  }
+
+  const descriptionLower = taskDescription.toLowerCase();
+  if (/\bdocs?\b|documentation|readme|user guide|cli reference/.test(descriptionLower)
+      && !changedFiles.some((file) => file.endsWith(".md") || file.startsWith("docs/"))) {
+    reasons.push("Task asks for docs, but no documentation file changed.");
+  }
+  if (/\btests?\b|smoke|coverage|regression/.test(descriptionLower)
+      && !changedFiles.some((file) => /(__tests__|\.test\.|\.spec\.|test\/)/.test(file))) {
+    reasons.push("Task asks for tests, but no test file changed.");
+  }
+
+  const tsJsChanged = changedFiles.some((file) => /\.[cm]?[jt]sx?$/.test(file));
+  let typecheckPassed: boolean | undefined;
+  let typecheckOutput: string | undefined;
+  if (tsJsChanged) {
+    try {
+      execFileSync("npx", ["tsc", "--noEmit"], { cwd: worktreePath, encoding: "utf8", stdio: "pipe", timeout: 120_000 });
+      typecheckPassed = true;
+    } catch (err: unknown) {
+      typecheckPassed = false;
+      const stderr = err instanceof Error && "stderr" in err ? String((err as { stderr?: Buffer | string }).stderr ?? "") : "";
+      const stdout = err instanceof Error && "stdout" in err ? String((err as { stdout?: Buffer | string }).stdout ?? "") : "";
+      typecheckOutput = (stderr || stdout || (err instanceof Error ? err.message : String(err))).slice(0, 4000);
+      reasons.push(`TypeScript check failed: ${typecheckOutput}`);
+    }
+  }
+
+  return { ok: reasons.length === 0, reasons, changedFiles, claimedFiles, typecheckRun: tsJsChanged, typecheckPassed, typecheckOutput };
+}
+
+function formatDeveloperGateFeedback(result: DeveloperGateResult): string {
+  return [
+    "Developer completion gate failed before QA.",
+    "",
+    "Fix every item below, then update DEVELOPER_REPORT.md Self-Check Evidence:",
+    ...result.reasons.map((reason) => `- ${reason}`),
+    "",
+    `Changed files detected: ${result.changedFiles.length > 0 ? result.changedFiles.join(", ") : "(none)"}`,
+    `Claimed files detected: ${result.claimedFiles.length > 0 ? result.claimedFiles.join(", ") : "(none)"}`,
+    result.typecheckRun ? `Typecheck: ${result.typecheckPassed ? "PASS" : "FAIL"}` : "Typecheck: not required (no TS/JS diff)",
+  ].join("\n");
+}
+
+function developerGateRetryLimit(phases: WorkflowPhaseConfig[], phaseName: string): number {
+  const retryPhase = phases.find((candidate) => candidate.retryWith === phaseName && typeof candidate.retryOnFail === "number");
+  return retryPhase?.retryOnFail ?? 1;
 }
 
 // ── Generic Pipeline Executor ───────────────────────────────────────────────
@@ -1089,6 +1239,8 @@ async function runPhaseSequence(
   let feedbackContext: string | undefined;
   let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
   const retryCounts: Record<string, number> = {};
+  const phaseAttemptCounts: Record<string, number> = {};
+  const preservedArtifactAttempts: Array<{ phase: string; artifact: string; attempt: number; preservedPath: string }> = [];
   // P1: Explorer circuit breaker - track Explorer failures to fail fast after 3
   const explorerFailures: string[] = [];
   // P1/P2: Rate limit tracking per phase
@@ -1207,6 +1359,8 @@ async function runPhaseSequence(
 
     // 5. Rotate and run phase
     // Interpolate {task.*} placeholders in artifact path before use.
+    const phaseAttempt = (phaseAttemptCounts[phaseName] ?? 0) + 1;
+    phaseAttemptCounts[phaseName] = phaseAttempt;
     const interpolatedArtifact = phase.artifact
       ? interpolateTaskPlaceholders(phase.artifact, phaseMeta)
       : undefined;
@@ -1402,6 +1556,9 @@ async function runPhaseSequence(
 
       const result = await ctx.runBuiltinPhase(phase, progress);
       const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
+      if (interpolatedArtifact && artifactPresent) {
+        preservePhaseArtifactAttempt({ worktreePath, artifact: interpolatedArtifact, phaseName, attempt: phaseAttempt, attempts: preservedArtifactAttempts });
+      }
       const phaseSucceeded = result.success && (!interpolatedArtifact || artifactPresent === true);
       const phaseError = result.error ?? (phaseSucceeded ? undefined : `Expected artifact missing: ${interpolatedArtifact}`);
 
@@ -1553,6 +1710,9 @@ async function runPhaseSequence(
         error: bashResult.error,
         outputText: bashResult.stdout || bashResult.stderr,
       };
+      if (interpolatedArtifact && existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact))) {
+        preservePhaseArtifactAttempt({ worktreePath, artifact: interpolatedArtifact, phaseName, attempt: phaseAttempt, attempts: preservedArtifactAttempts });
+      }
       phaseRecords.push({
         name: phaseName,
         phaseType,
@@ -1688,6 +1848,9 @@ async function runPhaseSequence(
     }
 
     const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
+    if (interpolatedArtifact && artifactPresent) {
+      preservePhaseArtifactAttempt({ worktreePath, artifact: interpolatedArtifact, phaseName, attempt: phaseAttempt, attempts: preservedArtifactAttempts });
+    }
     activityPhase.artifactPresent = artifactPresent;
     activityPhase.traceFile = result.traceFile;
     activityPhase.traceMarkdownFile = result.traceMarkdownFile;
@@ -1726,11 +1889,23 @@ async function runPhaseSequence(
       await appendFile(logFile, `\n[PIPELINE] ${phaseName} agent-error: ${explicitAgentError.error}\n`);
     }
 
+    let developerGateFeedback: string | undefined;
     if (phaseSucceeded && phaseName === "developer") {
       const debugArtifacts = findDebugArtifacts(worktreePath);
       if (debugArtifacts.length > 0) {
         phaseSucceeded = false;
         phaseError = `Debug artifacts left in worktree: ${debugArtifacts.join(", ")}`;
+      } else if (interpolatedArtifact && config.taskMeta?.projectReportsDir) {
+        const gate = validateDeveloperCompletion(
+          worktreePath,
+          resolveArtifactPath(worktreePath, interpolatedArtifact),
+          `${description}\n${comments ?? ""}`,
+        );
+        if (!gate.ok) {
+          phaseSucceeded = false;
+          developerGateFeedback = formatDeveloperGateFeedback(gate);
+          phaseError = developerGateFeedback;
+        }
       }
     }
 
@@ -1843,6 +2018,21 @@ async function runPhaseSequence(
     if (!phaseSucceeded) {
       const errorMsg = phaseError ?? `${phaseName} failed`;
       const isRateLimit = isRateLimitError(errorMsg);
+
+      if (phaseName === "developer" && developerGateFeedback) {
+        const retryCountKey = "developer-gate";
+        const currentRetries = retryCounts[retryCountKey] ?? 0;
+        const maxRetries = developerGateRetryLimit(phases, phaseName);
+        if (currentRetries < maxRetries) {
+          retryCounts[retryCountKey] = currentRetries + 1;
+          feedbackContext = developerGateFeedback;
+          ctx.sendMailText(agentMailClient, `${phaseName}-${seedId}`, `Developer Gate Feedback - Retry ${currentRetries + 1}`, developerGateFeedback);
+          ctx.log(`[DEVELOPER] Gate failed — retrying developer before QA (retry ${currentRetries + 1}/${maxRetries})`);
+          await appendFile(logFile, `\n[PIPELINE] developer gate failed before QA, retrying developer (retry ${currentRetries + 1}/${maxRetries})\n`);
+          i = phaseIndex.get(phaseName) ?? i;
+          continue;
+        }
+      }
 
       // P1: Track Explorer failures for circuit breaker
       if (phaseName === "explorer") {

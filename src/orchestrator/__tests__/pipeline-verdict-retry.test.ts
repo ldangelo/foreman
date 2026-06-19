@@ -13,9 +13,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execSync } from "node:child_process";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -843,4 +844,47 @@ describe("verdict-triggered retry", () => {
 
     expect(log).toHaveBeenCalledWith(expect.stringContaining("finalized branch does not contain the drifted target revision"));
   });
+
+  it("retries Developer before QA when the completion gate fails", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const log = vi.fn();
+    execSync("git init", { cwd: tmpDir, stdio: "ignore" });
+    execSync("git config user.email test@example.com", { cwd: tmpDir });
+    execSync("git config user.name Test", { cwd: tmpDir });
+    writeFileSync(join(tmpDir, "README.md"), "initial\n");
+    execSync("git add README.md && git commit -m init", { cwd: tmpDir, stdio: "ignore" });
+
+    let developerCalls = 0;
+    const runPhase = vi.fn(async (phaseName: string) => {
+      if (phaseName === "developer") {
+        developerCalls += 1;
+        writeFileSync(join(tmpDir, "README.md"), `changed ${developerCalls}\n`);
+        writeFileSync(
+          join(tmpDir, "DEVELOPER_REPORT.md"),
+          developerCalls === 1
+            ? "# Developer Report\n\nChanged `README.md`.\n"
+            : "# Developer Report\n\nChanged `README.md`.\n\n## Self-Check Evidence\n- git diff --name-only: README.md\n",
+        );
+        return successResult();
+      }
+      writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot`\n- Test suite: 1 passed, 0 failed\n- Raw summary: 1 passed, 0 failed\n");
+      return successResult();
+    });
+
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+    ];
+
+    const args = makeBasePipelineArgs(tmpDir, phases, runPhase, log, { autoArtifacts: false }) as any;
+    args.config.taskMeta = { id: "seed-verdict", title: "Verdict retry test", description: "", type: "feature", priority: 2, projectReportsDir: tmpDir };
+    await executePipeline(args);
+
+    expect(developerCalls).toBe(2);
+    expect(runPhase.mock.calls.some((call) => call[0] === "qa")).toBe(true);
+    expect(existsSync(join(tmpDir, "DEVELOPER_REPORT.attempt-1.md"))).toBe(true);
+    expect(existsSync(join(tmpDir, "DEVELOPER_REPORT.attempt-2.md"))).toBe(true);
+    expect(readFileSync(join(tmpDir, "RETRY_ATTEMPTS.md"), "utf8")).toContain("developer attempt 2");
+  });
+
 });
