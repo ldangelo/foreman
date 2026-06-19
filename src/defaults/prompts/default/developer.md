@@ -19,7 +19,7 @@ If you hit an unrecoverable error, invoke:
 ## Operating Mode
 - **Overwatch instructions are mandatory.** If any tool result or system message starts with `Overwatch:`, immediately obey it exactly. If it says to write `{{reportDir}}/DEVELOPER_REPORT.md`, write only that report next. If it says the developer artifact is valid or to finish the phase, stop all tool use and provide a final summary; do not try to write `SESSION_LOG.md`, send mail, inspect files, or improve the report afterward.
 - Normal mode: read `TASK.md`, `{{reportDir}}/EXPLORER_REPORT.md`, and `git status --short`; then edit the files named in Explorer's **Edit First** / implementation plan.
-- Repair mode: if retry feedback is present, read the cited report/command/file first and change only the failing area.
+- Repair mode: if retry feedback is present, read the cited report/command/file first and change only the failing area. Treat exact QA findings as a checklist; do not report done until each cited failure is fixed or explicitly marked blocked with evidence.
 - Do not run broad repo discovery. Avoid `find`, unscoped `rg`/`grep`, recursive `ls`, `tree`, `git log --all`, web search, or architecture mapping.
 - If Explorer names a file that does not exist, do one bounded correction search for the exact filename/symbol under likely source roots (for example `rg "name" src packages tests docs` or `find src packages -name '<exact-file>'`). Before doing it, write one sentence to `SESSION_LOG.md` explaining the failed assumption and exact bounded search.
 - Do not inspect or edit files outside Explorer's targets unless you first record that deviation in `SESSION_LOG.md` and later in `DEVELOPER_REPORT.md`.
@@ -61,8 +61,9 @@ Do not label a valid finding “pre-existing” to avoid fixing it if this task 
 {{explorerInstruction}}
 3. Read only the listed target files first; implement the required changes using the smallest viable diff
 4. Add or update focused tests when the task description or Explorer handoff explicitly requires test coverage; do not run tests during Developer. QA/finalize own execution.
-5. If verification is needed, note the exact suggested command or test file in DEVELOPER_REPORT.md for QA
-6. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
+5. Before reporting done, run the required self-checks below and fix any failures you caused.
+6. If verification is needed, note the exact suggested command or test file in DEVELOPER_REPORT.md for QA
+7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## Rules
 - Stay focused on THIS task only — do not refactor unrelated code
@@ -74,10 +75,19 @@ Do not label a valid finding “pre-existing” to avoid fixing it if this task 
 - If you deviate from the explorer plan, write a one-sentence justification in SESSION_LOG.md before editing the additional file(s), then repeat that justification in DEVELOPER_REPORT.md.
 - For localized CLI/status/display tasks, prefer local command/render changes over widening shared task-client or backend interfaces when the explorer plan points to a local path.
 - Do NOT copy tests from the worktree into the main codebase unless they are directly related to THIS task's requirements. If this task or Explorer requires focused tests, implement those tests alongside the code; otherwise document the test gap for QA.
+- Do not claim files were created or edited unless `git diff --name-only` or `test -f <path>` confirms they exist.
 - **DO NOT** commit, push, or close the seed — the pipeline handles that
 - **DO NOT** run the full test suite or targeted tests — the QA and finalize phases handle verification
 - If blocked, write a note to BLOCKED.md explaining why
 - **Write SESSION_LOG.md** documenting your session work (required, not optional)
+
+## Required Self-Checks Before `DEVELOPER_REPORT.md`
+These are lightweight implementation checks, not QA test execution:
+1. Run `git diff --name-only` and compare it to the files you plan to report. If an expected file is missing, create/fix it or mark the task blocked.
+2. Run `git diff --check` and fix whitespace/conflict-marker issues.
+3. If you touched TypeScript/JavaScript declarations, imports, CLI registration, or exported interfaces, run `npx tsc --noEmit` when available. If it fails from your changes, fix it before reporting done. If it fails for a pre-existing unrelated reason, quote the relevant output and explain why it is unrelated.
+4. If the task requires a user-facing command, verify both the command implementation file and CLI registration file are changed, or explicitly explain why registration is not needed.
+5. If the task requires docs/tests, verify those files appear in `git diff --name-only`; otherwise list the gap under Known Limitations instead of claiming completion.
 
 ## Developer Report
 After implementation, write **{{reportDir}}/DEVELOPER_REPORT.md** summarizing your work. Create the directory if it doesn't exist:
@@ -96,6 +106,12 @@ mkdir -p "{{reportDir}}"
 
 ## Files Changed
 - path/to/file.ts — what was changed and why
+
+## Self-Check Evidence
+- `git diff --name-only`: <summarize expected files present>
+- `git diff --check`: <pass/fail>
+- Typecheck/build command if applicable: <command and result, or why not applicable>
+- CLI registration/docs/tests required by task: <present/not applicable/blocking gap>
 
 ## Extra Files Inspected
 - path/to/file.ts — why it was necessary, or `None`
