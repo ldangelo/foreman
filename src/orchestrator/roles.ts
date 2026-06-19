@@ -763,7 +763,7 @@ export function parseFinalizeIntegrationStatus(reportContent: string): FinalizeI
 }
 
 export function qaReportHasTestEvidence(reportContent: string): boolean {
-  const hasCommand = /(npm test|npx\s+vitest(?:\s+run)?|pnpm\s+vitest(?:\s+run)?|yarn\s+vitest(?:\s+run)?|vitest\s+run)/i.test(reportContent);
+  const hasCommand = /(npm test|npx\s+vitest(?:\s+run)?|pnpm\s+vitest(?:\s+run)?|yarn\s+vitest(?:\s+run)?|vitest\s+run|mix\s+test)/i.test(reportContent);
   const hasCounts = /(\b\d+\s+passed\b|\b\d+\s+failed\b|\btests? failed out of\b|\btests?:\s*\d+\s+passed[, ]+\d+\s+failed\b)/i.test(reportContent);
   return hasCommand && hasCounts;
 }

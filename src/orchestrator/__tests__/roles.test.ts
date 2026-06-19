@@ -348,6 +348,10 @@ describe("qaReportHasTestEvidence", () => {
     expect(qaReportHasTestEvidence("Command run: npx vitest run src/cli/__tests__/status-display.test.ts\nTest suite: 10 passed, 0 failed\nRaw summary: 10 passed, 0 failed")).toBe(true);
   });
 
+  it("returns true when mix test command and pass/fail counts are present", () => {
+    expect(qaReportHasTestEvidence("Command run: cd packages/foreman_server && mix test test/inbox_test.exs --trace\nTest suite: 22 passed, 0 failures\nRaw summary: 22 tests, 0 failures")).toBe(true);
+  });
+
   it("returns false when test command is missing", () => {
     expect(qaReportHasTestEvidence("Test suite: 10 passed, 0 failed")).toBe(false);
   });

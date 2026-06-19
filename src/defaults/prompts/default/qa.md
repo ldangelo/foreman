@@ -45,7 +45,7 @@ Do NOT run tests if conflict markers are found.
 ## Verdict: PASS | FAIL
 
 ## Test Results
-- Command run: <exact targeted test command, e.g. npm test -- path/to/test.ts>
+- Command run: <exact targeted test command, e.g. npm test -- path/to/test.ts or mix test test/path_test.exs>
 - Full suite command: SKIPPED (finalize owns broad/full-suite validation)
 - Test suite: X passed, Y failed
 - Raw summary: <copy the pass/fail count lines from the command actually used>
@@ -67,6 +67,6 @@ Do NOT run tests if conflict markers are found.
 - Do not invent legacy backend requirements. During the Elixir cutover, Postgres/native TS store parity is not required unless explicitly requested by the task or Explorer.
 - Be specific about failures — include error messages
 - Use targeted verification only; do not run broad/full-suite commands in QA. Full-suite commands belong only to finalize
-- QA_REPORT.md MUST include `Command run:` plus `Test suite: X passed, Y failed` with real pass/fail evidence; reports without these exact evidence fields are invalid
+- QA_REPORT.md MUST include `Command run:` plus `Test suite: X passed, Y failed` with real pass/fail evidence; JavaScript (`npm test`, `vitest`) and Elixir (`mix test`) targeted commands are valid evidence; reports without these exact evidence fields are invalid
 - **DO NOT** commit, push, or close the seed
 - **Write SESSION_LOG.md** documenting your session work (required, not optional)
