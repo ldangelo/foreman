@@ -44,7 +44,17 @@ Do NOT run tests if conflict markers are found.
 
 ## Files Modified
 - (list files inspected; QA should normally be read-only)
-```
+
+## Structured Failures (for FAIL verdict — required for Developer retries)
+When the verdict is FAIL, include one section per failure item using this format:
+
+### <Failure Category>
+**File:** <path to the affected file>
+**Command:** <command that was run and failed>
+**Failure Output:** <relevant error output from the failure>
+**Requested Fix:** <clear description of what Developer should fix>
+
+*Note: Structured failures are parsed by the pipeline to generate a checklist for Developer. Each failure should have a unique category (e.g., "TypeScript Error", "Test Failure", "Missing Implementation").*
 
 ## Rules
 - QA is verification-only. Do not modify source code or tests in this phase.

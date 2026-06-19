@@ -48,6 +48,7 @@ import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig } from "../lib/project-config.js";
 import { SandboxProviderFactory } from "../lib/sandbox-providers/index.js";
 import type { SandboxProviderConfig } from "../lib/sandbox-provider.js";
+import { parseQAFailures, formatFailureChecklist, diffQAFailures, type QAFailureItem, type TrackedFailureItem } from "../lib/report-parser.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -386,6 +387,34 @@ function extractRetryAfterSeconds(error: string | undefined): number | undefined
     if (!isNaN(seconds) && seconds > 0) return seconds;
   }
   return undefined;
+}
+
+/**
+ * Format a tracked checklist with resolution status indicators.
+ * Items are marked as [NEW], [STILL FAILING], or [RESOLVED].
+ */
+function formatTrackedChecklist(items: TrackedFailureItem[]): string {
+  if (!items.length) return "";
+
+  const statusEmoji: Record<TrackedFailureItem["status"], string> = {
+    new: "🔴",
+    still_failing: "🟡",
+    resolved: "✅",
+    blocked: "⚠️",
+  };
+
+  const lines = items.map((item) => {
+    const filePart = item.file ? ` \`${item.file}\`: ` : ": ";
+    const summary = item.failureOutput
+      ? item.failureOutput.split("\n")[0].slice(0, 80)
+      : item.requestedFix?.split("\n")[0].slice(0, 80) ?? "See details below";
+    const emoji = statusEmoji[item.status];
+    const statusTag = item.status === "new" ? "[NEW]" : item.status === "still_failing" ? "[STILL FAILING]" : item.status === "resolved" ? "[RESOLVED]" : "[BLOCKED]";
+    const fixPart = item.requestedFix ? ` → Fix: ${item.requestedFix.slice(0, 120)}` : "";
+    return `- [ ] ${emoji} **${item.category}**${filePart}${summary}\n  ${statusTag}${fixPart}`;
+  });
+
+  return lines.join("\n");
 }
 
 /**
@@ -1280,6 +1309,8 @@ async function runPhaseSequence(
   const explorerFailures: string[] = [];
   // P1/P2: Rate limit tracking per phase
   const rateLimitRetries: Record<string, number> = {};
+  // Track previous QA failure items for resolution diffing across retries
+  let previousQAFailureItems: QAFailureItem[] = [];
   const pipelineStartedAt = Date.now();
 
   const totalReviewLoops = (): number => Object.values(retryCounts).reduce((sum, count) => sum + count, 0);
@@ -2375,7 +2406,27 @@ async function runPhaseSequence(
 
           if (phase.mail?.onFail && report) {
             const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
-            ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
+            // Parse structured failure items from QA report
+            const parsedReport = parseQAFailures(report);
+            let feedbackBody = report;
+
+            // Inject structured checklist for QA failures targeting developer
+            if (phaseName === "qa" && parsedReport.items.length > 0) {
+              // Diff against previous QA failure items to track resolution
+              const trackedItems: TrackedFailureItem[] = previousQAFailureItems.length > 0
+                ? diffQAFailures(previousQAFailureItems, parsedReport.items)
+                : parsedReport.items.map((item) => ({ ...item, status: "new" as const }));
+
+              // Update previous items for next retry
+              previousQAFailureItems = parsedReport.items;
+
+              // Format checklist with resolution status
+              const checklist = formatTrackedChecklist(trackedItems);
+              const retryNum = currentRetries + 1;
+              feedbackBody = `${report}\n\n---\n\n## Developer Retry Checklist (${retryNum})\n\n${checklist}\n\n---\n*This checklist was auto-generated from the QA report. Items marked [RESOLVED] should be verified; [STILL FAILING] items still need attention.*`;
+            }
+
+            ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedbackBody);
           }
           feedbackContext = feedbackContext ?? (report ? extractIssues(report) : `(${phaseName} failed but no report)`);
 
