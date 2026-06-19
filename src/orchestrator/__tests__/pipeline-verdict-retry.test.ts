@@ -888,6 +888,28 @@ describe("verdict-triggered retry", () => {
   });
 
 
+  it("developer gate accepts committed branch diffs when worktree is clean", async () => {
+    const { validateDeveloperCompletion } = await import("../pipeline-executor.js");
+    execSync("git init", { cwd: tmpDir, stdio: "ignore" });
+    execSync("git config user.email test@example.com", { cwd: tmpDir });
+    execSync("git config user.name Test", { cwd: tmpDir });
+    writeFileSync(join(tmpDir, "README.md"), "initial\n");
+    execSync("git add README.md && git commit -m init", { cwd: tmpDir, stdio: "ignore" });
+    execSync("git branch dev", { cwd: tmpDir, stdio: "ignore" });
+    writeFileSync(join(tmpDir, "README.md"), "changed\n");
+    execSync("git add README.md && git commit -m change", { cwd: tmpDir, stdio: "ignore" });
+    writeFileSync(
+      join(tmpDir, "DEVELOPER_REPORT.md"),
+      "# Developer Report\n\n## Changed Files\n- `README.md`\n\n## Self-Check Evidence\n- git diff --name-only dev...HEAD: README.md\n",
+    );
+    execSync("git add DEVELOPER_REPORT.md && git commit -m report", { cwd: tmpDir, stdio: "ignore" });
+
+    const result = validateDeveloperCompletion(tmpDir, join(tmpDir, "DEVELOPER_REPORT.md"));
+
+    expect(result.ok).toBe(true);
+    expect(result.changedFiles).toContain("README.md");
+  });
+
   it("developer gate ignores prose/example filenames outside explicit claimed-file evidence", async () => {
     const { validateDeveloperCompletion } = await import("../pipeline-executor.js");
     execSync("git init", { cwd: tmpDir, stdio: "ignore" });

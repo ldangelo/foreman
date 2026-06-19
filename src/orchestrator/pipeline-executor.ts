@@ -530,8 +530,26 @@ export function preservePhaseArtifactAttempt(args: {
 function gitChangedFiles(worktreePath: string): string[] | null {
   try {
     execSync("git rev-parse --is-inside-work-tree", { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    const output = execSync("git diff --name-only", { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    return output.split("\n").map((line) => line.trim()).filter(Boolean);
+    const uncommitted = execSync("git diff --name-only HEAD", { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (uncommitted.length > 0) return uncommitted;
+
+    for (const baseRef of ["origin/dev", "dev", "origin/main", "main"]) {
+      try {
+        execSync(`git rev-parse --verify --quiet ${baseRef}`, { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+        const committed = execSync(`git diff --name-only ${baseRef}...HEAD`, { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        if (committed.length > 0) return committed;
+      } catch {
+        // Try the next common base ref.
+      }
+    }
+
+    return [];
   } catch {
     return null;
   }
