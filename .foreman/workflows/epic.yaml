@@ -125,7 +125,7 @@ phases:
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
-    retryOnFail: 2
+    retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
@@ -138,7 +138,7 @@ phases:
     maxTurns: 30
     verdict: true
     retryWith: developer
-    retryOnFail: 1
+    retryOnFail: 6
     mail:
       onStart: true
       onComplete: true

@@ -355,6 +355,16 @@ function failureKind(error: string | undefined): "provider_transient" | "max_tur
   return "phase_failed";
 }
 
+/**
+ * Retry budgets belong to the failing/source phase, not the retry target.
+ * Example: QA and finalize may both loop back to developer, but QA failures
+ * spend QA's budget and finalize failures spend finalize's budget. Developer
+ * can therefore run once initially plus each source-phase retry activation.
+ */
+function retryBudgetKey(sourcePhaseName: string): string {
+  return sourcePhaseName;
+}
+
 /** Return true when a failed phase should enter cooldown retry instead of terminal failure. */
 export function shouldUseCooldownRetry(error: string | undefined, phase: Pick<WorkflowPhaseConfig, "retryAfterCooldown">): boolean {
   return Boolean(phase.retryAfterCooldown && isRateLimitError(error));
@@ -1129,7 +1139,6 @@ async function runPhaseSequence(
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
     const agentName = `${phaseName}-${seedId}`;
-    const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
     const phaseType = phase.bash
       ? "bash"
       : phase.command
@@ -1146,6 +1155,9 @@ async function runPhaseSequence(
       ...ctx.taskMeta,
       projectReportsDir: ctx.taskMeta?.projectReportsDir || getRunReportsDir(projectId, seedId, runId),
     };
+    const projectReportsDir = phaseMeta.projectReportsDir ?? getRunReportsDir(projectId, seedId, runId);
+    const hasExplorerReport = existsSync(join(projectReportsDir, "EXPLORER_REPORT.md"))
+      || existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
 
     if (phase.retryOnly && !retryOnlyActivations.has(phaseName)) {
       ctx.log(`[${phaseName.toUpperCase()}] Skipping — retryOnly phase not activated by retryWith`);
@@ -1283,7 +1295,7 @@ async function runPhaseSequence(
           seedType: config.seedType,
           runId,
           hasExplorerReport,
-          requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
+          requiresExplorerReport: ["default", "feature"].includes(workflowConfig.name) && phaseName === "developer" && !phase.retryOnly,
           feedbackContext,
           worktreePath,
           reportDir: phaseMeta.projectReportsDir,
@@ -1359,7 +1371,19 @@ async function runPhaseSequence(
       phaseModel = fallbackModelForPhase;
     }
 
-    const phaseConfig = { ...config, model: phaseModel, maxTurns: phase.maxTurns };
+    const phaseConfig = {
+      ...config,
+      model: phaseModel,
+      maxTurns: phase.maxTurns,
+      phaseControl: phase.overwatch?.enabled ? {
+        phaseName,
+        worktreePath,
+        artifact: interpolatedArtifact,
+        maxTurns: phase.maxTurns,
+        contract: phase.contract,
+        overwatch: phase.overwatch,
+      } : undefined,
+    };
     if (phase.tools?.allowed) {
       (phaseConfig as typeof phaseConfig & { allowedTools?: string[] }).allowedTools = phase.tools.allowed;
     }
@@ -1447,12 +1471,13 @@ async function runPhaseSequence(
         if (phase.retryWith) {
           const retryTarget = phase.retryWith;
           const maxRetries = phase.retryOnFail ?? 0;
-          const currentRetries = retryCounts[phaseName] ?? 0;
+          const retryCountKey = retryBudgetKey(phaseName);
+          const currentRetries = retryCounts[retryCountKey] ?? 0;
           const artifactContent = interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null;
           const feedback = artifactContent ?? result.outputText ?? errorMsg;
 
           if (currentRetries < maxRetries) {
-            retryCounts[phaseName] = currentRetries + 1;
+            retryCounts[retryCountKey] = currentRetries + 1;
             if (phase.mail?.onFail) {
               const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
               ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
@@ -1557,13 +1582,14 @@ async function runPhaseSequence(
         if (phase.retryWith) {
           const retryTarget = phase.retryWith;
           const maxRetries = phase.retryOnFail ?? 0;
-          const currentRetries = retryCounts[phaseName] ?? 0;
+          const retryCountKey = retryBudgetKey(phaseName);
+          const currentRetries = retryCounts[retryCountKey] ?? 0;
           const feedback = (interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null)
             ?? result.outputText
             ?? errorMsg;
 
           if (currentRetries < maxRetries) {
-            retryCounts[phaseName] = currentRetries + 1;
+            retryCounts[retryCountKey] = currentRetries + 1;
             if (phase.mail?.onFail) {
               const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
               ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
@@ -2018,7 +2044,7 @@ async function runPhaseSequence(
       const report = readReport(worktreePath, interpolatedArtifact);
       let verdict = report ? parseVerdict(report) : "unknown";
 
-      if (phaseName === "qa" && report && !qaReportHasTestEvidence(report)) {
+      if (phaseName === "qa" && report && verdict !== "fail" && !qaReportHasTestEvidence(report)) {
         verdict = "fail";
         feedbackContext = "QA report invalid: missing explicit test command/output evidence with pass/fail counts.";
         ctx.log("[QA] FAIL — report missing test command evidence");
@@ -2104,7 +2130,7 @@ async function runPhaseSequence(
       if (verdict === "fail" && phase.retryWith) {
         const retryTarget = phase.retryWith;
         const maxRetries = phase.retryOnFail ?? 0;
-        const retryCountKey = phaseName;
+        const retryCountKey = retryBudgetKey(phaseName);
         const currentRetries = retryCounts[retryCountKey] ?? 0;
         const finalizeFailureScope = phaseName === "finalize" && report
           ? parseFinalizeFailureScope(report)
@@ -2136,11 +2162,13 @@ async function runPhaseSequence(
           }
           ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — continuing`);
         } else {
-          const terminalFinalizeFailure = phaseName === "finalize";
-          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}`);
-          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}\n`);
+          const terminalVerdictFailure = phaseName === "finalize"
+            || phase.stopOnFailExhausted === true
+            || ["qa", "reviewer", "cli-review", "pr-review"].includes(phaseName);
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted || terminalVerdictFailure ? "" : ", continuing"}`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted || terminalVerdictFailure ? "" : ", continuing"}\n`);
           feedbackContext = undefined;
-          if (failOnRetriesExhausted || terminalFinalizeFailure) {
+          if (failOnRetriesExhausted || terminalVerdictFailure) {
             return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
           }
         }

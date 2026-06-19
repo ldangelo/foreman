@@ -310,6 +310,7 @@ const editCommand = new Command("edit")
   .argument("<id>", "Project ID to edit")
   .option("--name <name>", "Project display name")
   .option("--status <status>", "Project status: active, paused, archived")
+  .option("--default-branch <branch>", "Default/base branch for new project worktrees")
   .option("--jira-url <url>", "Jira Cloud API URL (e.g., https://your-domain.atlassian.net)")
   .option("--jira-email <email>", "Jira account email")
   .option("--jira-token <token>", "Jira API token (will be encrypted)")
@@ -328,6 +329,7 @@ const editCommand = new Command("edit")
       const updates: Record<string, unknown> = {};
       if (opts.name) updates.name = opts.name;
       if (opts.status) updates.status = opts.status;
+      if (opts.defaultBranch) updates.defaultBranch = opts.defaultBranch;
       if (jiraUpdates) updates.jira = jiraUpdates;
       if (Object.keys(updates).length === 0) {
         console.log(chalk.yellow("No updates provided. Use --help to see available options."));

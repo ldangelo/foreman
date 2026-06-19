@@ -32,7 +32,8 @@ foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
-foreman server doctor # Elixir default backend; scheduler ticks every 5s and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
+foreman server doctor # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
+# Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
@@ -44,7 +45,7 @@ foreman inbox          # Agent mail + selected-run lifecycle events
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
 foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
-# In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
+# In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-logs [run-id], /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
 
 # br (beads_rust) task tracking
 br ready               # Unblocked tasks
@@ -108,7 +109,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 **Default pipeline phases:**
 
 1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
-2. **Developer** (Sonnet) — implementation only; QA/finalize own tests → DEVELOPER_REPORT.md
+2. **Developer** (Sonnet) — implementation only; obey Overwatch stop/report instructions as terminal guidance; QA/finalize own test execution, but Developer may author focused tests when task/handoff requires coverage → DEVELOPER_REPORT.md
 3. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
 5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
@@ -182,7 +183,7 @@ phases:
     models:
       default: haiku
       P0: opus
-    maxTurns: 12
+    maxTurns: 20
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
@@ -198,7 +199,7 @@ phases:
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true            # parse PASS/FAIL from artifact
     retryWith: developer     # on FAIL, loop back to developer
-    retryOnFail: 2           # max retry count
+    retryOnFail: 3           # max retry count for this failing/source phase
     mail:
       onFail: developer      # send feedback to developer on FAIL
 ```
@@ -272,7 +273,10 @@ npx tsc --noEmit       # Type-check without building
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)
 - br state diverged from git → `br sync --flush-only && git add .beads/ && git commit -m "sync beads"`
-- agent-worker crash on startup → check `~/.foreman/logs/<runId>.err` for syntax/import errors
+- agent-worker crash on startup/finalize → check `~/.foreman/logs/<runId>.err`; fatal handlers print stack traces when available
+- QA says `report missing test command evidence` → ensure `QA_REPORT.md` has `Command run:` and `Test suite: X passed, Y failed`
+- Developer/QA broad search blocked → expected; Explorer owns code discovery, Developer follows `EXPLORER_REPORT.md`, QA verifies changed files with targeted commands
+- provider `529` / `overloaded_error` → bundled prompt phases enter cooldown retry instead of burning normal retry loops
 
 <!-- br-agent-instructions-v1 -->
 

@@ -20,6 +20,7 @@ phases:
     models:
       default: haiku
     maxTurns: 5
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: EXPLORER_REPORT.md
     mail:
@@ -34,6 +35,7 @@ phases:
     models:
       default: haiku
     maxTurns: 5
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -47,6 +49,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
@@ -60,10 +63,11 @@ phases:
     models:
       default: haiku
     maxTurns: 5
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
-    retryOnFail: 2
+    retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
@@ -76,6 +80,7 @@ phases:
     models:
       default: sonnet
     maxTurns: 5
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
@@ -92,7 +97,7 @@ phases:
     maxTurns: 30
     verdict: true
     retryWith: developer
-    retryOnFail: 1
+    retryOnFail: 6
     mail:
       onStart: true
       onComplete: true

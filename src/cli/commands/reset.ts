@@ -695,16 +695,51 @@ export interface ResetSeedResult {
  * - In dry-run mode, the `show()` check still runs (read-only) but `update()`
  *   is skipped — the returned `action` accurately reflects what would happen.
  */
-async function syncElixirResetToReady(seedId: string): Promise<void> {
+async function syncElixirResetToReady(seedId: string, projectId?: string): Promise<boolean> {
   const manager = new ElixirServerManager();
   const status = await manager.ensureRunning();
   const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
-  const commandId = `reset-${seedId}-${Date.now()}`;
+  const existingTask = await client.getTask(seedId);
+  if (!existingTask) return false;
+
+  const resetStartedAt = Date.now();
+  const activeRuns = (await client.listRuns()).filter((run) => {
+    const runTaskId = run.task_id;
+    const runProjectId = run.project_id;
+    const status = String(run.status ?? "");
+    return runTaskId === seedId &&
+      (!projectId || runProjectId === projectId) &&
+      ["pending", "running", "in_progress"].includes(status);
+  });
+
+  for (const run of activeRuns) {
+    const runId = run.run_id ?? run.id;
+    if (!runId) continue;
+    const failCommandId = `reset-${seedId}-${runId}-${resetStartedAt}`;
+    const failResponse = await client.sendCommand({
+      command_id: failCommandId,
+      command_type: "run.fail",
+      payload: {
+        task_id: seedId,
+        project_id: run.project_id ?? existingTask.project_id ?? projectId,
+        run_id: runId,
+        failure_reason: "reset",
+        failure_output: "Run reset by foreman reset",
+      },
+      metadata: { source: "foreman-reset", correlation_id: failCommandId },
+    });
+    if (!failResponse.ok) {
+      throw new Error(failResponse.error.message);
+    }
+  }
+
+  const commandId = `reset-${seedId}-${resetStartedAt}`;
   const response = await client.sendCommand({
     command_id: commandId,
     command_type: "task.update",
     payload: {
       task_id: seedId,
+      project_id: existingTask.project_id ?? projectId,
       status: "ready",
       run_id: null,
       failure_reason: null,
@@ -716,6 +751,8 @@ async function syncElixirResetToReady(seedId: string): Promise<void> {
   if (!response.ok) {
     throw new Error(response.error.message);
   }
+
+  return true;
 }
 
 export async function resetSeedToOpen(
@@ -1035,8 +1072,10 @@ export const resetCommand = new Command("reset")
         const result = await resetSeedToOpen(seedId, seeds, { dryRun, force: !!beadFilter });
         if (!dryRun && runtimeProjectId && (result.action === "reset" || result.action === "already-open") && result.targetStatus === "ready") {
           try {
-            await syncElixirResetToReady(seedId);
-            console.log(`  ${chalk.yellow("sync")} Elixir projection ${chalk.cyan(seedId)} → ready`);
+            const synced = await syncElixirResetToReady(seedId, runtimeProjectId);
+            if (synced) {
+              console.log(`  ${chalk.yellow("sync")} Elixir projection ${chalk.cyan(seedId)} → ready`);
+            }
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             errors.push(`Failed to sync Elixir reset for ${seedId}: ${msg}`);

@@ -37,14 +37,15 @@ The HTTP transport accepts JSON-RPC MCP requests via `POST /mcp` and exposes `GE
 |------|---------|
 | `foreman.smoke.status` | One-call operator smoke check with health, scheduler, active tasks, and recent open tasks. |
 | `foreman.health` | Combined MCP/Elixir readiness. |
-| `foreman.scheduler.status` | Scheduler state, capacity, active runs, stale active runs. |
-| `foreman.scheduler.tick` | One manual scheduler tick for smoke checks/controlled dispatch. |
+| `foreman.scheduler.status` | Scheduler state, capacity, active runs, stale active runs, and terminal-log reconciliations from the last tick. |
+| `foreman.scheduler.tick` | One manual scheduler tick for smoke checks/controlled dispatch; also reconciles active runs with terminal worker-log markers before capacity checks. |
 | `foreman.projects.list` | Registered project inventory. |
 | `foreman.tasks.list` | Project task list from the Elixir projection. |
 | `foreman.tasks.get` | One task from the Elixir projection. |
 | `foreman.tasks.update` | Mutate task through Elixir command boundary. |
 | `foreman.tasks.approve` | Approve an open task through Elixir command boundary. |
 | `foreman.runs.list` | Recent project runs. |
+| `foreman.runs.logs` | Event-backed run logs; tails entries for one run or recent runs. |
 | `foreman.inbox.list` | Agent messages by run or project. |
 | `foreman.events.list` | Lifecycle events by run or project. |
 | `foreman.debug.timeline` | Elixir debug timeline for one run. |
@@ -72,7 +73,7 @@ Foreman MCP adapter (TypeScript)
 Foreman Elixir backend
 ```
 
-The adapter keeps all reads and writes behind the Elixir HTTP API/command boundary. MCP does not read Postgres directly.
+The adapter keeps all reads and writes behind the Elixir HTTP API/command boundary. MCP does not read Postgres directly. Worker phase observability also writes `PhaseStarted`/`PhaseCompleted` lifecycle events through the Elixir command boundary so MCP inbox/events can show post-dispatch phase activity instead of relying only on log-file tails.
 
 ## Pi Slash Commands
 
@@ -84,12 +85,13 @@ The project-local Pi extension `.pi/extensions/foreman-mcp.ts` also registers op
 - `/foreman-task <task-id>` — one task detail.
 - `/foreman-approve [project]` — interactively select open/backlog tasks and approve them.
 - `/foreman-runs [status|all] [limit]` — compact run list.
+- `/foreman-logs [run-id] [limit]` — tail event-backed logs for one run, or recent runs when no run id is passed; defaults to a compact tail and clamps very large log lines/results to protect Pi context.
 - `/foreman-inbox [run-id] [limit]` — recent inbox messages.
 - `/foreman-events [run-id] [limit]` — recent lifecycle events.
 - `/foreman-scheduler` — scheduler state summary.
 - `/foreman-tick` — run one scheduler tick.
 
-Run `/reload` in Pi after changing the extension.
+Run `/reload` in Pi after changing the extension. Generic MCP tool output is also capped before being returned to Pi; request smaller `limit`/`runs` values or inspect raw log files directly when full log payloads are required.
 
 ## Remote Deployment Notes
 

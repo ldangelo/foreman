@@ -114,6 +114,36 @@ export interface WorkflowPhaseTools {
   allowed?: string[];
 }
 
+export interface WorkflowPhaseContractConfig {
+  goal?: string;
+  requiredSections?: string[];
+  completion?: {
+    minEditTargets?: number;
+    maxEditTargets?: number;
+    requireTestTargets?: boolean;
+    requireFilesChanged?: boolean;
+    requireValidationNotes?: boolean;
+  };
+  allowedScope?: {
+    canRead?: boolean;
+    canWriteOnly?: string[];
+  };
+}
+
+export interface WorkflowPhaseOverwatchConfig {
+  enabled?: boolean;
+  mode?: "off" | "warn" | "enforce";
+  checkEveryTurns?: number;
+  forceArtifactNearMaxTurns?: boolean;
+  continueIfArtifactValidOnBudgetStop?: boolean;
+  maxSteersPerPhase?: number;
+  forceArtifactAfterSteers?: number;
+  forceArtifactAfterToolCalls?: number;
+  repeatedCommandLimit?: number;
+  maxToolCalls?: number;
+  blockedCommands?: string[];
+}
+
 /** Per-phase configuration in a workflow YAML. */
 export interface WorkflowPhaseConfig {
   /** Phase name: "explorer" | "developer" | "qa" | "reviewer" | "finalize" | custom */
@@ -167,6 +197,8 @@ export interface WorkflowPhaseConfig {
    * When retryWith is set, the executor loops back retryOnFail times.
    */
   retryOnFail?: number;
+  /** Stop the pipeline when verdict FAIL remains after retries are exhausted. */
+  stopOnFailExhausted?: boolean;
   /**
    * When true and this phase fails with a retryable/transient error (e.g. rate limit),
    * the task is placed in cooldown state instead of being marked failed/stuck.
@@ -189,6 +221,10 @@ export interface WorkflowPhaseConfig {
   files?: WorkflowPhaseFiles;
   /** Tool allowlist override for this phase. */
   tools?: WorkflowPhaseTools;
+  /** Optional deterministic completion contract used by phase overwatch. */
+  contract?: WorkflowPhaseContractConfig;
+  /** Optional supervisor/policy controls for runaway phase prevention. */
+  overwatch?: WorkflowPhaseOverwatchConfig;
   /**
    * When true, this phase is implemented as a built-in TypeScript function
    * rather than an SDK agent call. Currently only "finalize" uses this.
@@ -500,6 +536,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
     if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
+    if (typeof p["stopOnFailExhausted"] === "boolean") phase.stopOnFailExhausted = p["stopOnFailExhausted"];
     if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
     if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
@@ -520,6 +557,50 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
           return tool;
         });
         phase.tools = { allowed };
+      }
+    }
+
+    if (isRecord(p["contract"])) {
+      const c = p["contract"];
+      phase.contract = {};
+      if (typeof c["goal"] === "string") phase.contract.goal = c["goal"];
+      if (Array.isArray(c["requiredSections"])) {
+        phase.contract.requiredSections = c["requiredSections"].filter((section): section is string => typeof section === "string" && section.trim().length > 0);
+      }
+      if (isRecord(c["completion"])) {
+        const completion = c["completion"];
+        phase.contract.completion = {};
+        if (typeof completion["minEditTargets"] === "number") phase.contract.completion.minEditTargets = completion["minEditTargets"];
+        if (typeof completion["maxEditTargets"] === "number") phase.contract.completion.maxEditTargets = completion["maxEditTargets"];
+        if (typeof completion["requireTestTargets"] === "boolean") phase.contract.completion.requireTestTargets = completion["requireTestTargets"];
+        if (typeof completion["requireFilesChanged"] === "boolean") phase.contract.completion.requireFilesChanged = completion["requireFilesChanged"];
+        if (typeof completion["requireValidationNotes"] === "boolean") phase.contract.completion.requireValidationNotes = completion["requireValidationNotes"];
+      }
+      if (isRecord(c["allowedScope"])) {
+        const allowedScope = c["allowedScope"];
+        phase.contract.allowedScope = {};
+        if (typeof allowedScope["canRead"] === "boolean") phase.contract.allowedScope.canRead = allowedScope["canRead"];
+        if (Array.isArray(allowedScope["canWriteOnly"])) {
+          phase.contract.allowedScope.canWriteOnly = allowedScope["canWriteOnly"].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+        }
+      }
+    }
+
+    if (isRecord(p["overwatch"])) {
+      const o = p["overwatch"];
+      phase.overwatch = {};
+      if (typeof o["enabled"] === "boolean") phase.overwatch.enabled = o["enabled"];
+      if (o["mode"] === "off" || o["mode"] === "warn" || o["mode"] === "enforce") phase.overwatch.mode = o["mode"];
+      if (typeof o["checkEveryTurns"] === "number") phase.overwatch.checkEveryTurns = o["checkEveryTurns"];
+      if (typeof o["forceArtifactNearMaxTurns"] === "boolean") phase.overwatch.forceArtifactNearMaxTurns = o["forceArtifactNearMaxTurns"];
+      if (typeof o["continueIfArtifactValidOnBudgetStop"] === "boolean") phase.overwatch.continueIfArtifactValidOnBudgetStop = o["continueIfArtifactValidOnBudgetStop"];
+      if (typeof o["maxSteersPerPhase"] === "number") phase.overwatch.maxSteersPerPhase = o["maxSteersPerPhase"];
+      if (typeof o["forceArtifactAfterSteers"] === "number") phase.overwatch.forceArtifactAfterSteers = o["forceArtifactAfterSteers"];
+      if (typeof o["forceArtifactAfterToolCalls"] === "number") phase.overwatch.forceArtifactAfterToolCalls = o["forceArtifactAfterToolCalls"];
+      if (typeof o["repeatedCommandLimit"] === "number") phase.overwatch.repeatedCommandLimit = o["repeatedCommandLimit"];
+      if (typeof o["maxToolCalls"] === "number") phase.overwatch.maxToolCalls = o["maxToolCalls"];
+      if (Array.isArray(o["blockedCommands"])) {
+        phase.overwatch.blockedCommands = o["blockedCommands"].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
       }
     }
 

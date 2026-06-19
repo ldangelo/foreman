@@ -57,6 +57,20 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 | `--force` | Overwrite existing prompt and workflow files |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`beads`, `jira`, or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
+### `foreman project edit`
+
+Update registered project settings. `--default-branch` controls the base branch used for new task worktrees and finalization targets.
+
+```bash
+foreman project edit <project-id> --default-branch dev
+```
+
+| Option | Description |
+|--------|-------------|
+| `--name <name>` | Project display name |
+| `--status <status>` | Project status: `active`, `paused`, or `archived` |
+| `--default-branch <branch>` | Default/base branch for new project worktrees |
+
 ---
 
 ## Dispatching Work
@@ -65,7 +79,7 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, skips ready tasks whose dependency blockers are not closed, monitors agents, and auto-merges completed work. The daemon uses the same dependency-filtered ready queue and logs both dispatched task IDs and skipped-task reasons each dispatch cycle.
 
-Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
+Default workflows include a `documentation` phase after finalization and before PR creation. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer owns code discovery; Developer and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Developer may still author focused tests when the task/handoff requires coverage.
 
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
@@ -340,7 +354,7 @@ foreman server stop               # Stop server started by Foreman
 
 `server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token. Binding the Elixir HTTP server beyond loopback also requires this token. Worker starts strip forbidden host variables (`FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, `DATABASE_*`) and scope explicit project/run secrets to the run. Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events.
 
-Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the default backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start` unless `FOREMAN_BACKEND=node` is set explicitly. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
+Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to reconcile active runs with terminal worker-log markers, claim `ready` tasks within capacity, and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the default backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start` unless `FOREMAN_BACKEND=node` is set explicitly. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
 ### `foreman reset`
 
@@ -479,7 +493,7 @@ foreman mcp --transport http --server-url http://foreman.internal:4766
 | `--mcp-auth-token <token>` | unset | Require bearer token for HTTP MCP requests |
 | `--no-auto-start` | — | Do not auto-start the local Elixir server |
 
-Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, inbox, lifecycle events, and debug timelines. MCP reads/writes through the Elixir backend only. The project-local Pi extension exposes common slash commands (`/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, `/foreman-tick`) backed by these tools. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
+Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, logs, inbox, lifecycle events, and debug timelines. MCP reads/writes through the Elixir backend only. `foreman.runs.logs` tails raw worker `.log/.err/.out` files when present, which is the best source for fatal stacks, provider overloads, QA evidence failures, and phase-loop diagnostics. The project-local Pi extension exposes common slash commands (`/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-logs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, `/foreman-tick`) backed by these tools. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
 
 ---
 

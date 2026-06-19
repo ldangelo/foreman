@@ -25,8 +25,11 @@ Common commands:
 ```bash
 foreman init --name my-project
 foreman project list
+foreman project edit <project-id> --default-branch dev
 foreman status --project my-project
 ```
+
+The project default branch is the base for newly created task worktrees and finalization targets.
 
 ### Tasks
 
@@ -74,7 +77,7 @@ For architecture details, deprecated command mappings, and troubleshooting examp
 
 ### Documentation Gate
 
-Foreman workflows include a documentation phase before finalization. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`.
+Foreman workflows include a documentation phase after finalization and before PR creation. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`.
 
 Docs that must be considered for every fix or feature:
 
@@ -98,7 +101,7 @@ foreman doctor
 
 If commands report daemon or database issues, run `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
 
-Elixir backend work uses a separate local server. Elixir is the default backend after cutover; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
+Elixir backend work uses a separate local server. Elixir is the default backend after cutover; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
 
 ```bash
 foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
@@ -201,7 +204,7 @@ foreman run --yes                 # Auto-confirm run prompts for scripts/non-int
 foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
 ```
 
-Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
+Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors. Prompt-backed phases also enable phase overwatch: Foreman tracks tool calls, validates required reports, blocks known drift patterns such as Developer test runs or QA broad full-suite commands, steers runaway work through blocked tool-call messages, treats valid-artifact stop instructions as non-error terminal guidance, and can continue after a max-turn stop when the required artifact is already valid. Developer may author focused tests when the task or Explorer handoff explicitly requires coverage, but QA/finalize own test execution. Optional `FOREMAN_MAX_PIPELINE_*` budgets can still stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
 ### 7. Monitor Progress
 
@@ -213,7 +216,7 @@ foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
+Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-logs [run-id]`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
 
 ### 8. Triage Failures
 
@@ -232,7 +235,9 @@ foreman reset --bead <task-id> --dry-run
 foreman retry <task-id> --dispatch
 ```
 
-Avoid mass retrying unless failures are known transient and the root cause is external.
+Avoid mass retrying unless failures are known transient and the root cause is external. QA failures that say `report missing test command evidence` mean `QA_REPORT.md` did not include `Command run:` plus `Test suite: X passed, Y failed`; rerun after the QA prompt/report is corrected.
+
+Developer and QA phases are intentionally handoff-driven. Explorer performs code discovery and writes verified edit/verification targets; Developer should execute that plan without broad repo search, and QA should verify the changed files with targeted commands only. Worker phase starts/completions are mirrored into the Elixir lifecycle event stream so inbox/board/watch can surface post-dispatch activity even when agent mail is sparse. Reviewer is also expected to judge the current Elixir/MCP/read-model path during the cutover, not require legacy Postgres/native TS storage changes unless the task explicitly targets them. During the Elixir cutover, runtime/state/MCP/activity-feed work should target the Elixir event/projection path plus current CLI/read-model consumers, not legacy Postgres/native TS storage unless explicitly requested. Broad discovery commands are blocked by phase overwatch in Developer/QA. If QA or Review still fails after retries, Foreman stops the pipeline instead of proceeding to finalize with invalid/no changes. Retry budgets are charged to the failing/source phase, not the retry target: QA can retry Developer 3 times, and Finalize can retry Developer 6 times.
 
 ### 9. Review and Merge
 

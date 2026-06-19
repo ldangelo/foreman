@@ -155,8 +155,8 @@ export class ElixirServerClient {
     return body.events;
   }
 
-  async getRunLogs(runId: string, view: "compact" | "raw" = "compact"): Promise<unknown[]> {
-    const body = await this.getJson<{ ok: true; logs: unknown[] }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?view=${view}`);
+  async getRunLogs(runId: string, view: "compact" | "raw" = "compact"): Promise<unknown> {
+    const body = await this.getJson<{ ok: true; logs: unknown }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?view=${view}`);
     return body.logs;
   }
 

@@ -29,6 +29,7 @@ phases:
       P0: opus
       P4: haiku
     maxTurns: 60
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -44,6 +45,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
@@ -83,7 +85,7 @@ phases:
     maxTurns: 30
     verdict: true
     retryWith: developer
-    retryOnFail: 1
+    retryOnFail: 6
     mail:
       onStart: true
       onComplete: true
@@ -120,6 +122,7 @@ phases:
     models:
       default: MiniMax
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
     verdict: true
     retryWith: fix

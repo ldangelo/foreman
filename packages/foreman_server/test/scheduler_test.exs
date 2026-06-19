@@ -5,7 +5,7 @@ end
 defmodule ForemanServer.SchedulerTest do
   use ExUnit.Case
 
-  alias ForemanServer.{ProjectionStore, RunActor, Scheduler}
+  alias ForemanServer.{EventStore, ProjectionStore, RunActor, Scheduler}
 
   setup do
     tmp_dir =
@@ -15,10 +15,13 @@ defmodule ForemanServer.SchedulerTest do
 
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+
     Application.put_env(:foreman_server, :scheduler,
       auto_tick: false,
+      log_dir: Path.join(tmp_dir, "logs"),
       worker_launcher: ForemanServer.SchedulerTest.NoopLauncher
     )
+
     assert :ok = Application.start(:foreman_server)
 
     on_exit(fn ->
@@ -73,13 +76,55 @@ defmodule ForemanServer.SchedulerTest do
     assert snapshot.scheduler_skips["alpha-2"].reason == "project_capacity_exhausted"
   end
 
+  test "tick reconciles stale active runs with terminal log markers before enforcing capacity" do
+    log_dir = Application.get_env(:foreman_server, :scheduler)[:log_dir]
+    File.mkdir_p!(log_dir)
+
+    create_task("task-done", %{project_id: "alpha", status: "in_progress"})
+    append_run_started("run-done", "task-done")
+    File.write!(Path.join(log_dir, "run-done.err"), "[PIPELINE] COMPLETED ($0.01)\n")
+
+    create_task("task-ready", %{project_id: "alpha", status: "ready"})
+
+    assert {:ok, result} = Scheduler.tick(max_concurrent: 1)
+
+    assert [%{run_id: "run-done", status: "completed", source: "log"}] =
+             result.reconciled_terminal_runs
+
+    assert [%{task_id: "task-ready"}] = result.claimed
+    assert ProjectionStore.snapshot().runs["run-done"].status == "completed"
+  end
+
+  test "tick prefers PIPELINE FAILED over PIPELINE COMPLETED across .err and .log files" do
+    log_dir = Application.get_env(:foreman_server, :scheduler)[:log_dir]
+    File.mkdir_p!(log_dir)
+
+    create_task("task-fail", %{project_id: "alpha", status: "in_progress"})
+    append_run_started("run-fail", "task-fail")
+    # .err has the failure (stderr), .log has an earlier COMPLETED marker
+    File.write!(Path.join(log_dir, "run-fail.err"), "[PIPELINE] FAILED ($1.00)\n")
+    File.write!(Path.join(log_dir, "run-fail.log"), "[PIPELINE] COMPLETED ($0.50)\n")
+
+    create_task("task-ready", %{project_id: "alpha", status: "ready"})
+
+    assert {:ok, result} = Scheduler.tick(max_concurrent: 1)
+
+    assert [%{run_id: "run-fail", status: "failed", source: "log"}] =
+             result.reconciled_terminal_runs
+
+    assert [%{task_id: "task-ready"}] = result.claimed
+    assert ProjectionStore.snapshot().runs["run-fail"].status == "failed"
+  end
+
   test "periodic tick automatically claims ready tasks" do
     Application.stop(:foreman_server)
+
     Application.put_env(:foreman_server, :scheduler,
       auto_tick: true,
       tick_interval_ms: 20,
       worker_launcher: ForemanServer.SchedulerTest.NoopLauncher
     )
+
     assert :ok = Application.start(:foreman_server)
 
     create_task("task-auto", %{project_id: "alpha", status: "ready"})
@@ -90,6 +135,7 @@ defmodule ForemanServer.SchedulerTest do
   end
 
   defp assert_receive_tick(fun, attempts \\ 20)
+
   defp assert_receive_tick(fun, attempts) when attempts > 0 do
     if fun.() == "in_progress" do
       :ok
@@ -100,6 +146,16 @@ defmodule ForemanServer.SchedulerTest do
   end
 
   defp assert_receive_tick(_fun, 0), do: flunk("scheduler did not claim ready task")
+
+  defp append_run_started(run_id, task_id) do
+    assert {:ok, _} =
+             EventStore.append(%{
+               stream_id: "run:#{run_id}",
+               event_type: "RunStarted",
+               payload: %{run_id: run_id, task_id: task_id, phase_order: ["developer"]},
+               metadata: %{correlation_id: run_id}
+             })
+  end
 
   defp create_task(task_id, attrs) do
     payload = Map.merge(%{task_id: task_id, title: task_id}, attrs)

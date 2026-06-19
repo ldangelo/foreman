@@ -270,19 +270,57 @@ The `phases` array defines the ordered sequence of pipeline phases. Most phases 
 | `skipIfArtifact` | string | — | Skip phase if this file already exists (resume from crash) |
 | `verdict` | boolean | `false` | Parse PASS/FAIL from artifact content |
 | `retryWith` | string | — | On verdict FAIL, loop back to this phase name |
-| `retryOnFail` | number | `0` | Maximum retry count for verdict failures |
+| `retryOnFail` | number | `0` | Maximum retry count for this failing/source phase. The budget is charged to the phase that produced FAIL, not to the `retryWith` target. |
 | `mail` | object | — | Mail hook configuration (see below) |
 | `files` | object | — | File reservation configuration (see below) |
+| `contract` | object | — | Optional artifact completion contract used by phase overwatch |
+| `overwatch` | object | — | Optional runtime supervisor/policy controls for runaway phase prevention |
 | `builtin` | boolean | `false` | Phase implemented in TypeScript, not as agent prompt |
+
+### Phase Overwatch
+
+Prompt phases can enable `overwatch` to make `maxTurns` an emergency fuse instead of the only runaway-control mechanism. Overwatch tracks tool calls, validates the phase artifact, blocks known drift patterns, and returns steering messages through blocked tool-call results. When the artifact is valid, the stop instruction is returned as non-error terminal guidance so the agent is less likely to enter error-recovery tool loops. If a phase hits a budget/max-turn stop after producing a valid artifact and `continueIfArtifactValidOnBudgetStop: true`, Foreman accepts the phase evidence and continues.
+
+Bundled default/feature/bug workflows enable overwatch across prompt-backed phases: Explorer, Developer/fix, QA, Reviewer, Documentation, and PR Review. Explorer owns code discovery and writes the edit/verification handoff. Developer/fix follows `EXPLORER_REPORT.md` or focused retry feedback, blocks test execution and broad repo discovery, may author focused tests when the task/handoff requires coverage, and requires changed-files/QA-handoff evidence. QA is verification-only: it reviews changed files, runs targeted commands, blocks broad discovery/full-suite commands, and requires a verdict/report contract. During the Elixir cutover, runtime/state/MCP/activity-feed tasks should target the Elixir event/projection path plus current CLI/read-model consumers, not legacy Postgres/native TS storage unless explicitly requested. Review and documentation phases stop after bounded evidence and valid reports.
+
+```yaml
+  - name: explorer
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    contract:
+      requiredSections: [Summary, Likely edit targets, Test targets, Risks]
+      completion:
+        minEditTargets: 1
+        maxEditTargets: 3
+        requireTestTargets: true
+      allowedScope:
+        canWriteOnly: [EXPLORER_REPORT.md, SESSION_LOG.md]
+    overwatch:
+      enabled: true
+      mode: enforce # or warn/off
+      continueIfArtifactValidOnBudgetStop: true
+      maxSteersPerPhase: 3
+      forceArtifactAfterSteers: 2
+      forceArtifactAfterToolCalls: 10
+      maxToolCalls: 20
+      repeatedCommandLimit: 2
+```
+
+Additional `contract.completion` fields include `requireFilesChanged` and `requireValidationNotes` for handoff-style phases. Additional `overwatch` controls include `forceArtifactAfterToolCalls`, `maxToolCalls`, `repeatedCommandLimit`, and `blockedCommands` (regular-expression strings matched against normalized shell commands).
 
 ### Documentation Phase
 
-Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `{task.projectReportsDir}/DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
+Bundled workflows include a prompt-driven `documentation` phase after `finalize` and before PR creation. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `{task.projectReportsDir}/DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
 
 ```yaml
   - name: documentation
     prompt: documentation.md
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Documentation Updated, Documentation Not Needed, Checks]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
 ```
 
 ### Finalize Phase
@@ -296,7 +334,7 @@ Bundled workflows use a deterministic builtin `finalize` phase. It runs dependen
     maxTurns: 30
     verdict: true
     retryWith: developer
-    retryOnFail: 1
+    retryOnFail: 6
 ```
 
 ### Models
@@ -390,7 +428,7 @@ Phases with `verdict: true` parse PASS/FAIL from their artifact. On FAIL, `retry
 - name: qa
   verdict: true
   retryWith: developer           # Loop back to developer on FAIL
-  retryOnFail: 2                 # Max 2 retries (3 total attempts)
+  retryOnFail: 3                 # Max 3 QA retries (4 QA attempts)
   mail:
     onFail: developer            # Send QA_REPORT.md to developer inbox
 
@@ -398,12 +436,18 @@ Phases with `verdict: true` parse PASS/FAIL from their artifact. On FAIL, `retry
 - name: reviewer
   verdict: true
   retryWith: developer
-  retryOnFail: 1                 # Max 1 retry (2 total attempts)
+  retryOnFail: 1                 # Max 1 reviewer retry (2 reviewer attempts)
   mail:
     onFail: developer
+
+# Finalize failures use finalize's budget, even though they retry developer
+- name: finalize
+  verdict: true
+  retryWith: developer
+  retryOnFail: 6                 # Max 6 finalize retries
 ```
 
-QA and Reviewer have **independent retry budgets** — QA exhausting its retries does not affect Reviewer's ability to retry.
+Retry budgets are **independent per failing/source phase**, not per retry target. QA, Reviewer, CLI review, PR review, and Finalize can all loop back to Developer without consuming a shared Developer retry budget. With QA at 3 and Finalize at 6, Developer can run once initially plus additional source-phase retries. If a verdict phase still reports FAIL after its own retry budget is exhausted, the pipeline stops instead of continuing to later phases with invalid evidence.
 
 ---
 
@@ -426,7 +470,7 @@ phases:
     models:
       default: haiku
       P0: sonnet
-    maxTurns: 12
+    maxTurns: 20
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
@@ -457,7 +501,7 @@ phases:
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
-    retryOnFail: 2
+    retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
@@ -509,7 +553,7 @@ phases:
     models:
       default: haiku
       P0: sonnet
-    maxTurns: 12
+    maxTurns: 20
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
@@ -539,7 +583,7 @@ phases:
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
-    retryOnFail: 2
+    retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
@@ -620,7 +664,7 @@ phases:
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
-    retryOnFail: 2
+    retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
@@ -693,7 +737,7 @@ phases:
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
-    retryOnFail: 2
+    retryOnFail: 3
     mail:
       onStart: true
       onComplete: true

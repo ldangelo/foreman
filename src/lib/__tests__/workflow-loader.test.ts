@@ -353,7 +353,7 @@ phases:
     expect(developerPhase?.prompt).toBe("developer.md");
     expect(qaPhase?.prompt).toBe("qa.md");
     expect(qaPhase?.retryWith).toBe("developer");
-    expect(qaPhase?.retryOnFail).toBe(2);
+    expect(qaPhase?.retryOnFail).toBe(3);
 
     for (const phase of config.phases) {
       if (phase.retryWith) {
@@ -388,6 +388,7 @@ phases:
       "reviewer",
       "cli-review",
       "finalize",
+      "documentation",
       "create-pr",
       "pr-wait",
       "prepare-pr-review",
@@ -430,7 +431,7 @@ phases:
     }
   });
 
-  it("bundled workflows run documentation before finalization", () => {
+  it("bundled workflows run documentation after finalization and before PR creation", () => {
     for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
       const config = loadWorkflowConfig(workflowName, tmpDir);
       const phaseNames = config.phases.map((phase) => phase.name);
@@ -438,7 +439,15 @@ phases:
       const finalizeIdx = phaseNames.indexOf("finalize");
       expect(documentationIdx, workflowName).toBeGreaterThanOrEqual(0);
       expect(finalizeIdx, workflowName).toBeGreaterThanOrEqual(0);
-      expect(documentationIdx, workflowName).toBeLessThan(finalizeIdx);
+      const createPrIdx = phaseNames.indexOf("create-pr");
+      if (["default", "feature", "bug"].includes(workflowName)) {
+        expect(documentationIdx, workflowName).toBeGreaterThan(finalizeIdx);
+        if (createPrIdx >= 0) {
+          expect(documentationIdx, workflowName).toBeLessThan(createPrIdx);
+        }
+      } else {
+        expect(documentationIdx, workflowName).toBeLessThan(finalizeIdx);
+      }
       const documentationPhase = config.phases[documentationIdx];
       expect(documentationPhase?.prompt, workflowName).toBe("documentation.md");
       expect(documentationPhase?.artifact, workflowName).toBe("{task.projectReportsDir}/DOCUMENTATION_REPORT.md");
@@ -496,11 +505,13 @@ phases:
     expect(qaPhase!.retryOnFail).toBeGreaterThan(0);
   });
 
-  it("bundled default workflow has explorer with skipIfArtifact", () => {
+  it("bundled default workflow has explorer with skipIfArtifact and overwatch", () => {
     const config = loadWorkflowConfig("default", tmpDir);
     const explorerPhase = config.phases.find((p) => p.name === "explorer");
     expect(explorerPhase).toBeDefined();
     expect(explorerPhase?.skipIfArtifact).toBe("EXPLORER_REPORT.md");
+    expect(explorerPhase?.overwatch?.enabled).toBe(true);
+    expect(explorerPhase?.contract?.completion?.maxEditTargets).toBe(3);
   });
 });
 

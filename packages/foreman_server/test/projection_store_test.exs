@@ -74,6 +74,52 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert ProjectionStore.task("task-1").failure_output == nil
   end
 
+  test "terminal run events update the associated active task" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "open"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      task_id: "task-1",
+      status: "in_progress",
+      run_id: "run-1",
+      failure_reason: "old",
+      failure_output: "old output"
+    })
+
+    append!("run:run-1", "RunStarted", %{run_id: "run-1", task_id: "task-1"})
+    append!("run:run-1", "RunCompleted", %{run_id: "run-1"})
+
+    task = ProjectionStore.task("task-1")
+    assert task.status == "completed"
+    assert task.run_id == "run-1"
+    assert task.failure_reason == nil
+    assert task.failure_output == nil
+  end
+
+  test "terminal run events do not overwrite tasks moved to a newer run" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "open"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      task_id: "task-1",
+      status: "in_progress",
+      run_id: "run-2"
+    })
+
+    append!("run:run-1", "RunStarted", %{run_id: "run-1", task_id: "task-1"})
+    append!("run:run-1", "RunCompleted", %{run_id: "run-1"})
+
+    task = ProjectionStore.task("task-1")
+    assert task.status == "in_progress"
+    assert task.run_id == "run-2"
+  end
+
   test "run projection exposes status counts without log inference" do
     append!("run:active", "RunStarted", %{run_id: "active", task_id: "task-1"})
     append!("run:active", "PhaseStarted", %{run_id: "active", phase_id: "developer"})

@@ -75,14 +75,14 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 > **Note:** Foreman uses PostgreSQL via `DATABASE_URL`. The daemon owns the shared Postgres pool and exposes a tRPC layer for CLI commands, avoiding per-invocation connection overhead and enabling multi-project aggregation.
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
-1. **Explorer** (Haiku, 12 turns, read-only) — concise developer handoff → `EXPLORER_REPORT.md`
-2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — implementation only; QA/finalize own tests
-3. **QA** (Sonnet, 30 turns, read+bash) — targeted test verification only → `QA_REPORT.md`
-4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
-5. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
-6. **Finalize** — git add/commit/push, native task merge/close update
+1. **Explorer** (Haiku, 20 turns emergency fuse, read-only) — owns code discovery and writes concise edit/verification targets → `EXPLORER_REPORT.md`
+2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — executes the Explorer handoff; overwatch blocks broad repo discovery/test execution and treats valid-report stop instructions as terminal guidance, but allows focused test authoring when the task/handoff requires coverage → `DEVELOPER_REPORT.md`
+3. **QA** (Sonnet, 60 turns, read+bash) — verifies changed files with targeted commands only; overwatch blocks broad discovery/full-suite runs → `QA_REPORT.md`
+4. **Reviewer** (Sonnet, 20 turns, read-only) — overwatch bounds review evidence and requires a verdict report → `REVIEW.md`
+5. **Finalize** — git add/commit/push, native task merge/close update
+6. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
 
-Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs before finalization so fixes/features do not merge without an explicit documentation decision.
+QA retries Developer up to 3x; Finalize can retry Developer up to 6x. Retry budgets are charged to the failing/source phase, not to the Developer target, so Developer can run once initially plus source-phase retries. If QA or Review still fails after its retry budget, the pipeline stops instead of proceeding to finalize with invalid/no changes. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for prompt-backed phases rather than only Explorer/QA.
 
 ## Dispatch Flow
 
@@ -146,7 +146,7 @@ flowchart TD
     subgraph PIPELINE["Pipeline phases"]
         AC --> P1A
 
-        subgraph P1["Phase 1: Explorer (Haiku, 12 turns, read-only)"]
+        subgraph P1["Phase 1: Explorer (Haiku, 20 turns, read-only)"]
             P1A[Register agent-mail identity] --> P1B[Run SDK query\nexplorerPrompt]
             P1B --> P1C[Write EXPLORER_REPORT.md]
             P1C --> P1D[Write EXPLORER_TRACE.{md,json}]
@@ -167,11 +167,14 @@ flowchart TD
         P2A --> P2_ok{success?}
         P2_ok -- No --> STUCK
 
+        P2_ok -- transient provider error --> COOLDOWN[Cooldown retry
+re-dispatch later]
+
         P2_ok -- Yes --> P3A
 
         subgraph P3["Phase 3: QA (Sonnet, 30 turns, read+bash)"]
             P3A[Run SDK query\nqaPrompt + dev report]
-            P3A --> P3B[Run tests\nWrite QA_REPORT.md]
+            P3A --> P3B[Run targeted tests\nWrite QA_REPORT.md\nwith command + pass/fail counts]
             P3B --> P3C[Write QA_TRACE.{md,json}]
             P3C --> P3D[Parse verdict: PASS / FAIL]
         end
@@ -220,7 +223,7 @@ flowchart TD
 | **Dependency stacking** | Task depends on open task → worktree branches from that dependency's branch |
 | **Pi vs SDK** | `pi` binary on PATH → JSONL RPC protocol; otherwise Claude SDK `query()` |
 | **Pipeline vs single** | `--pipeline` flag → 4-phase orchestration; otherwise single agent |
-| **Dev↔QA retry** | Max 2 retries; QA feedback injected into next developer prompt |
+| **Dev↔QA retry** | QA max 3 retries; QA feedback injected into next developer prompt; source-phase budgets avoid charging Developer for every loop |
 | **Reviewer FAIL** | CRITICAL/WARNING issues → run marked failed, task reset to open |
 | **Merge tiers T1-T4** | T1/T2 = TypeScript auto-merge; T3/T4 = AI-assisted conflict resolution |
 
@@ -428,13 +431,13 @@ Standard Pi tools are also available per phase (configured in [workflow YAML](do
 
 Models are configured per-phase in the workflow YAML with priority-based overrides. See [Workflow YAML Reference](docs/workflow-yaml-reference.md) for full details.
 
-| Phase | Default Model | P0 Override | Max Turns |
+| Phase | Default Model | P0 Override | Runtime Guard |
 |---|---|---|---|
-| Explorer | haiku | sonnet | 30 |
-| Developer | sonnet | opus | 80 |
-| QA | sonnet | opus | 30 |
-| Reviewer | sonnet | opus | 20 |
-| Finalize | haiku | — | 20 |
+| Explorer | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch artifact gate |
+| Developer | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch handoff/test-command gate |
+| QA | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch targeted-test policy |
+| Reviewer | workflow-defined | workflow-defined | maxTurns emergency fuse + overwatch verdict artifact gate |
+| Finalize | builtin | — | deterministic validation/commit logic |
 
 ### Per-phase trace artifacts
 
@@ -475,6 +478,7 @@ Use `--wizard` for interactive setup that writes `.foreman/config.yaml` with VCS
 ```bash
 foreman init --name "my-project"
 foreman init --wizard
+foreman project edit <project-id> --default-branch dev  # Change base for new worktrees
 ```
 
 ### `foreman run`
@@ -524,7 +528,7 @@ foreman mcp --transport http --host 127.0.0.1 --port 4777
 foreman mcp --transport http --host 0.0.0.0 --mcp-auth-token "$FOREMAN_MCP_AUTH_TOKEN"
 ```
 
-Tools cover one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, inbox messages, lifecycle events, and debug timelines through the Elixir backend only. In Pi, the project extension also adds slash commands such as `/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick`. See [`docs/mcp-server.md`](docs/mcp-server.md).
+Tools cover one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, logs, inbox messages, lifecycle events, and debug timelines through the Elixir backend only. In Pi, the project extension also adds slash commands such as `/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-logs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick`. See [`docs/mcp-server.md`](docs/mcp-server.md).
 
 ### `foreman watch`
 Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
@@ -611,7 +615,7 @@ foreman server status        # Show PID/URL and health
 foreman server stop          # Stop local Elixir server
 ```
 
-The Elixir server scheduler automatically ticks every 5 seconds, claims dispatchable `ready` tasks within global/project capacity, and launches the Node/Pi worker bridge. `foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines. Troubleshoot Elixir-backed status issues by checking the durable event first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
+The Elixir server scheduler automatically ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, claims dispatchable `ready` tasks within global/project capacity, and launches the Node/Pi worker bridge. `foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines. Troubleshoot Elixir-backed status issues by checking the durable event first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
 
 Security controls for the Elixir server:
 - Worker startup scopes environment to `FOREMAN_PROJECT_ID`, `FOREMAN_RUN_ID`, allowed base variables, and explicit project/run secret maps. Forbidden host secrets such as `FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, and `DATABASE_*` are stripped before worker launch metadata is recorded.
@@ -899,7 +903,7 @@ phases:
     prompt: qa.md
     verdict: true
     retryWith: developer
-    retryOnFail: 2
+    retryOnFail: 3
 ```
 
 Direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks:

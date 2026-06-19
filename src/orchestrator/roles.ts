@@ -531,12 +531,14 @@ export function buildPhasePrompt(
   const commentsSection = context.seedComments ? `\n## Additional Context\n${context.seedComments}\n` : "";
   const explorerInstruction = context.hasExplorerReport
     ? `2. Read **EXPLORER_REPORT.md** for codebase context and follow its **Implementation Plan** unless you document a justified deviation`
-    : `2. Explore the codebase to understand the relevant architecture`;
+    : context.feedbackContext
+      ? `2. Read the cited feedback artifact/report first; do not re-explore the codebase`
+      : `2. If EXPLORER_REPORT.md is missing, report blocked instead of exploring the codebase`;
   const explorerPreflightSection = context.requiresExplorerReport
     ? `## Pre-flight: Check EXPLORER_REPORT.md
-After verifying /send-mail, check if \`EXPLORER_REPORT.md\` exists in the worktree root:
+After verifying /send-mail, check if \`{{reportDir}}/EXPLORER_REPORT.md\` exists:
 \`\`\`bash
-test -f EXPLORER_REPORT.md || echo "MISSING"
+test -f "{{reportDir}}/EXPLORER_REPORT.md" || echo "MISSING"
 \`\`\`
 If it is missing, invoke and stop — do not proceed with implementation:
 \`\`\`
@@ -589,7 +591,7 @@ export function explorerPrompt(seedId: string, seedTitle: string, seedDescriptio
   const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
   return resolvePrompt(
     "explorer",
-    { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "explorer" },
+    { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "explorer", reportDir: "." },
     "explorer-prompt.md",
     opts,
   );
@@ -612,7 +614,9 @@ export function developerPrompt(
   // in the template, update the numbering here to match.
   const explorerInstruction = hasExplorerReport
     ? `2. Read **EXPLORER_REPORT.md** for codebase context and follow its **Implementation Plan** unless you document a justified deviation`
-    : `2. Explore the codebase to understand the relevant architecture`;
+    : feedbackContext
+      ? `2. Read the cited feedback artifact/report first; do not re-explore the codebase`
+      : `2. If EXPLORER_REPORT.md is missing, report blocked instead of exploring the codebase`;
 
   const feedbackSection = feedbackContext
     ? `\n## Focused Repair Feedback\nAddress ONLY the issues below from the previous verification/review. Do not redesign unrelated code. Do not create temporary debug tests, console logs, or one-off debug files. Prefer the smallest patch that makes the reported verification pass. If you need to touch more than five source/test files, explain why in DEVELOPER_REPORT.md before doing so.\n${feedbackContext}\n`
@@ -631,6 +635,9 @@ export function developerPrompt(
       commentsSection,
       runId: runId ?? "",
       agentRole: "developer",
+      explorerPreflightSection: "",
+      reportDir: ".",
+      baseBranch: "main",
     },
     "developer-prompt.md",
     opts,

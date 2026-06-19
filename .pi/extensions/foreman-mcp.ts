@@ -66,19 +66,28 @@ async function callTool(name: string, args: Record<string, unknown>, signal?: Ab
 
 function textFromMcpResult(response: JsonRpcResponse): string {
 	const content = response.result?.content;
-	if (Array.isArray(content) && content.length > 0) {
-		return content
+	const text = Array.isArray(content) && content.length > 0
+		? content
 			.map((item: any) => {
 				if (item?.type === "text") return String(item.text ?? "");
 				return JSON.stringify(item);
 			})
-			.join("\n");
-	}
-	return JSON.stringify(response.result ?? response, null, 2);
+			.join("\n")
+		: JSON.stringify(response.result ?? response, null, 2);
+	return clampToolText(text);
+}
+
+function clampToolText(text: string, maxChars = 12000): string {
+	if (text.length <= maxChars) return text;
+	return `${text.slice(0, maxChars)}\n… [Foreman MCP output truncated: ${text.length - maxChars} chars omitted. Use lower limit/tail or raw log file if needed.]`;
 }
 
 function structured(response: JsonRpcResponse): any {
 	return response.result?.structuredContent ?? tryJson(textFromMcpResult(response));
+}
+
+function compactDetails(response: JsonRpcResponse): unknown {
+	return response.result?.structuredContent ?? { ok: true, note: "full MCP response omitted from pi details to prevent context overflow" };
 }
 
 function tryJson(text: string): any {
@@ -145,12 +154,46 @@ function formatRuns(runs: any[], heading = "Foreman runs"): string {
 
 function formatInbox(messages: any[], heading = "Foreman inbox"): string {
 	if (!messages.length) return `${heading}\n(no messages)`;
-	return [heading, ...messages.map((msg) => `- ${msg.created_at ?? ""} ${msg.run_id ?? "-"} ${msg.from ?? "?"}->${msg.to ?? "?"}: ${firstLine(msg.body ?? msg.message ?? msg.summary)}`)].join("\n");
+	return [heading, ...messages.map((msg) => `- ${msg.created_at ?? ""} ${msg.run_id ?? "-"} ${msg.source ? `[${msg.source}] ` : ""}${msg.from ?? "?"}->${msg.to ?? "?"}: ${firstLine(msg.body ?? msg.message ?? msg.summary)}`)].join("\n");
 }
 
 function formatEvents(events: any[], heading = "Foreman events"): string {
 	if (!events.length) return `${heading}\n(no events)`;
 	return [heading, ...events.map((event) => `- ${event.occurred_at ?? ""} ${event.type ?? event.event_type ?? "?"} run=${event.run_id ?? "-"} task=${event.task_id ?? "-"}`)].join("\n");
+}
+
+function formatLogEntries(logs: any, heading = "Foreman logs"): string {
+	if (Array.isArray(logs)) {
+		if (!logs.length) return `${heading}\n(no logs)`;
+		return [heading, ...logs.flatMap((item) => [`## ${item.run_id ?? "run"} task=${item.task_id ?? "?"} status=${item.status ?? "?"}`, ...formatLogLines(item.logs).slice(1)])].join("\n");
+	}
+	return formatLogLines(logs, heading).join("\n");
+}
+
+function formatLogLines(logs: any, heading = "logs"): string[] {
+	if (Array.isArray(logs?.files) && logs.files.length) {
+		const lines = [`${heading} (${logs.source ?? "files"})`];
+		for (const file of logs.files) {
+			const fileLines = Array.isArray(file.lines) ? file.lines : [];
+			const suffix = file.tailed ? ` tail ${fileLines.length}/${file.total_lines}` : `${fileLines.length} lines`;
+			lines.push(`### ${file.type} ${suffix}`);
+			lines.push(...fileLines.map((line: string) => `- ${firstLine(line, 220)}`));
+		}
+		const entries = Array.isArray(logs?.events?.entries) ? logs.events.entries : [];
+		if (entries.length) lines.push(...formatLogLines(logs.events, "events").slice(1));
+		return lines;
+	}
+
+	const entries = Array.isArray(logs?.entries) ? logs.entries : Array.isArray(logs) ? logs : [];
+	if (!entries.length) return [heading, "(no logs)"];
+	const suffix = logs?.tailed ? ` (tail ${entries.length}/${logs.total_entries})` : "";
+	return [`${heading}${suffix}`, ...entries.map((entry: any) => {
+		const ts = entry.occurred_at ?? "";
+		const type = entry.type ?? entry.event_type ?? entry.stream ?? "log";
+		const phase = entry.phase_id ? ` ${entry.phase_id}` : "";
+		const msg = entry.message ?? entry.body ?? entry.text ?? JSON.stringify(entry.payload ?? entry);
+		return `- ${ts} ${type}${phase}: ${firstLine(msg, 180)}`;
+	})];
 }
 
 function summarizeHealth(data: any): string {
@@ -190,7 +233,7 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 					const response = await callTool(tool.name, params as Record<string, unknown>, signal);
 					return {
 						content: [{ type: "text", text: textFromMcpResult(response) }],
-						details: { mcpTool: tool.name, response },
+						details: { mcpTool: tool.name, data: compactDetails(response) },
 					};
 				},
 			});
@@ -235,7 +278,7 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 			const response = await callTool(params.name, params.arguments ?? {}, signal);
 			return {
 				content: [{ type: "text", text: textFromMcpResult(response) }],
-				details: { mcpTool: params.name, response },
+				details: { mcpTool: params.name, data: compactDetails(response) },
 			};
 		},
 	});
@@ -398,6 +441,26 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("foreman-logs", {
+		description: "Show Foreman logs (usage: /foreman-logs [run-id] [limit])",
+		handler: async (args, ctx) => {
+			try {
+				const parsed = parseArgs(args);
+				const first = String(parsed["0"] ?? "");
+				const limit = Math.min(numberArg(parsed.limit ?? parsed.tail ?? parsed["1"], 30), 50);
+				const toolArgs: Record<string, unknown> = { limit };
+				if (parsed.view) toolArgs.view = parsed.view;
+				if (parsed.runs) toolArgs.runs = Math.min(numberArg(parsed.runs, 5), 10);
+				if (parsed.run_id || first) toolArgs.run_id = parsed.run_id ?? first;
+				else toolArgs.project = parsed.project ?? "foreman";
+				const logs = structured(await callTool("foreman.runs.logs", toolArgs));
+				show(pi, formatLogEntries(logs, first ? `Foreman logs ${first}` : "Foreman logs"), logs);
+			} catch (error) {
+				ctx.ui.notify(`Foreman logs failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
 	pi.registerCommand("foreman-inbox", {
 		description: "List Foreman inbox messages (usage: /foreman-inbox [run-id] [limit])",
 		handler: async (args, ctx) => {
@@ -446,6 +509,7 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 					`- max_concurrent: ${scheduler?.max_concurrent ?? "?"}`,
 					`- active_runs: ${scheduler?.last_tick?.active_runs ?? 0}`,
 					`- stale_active_runs: ${scheduler?.last_tick?.stale_active_runs?.length ?? 0}`,
+					`- reconciled_terminal_runs: ${scheduler?.last_tick?.reconciled_terminal_runs?.length ?? 0}`,
 				].join("\n"), data);
 			} catch (error) {
 				ctx.ui.notify(`Foreman scheduler failed: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -464,6 +528,7 @@ export default function foremanMcpExtension(pi: ExtensionAPI) {
 					`- claimed: ${scheduler?.claimed?.length ?? 0}`,
 					`- skipped: ${scheduler?.skipped?.length ?? 0}`,
 					`- active_runs: ${scheduler?.active_runs ?? "?"}`,
+					`- reconciled_terminal_runs: ${scheduler?.reconciled_terminal_runs?.length ?? 0}`,
 				].join("\n"), data);
 			} catch (error) {
 				ctx.ui.notify(`Foreman tick failed: ${error instanceof Error ? error.message : String(error)}`, "error");

@@ -299,10 +299,15 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:runs, run_id], run)
   end
 
-  defp apply_domain_event(projection, %{type: "RunCompleted", payload: %{run_id: run_id}}, _mode) do
+  defp apply_domain_event(
+         projection,
+         %{type: "RunCompleted", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
     projection
     |> update_run_status(run_id, "completed")
     |> update_run(run_id, &Map.put(&1, :current_phase, nil))
+    |> update_task_for_terminal_run(run_id, "completed", payload)
   end
 
   defp apply_domain_event(
@@ -320,10 +325,17 @@ defmodule ForemanServer.ProjectionStore do
         Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
       )
     end)
+    |> update_task_for_terminal_run(run_id, "failed", payload)
   end
 
-  defp apply_domain_event(projection, %{type: "RunBlocked", payload: %{run_id: run_id}}, _mode) do
-    update_run_status(projection, run_id, "blocked")
+  defp apply_domain_event(
+         projection,
+         %{type: "RunBlocked", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    projection
+    |> update_run_status(run_id, "blocked")
+    |> update_task_for_terminal_run(run_id, "blocked", payload)
   end
 
   defp apply_domain_event(
@@ -765,6 +777,49 @@ defmodule ForemanServer.ProjectionStore do
   defp update_run_status(projection, run_id, status) do
     update_run(projection, run_id, &Map.put(&1, :status, status))
   end
+
+  defp update_task_for_terminal_run(projection, run_id, status, payload) do
+    run = get_in(projection, [:runs, run_id]) || %{}
+    task_id = Map.get(payload, :task_id) || Map.get(run, :task_id)
+
+    case get_in(projection, [:tasks, task_id]) do
+      %{run_id: task_run_id} when task_run_id not in [nil, run_id] ->
+        projection
+
+      task when is_binary(task_id) and is_map(task) ->
+        if terminal_task_updateable?(task, run_id) do
+          updates = terminal_task_updates(status, run_id, payload)
+          put_in(projection, [:tasks, task_id], Map.merge(task, updates))
+        else
+          projection
+        end
+
+      _ ->
+        projection
+    end
+  end
+
+  defp terminal_task_updateable?(%{run_id: run_id}, run_id), do: true
+
+  defp terminal_task_updateable?(%{status: status}, _run_id),
+    do: status in ["in_progress", "in-progress"]
+
+  defp terminal_task_updateable?(_task, _run_id), do: false
+
+  defp terminal_task_updates("completed", run_id, _payload) do
+    %{status: "completed", run_id: run_id, failure_reason: nil, failure_output: nil}
+  end
+
+  defp terminal_task_updates("failed", run_id, payload) do
+    %{
+      status: "failed",
+      run_id: run_id,
+      failure_reason: Map.get(payload, :failure_reason),
+      failure_output: Map.get(payload, :failure_output)
+    }
+  end
+
+  defp terminal_task_updates(status, run_id, _payload), do: %{status: status, run_id: run_id}
 
   defp update_run(projection, run_id, fun) do
     existing =
