@@ -379,8 +379,8 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
     }
   }
 
-  if (config.phaseName === "documentation" && (tool === "write" || tool === "edit") && path && !/(^|\/)docs\/|README\.md$|CLAUDE\.md$|AGENTS\.md$/i.test(path)) {
-    return { allow: false, reason: "Overwatch: documentation phase may only edit documentation files." };
+  if (config.phaseName === "documentation" && (tool === "write" || tool === "edit") && path && !artifactWriteAllowed(config, path) && !/(^|\/)docs\/|README\.md$|CLAUDE\.md$|AGENTS\.md$/i.test(path)) {
+    return { allow: false, reason: "Overwatch: documentation phase may only edit documentation files or its configured report artifact." };
   }
 
   const summary = telemetry.summary();

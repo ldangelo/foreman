@@ -151,6 +151,20 @@ describe("phase overwatch artifact validation", () => {
     expect(artifactWrite).toBeUndefined();
   });
 
+  it("allows documentation to write its configured report outside docs", () => {
+    const worktreePath = tempWorktree();
+    const artifact = join(worktreePath, ".foreman/reports/run/DOCUMENTATION_REPORT.md");
+    const policy = createPhaseToolPolicy({
+      phaseName: "documentation",
+      worktreePath,
+      artifact,
+      overwatch: { enabled: true, mode: "enforce" },
+    });
+
+    expect(policy?.beforeTool("write", { path: artifact, content: "# Documentation Report\n" })).toBeUndefined();
+    expect(policy?.beforeTool("write", { path: join(worktreePath, "src/a.ts"), content: "x" })).toContain("documentation files or its configured report artifact");
+  });
+
   it("blocks non-artifact writes after forced handoff", () => {
     const worktreePath = tempWorktree();
     const policy = createPhaseToolPolicy({
