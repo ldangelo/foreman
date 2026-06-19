@@ -644,6 +644,7 @@ export class PostgresAdapter {
       limit?: number;
       externalId?: string;
       labels?: string[];
+      updatedSince?: string;
     }
   ): Promise<TaskRow[]> {
     const conditions = ["t.project_id = $1"];
@@ -669,6 +670,11 @@ export class PostgresAdapter {
     if (filters?.labels && filters.labels.length > 0) {
       conditions.push(`t.labels @> $${i++}::text[]`);
       params.push(filters.labels);
+    }
+
+    if (filters?.updatedSince !== undefined) {
+      conditions.push(`t.updated_at > $${i++}`);
+      params.push(filters.updatedSince);
     }
 
     const limit = filters?.limit ?? 100;

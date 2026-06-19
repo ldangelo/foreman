@@ -206,6 +206,7 @@ export interface TRPCTasksClient {
     status?: string[];
     runId?: string;
     limit?: number;
+    updatedSince?: string;
   }): Promise<unknown>;
   get(input: { projectId: string; taskId: string }): Promise<unknown>;
   create(input: {
