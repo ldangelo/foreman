@@ -31,7 +31,7 @@ vi.mock("../../lib/elixir-server-client.js", () => ({
   }),
 }));
 
-import { applyBoardTaskUpdate, loadBoardTasks, pollBoardInboxTaskUpdates, type BoardTask } from "../commands/board.js";
+import { applyBoardTaskUpdate, loadBoardTasks, pollBoardInboxTaskUpdates, pollRecentlyUpdatedTasks, type BoardTask } from "../commands/board.js";
 
 describe("foreman board command context", () => {
   const tempDirs: string[] = [];
@@ -336,6 +336,40 @@ describe("board inbox-driven task updates", () => {
     expect(result).toEqual({ taskIds: ["task-2", "task-3"], newestId: "msg-3" });
     expect(runGet).toHaveBeenCalledWith({ runId: "run-2" });
     expect(runGet).toHaveBeenCalledWith({ runId: "run-3" });
+  });
+
+
+  it("polls timestamp-based task updates through the Node backend", async () => {
+    const { projectDir } = setupProject();
+    const list = vi.fn().mockResolvedValue([
+      { id: "task-1", title: "Updated", status: "ready", updated_at: "2026-01-01T00:00:02Z" },
+    ]);
+    mockCreateTrpcClient.mockReturnValue({ tasks: { list } });
+
+    const result = await pollRecentlyUpdatedTasks(projectDir, "2026-01-01T00:00:01Z");
+
+    expect(list).toHaveBeenCalledWith({
+      projectId: "proj-1",
+      limit: 1000,
+      updatedSince: "2026-01-01T00:00:00.000Z",
+    });
+    expect(result.taskIds).toEqual(["task-1"]);
+  });
+
+  it("polls timestamp-based task updates through the Elixir backend", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const { projectDir } = setupProject();
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockListTasks.mockResolvedValue([
+      { task_id: "task-1", project_id: "proj-1", title: "Updated", status: "ready", updated_at: "2026-01-01T00:00:02Z" },
+      { task_id: "task-2", project_id: "other", title: "Other project", status: "ready", updated_at: "2026-01-01T00:00:02Z" },
+      { task_id: "task-3", project_id: "proj-1", title: "Old", status: "ready", updated_at: "2025-12-31T23:59:00Z" },
+    ]);
+
+    const result = await pollRecentlyUpdatedTasks(projectDir, "2026-01-01T00:00:01Z");
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(result.taskIds).toEqual(["task-1"]);
   });
 
   it("updates only the changed task in the board map", () => {

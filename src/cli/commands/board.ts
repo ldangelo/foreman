@@ -390,6 +390,50 @@ export async function pollBoardInboxTaskUpdates(
   return { taskIds: [...taskIds], newestId };
 }
 
+/**
+ * Poll for tasks that have been updated since the last poll time.
+ * This supplements inbox-based polling to catch task changes made externally
+ * (e.g., via CLI, MCP, Jira sync, GitHub webhooks) that don't generate inbox messages.
+ */
+export interface BoardTimestampUpdateResult {
+  taskIds: string[];
+  lastPollTime: string;
+}
+
+export async function pollRecentlyUpdatedTasks(
+  projectPath: string,
+  lastPollTime: string | null,
+): Promise<BoardTimestampUpdateResult> {
+  const nextPollTime = new Date().toISOString();
+  if (!lastPollTime) {
+    return { taskIds: [], lastPollTime: nextPollTime };
+  }
+
+  const context = await resolveBoardContext(projectPath);
+  const sinceTime = new Date(new Date(lastPollTime).getTime() - 1000).toISOString();
+
+  if (context.backend === "elixir") {
+    const rows = await context.client.listTasks();
+    const taskIds = rows
+      .filter((task) => !task.project_id || task.project_id === context.projectId)
+      .filter((task) => task.updated_at && task.updated_at > sinceTime)
+      .map((task) => task.task_id ?? task.id)
+      .filter((taskId): taskId is string => Boolean(taskId));
+    return { taskIds, lastPollTime: nextPollTime };
+  }
+
+  const updatedTasks = await context.client.tasks.list({
+    projectId: context.projectId,
+    limit: 1000,
+    updatedSince: sinceTime,
+  }) as TaskRow[];
+
+  return {
+    taskIds: updatedTasks.map((task) => task.id),
+    lastPollTime: nextPollTime,
+  };
+}
+
 export function applyBoardTaskUpdate(
   taskMap: Map<BoardStatus, BoardTask[]>,
   task: BoardTask | null,
@@ -1824,6 +1868,7 @@ async function readLine(prompt: string): Promise<string> {
  */
 export async function runBoard(opts: BoardOptions): Promise<void> {
   const { projectPath, projectName, limit } = opts;
+  const timestampPollBaseline = new Date().toISOString();
 
   let tasks: Map<BoardStatus, BoardTask[]>;
   try {
@@ -1850,6 +1895,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let inboxMonitorTimer: NodeJS.Timeout | null = null;
   let boardInboxLastSeenId: string | null = null;
   let boardInboxCursorSeeded = false;
+  let lastTimestampPollTime: string | null = timestampPollBaseline;
   let inboxUpdateInFlight = false;
   let quit = false;
   let stdinRawMode = false;
@@ -1938,43 +1984,72 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   }
   boardInboxCursorSeeded = true;
 
+  /**
+   * Merge task IDs from multiple sources and refresh them on the board.
+   * Handles deduplication and updates the board state accordingly.
+   */
+  const applyTaskUpdates = async (allTaskIds: string[]) => {
+    if (allTaskIds.length === 0) return;
+
+    // Deduplicate task IDs
+    const uniqueTaskIds = [...new Set(allTaskIds)];
+    const refreshedTasks = await Promise.all(
+      uniqueTaskIds.map(async (taskId) => ({ taskId, task: await loadBoardTask(projectPath, taskId) })),
+    );
+    let nextTasks = tasks;
+    for (const { taskId, task } of refreshedTasks) {
+      nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
+    }
+    tasks = nextTasks;
+    normalizeNavRowIndex(nav, tasks);
+    flashTaskId = uniqueTaskIds[0] ?? null;
+    refreshedAt = new Date().toLocaleTimeString();
+    refreshStatus = "refreshed";
+
+    if (detailTask && uniqueTaskIds.includes(detailTask.id)) {
+      const refreshedDetail = getHighlightedTask(nav, tasks)?.id === detailTask.id
+        ? getHighlightedTask(nav, tasks)
+        : uniqueTaskIds.includes(detailTask.id)
+          ? await loadBoardTask(projectPath, detailTask.id)
+          : null;
+      if (refreshedDetail) {
+        detailTask = { ...refreshedDetail, notes: detailTask.notes };
+      }
+    }
+  };
+
   const processInboxTaskUpdates = async () => {
     if (quit || inboxUpdateInFlight) return;
     inboxUpdateInFlight = true;
     try {
-      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorSeeded);
-      if (update.taskIds.length === 0) {
-        if (update.newestId) {
-          boardInboxLastSeenId = update.newestId;
+      // Poll for inbox-based updates (existing behavior)
+      const inboxUpdate = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorSeeded);
+
+      // Poll for timestamp-based updates (new behavior for external changes)
+      const timestampUpdate = await pollRecentlyUpdatedTasks(projectPath, lastTimestampPollTime);
+
+      // Update timestamp for next poll
+      lastTimestampPollTime = timestampUpdate.lastPollTime;
+
+      // Combine task IDs from both sources
+      const allTaskIds = [
+        ...inboxUpdate.taskIds,
+        ...timestampUpdate.taskIds,
+      ];
+
+      // If no updates, just update the inbox cursor and return
+      if (allTaskIds.length === 0) {
+        if (inboxUpdate.newestId) {
+          boardInboxLastSeenId = inboxUpdate.newestId;
         }
         return;
       }
 
-      const refreshedTasks = await Promise.all(
-        update.taskIds.map(async (taskId) => ({ taskId, task: await loadBoardTask(projectPath, taskId) })),
-      );
-      let nextTasks = tasks;
-      for (const { taskId, task } of refreshedTasks) {
-        nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
-      }
-      tasks = nextTasks;
-      if (update.newestId) {
-        boardInboxLastSeenId = update.newestId;
-      }
-      normalizeNavRowIndex(nav, tasks);
-      flashTaskId = update.taskIds[0] ?? null;
-      refreshedAt = new Date().toLocaleTimeString();
-      refreshStatus = "refreshed";
+      // Apply updates and re-render
+      await applyTaskUpdates(allTaskIds);
 
-      if (detailTask && update.taskIds.includes(detailTask.id)) {
-        const refreshedDetail = getHighlightedTask(nav, tasks)?.id === detailTask.id
-          ? getHighlightedTask(nav, tasks)
-          : update.taskIds.includes(detailTask.id)
-            ? await loadBoardTask(projectPath, detailTask.id)
-            : null;
-        if (refreshedDetail) {
-          detailTask = { ...refreshedDetail, notes: detailTask.notes };
-        }
+      if (inboxUpdate.newestId) {
+        boardInboxLastSeenId = inboxUpdate.newestId;
       }
 
       renderCurrentBoard();

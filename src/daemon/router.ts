@@ -120,6 +120,7 @@ const tasksRouter = t.router({
         status: TASK_STATUS_ARRAY_SCHEMA,
         runId: z.string().optional(),
         limit: z.number().int().min(1).max(1000).optional(),
+        updatedSince: z.string().datetime().optional(),
       })
     )
     .query(async ({ input, ctx }) => {
@@ -127,6 +128,7 @@ const tasksRouter = t.router({
         status: input.status,
         runId: input.runId,
         limit: input.limit,
+        updatedSince: input.updatedSince,
       });
     }),
 

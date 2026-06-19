@@ -368,6 +368,18 @@ describe("tasks.list procedure", () => {
     );
   });
 
+  it("passes updatedSince filter to adapter", async () => {
+    mockAdapter.listTasks.mockResolvedValueOnce([]);
+    const caller = appRouter.createCaller(mockCtx);
+    // @ts-ignore - intentionally testing runtime input passthrough
+    await caller.tasks.list({ projectId: "proj-123", updatedSince: "2026-01-01T00:00:00.000Z" });
+    expect(mockAdapter.listTasks).toHaveBeenCalledWith(
+      "proj-123",
+      expect.objectContaining({ updatedSince: "2026-01-01T00:00:00.000Z" })
+    );
+  });
+
+
   it("rejects missing projectId", async () => {
     const caller = appRouter.createCaller(mockCtx);
     // @ts-ignore
