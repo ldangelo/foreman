@@ -352,6 +352,10 @@ describe("qaReportHasTestEvidence", () => {
     expect(qaReportHasTestEvidence("Command run: cd packages/foreman_server && mix test test/inbox_test.exs --trace\nTest suite: 22 passed, 0 failures\nRaw summary: 22 tests, 0 failures")).toBe(true);
   });
 
+  it("returns true when mix test report uses ExUnit count format", () => {
+    expect(qaReportHasTestEvidence("Command run: mix test test/inbox_test.exs --trace\nTest suite: 24 tests, 0 failures\nRaw summary: Finished in 0.3 seconds — 24 tests, 0 failures")).toBe(true);
+  });
+
   it("returns false when test command is missing", () => {
     expect(qaReportHasTestEvidence("Test suite: 10 passed, 0 failed")).toBe(false);
   });

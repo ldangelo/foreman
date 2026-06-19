@@ -436,58 +436,75 @@ defmodule ForemanServer.InboxTest do
       inbox = Inbox.list("run-worker-exit-activity")
       assert Enum.any?(inbox, &(&1.activity_type == "worker_exit"))
       exited = Enum.find(inbox, &(&1.activity_type == "worker_exit"))
+      assert exited.body == "Worker worker-1 exited"
       assert exited.actor == "pi-sdk"
       assert exited.severity == "info"
     end
 
-    test "QaVerdict creates activity entry with correct severity" do
-      start_run_event("run-qa-verdict-activity")
+    test "QaVerdict creates activity entry in inbox with correct severity" do
+      start_workflow_run("run-qa-activity")
 
       EventStore.append(%{
-        stream_id: "run:run-qa-verdict-activity",
+        stream_id: "run:run-qa-activity",
         event_type: "QaVerdict",
         payload: %{
-          run_id: "run-qa-verdict-activity",
+          run_id: "run-qa-activity",
+          verdict: "pass",
+          phase: "qa"
+        },
+        metadata: %{correlation_id: "run-qa-activity"}
+      })
+
+      inbox = Inbox.list("run-qa-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "qa_verdict"))
+      qa = Enum.find(inbox, &(&1.activity_type == "qa_verdict"))
+      assert qa.severity == "info"
+      assert qa.body == "QA verdict: pass"
+
+      EventStore.append(%{
+        stream_id: "run:run-qa-activity",
+        event_type: "QaVerdict",
+        payload: %{
+          run_id: "run-qa-activity",
           verdict: "fail",
           phase: "qa",
           failure_reasons: ["test timeout"]
         },
-        metadata: %{correlation_id: "run-qa-verdict-activity"}
+        metadata: %{correlation_id: "run-qa-activity-2"}
       })
 
-      inbox = Inbox.list("run-qa-verdict-activity")
-      assert Enum.any?(inbox, &(&1.activity_type == "qa_verdict"))
-      verdict = Enum.find(inbox, &(&1.activity_type == "qa_verdict"))
-      assert verdict.actor == "qa"
-      assert verdict.severity == "error"
-      assert verdict.body =~ "fail"
+      inbox2 = Inbox.list("run-qa-activity")
+      assert Enum.any?(inbox2, &(&1.activity_type == "qa_verdict" && &1.severity == "error"))
+      failed = Enum.find(inbox2, &(&1.activity_type == "qa_verdict" && &1.severity == "error"))
+      assert failed.actor == "qa"
+      assert failed.body =~ "fail"
     end
 
-    test "ReviewFinding creates activity entry with blocking severity" do
-      start_run_event("run-review-finding-activity")
+    test "ReviewFinding creates activity entry in inbox with correct severity" do
+      start_workflow_run("run-review-activity")
 
       EventStore.append(%{
-        stream_id: "run:run-review-finding-activity",
+        stream_id: "run:run-review-activity",
         event_type: "ReviewFinding",
         payload: %{
-          run_id: "run-review-finding-activity",
-          finding: "missing test coverage",
+          run_id: "run-review-activity",
+          finding: "Code review blocking issues found",
           severity: "blocking",
           phase: "review"
         },
-        metadata: %{correlation_id: "run-review-finding-activity"}
+        metadata: %{correlation_id: "run-review-activity"}
       })
 
-      inbox = Inbox.list("run-review-finding-activity")
+      inbox = Inbox.list("run-review-activity")
       assert Enum.any?(inbox, &(&1.activity_type == "review_finding"))
-      finding = Enum.find(inbox, &(&1.activity_type == "review_finding"))
-      assert finding.actor == "reviewer"
-      assert finding.severity == "error"
-      assert finding.body =~ "missing test coverage"
+      review = Enum.find(inbox, &(&1.activity_type == "review_finding"))
+      assert review.severity == "error"
+      assert review.actor == "reviewer"
+      assert review.body == "Review finding: Code review blocking issues found"
     end
 
     test "PrCreated creates activity entry in inbox" do
-      start_run_event("run-pr-created-activity")
+      start_workflow_run("run-pr-created-activity")
 
       EventStore.append(%{
         stream_id: "run:run-pr-created-activity",
@@ -502,48 +519,71 @@ defmodule ForemanServer.InboxTest do
 
       inbox = Inbox.list("run-pr-created-activity")
       assert Enum.any?(inbox, &(&1.activity_type == "pr_created"))
-      created = Enum.find(inbox, &(&1.activity_type == "pr_created"))
-      assert created.actor == "vcs"
-      assert created.severity == "info"
-      assert created.body == "PR PR-456 created"
+      pr_created = Enum.find(inbox, &(&1.activity_type == "pr_created"))
+      assert pr_created.body == "PR PR-456 created"
+      assert pr_created.actor == "vcs"
+      assert pr_created.severity == "info"
     end
 
     test "SchedulerClaim creates activity entry in inbox" do
-      start_run_event("run-scheduler-claim-activity")
+      start_run_event("run-scheduler-activity")
 
       EventStore.append(%{
-        stream_id: "run:run-scheduler-claim-activity",
+        stream_id: "run:run-scheduler-activity",
         event_type: "SchedulerClaim",
         payload: %{
-          run_id: "run-scheduler-claim-activity"
+          run_id: "run-scheduler-activity",
+          claimed_by: "scheduler-1"
         },
-        metadata: %{correlation_id: "run-scheduler-claim-activity"}
+        metadata: %{correlation_id: "run-scheduler-activity"}
       })
 
-      inbox = Inbox.list("run-scheduler-claim-activity")
+      inbox = Inbox.list("run-scheduler-activity")
       assert Enum.any?(inbox, &(&1.activity_type == "scheduler_claim"))
-      claimed = Enum.find(inbox, &(&1.activity_type == "scheduler_claim"))
-      assert claimed.actor == "scheduler"
-      assert claimed.severity == "info"
+      claim = Enum.find(inbox, &(&1.activity_type == "scheduler_claim"))
+      assert claim.actor == "scheduler"
+      assert claim.severity == "info"
     end
 
-    test "manual TaskUpdated creates activity entry in inbox" do
-      start_run_event("run-task-update-activity")
+    test "TaskUpdated creates activity entry in inbox for manual updates" do
+      start_workflow_run("run-task-update-activity")
 
-      # Append a TaskUpdated event with run_id (manual update)
       EventStore.append(%{
-        stream_id: "task:foreman-task-update",
+        stream_id: "task:task-manual-update-1",
         event_type: "TaskUpdated",
         payload: %{
-          task_id: "foreman-task-update",
+          task_id: "task-manual-update-1",
           run_id: "run-task-update-activity",
+          actor: "operator",
           status: "in_progress",
-          updated_by: "operator"
+          manual_note: "Starting work manually"
         },
         metadata: %{correlation_id: "run-task-update-activity"}
       })
 
       inbox = Inbox.list("run-task-update-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "task_updated"))
+      updated = Enum.find(inbox, &(&1.activity_type == "task_updated"))
+      assert updated.body == "Task task-manual-update-1 updated manually"
+      assert updated.actor == "operator"
+    end
+
+    test "TaskUpdated falls back to updated_by actor" do
+      start_run_event("run-task-update-updated-by")
+
+      EventStore.append(%{
+        stream_id: "task:task-updated-by-1",
+        event_type: "TaskUpdated",
+        payload: %{
+          task_id: "task-updated-by-1",
+          run_id: "run-task-update-updated-by",
+          status: "in_progress",
+          updated_by: "operator"
+        },
+        metadata: %{correlation_id: "run-task-update-updated-by"}
+      })
+
+      inbox = Inbox.list("run-task-update-updated-by")
       assert Enum.any?(inbox, &(&1.activity_type == "task_updated"))
       updated = Enum.find(inbox, &(&1.activity_type == "task_updated"))
       assert updated.actor == "operator"
@@ -552,7 +592,6 @@ defmodule ForemanServer.InboxTest do
     test "TaskUpdated without run_id does not create activity entry" do
       start_run_event("run-task-update-no-run-id")
 
-      # Append a TaskUpdated event WITHOUT run_id field (event not linked to a run)
       EventStore.append(%{
         stream_id: "task:foreman-task-orphan",
         event_type: "TaskUpdated",
@@ -566,6 +605,75 @@ defmodule ForemanServer.InboxTest do
 
       inbox = Inbox.list("run-task-update-no-run-id")
       refute Enum.any?(inbox, &(&1.activity_type == "task_updated"))
+    end
+
+    test "activity feed captures events when visible messages stop before merge failure" do
+      start_workflow_run("run-stopped-before-fail")
+
+      EventStore.append(%{
+        stream_id: "run:run-stopped-before-fail",
+        event_type: "WorkerStarted",
+        payload: %{
+          run_id: "run-stopped-before-fail",
+          worker_id: "worker-1",
+          phase_id: "developer"
+        },
+        metadata: %{correlation_id: "run-stopped-before-fail-1"}
+      })
+
+      EventStore.append(%{
+        stream_id: "run:run-stopped-before-fail",
+        event_type: "QaVerdict",
+        payload: %{
+          run_id: "run-stopped-before-fail",
+          verdict: "pass",
+          phase: "qa"
+        },
+        metadata: %{correlation_id: "run-stopped-before-fail-2"}
+      })
+
+      EventStore.append(%{
+        stream_id: "run:run-stopped-before-fail",
+        event_type: "PrCreated",
+        payload: %{
+          run_id: "run-stopped-before-fail",
+          pr_id: "PR-789"
+        },
+        metadata: %{correlation_id: "run-stopped-before-fail-3"}
+      })
+
+      EventStore.append(%{
+        stream_id: "run:run-stopped-before-fail",
+        event_type: "ReviewFinding",
+        payload: %{
+          run_id: "run-stopped-before-fail",
+          finding: "Critical security issue",
+          severity: "blocking",
+          phase: "review"
+        },
+        metadata: %{correlation_id: "run-stopped-before-fail-4"}
+      })
+
+      EventStore.append(%{
+        stream_id: "run:run-stopped-before-fail",
+        event_type: "RunFailed",
+        payload: %{
+          run_id: "run-stopped-before-fail",
+          phase_id: "review",
+          reason: "ReviewFinding: Critical security issue"
+        },
+        metadata: %{correlation_id: "run-stopped-before-fail-5"}
+      })
+
+      inbox = Inbox.list("run-stopped-before-fail")
+      assert Enum.any?(inbox, &(&1.activity_type == "worker_started"))
+      assert Enum.any?(inbox, &(&1.activity_type == "qa_verdict"))
+      assert Enum.any?(inbox, &(&1.activity_type == "pr_created"))
+      assert Enum.any?(inbox, &(&1.activity_type == "review_finding"))
+      assert Enum.any?(inbox, &(&1.activity_type == "run_failed"))
+
+      failed = Enum.find(inbox, &(&1.activity_type == "run_failed"))
+      assert failed.body =~ "ReviewFinding"
     end
   end
 

@@ -15,7 +15,6 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { getForemanHomePath } from "../lib/foreman-paths.js";
-import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +29,16 @@ export interface PhaseRecord {
   phaseType?: "prompt" | "command" | "bash" | "builtin";
   /** True if this phase was skipped */
   skipped: boolean;
+  /** Who performed the action (e.g., "foreman", "scheduler", "worker", "operator") */
+  actor?: string;
+  /** Severity level for activity feed display */
+  severity?: "debug" | "info" | "warning" | "error" | "critical";
+  /** Human-readable description of the phase event */
+  summary?: string;
+  /** Source link or trace file path for this event */
+  sourceLink?: string;
+  /** Log file path for this event */
+  logPath?: string;
   /** Whether the phase succeeded */
   success?: boolean;
   /** Cost in USD */
