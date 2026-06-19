@@ -19,7 +19,7 @@ foreman <command> --help    # Show command-specific help
 - Setup/health: `init`, `doctor`, `daemon`, `server`
 - Planning: `plan`, `sling`
 - Execution: `run`, `retry`, `reset`, `stop`, `recover`
-- Tasks/views: `task`, `status`, `board`, `watch`, `logs`
+- Tasks/views: `task`, `status`, `board`, `watch`, `logs`, `runs`
 - Collaboration: `inbox`, `attach`, `debug`
 - Delivery/VCS: `worktree`, `merge`, `pr`
 
@@ -267,6 +267,56 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 | Option | Description |
 |--------|-------------|
 | `--force` | Force kill with SIGKILL |
+
+### `foreman runs`
+
+Operator traceability dashboard for active Foreman runs. Lists pending/running runs with task ID, phase, elapsed time, last activity, and stuck/fatal indicators. Makes scheduler/worker activity observable even when inbox messages are sparse.
+
+```bash
+foreman runs                              # List active runs
+foreman runs --project my-project         # Runs for a specific project
+foreman runs --verbose                    # Show log path, report path, cost/turns
+foreman runs --json                       # Output as JSON array
+foreman runs --stuck                      # Show only runs likely stuck (>15 min inactive)
+foreman runs --all                        # Include completed/failed runs in summary
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Registered project name |
+| `--project-path <path>` | — | Absolute project path (advanced/script usage) |
+| `--verbose` | — | Show log path, report path, cost, and turns columns |
+| `--json` | — | Output runs as a JSON array |
+| `--stuck` | — | Show only runs likely stuck (>15 min inactive) |
+| `--all` | — | Include completed/failed runs in summary count |
+
+**Output columns:**
+- `RUN_ID` — Unique run identifier
+- `TASK` — Seed/task ID
+- `STATUS` — Current status (pending, running, completed, failed, etc.)
+- `PHASE` — Current pipeline phase (explorer, developer, qa, etc.)
+- `ELAPSED` — Time since run started
+- `LAST_EVENT` — Last tool call observed from Pi activity logs
+- `LOG_PATH` / `REPORT_PATH` — Paths to run artifacts (verbose only)
+- `COST` / `TURNS` — Cost and turn counts (verbose only)
+- `INDICATORS` — Status flags: `STUCK`, `FATAL`, `CONFLICT`, `TEST-FAIL`
+
+**Example output:**
+
+```
+Foreman Runs  (3 shown)
+
+  Use --verbose to show log path, report path, and cost/turns.
+  Use --stuck to filter to likely-stuck runs only.
+
+────────────────────────────────────────────────────────────────────────────────────
+RUN_ID    TASK                STATUS    PHASE        ELAPSED  LAST_EVENT         INDICATORS
+────────────────────────────────────────────────────────────────────────────────────
+run-abc1  foreman-12345       RUNNING   developer    5m 32s   read(src/app.ts)   —
+run-xyz2  foreman-67890       PENDING   explorer     1m 05s   —                  —
+run-qrs3  foreman-11111       RUNNING   qa           12m 48s  bash(npm test)     STUCK
+────────────────────────────────────────────────────────────────────────────────────
+```
 
 ---
 
