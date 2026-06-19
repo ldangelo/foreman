@@ -56,7 +56,7 @@ If you hit an unrecoverable error, invoke:
 - Focus on handoff, not completeness
 - Be specific — reference actual file paths and line numbers that you verified by reading
 - Keep the report under ~80 lines unless the task is genuinely cross-cutting
-- Start narrow. Use the task title/description to form an initial file hypothesis before reading broadly
+- Start narrow. For narrow/localized tasks, use the task title/description to form an initial file hypothesis before reading broadly; identify 1–3 likely files; Stop early once you can name the likely edit files.
 - Do not map generic architecture, dependency graphs, or test strategy unless needed to identify the edit target
 - Stop after you can name likely edit files, nearby verification targets, and one concrete implementation sketch
 - Make the handoff concrete enough that Developer can start editing after reading TASK.md plus EXPLORER_REPORT.md
