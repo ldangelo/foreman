@@ -11,7 +11,7 @@ import type { MigrationBuilder } from "node-pg-migrate";
  */
 export async function up(pgm: MigrationBuilder): Promise<void> {
   pgm.addColumn("events", {
-    sentinel_run_id: { type: "uuid", notNull: false },
+    sentinel_run_id: { type: "text", notNull: false },
   });
 
   pgm.alterColumn("events", "run_id", { notNull: false });
