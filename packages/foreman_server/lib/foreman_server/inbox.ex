@@ -88,6 +88,89 @@ defmodule ForemanServer.Inbox do
     end
   end
 
+  @valid_severity_levels ["debug", "info", "warning", "error", "critical"]
+  @valid_activity_event_types [
+    "scheduler_claim",
+    "worker_started",
+    "worker_exit",
+    "phase_started",
+    "phase_completed",
+    "phase_failed",
+    "phase_retried",
+    "qa_verdict",
+    "review_finding",
+    "retry_loop",
+    "pr_created",
+    "pr_merged",
+    "task_updated",
+    "run_completed",
+    "run_failed"
+  ]
+
+  @spec append_activity_event(String.t(), map(), map() | nil) :: {:ok, map()} | {:error, term()}
+  def append_activity_event(event_type, payload, metadata \\ %{})
+      when is_binary(event_type) and is_map(payload) do
+    with {:ok, run_id} <- required_binary(fetch(payload, :run_id), :run_id),
+         true <- event_type in @valid_activity_event_types do
+      activity_id =
+        fetch(
+          payload,
+          :activity_id,
+          "act-#{run_id}-#{event_type}-#{System.unique_integer([:positive])}"
+        )
+
+      activity_entry = %{
+        activity_id: activity_id,
+        run_id: run_id,
+        event_type: event_type,
+        timestamp: fetch(payload, :timestamp, DateTime.utc_now()),
+        actor: fetch(payload, :actor, "foreman"),
+        phase: fetch(payload, :phase),
+        severity: normalize_severity(fetch(payload, :severity, "info")),
+        summary: fetch(payload, :summary, "#{event_type} for run #{run_id}"),
+        source_link: fetch(payload, :source_link),
+        log_path: fetch(payload, :log_path),
+        details:
+          Map.drop(payload, [
+            :run_id,
+            :activity_id,
+            :timestamp,
+            :actor,
+            :phase,
+            :severity,
+            :summary,
+            :source_link,
+            :log_path
+          ]),
+        metadata: metadata
+      }
+
+      append_message(%{
+        message_id: activity_id,
+        run_id: run_id,
+        phase_id: fetch(payload, :phase),
+        from: "foreman",
+        to: "activity",
+        body: activity_entry.summary,
+        direction: "system",
+        activity_type: event_type,
+        severity: activity_entry.severity,
+        actor: activity_entry.actor,
+        activity_data:
+          Map.drop(activity_entry, [:message_id, :run_id, :summary, :severity, :direction, :actor])
+      })
+    else
+      false -> {:error, {:invalid_activity_event_type, event_type}}
+      {:ok, _} -> {:error, :missing_run_id}
+    end
+  end
+
+  defp normalize_severity(severity)
+       when is_binary(severity) and severity in @valid_severity_levels,
+       do: severity
+
+  defp normalize_severity(_), do: "info"
+
   defp append_hook_messages(event_type, payload, configs) do
     with {:ok, run_id} <- required_binary(fetch(payload, :run_id), :run_id),
          {:ok, phase_id} <- required_binary(fetch(payload, :phase_id), :phase_id),

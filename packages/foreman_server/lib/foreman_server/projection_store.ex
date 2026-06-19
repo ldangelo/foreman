@@ -302,19 +302,46 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_domain_event(
          projection,
          %{type: "RunCompleted", payload: %{run_id: run_id} = payload},
-         _mode
+         mode
        ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "run_completed",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "foreman",
+      severity: "info",
+      summary: "Run completed successfully",
+      phase: Map.get(payload, :current_phase),
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
     projection
     |> update_run_status(run_id, "completed")
     |> update_run(run_id, &Map.put(&1, :current_phase, nil))
     |> update_task_for_terminal_run(run_id, "completed", payload)
+    |> apply_activity_and_notify(activity_payload, mode)
   end
 
   defp apply_domain_event(
          projection,
          %{type: "RunFailed", payload: %{run_id: run_id} = payload},
-         _mode
+         mode
        ) do
+    failure_reason = Map.get(payload, :failure_reason, Map.get(payload, :reason, "unknown"))
+
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "run_failed",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "foreman",
+      severity: "error",
+      summary: "Run failed: #{failure_reason}",
+      phase: Map.get(payload, :phase_id),
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
     projection
     |> update_run_status(run_id, "failed")
     |> update_run(run_id, fn run ->
@@ -326,6 +353,7 @@ defmodule ForemanServer.ProjectionStore do
       )
     end)
     |> update_task_for_terminal_run(run_id, "failed", payload)
+    |> apply_activity_and_notify(activity_payload, mode)
   end
 
   defp apply_domain_event(
@@ -342,15 +370,28 @@ defmodule ForemanServer.ProjectionStore do
          projection,
          %{
            type: "PhaseStarted",
-           payload: %{run_id: run_id, phase_id: phase_id}
+           payload: %{run_id: run_id, phase_id: phase_id} = payload
          },
-         _mode
+         mode
        ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "phase_started",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: Map.get(payload, :actor, "foreman"),
+      severity: "info",
+      summary: "#{phase_id} phase started",
+      phase: phase_id,
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
     update_run(projection, run_id, fn run ->
       run
       |> Map.put(:current_phase, phase_id)
       |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "in_progress"))
     end)
+    |> apply_activity_and_notify(activity_payload, mode)
   end
 
   defp apply_domain_event(
@@ -359,8 +400,20 @@ defmodule ForemanServer.ProjectionStore do
            type: "PhaseCompleted",
            payload: %{run_id: run_id, phase_id: phase_id} = payload
          },
-         _mode
+         mode
        ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "phase_completed",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: Map.get(payload, :actor, "foreman"),
+      severity: "info",
+      summary: "#{phase_id} phase completed",
+      phase: phase_id,
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->
@@ -373,6 +426,7 @@ defmodule ForemanServer.ProjectionStore do
       )
       |> Map.put(:report_paths, Map.get(payload, :report_paths, Map.get(run, :report_paths, [])))
     end)
+    |> apply_activity_and_notify(activity_payload, mode)
   end
 
   defp apply_domain_event(
@@ -381,10 +435,24 @@ defmodule ForemanServer.ProjectionStore do
            type: type,
            payload: %{run_id: run_id, phase_id: phase_id} = payload
          },
-         _mode
+         mode
        )
        when type in ["PhaseFailed", "PhaseTimedOut"] do
     status = if type == "PhaseTimedOut", do: "timed_out", else: "failed"
+    event_type = if type == "PhaseTimedOut", do: "phase_timed_out", else: "phase_failed"
+    failure_reason = Map.get(payload, :failure_reason, Map.get(payload, :reason, "phase failed"))
+
+    activity_payload = %{
+      run_id: run_id,
+      event_type: event_type,
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: Map.get(payload, :actor, "foreman"),
+      severity: "error",
+      summary: "#{phase_id} #{event_type}: #{failure_reason}",
+      phase: phase_id,
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
 
     update_run(projection, run_id, fn run ->
       run
@@ -394,25 +462,7 @@ defmodule ForemanServer.ProjectionStore do
         Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
       )
     end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "PhaseRetried",
-           payload: %{run_id: run_id, phase_id: phase_id} = payload
-         },
-         _mode
-       ) do
-    update_run(projection, run_id, fn run ->
-      run
-      |> Map.put(:current_phase, phase_id)
-      |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "retrying"))
-      |> Map.put(
-        :retry_history,
-        Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
-      )
-    end)
+    |> apply_activity_and_notify(activity_payload, mode)
   end
 
   defp apply_domain_event(
@@ -425,25 +475,6 @@ defmodule ForemanServer.ProjectionStore do
        ) do
     update_run(projection, run_id, fn run ->
       update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "WorkerStarted",
-           payload: %{run_id: run_id, worker_id: worker_id, phase_id: phase_id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_worker_sequence(payload)
-    |> update_run(run_id, fn run ->
-      run
-      |> update_in([:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
-      |> Map.put(:current_phase, phase_id)
-      |> Map.put(:adapter, Map.get(payload, :adapter))
-      |> Map.put(:artifact_paths, Map.get(payload, :artifact_paths, []))
     end)
   end
 
@@ -614,9 +645,30 @@ defmodule ForemanServer.ProjectionStore do
            type: "PrMerged",
            payload: %{pr_id: pr_id} = payload
          },
-         _mode
+         mode
        ) do
-    put_in(projection, [:pr_gates, pr_id], Map.put(payload, :state, "merged"))
+    projection = put_in(projection, [:pr_gates, pr_id], Map.put(payload, :state, "merged"))
+
+    case Map.get(payload, :run_id) do
+      nil ->
+        projection
+
+      run_id ->
+        apply_activity_and_notify(
+          projection,
+          %{
+            run_id: run_id,
+            event_type: "pr_merged",
+            timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+            actor: "vcs",
+            severity: "info",
+            summary: "PR #{pr_id} merged",
+            source_link: Map.get(payload, :source_link),
+            log_path: Map.get(payload, :log_path)
+          },
+          mode
+        )
+    end
   end
 
   defp apply_domain_event(
@@ -669,6 +721,189 @@ defmodule ForemanServer.ProjectionStore do
     |> put_in([:inbox_messages, message_id], message)
     |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [message_id]) end)
     |> update_in([:inbox_updates], &((&1 || []) ++ [message]))
+  end
+
+  # Activity event handlers for unified activity feed
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "WorkerStarted",
+           payload: %{run_id: run_id, worker_id: worker_id, phase_id: phase_id} = payload
+         },
+         mode
+       ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "worker_started",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: Map.get(payload, :adapter, "foreman"),
+      severity: "info",
+      summary: "Worker started for #{phase_id}",
+      phase: phase_id,
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
+      run
+      |> update_in([:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
+      |> Map.put(:current_phase, phase_id)
+      |> Map.put(:adapter, Map.get(payload, :adapter))
+      |> Map.put(:artifact_paths, Map.get(payload, :artifact_paths, []))
+    end)
+    |> apply_activity_and_notify(activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "PhaseRetried",
+           payload: %{run_id: run_id, phase_id: phase_id, attempt: attempt} = payload
+         },
+         mode
+       ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "phase_retried",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "foreman",
+      severity: "warning",
+      summary: "#{phase_id} retry attempt #{attempt}",
+      phase: phase_id,
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.put(:current_phase, phase_id)
+      |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "retrying"))
+      |> Map.put(
+        :retry_history,
+        Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
+      )
+    end)
+    |> apply_activity_and_notify(activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "PrCreated", payload: %{pr_id: pr_id, run_id: run_id} = payload},
+         mode
+       ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "pr_created",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "vcs",
+      severity: "info",
+      summary: "PR #{pr_id} created",
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    apply_activity_and_notify(projection, activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "WorkerExited", payload: %{run_id: run_id, worker_id: worker_id} = payload},
+         mode
+       ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "worker_exit",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: Map.get(payload, :adapter, "foreman"),
+      severity: "info",
+      summary: "Worker #{worker_id} exited",
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    update_run(projection, run_id, fn run ->
+      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, "exited"))
+    end)
+    |> apply_activity_and_notify(activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "SchedulerClaim", payload: %{run_id: run_id} = payload},
+         mode
+       ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "scheduler_claim",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "scheduler",
+      severity: "info",
+      summary: "Scheduler claimed run #{run_id}",
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    apply_activity_and_notify(projection, activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "QaVerdict", payload: %{run_id: run_id} = payload},
+         mode
+       ) do
+    verdict = Map.get(payload, :verdict, "unknown")
+
+    severity =
+      case verdict do
+        v when v in ["pass", "approved"] -> "info"
+        v when v in ["fail", "rejected"] -> "error"
+        _ -> "warning"
+      end
+
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "qa_verdict",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "qa",
+      severity: severity,
+      summary: "QA verdict: #{verdict}",
+      phase: Map.get(payload, :phase),
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    apply_activity_and_notify(projection, activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "ReviewFinding", payload: %{run_id: run_id} = payload},
+         mode
+       ) do
+    finding = Map.get(payload, :finding, "review completed")
+
+    severity =
+      case Map.get(payload, :severity) do
+        "blocking" -> "error"
+        "warning" -> "warning"
+        _ -> "info"
+      end
+
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "review_finding",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "reviewer",
+      severity: severity,
+      summary: "Review finding: #{finding}",
+      phase: Map.get(payload, :phase),
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    apply_activity_and_notify(projection, activity_payload, mode)
   end
 
   defp apply_domain_event(
@@ -766,6 +1001,37 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_domain_event(projection, _event, _mode), do: projection
+
+  defp apply_activity_and_notify(projection, activity_payload, mode) do
+    run_id = Map.get(activity_payload, :run_id)
+
+    activity_id =
+      "act-#{run_id}-#{Map.get(activity_payload, :event_type)}-#{System.unique_integer([:positive])}"
+
+    activity_message = %{
+      message_id: activity_id,
+      run_id: run_id,
+      phase_id: Map.get(activity_payload, :phase),
+      from: "foreman",
+      to: "activity",
+      body: Map.get(activity_payload, :summary),
+      direction: "system",
+      activity_type: Map.get(activity_payload, :event_type),
+      severity: Map.get(activity_payload, :severity),
+      actor: Map.get(activity_payload, :actor, "foreman"),
+      activity_data: activity_payload
+    }
+
+    maybe_notify_inbox_watchers(mode, run_id, activity_message)
+
+    projection
+    |> put_in(
+      [:inbox_messages, activity_id],
+      Map.put(activity_message, :event_type, "InboxActivityAppended")
+    )
+    |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [activity_id]) end)
+    |> update_in([:inbox_updates], &((&1 || []) ++ [activity_message]))
+  end
 
   defp maybe_complete_worker(run, %{worker_id: worker_id})
        when is_binary(worker_id) and worker_id != "" do

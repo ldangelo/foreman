@@ -135,8 +135,11 @@ defmodule ForemanServer.RunActor do
   defp advance_after_pass(state) do
     next = %{state | status: :completed, current_phase: nil}
 
-    case append(state.run_id, "RunCompleted", %{run_id: state.run_id}) do
-      {:ok, _event} -> {:reply, {:ok, next}, next}
+    with {:ok, _event} <- append(state.run_id, "RunCompleted", %{run_id: state.run_id}),
+         {:ok, _activity} <-
+           append_run_activity(state, "run_completed", "info", "Run completed successfully") do
+      {:reply, {:ok, next}, next}
+    else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -200,13 +203,17 @@ defmodule ForemanServer.RunActor do
     history = state.retry_history ++ [history_entry]
     next = %{state | status: :failed, retry_history: history}
 
-    case append(state.run_id, "RunFailed", %{
-           run_id: state.run_id,
-           phase_id: phase_id,
-           reason: reason,
-           retry_history: history
-         }) do
-      {:ok, _event} -> {:reply, {:ok, next}, next}
+    with {:ok, _event} <-
+           append(state.run_id, "RunFailed", %{
+             run_id: state.run_id,
+             phase_id: phase_id,
+             reason: reason,
+             retry_history: history
+           }),
+         {:ok, _activity} <-
+           append_run_activity(state, "run_failed", "error", "Run failed: #{reason}") do
+      {:reply, {:ok, next}, next}
+    else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -266,6 +273,16 @@ defmodule ForemanServer.RunActor do
 
   defp failed_status("PhaseTimedOut"), do: :timed_out
   defp failed_status(_event_type), do: :failed
+
+  defp append_run_activity(state, event_type, severity, summary) do
+    Inbox.append_activity_event(event_type, %{
+      run_id: state.run_id,
+      actor: "foreman",
+      phase: state.current_phase,
+      severity: severity,
+      summary: summary
+    })
+  end
 
   defp via(run_id), do: {:global, {__MODULE__, run_id}}
 end
