@@ -11,7 +11,7 @@ import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import type { BvClient } from "../lib/bv.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
-import type { NativeTask, Run, EventType } from "../lib/store.js";
+import type { BeadWriteEntry, NativeTask, Run, EventType } from "../lib/store.js";
 import type { RunStoreReadModel } from "./read-models.js";
 import type { RunCommands, RunFactory } from "./write-models.js";
 import type { ModelSelection, RuntimeSelection, NativeTaskStatus } from "./types.js";
@@ -144,6 +144,10 @@ export interface DispatcherStoreDeps {
   // Query operations
   /** Check if a seed has an active or pending run. */
   hasActiveOrPendingRun(seedId: string, projectId?: string): Awaitable<boolean>;
+  /** Pending serialized bead write operations. */
+  getPendingBeadWrites?(): Awaitable<BeadWriteEntry[]>;
+  /** Mark a serialized bead write operation processed. */
+  markBeadWriteProcessed?(id: string): Awaitable<boolean>;
 }
 
 // ── Run operations interface ───────────────────────────────────────────────

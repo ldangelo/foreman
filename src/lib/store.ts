@@ -233,6 +233,15 @@ export interface Message {
   deleted_at: string | null;
 }
 
+export interface BeadWriteEntry {
+  id: string;
+  sender: string;
+  operation: string;
+  payload: string;
+  created_at: string;
+  processed_at: string | null;
+}
+
 // ── Native Task interfaces ───────────────────────────────────────────────
 
 /**
@@ -447,6 +456,20 @@ CREATE TABLE IF NOT EXISTS merge_costs (
 CREATE INDEX IF NOT EXISTS idx_merge_costs_session ON merge_costs (session_id);
 CREATE INDEX IF NOT EXISTS idx_merge_costs_date ON merge_costs (recorded_at);
 
+`;
+
+const BEAD_WRITE_QUEUE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS bead_write_queue (
+  id TEXT PRIMARY KEY,
+  sender TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  processed_at TEXT DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bead_write_queue_pending
+  ON bead_write_queue (processed_at, created_at);
 `;
 
 // Messages table DDL — kept separate so it can be applied after pre-flight migrations
@@ -944,6 +967,7 @@ export class ForemanStore {
     // Apply messaging schema after migrations so any legacy messages table has
     // been dropped first, allowing a clean re-creation.
     this.db.exec(MESSAGES_SCHEMA);
+    this.db.exec(BEAD_WRITE_QUEUE_SCHEMA);
 
     // Apply native task management schemas (PRD-2026-006 REQ-003, REQ-004).
     // Both use CREATE TABLE IF NOT EXISTS — safe to run on every startup.
@@ -1812,6 +1836,40 @@ export class ForemanStore {
       (this.db.prepare("SELECT * FROM messages WHERE id = ?").get(messageId) as Message | undefined) ??
       null
     );
+  }
+
+  enqueueBeadWrite(sender: string, operation: string, payload: unknown): void {
+    const entry: BeadWriteEntry = {
+      id: randomUUID(),
+      sender,
+      operation,
+      payload: JSON.stringify(payload),
+      created_at: new Date().toISOString(),
+      processed_at: null,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO bead_write_queue (id, sender, operation, payload, created_at, processed_at)
+         VALUES (@id, @sender, @operation, @payload, @created_at, @processed_at)`
+      )
+      .run(entry);
+  }
+
+  getPendingBeadWrites(): BeadWriteEntry[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM bead_write_queue
+         WHERE processed_at IS NULL
+         ORDER BY created_at ASC, rowid ASC`
+      )
+      .all() as BeadWriteEntry[];
+  }
+
+  markBeadWriteProcessed(id: string): boolean {
+    const result = this.db
+      .prepare("UPDATE bead_write_queue SET processed_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), id);
+    return result.changes > 0;
   }
 
   // ── Sentinel ─────────────────────────────────────────────────────────

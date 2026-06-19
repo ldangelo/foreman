@@ -1,16 +1,16 @@
 import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { NativeTask, Run, EventType, RunStore, ProgressEventStore } from "../lib/store.js";
 import type { RunStatus } from "./read-models.js";
 import type { DispatcherStoreDeps } from "./dispatcher-dependencies.js";
-import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, getDefaultModel } from "../lib/config.js";
+import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
@@ -1813,6 +1813,108 @@ export class Dispatcher {
       if (run.status === "merged" || run.status === "pr-created") return true;
     }
     return false;
+  }
+
+  async drainBeadWriterInbox(): Promise<number> {
+    const getPending = this.store.getPendingBeadWrites;
+    const markProcessed = this.store.markBeadWriteProcessed;
+    if (!getPending || !markProcessed) return 0;
+
+    const pending = await getPending.call(this.store);
+    if (pending.length === 0) return 0;
+
+    const beadsDirPath = join(this.projectPath, ".beads");
+    if (!existsSync(beadsDirPath)) {
+      for (const entry of pending) {
+        await markProcessed.call(this.store, entry.id);
+      }
+      return 0;
+    }
+
+    const bin = join(homedir(), ".local", "bin", "br");
+    const execOpts = {
+      stdio: "pipe" as const,
+      timeout: PIPELINE_TIMEOUTS.beadClosureMs,
+      cwd: this.projectPath,
+    };
+    const lockArgs = ["--lock-timeout", "10000"];
+    const projectId = await this.resolveProjectId();
+    const latestRunHasTerminalSuccess = async (seedId: string): Promise<boolean> => {
+      const runs = await this.getRunsForSeedRecord(seedId, projectId);
+      const latestRun = runs[0];
+      return latestRun?.status === "merged" || latestRun?.status === "pr-created";
+    };
+
+    let processed = 0;
+    for (const entry of pending) {
+      try {
+        const payload = JSON.parse(entry.payload) as Record<string, unknown>;
+        const seedId = payload.seedId as string;
+
+        switch (entry.operation) {
+          case "close-seed":
+            execFileSync(bin, ["close", seedId, "--no-db", "--reason", "Completed via pipeline", ...lockArgs], execOpts);
+            break;
+          case "reset-seed":
+            if (!(await latestRunHasTerminalSuccess(seedId))) {
+              execFileSync(bin, ["update", seedId, "--status", "open", ...lockArgs], execOpts);
+            }
+            break;
+          case "mark-failed":
+            if (!(await latestRunHasTerminalSuccess(seedId))) {
+              execFileSync(bin, ["update", seedId, "--status", "failed", ...lockArgs], execOpts);
+            }
+            break;
+          case "set-status": {
+            const targetStatus = payload.status as string;
+            if (targetStatus === "closed" || !(await latestRunHasTerminalSuccess(seedId))) {
+              execFileSync(bin, ["update", seedId, "--status", targetStatus, ...lockArgs], execOpts);
+            }
+            break;
+          }
+          case "add-notes": {
+            const notes = payload.notes as string;
+            if (notes) execFileSync(bin, ["update", seedId, "--notes", notes, ...lockArgs], execOpts);
+            break;
+          }
+          case "add-labels": {
+            const labels = payload.labels as string[];
+            if (labels?.length) {
+              execFileSync(bin, ["update", seedId, ...labels.flatMap((label) => ["--add-label", label]), ...lockArgs], execOpts);
+            }
+            break;
+          }
+        }
+
+        await markProcessed.call(this.store, entry.id);
+        processed++;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[bead-writer] Error processing entry ${entry.id} (${entry.operation}): ${msg.slice(0, 200)}`);
+        await markProcessed.call(this.store, entry.id);
+      }
+    }
+
+    if (processed > 0) {
+      try {
+        execFileSync(bin, ["sync", "--flush-only", "--force"], {
+          ...execOpts,
+          timeout: Math.max(execOpts.timeout, 60_000),
+        });
+        try {
+          execFileSync("sqlite3", [join(beadsDirPath, "beads.db"), "DELETE FROM blocked_issues_cache;"], execOpts);
+        } catch {
+          for (const dbFile of ["beads.db", "beads.db-wal", "beads.db-shm"]) {
+            try { unlinkSync(join(beadsDirPath, dbFile)); } catch { /* ignore */ }
+          }
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[bead-writer] Warning: post-drain cleanup failed: ${msg.slice(0, 200)}`);
+      }
+    }
+
+    return processed;
   }
 
   private async resolveProjectId(): Promise<string> {

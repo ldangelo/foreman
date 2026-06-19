@@ -417,6 +417,20 @@ function statusChalk(status: string): string {
   }
 }
 
+export type TaskPrDisplayState = "none" | "draft" | "open" | "merged" | "closed" | "head-mismatch";
+
+export function resolveTaskPrDisplayState(
+  run: { pr_state?: string | null; pr_head_sha?: string | null } | null | undefined,
+  branchHeadSha?: string | null,
+): TaskPrDisplayState {
+  if (!run?.pr_state || run.pr_state === "none") return "none";
+  if (run.pr_head_sha && branchHeadSha && run.pr_head_sha !== branchHeadSha) return "head-mismatch";
+  if (["draft", "open", "merged", "closed"].includes(run.pr_state)) {
+    return run.pr_state as TaskPrDisplayState;
+  }
+  return "none";
+}
+
 /**
  * Render a PR state badge for display in task list.
  */

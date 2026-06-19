@@ -17,7 +17,7 @@ import { getForemanHomePath } from "../lib/foreman-paths.js";
 
 const DEFAULT_LOG_DIR = getForemanHomePath("logs", "refinery");
 
-interface CliOptions {
+export interface CliOptions {
   daemon: boolean;
   once: boolean;
   pollInterval: number;
@@ -83,9 +83,7 @@ ENVIRONMENT
 /**
  * Main CLI entry point.
  */
-export async function runRefineCli(args: string[]): Promise<number> {
-  const opts = parseCliArgs(args);
-
+export async function runRefineryAgentCommand(opts: CliOptions): Promise<number> {
   if (opts.help) {
     printHelp();
     return 0;
@@ -161,6 +159,10 @@ export async function runRefineCli(args: string[]): Promise<number> {
   // No mode specified
   printHelp();
   return 1;
+}
+
+export async function runRefineCli(args: string[]): Promise<number> {
+  return runRefineryAgentCommand(parseCliArgs(args));
 }
 
 // CLI runner
