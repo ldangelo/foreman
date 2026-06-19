@@ -124,6 +124,7 @@ describe("task CLI daemon/Postgres integration", () => {
         ...process.env,
         HOME: tempHome,
         DATABASE_URL: databaseUrl,
+        FOREMAN_BACKEND: "node",
       },
       stdio: "ignore",
     });
@@ -132,6 +133,7 @@ describe("task CLI daemon/Postgres integration", () => {
       ...process.env,
       HOME: tempHome,
       DATABASE_URL: databaseUrl,
+      FOREMAN_BACKEND: "node",
     }, 60_000);
   }, 130_000);
 
@@ -163,6 +165,7 @@ describe("task CLI daemon/Postgres integration", () => {
       ...process.env,
       HOME: tempHome,
       DATABASE_URL: databaseUrl,
+      FOREMAN_BACKEND: "node",
     };
 
     const create = await runTsxModule(

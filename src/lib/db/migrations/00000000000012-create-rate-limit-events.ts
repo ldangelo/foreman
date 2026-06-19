@@ -1,6 +1,8 @@
 import type { MigrationBuilder } from "node-pg-migrate";
 
 export async function up(pgm: MigrationBuilder): Promise<void> {
+  // rate_limit_events is already created by 00000000000004-add-legacy-run-compat.
+  // Keep this historical migration idempotent on fresh databases that run both.
   pgm.createTable("rate_limit_events", {
     id: {
       type: "uuid",
@@ -11,10 +13,14 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
     project_id: {
       type: "uuid",
       notNull: true,
+      references: "projects",
+      onDelete: "CASCADE",
     },
     run_id: {
       type: "uuid",
       notNull: false,
+      references: "runs",
+      onDelete: "CASCADE",
     },
     model: {
       type: "varchar(255)",
@@ -37,28 +43,13 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
       notNull: true,
       default: "now()",
     },
-  });
-
-  pgm.addConstraint("rate_limit_events", "rate_limit_events_project_id_fkey", {
-    foreignKeys: {
-      columns: ["project_id"],
-      references: "projects(id)",
-      onDelete: "CASCADE",
-    },
-  });
-
-  pgm.addConstraint("rate_limit_events", "rate_limit_events_run_id_fkey", {
-    foreignKeys: {
-      columns: ["run_id"],
-      references: "runs(id)",
-      onDelete: "CASCADE",
-    },
-  });
+  }, { ifNotExists: true });
 
   pgm.createIndex("rate_limit_events", ["model", "recorded_at"], { ifNotExists: true });
   pgm.createIndex("rate_limit_events", ["project_id", "recorded_at"], { ifNotExists: true });
 }
 
 export async function down(pgm: MigrationBuilder): Promise<void> {
-  pgm.dropTable("rate_limit_events", { ifExists: true });
+  pgm.dropIndex("rate_limit_events", ["model", "recorded_at"], { ifExists: true });
+  pgm.dropIndex("rate_limit_events", ["project_id", "recorded_at"], { ifExists: true });
 }

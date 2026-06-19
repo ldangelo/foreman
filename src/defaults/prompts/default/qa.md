@@ -24,6 +24,7 @@ Do NOT run tests if conflict markers are found.
    - `git diff -- <changed files>` when needed to choose verification
    - For Foreman runtime/state/MCP/activity-feed work during the Elixir cutover, do not fail an implementation for missing `PostgresStore`, `src/lib/store.ts`, or legacy Postgres/native TS storage changes unless the task or Explorer explicitly targets that legacy path. Verify the Elixir server, MCP/Elixir client, and current CLI/read-model consumers named by Explorer.
 3. Choose the narrowest verification that can prove the changed behavior:
+   - Prefer targeted verification first for narrow tasks
    - Prefer the command/test target from Developer's **QA Handoff** when it matches the changed files
    - Otherwise infer one targeted command from the changed files and Explorer's verification notes
    - Do **not** run broad discovery (`find`, unscoped `rg`/`grep`, recursive `ls`, `tree`, `git log --all`) unless the handoff is unusable; if unusable, write QA FAIL/BLOCKED instead of exploring broadly
@@ -45,7 +46,8 @@ Do NOT run tests if conflict markers are found.
 ## Verdict: PASS | FAIL
 
 ## Test Results
-- Command run: <exact targeted test command, e.g. npm test -- path/to/test.ts or mix test test/path_test.exs>
+- Targeted command(s) run: <exact targeted test command, e.g. npm test -- --reporter=dot 2>&1 or mix test test/path_test.exs>
+- Command run: <same exact targeted command>
 - Full suite command: SKIPPED (finalize owns broad/full-suite validation)
 - Test suite: X passed, Y failed
 - Raw summary: <copy the pass/fail count lines from the command actually used>
@@ -67,6 +69,6 @@ Do NOT run tests if conflict markers are found.
 - Do not invent legacy backend requirements. During the Elixir cutover, Postgres/native TS store parity is not required unless explicitly requested by the task or Explorer.
 - Be specific about failures — include error messages
 - Use targeted verification only; do not run broad/full-suite commands in QA. Full-suite commands belong only to finalize
-- QA_REPORT.md MUST include `Command run:` plus `Test suite: X passed, Y failed` with real pass/fail evidence; JavaScript (`npm test`, `vitest`) and Elixir (`mix test`) targeted commands are valid evidence; reports without these exact evidence fields are invalid
+- QA_REPORT.md MUST include `Command run:` plus `Test suite: X passed, Y failed` with real pass/fail evidence; JavaScript (`npm test`, `vitest`) and Elixir (`mix test`) targeted commands are valid evidence; reports without real test evidence are invalid
 - **DO NOT** commit, push, or close the seed
 - **Write SESSION_LOG.md** documenting your session work (required, not optional)

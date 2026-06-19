@@ -236,8 +236,6 @@ defmodule ForemanServer.ProjectionStore do
       |> clear_failure_fields_for_active_status()
 
     updated_task = Map.merge(existing, updates)
-
-    # Emit activity event for manual task updates
     run_id = Map.get(payload, :run_id)
 
     projection =
@@ -248,9 +246,10 @@ defmodule ForemanServer.ProjectionStore do
         run_id: run_id,
         event_type: "task_updated",
         timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
-        actor: Map.get(payload, :actor, "operator"),
+        actor: Map.get(payload, :actor, Map.get(payload, :updated_by, "operator")),
         severity: "info",
         summary: "Task #{task_id} updated manually",
+        phase: Map.get(payload, :phase),
         source_link: Map.get(payload, :source_link),
         log_path: Map.get(payload, :log_path)
       }
@@ -807,6 +806,33 @@ defmodule ForemanServer.ProjectionStore do
         :retry_history,
         Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
       )
+    end)
+    |> apply_activity_and_notify(activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "RetryLoop",
+           payload: %{run_id: run_id, phase_id: phase_id, attempt: attempt} = payload
+         },
+         mode
+       ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "retry_loop",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "foreman",
+      severity: "warning",
+      summary: "#{phase_id} entered retry loop (attempt #{attempt})",
+      phase: phase_id,
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    update_run(projection, run_id, fn run ->
+      run
+      |> update_in([:retry_history], &((&1 || []) ++ [%{phase_id: phase_id, attempt: attempt}]))
     end)
     |> apply_activity_and_notify(activity_payload, mode)
   end

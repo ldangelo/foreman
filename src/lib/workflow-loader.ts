@@ -785,6 +785,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   if (isRecord(raw["pr"])) {
     const prRaw = raw["pr"];
     config.pr = {};
+    config.pr.timing = "create-at-finalize";
     if (typeof prRaw["timing"] === "string") {
       const timing = prRaw["timing"];
       if (timing === "draft-after-developer" || timing === "create-at-finalize" || timing === "never") {

@@ -343,6 +343,30 @@ defmodule ForemanServer.InboxTest do
       assert retried.severity == "warning"
     end
 
+    test "RetryLoop creates activity entry in inbox" do
+      start_run_event("run-retry-loop-activity")
+
+      # Append RetryLoop event directly
+      EventStore.append(%{
+        stream_id: "run:run-retry-loop-activity",
+        event_type: "RetryLoop",
+        payload: %{
+          run_id: "run-retry-loop-activity",
+          phase_id: "developer",
+          attempt: 3,
+          reason: "PhaseFailed"
+        },
+        metadata: %{correlation_id: "run-retry-loop-activity"}
+      })
+
+      inbox = Inbox.list("run-retry-loop-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "retry_loop"))
+      retried = Enum.find(inbox, &(&1.activity_type == "retry_loop"))
+      assert retried.severity == "warning"
+      assert retried.body =~ "developer"
+      assert retried.body =~ "attempt 3"
+    end
+
     test "PrMerged creates activity entry in inbox" do
       start_workflow_run("run-pr-merge-activity")
 
@@ -397,13 +421,13 @@ defmodule ForemanServer.InboxTest do
     test "WorkerExited creates activity entry in inbox" do
       start_run_event("run-worker-exit-activity")
 
-      # Append WorkerExited event
       EventStore.append(%{
         stream_id: "run:run-worker-exit-activity",
         event_type: "WorkerExited",
         payload: %{
           run_id: "run-worker-exit-activity",
           worker_id: "worker-1",
+          adapter: "pi-sdk",
           exit_code: 0
         },
         metadata: %{correlation_id: "run-worker-exit-activity"}
@@ -413,12 +437,13 @@ defmodule ForemanServer.InboxTest do
       assert Enum.any?(inbox, &(&1.activity_type == "worker_exit"))
       exited = Enum.find(inbox, &(&1.activity_type == "worker_exit"))
       assert exited.body == "Worker worker-1 exited"
+      assert exited.actor == "pi-sdk"
+      assert exited.severity == "info"
     end
 
     test "QaVerdict creates activity entry in inbox with correct severity" do
       start_workflow_run("run-qa-activity")
 
-      # Append QaVerdict event with pass
       EventStore.append(%{
         stream_id: "run:run-qa-activity",
         event_type: "QaVerdict",
@@ -436,26 +461,28 @@ defmodule ForemanServer.InboxTest do
       assert qa.severity == "info"
       assert qa.body == "QA verdict: pass"
 
-      # Append QaVerdict event with fail
       EventStore.append(%{
         stream_id: "run:run-qa-activity",
         event_type: "QaVerdict",
         payload: %{
           run_id: "run-qa-activity",
           verdict: "fail",
-          phase: "qa"
+          phase: "qa",
+          failure_reasons: ["test timeout"]
         },
         metadata: %{correlation_id: "run-qa-activity-2"}
       })
 
       inbox2 = Inbox.list("run-qa-activity")
       assert Enum.any?(inbox2, &(&1.activity_type == "qa_verdict" && &1.severity == "error"))
+      failed = Enum.find(inbox2, &(&1.activity_type == "qa_verdict" && &1.severity == "error"))
+      assert failed.actor == "qa"
+      assert failed.body =~ "fail"
     end
 
     test "ReviewFinding creates activity entry in inbox with correct severity" do
       start_workflow_run("run-review-activity")
 
-      # Append ReviewFinding event with blocking severity
       EventStore.append(%{
         stream_id: "run:run-review-activity",
         event_type: "ReviewFinding",
@@ -472,13 +499,13 @@ defmodule ForemanServer.InboxTest do
       assert Enum.any?(inbox, &(&1.activity_type == "review_finding"))
       review = Enum.find(inbox, &(&1.activity_type == "review_finding"))
       assert review.severity == "error"
+      assert review.actor == "reviewer"
       assert review.body == "Review finding: Code review blocking issues found"
     end
 
     test "PrCreated creates activity entry in inbox" do
       start_workflow_run("run-pr-created-activity")
 
-      # Append PrCreated event
       EventStore.append(%{
         stream_id: "run:run-pr-created-activity",
         event_type: "PrCreated",
@@ -495,12 +522,12 @@ defmodule ForemanServer.InboxTest do
       pr_created = Enum.find(inbox, &(&1.activity_type == "pr_created"))
       assert pr_created.body == "PR PR-456 created"
       assert pr_created.actor == "vcs"
+      assert pr_created.severity == "info"
     end
 
     test "SchedulerClaim creates activity entry in inbox" do
       start_run_event("run-scheduler-activity")
 
-      # Append SchedulerClaim event
       EventStore.append(%{
         stream_id: "run:run-scheduler-activity",
         event_type: "SchedulerClaim",
@@ -515,12 +542,12 @@ defmodule ForemanServer.InboxTest do
       assert Enum.any?(inbox, &(&1.activity_type == "scheduler_claim"))
       claim = Enum.find(inbox, &(&1.activity_type == "scheduler_claim"))
       assert claim.actor == "scheduler"
+      assert claim.severity == "info"
     end
 
     test "TaskUpdated creates activity entry in inbox for manual updates" do
       start_workflow_run("run-task-update-activity")
 
-      # Append TaskUpdated event with run_id
       EventStore.append(%{
         stream_id: "task:task-manual-update-1",
         event_type: "TaskUpdated",
@@ -541,13 +568,48 @@ defmodule ForemanServer.InboxTest do
       assert updated.actor == "operator"
     end
 
+    test "TaskUpdated falls back to updated_by actor" do
+      start_run_event("run-task-update-updated-by")
+
+      EventStore.append(%{
+        stream_id: "task:task-updated-by-1",
+        event_type: "TaskUpdated",
+        payload: %{
+          task_id: "task-updated-by-1",
+          run_id: "run-task-update-updated-by",
+          status: "in_progress",
+          updated_by: "operator"
+        },
+        metadata: %{correlation_id: "run-task-update-updated-by"}
+      })
+
+      inbox = Inbox.list("run-task-update-updated-by")
+      assert Enum.any?(inbox, &(&1.activity_type == "task_updated"))
+      updated = Enum.find(inbox, &(&1.activity_type == "task_updated"))
+      assert updated.actor == "operator"
+    end
+
+    test "TaskUpdated without run_id does not create activity entry" do
+      start_run_event("run-task-update-no-run-id")
+
+      EventStore.append(%{
+        stream_id: "task:foreman-task-orphan",
+        event_type: "TaskUpdated",
+        payload: %{
+          task_id: "foreman-task-orphan",
+          status: "in_progress",
+          updated_by: "operator"
+        },
+        metadata: %{correlation_id: "run-task-update-no-run-id"}
+      })
+
+      inbox = Inbox.list("run-task-update-no-run-id")
+      refute Enum.any?(inbox, &(&1.activity_type == "task_updated"))
+    end
+
     test "activity feed captures events when visible messages stop before merge failure" do
-      # Simulates foreman-93180/foreman-29707 style history where agent messages stop
-      # but lifecycle events should still appear in activity feed
       start_workflow_run("run-stopped-before-fail")
 
-      # Simulate scenario: agent messages stopped, but lifecycle events continue
-      # First, a worker starts
       EventStore.append(%{
         stream_id: "run:run-stopped-before-fail",
         event_type: "WorkerStarted",
@@ -559,7 +621,6 @@ defmodule ForemanServer.InboxTest do
         metadata: %{correlation_id: "run-stopped-before-fail-1"}
       })
 
-      # QA passes
       EventStore.append(%{
         stream_id: "run:run-stopped-before-fail",
         event_type: "QaVerdict",
@@ -571,7 +632,6 @@ defmodule ForemanServer.InboxTest do
         metadata: %{correlation_id: "run-stopped-before-fail-2"}
       })
 
-      # PR created
       EventStore.append(%{
         stream_id: "run:run-stopped-before-fail",
         event_type: "PrCreated",
@@ -582,7 +642,6 @@ defmodule ForemanServer.InboxTest do
         metadata: %{correlation_id: "run-stopped-before-fail-3"}
       })
 
-      # Review finds blocking issue
       EventStore.append(%{
         stream_id: "run:run-stopped-before-fail",
         event_type: "ReviewFinding",
@@ -595,7 +654,6 @@ defmodule ForemanServer.InboxTest do
         metadata: %{correlation_id: "run-stopped-before-fail-4"}
       })
 
-      # Run fails due to review finding
       EventStore.append(%{
         stream_id: "run:run-stopped-before-fail",
         event_type: "RunFailed",
@@ -608,14 +666,12 @@ defmodule ForemanServer.InboxTest do
       })
 
       inbox = Inbox.list("run-stopped-before-fail")
-      # Activity feed should capture all lifecycle events even without agent messages
       assert Enum.any?(inbox, &(&1.activity_type == "worker_started"))
       assert Enum.any?(inbox, &(&1.activity_type == "qa_verdict"))
       assert Enum.any?(inbox, &(&1.activity_type == "pr_created"))
       assert Enum.any?(inbox, &(&1.activity_type == "review_finding"))
       assert Enum.any?(inbox, &(&1.activity_type == "run_failed"))
 
-      # Verify the run failed due to review, not missing agent messages
       failed = Enum.find(inbox, &(&1.activity_type == "run_failed"))
       assert failed.body =~ "ReviewFinding"
     end

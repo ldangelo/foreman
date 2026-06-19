@@ -70,6 +70,7 @@ describe("foreman retry --project flag", () => {
     const result = await run(["retry", "bd-missing", "--project", "my-project", "--dry-run"], projectDir, {
       ...process.env,
       HOME: tmpBase,
+      FOREMAN_BACKEND: "node",
     });
 
     const output = result.stdout + result.stderr;

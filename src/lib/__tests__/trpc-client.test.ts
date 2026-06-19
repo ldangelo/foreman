@@ -19,12 +19,20 @@ function makeTempSocketPath() {
   return { dir, socketPath };
 }
 
+const ORIGINAL_FOREMAN_BACKEND = process.env.FOREMAN_BACKEND;
+
 beforeEach(() => {
   vi.restoreAllMocks();
+  process.env.FOREMAN_BACKEND = "node";
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  if (ORIGINAL_FOREMAN_BACKEND === undefined) {
+    delete process.env.FOREMAN_BACKEND;
+  } else {
+    process.env.FOREMAN_BACKEND = ORIGINAL_FOREMAN_BACKEND;
+  }
 });
 
 // ---------------------------------------------------------------------------

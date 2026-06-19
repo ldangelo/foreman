@@ -154,11 +154,8 @@ export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<P
     filesChanged.push(...applyScenario(cwd, scenario));
   }
 
-  if (phase === "finalize") {
-    if (!filesChanged.length && scenario.kind) {
-      filesChanged.push(...applyScenario(cwd, scenario));
-    }
-    commitChanges(cwd, context.seedId);
+  if (phase === "finalize" && !filesChanged.length && scenario.kind) {
+    filesChanged.push(...applyScenario(cwd, scenario));
   }
 
   writeArtifact(
@@ -171,6 +168,10 @@ export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<P
     `${new Date().toISOString()} ${phase} ${context.seedId}\n`,
     "utf-8",
   );
+
+  if (phase === "finalize") {
+    commitChanges(cwd, context.seedId);
+  }
 
   onTurnEnd?.(1);
   return {

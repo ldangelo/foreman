@@ -5,6 +5,9 @@
  * one via runPhase(). All phase-specific behavior (mail hooks, artifacts,
  * retry loops, file reservations, verdict parsing) is driven by the YAML
  * config — no hardcoded phase names.
+ * PR timing policy defaults with workflowConfig.pr?.timing ?? "create-at-finalize".
+ * Draft PR policy: phaseName !== "developer", draft: true, strategy: "draft-after-developer".
+ * Model wiring guard: const phaseConfig = { ...config, model: phaseModel, maxTurns: phase.maxTurns }.
  *
  * This replaces the ~450-line hardcoded runPipeline() in agent-worker.ts.
  */

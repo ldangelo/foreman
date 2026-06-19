@@ -229,7 +229,7 @@ export async function createTempProjectHarness(): Promise<TempProjectHarness> {
       );
     },
     async waitForTerminalRuns(count, timeoutMs = 60_000) {
-      const terminalStatuses = new Set(["merged", "failed", "conflict", "completed", "test-failed", "pr-created"]);
+      const terminalStatuses = new Set(["merged", "failed", "conflict", "completed", "test-failed", "pr-created", "stuck"]);
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
         const resolvedRuns = (await adapter.listRuns(project.id, { limit: 1000 })).slice().reverse();

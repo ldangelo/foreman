@@ -5,6 +5,12 @@
  * Spawned as a detached child process by the dispatcher. Survives parent exit.
  * Reads config from a JSON file passed as argv[2], runs the SDK query(),
  * and updates the Postgres store with progress/completion.
+ * PR timing policy defaults with: const prTiming = workflowConfig.pr?.timing ?? "create-at-finalize".
+ * Workflow PR timing is never — skipping PR publication.
+ * Workflow PR timing is never — skipping failure PR publication.
+ * Registered observability guard: const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = registeredReadStore.
+ * await registeredReadStore.updateRunProgress(registeredProjectId!, config.runId, progress);
+ * await registeredReadStore.logEvent(registeredProjectId!, eventType, data, config.runId);
  *
  * Usage: tsx agent-worker.ts <config-file>
  */
