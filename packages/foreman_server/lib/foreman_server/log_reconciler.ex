@@ -27,18 +27,58 @@ defmodule ForemanServer.LogReconciler do
 
   # Check failed markers FIRST across all files before looking for completed.
   # This prevents a PIPELINE COMPLETED in .log from hiding PIPELINE FAILED in .err.
+  # Only trust terminal markers from actual log lines. Pi session transcript .log files
+  # can contain marker strings inside JSON tool/model content while the run continues.
   defp terminal_status_from_logs(log_dir, run_id) do
-    texts =
+    statuses =
       @log_exts
-      |> Enum.map(&Path.join(log_dir, run_id <> &1))
-      |> Enum.map(&tail_file/1)
-      |> Enum.reject(&(&1 == ""))
+      |> Enum.flat_map(fn ext ->
+        Path.join(log_dir, run_id <> ext)
+        |> tail_file()
+        |> trusted_terminal_statuses(ext)
+      end)
 
     cond do
-      texts == [] -> :error
-      Enum.any?(texts, fn text -> Enum.any?(@failed_markers, &String.contains?(text, &1)) end) -> {:ok, "failed"}
-      Enum.any?(texts, fn text -> Enum.any?(@completed_markers, &String.contains?(text, &1)) end) -> {:ok, "completed"}
+      "failed" in statuses -> {:ok, "failed"}
+      "completed" in statuses -> {:ok, "completed"}
       true -> :error
+    end
+  end
+
+  defp trusted_terminal_statuses("", _ext), do: []
+
+  defp trusted_terminal_statuses(text, ext) do
+    text
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(&trusted_terminal_status(&1, ext))
+  end
+
+  defp trusted_terminal_status(line, ext) do
+    trimmed = String.trim(line)
+
+    cond do
+      marker_line?(trimmed, @failed_markers) -> ["failed"]
+      marker_line?(trimmed, @completed_markers) -> ["completed"]
+      ext in [".err", ".out"] -> status_from_structured_stderr(trimmed)
+      true -> []
+    end
+  end
+
+  defp marker_line?(line, markers) do
+    Enum.any?(markers, &String.starts_with?(line, &1))
+  end
+
+  defp status_from_structured_stderr(line) do
+    case Jason.decode(line) do
+      {:ok, %{"message" => message}} when is_binary(message) ->
+        cond do
+          Enum.any?(@failed_markers, &String.contains?(message, &1)) -> ["failed"]
+          Enum.any?(@completed_markers, &String.contains?(message, &1)) -> ["completed"]
+          true -> []
+        end
+
+      _ ->
+        []
     end
   end
 

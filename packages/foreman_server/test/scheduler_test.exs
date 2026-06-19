@@ -116,6 +116,56 @@ defmodule ForemanServer.SchedulerTest do
     assert ProjectionStore.snapshot().runs["run-fail"].status == "failed"
   end
 
+  test "tick ignores terminal marker text embedded inside pi session transcript json" do
+    log_dir = Application.get_env(:foreman_server, :scheduler)[:log_dir]
+    File.mkdir_p!(log_dir)
+
+    create_task("task-active", %{project_id: "alpha", status: "in_progress"})
+    append_run_started("run-active", "task-active")
+
+    transcript_line =
+      Jason.encode!(%{
+        type: "message_start",
+        message: %{
+          role: "toolResult",
+          content: [
+            %{
+              type: "text",
+              text: "historical content says PIPELINE FAILED but this is not stderr"
+            }
+          ]
+        }
+      })
+
+    File.write!(Path.join(log_dir, "run-active.log"), transcript_line <> "\n")
+
+    assert {:ok, result} = Scheduler.tick(max_concurrent: 1)
+
+    assert [] = result.reconciled_terminal_runs
+    assert ProjectionStore.snapshot().runs["run-active"].status == "in_progress"
+  end
+
+  test "tick trusts structured stderr terminal marker messages" do
+    log_dir = Application.get_env(:foreman_server, :scheduler)[:log_dir]
+    File.mkdir_p!(log_dir)
+
+    create_task("task-json-fail", %{project_id: "alpha", status: "in_progress"})
+    append_run_started("run-json-fail", "task-json-fail")
+
+    File.write!(
+      Path.join(log_dir, "run-json-fail.err"),
+      Jason.encode!(%{level: "info", message: "PIPELINE FAILED for task-json-fail ($1.00)"}) <>
+        "\n"
+    )
+
+    assert {:ok, result} = Scheduler.tick(max_concurrent: 1)
+
+    assert [%{run_id: "run-json-fail", status: "failed", source: "log"}] =
+             result.reconciled_terminal_runs
+
+    assert ProjectionStore.snapshot().runs["run-json-fail"].status == "failed"
+  end
+
   test "periodic tick automatically claims ready tasks" do
     Application.stop(:foreman_server)
 
