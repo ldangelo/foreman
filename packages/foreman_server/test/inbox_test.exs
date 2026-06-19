@@ -343,6 +343,30 @@ defmodule ForemanServer.InboxTest do
       assert retried.severity == "warning"
     end
 
+    test "RetryLoop creates activity entry in inbox" do
+      start_run_event("run-retry-loop-activity")
+
+      # Append RetryLoop event directly
+      EventStore.append(%{
+        stream_id: "run:run-retry-loop-activity",
+        event_type: "RetryLoop",
+        payload: %{
+          run_id: "run-retry-loop-activity",
+          phase_id: "developer",
+          attempt: 3,
+          reason: "PhaseFailed"
+        },
+        metadata: %{correlation_id: "run-retry-loop-activity"}
+      })
+
+      inbox = Inbox.list("run-retry-loop-activity")
+      assert Enum.any?(inbox, &(&1.activity_type == "retry_loop"))
+      retried = Enum.find(inbox, &(&1.activity_type == "retry_loop"))
+      assert retried.severity == "warning"
+      assert retried.body =~ "developer"
+      assert retried.body =~ "attempt 3"
+    end
+
     test "PrMerged creates activity entry in inbox" do
       start_workflow_run("run-pr-merge-activity")
 
