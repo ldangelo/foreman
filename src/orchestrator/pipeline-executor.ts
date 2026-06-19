@@ -539,14 +539,31 @@ function gitChangedFiles(worktreePath: string): string[] | null {
 
 function extractClaimedPaths(report: string): string[] {
   const candidates = new Set<string>();
-  const pathPattern = /(?:`([^`]+)`|\b((?:src|docs|packages|test|tests|scripts|bin|README|AGENTS|CLAUDE|package|tsconfig|vite)[\w./-]*(?:\.[\w.-]+)?))/g;
-  for (const match of report.matchAll(pathPattern)) {
-    const raw = (match[1] ?? match[2] ?? "").trim();
-    if (!raw || raw.includes(" ") || raw.startsWith("http")) continue;
-    if (/^(npm|npx|git|mix|cd|node|bin\/foreman)$/.test(raw)) continue;
-    if (!/[./]/.test(raw) && !/^(README|AGENTS|CLAUDE|package|tsconfig|vite)/.test(raw)) continue;
-    candidates.add(raw.replace(/^\.\//, ""));
+  const claimSection = /^(?:#{1,6}\s*)?(?:changed|modified|created|updated|touched|claimed) files\b/i;
+  const nextSection = /^#{1,6}\s+\S/;
+  const pathPattern = /`([^`]+)`|\b((?:src|docs|packages|test|tests|scripts|bin)\/[\w./-]+|(?:README|AGENTS|CLAUDE)\.md|package\.json|tsconfig\.json|vite\.config\.[\w.]+)\b/g;
+  let inClaimSection = false;
+
+  for (const line of report.split("\n")) {
+    const trimmed = line.trim();
+    if (claimSection.test(trimmed)) {
+      inClaimSection = true;
+    }
+    if (inClaimSection && nextSection.test(trimmed) && !claimSection.test(trimmed)) {
+      inClaimSection = false;
+    }
+
+    const explicitDiffEvidence = /git diff --name-only/i.test(trimmed);
+    if (!inClaimSection && !explicitDiffEvidence) continue;
+
+    for (const match of trimmed.matchAll(pathPattern)) {
+      const raw = (match[1] ?? match[2] ?? "").trim();
+      if (!raw || raw.includes(" ") || raw.startsWith("http")) continue;
+      if (/^(npm|npx|git|mix|cd|node|bin\/foreman)$/.test(raw)) continue;
+      candidates.add(raw.replace(/^\.\//, ""));
+    }
   }
+
   return [...candidates];
 }
 
