@@ -542,6 +542,20 @@ describe("buildWorkerEnv — Pi permission isolation", () => {
       else process.env.FOREMAN_PI_PERMISSION_LEVEL = previousForemanPiPermission;
     }
   });
+
+  it("does not leak Elixir server HTTP enablement into worker commands", () => {
+    const previous = process.env.FOREMAN_SERVER_HTTP_ENABLED;
+    process.env.FOREMAN_SERVER_HTTP_ENABLED = "true";
+
+    try {
+      const env = buildWorkerEnv(false, "seed-001", "run-001", "model");
+
+      expect(env.FOREMAN_SERVER_HTTP_ENABLED).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.FOREMAN_SERVER_HTTP_ENABLED;
+      else process.env.FOREMAN_SERVER_HTTP_ENABLED = previous;
+    }
+  });
 });
 
 describe("buildWorkerEnv — PATH includes ~/.local/bin", () => {

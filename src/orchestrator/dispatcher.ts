@@ -2185,6 +2185,8 @@ export function buildWorkerEnv(
       env[key] = value;
     }
   }
+  delete env.FOREMAN_SERVER_HTTP_ENABLED;
+
   const home = process.env.HOME ?? "/home/nobody";
   env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
   env.TSX_DISABLE_IPC = "1";
