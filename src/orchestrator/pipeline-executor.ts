@@ -355,6 +355,16 @@ function failureKind(error: string | undefined): "provider_transient" | "max_tur
   return "phase_failed";
 }
 
+/**
+ * Retry budgets belong to the failing/source phase, not the retry target.
+ * Example: QA and finalize may both loop back to developer, but QA failures
+ * spend QA's budget and finalize failures spend finalize's budget. Developer
+ * can therefore run once initially plus each source-phase retry activation.
+ */
+function retryBudgetKey(sourcePhaseName: string): string {
+  return sourcePhaseName;
+}
+
 /** Return true when a failed phase should enter cooldown retry instead of terminal failure. */
 export function shouldUseCooldownRetry(error: string | undefined, phase: Pick<WorkflowPhaseConfig, "retryAfterCooldown">): boolean {
   return Boolean(phase.retryAfterCooldown && isRateLimitError(error));
@@ -1461,12 +1471,13 @@ async function runPhaseSequence(
         if (phase.retryWith) {
           const retryTarget = phase.retryWith;
           const maxRetries = phase.retryOnFail ?? 0;
-          const currentRetries = retryCounts[phaseName] ?? 0;
+          const retryCountKey = retryBudgetKey(phaseName);
+          const currentRetries = retryCounts[retryCountKey] ?? 0;
           const artifactContent = interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null;
           const feedback = artifactContent ?? result.outputText ?? errorMsg;
 
           if (currentRetries < maxRetries) {
-            retryCounts[phaseName] = currentRetries + 1;
+            retryCounts[retryCountKey] = currentRetries + 1;
             if (phase.mail?.onFail) {
               const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
               ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
@@ -1571,13 +1582,14 @@ async function runPhaseSequence(
         if (phase.retryWith) {
           const retryTarget = phase.retryWith;
           const maxRetries = phase.retryOnFail ?? 0;
-          const currentRetries = retryCounts[phaseName] ?? 0;
+          const retryCountKey = retryBudgetKey(phaseName);
+          const currentRetries = retryCounts[retryCountKey] ?? 0;
           const feedback = (interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null)
             ?? result.outputText
             ?? errorMsg;
 
           if (currentRetries < maxRetries) {
-            retryCounts[phaseName] = currentRetries + 1;
+            retryCounts[retryCountKey] = currentRetries + 1;
             if (phase.mail?.onFail) {
               const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
               ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
@@ -2118,7 +2130,7 @@ async function runPhaseSequence(
       if (verdict === "fail" && phase.retryWith) {
         const retryTarget = phase.retryWith;
         const maxRetries = phase.retryOnFail ?? 0;
-        const retryCountKey = phaseName;
+        const retryCountKey = retryBudgetKey(phaseName);
         const currentRetries = retryCounts[retryCountKey] ?? 0;
         const finalizeFailureScope = phaseName === "finalize" && report
           ? parseFinalizeFailureScope(report)

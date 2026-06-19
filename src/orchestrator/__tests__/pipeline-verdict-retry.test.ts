@@ -502,6 +502,52 @@ describe("verdict-triggered retry", () => {
     expect(reviewerCount).toBe(2);
   });
 
+  it("charges retry budgets to failing source phases, not the developer target", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+      { name: "finalize", artifact: "FINALIZE_VALIDATION.md", verdict: true, retryWith: "developer", retryOnFail: 2 },
+    ];
+
+    let qaCount = 0;
+    let finalizeCount = 0;
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        qaCount++;
+        writeFileSync(
+          join(tmpDir, "QA_REPORT.md"),
+          qaCount === 1
+            ? "# QA\n\n## Verdict: FAIL\n"
+            : "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npm test -- --reporter=dot 2>&1`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n",
+        );
+      }
+      if (phaseName === "finalize") {
+        finalizeCount++;
+        writeFileSync(
+          join(tmpDir, "FINALIZE_VALIDATION.md"),
+          finalizeCount < 3
+            ? "# Finalize Validation\n\n## Verdict: FAIL\n\n## Target Integration: SUCCESS\n\n## Test Validation: PASS\n"
+            : "# Finalize Validation\n\n## Verdict: PASS\n\n## Target Integration: SUCCESS\n\n## Test Validation: PASS\n",
+        );
+      }
+      return successResult();
+    });
+
+    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
+
+    expect(qaCount).toBe(4);
+    expect(finalizeCount).toBe(3);
+    expect(phaseOrder.filter((phase) => phase === "developer")).toHaveLength(4);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("QA] FAIL — looping back to developer (retry 1/1)"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("FINALIZE] FAIL — looping back to developer (retry 1/2)"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("FINALIZE] FAIL — looping back to developer (retry 2/2)"));
+  });
+
   it("records QA target revision and skips finalize rerun when target is unchanged", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const prompts: Record<string, string> = {};

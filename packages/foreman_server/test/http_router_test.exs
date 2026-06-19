@@ -101,6 +101,39 @@ defmodule ForemanServer.Http.RouterTest do
     assert ProjectionStore.snapshot().runs["run-http-fail"].status == "failed"
   end
 
+  test "authorized phase commands append lifecycle projection events" do
+    append_run_event("RunStarted", %{
+      run_id: "run-http-phase",
+      task_id: "task-http-phase",
+      project_id: "proj-http",
+      phase_order: ["developer", "qa"],
+      current_phase: "developer"
+    })
+
+    command = %{
+      "command_id" => "cmd-phase-complete",
+      "command_type" => "phase.complete",
+      "schema_version" => 1,
+      "payload" => %{
+        "run_id" => "run-http-phase",
+        "task_id" => "task-http-phase",
+        "project_id" => "proj-http",
+        "phase_id" => "developer"
+      },
+      "metadata" => %{"correlation_id" => "run-http-phase"}
+    }
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 202
+    assert ProjectionStore.snapshot().runs["run-http-phase"].phase_status["developer"] == "completed"
+  end
+
   test "run log/report/debug endpoints require bearer token" do
     seed_debug_http_run()
 

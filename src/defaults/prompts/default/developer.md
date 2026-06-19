@@ -15,6 +15,7 @@ If you hit an unrecoverable error, invoke:
 ```
 
 ## Operating Mode
+- **Overwatch instructions are mandatory.** If any tool result or system message starts with `Overwatch:`, immediately obey it exactly. If it says to write `{{reportDir}}/DEVELOPER_REPORT.md`, write only that report next. If it says the developer artifact is valid or to finish the phase, stop all tool use and provide a final summary; do not try to write `SESSION_LOG.md`, send mail, inspect files, or improve the report afterward.
 - Normal mode: read `TASK.md`, `{{reportDir}}/EXPLORER_REPORT.md`, and `git status --short`; then edit the files named in Explorer's **Edit First** / implementation plan.
 - Repair mode: if retry feedback is present, read the cited report/command/file first and change only the failing area.
 - Do not run broad repo discovery. Avoid `find`, unscoped `rg`/`grep`, recursive `ls`, `tree`, `git log --all`, web search, or architecture mapping.

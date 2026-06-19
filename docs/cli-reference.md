@@ -57,6 +57,20 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 | `--force` | Overwrite existing prompt and workflow files |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`beads`, `jira`, or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
+### `foreman project edit`
+
+Update registered project settings. `--default-branch` controls the base branch used for new task worktrees and finalization targets.
+
+```bash
+foreman project edit <project-id> --default-branch dev
+```
+
+| Option | Description |
+|--------|-------------|
+| `--name <name>` | Project display name |
+| `--status <status>` | Project status: `active`, `paused`, or `archived` |
+| `--default-branch <branch>` | Default/base branch for new project worktrees |
+
 ---
 
 ## Dispatching Work

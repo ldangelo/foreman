@@ -164,12 +164,12 @@ describe("bundled default.yaml: verdict/retry config", () => {
     expect(phases["reviewer"].artifact).toBe("{task.projectReportsDir}/REVIEW.md");
   });
 
-  it("qa phase has verdict:true, retryWith:developer, retryOnFail:2", () => {
+  it("qa phase has verdict:true, retryWith:developer, retryOnFail:3", () => {
     const phases = loadPhaseMap(BUNDLED_DEFAULT_YAML);
     expect(phases["qa"]).toBeDefined();
     expect(phases["qa"].verdict).toBe(true);
     expect(phases["qa"].retryWith).toBe("developer");
-    expect(phases["qa"].retryOnFail).toBe(2);
+    expect(phases["qa"].retryOnFail).toBe(3);
     expect(phases["qa"].artifact).toBe("{task.projectReportsDir}/QA_REPORT.md");
   });
 });
@@ -184,12 +184,12 @@ describe("project-local .foreman/workflows/default.yaml: verdict/retry config", 
     expect(phases["reviewer"].artifact).toBe("{task.projectReportsDir}/REVIEW.md");
   });
 
-  it("qa phase has verdict:true, retryWith:developer, retryOnFail:2", () => {
+  it("qa phase has verdict:true, retryWith:developer, retryOnFail:3", () => {
     const phases = loadPhaseMap(RESOLVED_LOCAL_DEFAULT_YAML);
     expect(phases["qa"]).toBeDefined();
     expect(phases["qa"].verdict).toBe(true);
     expect(phases["qa"].retryWith).toBe("developer");
-    expect(phases["qa"].retryOnFail).toBe(2);
+    expect(phases["qa"].retryOnFail).toBe(3);
     expect(phases["qa"].artifact).toBe("{task.projectReportsDir}/QA_REPORT.md");
   });
 

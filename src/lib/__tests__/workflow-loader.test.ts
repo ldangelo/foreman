@@ -353,7 +353,7 @@ phases:
     expect(developerPhase?.prompt).toBe("developer.md");
     expect(qaPhase?.prompt).toBe("qa.md");
     expect(qaPhase?.retryWith).toBe("developer");
-    expect(qaPhase?.retryOnFail).toBe(2);
+    expect(qaPhase?.retryOnFail).toBe(3);
 
     for (const phase of config.phases) {
       if (phase.retryWith) {

@@ -73,7 +73,7 @@ Foreman MCP adapter (TypeScript)
 Foreman Elixir backend
 ```
 
-The adapter keeps all reads and writes behind the Elixir HTTP API/command boundary. MCP does not read Postgres directly.
+The adapter keeps all reads and writes behind the Elixir HTTP API/command boundary. MCP does not read Postgres directly. Worker phase observability also writes `PhaseStarted`/`PhaseCompleted` lifecycle events through the Elixir command boundary so MCP inbox/events can show post-dispatch phase activity instead of relying only on log-file tails.
 
 ## Pi Slash Commands
 

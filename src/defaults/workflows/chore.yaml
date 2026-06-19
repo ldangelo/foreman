@@ -85,7 +85,7 @@ phases:
     maxTurns: 30
     verdict: true
     retryWith: developer
-    retryOnFail: 1
+    retryOnFail: 6
     mail:
       onStart: true
       onComplete: true

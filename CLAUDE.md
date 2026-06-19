@@ -109,7 +109,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 **Default pipeline phases:**
 
 1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
-2. **Developer** (Sonnet) — implementation only; QA/finalize own test execution, but Developer may author focused tests when task/handoff requires coverage → DEVELOPER_REPORT.md
+2. **Developer** (Sonnet) — implementation only; obey Overwatch stop/report instructions as terminal guidance; QA/finalize own test execution, but Developer may author focused tests when task/handoff requires coverage → DEVELOPER_REPORT.md
 3. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
 5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
@@ -199,7 +199,7 @@ phases:
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true            # parse PASS/FAIL from artifact
     retryWith: developer     # on FAIL, loop back to developer
-    retryOnFail: 2           # max retry count
+    retryOnFail: 3           # max retry count for this failing/source phase
     mail:
       onFail: developer      # send feedback to developer on FAIL
 ```

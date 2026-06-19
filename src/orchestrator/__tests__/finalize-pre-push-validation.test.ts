@@ -133,12 +133,12 @@ describe("default.yaml: finalize phase pre-push validation config", () => {
     expect(finalize?.retryWith).toBe("developer");
   });
 
-  it("finalize phase has retryOnFail: 1", () => {
+  it("finalize phase has retryOnFail: 6", () => {
     const { load: yamlLoad } = require("js-yaml") as { load: (s: string) => unknown };
     const raw = yamlLoad(readFileSync(DEFAULT_WORKFLOW_YAML, "utf-8"));
     const config = validateWorkflowConfig(raw, "default");
     const finalize = config.phases.find((p) => p.name === "finalize");
-    expect(finalize?.retryOnFail).toBe(1);
+    expect(finalize?.retryOnFail).toBe(6);
   });
 
   it("finalize phase has mail.onFail: developer", () => {

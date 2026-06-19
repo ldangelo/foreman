@@ -58,6 +58,8 @@ import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { runWorkspaceHook } from "../lib/setup.js";
 import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
+import { ElixirServerClient } from "../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../lib/elixir-server-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1672,6 +1674,59 @@ async function runMergeBuiltinPhase(args: {
   };
 }
 
+function createPipelineObservabilityWriter(opts: {
+  config: WorkerConfig;
+  registeredReadStore?: PostgresStore;
+  registeredProjectId?: string;
+  log: (message: string) => void;
+}): PipelineObservabilityWriter {
+  const { config, registeredReadStore, registeredProjectId, log } = opts;
+  const manager = new ElixirServerManager();
+  const elixirClient = new ElixirServerClient(manager.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+
+  return {
+    async updateProgress(progress) {
+      if (!registeredReadStore) return;
+      try {
+        await registeredReadStore.updateRunProgress(config.runId, progress);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`[pipeline-observability] progress update failed (non-fatal): ${msg}`);
+      }
+    },
+    async logEvent(eventType, data) {
+      const commandType = eventType === "phase-start" ? "phase.start" : eventType === "complete" ? "phase.complete" : undefined;
+      if (commandType) {
+        try {
+          await elixirClient.sendCommand({
+            command_id: `phase-${eventType}-${config.runId}-${String(data.phase ?? data.phase_id ?? "unknown")}-${Date.now()}`,
+            command_type: commandType,
+            payload: {
+              ...data,
+              run_id: config.runId,
+              task_id: config.seedId,
+              project_id: config.projectId,
+              phase_id: data.phase_id ?? data.phase,
+            },
+            metadata: { correlation_id: config.runId, source: "agent-worker" },
+          });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[pipeline-observability] Elixir ${eventType} event failed (non-fatal): ${msg}`);
+        }
+      }
+
+      if (!registeredReadStore || !registeredProjectId) return;
+      try {
+        await registeredReadStore.logEvent(registeredProjectId, eventType, data, config.runId);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`[pipeline-observability] ${eventType} event failed (non-fatal): ${msg}`);
+      }
+    },
+  };
+}
+
 async function runPipeline(
   config: WorkerConfig,
   store: ForemanStore,
@@ -1711,26 +1766,12 @@ async function runPipeline(
       registeredProjectId,
     },
   );
-  const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = registeredReadStore
-    ? {
-        async updateProgress(progress) {
-          try {
-            await registeredReadStore.updateRunProgress(config.runId, progress);
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`[pipeline-observability] progress update failed (non-fatal): ${msg}`);
-          }
-        },
-        async logEvent(eventType, data) {
-          try {
-            await registeredReadStore.logEvent(registeredProjectId!, eventType, data, config.runId);
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`[pipeline-observability] ${eventType} event failed (non-fatal): ${msg}`);
-          }
-        },
-      }
-    : undefined;
+  const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = createPipelineObservabilityWriter({
+    config,
+    registeredReadStore,
+    registeredProjectId,
+    log,
+  });
 
   // Initialize VCS backend for prompt templating (TRD-026, TRD-027).
   // Reconstructed from FOREMAN_VCS_BACKEND env var set by dispatcher.

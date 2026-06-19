@@ -203,10 +203,11 @@ function wrapToolWithPhasePolicy<T extends ToolDefinition>(tool: T, policy?: Pha
       const params = args[1] && typeof args[1] === "object" ? args[1] as Record<string, unknown> : {};
       const reason = policy.beforeTool(tool.name, params);
       if (reason) {
+        const terminalStop = /artifact is valid|finish this phase now/i.test(reason);
         return {
           content: [{ type: "text", text: reason }],
-          details: { blockedBy: "phase-overwatch" },
-          isError: true,
+          details: { blockedBy: "phase-overwatch", terminalStop },
+          isError: !terminalStop,
         };
       }
       return originalExecute(...args);
