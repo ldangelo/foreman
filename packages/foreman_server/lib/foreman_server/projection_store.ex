@@ -315,7 +315,8 @@ defmodule ForemanServer.ProjectionStore do
       current_phase: Map.get(payload, :current_phase),
       phase_status: %{},
       worker_status: %{},
-      retry_history: []
+      retry_history: [],
+      updated_at: Map.get(payload, :occurred_at, DateTime.utc_now())
     }
 
     put_in(projection, [:runs, run_id], run)
@@ -411,6 +412,7 @@ defmodule ForemanServer.ProjectionStore do
     update_run(projection, run_id, fn run ->
       run
       |> Map.put(:current_phase, phase_id)
+      |> Map.put(:updated_at, Map.get(payload, :occurred_at, DateTime.utc_now()))
       |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "in_progress"))
     end)
     |> apply_activity_and_notify(activity_payload, mode)

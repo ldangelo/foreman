@@ -72,6 +72,14 @@ export type ElixirInboxMessage = Record<string, unknown> & {
   unread?: boolean;
 };
 
+export type ElixirSchedulerSkip = Record<string, unknown> & {
+  task_id?: string;
+  project_id?: string;
+  reason?: string;
+  task_title?: string;
+  task_project_id?: string;
+};
+
 export type ElixirEvent = Record<string, unknown> & {
   event_id?: string;
   run_id?: string;
@@ -132,6 +140,14 @@ export class ElixirServerClient {
   async listRuns(): Promise<ElixirRun[]> {
     const body = await this.getJson<{ ok: true; runs: ElixirRun[] }>("/api/v1/runs");
     return body.runs;
+  }
+
+  async listSchedulerSkips(projectId?: string): Promise<ElixirSchedulerSkip[]> {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; skips: ElixirSchedulerSkip[]; count: number }>(`/api/v1/scheduler/skips${query ? `?${query}` : ""}`);
+    return body.skips;
   }
 
   async listInbox(opts: { runId?: string; projectId?: string; limit?: number; unread?: boolean } = {}): Promise<ElixirInboxMessage[]> {
