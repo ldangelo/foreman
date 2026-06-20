@@ -23,6 +23,18 @@ export interface ParsedQAReport {
   rawContent: string;
 }
 
+export interface AcceptanceCriterion {
+  id: string;
+  text: string;
+}
+
+export interface AcceptanceCoverageResult {
+  ok: boolean;
+  criteria: AcceptanceCriterion[];
+  missing: AcceptanceCriterion[];
+  reportHasAcceptanceSection: boolean;
+}
+
 /**
  * Parse a QA_REPORT.md markdown string into structured failure items.
  * Also extracts the verdict (PASS/FAIL) from the report.
@@ -138,6 +150,73 @@ export function diffQAFailures(
   }
 
   return tracked;
+}
+
+export function parseAcceptanceContract(content: string): AcceptanceCriterion[] {
+  const section = content.match(/(?:^|\n)##\s+Acceptance Contract\s*\n([\s\S]*?)(?=\n##\s+|$)/i)?.[1] ?? "";
+  if (!section.trim()) return [];
+
+  const criteria: AcceptanceCriterion[] = [];
+  for (const line of section.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const bullet = trimmed.match(/^(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*)$/);
+    if (!bullet) continue;
+    const text = cleanAcceptanceText(bullet[1]);
+    if (!text || /^carry the same acceptance contract/i.test(text)) continue;
+    const idMatch = text.match(/^\[?([A-Z]{1,4}-?\d{1,3}|AC\d{1,3}|C\d{1,3})\]?\s*[:—-]\s*(.+)$/i);
+    criteria.push({
+      id: idMatch?.[1]?.toUpperCase() ?? `AC${criteria.length + 1}`,
+      text: idMatch?.[2]?.trim() ?? text,
+    });
+  }
+  return criteria;
+}
+
+export function validateAcceptanceCoverage(explorerReport: string, phaseReport: string): AcceptanceCoverageResult {
+  const criteria = parseAcceptanceContract(explorerReport);
+  if (criteria.length === 0) {
+    return { ok: true, criteria, missing: [], reportHasAcceptanceSection: true };
+  }
+
+  const reportHasAcceptanceSection = /^##\s+Acceptance Contract\b/im.test(phaseReport);
+  const normalizedReport = normalizeAcceptanceText(phaseReport);
+  const missing = criteria.filter((criterion) => !criterionCovered(criterion, normalizedReport));
+  return {
+    ok: reportHasAcceptanceSection && missing.length === 0,
+    criteria,
+    missing,
+    reportHasAcceptanceSection,
+  };
+}
+
+function criterionCovered(criterion: AcceptanceCriterion, normalizedReport: string): boolean {
+  if (normalizeAcceptanceText(criterion.id).length >= 2 && normalizedReport.includes(normalizeAcceptanceText(criterion.id))) {
+    return true;
+  }
+  const normalizedCriterion = normalizeAcceptanceText(criterion.text);
+  if (normalizedCriterion && normalizedReport.includes(normalizedCriterion)) return true;
+  const significantTokens = normalizedCriterion
+    .split(" ")
+    .filter((token) => token.length >= 4)
+    .slice(0, 8);
+  return significantTokens.length >= 3 && significantTokens.every((token) => normalizedReport.includes(token));
+}
+
+function cleanAcceptanceText(text: string): string {
+  return text
+    .replace(/^\*\*([^*]+)\*\*\s*[:—-]?\s*/, "$1: ")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
+
+function normalizeAcceptanceText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/[^a-z0-9/_.-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function itemKey(item: QAFailureItem): string {

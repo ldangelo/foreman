@@ -48,7 +48,7 @@ import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig } from "../lib/project-config.js";
 import { SandboxProviderFactory } from "../lib/sandbox-providers/index.js";
 import type { SandboxProviderConfig } from "../lib/sandbox-provider.js";
-import { parseQAFailures, formatFailureChecklist, diffQAFailures, type QAFailureItem, type TrackedFailureItem } from "../lib/report-parser.js";
+import { parseQAFailures, formatFailureChecklist, diffQAFailures, validateAcceptanceCoverage, type QAFailureItem, type TrackedFailureItem } from "../lib/report-parser.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -694,6 +694,19 @@ function formatDeveloperGateFeedback(result: DeveloperGateResult): string {
     `Claimed files detected: ${result.claimedFiles.length > 0 ? result.claimedFiles.join(", ") : "(none)"}`,
     result.typecheckRun ? `Typecheck: ${result.typecheckPassed ? "PASS" : "FAIL"}` : "Typecheck: not required (no TS/JS diff)",
   ].join("\n");
+}
+
+function acceptanceCoverageFailure(_worktreePath: string, reportPath: string): string | null {
+  const explorerPath = join(dirname(reportPath), "EXPLORER_REPORT.md");
+  if (!existsSync(explorerPath) || !existsSync(reportPath)) return null;
+  const coverage = validateAcceptanceCoverage(
+    readFileSync(explorerPath, "utf8"),
+    readFileSync(reportPath, "utf8"),
+  );
+  if (coverage.ok) return null;
+  const missing = coverage.missing.map((criterion) => `- ${criterion.id}: ${criterion.text}`).join("\n");
+  const sectionReason = coverage.reportHasAcceptanceSection ? "" : "Missing `## Acceptance Contract` section.\n";
+  return `Acceptance contract coverage missing. ${sectionReason}Unaddressed criteria:\n${missing || "- (none parsed)"}`;
 }
 
 function developerGateRetryLimit(phases: WorkflowPhaseConfig[], phaseName: string): number {
@@ -1972,14 +1985,19 @@ async function runPhaseSequence(
         phaseSucceeded = false;
         phaseError = `Debug artifacts left in worktree: ${debugArtifacts.join(", ")}`;
       } else if (interpolatedArtifact && config.taskMeta?.projectReportsDir) {
+        const developerReportPath = resolveArtifactPath(worktreePath, interpolatedArtifact);
         const gate = validateDeveloperCompletion(
           worktreePath,
-          resolveArtifactPath(worktreePath, interpolatedArtifact),
+          developerReportPath,
           `${description}\n${comments ?? ""}`,
         );
-        if (!gate.ok) {
+        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, developerReportPath);
+        if (!gate.ok || acceptanceFailure) {
           phaseSucceeded = false;
-          developerGateFeedback = formatDeveloperGateFeedback(gate);
+          developerGateFeedback = [
+            !gate.ok ? formatDeveloperGateFeedback(gate) : undefined,
+            acceptanceFailure,
+          ].filter(Boolean).join("\n\n");
           phaseError = developerGateFeedback;
         }
       }
@@ -2310,8 +2328,18 @@ async function runPhaseSequence(
         phase.artifact,
         ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
       );
+      const reportPath = resolveArtifactPath(worktreePath, interpolatedArtifact);
       const report = readReport(worktreePath, interpolatedArtifact);
       let verdict = report ? parseVerdict(report) : "unknown";
+
+      if ((phaseName === "qa" || phaseName === "finalize" || phaseName === "reviewer") && report && verdict !== "fail") {
+        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, reportPath);
+        if (acceptanceFailure) {
+          verdict = "fail";
+          feedbackContext = acceptanceFailure;
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — acceptance contract coverage missing`);
+        }
+      }
 
       if (phaseName === "qa" && report && verdict !== "fail" && !qaReportHasTestEvidence(report)) {
         verdict = "fail";
