@@ -55,6 +55,16 @@ export interface RunSummary {
   createdAt: string;
   /** Serialized progress JSON string, or null if not set. */
   progress: string | null;
+  workerPid?: string | number | null;
+  elapsedMs?: number | null;
+  lastLifecycleEvent?: string | null;
+  logPath?: string | null;
+  reportPath?: string | null;
+  stuck?: boolean;
+  fatal?: boolean;
+  cost?: number | null;
+  turns?: number | null;
+  toolCalls?: number | null;
 }
 
 // ── RunProgress read model ─────────────────────────────────────────────────
