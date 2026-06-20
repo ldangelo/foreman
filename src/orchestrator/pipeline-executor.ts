@@ -1319,6 +1319,8 @@ async function runPhaseSequence(
   const rateLimitRetries: Record<string, number> = {};
   // Track previous QA failure items for resolution diffing across retries
   let previousQAFailureItems: QAFailureItem[] = [];
+  // Track previous still-failing item keys for same-failure circuit breaker
+  let prevStillFailingKeys: Set<string> = new Set();
   const pipelineStartedAt = Date.now();
 
   const totalReviewLoops = (): number => Object.values(retryCounts).reduce((sum, count) => sum + count, 0);
@@ -2418,8 +2420,8 @@ async function runPhaseSequence(
             const parsedReport = parseQAFailures(report);
             let feedbackBody = report;
 
-            // Inject structured checklist for QA failures targeting developer
-            if (phaseName === "qa" && parsedReport.items.length > 0) {
+            // Inject structured checklist for QA/reviewer failures targeting developer
+            if ((phaseName === "qa" || phaseName === "reviewer") && parsedReport.items.length > 0) {
               // Diff against previous QA failure items to track resolution
               const trackedItems: TrackedFailureItem[] = previousQAFailureItems.length > 0
                 ? diffQAFailures(previousQAFailureItems, parsedReport.items)
@@ -2427,6 +2429,37 @@ async function runPhaseSequence(
 
               // Update previous items for next retry
               previousQAFailureItems = parsedReport.items;
+
+              // Same-failure circuit breaker: detect repeated failure signatures
+              // Default to true for qa/reviewer phases unless explicitly disabled (sameFailureCircuitBreaker !== false)
+              const circuitBreakerEnabled = phase.sameFailureCircuitBreaker !== false;
+              if (circuitBreakerEnabled && trackedItems.length > 0) {
+                const currentStillFailingKeys = new Set(
+                  parsedReport.items.map((item) => `${item.category}|${item.file ?? ""}|${item.command ?? ""}`)
+                );
+
+                // Trip the breaker if: (1) we have previous failure keys, (2) retry >= 1, (3) same failures repeat
+                // This requires failures to repeat on consecutive retries (retry 1 + retry 2 for first trip)
+                if (prevStillFailingKeys.size > 0 && currentRetries >= 1) {
+                  const repeatedKeys = [...currentStillFailingKeys].filter((key) => prevStillFailingKeys.has(key));
+                  if (repeatedKeys.length > 0) {
+                    ctx.log(`[${phaseName.toUpperCase()}] SAME-FAILURE CIRCUIT BREAKER — repeated failure signatures detected on retry ${currentRetries + 1}: ${repeatedKeys.join(", ")}`);
+                    await appendFile(logFile, `\n[PIPELINE] ${phaseName} same-failure circuit breaker tripped — repeated failures: ${repeatedKeys.join(", ")}\n`);
+                    // Stop early instead of consuming remaining retry budget
+                    const terminalVerdictFailure = phase.stopOnFailExhausted === true;
+                    if (failOnRetriesExhausted || terminalVerdictFailure) {
+                      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
+                    }
+                    // Mark retry budget as exhausted for terminal handling, but allow current iteration to complete
+                    // This ensures the failure is logged and reported before the phase exits
+                    ctx.log(`[${phaseName.toUpperCase()}] SAME-FAILURE CIRCUIT BREAKER — marking retries exhausted, completing current iteration`);
+                    retryCounts[retryCountKey] = maxRetries;
+                  }
+                }
+
+                // Update previous keys for next iteration
+                prevStillFailingKeys = currentStillFailingKeys;
+              }
 
               // Format checklist with resolution status
               const checklist = formatTrackedChecklist(trackedItems);
