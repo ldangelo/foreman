@@ -172,7 +172,7 @@ vcs:
 
 ## Workflow YAML Configuration
 
-Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides).
+Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). A workflow may declare top-level `task_type: <type>`; each task type must be declared by at most one workflow.
 
 ```yaml
 # Example: src/defaults/workflows/default.yaml

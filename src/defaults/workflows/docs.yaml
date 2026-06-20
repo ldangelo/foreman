@@ -7,6 +7,7 @@
 # Auto-selected when bead type is "docs".
 
 name: docs
+task_type: docs
 merge: auto
 setup: []
 # No dependencies needed for docs-only changes

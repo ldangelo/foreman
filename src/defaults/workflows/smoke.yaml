@@ -5,6 +5,7 @@
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
 name: smoke
+task_type: smoke
 setup:
   - command: npm install --prefer-offline --no-audit
     description: Install Node.js dependencies

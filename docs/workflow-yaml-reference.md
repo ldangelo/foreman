@@ -21,9 +21,12 @@ Foreman ships with bundled workflows for common task types:
 Workflows are resolved per task:
 1. `foreman run --workflow <name>` CLI override (applies to every task in that dispatch; fails fast if the workflow cannot be loaded)
 2. First `workflow:<name>` label on the task (e.g. `workflow:smoke`)
-3. `taskTypeWorkflowMap[task.type]` in project config
-4. `taskTypeWorkflowMap.default`
-5. File-existence fallback (`~/.foreman/workflows/<type>.yaml` or bundled defaults)
+3. Workflow-declared `task_type` in YAML (for example, `task_type: bug` maps bug tasks to that workflow)
+4. `taskTypeWorkflowMap[task.type]` in project config (compatibility fallback)
+5. `taskTypeWorkflowMap.default`
+6. File-existence fallback (`~/.foreman/workflows/<type>.yaml` or bundled defaults)
+
+Startup/doctor validation fails if multiple workflows declare the same `task_type`, because type-based dispatch would be ambiguous.
 
 ```bash
 # Dispatch with default workflow
@@ -47,6 +50,7 @@ foreman run task <task-id> task --project <name> --no-watch
 
 ```yaml
 name: default                    # Workflow name (required)
+task_type: task                  # Task type this workflow handles (optional)
 setup: [...]                     # Setup steps (optional)
 setupCache: { key, path }        # Dependency cache (optional)
 vcs: { backend, git, jujutsu }   # VCS backend override (optional)
@@ -60,6 +64,17 @@ The workflow identifier. Must match the filename (e.g. `default.yaml` → `name:
 ```yaml
 name: default
 ```
+
+### `task_type` (optional)
+
+Declares which task type should dispatch to this workflow when there is no CLI override or `workflow:<name>` label.
+
+```yaml
+name: bug
+task_type: bug
+```
+
+Each task type may be declared by at most one workflow. Duplicate declarations are reported by `foreman doctor` and should be fixed before dispatch.
 
 ---
 

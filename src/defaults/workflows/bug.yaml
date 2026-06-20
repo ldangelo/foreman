@@ -10,6 +10,7 @@
 # Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
 
 name: bug
+task_type: bug
 merge: auto
 setup:
   - command: npm install --prefer-offline --no-audit

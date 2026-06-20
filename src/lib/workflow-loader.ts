@@ -277,6 +277,17 @@ export interface WorkflowConfig {
   /** Absolute path of the workflow YAML file that was actually loaded. */
   sourcePath?: string;
   /**
+   * Optional task type declaration. When present, this workflow claims ownership
+   * of the named task type for dispatch routing purposes.
+   *
+   * Example: `task_type: bug` in bug.yaml means the "bug" task type dispatches to
+   * the bug workflow automatically when no explicit override is provided.
+   *
+   * Duplicate detection: if multiple workflows declare the same `task_type`,
+   * `validateTaskTypeUniqueness()` will report the conflict.
+   */
+  taskType?: string;
+  /**
    * Optional setup steps to run before pipeline phases begin.
    * When present, these replace the Node.js-specific installDependencies() fallback.
    */
@@ -445,6 +456,11 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   }
 
   const name = typeof raw["name"] === "string" ? raw["name"] : workflowName;
+
+  // ── Parse optional task_type declaration ──────────────────────────────────
+  const taskType = typeof raw["task_type"] === "string" && raw["task_type"].trim()
+    ? raw["task_type"].trim()
+    : undefined;
 
   // ── Parse optional setup block ─────────────────────────────────────────────
   let setup: WorkflowSetupStep[] | undefined;
@@ -663,6 +679,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   const config: WorkflowConfig = { name, phases };
   if (setup !== undefined) config.setup = setup;
   if (setupCache !== undefined) config.setupCache = setupCache;
+  if (taskType !== undefined) config.taskType = taskType;
 
   // ── Parse optional vcs block ───────────────────────────────────────────────
   if (isRecord(raw["vcs"])) {
@@ -1099,10 +1116,17 @@ export function findStaleWorkflows(_projectRoot: string): string[] {
     try {
       const localRaw = yamlLoad(readFileSync(localPath, "utf-8")) as {
         phases?: Array<{ name: string; [k: string]: unknown }>;
+        [k: string]: unknown;
       };
       const bundledRaw = yamlLoad(readFileSync(bundledPath, "utf-8")) as {
         phases?: Array<{ name: string; [k: string]: unknown }>;
+        [k: string]: unknown;
       };
+
+      if (bundledRaw?.["task_type"] !== undefined && localRaw?.["task_type"] !== bundledRaw["task_type"]) {
+        stale.push(name);
+        continue;
+      }
 
       if (!Array.isArray(localRaw?.phases) || !Array.isArray(bundledRaw?.phases)) continue;
 
@@ -1147,6 +1171,83 @@ export function findStaleWorkflows(_projectRoot: string): string[] {
 }
 
 /**
+ * Result of task type uniqueness validation.
+ */
+export interface TaskTypeUniquenessResult {
+  /** True when no duplicate task type declarations exist. */
+  valid: boolean;
+  /**
+   * List of task types declared by multiple workflows.
+   * Each entry includes the task type name and the conflicting workflow names.
+   */
+  duplicates: Array<{ taskType: string; workflows: string[] }>;
+}
+
+/**
+ * Build a reverse map from task types to workflow names by loading all
+ * available workflows and collecting their `taskType` declarations.
+ *
+ * Only workflows that declare a `task_type` are included in the map.
+ * The map is built fresh each call — callers should cache or pass the result
+ * if performance is a concern.
+ *
+ * @returns Map of `taskType → workflowName` for workflows that declare `task_type`.
+ */
+function collectTaskTypeDeclarations(): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+
+  for (const workflowName of listAvailableWorkflows()) {
+    try {
+      const config = loadWorkflowConfig(workflowName, "");
+      if (!config.taskType) continue;
+      const workflows = result.get(config.taskType) ?? [];
+      workflows.push(config.name);
+      result.set(config.taskType, workflows);
+    } catch {
+      // Workflow not loadable (e.g. malformed YAML) — skip. Parse errors are
+      // surfaced by normal workflow loading/doctor checks.
+    }
+  }
+
+  return result;
+}
+
+export function buildTaskTypeWorkflowMap(): Map<string, string> {
+  const result = new Map<string, string>();
+
+  for (const [taskType, workflows] of collectTaskTypeDeclarations()) {
+    if (workflows.length === 1) {
+      result.set(taskType, workflows[0]!);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Validate that no two workflows declare the same `task_type`.
+ *
+ * On a clean install (each workflow declares a unique task type), returns
+ * `{ valid: true, duplicates: [] }`.
+ *
+ * When duplicates exist, returns `{ valid: false, duplicates: [...] }` where
+ * each entry lists all workflows that declared the conflicting task type.
+ *
+ * @returns Validation result describing any duplicate task type declarations.
+ */
+export function validateTaskTypeUniqueness(): TaskTypeUniquenessResult {
+  const duplicates: Array<{ taskType: string; workflows: string[] }> = [];
+
+  for (const [taskType, workflows] of collectTaskTypeDeclarations()) {
+    if (workflows.length > 1) {
+      duplicates.push({ taskType, workflows: [...workflows].sort() });
+    }
+  }
+
+  return { valid: duplicates.length === 0, duplicates };
+}
+
+/**
  * Resolve the effective workflow name for a seed.
  *
  * Resolution order:
@@ -1179,6 +1280,7 @@ export function resolveWorkflowName(
   labels?: string[],
   taskTypeWorkflowMap?: Record<string, string>,
   workflowOverride?: string,
+  workflowDeclaredMap?: Record<string, string>,
 ): string {
   // 0. Explicit override (e.g. `foreman run --workflow quick`) — top priority
   const override = workflowOverride?.trim();
@@ -1195,20 +1297,28 @@ export function resolveWorkflowName(
     }
   }
 
-  // 2. Explicit taskTypeWorkflowMap mapping
+  // 2. Workflow-declared task_type mapping. An explicitly provided map is used
+  // by tests/callers that already loaded workflows; otherwise build it from the
+  // available workflow YAML files.
+  const declaredWorkflow = workflowDeclaredMap?.[seedType] ?? buildTaskTypeWorkflowMap().get(seedType);
+  if (declaredWorkflow && hasWorkflowConfig(declaredWorkflow)) {
+    return declaredWorkflow;
+  }
+
+  // 3. Explicit taskTypeWorkflowMap mapping remains a compatibility fallback.
   if (taskTypeWorkflowMap) {
     const mappedWorkflow = taskTypeWorkflowMap[seedType];
     if (mappedWorkflow && hasWorkflowConfig(mappedWorkflow)) {
       return mappedWorkflow;
     }
-    // 3. Default fallback from config mapping
+    // 4. Default fallback from config mapping
     const defaultWorkflow = taskTypeWorkflowMap["default"];
     if (defaultWorkflow && hasWorkflowConfig(defaultWorkflow)) {
       return defaultWorkflow;
     }
   }
 
-  // 4. File-existence fallback (backward compatible with pre-config behavior)
+  // 5. File-existence fallback (backward compatible with pre-config behavior)
   if (seedType) {
     const globalPath = getForemanHomePath("workflows", `${seedType}.yaml`);
     if (existsSync(globalPath)) {

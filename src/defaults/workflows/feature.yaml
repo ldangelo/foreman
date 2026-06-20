@@ -7,6 +7,7 @@
 # Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
 
 name: feature
+task_type: feature
 merge: auto
 onError: stop
 setup:
