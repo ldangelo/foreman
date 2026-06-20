@@ -231,6 +231,9 @@ Use this format:
 - Branch: foreman/{{seedId}}
 ```
 
+## Acceptance Contract
+The acceptance contract from `{{reportDir}}/EXPLORER_REPORT.md` defines the success criteria for this task. Confirm the implementation satisfies those criteria before finalizing.
+
 ## Rules
 - **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop

@@ -65,6 +65,9 @@ Do not label a valid finding “pre-existing” to avoid fixing it if this task 
 6. If verification is needed, note the exact suggested command or test file in DEVELOPER_REPORT.md for QA
 7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
+## Acceptance Contract
+The acceptance contract from `{{reportDir}}/EXPLORER_REPORT.md` defines the success criteria for this task. Validate your implementation against those criteria before reporting done. Carry the same acceptance contract through to QA and finalize.
+
 ## Rules
 - Stay focused on THIS task only — do not refactor unrelated code
 - Follow existing codebase patterns and conventions

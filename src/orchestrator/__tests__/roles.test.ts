@@ -106,6 +106,22 @@ describe("prompt templates", () => {
     expect(prompt).toContain("### Implementation Sketch");
   });
 
+  it("explorerPrompt includes Acceptance Contract section with explicit done criteria", () => {
+    const prompt = explorerPrompt("bd-123", "Fix auth", "JWT token refresh");
+    expect(prompt).toContain("## Acceptance Contract");
+    expect(prompt).toContain("CLI command registered");
+    expect(prompt).toContain("focused tests added");
+    expect(prompt).toContain("typecheck passes");
+  });
+
+  it("explorerPrompt instructs to derive task-specific acceptance criteria", () => {
+    const prompt = explorerPrompt("bd-123", "Fix auth", "JWT token refresh");
+    // The Acceptance Contract section must instruct the Explorer to derive
+    // criteria from the task title/description, not just echo static text
+    expect(prompt).toMatch(/derive/i);
+    expect(prompt).toMatch(/## Acceptance Contract/s);
+  });
+
   it("developerPrompt includes seed context", () => {
     const prompt = developerPrompt("bd-123", "Fix auth", "JWT refresh", true);
     expect(prompt).toContain("bd-123");
