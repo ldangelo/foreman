@@ -120,6 +120,34 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert task.run_id == "run-2"
   end
 
+  test "PrMerged updates the linked run and task to merged" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "open"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      task_id: "task-1",
+      status: "in_progress",
+      run_id: "run-1"
+    })
+
+    append!("run:run-1", "RunStarted", %{run_id: "run-1", task_id: "task-1"})
+
+    append!("pr:123", "PrMerged", %{
+      pr_id: "123",
+      run_id: "run-1",
+      source_link: "https://example.test/pr/123"
+    })
+
+    assert ProjectionStore.snapshot().runs["run-1"].status == "merged"
+
+    task = ProjectionStore.task("task-1")
+    assert task.status == "merged"
+    assert task.run_id == "run-1"
+  end
+
   test "run projection exposes status counts without log inference" do
     append!("run:active", "RunStarted", %{run_id: "active", task_id: "task-1"})
     append!("run:active", "PhaseStarted", %{run_id: "active", phase_id: "developer"})

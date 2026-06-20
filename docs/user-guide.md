@@ -243,7 +243,7 @@ Developer and QA phases are intentionally handoff-driven. Explorer performs code
 
 ### 9. Review and Merge
 
-Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
+Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If `gh pr merge` authentication fails during merge, Foreman falls back to its direct VCS merge path for the same branch. If an operator merges the PR manually, the PR merge event updates the linked run and task to `merged`. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
 
 ```bash
 foreman merge

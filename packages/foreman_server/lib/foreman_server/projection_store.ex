@@ -716,8 +716,11 @@ defmodule ForemanServer.ProjectionStore do
         projection
 
       run_id ->
-        apply_activity_and_notify(
-          projection,
+        projection
+        |> update_run_status(run_id, "merged")
+        |> update_run(run_id, &Map.put(&1, :current_phase, nil))
+        |> update_task_for_terminal_run(run_id, "merged", payload)
+        |> apply_activity_and_notify(
           %{
             run_id: run_id,
             event_type: "pr_merged",
