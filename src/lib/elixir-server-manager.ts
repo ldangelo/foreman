@@ -42,6 +42,10 @@ export class ElixirServerManager {
     return this.getJson("/api/v1/metrics", { authenticated: true });
   }
 
+  async pipelineMetrics(): Promise<{ ok: boolean; body?: unknown; error?: string }> {
+    return this.getJson("/api/v1/pipeline-metrics", { authenticated: true });
+  }
+
   private async getJson(
     path: string,
     opts: { authenticated?: boolean } = {},

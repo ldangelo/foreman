@@ -31,6 +31,16 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  get "/api/v1/pipeline-metrics" do
+    with :ok <- authorize(conn),
+         {:ok, metrics} <- ForemanServer.Operations.pipeline_metrics() do
+      send_json(conn, 200, %{ok: true, pipeline_metrics: metrics})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
   get "/api/v1/scheduler" do
     with :ok <- authorize(conn) do
       send_json(conn, 200, %{ok: true, scheduler: ForemanServer.Scheduler.state()})
