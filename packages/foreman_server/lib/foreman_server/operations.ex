@@ -104,6 +104,27 @@ defmodule ForemanServer.Operations do
     }
   end
 
+  @spec pipeline_metrics() :: {:ok, map()}
+  def pipeline_metrics do
+    {:ok, pipeline_metrics(EventStore.all())}
+  end
+
+  @doc false
+  def pipeline_metrics(events) when is_list(events) do
+    by_phase = aggregate_by_phase(events)
+    top_failures = top_failure_reasons(events, 5)
+    stuck_by_reason = stuck_by_reason(events)
+    bottlenecks = recent_bottlenecks(events, 5)
+
+    %{
+      phases: by_phase,
+      top_failure_reasons: top_failures,
+      stuck_by_reason: stuck_by_reason,
+      recent_bottlenecks: bottlenecks,
+      emitted_at: DateTime.utc_now()
+    }
+  end
+
   @doc false
   def metrics(events, snapshot) when is_list(events) and is_map(snapshot) do
     %{
@@ -189,4 +210,211 @@ defmodule ForemanServer.Operations do
   defp terminal_status(%Event{event_type: "PhaseCompleted"}), do: "completed"
   defp terminal_status(%Event{event_type: "PhaseTimedOut"}), do: "timed_out"
   defp terminal_status(%Event{event_type: "PhaseFailed"}), do: "failed"
+
+  # ── Pipeline metrics helpers ────────────────────────────────────────────────
+
+  defp aggregate_by_phase(events) do
+    events
+    |> Enum.reduce(%{}, fn %Event{} = event, acc ->
+      phase_id = Map.get(event.payload, :phase_id)
+
+      if is_binary(phase_id) and phase_id != "" do
+        key = phase_id
+
+        case event.event_type do
+          "PhaseStarted" ->
+            Map.update(
+              acc,
+              key,
+              %{
+                started: 1,
+                completed: 0,
+                failed: 0,
+                timed_out: 0,
+                retries: 0,
+                total_turns: 0,
+                total_cost: 0.0,
+                observations: 0
+              },
+              fn v ->
+                %{v | started: v.started + 1}
+              end
+            )
+
+          "PhaseCompleted" ->
+            Map.update(
+              acc,
+              key,
+              %{
+                started: 0,
+                completed: 1,
+                failed: 0,
+                timed_out: 0,
+                retries: 0,
+                total_turns: 0,
+                total_cost: 0.0,
+                observations: 0
+              },
+              fn v ->
+                %{v | completed: v.completed + 1}
+              end
+            )
+
+          type when type in ["PhaseFailed", "PhaseTimedOut"] ->
+            status_key = if type == "PhaseTimedOut", do: :timed_out, else: :failed
+
+            Map.update(
+              acc,
+              key,
+              %{
+                started: 0,
+                completed: 0,
+                failed: 0,
+                timed_out: 0,
+                retries: 0,
+                total_turns: 0,
+                total_cost: 0.0,
+                observations: 0
+              },
+              fn v ->
+                Map.update!(v, status_key, &(&1 + 1))
+              end
+            )
+
+          "PhaseRetried" ->
+            Map.update(
+              acc,
+              key,
+              %{
+                started: 0,
+                completed: 0,
+                failed: 0,
+                timed_out: 0,
+                retries: 0,
+                total_turns: 0,
+                total_cost: 0.0,
+                observations: 0
+              },
+              fn v ->
+                %{v | retries: v.retries + 1}
+              end
+            )
+
+          "ToolCallFinished" ->
+            turns = Map.get(event.payload, :turns, 0) |> clamp_integer()
+            cost = Map.get(event.payload, :cost, 0.0) |> clamp_float()
+
+            Map.update(
+              acc,
+              key,
+              %{
+                started: 0,
+                completed: 0,
+                failed: 0,
+                timed_out: 0,
+                retries: 0,
+                total_turns: 0,
+                total_cost: 0.0,
+                observations: 0
+              },
+              fn v ->
+                %{
+                  v
+                  | total_turns: v.total_turns + turns,
+                    total_cost: v.total_cost + cost,
+                    observations: v.observations + 1
+                }
+              end
+            )
+
+          _ ->
+            acc
+        end
+      else
+        acc
+      end
+    end)
+    |> Enum.map(fn {phase_id, counts} ->
+      # pass_rate is completed / (completed + failed + timed_out); started is not a terminal state
+      terminals = max(counts.completed + counts.failed + counts.timed_out, 1)
+      total = max(counts.started + counts.completed + counts.failed + counts.timed_out, 1)
+      pass_rate = counts.completed / terminals
+      observations = max(counts.observations, 1)
+      avg_turns = counts.total_turns / observations
+      avg_cost = counts.total_cost / observations
+
+      {phase_id,
+       %{
+         pass_rate: pass_rate,
+         fail_count: counts.failed,
+         timed_out_count: counts.timed_out,
+         retry_count: counts.retries,
+         avg_turns: avg_turns,
+         avg_cost: avg_cost,
+         total_runs: total,
+         phases_started: counts.started,
+         phases_completed: counts.completed
+       }}
+    end)
+    |> Map.new()
+  end
+
+  defp top_failure_reasons(events, limit) do
+    events
+    |> Enum.filter(fn %Event{} = e ->
+      e.event_type in ["PhaseFailed", "PhaseTimedOut", "RunFailed"]
+    end)
+    |> Enum.map(fn %Event{} = e ->
+      reason = Map.get(e.payload, :failure_reason) || Map.get(e.payload, :reason) || "unknown"
+      phase = Map.get(e.payload, :phase_id) || "unknown"
+      %{reason: reason, phase: phase, count: 1}
+    end)
+    |> Enum.group_by(&{&1.reason, &1.phase})
+    |> Enum.map(fn {{reason, phase}, items} ->
+      %{reason: reason, phase: phase, count: length(items)}
+    end)
+    |> Enum.sort_by(&(-&1.count))
+    |> Enum.take(limit)
+  end
+
+  defp stuck_by_reason(events) do
+    events
+    |> Enum.filter(fn %Event{} = e ->
+      e.event_type in ["PhaseFailed", "PhaseTimedOut"] and
+        Map.get(e.payload, :stuck) == true
+    end)
+    |> Enum.map(fn %Event{} = e ->
+      reason = Map.get(e.payload, :failure_reason) || "unknown"
+      phase = Map.get(e.payload, :phase_id) || "unknown"
+      %{reason: reason, phase: phase, count: 1}
+    end)
+    |> Enum.group_by(&{&1.reason, &1.phase})
+    |> Enum.map(fn {{reason, phase}, items} ->
+      %{reason: reason, phase: phase, count: length(items)}
+    end)
+    |> Enum.sort_by(&(-&1.count))
+  end
+
+  defp recent_bottlenecks(events, limit) do
+    events
+    |> Enum.filter(fn %Event{} = e ->
+      e.event_type == "PhaseStarted"
+    end)
+    |> Enum.sort_by(& &1.occurred_at, {:desc, DateTime})
+    |> Enum.take(limit * 2)
+    |> Enum.map(fn %Event{} = e ->
+      phase_id = Map.get(e.payload, :phase_id)
+      run_id = Map.get(e.payload, :run_id)
+      %{phase_id: phase_id, run_id: run_id, started_at: e.occurred_at}
+    end)
+    |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
+    |> Enum.take(limit)
+  end
+
+  defp clamp_integer(n) when is_integer(n) and n >= 0, do: n
+  defp clamp_integer(_), do: 0
+
+  defp clamp_float(n) when is_float(n) and n >= 0.0, do: n
+  defp clamp_float(n) when is_integer(n) and n >= 0, do: :erlang.float(n)
+  defp clamp_float(_), do: 0.0
 end

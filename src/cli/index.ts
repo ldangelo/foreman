@@ -65,6 +65,7 @@ import { jiraCommand } from "./commands/jira.js";
 import { logsCommand } from "./commands/logs.js";
 import { serverCommand } from "./commands/server.js";
 import { mcpCommand } from "./commands/mcp.js";
+import { metricsCommand } from "./commands/metrics.js";
 import { maybeDelegateToLegacyTs } from "./legacy-coexistence.js";
 function isCliEntrypoint(): boolean {
   try {
@@ -128,12 +129,13 @@ program.addCommand(jiraCommand);
 program.addCommand(logsCommand);
 program.addCommand(serverCommand);
 program.addCommand(mcpCommand);
+program.addCommand(metricsCommand);
 
 program.addHelpText(
   "after",
   `
 Domain groups:
-  Setup/health:     init, doctor, daemon, server
+  Setup/health:     init, doctor, daemon, server, metrics
   Planning:         plan, sling
   Execution:        run, retry, reset, stop, recover
   Tasks/views:      task, status, board, watch, logs, runs

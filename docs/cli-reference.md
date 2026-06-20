@@ -385,6 +385,27 @@ foreman doctor --json             # Machine-readable output
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
 
+### `foreman metrics`
+
+Show per-phase pipeline metrics from the Elixir server. Requires `foreman server start` (or `foreman server doctor --auto-start`).
+
+```bash
+foreman metrics                    # Human-readable dashboard
+foreman metrics --json             # Raw JSON from the server
+```
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output raw JSON from the server |
+| `--project <name>` | Registered project name (default: current directory) |
+| `--project-path <absolute-path>` | Absolute project path |
+
+Output sections:
+- **Per-Phase Breakdown** — pass rate, fail count, timeout count, retry count, avg turns, avg cost, total runs
+- **Top Failure Reasons** — grouped by phase, sorted by frequency
+- **Stuck Tasks by Reason** — phases stuck due to timeout or failure
+- **Recent Pipeline Bottlenecks** — most recently started phases (last 5)
+
 ### `foreman server`
 
 Manage the experimental Elixir orchestration server used by TRD-2026-014.
