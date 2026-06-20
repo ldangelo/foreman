@@ -161,6 +161,7 @@ foreman status --json             # Machine-readable output
 | `--json` | — | Output as JSON |
 | `--project <name-or-path>` | — | Show status for a registered project name or absolute project path |
 | `--all` | — | Aggregate status across all registered projects |
+| `--include-archived` | — | Include archived runs in status output (default: archived runs are hidden to reduce noise) |
 
 **Example output:**
 

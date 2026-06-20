@@ -326,6 +326,16 @@ foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
 | `foreman run --task <id>` | Yes (task must be `ready`) | `--workflow` flag | Normal dispatch |
 | `foreman run task <id> <workflow>` | No (any state) | Positional argument | Debug, recovery, testing |
 
+## Run Archiving and Filtering
+
+Old failed runs can accumulate and obscure current state in `foreman runs`, `foreman status`, and operator views. Foreman archives and filters historical failed runs so they remain inspectable without cluttering active views.
+
+- Archived runs are hidden from default views but remain in storage for inspection.
+- `runs.archived` controls visibility in PostgreSQL-backed stores.
+- Recent-active run reads include pending/running runs plus failed runs from the last 30 days, excluding archived runs.
+- Use `foreman status --include-archived` when historical runs need inspection.
+- `foreman purge runs` archives failed runs whose tasks are closed; permanent deletion is available via the explicit purge option.
+
 ## Documentation Expectations
 
 Every user-visible change should update docs in the same task. Examples:

@@ -28,7 +28,10 @@ function withPurgeLogsOptions(command: Command): Command {
 }
 
 function withPurgeRunsOptions(command: Command): Command {
-  return command.option("--dry-run", "Show what would be purged without making any changes");
+  return command
+    .option("--dry-run", "Show what would be done without making any changes")
+    .option("--archive", "Archive failed runs instead of deleting them (default when archiving is supported)")
+    .option("--purge", "Permanently delete archived runs instead of archiving");
 }
 
 // ── Canonical group: foreman purge logs|runs ─────────────────────────────
