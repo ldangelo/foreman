@@ -77,7 +77,7 @@ For architecture details, deprecated command mappings, and troubleshooting examp
 
 ### Documentation Gate
 
-Foreman workflows include a documentation phase after finalization and before PR creation. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`.
+Foreman workflows include a documentation phase after finalization and before PR creation. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`. Explorer also writes an Acceptance Contract in `EXPLORER_REPORT.md`; Developer, QA, review, and finalize reports must carry and address those criteria before Foreman accepts a passing phase.
 
 Docs that must be considered for every fix or feature:
 
