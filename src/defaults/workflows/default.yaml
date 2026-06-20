@@ -92,6 +92,9 @@ phases:
       leaseSecs: 600
 
   - name: auto-smoke
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
     bash: |
       set -euo pipefail
       trap 'echo "## Verdict: FAIL"' ERR
