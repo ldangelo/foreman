@@ -39,7 +39,7 @@ function writeArtifact(cwd: string, artifact: string, body: string): void {
   writeFileSync(path, body, "utf-8");
 }
 
-function buildArtifactBody(phase: string, seedId: string): string {
+function buildArtifactBody(phase: string, seedId: string, changedFiles: string[] = []): string {
   if (phase === "qa") {
     return [
       "# QA",
@@ -87,6 +87,23 @@ function buildArtifactBody(phase: string, seedId: string): string {
       "## Verdict: PASS",
       "",
       "Smoke test noop.",
+      "",
+    ].join("\n");
+  }
+
+  if (phase === "developer") {
+    return [
+      "# Developer Report",
+      "",
+      `Seed: ${seedId}`,
+      "## Verdict: PASS",
+      "",
+      "## Changed Files",
+      ...(changedFiles.length > 0 ? changedFiles.map((file) => `- \`${file}\``) : ["(none)"]),
+      "",
+      "## Self-Check Evidence",
+      `- git diff --name-only: ${changedFiles.length > 0 ? changedFiles.join(", ") : "(none)"}`,
+      "- Typecheck: not required (deterministic test fixture)",
       "",
     ].join("\n");
   }
@@ -161,7 +178,7 @@ export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<P
   writeArtifact(
     cwd,
     artifact,
-    buildArtifactBody(phase, context.seedId),
+    buildArtifactBody(phase, context.seedId, filesChanged),
   );
   appendFileSync(
     join(cwd, "RUN_LOG.md"),

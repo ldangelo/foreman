@@ -287,6 +287,19 @@ function qaBroadCommand(command: string): boolean {
     || /^go\s+test\s+\.\/\.\.\.$/i.test(normalized);
 }
 
+/**
+ * Commands explicitly allowed for QA's environment readiness checks.
+ * These must not be blocked even when qaBroadCommand would otherwise
+ * restrict test-suite runs.
+ */
+function qaAllowedCheckCommand(command: string): boolean {
+  const normalized = normalizedCommand(command);
+  return /^(foreman\s+doctor|foreman\s+doctor\s+--json)/i.test(normalized)
+    || /^pg_isready\b/i.test(normalized)
+    || /^curl\s+.*https?:\/\//i.test(normalized)
+    || /^\.\/node_modules\/\.bin\/foreman\s+doctor/i.test(normalized);
+}
+
 function hasExplicitSearchPath(command: string): boolean {
   return /\s(--glob|-g|src\/?|packages\/?|lib\/?|test\/?|tests\/?|docs\/?|\.ts\b|\.tsx\b|\.js\b|\.jsx\b|\.ex\b|\.exs\b|\.md\b)/i.test(command);
 }
@@ -369,7 +382,7 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
     if (config.phaseName === "developer" && anyTestCommand(command)) {
       return { allow: false, reason: "Overwatch: Developer must not run tests; write QA handoff with focused validation commands instead." };
     }
-    if (config.phaseName === "qa" && qaBroadCommand(command)) {
+    if (config.phaseName === "qa" && qaBroadCommand(command) && !qaAllowedCheckCommand(command)) {
       return { allow: false, reason: "Overwatch: QA may not run broad full-suite commands; run targeted validation only or write BLOCKED with rationale." };
     }
     const repeatedCommandLimit = config.overwatch?.repeatedCommandLimit ?? 3;
