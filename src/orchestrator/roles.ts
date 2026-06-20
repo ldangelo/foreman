@@ -166,6 +166,7 @@ function resolveModel(envVar: string, defaultModel: ModelSelection): ModelSelect
 const DEFAULT_MODELS: Readonly<Record<Exclude<AgentRole, "lead" | "worker" | "sentinel">, ModelSelection>> = {
   explorer: getDefaultModel() as ModelSelection,
   developer: getDefaultModel() as ModelSelection,
+  "auto-smoke": getDefaultModel() as ModelSelection,
   qa: getDefaultModel() as ModelSelection,
   reviewer: getDefaultModel() as ModelSelection,
   finalize: getDefaultModel() as ModelSelection,
@@ -209,6 +210,14 @@ export function buildRoleConfigs(): Record<Exclude<AgentRole, "lead" | "worker" 
         "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
         "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
       ],
+    },
+    "auto-smoke": {
+      role: "auto-smoke",
+      model: resolveModel("FOREMAN_AUTO_SMOKE_MODEL", DEFAULT_MODELS["auto-smoke"]),
+      maxBudgetUsd: 0.50,
+      permissionMode: "plan",
+      reportFile: "AUTO_SMOKE_REPORT.md",
+      allowedTools: ["Bash", "Glob", "Grep", "Read"],
     },
     qa: {
       role: "qa",
@@ -334,6 +343,14 @@ export const ROLE_CONFIGS: Record<Exclude<AgentRole, "lead" | "worker" | "sentin
           "Agent", "Bash", "Edit", "Glob", "Grep", "Read",
           "TaskOutput", "TaskStop", "TodoWrite", "WebFetch", "WebSearch", "Write",
         ],
+      },
+      "auto-smoke": {
+        role: "auto-smoke",
+        model: DEFAULT_MODELS["auto-smoke"],
+        maxBudgetUsd: 0.50,
+        permissionMode: "plan",
+        reportFile: "AUTO_SMOKE_REPORT.md",
+        allowedTools: ["Bash", "Glob", "Grep", "Read"],
       },
       qa: {
         role: "qa",
