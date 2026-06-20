@@ -49,6 +49,9 @@ One paragraph assessment.
 - What was done well
 ```
 
+## Acceptance Contract
+The acceptance contract from `{{reportDir}}/EXPLORER_REPORT.md` defines the success criteria for this task. Evaluate whether the implementation satisfies those criteria as part of your review.
+
 ## Rules
 - **DO NOT modify any files** — you are read-only, only write {{reportDir}}/REVIEW.md and SESSION_LOG.md
 - Be fair but thorough — PASS means ready to ship with no remaining issues

@@ -48,6 +48,9 @@ If you hit an unrecoverable error, invoke:
 ### Boundaries
 - Files/areas the developer should not inspect or edit unless the sketch fails
 - One-sentence reason required before deviating
+
+## Acceptance Contract
+Derive 3–6 explicit, verifiable done criteria from the task title and description (e.g., CLI command registered, focused tests added, typecheck passes, docs updated, smoke command succeeds). Carry the same acceptance contract through Developer, QA, review, and finalize phases.
 ```
 
 ## Rules

@@ -61,6 +61,9 @@ Do NOT run tests if conflict markers are found.
 - (list files inspected; QA should normally modify only QA_REPORT.md and SESSION_LOG.md)
 ```
 
+## Acceptance Contract
+The acceptance contract from `{{reportDir}}/EXPLORER_REPORT.md` defines the success criteria for this task. Verify that the implementation satisfies those criteria before writing your report. Carry the same acceptance contract through to review and finalize.
+
 ## Rules
 - QA is verification-only. Do not modify source code or tests in this phase
 - Focus on correctness and regressions, not style
