@@ -607,11 +607,19 @@ function extractClaimedPaths(report: string): string[] {
       const raw = (match[1] ?? match[2] ?? "").trim();
       if (!raw || raw.includes(" ") || raw.startsWith("http")) continue;
       if (/^(npm|npx|git|mix|cd|node|bin\/foreman)$/.test(raw)) continue;
+      if (!isPlausibleClaimedPath(raw)) continue;
       candidates.add(raw.replace(/^\.\//, ""));
     }
   }
 
   return [...candidates];
+}
+
+function isPlausibleClaimedPath(rawPath: string): boolean {
+  const path = rawPath.replace(/^\.\//, "");
+  if (/[()]/.test(path)) return false;
+  if (path.includes("/")) return true;
+  return /^(README|AGENTS|CLAUDE)\.md$|^package\.json$|^tsconfig\.json$|^vite\.config\.[\w.]+$/i.test(path);
 }
 
 export interface DeveloperGateResult {

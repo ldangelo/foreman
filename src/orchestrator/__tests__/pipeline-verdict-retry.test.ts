@@ -923,10 +923,12 @@ describe("verdict-triggered retry", () => {
       [
         "# Developer Report",
         "",
-        "Implementation discusses `roles.ts`, `developer-prompt.md`, `pipeline-executor.ts`, `qa-failure-parser.ts`, `QA_REPORT.md`, and `test.ts` as examples.",
+        "Implementation discusses `roles.ts`, `developer-prompt.md`, `pipeline-executor.ts`, `qa-failure-parser.ts`, `QA_REPORT.md`, `test.ts`, `deriveAcceptanceContract()`, and `buildTaskDescription()` as examples.",
         "",
         "## Changed Files",
         "- `README.md`",
+        "- `deriveAcceptanceContract()` helper",
+        "- `buildTaskDescription()` helper",
         "",
         "## Self-Check Evidence",
         "- git diff --name-only: README.md",
