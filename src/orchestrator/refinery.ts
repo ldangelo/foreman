@@ -85,6 +85,16 @@ function shouldTreatLocalBranchDeleteFailureAsNonFatal(err: unknown): boolean {
     && message.includes("used by worktree");
 }
 
+export function isGhAuthFailure(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return message.includes("bad credentials")
+    || message.includes("http 401")
+    || message.includes("authentication required")
+    || message.includes("not authenticated")
+    || message.includes("gh auth login")
+    || message.includes("this endpoint requires you to be authenticated");
+}
+
 function safeIntegrationBranchSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "default";
 }
@@ -748,13 +758,14 @@ export class Refinery {
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      if (!this.isTestRuntime() && shouldTreatLocalBranchDeleteFailureAsNonFatal(err)) {
+      if (!this.isTestRuntime()) {
         const existingPr = await this.getExistingPrState(branchName);
         const currentBranchHead = existingPr?.headRefOid
           ? await this.vcsBackend.resolveRef(this.projectPath, branchName).catch(() => null)
           : null;
-        if (existingPr?.state === "MERGED" && currentBranchHead === existingPr.headRefOid) {
-          await this.persistRunEvent(run, "merge-cleanup-fallback", { seedId: run.seed_id, branchName, error: message.slice(0, 400) });
+
+        if (existingPr?.state === "MERGED" && (currentBranchHead === null || currentBranchHead === existingPr.headRefOid)) {
+          await this.persistRunEvent(run, "merge-cleanup-fallback", { seedId: run.seed_id, branchName, error: message.slice(0, 400), prState: existingPr.state });
           await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
           merged.push({
             runId: run.id,
@@ -763,6 +774,25 @@ export class Refinery {
           });
           return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
         }
+
+        if (isGhAuthFailure(err)) {
+          await this.persistRunEvent(run, "merge-auth-fallback", { seedId: run.seed_id, branchName, targetBranch, error: message.slice(0, 400) });
+          const report = await this.mergeCompleted({
+            targetBranch,
+            runTests: false,
+            projectId: run.project_id,
+            seedId: run.seed_id,
+            runId: run.id,
+          });
+          merged.push(...report.merged);
+          conflicts.push(...report.conflicts);
+          testFailures.push(...report.testFailures);
+          unexpectedErrors.push(...report.unexpectedErrors);
+          return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
+        }
+
+        // Local branch cleanup failures are handled above only when GitHub already
+        // reports the PR merged; otherwise keep the original failure visible.
       }
       await this.persistRunUpdate(run, { status: "failed" });
       await this.persistRunEvent(

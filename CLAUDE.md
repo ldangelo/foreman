@@ -230,7 +230,7 @@ phases:
 - **Agent Mail is PostgreSQL-backed**: Messages stored in Postgres (shared across all workers), not a separate mail database
 - **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, and `.beads/issues.jsonl` after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
-- **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
+- **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, merge re-waits if GitHub surfaces late pending checks after `pr-wait`, and `gh pr merge` auth failures fall back to direct VCS merge while manual PR merge events reconcile linked runs/tasks to `merged`
 
 ## Debugging & Recovery
 
