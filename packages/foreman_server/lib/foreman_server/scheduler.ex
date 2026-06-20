@@ -87,6 +87,10 @@ defmodule ForemanServer.Scheduler do
     tasks = ProjectionStore.dispatchable_tasks()
     active_runs = active_runs()
 
+    # Emit repair events for stale runs so operators/automated systems can act on them.
+    stale_runs = stale_active_runs(active_runs)
+    repaired_stale_runs = emit_stale_run_repair_events(stale_runs)
+
     {claimed, skipped, _active_count, _project_counts} =
       Enum.reduce(tasks, {[], [], length(active_runs), project_counts(active_runs)}, fn task,
                                                                                         {claimed,
@@ -135,9 +139,40 @@ defmodule ForemanServer.Scheduler do
       skipped: skipped,
       active_runs: length(active_runs),
       active_run_details: active_runs,
-      stale_active_runs: stale_active_runs(active_runs),
+      stale_active_runs: stale_runs,
+      repaired_stale_runs: repaired_stale_runs,
       reconciled_terminal_runs: reconciled_terminal_runs
     }
+  end
+
+  # Emit SchedulerStaleRunDetected events for each stale run so they can be
+  # picked up by the doctor/reset system for repair. Returns the list of run_ids
+  # for which events were successfully emitted.
+  defp emit_stale_run_repair_events([]), do: []
+
+  defp emit_stale_run_repair_events(stale_runs) do
+    Enum.flat_map(stale_runs, fn stale_run ->
+      run_id = Map.get(stale_run, :run_id)
+
+      case EventStore.append(%{
+             stream_id: "scheduler:#{run_id}",
+             event_type: "SchedulerStaleRunDetected",
+             payload: %{
+               run_id: run_id,
+               task_id: Map.get(stale_run, :task_id),
+               project_id: Map.get(stale_run, :project_id),
+               age_seconds: Map.get(stale_run, :age_seconds),
+               updated_at: Map.get(stale_run, :updated_at)
+             },
+             metadata: %{
+               correlation_id: run_id,
+               idempotency_key: "stale-repair:#{run_id}"
+             }
+           }) do
+        {:ok, _event} -> [run_id]
+        _ -> []
+      end
+    end)
   end
 
   defp claim_task(task, phases, worker_launcher) do

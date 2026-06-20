@@ -40,6 +40,36 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  get "/api/v1/scheduler/skips" do
+    conn = fetch_query_params(conn)
+
+    with :ok <- authorize(conn) do
+      snapshot = ForemanServer.ProjectionStore.snapshot()
+      project_id = conn.query_params["project_id"]
+
+      skips =
+        snapshot.scheduler_skips
+        |> Map.values()
+        |> Enum.map(fn skip ->
+          task_id = Map.get(skip, :task_id)
+          task = get_in(snapshot, [:tasks, task_id]) || %{}
+
+          skip
+          |> Map.put(:task_title, Map.get(task, :title))
+          |> Map.put(:task_project_id, Map.get(task, :project_id))
+        end)
+        |> Enum.filter(fn skip ->
+          is_nil(project_id) or Map.get(skip, :task_project_id) == project_id
+        end)
+        |> Enum.sort_by(&Map.get(&1, :task_id), :desc)
+
+      send_json(conn, 200, %{ok: true, skips: skips, count: length(skips)})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
   post "/api/v1/scheduler/tick" do
     with :ok <- authorize(conn),
          {:ok, result} <- ForemanServer.scheduler_tick() do

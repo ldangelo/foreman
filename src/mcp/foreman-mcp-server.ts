@@ -179,10 +179,20 @@ export class ForemanMcpServer {
       },
       {
         name: "foreman.scheduler.status",
-        description: "Read scheduler state, including active and stale active runs.",
-        inputSchema: okSchema,
+        description: "Read scheduler state, including active runs, stale runs, repaired stale runs, and scheduler skips.",
+        inputSchema: {
+          type: "object",
+          properties: { project_id: { type: "string" } },
+          additionalProperties: false,
+        },
         futureUseCases: ["remote operator dashboards", "capacity alerts", "stale-run automation"],
-        handler: async () => this.getJson("/api/v1/scheduler"),
+        handler: async (args) => {
+          const [scheduler, skips] = await Promise.all([
+            this.getJson("/api/v1/scheduler"),
+            this.client.listSchedulerSkips(args.project_id as string | undefined),
+          ]);
+          return { scheduler, skips, skip_count: skips.length };
+        },
       },
       {
         name: "foreman.scheduler.tick",

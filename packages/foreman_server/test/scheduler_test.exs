@@ -217,4 +217,89 @@ defmodule ForemanServer.SchedulerTest do
                payload: payload
              })
   end
+
+  describe "stale run repair" do
+    test "tick emits SchedulerStaleRunDetected events for stale active runs" do
+      # Create a task that has been in progress for a long time (simulating stale state)
+      create_task("stale-task", %{project_id: "alpha", status: "in_progress"})
+      append_run_started("stale-run", "stale-task")
+
+      # Manually backdate the run's updated_at to make it appear stale
+      # (stale threshold is 30 minutes by default)
+      stale_time = DateTime.add(DateTime.utc_now(), -45, :minute)
+
+      {:ok, _} =
+        EventStore.append(%{
+          stream_id: "run:stale-run",
+          event_type: "PhaseStarted",
+          payload: %{
+            run_id: "stale-run",
+            task_id: "stale-task",
+            phase_id: "developer",
+            occurred_at: stale_time
+          },
+          metadata: %{correlation_id: "stale-run"}
+        })
+
+      assert {:ok, result} = Scheduler.tick(max_concurrent: 2)
+
+      # Verify the tick result includes the stale run info
+      assert %{stale_active_runs: [stale_run]} = result
+      assert stale_run.run_id == "stale-run"
+      assert stale_run.task_id == "stale-task"
+      assert stale_run.stale == true
+
+      # Verify the repair event was emitted
+      assert %{repaired_stale_runs: ["stale-run"]} = result
+
+      # Verify the event was stored in the event store
+      events = EventStore.all()
+      stale_events = Enum.filter(events, &(&1.event_type == "SchedulerStaleRunDetected"))
+      assert length(stale_events) == 1
+
+      [stale_event] = stale_events
+      assert %{run_id: "stale-run", task_id: "stale-task"} = stale_event.payload
+    end
+
+    test "tick does not emit repair events when no stale runs exist" do
+      create_task("fresh-task", %{project_id: "alpha", status: "ready"})
+
+      assert {:ok, result} = Scheduler.tick(max_concurrent: 2)
+
+      assert %{stale_active_runs: [], repaired_stale_runs: []} = result
+    end
+  end
+
+  describe "skip visibility" do
+    test "scheduler_skips are recorded in projection store and queryable" do
+      create_task("ready-a", %{project_id: "alpha", status: "ready"})
+      create_task("ready-b", %{project_id: "alpha", status: "ready"})
+
+      assert {:ok, result} = Scheduler.tick(max_concurrent: 1)
+
+      snapshot = ProjectionStore.snapshot()
+
+      # Verify skips are recorded
+      assert map_size(snapshot.scheduler_skips) == 1
+      assert snapshot.scheduler_skips["ready-b"].reason == "global_capacity_exhausted"
+
+      # Verify the skipped task still has correct status
+      assert snapshot.tasks["ready-b"].status == "ready"
+    end
+
+    test "skipped tasks include project_id in skip payload" do
+      create_task("task-alpha", %{project_id: "alpha", status: "ready"})
+      create_task("task-beta", %{project_id: "beta", status: "ready"})
+
+      assert {:ok, result} = Scheduler.tick(max_concurrent: 1)
+
+      # First task should be claimed, second skipped
+      assert length(result.claimed) == 1
+      assert length(result.skipped) == 1
+
+      skipped = List.first(result.skipped)
+      assert skipped.task_id == "task-beta"
+      assert skipped.project_id == "beta"
+    end
+  end
 end
