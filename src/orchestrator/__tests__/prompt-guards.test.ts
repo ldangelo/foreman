@@ -54,6 +54,25 @@ describe("qa prompt validation", () => {
     expect(prompt).toContain("Choose the narrowest verification");
     expect(prompt).toContain("Prefer targeted verification first for narrow tasks");
   });
+
+  it("includes environment readiness checks before running tests", () => {
+    expect(prompt).toContain("Pre-flight: Environment Readiness Checks");
+    expect(prompt).toContain("foreman doctor --json");
+    expect(prompt).toContain("pg_isready");
+    expect(prompt).toContain("backend_mode");
+  });
+
+  it("tells QA to write environment-blocked verdict when checks fail", () => {
+    expect(prompt).toContain("environment-blocked");
+    expect(prompt).toContain("Status: environment-blocked");
+    expect(prompt).toContain("with evidence");
+  });
+
+  it("allows environment readiness check commands in overwatch", () => {
+    expect(prompt).toContain("pg_isready");
+    expect(prompt).toContain("curl");
+    expect(prompt).toContain("foreman doctor");
+  });
 });
 
 describe("finalize prompt failure handling", () => {
