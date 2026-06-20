@@ -55,16 +55,8 @@ export interface RunSummary {
   createdAt: string;
   /** Serialized progress JSON string, or null if not set. */
   progress: string | null;
-  workerPid?: string | number | null;
-  elapsedMs?: number | null;
-  lastLifecycleEvent?: string | null;
-  logPath?: string | null;
-  reportPath?: string | null;
-  stuck?: boolean;
-  fatal?: boolean;
-  cost?: number | null;
-  turns?: number | null;
-  toolCalls?: number | null;
+  /** Whether this run has been archived (hidden from default views). */
+  archived: boolean;
 }
 
 // ── RunProgress read model ─────────────────────────────────────────────────
@@ -99,6 +91,14 @@ export interface RunProgressSummary {
 // ── Read model interface ───────────────────────────────────────────────────
 
 /**
+ * Options for filtering runs in read operations.
+ */
+export interface RunFilterOptions {
+  /** Include archived runs in results. Default: false (excludes archived). */
+  includeArchived?: boolean;
+}
+
+/**
  * Read-only interface for accessing run data.
  * Store implementations (ForemanStore, PostgresStore, etc.) must satisfy this.
  */
@@ -107,23 +107,29 @@ export interface RunStoreReadModel {
   getRun(runId: string): Promise<RunSummary | null>;
 
   /** Fetch all runs for a given task. */
-  getRunsForSeed(taskId: string, projectId?: string): Promise<RunSummary[]>;
+  getRunsForSeed(taskId: string, projectId?: string, opts?: RunFilterOptions): Promise<RunSummary[]>;
 
   /** Fetch all active runs (pending or running). */
-  getActiveRuns(projectId?: string): Promise<RunSummary[]>;
+  getActiveRuns(projectId?: string, opts?: RunFilterOptions): Promise<RunSummary[]>;
 
   /** Fetch runs by status. */
-  getRunsByStatus(status: RunStatus, projectId?: string): Promise<RunSummary[]>;
+  getRunsByStatus(status: RunStatus, projectId?: string, opts?: RunFilterOptions): Promise<RunSummary[]>;
 
   /** Fetch runs matching any of the given statuses. */
-  getRunsByStatuses(statuses: RunStatus[], projectId?: string): Promise<RunSummary[]>;
+  getRunsByStatuses(statuses: RunStatus[], projectId?: string, opts?: RunFilterOptions): Promise<RunSummary[]>;
 
   /** Fetch runs matching any of the given statuses created on or after `since`. */
-  getRunsByStatusesSince(statuses: RunStatus[], since: string, projectId?: string): Promise<RunSummary[]>;
+  getRunsByStatusesSince(statuses: RunStatus[], since: string, projectId?: string, opts?: RunFilterOptions): Promise<RunSummary[]>;
+
+  /** Fetch recent active runs (pending/running or failed within last 30 days), excluding archived. */
+  getRecentActiveRuns(projectId?: string): Promise<RunSummary[]>;
 
   /** Check whether a task has a non-terminal run. */
   hasActiveOrPendingRun(taskId: string, projectId?: string): Promise<boolean>;
 
   /** Get run progress for a run. Returns null if not set. */
   getRunProgress(runId: string): Promise<RunProgressSummary | null>;
+
+  /** Archive a set of runs by their IDs. */
+  archiveRuns(runIds: string[], projectId?: string): Promise<number>;
 }

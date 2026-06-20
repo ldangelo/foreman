@@ -66,6 +66,8 @@ export interface RunRow {
   merge_strategy: "auto" | "pr" | "none" | null;
   created_at: string;
   progress: string | null;
+  /** Whether this run has been archived (hidden from default views). */
+  archived: boolean;
 }
 
 export interface TaskRow {
@@ -247,7 +249,8 @@ function runRowSelectSql(): string {
       created_at,
       CASE WHEN progress IS NULL THEN NULL ELSE progress::text END AS progress,
       base_branch,
-      merge_strategy
+      merge_strategy,
+      COALESCE(archived, false) AS archived
     FROM runs
   `;
 }
@@ -1273,10 +1276,10 @@ export class PostgresAdapter {
 
   /**
    * List runs for a project.
-     */
+   */
   async listRuns(
     projectId: string,
-    filters?: { status?: string[]; limit?: number }
+    filters?: { status?: string[]; limit?: number; includeArchived?: boolean }
   ): Promise<RunRow[]> {
     const conditions = [`project_id = $1`];
     const params: unknown[] = [projectId];
@@ -1286,6 +1289,10 @@ export class PostgresAdapter {
       conditions.push(`status IN (${mapped.map((_, idx) => `$${i + idx}`).join(",")})`);
       params.push(...mapped);
       i += mapped.length;
+    }
+    // By default, exclude archived runs
+    if (!filters?.includeArchived) {
+      conditions.push(`COALESCE(archived, false) = false`);
     }
     let sql = `${runRowSelectSql()} WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC`;
     if (filters?.limit) {
@@ -1360,19 +1367,27 @@ export class PostgresAdapter {
 
   /**
    * List active (pending/running) runs for a project.
-     */
-  async listActiveRuns(projectId: string): Promise<RunRow[]> {
-    const rows = await query<RunRow>(
-      `${runRowSelectSql()} r
-       WHERE r.project_id = $1
-         AND r.status IN ('pending','running')
-         AND NOT EXISTS (
+   * Excludes archived runs by default.
+   */
+  async listActiveRuns(projectId: string, opts?: { includeArchived?: boolean }): Promise<RunRow[]> {
+    const conditions = [
+      `r.project_id = $1`,
+      `r.status IN ('pending','running')`,
+      `NOT EXISTS (
            SELECT 1
            FROM tasks t
            WHERE t.project_id = r.project_id
              AND t.id = r.bead_id
              AND t.status IN ('closed','merged')
-         )
+         )`,
+    ];
+    // By default, exclude archived runs
+    if (!opts?.includeArchived) {
+      conditions.push(`COALESCE(r.archived, false) = false`);
+    }
+    const rows = await query<RunRow>(
+      `${runRowSelectSql()} r
+       WHERE ${conditions.join("\n         AND ")}
        ORDER BY r.created_at DESC`,
        [projectId],
      );
@@ -1439,6 +1454,35 @@ export class PostgresAdapter {
       [projectId, runId],
     );
     return changed > 0;
+  }
+
+  /**
+   * Archive a set of runs by their IDs.
+   * Archived runs are hidden from default views but remain inspectable.
+   * @returns Number of runs successfully archived.
+   */
+  async archiveRuns(projectId: string, runIds: string[]): Promise<number> {
+    if (runIds.length === 0) return 0;
+    const placeholders = runIds.map((_, i) => `$${i + 2}`).join(", ");
+    return execute(
+      `UPDATE runs SET archived = true, updated_at = now()
+       WHERE project_id = $1 AND id IN (${placeholders})`,
+      [projectId, ...runIds],
+    );
+  }
+
+  /**
+   * Unarchive a set of runs by their IDs.
+   * @returns Number of runs successfully unarchived.
+   */
+  async unarchiveRuns(projectId: string, runIds: string[]): Promise<number> {
+    if (runIds.length === 0) return 0;
+    const placeholders = runIds.map((_, i) => `$${i + 2}`).join(", ");
+    return execute(
+      `UPDATE runs SET archived = false, updated_at = now()
+       WHERE project_id = $1 AND id IN (${placeholders})`,
+      [projectId, ...runIds],
+    );
   }
 
   // -------------------------------------------------------------------------

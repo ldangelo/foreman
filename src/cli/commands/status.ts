@@ -382,7 +382,8 @@ export const statusCommand = new Command("status")
   .option("--all", "Show status across all registered projects")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (opts: { watch?: boolean | string; json?: boolean; live?: boolean; project?: string; projectPath?: string; all?: boolean }) => {
+  .option("--include-archived", "Include archived runs in status output (default: archived runs are hidden to reduce noise)")
+  .action(async (opts: { watch?: boolean | string; json?: boolean; live?: boolean; project?: string; projectPath?: string; all?: boolean; includeArchived?: boolean }) => {
     // Require --project or --all in multi-project mode
     if (!opts.all) {
       await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
