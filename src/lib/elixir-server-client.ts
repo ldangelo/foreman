@@ -137,9 +137,17 @@ export class ElixirServerClient {
     throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
   }
 
-  async listRuns(): Promise<ElixirRun[]> {
-    const body = await this.getJson<{ ok: true; runs: ElixirRun[] }>("/api/v1/runs");
+  async listRuns(projectId?: string): Promise<ElixirRun[]> {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; runs: ElixirRun[] }>(`/api/v1/runs${query ? `?${query}` : ""}`);
     return body.runs;
+  }
+
+  async getRun(runId: string): Promise<ElixirRun | null> {
+    const runs = await this.listRuns();
+    return runs.find((run) => run.run_id === runId || run.id === runId) ?? null;
   }
 
   async listSchedulerSkips(projectId?: string): Promise<ElixirSchedulerSkip[]> {

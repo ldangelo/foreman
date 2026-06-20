@@ -17,6 +17,9 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run, RunProgress } from "../../lib/store.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { elapsed } from "../watch-ui.js";
 import { getLastPiActivity } from "./status.js";
 import {
@@ -63,7 +66,7 @@ export interface RunRow {
   cost: string | null;
   turns: number | null;
   indicators: string[];
-  raw: Run;
+  raw: Run | ElixirRun;
 }
 
 // ── Table formatting ──────────────────────────────────────────────────────
@@ -197,7 +200,7 @@ export interface RunJson {
 
 /** Convert a RunRow to a JSON-serializable object. */
 export function runToJson(row: RunRow): RunJson {
-  const since = row.raw.started_at ?? row.raw.created_at;
+  const since = stringField(row.raw, "started_at") ?? stringField(row.raw, "created_at") ?? new Date().toISOString();
   return {
     id: row.id,
     task: row.task,
@@ -213,8 +216,93 @@ export function runToJson(row: RunRow): RunJson {
     turns: row.turns,
     indicators: row.indicators,
     stuck: row.indicators.includes("STUCK"),
-    startedAt: row.raw.started_at,
-    createdAt: row.raw.created_at,
+    startedAt: stringField(row.raw, "started_at"),
+    createdAt: stringField(row.raw, "created_at") ?? since,
+  };
+}
+
+function stringField(source: object, key: string): string | null {
+  const value = (source as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberField(source: object, key: string): number | null {
+  const value = (source as Record<string, unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isElixirActiveRun(run: ElixirRun): boolean {
+  const status = stringField(run, "status");
+  return status === "pending" || status === "running" || status === "in_progress";
+}
+
+function isElixirStuckRun(run: ElixirRun): boolean {
+  if (run.stuck === true) return true;
+  if (!isElixirActiveRun(run)) return false;
+  const since = stringField(run, "updated_at") ?? stringField(run, "started_at") ?? stringField(run, "created_at");
+  return since ? Date.now() - new Date(since).getTime() > STUCK_THRESHOLD_MINUTES * 60 * 1000 : false;
+}
+
+async function nodeRunToRow(run: Run, progress: RunProgress | null): Promise<RunRow> {
+  const lastEvent = await getLastPiActivity(run.id);
+  const since = run.started_at ?? run.created_at;
+  const indicators: string[] = [];
+  if (run.status === "failed") indicators.push("FATAL");
+  if (isStuck(run, progress)) indicators.push("STUCK");
+  if (run.status === "conflict") indicators.push("CONFLICT");
+  if (run.status === "test-failed") indicators.push("TEST-FAIL");
+
+  let costStr: string | null = null;
+  let turns: number | null = null;
+  if (progress) {
+    if (progress.costUsd > 0) costStr = `$${progress.costUsd.toFixed(4)}`;
+    if (progress.turns > 0) turns = progress.turns;
+  }
+
+  return {
+    id: run.id,
+    task: run.seed_id,
+    status: run.status,
+    phase: progress?.currentPhase ?? null,
+    workerPid: null,
+    elapsed: elapsed(since),
+    lastEvent,
+    logPath: null,
+    reportPath: null,
+    cost: costStr,
+    turns,
+    indicators,
+    raw: run,
+  };
+}
+
+function elixirRunToRow(run: ElixirRun): RunRow {
+  const id = stringField(run, "run_id") ?? stringField(run, "id") ?? "unknown";
+  const status = stringField(run, "status") ?? "unknown";
+  const startedAt = stringField(run, "started_at") ?? stringField(run, "created_at") ?? new Date().toISOString();
+  const workerPid = stringField(run, "worker_pid") ?? (numberField(run, "worker_pid")?.toString() ?? null);
+  const cost = numberField(run, "cost") ?? numberField(run, "cost_usd");
+  const turns = numberField(run, "turns");
+  const indicators: string[] = [];
+  if (run.fatal === true || status === "failed") indicators.push("FATAL");
+  if (isElixirStuckRun(run)) indicators.push("STUCK");
+  if (status === "conflict") indicators.push("CONFLICT");
+  if (status === "test-failed") indicators.push("TEST-FAIL");
+
+  return {
+    id,
+    task: stringField(run, "task_id") ?? "unknown",
+    status,
+    phase: stringField(run, "current_phase"),
+    workerPid,
+    elapsed: elapsed(startedAt),
+    lastEvent: stringField(run, "last_lifecycle_event"),
+    logPath: stringField(run, "log_path"),
+    reportPath: stringField(run, "report_path") ?? stringField(run, "report_paths"),
+    cost: cost && cost > 0 ? `$${cost.toFixed(4)}` : null,
+    turns,
+    indicators,
+    raw: run,
   };
 }
 
@@ -254,56 +342,31 @@ export const runsCommand = new Command("runs")
 
     let rows: RunRow[] = [];
     try {
-      const allRuns = opts.all
-        ? store.getRunsByStatuses(
-            ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created"],
-            project.id,
-          )
-        : store.getActiveRuns(project.id);
+      if (foremanBackendMode() === "elixir" && process.env.FOREMAN_RUNS_NODE_FALLBACK !== "true") {
+        const manager = new ElixirServerManager();
+        const status = await manager.ensureRunning();
+        if (!status.running) {
+          throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+        }
+        const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+        const elixirRuns = (await client.listRuns(project.id)).filter((run) => opts.all || isElixirActiveRun(run));
+        const visibleRuns = opts.stuck ? elixirRuns.filter(isElixirStuckRun) : elixirRuns;
+        rows = visibleRuns.map(elixirRunToRow);
+      } else {
+        const allRuns = opts.all
+          ? store.getRunsByStatuses(
+              ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created"],
+              project.id,
+            )
+          : store.getActiveRuns(project.id);
 
-      const progressByRunId = new Map<string, RunProgress | null>();
-      for (const run of allRuns) {
-        progressByRunId.set(run.id, store.getRunProgress(run.id));
-      }
-
-      const activeRuns = opts.stuck ? filterStuckRuns(allRuns, progressByRunId) : allRuns;
-
-      // Build RunRow for each active run
-      rows = [];
-      for (const run of activeRuns) {
-        const progress = progressByRunId.get(run.id) ?? null;
-        const lastEvent = await getLastPiActivity(run.id);
-        const since = run.started_at ?? run.created_at;
-        const runElapsed = elapsed(since);
-
-        const indicators: string[] = [];
-        if (run.status === "failed") indicators.push("FATAL");
-        if (isStuck(run, progress)) indicators.push("STUCK");
-        if (run.status === "conflict") indicators.push("CONFLICT");
-        if (run.status === "test-failed") indicators.push("TEST-FAIL");
-
-        let costStr: string | null = null;
-        let turns: number | null = null;
-        if (progress) {
-          if (progress.costUsd > 0) costStr = `$${progress.costUsd.toFixed(4)}`;
-          if (progress.turns > 0) turns = progress.turns;
+        const progressByRunId = new Map<string, RunProgress | null>();
+        for (const run of allRuns) {
+          progressByRunId.set(run.id, store.getRunProgress(run.id));
         }
 
-        rows.push({
-          id: run.id,
-          task: run.seed_id,
-          status: run.status,
-          phase: progress?.currentPhase ?? null,
-          workerPid: null, // workerPid not available in current RunProgress model
-          elapsed: runElapsed,
-          lastEvent,
-          logPath: null, // populated from progress or environment when available
-          reportPath: null,
-          cost: costStr,
-          turns,
-          indicators,
-          raw: run,
-        });
+        const activeRuns = opts.stuck ? filterStuckRuns(allRuns, progressByRunId) : allRuns;
+        rows = await Promise.all(activeRuns.map((run) => nodeRunToRow(run, progressByRunId.get(run.id) ?? null)));
       }
     } finally {
       store.close();
@@ -316,7 +379,7 @@ export const runsCommand = new Command("runs")
 
     const stuckCount = rows.filter((r) => r.indicators.includes("STUCK")).length;
     const failedCount = rows.filter((r) => r.indicators.includes("FATAL")).length;
-    const activeCount = rows.filter((r) => r.status === "pending" || r.status === "running").length;
+    const activeCount = rows.filter((r) => r.status === "pending" || r.status === "running" || r.status === "in_progress").length;
 
     console.log(chalk.bold("Foreman Runs") + chalk.dim(`  (${rows.length} shown)`));
     if (stuckCount > 0) console.log(chalk.yellow(`  ⚠  ${stuckCount} stuck run(s) detected`));
