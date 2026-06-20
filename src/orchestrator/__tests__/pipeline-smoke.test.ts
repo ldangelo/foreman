@@ -171,6 +171,116 @@ describe("smoke workflow: structural invariants", () => {
 
 // ── loadPrompt(): unified resolution chain ────────────────────────────────────
 
+// ── auto-smoke phase: structural invariants ───────────────────────────────────
+
+describe("auto-smoke phase: structural invariants", () => {
+  const DEFAULT_WORKFLOW = join(PROJECT_ROOT, "src", "defaults", "workflows", "default.yaml");
+  const TYPES_SRC = join(PROJECT_ROOT, "src", "orchestrator", "types.ts");
+  const ROLES_SRC = join(PROJECT_ROOT, "src", "orchestrator", "roles.ts");
+  const AUTO_SMOKE_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "auto-smoke.md");
+
+  it("default.yaml defines auto-smoke phase between developer and qa", () => {
+    const content = readFileSync(DEFAULT_WORKFLOW, "utf-8");
+    // auto-smoke must be present
+    expect(content).toContain("- name: auto-smoke");
+    // Must be between developer and qa phases
+    const devPos = content.indexOf("- name: developer");
+    const smokePos = content.indexOf("- name: auto-smoke");
+    const qaPos = content.indexOf("- name: qa");
+    expect(devPos).toBeGreaterThan(-1);
+    expect(smokePos).toBeGreaterThan(-1);
+    expect(qaPos).toBeGreaterThan(-1);
+    expect(smokePos).toBeGreaterThan(devPos);
+    expect(smokePos).toBeLessThan(qaPos);
+  });
+
+  it("default.yaml auto-smoke phase has bash command with required checks", () => {
+    const content = readFileSync(DEFAULT_WORKFLOW, "utf-8");
+    // git diff --check
+    expect(content).toContain("git diff --check");
+    // conflict-marker scan
+    expect(content).toContain("<<<<<<");
+    expect(content).toContain("======");
+    expect(content).toContain(">>>>>>");
+    // DEVELOPER_REPORT.md existence
+    expect(content).toContain("DEVELOPER_REPORT.md");
+    // verdict artifact
+    expect(content).toContain('artifact: "{task.projectReportsDir}/AUTO_SMOKE_REPORT.md"');
+    expect(content).toContain("verdict: true");
+    expect(content).toContain("retryWith: developer");
+    expect(content).toContain("retryOnFail:");
+  });
+
+  it("default.yaml auto-smoke phase has timeout of 120 seconds", () => {
+    const content = readFileSync(DEFAULT_WORKFLOW, "utf-8");
+    const autoSmokeSection = content.substring(content.indexOf("- name: auto-smoke"), content.indexOf("- name: qa"));
+    expect(autoSmokeSection).toContain("timeoutSecs: 120");
+  });
+
+  it("default.yaml auto-smoke phase has mail onStart/onComplete/onFail", () => {
+    const content = readFileSync(DEFAULT_WORKFLOW, "utf-8");
+    const autoSmokeSection = content.substring(content.indexOf("- name: auto-smoke"), content.indexOf("- name: qa"));
+    expect(autoSmokeSection).toContain("onStart: true");
+    expect(autoSmokeSection).toContain("onComplete: true");
+    expect(autoSmokeSection).toContain("onFail: developer");
+  });
+
+  it('types.ts includes "auto-smoke" in AgentRole union', () => {
+    const content = readFileSync(TYPES_SRC, "utf-8");
+    expect(content).toMatch(/export type AgentRole = "lead" \| "explorer" \| "developer" \| "auto-smoke" \|/);
+  });
+
+  it("roles.ts includes auto-smoke in DEFAULT_MODELS", () => {
+    const content = readFileSync(ROLES_SRC, "utf-8");
+    expect(content).toContain('"auto-smoke": getDefaultModel()');
+  });
+
+  it("roles.ts buildRoleConfigs() includes auto-smoke entry", () => {
+    const content = readFileSync(ROLES_SRC, "utf-8");
+    // The entry must appear in buildRoleConfigs() output
+    expect(content).toMatch(/"auto-smoke":\s*\{[^}]*role:\s*"auto-smoke"/);
+  });
+
+  it("roles.ts ROLE_CONFIGS fallback includes auto-smoke entry", () => {
+    const content = readFileSync(ROLES_SRC, "utf-8");
+    // The try/catch fallback must also have the entry
+    expect(content).toMatch(/"auto-smoke":\s*\{[^}]*role:\s*"auto-smoke"[^}]*maxBudgetUsd:\s*0\.50/);
+  });
+
+  it("roles.ts auto-smoke config has correct constraints", () => {
+    const content = readFileSync(ROLES_SRC, "utf-8");
+    // Extract the auto-smoke config from buildRoleConfigs
+    const configMatch = content.match(/"auto-smoke":\s*\{([^}]+)\}/);
+    expect(configMatch).toBeTruthy();
+    const configBlock = configMatch![1];
+    expect(configBlock).toContain('permissionMode: "plan"');
+    expect(configBlock).toContain('reportFile: "AUTO_SMOKE_REPORT.md"');
+    expect(configBlock).toContain('allowedTools: ["Bash", "Glob", "Grep", "Read"]');
+  });
+
+  it("auto-smoke.md prompt template exists", () => {
+    expect(existsSync(AUTO_SMOKE_PROMPT), "auto-smoke.md must exist in src/defaults/prompts/default/").toBe(true);
+  });
+
+  it("auto-smoke.md describes all five checks", () => {
+    const content = readFileSync(AUTO_SMOKE_PROMPT, "utf-8");
+    expect(content).toContain("git diff --check");
+    expect(content.toLowerCase()).toContain("conflict");
+    expect(content).toContain("DEVELOPER_REPORT.md");
+    expect(content).toContain("typecheck");
+    expect(content).toContain("CLI --help");
+  });
+
+  it("auto-smoke.md documents verdict PASS/FAIL and timeout", () => {
+    const content = readFileSync(AUTO_SMOKE_PROMPT, "utf-8");
+    expect(content).toContain("## Verdict");
+    expect(content).toContain("120");
+    expect(content).toContain("Retry with `developer`");
+  });
+});
+
+// ── loadPrompt(): unified resolution chain ───────────────────────────────────
+
 describe("loadPrompt(): unified resolution chain", () => {
   let tmpProject: string;
 
