@@ -1,15 +1,29 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore, type Metrics } from "../../lib/store.js";
-import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
+
+interface RenderMetricsOptions {
+  since?: string;
+  phase?: string;
+  agent?: string;
+  taskType?: string;
+}
 
 /**
  * Render metrics as human-readable output.
  * Mirrors the cost display pattern used in status.ts.
  */
-function renderMetrics(metrics: Metrics, since?: string): void {
-  if (since) {
-    console.log(chalk.dim(`Metrics since ${since}`));
+function renderMetrics(metrics: Metrics, opts?: RenderMetricsOptions): void {
+  // Build filter context line
+  const contexts: string[] = [];
+  if (opts?.since) contexts.push(`since ${opts.since}`);
+  if (opts?.phase) contexts.push(`phase=${opts.phase}`);
+  if (opts?.agent) contexts.push(`agent=${opts.agent}`);
+  if (opts?.taskType) contexts.push(`task-type=${opts.taskType}`);
+
+  if (contexts.length > 0) {
+    console.log(chalk.bold("Metrics") + " " + chalk.dim(`(${contexts.join(", ")})`));
   } else {
     console.log(chalk.bold("Metrics"));
   }
@@ -56,13 +70,26 @@ function renderMetrics(metrics: Metrics, since?: string): void {
 /**
  * Render metrics as compact single-line output for scripts.
  * Format: "cost=<totalCost> tokens=<totalTokens> phases=<phaseCount> agents=<agentCount>"
+ * Optionally appends filter context: "filters=since=<ts>,phase=<phase>,agent=<agent>,task-type=<type>"
  */
-function renderMetricsCompact(metrics: Metrics): void {
+function renderMetricsCompact(metrics: Metrics, opts?: RenderMetricsOptions): void {
   const phaseCount = metrics.costByPhase ? Object.keys(metrics.costByPhase).length : 0;
   const agentCount = metrics.agentCostBreakdown ? Object.keys(metrics.agentCostBreakdown).length : 0;
-  console.log(
-    `cost=${metrics.totalCost.toFixed(4)} tokens=${metrics.totalTokens} phases=${phaseCount} agents=${agentCount}`,
-  );
+  const parts: string[] = [
+    `cost=${metrics.totalCost.toFixed(4)}`,
+    `tokens=${metrics.totalTokens}`,
+    `phases=${phaseCount}`,
+    `agents=${agentCount}`,
+  ];
+  const filters: string[] = [];
+  if (opts?.since) filters.push(`since=${opts.since}`);
+  if (opts?.phase) filters.push(`phase=${opts.phase}`);
+  if (opts?.agent) filters.push(`agent=${opts.agent}`);
+  if (opts?.taskType) filters.push(`task-type=${opts.taskType}`);
+  if (filters.length > 0) {
+    parts.push(`filters=${filters.join(",")}`);
+  }
+  console.log(parts.join(" "));
 }
 
 /**
@@ -89,17 +116,7 @@ function filterMetricsByAgent(metrics: Metrics, agent: string): Metrics {
   return { ...filtered, agentCostBreakdown: agentCost !== undefined ? { [agent]: agentCost } : {} };
 }
 
-/**
- * Filter metrics to only include tasks of a specific type (feature, bug, chore, etc.).
- * Note: This mirrors the behavior of other CLI filters but the actual filtering is done
- * at the SQL level in store.getMetrics for efficiency.
- */
-function filterMetricsByTaskType(metrics: Metrics, taskType: string): Metrics {
-  // Task type filtering happens in SQL via getMetrics taskType parameter.
-  // This CLI filter function exists for consistency with --phase and --agent filters.
-  // When taskType is specified, all metrics returned are already filtered by that type.
-  return { ...metrics };
-}
+
 
 export const metricsCommand = new Command("metrics")
   .description("Show cost and token usage metrics from the native Postgres task store")
@@ -150,10 +167,12 @@ export const metricsCommand = new Command("metrics")
         metrics = filterMetricsByAgent(metrics, opts.agent);
       }
 
-      // Apply --task-type CLI filter (SQL filtering already done, this ensures consistency)
-      if (opts.taskType) {
-        metrics = filterMetricsByTaskType(metrics, opts.taskType);
-      }
+      const renderOpts = {
+        since: opts.since,
+        phase: opts.phase,
+        agent: opts.agent,
+        taskType: opts.taskType,
+      };
 
       if (opts.json) {
         console.log(
@@ -168,9 +187,9 @@ export const metricsCommand = new Command("metrics")
           ),
         );
       } else if (opts.compact) {
-        renderMetricsCompact(metrics);
+        renderMetricsCompact(metrics, renderOpts);
       } else {
-        renderMetrics(metrics, opts.since);
+        renderMetrics(metrics, renderOpts);
       }
 
       store.close();

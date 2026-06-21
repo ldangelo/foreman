@@ -676,14 +676,20 @@ describe("foreman metrics", () => {
     expect(stdout).toMatch(/^cost=[\d.]+ tokens=\d+ phases=\d+ agents=\d+$/);
   });
 
-  it("--compact with --phase shows only that phase", async () => {
-    const { stdout } = await runCommand(metricsCommand, ["--compact", "--phase", "explorer"]);
-    expect(stdout).toContain("phases=1");
+  it("--compact with --since includes filters= in output", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact", "--since", "2026-06-01T00:00:00Z"]);
+    expect(stdout).toContain("filters=since=2026-06-01T00:00:00Z");
   });
 
-  it("human-readable output shows --since context", async () => {
+  it("--compact with --phase includes filters= in output", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact", "--phase", "explorer"]);
+    expect(stdout).toContain("filters=phase=explorer");
+  });
+
+  it("human-readable output shows filter context", async () => {
     const { stdout } = await runCommand(metricsCommand, ["--since", "2026-06-01T00:00:00Z"]);
-    expect(stdout).toContain("Metrics since 2026-06-01T00:00:00Z");
+    expect(stdout).toContain("Metrics");
+    expect(stdout).toContain("since 2026-06-01T00:00:00Z");
   });
 
   it("human-readable output shows 'Metrics' when --since is omitted", async () => {

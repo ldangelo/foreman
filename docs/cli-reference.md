@@ -207,7 +207,7 @@ foreman metrics --json --since 2026-06-01 --phase developer --task-type bug  # C
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--json` | — | Output as JSON with `projectId` and `timestamp` fields |
-| `--compact` | — | Output as a single-line `key=value` string for scripting (e.g., `cost=1.2300 tokens=12345 phases=3 agents=1`) |
+| `--compact` | — | Output as a single-line `key=value` string for scripting (e.g., `cost=1.2300 tokens=12345 phases=3 agents=1 filters=since=X,phase=Y`) |
 | `--since <iso-timestamp>` | — | Include metrics since this ISO timestamp |
 | `--phase <phase-name>` | — | Filter costs to a specific phase (explorer, developer, qa, reviewer, finalize) |
 | `--agent <type>` | — | Filter costs to a specific agent model (e.g., claude-sonnet-4-6) |
@@ -217,7 +217,7 @@ foreman metrics --json --since 2026-06-01 --phase developer --task-type bug  # C
 **Example output:**
 
 ```
-Metrics
+Metrics (since 2026-06-01, phase=developer, agent=claude-sonnet-4-6, task-type=bug)
   Total Cost:   $4.56
   Total Tokens: 123.5k
 
