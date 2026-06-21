@@ -686,6 +686,11 @@ describe("foreman metrics", () => {
     expect(stdout).toContain("filters=phase=explorer");
   });
 
+  it("--compact with --task-type includes filters= in output", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact", "--task-type", "feature"]);
+    expect(stdout).toContain("filters=task-type=feature");
+  });
+
   it("human-readable output shows filter context", async () => {
     const { stdout } = await runCommand(metricsCommand, ["--since", "2026-06-01T00:00:00Z"]);
     expect(stdout).toContain("Metrics");

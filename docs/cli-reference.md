@@ -201,6 +201,7 @@ foreman metrics --phase explorer        # Filter to a specific phase
 foreman metrics --agent claude-sonnet-4-6       # Filter by agent model
 foreman metrics --task-type feature     # Filter to a specific task type
 foreman metrics --project my-project    # Metrics for a registered project
+foreman metrics --project-path /abs/path # Metrics for a project at an absolute path
 foreman metrics --json --since 2026-06-01 --phase developer --task-type bug  # Combine filters
 ```
 
@@ -212,7 +213,8 @@ foreman metrics --json --since 2026-06-01 --phase developer --task-type bug  # C
 | `--phase <phase-name>` | — | Filter costs to a specific phase (explorer, developer, qa, reviewer, finalize) |
 | `--agent <type>` | — | Filter costs to a specific agent model (e.g., claude-sonnet-4-6) |
 | `--task-type <type>` | — | Filter costs to tasks of a specific type (feature, bug, chore, task) |
-| `--project <name-or-path>` | — | Show metrics for a registered project name or absolute project path |
+| `--project <name-or-path>` | — | Show metrics for a registered project name |
+| `--project-path <absolute-path>` | — | Show metrics for a project at an absolute path (advanced/script usage) |
 
 **Example output:**
 
