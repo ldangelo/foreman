@@ -34,6 +34,8 @@ function mapRunToSummary(run: Run): RunSummary {
     completedAt: run.completed_at,
     createdAt: run.created_at,
     progress: run.progress,
+    // Legacy store doesn't have archived column; default to false for backward compat
+    archived: (run as Run & { archived?: boolean }).archived ?? false,
   };
 }
 
@@ -119,5 +121,61 @@ export class ForemanStoreReadModelAdapter implements RunStoreReadModel {
   async getRunProgress(runId: string): Promise<RunProgressSummary | null> {
     const progress = this.store.getRunProgress(runId);
     return progress ? mapProgressToSummary(progress) : null;
+  }
+
+  /**
+   * Fetch recent active runs: pending/running or failed within the last 30 days.
+   * Excludes archived runs by default.
+   *
+   * @param projectId - Optional project filter
+   */
+  async getRecentActiveRuns(projectId?: string): Promise<RunSummary[]> {
+    // Get active runs (pending/running)
+    const activeRuns = await this.getActiveRuns(projectId);
+
+    // Get failed runs from the last 30 days
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const failedRuns = await this.getRunsByStatusesSince(
+      ["failed", "test-failed", "stuck", "conflict"] as RunStatus[],
+      thirtyDaysAgo,
+      projectId,
+    );
+
+    // Combine and deduplicate by run ID
+    const runMap = new Map<string, RunSummary>();
+    for (const run of activeRuns) {
+      runMap.set(run.id, run);
+    }
+    for (const run of failedRuns) {
+      if (run.createdAt < thirtyDaysAgo) continue;
+      if (!runMap.has(run.id)) {
+        runMap.set(run.id, run);
+      }
+    }
+
+    // Filter out archived runs
+    const results = Array.from(runMap.values()).filter((run) => !run.archived);
+
+    // Sort by created_at DESC
+    results.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+    return results;
+  }
+
+  /**
+   * Archive a set of runs by their IDs.
+   *
+   * Note: The legacy ForemanStore does not support archiving. This method
+   * is a no-op for backward compatibility. Use the PostgresAdapter directly
+   * for archival operations in production.
+   *
+   * @param runIds - Array of run IDs to archive
+   * @param _projectId - Ignored for legacy store
+   * @returns 0 (archiving not supported in legacy store)
+   */
+  async archiveRuns(runIds: string[], _projectId?: string): Promise<number> {
+    // Legacy store does not support archiving; this is a no-op
+    // Production should use PostgresAdapter.archiveRuns() instead
+    return 0;
   }
 }

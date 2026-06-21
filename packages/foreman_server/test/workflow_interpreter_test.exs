@@ -39,7 +39,7 @@ defmodule ForemanServer.WorkflowInterpreterTest do
            ]
 
     assert workflow.models["developer"].default == "MiniMax"
-    assert workflow.retry_rules["qa"] == %{retry_with: "developer", retry_on_fail: 2}
+    assert workflow.retry_rules["qa"] == %{retry_with: "developer", retry_on_fail: 3}
     assert workflow.artifacts["qa"] == "{task.projectReportsDir}/QA_REPORT.md"
     assert workflow.mail_hooks["reviewer"].forward_artifact_to == "foreman"
   end

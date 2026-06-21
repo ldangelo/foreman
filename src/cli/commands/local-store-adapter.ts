@@ -22,6 +22,7 @@ export interface LocalRunStoreAdapter {
   ): Promise<ReturnType<ForemanStore["getRunsForSeed"]>>;
   updateRun(...args: Parameters<ForemanStore["updateRun"]>): Promise<void>;
   deleteRun(runId: string): Promise<ReturnType<ForemanStore["deleteRun"]>>;
+  archiveRuns(runIds: string[], projectId?: string): Promise<number>;
   logEvent(...args: Parameters<ForemanStore["logEvent"]>): Promise<void>;
   close(): void;
   isOpen(): boolean;
@@ -40,6 +41,7 @@ export function wrapLocalRunStore(store: ForemanStore): LocalRunStoreAdapter {
     getRunsForSeed: async (seedId, projectId) => store.getRunsForSeed(seedId, projectId),
     updateRun: async (runId, updates) => store.updateRun(runId, updates),
     deleteRun: async (runId) => store.deleteRun(runId),
+    archiveRuns: async () => 0,
     logEvent: async (projectId, eventType, data, runId) =>
       store.logEvent(projectId, eventType, data, runId),
     close: () => store.close(),

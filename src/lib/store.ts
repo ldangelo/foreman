@@ -95,6 +95,8 @@ export interface Run {
   completed_at: string | null;
   created_at: string;
   progress: string | null;
+  /** Hidden from default operator views but retained for inspection. */
+  archived?: boolean;
   /** @deprecated tmux removed; column kept for DB backward compat */
   tmux_session?: string | null;
   /** Branch that this seed's worktree was branched from (null = default branch). Used for branch stacking. */
@@ -157,6 +159,7 @@ export type EventType =
   | "merge-queue-dequeue"
   | "merge-queue-resolve"
   | "merge-queue-fallback"
+  | "merge-auth-fallback"
   | "merge-cleanup-fallback"
   | "sentinel-start"
   | "sentinel-pass"

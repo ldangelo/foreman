@@ -200,6 +200,16 @@ export interface WorkflowPhaseConfig {
   /** Stop the pipeline when verdict FAIL remains after retries are exhausted. */
   stopOnFailExhausted?: boolean;
   /**
+   * When true, detects repeated QA/review failure signatures across retry attempts.
+   * If the same root cause repeats on consecutive retries without meaningful diff progress,
+   * the circuit breaker trips early and sets retriesExhausted: true instead of consuming
+   * the remaining retry budget. Uses the failure item keys (category|file|command) from
+   * the parsed QA report to detect repeated failures.
+   *
+   * Default: true for phases with verdict: true
+   */
+  sameFailureCircuitBreaker?: boolean;
+  /**
    * When true and this phase fails with a retryable/transient error (e.g. rate limit),
    * the task is placed in cooldown state instead of being marked failed/stuck.
    * The dispatcher will not re-dispatch the task until the cooldown period expires.
@@ -553,6 +563,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
     if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
     if (typeof p["stopOnFailExhausted"] === "boolean") phase.stopOnFailExhausted = p["stopOnFailExhausted"];
+    if (typeof p["sameFailureCircuitBreaker"] === "boolean") phase.sameFailureCircuitBreaker = p["sameFailureCircuitBreaker"];
     if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
     if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];

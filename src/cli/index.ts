@@ -130,12 +130,13 @@ program.addCommand(jiraCommand);
 program.addCommand(logsCommand);
 program.addCommand(serverCommand);
 program.addCommand(mcpCommand);
+program.addCommand(metricsCommand);
 
 program.addHelpText(
   "after",
   `
 Domain groups:
-  Setup/health:     init, doctor, daemon, server
+  Setup/health:     init, doctor, daemon, server, metrics
   Planning:         plan, sling
   Execution:        run, retry, reset, stop, recover
   Tasks/views:      task, status, metrics, board, watch, logs, runs

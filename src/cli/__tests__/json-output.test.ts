@@ -563,25 +563,25 @@ describe("foreman metrics", () => {
   });
 
   it("outputs valid JSON when --json flag is passed", async () => {
-    const { stdout } = await runCommand(metricsCommand, ["--json"]);
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
     expect(() => JSON.parse(stdout)).not.toThrow();
   });
 
   it("output contains totalCost and totalTokens", async () => {
-    const { stdout } = await runCommand(metricsCommand, ["--json"]);
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
     const data = JSON.parse(stdout);
     expect(data.totalCost).toBe(1.23);
     expect(data.totalTokens).toBe(12345);
   });
 
   it("output contains costByPhase when available", async () => {
-    const { stdout } = await runCommand(metricsCommand, ["--json"]);
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
     const data = JSON.parse(stdout);
     expect(data.costByPhase).toEqual({ explorer: 0.10, developer: 0.50, qa: 0.63 });
   });
 
   it("output contains agentCostBreakdown when available", async () => {
-    const { stdout } = await runCommand(metricsCommand, ["--json"]);
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
     const data = JSON.parse(stdout);
     expect(data.agentCostBreakdown).toEqual({ "claude-sonnet-4-6": 1.23 });
   });
@@ -631,7 +631,7 @@ describe("foreman metrics", () => {
   });
 
   it("does not output JSON structure when --json is omitted", async () => {
-    const { stdout } = await runCommand(metricsCommand, []);
+    const { stdout } = await runCommand(metricsCommand, ["--costs"]);
     expect(stdout).toContain("Metrics");
     expect(stdout).toContain("Total Cost");
     expect(stdout).toContain("1.23");
@@ -642,7 +642,7 @@ describe("foreman metrics", () => {
     mockGetProjectByPath.mockReturnValue(null);
     let caughtError: Error | undefined;
     try {
-      await runCommand(metricsCommand, ["--json"]);
+      await runCommand(metricsCommand, ["--costs", "--json"]);
     } catch (e) {
       caughtError = e as Error;
     }
@@ -653,7 +653,7 @@ describe("foreman metrics", () => {
 
   it("outputs formatted error when project is not registered and --json is omitted", async () => {
     mockGetProjectByPath.mockReturnValue(null);
-    const { stdout } = await runCommand(metricsCommand, []);
+    const { stdout } = await runCommand(metricsCommand, ["--costs"]);
     expect(stdout).toContain("not found");
   });
 
@@ -665,7 +665,7 @@ describe("foreman metrics", () => {
   });
 
   it("JSON output includes projectId and timestamp metadata", async () => {
-    const { stdout } = await runCommand(metricsCommand, ["--json"]);
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
     const data = JSON.parse(stdout);
     expect(data.projectId).toBe(MOCK_PROJECT.id);
     expect(data.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
@@ -698,7 +698,7 @@ describe("foreman metrics", () => {
   });
 
   it("human-readable output shows 'Metrics' when --since is omitted", async () => {
-    const { stdout } = await runCommand(metricsCommand, []);
+    const { stdout } = await runCommand(metricsCommand, ["--costs"]);
     expect(stdout).toContain("Metrics");
     expect(stdout).not.toContain("Metrics since");
   });

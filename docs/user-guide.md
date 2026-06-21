@@ -77,7 +77,7 @@ For architecture details, deprecated command mappings, and troubleshooting examp
 
 ### Documentation Gate
 
-Foreman workflows include a documentation phase after finalization and before PR creation. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`.
+Foreman workflows include a documentation phase after finalization and before PR creation. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`. Explorer also writes an Acceptance Contract in `EXPLORER_REPORT.md`; Developer, QA, review, and finalize reports must carry and address those criteria before Foreman accepts a passing phase.
 
 Docs that must be considered for every fix or feature:
 
@@ -215,10 +215,11 @@ foreman watch
 foreman runs
 foreman logs <run-id>
 foreman attach <run-id>
-foreman metrics --since 2026-06-01
+foreman metrics
+foreman metrics --costs --since 2026-06-01
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman runs` to see a traceability dashboard listing all active runs with their phase, elapsed time, last activity, and stuck/fatal indicators — useful for observing scheduler/worker activity even when inbox messages are sparse. Add `--verbose` to show cost, turns, and log/report paths; add `--stuck` to filter to likely-stuck runs. Use `foreman metrics` to view cost and token usage aggregated from the task store, with optional filters for `--since`, `--phase`, `--agent`, `--task-type`, and three output modes: human-readable, `--json`, and `--compact` for scripting. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-logs [run-id]`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
+Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman runs` to see a traceability dashboard listing all active runs with their phase, elapsed time, last activity, and stuck/fatal indicators — useful for observing scheduler/worker activity even when inbox messages are sparse. Add `--verbose` to show cost, turns, and log/report paths; add `--stuck` to filter to likely-stuck runs. Use `foreman metrics` for a per-phase pipeline observability view showing pass/fail rates, retry counts, average turns/cost, top failure reasons, stuck tasks by reason, and recent bottlenecks; add `--costs` or cost filters such as `--since`, `--phase`, `--agent`, or `--task-type` to view task-store cost/token metrics in human-readable, `--json`, or `--compact` form. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-logs [run-id]`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
 
 ### 8. Triage Failures
 
@@ -243,7 +244,7 @@ Developer and QA phases are intentionally handoff-driven. Explorer performs code
 
 ### 9. Review and Merge
 
-Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
+Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If `gh pr merge` authentication fails during merge, Foreman falls back to its direct VCS merge path for the same branch. If an operator merges the PR manually, the PR merge event updates the linked run and task to `merged`. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
 
 ```bash
 foreman merge
@@ -325,6 +326,16 @@ foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
 |---------|--------------|--------------------|-------------|
 | `foreman run --task <id>` | Yes (task must be `ready`) | `--workflow` flag | Normal dispatch |
 | `foreman run task <id> <workflow>` | No (any state) | Positional argument | Debug, recovery, testing |
+
+## Run Archiving and Filtering
+
+Old failed runs can accumulate and obscure current state in `foreman runs`, `foreman status`, and operator views. Foreman archives and filters historical failed runs so they remain inspectable without cluttering active views.
+
+- Archived runs are hidden from default views but remain in storage for inspection.
+- `runs.archived` controls visibility in PostgreSQL-backed stores.
+- Recent-active run reads include pending/running runs plus failed runs from the last 30 days, excluding archived runs.
+- Use `foreman status --include-archived` when historical runs need inspection.
+- `foreman purge runs` archives failed runs whose tasks are closed; permanent deletion is available via the explicit purge option.
 
 ## Documentation Expectations
 

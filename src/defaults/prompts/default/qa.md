@@ -17,6 +17,66 @@ If ANY output appears, IMMEDIATELY report QA FAIL with message:
   "CONFLICT MARKERS FOUND: unresolved git conflict markers in source files — branch needs manual fix before QA can proceed."
 Do NOT run tests if conflict markers are found.
 
+## Pre-flight: Environment Readiness Checks
+
+Before running any smoke or integration tests, verify the project environment is ready. If the environment is missing or inconsistent, report `environment-blocked` with evidence instead of a product failure.
+
+Run the following checks using the `bash` tool. Do NOT run the full test suite (`npm test`, `npx vitest run`, `mix test`, etc.) until these checks pass.
+
+### 1. Project registration and backend health
+```bash
+foreman doctor --json 2>&1 | head -100
+```
+- Parse the JSON: if `summary.fail > 0`, extract the failed check names and messages.
+- Failed checks under **System** (missing `br`, missing Pi binary) or **Data integrity** (missing DB pool) are environment-blocked evidence.
+- A non-zero exit code from `foreman doctor` itself is also environment-blocked evidence.
+
+### 2. Database connectivity (Postgres)
+```bash
+pg_isready -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U "${PGUSER:-postgres}" 2>&1 || echo "DB_CONNECTION_FAILED"
+```
+- Expected on success: output containing `accepting connections`.
+- If output contains `DB_CONNECTION_FAILED` or indicates rejection, that is environment-blocked evidence.
+
+### 3. Backend mode consistency
+```bash
+grep -E "^backend_mode:|^backendMode:" .foreman/config.yaml 2>/dev/null || echo "NO_BACKEND_MODE"
+```
+- Record the detected backend mode. Inconsistency between the detected mode and the mode expected by the implementation is environment-blocked evidence.
+- If `NO_BACKEND_MODE`, check the `.foreman/config.yaml` directly to confirm the configured mode.
+
+### 4. Local service health (optional — skip if project has no local server)
+```bash
+curl -sf http://localhost:3000/health 2>&1 || curl -sf http://localhost:4000/health 2>&1 || echo "NO_LOCAL_SERVICE"
+```
+- If a local server is required by the task but this returns `NO_LOCAL_SERVICE`, that is environment-blocked evidence.
+- If the project has no local server, `NO_LOCAL_SERVICE` is acceptable and not a blocker.
+
+### If any check fails
+
+Write **{{reportDir}}/QA_REPORT.md** immediately with this format:
+```markdown
+# QA Report: {{seedTitle}}
+
+## Verdict: FAIL
+
+## Environment Readiness Result
+- Status: environment-blocked
+
+## Evidence
+- <check name>: <failure description from output>
+- <check name>: <failure description from output>
+
+## Blocked Checks
+- <list of failed check names>
+```
+
+Then stop. Do NOT run smoke tests, integration tests, or targeted test commands. Route back to Developer only after the environment is fixed.
+
+### If all checks pass
+
+Proceed with the normal QA instructions below.
+
 ## Instructions
 1. Read TASK.md, `{{reportDir}}/EXPLORER_REPORT.md`, and `{{reportDir}}/DEVELOPER_REPORT.md` for context
 2. Review only the implementation surface:
@@ -43,7 +103,14 @@ Do NOT run tests if conflict markers are found.
 ```markdown
 # QA Report: {{seedTitle}}
 
-## Verdict: PASS | FAIL
+## Verdict: PASS | FAIL | FAIL (environment-blocked)
+
+## Environment Readiness Result
+*(Omit this section if verdict is PASS. Required if verdict is FAIL.)*
+- Status: environment-blocked | pass
+
+## Evidence
+*(Required if verdict is FAIL. List each failed check and its output.)*
 
 ## Test Results
 - Targeted command(s) run: <exact targeted test command, e.g. npm test -- --reporter=dot 2>&1 or mix test test/path_test.exs>

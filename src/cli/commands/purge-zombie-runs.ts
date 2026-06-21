@@ -13,6 +13,10 @@ import { printDryRunNotice, printPurgeSummary } from "./cli-output.js";
 
 export interface PurgeZombieRunsOpts {
   dryRun?: boolean;
+  /** Archive runs instead of deleting them (default behavior when archiving is supported). */
+  archive?: boolean;
+  /** Permanently delete archived runs. Implies --dry-run shows what would be deleted. */
+  purge?: boolean;
 }
 
 export interface PurgeZombieRunsResult {
@@ -26,6 +30,7 @@ interface PurgeZombieStore {
   getProjectByPath(path: string): Promise<{ id: string; path: string } | null>;
   getRunsByStatus(status: Run["status"], projectId: string): Promise<Run[]>;
   deleteRun(runId: string): Promise<boolean>;
+  archiveRuns(runIds: string[], projectId: string): Promise<number>;
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -115,14 +120,21 @@ export async function purgeZombieRunsAction(
 
     if (dryRun) {
       console.log(
-        chalk.cyan(`  would purge  run ${run.id} — bead ${run.seed_id} is closed/gone`),
+        chalk.cyan(`  would ${opts.purge ? "purge" : "archive"}  run ${run.id} — bead ${run.seed_id} is closed/gone`),
       );
       result.purged += 1;
     } else {
-      await store.deleteRun(run.id);
-      console.log(
-        chalk.green(`  purged  run ${run.id} — bead ${run.seed_id} is closed/gone`),
-      );
+      if (opts.purge) {
+        await store.deleteRun(run.id);
+        console.log(
+          chalk.green(`  purged  run ${run.id} — bead ${run.seed_id} is closed/gone`),
+        );
+      } else {
+        await store.archiveRuns([run.id], project.id);
+        console.log(
+          chalk.green(`  archived  run ${run.id} — bead ${run.seed_id} is closed/gone`),
+        );
+      }
       result.purged += 1;
     }
   }

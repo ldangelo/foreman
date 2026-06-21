@@ -91,6 +91,86 @@ phases:
       reserve: true
       leaseSecs: 600
 
+  - name: auto-smoke
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    bash: |
+      set -euo pipefail
+      trap 'echo "## Verdict: FAIL"' ERR
+
+      # ── 1. git diff --check: catch whitespace / blank-line errors ─────────
+      echo "=== git diff --check ==="
+      git diff --check || { echo "FAIL: whitespace errors in diff"; exit 1; }
+      echo "PASS"
+
+      # ── 2. Conflict-marker scan ───────────────────────────────────────────
+      echo "=== conflict-marker scan ==="
+      CONFLICTS=$(grep -r "^<<<<<<\|^======\|^>>>>>>" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.yaml" --include="*.yml" . 2>/dev/null | head -20 || true)
+      if [ -n "$CONFLICTS" ]; then
+        echo "FAIL: conflict markers found:"
+        echo "$CONFLICTS"
+        exit 1
+      fi
+      echo "PASS"
+
+      # ── 3. Check that DEVELOPER_REPORT.md exists ──────────────────────────
+      echo "=== DEVELOPER_REPORT.md existence ==="
+      REPORT_FILE="{task.projectReportsDir}/DEVELOPER_REPORT.md"
+      if [ ! -f "$REPORT_FILE" ]; then
+        echo "FAIL: $REPORT_FILE not found"
+        exit 1
+      fi
+      echo "PASS"
+
+      # ── 4. Targeted typecheck (when tsconfig.json exists) ───────────────
+      echo "=== typecheck (tsc --noEmit) ==="
+      if [ -f "tsconfig.json" ]; then
+        TSC_OUTPUT=$(npx tsc --noEmit 2>&1 | head -30 || true)
+        if [ -n "$TSC_OUTPUT" ]; then
+          echo "FAIL: TypeScript errors detected:"
+          echo "$TSC_OUTPUT"
+          exit 1
+        fi
+        echo "PASS"
+      else
+        echo "SKIPPED (no tsconfig.json)"
+      fi
+
+      # ── 5. CLI --help for touched commands (from DEVELOPER_REPORT.md) ──────
+      echo "=== CLI --help checks ==="
+      if [ -f "$REPORT_FILE" ]; then
+        # Extract CLI commands from Files Changed section
+        CLI_COMMANDS=$(grep -E "(foreman|foremanctl|foreman-server)" "$REPORT_FILE" | grep -oE "foreman(-[a-z]+)+" | sort -u || true)
+        if [ -n "$CLI_COMMANDS" ]; then
+          for cmd in $CLI_COMMANDS; do
+            echo "Checking: $cmd --help"
+            if command -v "$cmd" &>/dev/null; then
+              "$cmd" --help > /dev/null 2>&1 || { echo "FAIL: $cmd --help failed"; exit 1; }
+              echo "  PASS"
+            else
+              echo "  SKIPPED (not in PATH)"
+            fi
+          done
+        else
+          echo "SKIPPED (no CLI commands claimed in report)"
+        fi
+      else
+        echo "SKIPPED (no report file)"
+      fi
+
+      echo "=== ALL CHECKS PASSED ==="
+      echo "## Verdict: PASS"
+    artifact: "{task.projectReportsDir}/AUTO_SMOKE_REPORT.md"
+    verdict: true
+    timeoutSecs: 120
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
   - name: qa
     prompt: qa.md
     tools:

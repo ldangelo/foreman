@@ -304,7 +304,7 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(
          projection,
-         %{type: "RunStarted", payload: %{run_id: run_id} = payload},
+         %{type: "RunStarted", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
          _mode
        ) do
     run = %{
@@ -316,7 +316,14 @@ defmodule ForemanServer.ProjectionStore do
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
-      updated_at: Map.get(payload, :occurred_at, DateTime.utc_now())
+      updated_at: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      started_at: occurred_at || DateTime.utc_now(),
+      worker_pid: Map.get(payload, :worker_pid),
+      report_paths: Map.get(payload, :report_paths, []),
+      cost: nil,
+      turns: nil,
+      stuck: false,
+      fatal: false
     }
 
     put_in(projection, [:runs, run_id], run)
@@ -374,6 +381,7 @@ defmodule ForemanServer.ProjectionStore do
         :retry_history,
         Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
       )
+      |> Map.put(:fatal, Map.get(payload, :fatal, true))
     end)
     |> update_task_for_terminal_run(run_id, "failed", payload)
     |> apply_activity_and_notify(activity_payload, mode)
@@ -387,6 +395,30 @@ defmodule ForemanServer.ProjectionStore do
     projection
     |> update_run_status(run_id, "blocked")
     |> update_task_for_terminal_run(run_id, "blocked", payload)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "RunStuck", payload: %{run_id: run_id} = payload},
+         mode
+       ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "run_stuck",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: "foreman",
+      severity: "warning",
+      summary: "Run marked as stuck",
+      phase: Map.get(payload, :phase_id),
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    projection
+    |> update_run_status(run_id, "stuck")
+    |> update_run(run_id, &Map.put(&1, :stuck, true))
+    |> update_task_for_terminal_run(run_id, "stuck", payload)
+    |> apply_activity_and_notify(activity_payload, mode)
   end
 
   defp apply_domain_event(
@@ -449,6 +481,8 @@ defmodule ForemanServer.ProjectionStore do
         Map.get(payload, :artifact_paths, Map.get(run, :artifact_paths, []))
       )
       |> Map.put(:report_paths, Map.get(payload, :report_paths, Map.get(run, :report_paths, [])))
+      |> maybe_put(:cost, Map.get(payload, :cost))
+      |> maybe_put(:turns, Map.get(payload, :turns))
     end)
     |> apply_activity_and_notify(activity_payload, mode)
   end
@@ -510,11 +544,15 @@ defmodule ForemanServer.ProjectionStore do
          },
          _mode
        ) do
+    worker_pid = Map.get(payload, :pid)
+
     projection
     |> put_worker_sequence(payload)
     |> put_in([:worker_heartbeats, "#{run_id}:#{worker_id}"], payload)
     |> update_run(run_id, fn run ->
-      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, "heartbeat"))
+      run
+      |> update_in([:worker_status], &Map.put(&1 || %{}, worker_id, "heartbeat"))
+      |> maybe_put_run_field(:worker_pid, worker_pid)
     end)
   end
 
@@ -678,8 +716,11 @@ defmodule ForemanServer.ProjectionStore do
         projection
 
       run_id ->
-        apply_activity_and_notify(
-          projection,
+        projection
+        |> update_run_status(run_id, "merged")
+        |> update_run(run_id, &Map.put(&1, :current_phase, nil))
+        |> update_task_for_terminal_run(run_id, "merged", payload)
+        |> apply_activity_and_notify(
           %{
             run_id: run_id,
             event_type: "pr_merged",
@@ -1222,6 +1263,10 @@ defmodule ForemanServer.ProjectionStore do
   defp maybe_put(map, _key, []), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
+  defp maybe_put_run_field(run, _key, nil), do: run
+  defp maybe_put_run_field(run, _key, ""), do: run
+  defp maybe_put_run_field(run, key, value), do: Map.put(run, key, value)
+
   defp put_worker_sequence(projection, %{run_id: run_id, worker_id: worker_id, sequence: sequence})
        when is_integer(sequence) do
     put_in(projection, [:worker_sequences, "#{run_id}:#{worker_id}"], sequence)
@@ -1250,14 +1295,14 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp normalize_event(%ForemanServer.Event{} = event) do
-    %{type: event.event_type, payload: event.payload}
+    %{type: event.event_type, payload: event.payload, occurred_at: event.occurred_at}
   end
 
-  defp normalize_event(%{event_type: event_type, payload: payload}) do
-    %{type: event_type, payload: payload}
+  defp normalize_event(%{event_type: event_type, payload: payload} = raw) do
+    Map.merge(%{type: event_type, payload: payload}, Map.take(raw, [:occurred_at]))
   end
 
-  defp normalize_event(%{type: type, payload: payload}) do
-    %{type: type, payload: payload}
+  defp normalize_event(%{type: type, payload: payload} = raw) do
+    Map.merge(%{type: type, payload: payload}, Map.take(raw, [:occurred_at]))
   end
 end

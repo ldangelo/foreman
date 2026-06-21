@@ -48,7 +48,7 @@ import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig } from "../lib/project-config.js";
 import { SandboxProviderFactory } from "../lib/sandbox-providers/index.js";
 import type { SandboxProviderConfig } from "../lib/sandbox-provider.js";
-import { parseQAFailures, formatFailureChecklist, diffQAFailures, type QAFailureItem, type TrackedFailureItem } from "../lib/report-parser.js";
+import { parseQAFailures, formatFailureChecklist, diffQAFailures, validateAcceptanceCoverage, type QAFailureItem, type TrackedFailureItem } from "../lib/report-parser.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -696,6 +696,19 @@ function formatDeveloperGateFeedback(result: DeveloperGateResult): string {
   ].join("\n");
 }
 
+function acceptanceCoverageFailure(_worktreePath: string, reportPath: string): string | null {
+  const explorerPath = join(dirname(reportPath), "EXPLORER_REPORT.md");
+  if (!existsSync(explorerPath) || !existsSync(reportPath)) return null;
+  const coverage = validateAcceptanceCoverage(
+    readFileSync(explorerPath, "utf8"),
+    readFileSync(reportPath, "utf8"),
+  );
+  if (coverage.ok) return null;
+  const missing = coverage.missing.map((criterion) => `- ${criterion.id}: ${criterion.text}`).join("\n");
+  const sectionReason = coverage.reportHasAcceptanceSection ? "" : "Missing `## Acceptance Contract` section.\n";
+  return `Acceptance contract coverage missing. ${sectionReason}Unaddressed criteria:\n${missing || "- (none parsed)"}`;
+}
+
 function developerGateRetryLimit(phases: WorkflowPhaseConfig[], phaseName: string): number {
   const retryPhase = phases.find((candidate) => candidate.retryWith === phaseName && typeof candidate.retryOnFail === "number");
   return retryPhase?.retryOnFail ?? 1;
@@ -1319,6 +1332,8 @@ async function runPhaseSequence(
   const rateLimitRetries: Record<string, number> = {};
   // Track previous QA failure items for resolution diffing across retries
   let previousQAFailureItems: QAFailureItem[] = [];
+  // Track previous still-failing item keys for same-failure circuit breaker
+  let prevStillFailingKeys: Set<string> = new Set();
   const pipelineStartedAt = Date.now();
 
   const totalReviewLoops = (): number => Object.values(retryCounts).reduce((sum, count) => sum + count, 0);
@@ -1970,14 +1985,19 @@ async function runPhaseSequence(
         phaseSucceeded = false;
         phaseError = `Debug artifacts left in worktree: ${debugArtifacts.join(", ")}`;
       } else if (interpolatedArtifact && config.taskMeta?.projectReportsDir) {
+        const developerReportPath = resolveArtifactPath(worktreePath, interpolatedArtifact);
         const gate = validateDeveloperCompletion(
           worktreePath,
-          resolveArtifactPath(worktreePath, interpolatedArtifact),
+          developerReportPath,
           `${description}\n${comments ?? ""}`,
         );
-        if (!gate.ok) {
+        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, developerReportPath);
+        if (!gate.ok || acceptanceFailure) {
           phaseSucceeded = false;
-          developerGateFeedback = formatDeveloperGateFeedback(gate);
+          developerGateFeedback = [
+            !gate.ok ? formatDeveloperGateFeedback(gate) : undefined,
+            acceptanceFailure,
+          ].filter(Boolean).join("\n\n");
           phaseError = developerGateFeedback;
         }
       }
@@ -2308,8 +2328,18 @@ async function runPhaseSequence(
         phase.artifact,
         ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
       );
+      const reportPath = resolveArtifactPath(worktreePath, interpolatedArtifact);
       const report = readReport(worktreePath, interpolatedArtifact);
       let verdict = report ? parseVerdict(report) : "unknown";
+
+      if ((phaseName === "qa" || phaseName === "finalize" || phaseName === "reviewer") && report && verdict !== "fail") {
+        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, reportPath);
+        if (acceptanceFailure) {
+          verdict = "fail";
+          feedbackContext = acceptanceFailure;
+          ctx.log(`[${phaseName.toUpperCase()}] FAIL — acceptance contract coverage missing`);
+        }
+      }
 
       if (phaseName === "qa" && report && verdict !== "fail" && !qaReportHasTestEvidence(report)) {
         verdict = "fail";
@@ -2418,8 +2448,8 @@ async function runPhaseSequence(
             const parsedReport = parseQAFailures(report);
             let feedbackBody = report;
 
-            // Inject structured checklist for QA failures targeting developer
-            if (phaseName === "qa" && parsedReport.items.length > 0) {
+            // Inject structured checklist for QA/reviewer failures targeting developer
+            if ((phaseName === "qa" || phaseName === "reviewer") && parsedReport.items.length > 0) {
               // Diff against previous QA failure items to track resolution
               const trackedItems: TrackedFailureItem[] = previousQAFailureItems.length > 0
                 ? diffQAFailures(previousQAFailureItems, parsedReport.items)
@@ -2427,6 +2457,37 @@ async function runPhaseSequence(
 
               // Update previous items for next retry
               previousQAFailureItems = parsedReport.items;
+
+              // Same-failure circuit breaker: detect repeated failure signatures
+              // Default to true for qa/reviewer phases unless explicitly disabled (sameFailureCircuitBreaker !== false)
+              const circuitBreakerEnabled = phase.sameFailureCircuitBreaker !== false;
+              if (circuitBreakerEnabled && trackedItems.length > 0) {
+                const currentStillFailingKeys = new Set(
+                  parsedReport.items.map((item) => `${item.category}|${item.file ?? ""}|${item.command ?? ""}`)
+                );
+
+                // Trip the breaker if: (1) we have previous failure keys, (2) retry >= 1, (3) same failures repeat
+                // This requires failures to repeat on consecutive retries (retry 1 + retry 2 for first trip)
+                if (prevStillFailingKeys.size > 0 && currentRetries >= 1) {
+                  const repeatedKeys = [...currentStillFailingKeys].filter((key) => prevStillFailingKeys.has(key));
+                  if (repeatedKeys.length > 0) {
+                    ctx.log(`[${phaseName.toUpperCase()}] SAME-FAILURE CIRCUIT BREAKER — repeated failure signatures detected on retry ${currentRetries + 1}: ${repeatedKeys.join(", ")}`);
+                    await appendFile(logFile, `\n[PIPELINE] ${phaseName} same-failure circuit breaker tripped — repeated failures: ${repeatedKeys.join(", ")}\n`);
+                    // Stop early instead of consuming remaining retry budget
+                    const terminalVerdictFailure = phase.stopOnFailExhausted === true;
+                    if (failOnRetriesExhausted || terminalVerdictFailure) {
+                      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
+                    }
+                    // Mark retry budget as exhausted for terminal handling, but allow current iteration to complete
+                    // This ensures the failure is logged and reported before the phase exits
+                    ctx.log(`[${phaseName.toUpperCase()}] SAME-FAILURE CIRCUIT BREAKER — marking retries exhausted, completing current iteration`);
+                    retryCounts[retryCountKey] = maxRetries;
+                  }
+                }
+
+                // Update previous keys for next iteration
+                prevStillFailingKeys = currentStillFailingKeys;
+              }
 
               // Format checklist with resolution status
               const checklist = formatTrackedChecklist(trackedItems);

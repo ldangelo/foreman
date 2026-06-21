@@ -79,7 +79,7 @@ foreman project edit <project-id> --default-branch dev
 
 Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, skips ready tasks whose dependency blockers are not closed, monitors agents, and auto-merges completed work. The daemon uses the same dependency-filtered ready queue and logs both dispatched task IDs and skipped-task reasons each dispatch cycle.
 
-Default workflows include a `documentation` phase after finalization and before PR creation. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer owns code discovery; Developer and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Developer may still author focused tests when the task/handoff requires coverage. Before QA, Foreman gates Developer completion on report self-check evidence, actual git diff, claimed file existence, required docs/tests, and TypeScript compilation when TS/JS files changed. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
+Default workflows include a `documentation` phase after finalization and before PR creation. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer owns code discovery; Developer and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Developer may still author focused tests when the task/handoff requires coverage. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests, and TypeScript compilation when TS/JS files changed. Verdict phases that report PASS must also carry and address the Explorer acceptance criteria. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
 
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
@@ -161,6 +161,7 @@ foreman status --json             # Machine-readable output
 | `--json` | — | Output as JSON |
 | `--project <name-or-path>` | — | Show status for a registered project name or absolute project path |
 | `--all` | — | Aggregate status across all registered projects |
+| `--include-archived` | — | Include archived runs in status output (default: archived runs are hidden to reduce noise) |
 
 **Example output:**
 
@@ -190,33 +191,42 @@ Active Agents
 
 ### `foreman metrics`
 
-Show cost and token usage metrics aggregated from the native Postgres task store.
+Show per-phase pipeline metrics from the Elixir server by default. Add `--costs` (or any cost filter such as `--since`, `--phase`, `--agent`, `--task-type`, or `--compact`) to show cost and token usage aggregated from the task store.
 
 ```bash
-foreman metrics                         # Human-readable metrics summary
-foreman metrics --json                  # Machine-readable JSON output with timestamp/projectId
-foreman metrics --compact               # Single-line key=value format for scripts
-foreman metrics --since 2026-06-01      # Filter to costs since this date
-foreman metrics --phase explorer        # Filter to a specific phase
-foreman metrics --agent claude-sonnet-4-6       # Filter by agent model
-foreman metrics --task-type feature     # Filter to a specific task type
+foreman metrics                         # Human-readable pipeline metrics dashboard
+foreman metrics --json                  # Raw pipeline metrics JSON from the server
+foreman metrics --costs                 # Human-readable cost/token metrics summary
+foreman metrics --costs --json          # Cost/token JSON with timestamp/projectId
+foreman metrics --compact               # Cost/token single-line key=value format for scripts
+foreman metrics --since 2026-06-01      # Filter cost metrics since this date
+foreman metrics --phase explorer        # Filter cost metrics to a specific phase
+foreman metrics --agent claude-sonnet-4-6       # Filter cost metrics by agent model
+foreman metrics --task-type feature     # Filter cost metrics to a specific task type
 foreman metrics --project my-project    # Metrics for a registered project
 foreman metrics --project-path /abs/path # Metrics for a project at an absolute path
-foreman metrics --json --since 2026-06-01 --phase developer --task-type bug  # Combine filters
+foreman metrics --costs --json --since 2026-06-01 --phase developer --task-type bug  # Combine cost filters
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--json` | — | Output as JSON with `projectId` and `timestamp` fields |
-| `--compact` | — | Output as a single-line `key=value` string for scripting (e.g., `cost=1.2300 tokens=12345 phases=3 agents=1 filters=since=X,phase=Y`) |
-| `--since <iso-timestamp>` | — | Include metrics since this ISO timestamp |
-| `--phase <phase-name>` | — | Filter costs to a specific phase (explorer, developer, qa, reviewer, finalize) |
-| `--agent <type>` | — | Filter costs to a specific agent model (e.g., claude-sonnet-4-6) |
-| `--task-type <type>` | — | Filter costs to tasks of a specific type (feature, bug, chore, task) |
+| `--json` | — | Output JSON: pipeline JSON by default, cost/token JSON in cost mode |
+| `--compact` | — | Output cost/token metrics as a single-line `key=value` string for scripting (e.g., `cost=1.2300 tokens=12345 phases=3 agents=1 filters=since=X,phase=Y`) |
+| `--costs` | — | Show task-store cost/token metrics instead of pipeline metrics |
+| `--since <iso-timestamp>` | — | Include cost metrics since this ISO timestamp; implies cost mode |
+| `--phase <phase-name>` | — | Filter cost metrics to a specific phase (explorer, developer, qa, reviewer, finalize); implies cost mode |
+| `--agent <type>` | — | Filter cost metrics to a specific agent model (e.g., claude-sonnet-4-6); implies cost mode |
+| `--task-type <type>` | — | Filter cost metrics to tasks of a specific type (feature, bug, chore, task); implies cost mode |
 | `--project <name-or-path>` | — | Show metrics for a registered project name |
 | `--project-path <absolute-path>` | — | Show metrics for a project at an absolute path (advanced/script usage) |
 
-**Example output:**
+Pipeline output sections:
+- **Per-Phase Breakdown** — pass rate, fail count, timeout count, retry count, avg turns, avg cost, total runs
+- **Top Failure Reasons** — grouped by phase, sorted by frequency
+- **Stuck Tasks by Reason** — phases stuck due to timeout or failure
+- **Recent Pipeline Bottlenecks** — most recently started phases (last 5)
+
+**Cost metrics example output:**
 
 ```
 Metrics (since 2026-06-01, phase=developer, agent=claude-sonnet-4-6, task-type=bug)
@@ -526,7 +536,7 @@ foreman stop --dry-run            # Preview
 
 ### `foreman merge`
 
-Merge completed agent work into the target branch via the refinery. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`.
+Merge completed agent work into the target branch via the refinery. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`. If GitHub CLI PR merge authentication fails, Foreman falls back to its direct VCS merge path for the same branch; if a PR was merged manually, the PR merge event marks the linked run and task as `merged` in projections.
 
 ```bash
 foreman merge                     # Process merge queue

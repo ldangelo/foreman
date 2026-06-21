@@ -33,7 +33,7 @@ foreman plan X         # PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
 foreman server doctor # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
-# Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
+# Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces acceptance-contract coverage, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
@@ -110,9 +110,10 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 
 1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
 2. **Developer** (Sonnet) — implementation only; obey Overwatch stop/report instructions as terminal guidance; QA/finalize own test execution, but Developer may author focused tests when task/handoff requires coverage → DEVELOPER_REPORT.md
-3. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
-4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
-5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
+3. **auto-smoke** (Bash, $0.50) — lightweight deterministic post-Developer check: `git diff --check`, conflict-marker scan, DEVELOPER_REPORT.md existence, targeted `tsc --noEmit`, CLI `--help` for claimed commands → AUTO_SMOKE_REPORT.md (verdict: PASS/FAIL; retry with Developer on failure)
+4. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
+5. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
+6. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
 
 After finalize: autoMerge triggers immediately → refinery merges to dev → bead closed.
 
@@ -229,7 +230,7 @@ phases:
 - **Agent Mail is PostgreSQL-backed**: Messages stored in Postgres (shared across all workers), not a separate mail database
 - **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, and `.beads/issues.jsonl` after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
-- **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
+- **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, merge re-waits if GitHub surfaces late pending checks after `pr-wait`, and `gh pr merge` auth failures fall back to direct VCS merge while manual PR merge events reconcile linked runs/tasks to `merged`
 
 ## Debugging & Recovery
 

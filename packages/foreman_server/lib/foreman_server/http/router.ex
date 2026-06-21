@@ -31,6 +31,16 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  get "/api/v1/pipeline-metrics" do
+    with :ok <- authorize(conn),
+         {:ok, metrics} <- ForemanServer.Operations.pipeline_metrics() do
+      send_json(conn, 200, %{ok: true, pipeline_metrics: metrics})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
   get "/api/v1/scheduler" do
     with :ok <- authorize(conn) do
       send_json(conn, 200, %{ok: true, scheduler: ForemanServer.Scheduler.state()})
@@ -139,16 +149,35 @@ defmodule ForemanServer.Http.Router do
     with :ok <- authorize(conn) do
       snapshot = ForemanServer.ProjectionStore.snapshot()
       project_id = conn.query_params["project_id"]
+      now = DateTime.utc_now()
 
       runs =
         snapshot.runs
         |> Map.values()
         |> Enum.map(fn run ->
-          Map.put(
-            run,
-            :project_id,
-            get_in(snapshot, [:tasks, Map.get(run, :task_id), :project_id])
-          )
+          # Derive elapsed_ms from started_at
+          elapsed_ms =
+            case Map.get(run, :started_at) do
+              nil -> nil
+              started_at ->
+                DateTime.diff(now, started_at, :millisecond)
+            end
+
+          # Derive last_lifecycle_event from logs_by_run tail
+          run_id = Map.get(run, :run_id)
+          logs = Map.get(snapshot.logs_by_run, run_id, [])
+          last_lifecycle_event =
+            case logs do
+              [] -> nil
+              log_list ->
+                last_log = List.last(log_list)
+                Map.get(last_log, :event_type) || Map.get(last_log, :type)
+            end
+
+          run
+          |> Map.put(:project_id, get_in(snapshot, [:tasks, Map.get(run, :task_id), :project_id]))
+          |> Map.put(:elapsed_ms, elapsed_ms)
+          |> Map.put(:last_lifecycle_event, last_lifecycle_event)
         end)
         |> Enum.filter(fn run ->
           is_nil(project_id) or Map.get(run, :project_id) == project_id

@@ -243,6 +243,10 @@ export class PostgresStore implements IStore {
     return this.adapter.deleteRun(this.projectId, runId);
   }
 
+  async archiveRuns(runIds: string[], projectId?: string): Promise<number> {
+    return this.adapter.archiveRuns(projectId ?? this.projectId, runIds);
+  }
+
   async getRunsForSeed(seedId: string, projectId?: string): Promise<Run[]> {
     const rows = await this.adapter.listRuns(projectId ?? this.projectId, {});
     return rows.filter((r) => r.seed_id === seedId).map((r) => this.rowToRun(r));
@@ -636,6 +640,7 @@ export class PostgresStore implements IStore {
     pr_url?: string | null;
     pr_state?: "none" | "draft" | "open" | "merged" | "closed" | null;
     pr_head_sha?: string | null;
+    archived?: boolean;
   }): Run {
     return {
       id: row.id,
@@ -649,6 +654,7 @@ export class PostgresStore implements IStore {
       completed_at: row.completed_at,
       created_at: row.created_at,
       progress: row.progress,
+      archived: row.archived ?? false,
       base_branch: row.base_branch,
       merge_strategy: row.merge_strategy,
       commit_sha: row.commit_sha,
