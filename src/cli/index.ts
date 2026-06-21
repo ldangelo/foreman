@@ -130,7 +130,6 @@ program.addCommand(jiraCommand);
 program.addCommand(logsCommand);
 program.addCommand(serverCommand);
 program.addCommand(mcpCommand);
-program.addCommand(metricsCommand);
 
 program.addHelpText(
   "after",
