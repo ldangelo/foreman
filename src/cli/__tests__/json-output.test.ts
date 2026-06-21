@@ -588,7 +588,7 @@ describe("foreman metrics", () => {
 
   it("passes --since to store.getMetrics", async () => {
     await runCommand(metricsCommand, ["--json", "--since", "2026-06-01T00:00:00Z"]);
-    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01T00:00:00Z");
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01T00:00:00Z", undefined);
   });
 
   it("filters by --phase when specified", async () => {
@@ -613,6 +613,21 @@ describe("foreman metrics", () => {
     const { stdout } = await runCommand(metricsCommand, ["--json", "--agent", "nonexistent-model"]);
     const data = JSON.parse(stdout);
     expect(data.agentCostBreakdown).toEqual({});
+  });
+
+  it("passes --task-type to store.getMetrics", async () => {
+    await runCommand(metricsCommand, ["--json", "--task-type", "feature"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, undefined, "feature");
+  });
+
+  it("passes --since and --task-type to store.getMetrics", async () => {
+    await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--task-type", "bug"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01", "bug");
+  });
+
+  it("combines --task-type and --phase filters", async () => {
+    await runCommand(metricsCommand, ["--json", "--task-type", "feature", "--phase", "explorer"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, undefined, "feature");
   });
 
   it("does not output JSON structure when --json is omitted", async () => {
@@ -644,7 +659,7 @@ describe("foreman metrics", () => {
 
   it("combines --since and --phase filters", async () => {
     await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "developer"]);
-    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01");
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01", undefined);
     const data = JSON.parse(await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "developer"]).then(r => r.stdout));
     expect(data.costByPhase).toEqual({ developer: 0.50 });
   });

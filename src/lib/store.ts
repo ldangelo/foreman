@@ -1459,7 +1459,7 @@ export class ForemanStore {
    * Aggregate phase costs across all runs in a project.
    * Reads per-phase cost data stored in progress JSON.
    */
-  getPhaseMetrics(projectId?: string, since?: string): {
+  getPhaseMetrics(projectId?: string, since?: string, taskType?: string): {
     totalByPhase: Record<string, number>;
     totalByAgent: Record<string, number>;
     runsByPhase: Record<string, number>;
@@ -1467,18 +1467,22 @@ export class ForemanStore {
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (projectId) {
-      conditions.push("project_id = ?");
+      conditions.push("r.project_id = ?");
       params.push(projectId);
     }
     if (since) {
-      conditions.push("created_at >= ?");
+      conditions.push("r.created_at >= ?");
       params.push(since);
     }
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
+    // Join with tasks table to filter by task type
+    const taskTypeJoin = taskType ? "JOIN tasks t ON r.id = t.run_id AND t.type = ?" : "";
+    const taskTypeParams = taskType ? [taskType] : [];
+
     const rows = this.db
-      .prepare(`SELECT progress FROM runs ${where}`)
-      .all(...params) as Array<{ progress: string | null }>;
+      .prepare(`SELECT r.progress FROM runs r ${taskTypeJoin} ${where}`)
+      .all(...taskTypeParams, ...params) as Array<{ progress: string | null }>;
 
     const totalByPhase: Record<string, number> = {};
     const totalByAgent: Record<string, number> = {};
@@ -2022,7 +2026,13 @@ export class ForemanStore {
 
   // ── Metrics ─────────────────────────────────────────────────────────
 
-  getMetrics(projectId?: string, since?: string): Metrics {
+  getMetrics(projectId?: string, since?: string, taskType?: string): Metrics {
+    // Build task type subquery for joins
+    const taskTypeJoin = taskType
+      ? "JOIN tasks t ON r.id = t.run_id AND t.type = ?"
+      : "";
+    const taskTypeCondition = taskType ? [taskType] : [];
+
     const costConditions: string[] = [];
     const costParams: unknown[] = [];
     if (projectId) {
@@ -2043,9 +2053,10 @@ export class ForemanStore {
                 COALESCE(SUM(c.tokens_in + c.tokens_out), 0) as totalTokens
          FROM costs c
          JOIN runs r ON c.run_id = r.id
+         ${taskTypeJoin}
          ${costWhere}`
       )
-      .get(...costParams) as { totalCost: number; totalTokens: number };
+      .get(...taskTypeCondition, ...costParams) as { totalCost: number; totalTokens: number };
 
     // Tasks by status
     const runConditions: string[] = [];
@@ -2062,9 +2073,22 @@ export class ForemanStore {
       ? `WHERE ${runConditions.join(" AND ")}`
       : "";
 
-    const statusRows = this.db
-      .prepare(`SELECT status, COUNT(*) as count FROM runs ${runWhere} GROUP BY status`)
-      .all(...runParams) as Array<{ status: string; count: number }>;
+    // Build run ID subquery for tasks by status when filtering by task type
+    let statusRows: Array<{ status: string; count: number }>;
+    if (taskType) {
+      const runIdSubquery = this.db
+        .prepare(`SELECT id FROM runs ${runWhere}`)
+        .all(...runParams) as Array<{ id: string }>;
+      const runIds = runIdSubquery.map((r) => r.id);
+      const taskTypeRows = this.db
+        .prepare(`SELECT status, COUNT(*) as count FROM tasks WHERE run_id IN (${runIds.map(() => "?").join(",")}) AND type = ? GROUP BY status`)
+        .all(...runIds, taskType) as Array<{ status: string; count: number }>;
+      statusRows = taskTypeRows;
+    } else {
+      statusRows = this.db
+        .prepare(`SELECT status, COUNT(*) as count FROM runs ${runWhere} GROUP BY status`)
+        .all(...runParams) as Array<{ status: string; count: number }>;
+    }
 
     const tasksByStatus: Record<string, number> = {};
     for (const row of statusRows) {
@@ -2081,14 +2105,15 @@ export class ForemanStore {
                      ELSE NULL END as duration_seconds
          FROM runs r
          LEFT JOIN costs c ON c.run_id = r.id
+         ${taskTypeJoin}
          ${runWhere}
          GROUP BY r.id
          ORDER BY cost DESC`
       )
-      .all(...runParams) as Metrics["costByRuntime"];
+      .all(...taskTypeCondition, ...runParams) as Metrics["costByRuntime"];
 
     // Phase & agent cost breakdown (aggregated from run progress JSON)
-    const phaseMetrics = this.getPhaseMetrics(projectId, since);
+    const phaseMetrics = this.getPhaseMetrics(projectId, since, taskType);
 
     return {
       totalCost: totals.totalCost,

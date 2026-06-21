@@ -61,12 +61,25 @@ function filterMetricsByAgent(metrics: Metrics, agent: string): Metrics {
   return { ...filtered, agentCostBreakdown: agentCost !== undefined ? { [agent]: agentCost } : {} };
 }
 
+/**
+ * Filter metrics to only include tasks of a specific type (feature, bug, chore, etc.).
+ * Note: This mirrors the behavior of other CLI filters but the actual filtering is done
+ * at the SQL level in store.getMetrics for efficiency.
+ */
+function filterMetricsByTaskType(metrics: Metrics, taskType: string): Metrics {
+  // Task type filtering happens in SQL via getMetrics taskType parameter.
+  // This CLI filter function exists for consistency with --phase and --agent filters.
+  // When taskType is specified, all metrics returned are already filtered by that type.
+  return { ...metrics };
+}
+
 export const metricsCommand = new Command("metrics")
   .description("Show cost and token usage metrics from the native Postgres task store")
   .option("--json", "Output metrics as JSON")
   .option("--since <iso-timestamp>", "Include metrics since this ISO timestamp (e.g., 2026-06-01T00:00:00Z)")
   .option("--phase <phase-name>", "Filter costs to a specific phase (explorer, developer, qa, reviewer, finalize)")
   .option("--agent <agent-id>", "Filter costs to a specific agent/model (e.g., claude-sonnet-4-6)")
+  .option("--task-type <type>", "Filter costs to tasks of a specific type (feature, bug, chore, task)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts: {
@@ -74,6 +87,7 @@ export const metricsCommand = new Command("metrics")
     since?: string;
     phase?: string;
     agent?: string;
+    taskType?: string;
     project?: string;
     projectPath?: string;
   }) => {
@@ -93,8 +107,8 @@ export const metricsCommand = new Command("metrics")
         return;
       }
 
-      // Fetch metrics with optional --since filter
-      let metrics: Metrics = store.getMetrics(project.id, opts.since);
+      // Fetch metrics with optional --since and --task-type filters
+      let metrics: Metrics = store.getMetrics(project.id, opts.since, opts.taskType);
 
       // Apply --phase filter if specified
       if (opts.phase) {
@@ -104,6 +118,11 @@ export const metricsCommand = new Command("metrics")
       // Apply --agent filter if specified
       if (opts.agent) {
         metrics = filterMetricsByAgent(metrics, opts.agent);
+      }
+
+      // Apply --task-type CLI filter (SQL filtering already done, this ensures consistency)
+      if (opts.taskType) {
+        metrics = filterMetricsByTaskType(metrics, opts.taskType);
       }
 
       if (opts.json) {
