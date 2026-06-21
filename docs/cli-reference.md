@@ -188,6 +188,49 @@ Active Agents
   Files      3
 ```
 
+### `foreman metrics`
+
+Show cost and token usage metrics aggregated from the native Postgres task store.
+
+```bash
+foreman metrics                         # Human-readable metrics summary
+foreman metrics --json                  # Machine-readable JSON output
+foreman metrics --since 2026-06-01      # Filter to costs since this date
+foreman metrics --phase explorer         # Filter to a specific phase
+foreman metrics --agent claude-sonnet-4-6       # Filter by agent model
+foreman metrics --project my-project    # Metrics for a registered project
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--json` | — | Output as JSON |
+| `--since <iso-timestamp>` | — | Include metrics since this ISO timestamp |
+| `--phase <phase-name>` | — | Filter costs to a specific phase (explorer, developer, qa, reviewer, finalize) |
+| `--agent <type>` | — | Filter costs to a specific agent model (e.g., claude-sonnet-4-6) |
+| `--project <name-or-path>` | — | Show metrics for a registered project name or absolute project path |
+
+**Example output:**
+
+```
+Metrics
+  Total Cost:   $4.56
+  Total Tokens: 123.5k
+
+By Phase
+  explorer    $0.31
+  developer   $3.25
+  qa          $1.00
+
+By Agent
+  claude-haiku-4-5       $0.31
+  claude-sonnet-4-6      $4.25
+
+Tasks by Status
+  ready       3
+  in-progress 2
+  completed   50
+```
+
 ### `foreman watch`
 
 Single-pane unified live dashboard: agents, board summary, inbox, and pipeline events. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
