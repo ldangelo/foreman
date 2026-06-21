@@ -194,17 +194,20 @@ Show cost and token usage metrics aggregated from the native Postgres task store
 
 ```bash
 foreman metrics                         # Human-readable metrics summary
-foreman metrics --json                  # Machine-readable JSON output
+foreman metrics --json                  # Machine-readable JSON output with timestamp/projectId
+foreman metrics --compact               # Single-line key=value format for scripts
 foreman metrics --since 2026-06-01      # Filter to costs since this date
 foreman metrics --phase explorer        # Filter to a specific phase
 foreman metrics --agent claude-sonnet-4-6       # Filter by agent model
 foreman metrics --task-type feature     # Filter to a specific task type
 foreman metrics --project my-project    # Metrics for a registered project
+foreman metrics --json --since 2026-06-01 --phase developer --task-type bug  # Combine filters
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--json` | — | Output as JSON |
+| `--json` | — | Output as JSON with `projectId` and `timestamp` fields |
+| `--compact` | — | Output as a single-line `key=value` string for scripting (e.g., `cost=1.2300 tokens=12345 phases=3 agents=1`) |
 | `--since <iso-timestamp>` | — | Include metrics since this ISO timestamp |
 | `--phase <phase-name>` | — | Filter costs to a specific phase (explorer, developer, qa, reviewer, finalize) |
 | `--agent <type>` | — | Filter costs to a specific agent model (e.g., claude-sonnet-4-6) |

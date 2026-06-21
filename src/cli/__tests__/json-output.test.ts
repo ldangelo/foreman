@@ -663,4 +663,50 @@ describe("foreman metrics", () => {
     const data = JSON.parse(await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "developer"]).then(r => r.stdout));
     expect(data.costByPhase).toEqual({ developer: 0.50 });
   });
+
+  it("JSON output includes projectId and timestamp metadata", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--json"]);
+    const data = JSON.parse(stdout);
+    expect(data.projectId).toBe(MOCK_PROJECT.id);
+    expect(data.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  it("--compact outputs single-line key=value format", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact"]);
+    expect(stdout).toMatch(/^cost=[\d.]+ tokens=\d+ phases=\d+ agents=\d+$/);
+  });
+
+  it("--compact with --phase shows only that phase", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact", "--phase", "explorer"]);
+    expect(stdout).toContain("phases=1");
+  });
+
+  it("human-readable output shows --since context", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--since", "2026-06-01T00:00:00Z"]);
+    expect(stdout).toContain("Metrics since 2026-06-01T00:00:00Z");
+  });
+
+  it("human-readable output shows 'Metrics' when --since is omitted", async () => {
+    const { stdout } = await runCommand(metricsCommand, []);
+    expect(stdout).toContain("Metrics");
+    expect(stdout).not.toContain("Metrics since");
+  });
+
+  it("combines --json --since --phase --task-type filters", async () => {
+    await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "qa", "--task-type", "bug"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01", "bug");
+    const data = JSON.parse(await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "qa", "--task-type", "bug"]).then(r => r.stdout));
+    expect(data.costByPhase).toEqual({ qa: 0.63 });
+  });
+
+  it("--compact outputs JSON error when project not found", async () => {
+    mockGetProjectByPath.mockReturnValue(null);
+    let caughtError: Error | undefined;
+    try {
+      await runCommand(metricsCommand, ["--compact"]);
+    } catch (e) {
+      caughtError = e as Error;
+    }
+    expect(caughtError?.message).toMatch(/process\.exit/);
+  });
 });

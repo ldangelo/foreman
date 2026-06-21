@@ -7,8 +7,24 @@ import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./pr
  * Render metrics as human-readable output.
  * Mirrors the cost display pattern used in status.ts.
  */
-function renderMetrics(metrics: Metrics): void {
-  console.log(chalk.bold("Metrics"));
+function renderMetrics(metrics: Metrics, since?: string): void {
+  if (since) {
+    console.log(chalk.dim(`Metrics since ${since}`));
+  } else {
+    console.log(chalk.bold("Metrics"));
+  }
+  const hasData =
+    metrics.totalCost > 0 ||
+    metrics.totalTokens > 0 ||
+    (metrics.costByPhase && Object.keys(metrics.costByPhase).length > 0) ||
+    (metrics.agentCostBreakdown && Object.keys(metrics.agentCostBreakdown).length > 0) ||
+    (metrics.tasksByStatus && Object.keys(metrics.tasksByStatus).length > 0);
+
+  if (!hasData) {
+    console.log(chalk.dim("  No metrics found for this project."));
+    return;
+  }
+
   console.log(`  Total Cost:   ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
   console.log(`  Total Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
 
@@ -35,6 +51,18 @@ function renderMetrics(metrics: Metrics): void {
       console.log(`  ${status.padEnd(12)} ${count}`);
     }
   }
+}
+
+/**
+ * Render metrics as compact single-line output for scripts.
+ * Format: "cost=<totalCost> tokens=<totalTokens> phases=<phaseCount> agents=<agentCount>"
+ */
+function renderMetricsCompact(metrics: Metrics): void {
+  const phaseCount = metrics.costByPhase ? Object.keys(metrics.costByPhase).length : 0;
+  const agentCount = metrics.agentCostBreakdown ? Object.keys(metrics.agentCostBreakdown).length : 0;
+  console.log(
+    `cost=${metrics.totalCost.toFixed(4)} tokens=${metrics.totalTokens} phases=${phaseCount} agents=${agentCount}`,
+  );
 }
 
 /**
@@ -76,6 +104,7 @@ function filterMetricsByTaskType(metrics: Metrics, taskType: string): Metrics {
 export const metricsCommand = new Command("metrics")
   .description("Show cost and token usage metrics from the native Postgres task store")
   .option("--json", "Output metrics as JSON")
+  .option("--compact", "Output metrics as a single-line key=value string (for scripts)")
   .option("--since <iso-timestamp>", "Include metrics since this ISO timestamp (e.g., 2026-06-01T00:00:00Z)")
   .option("--phase <phase-name>", "Filter costs to a specific phase (explorer, developer, qa, reviewer, finalize)")
   .option("--agent <agent-id>", "Filter costs to a specific agent/model (e.g., claude-sonnet-4-6)")
@@ -84,6 +113,7 @@ export const metricsCommand = new Command("metrics")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts: {
     json?: boolean;
+    compact?: boolean;
     since?: string;
     phase?: string;
     agent?: string;
@@ -97,7 +127,7 @@ export const metricsCommand = new Command("metrics")
       const project = store.getProjectByPath(projectPath);
 
       if (!project) {
-        if (opts.json) {
+        if (opts.json || opts.compact) {
           console.error(JSON.stringify({ error: "Project not found. Run 'foreman init' first." }));
           store.close();
           process.exit(1);
@@ -126,15 +156,27 @@ export const metricsCommand = new Command("metrics")
       }
 
       if (opts.json) {
-        console.log(JSON.stringify(metrics, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              projectId: project.id,
+              timestamp: new Date().toISOString(),
+              ...metrics,
+            },
+            null,
+            2,
+          ),
+        );
+      } else if (opts.compact) {
+        renderMetricsCompact(metrics);
       } else {
-        renderMetrics(metrics);
+        renderMetrics(metrics, opts.since);
       }
 
       store.close();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      if (opts.json) {
+      if (opts.json || opts.compact) {
         console.error(JSON.stringify({ error: message }));
       } else {
         console.error(chalk.red(message));
