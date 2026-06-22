@@ -480,6 +480,29 @@ defmodule ForemanServer.InboxTest do
       assert failed.body =~ "fail"
     end
 
+    test "QaVerdict environment-blocked verdict creates warning severity activity" do
+      start_workflow_run("run-env-blocked")
+
+      EventStore.append(%{
+        stream_id: "run:run-env-blocked",
+        event_type: "QaVerdict",
+        payload: %{
+          run_id: "run-env-blocked",
+          verdict: "environment-blocked",
+          phase: "qa",
+          source_link: "https://example.test/evidence"
+        },
+        metadata: %{correlation_id: "run-env-blocked-qa"}
+      })
+
+      inbox = Inbox.list("run-env-blocked")
+      assert Enum.any?(inbox, &(&1.activity_type == "qa_verdict"))
+      env_blocked = Enum.find(inbox, &(&1.activity_type == "qa_verdict" && &1.severity == "warning"))
+      assert env_blocked != nil
+      assert env_blocked.actor == "qa"
+      assert env_blocked.body == "QA verdict: environment-blocked"
+    end
+
     test "ReviewFinding creates activity entry in inbox with correct severity" do
       start_workflow_run("run-review-activity")
 

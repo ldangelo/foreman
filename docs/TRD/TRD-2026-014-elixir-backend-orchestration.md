@@ -1070,7 +1070,7 @@ The matrix above is requirement-level. Detailed AC coverage is carried by each t
 | AC-002-2 | TRD-003; TRD-003-TEST | Given an event is appended, when projections are rebuilt from scratch, then task/run status matches current production projection state. |
 | AC-002-3 | TRD-003; TRD-003-TEST | Given an event schema changes, when migrations run, then old events remain readable through versioned decoders. |
 | AC-003-1 | TRD-004; TRD-004-TEST | Given a task is created or updated, when its events are projected, then `foreman task show/list` renders from the task projection. |
-| AC-003-2 | TRD-004; TRD-004-TEST | Given a run emits phase/worker events, when `foreman status` is called, then the run projection displays active, in-progress, failed, blocked, and completed counts without log inference. |
+| AC-003-2 | TRD-004; TRD-004-TEST | Given a run emits phase/worker events, when `foreman status` is called, then the run projection displays active, in-progress, failed, blocked, completed, and environment_blocked counts without log inference. |
 | AC-003-3 | TRD-004; TRD-004-TEST | Given projection corruption or drift is detected, when a rebuild is requested, then projections can be dropped and rebuilt from events. |
 | AC-004-1 | TRD-005, TRD-006; TRD-005-TEST, TRD-006-TEST | Given the server is running, when a user runs `foreman task create`, `foreman run`, `foreman status`, or `foreman logs`, then the CLI calls the server API rather than mutating DB state directly. |
 | AC-004-2 | TRD-005, TRD-006; TRD-005-TEST, TRD-006-TEST | Given legacy aliases such as `--bead`, `dashboard`, or deprecated command names are used, when compatibility mode is enabled, then the CLI warns and maps to the new command. |

@@ -169,7 +169,8 @@ defmodule ForemanServer.ProjectionStoreTest do
              in_progress: 1,
              failed: 1,
              blocked: 0,
-             completed: 1
+             completed: 1,
+             environment_blocked: 0
            }
 
     snapshot = ProjectionStore.snapshot()
@@ -207,5 +208,33 @@ defmodule ForemanServer.ProjectionStoreTest do
       })
 
     event
+  end
+
+  test "QaVerdict with environment-blocked verdict creates warning severity activity" do
+    append!("run:env-blocked", "RunStarted", %{run_id: "env-blocked", task_id: "task-1"})
+
+    append!("run:env-blocked", "QaVerdict", %{
+      run_id: "env-blocked",
+      verdict: "environment-blocked",
+      phase: "qa"
+    })
+
+    snapshot = ProjectionStore.snapshot()
+
+    # The QaVerdict creates an activity entry with warning severity
+    activity_entries =
+      snapshot.inbox_by_run
+      |> Map.get("env-blocked", [])
+      |> Enum.map(&Map.get(snapshot.inbox_messages, &1))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(&(&1.activity_type == "qa_verdict"))
+
+    assert length(activity_entries) >= 1
+    env_blocked_entry = Enum.find(activity_entries, &(&1.severity == "warning"))
+    assert env_blocked_entry != nil
+    assert env_blocked_entry.body =~ "environment-blocked"
+
+    # status_counts includes environment_blocked key
+    assert Map.has_key?(snapshot.status_counts, :environment_blocked)
   end
 end
