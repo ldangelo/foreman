@@ -108,11 +108,13 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 
 **Default pipeline phases:**
 
-1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
-2. **Developer** (Sonnet) — implementation only; obey Overwatch stop/report instructions as terminal guidance; QA/finalize own test execution, but Developer may author focused tests when task/handoff requires coverage → DEVELOPER_REPORT.md
-3. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
-4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
-5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
+1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md; **derives 3–6 explicit, verifiable done criteria** as the Acceptance Contract
+2. **Developer** (Sonnet) — implementation only; obey Overwatch stop/report instructions as terminal guidance; QA/finalize own test execution, but Developer may author focused tests when task/handoff requires coverage; **validates against the Acceptance Contract before reporting done** → DEVELOPER_REPORT.md
+3. **QA** (Sonnet) — targeted test verification only; **validates against the Acceptance Contract before writing report** → QA_REPORT.md (verdict: PASS/FAIL)
+4. **Reviewer** (Sonnet) — code review; **evaluates against the Acceptance Contract as part of review** → REVIEW.md (verdict: PASS/FAIL)
+5. **Finalize** (Haiku) — rebase, validate, commit, push; **confirms the Acceptance Contract is satisfied** → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
+
+**Acceptance Contract:** The Explorer derives 3–6 explicit, verifiable done criteria from the task title and description. These criteria are carried through every subsequent phase; each phase validates that the implementation satisfies them before reporting done or issuing a verdict. The contract lives in the `## Acceptance Contract` section of each phase prompt.
 
 After finalize: autoMerge triggers immediately → refinery merges to dev → bead closed.
 
