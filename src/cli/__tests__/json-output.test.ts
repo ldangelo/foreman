@@ -66,6 +66,7 @@ const {
   const mockGetDb = vi.fn().mockReturnValue({});
   const mockGetRecentOutcomeCounts = vi.fn().mockReturnValue({ merged: 0, failed: 0, stuck: 0 });
   const mockGetRunsForSeed = vi.fn().mockReturnValue([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.getProjectByPath = mockGetProjectByPath;
     this.getActiveRuns = mockGetActiveRuns;
@@ -78,14 +79,15 @@ const {
     this.getRecentOutcomeCounts = mockGetRecentOutcomeCounts;
     this.getRunsForSeed = mockGetRunsForSeed;
   });
+  (MockForemanStore as typeof MockForemanStore & Record<"forProject", unknown>).forProject = vi.fn(
+    (_projectPath: string) => new MockForemanStore(),
+  );
   const MockPostgresStore = vi.fn(function MockPostgresStoreImpl(this: Record<string, unknown>) {
     this.getRun = vi.fn();
     this.getRunsByStatus = vi.fn();
     this.getRunsByStatuses = vi.fn();
     this.getRunsByBaseBranch = vi.fn();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
 
   // MergeQueue mocks
   const mockReconcile = vi.fn().mockResolvedValue({ enqueued: 0 });
@@ -211,6 +213,7 @@ afterEach(() => {
 // ── Imports ─────────────────────────────────────────────────────────────────
 import { statusCommand } from "../commands/status.js";
 import { mergeCommand } from "../commands/merge.js";
+import { metricsCommand } from "../commands/metrics.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -276,8 +279,9 @@ describe("foreman status --json", () => {
     mockGetActiveRuns.mockReturnValue([]);
     mockGetMetrics.mockReturnValue({ totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] });
     mockGetRunsByStatusSince.mockReturnValue([]);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
+    (MockForemanStore as typeof MockForemanStore & Record<"forProject", unknown>).forProject = vi.fn(
+      (_projectPath: string) => new MockForemanStore(),
+    );
   });
 
   it("outputs valid JSON when --json flag is passed", async () => {
@@ -426,8 +430,9 @@ describe("foreman merge --list --json", () => {
     mockList.mockReturnValue([]);
     mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
     mockGetDb.mockReturnValue({});
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (MockForemanStore as any).forProject = vi.fn((...args: unknown[]) => new (MockForemanStore as any)(...args));
+    (MockForemanStore as typeof MockForemanStore & Record<"forProject", unknown>).forProject = vi.fn(
+      (_projectPath: string) => new MockForemanStore(),
+    );
   });
 
   it("outputs valid JSON when --list --json flags are passed", async () => {
@@ -522,5 +527,197 @@ describe("foreman merge --list --json", () => {
     expect(data.entries[0].seed_id).toBe("bd-a");
     expect(data.entries[1].seed_id).toBe("bd-b");
     expect(data.entries[1].status).toBe("merged");
+  });
+});
+
+// ── Tests: foreman metrics ─────────────────────────────────────────────────────
+
+describe("foreman metrics", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreateVcsBackend.mockResolvedValue({
+      name: "git",
+      getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
+      getCurrentBranch: vi.fn().mockResolvedValue("main"),
+      checkoutBranch: vi.fn().mockResolvedValue(undefined),
+      getRemoteUrl: vi.fn().mockResolvedValue(null),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    });
+    MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
+      this.list = mockBrList;
+      this.ready = mockBrReady;
+      this.ensureBrInstalled = mockEnsureBrInstalled;
+    });
+    mockGetProjectByPath.mockReturnValue(MOCK_PROJECT);
+    mockGetMetrics.mockReturnValue({
+      totalCost: 1.23,
+      totalTokens: 12345,
+      tasksByStatus: { ready: 1, "in-progress": 1, completed: 1 },
+      costByRuntime: [],
+      costByPhase: { explorer: 0.10, developer: 0.50, qa: 0.63 },
+      agentCostBreakdown: { "claude-sonnet-4-6": 1.23 },
+    });
+    (MockForemanStore as typeof MockForemanStore & Record<"forProject", unknown>).forProject = vi.fn(
+      (_projectPath: string) => new MockForemanStore(),
+    );
+  });
+
+  it("outputs valid JSON when --json flag is passed", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
+    expect(() => JSON.parse(stdout)).not.toThrow();
+  });
+
+  it("output contains totalCost and totalTokens", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
+    const data = JSON.parse(stdout);
+    expect(data.totalCost).toBe(1.23);
+    expect(data.totalTokens).toBe(12345);
+  });
+
+  it("output contains costByPhase when available", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
+    const data = JSON.parse(stdout);
+    expect(data.costByPhase).toEqual({ explorer: 0.10, developer: 0.50, qa: 0.63 });
+  });
+
+  it("output contains agentCostBreakdown when available", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
+    const data = JSON.parse(stdout);
+    expect(data.agentCostBreakdown).toEqual({ "claude-sonnet-4-6": 1.23 });
+  });
+
+  it("passes --since to store.getMetrics", async () => {
+    await runCommand(metricsCommand, ["--json", "--since", "2026-06-01T00:00:00Z"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01T00:00:00Z", undefined);
+  });
+
+  it("filters by --phase when specified", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--json", "--phase", "explorer"]);
+    const data = JSON.parse(stdout);
+    expect(data.costByPhase).toEqual({ explorer: 0.10 });
+  });
+
+  it("returns empty costByPhase when --phase is specified but not found", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--json", "--phase", "nonexistent"]);
+    const data = JSON.parse(stdout);
+    expect(data.costByPhase).toEqual({});
+  });
+
+  it("filters by --agent when specified", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--json", "--agent", "claude-sonnet-4-6"]);
+    const data = JSON.parse(stdout);
+    expect(data.agentCostBreakdown).toEqual({ "claude-sonnet-4-6": 1.23 });
+  });
+
+  it("returns empty agentCostBreakdown when --agent is specified but not found", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--json", "--agent", "nonexistent-model"]);
+    const data = JSON.parse(stdout);
+    expect(data.agentCostBreakdown).toEqual({});
+  });
+
+  it("passes --task-type to store.getMetrics", async () => {
+    await runCommand(metricsCommand, ["--json", "--task-type", "feature"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, undefined, "feature");
+  });
+
+  it("passes --since and --task-type to store.getMetrics", async () => {
+    await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--task-type", "bug"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01", "bug");
+  });
+
+  it("combines --task-type and --phase filters", async () => {
+    await runCommand(metricsCommand, ["--json", "--task-type", "feature", "--phase", "explorer"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, undefined, "feature");
+  });
+
+  it("does not output JSON structure when --json is omitted", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--costs"]);
+    expect(stdout).toContain("Metrics");
+    expect(stdout).toContain("Total Cost");
+    expect(stdout).toContain("1.23");
+    expect(() => JSON.parse(stdout)).toThrow();
+  });
+
+  it("outputs JSON error when project is not registered and --json is passed", async () => {
+    mockGetProjectByPath.mockReturnValue(null);
+    let caughtError: Error | undefined;
+    try {
+      await runCommand(metricsCommand, ["--costs", "--json"]);
+    } catch (e) {
+      caughtError = e as Error;
+    }
+    // process.exit should have been called (mocked to throw)
+    expect(caughtError?.message).toMatch(/process\.exit/);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("outputs formatted error when project is not registered and --json is omitted", async () => {
+    mockGetProjectByPath.mockReturnValue(null);
+    const { stdout } = await runCommand(metricsCommand, ["--costs"]);
+    expect(stdout).toContain("not found");
+  });
+
+  it("combines --since and --phase filters", async () => {
+    await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "developer"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01", undefined);
+    const data = JSON.parse(await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "developer"]).then(r => r.stdout));
+    expect(data.costByPhase).toEqual({ developer: 0.50 });
+  });
+
+  it("JSON output includes projectId and timestamp metadata", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--costs", "--json"]);
+    const data = JSON.parse(stdout);
+    expect(data.projectId).toBe(MOCK_PROJECT.id);
+    expect(data.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  it("--compact outputs single-line key=value format", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact"]);
+    expect(stdout).toMatch(/^cost=[\d.]+ tokens=\d+ phases=\d+ agents=\d+$/);
+  });
+
+  it("--compact with --since includes filters= in output", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact", "--since", "2026-06-01T00:00:00Z"]);
+    expect(stdout).toContain("filters=since=2026-06-01T00:00:00Z");
+  });
+
+  it("--compact with --phase includes filters= in output", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact", "--phase", "explorer"]);
+    expect(stdout).toContain("filters=phase=explorer");
+  });
+
+  it("--compact with --task-type includes filters= in output", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--compact", "--task-type", "feature"]);
+    expect(stdout).toContain("filters=task-type=feature");
+  });
+
+  it("human-readable output shows filter context", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--since", "2026-06-01T00:00:00Z"]);
+    expect(stdout).toContain("Metrics");
+    expect(stdout).toContain("since 2026-06-01T00:00:00Z");
+  });
+
+  it("human-readable output shows 'Metrics' when --since is omitted", async () => {
+    const { stdout } = await runCommand(metricsCommand, ["--costs"]);
+    expect(stdout).toContain("Metrics");
+    expect(stdout).not.toContain("Metrics since");
+  });
+
+  it("combines --json --since --phase --task-type filters", async () => {
+    await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "qa", "--task-type", "bug"]);
+    expect(mockGetMetrics).toHaveBeenCalledWith(MOCK_PROJECT.id, "2026-06-01", "bug");
+    const data = JSON.parse(await runCommand(metricsCommand, ["--json", "--since", "2026-06-01", "--phase", "qa", "--task-type", "bug"]).then(r => r.stdout));
+    expect(data.costByPhase).toEqual({ qa: 0.63 });
+  });
+
+  it("--compact outputs JSON error when project not found", async () => {
+    mockGetProjectByPath.mockReturnValue(null);
+    let caughtError: Error | undefined;
+    try {
+      await runCommand(metricsCommand, ["--compact"]);
+    } catch (e) {
+      caughtError = e as Error;
+    }
+    expect(caughtError?.message).toMatch(/process\.exit/);
   });
 });

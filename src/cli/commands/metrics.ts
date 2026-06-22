@@ -1,6 +1,8 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { ForemanStore, type Metrics } from "../../lib/store.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 
 /** Shape returned by the /api/v1/pipeline-metrics endpoint. */
 export interface PipelineMetricsResponse {
@@ -27,7 +29,170 @@ export interface PipelineMetricsResponse {
   };
 }
 
-// ── Rendering helpers ────────────────────────────────────────────────────
+interface CostMetricsOptions {
+  since?: string;
+  phase?: string;
+  agent?: string;
+  taskType?: string;
+}
+
+interface MetricsCommandOptions extends CostMetricsOptions {
+  json?: boolean;
+  compact?: boolean;
+  costs?: boolean;
+  project?: string;
+  projectPath?: string;
+}
+
+// ── Cost/token rendering helpers ─────────────────────────────────────────
+
+function renderCostMetrics(metrics: Metrics, opts?: CostMetricsOptions): void {
+  const contexts: string[] = [];
+  if (opts?.since) contexts.push(`since ${opts.since}`);
+  if (opts?.phase) contexts.push(`phase=${opts.phase}`);
+  if (opts?.agent) contexts.push(`agent=${opts.agent}`);
+  if (opts?.taskType) contexts.push(`task-type=${opts.taskType}`);
+
+  if (contexts.length > 0) {
+    console.log(chalk.bold("Metrics") + " " + chalk.dim(`(${contexts.join(", ")})`));
+  } else {
+    console.log(chalk.bold("Metrics"));
+  }
+
+  const hasData =
+    metrics.totalCost > 0 ||
+    metrics.totalTokens > 0 ||
+    (metrics.costByPhase && Object.keys(metrics.costByPhase).length > 0) ||
+    (metrics.agentCostBreakdown && Object.keys(metrics.agentCostBreakdown).length > 0) ||
+    (metrics.tasksByStatus && Object.keys(metrics.tasksByStatus).length > 0);
+
+  if (!hasData) {
+    console.log(chalk.dim("  No metrics found for this project."));
+    return;
+  }
+
+  console.log(`  Total Cost:   ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
+  console.log(`  Total Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
+
+  if (metrics.costByPhase && Object.keys(metrics.costByPhase).length > 0) {
+    console.log();
+    console.log(chalk.bold("By Phase"));
+    for (const [phase, cost] of Object.entries(metrics.costByPhase)) {
+      console.log(`  ${phase.padEnd(12)} ${chalk.yellow(`$${cost.toFixed(2)}`)}`);
+    }
+  }
+
+  if (metrics.agentCostBreakdown && Object.keys(metrics.agentCostBreakdown).length > 0) {
+    console.log();
+    console.log(chalk.bold("By Agent"));
+    for (const [agent, cost] of Object.entries(metrics.agentCostBreakdown)) {
+      console.log(`  ${agent.padEnd(24)} ${chalk.yellow(`$${cost.toFixed(2)}`)}`);
+    }
+  }
+
+  if (metrics.tasksByStatus && Object.keys(metrics.tasksByStatus).length > 0) {
+    console.log();
+    console.log(chalk.bold("Tasks by Status"));
+    for (const [status, count] of Object.entries(metrics.tasksByStatus)) {
+      console.log(`  ${status.padEnd(12)} ${count}`);
+    }
+  }
+}
+
+function renderCostMetricsCompact(metrics: Metrics, opts?: CostMetricsOptions): void {
+  const phaseCount = metrics.costByPhase ? Object.keys(metrics.costByPhase).length : 0;
+  const agentCount = metrics.agentCostBreakdown ? Object.keys(metrics.agentCostBreakdown).length : 0;
+  const parts: string[] = [
+    `cost=${metrics.totalCost.toFixed(4)}`,
+    `tokens=${metrics.totalTokens}`,
+    `phases=${phaseCount}`,
+    `agents=${agentCount}`,
+  ];
+  const filters: string[] = [];
+  if (opts?.since) filters.push(`since=${opts.since}`);
+  if (opts?.phase) filters.push(`phase=${opts.phase}`);
+  if (opts?.agent) filters.push(`agent=${opts.agent}`);
+  if (opts?.taskType) filters.push(`task-type=${opts.taskType}`);
+  if (filters.length > 0) {
+    parts.push(`filters=${filters.join(",")}`);
+  }
+  console.log(parts.join(" "));
+}
+
+function filterMetricsByPhase(metrics: Metrics, phase: string): Metrics {
+  const filtered: Metrics = { ...metrics };
+  if (filtered.costByPhase === undefined) {
+    return { ...filtered, costByPhase: {} };
+  }
+  const phaseCost = filtered.costByPhase[phase];
+  return { ...filtered, costByPhase: phaseCost !== undefined ? { [phase]: phaseCost } : {} };
+}
+
+function filterMetricsByAgent(metrics: Metrics, agent: string): Metrics {
+  const filtered: Metrics = { ...metrics };
+  if (filtered.agentCostBreakdown === undefined) {
+    return { ...filtered, agentCostBreakdown: {} };
+  }
+  const agentCost = filtered.agentCostBreakdown[agent];
+  return { ...filtered, agentCostBreakdown: agentCost !== undefined ? { [agent]: agentCost } : {} };
+}
+
+async function renderTaskStoreMetrics(opts: MetricsCommandOptions): Promise<void> {
+  const projectPath = await resolveRepoRootProjectPath(opts);
+  const store = ForemanStore.forProject(projectPath);
+  try {
+    const project = store.getProjectByPath(projectPath);
+
+    if (!project) {
+      const msg = "Project not found. Run 'foreman init' first.";
+      if (opts.json || opts.compact) {
+        console.error(JSON.stringify({ error: msg }));
+        process.exit(1);
+      }
+      console.log(chalk.red(msg));
+      return;
+    }
+
+    let metrics: Metrics = store.getMetrics(project.id, opts.since, opts.taskType);
+
+    if (opts.phase) {
+      metrics = filterMetricsByPhase(metrics, opts.phase);
+    }
+
+    if (opts.agent) {
+      metrics = filterMetricsByAgent(metrics, opts.agent);
+    }
+
+    const renderOpts: CostMetricsOptions = {
+      since: opts.since,
+      phase: opts.phase,
+      agent: opts.agent,
+      taskType: opts.taskType,
+    };
+
+    if (opts.json) {
+      console.log(
+        JSON.stringify(
+          {
+            projectId: project.id,
+            timestamp: new Date().toISOString(),
+            ...metrics,
+          },
+          null,
+          2,
+        ),
+      );
+    } else if (opts.compact) {
+      renderCostMetricsCompact(metrics, renderOpts);
+    } else {
+      renderCostMetrics(metrics, renderOpts);
+    }
+  } finally {
+    store.close();
+  }
+}
+
+// ── Pipeline rendering helpers ───────────────────────────────────────────
 
 function formatRate(rate: number): string {
   const pct = (rate * 100).toFixed(1);
@@ -126,76 +291,93 @@ function renderBottlenecks(
   }
 }
 
+async function renderPipelineMetrics(opts: MetricsCommandOptions): Promise<void> {
+  const manager = new ElixirServerManager();
+  const status = manager.status();
+
+  if (!status.running) {
+    const msg = "Elixir server is not running. Start it with 'foreman server start'.";
+    if (opts.json) {
+      console.log(JSON.stringify({ error: msg }));
+    } else {
+      console.error(chalk.red(msg));
+    }
+    process.exit(1);
+  }
+
+  const result = await manager.pipelineMetrics();
+
+  if (!result.ok) {
+    const msg = result.error ?? "Failed to fetch pipeline metrics";
+    if (opts.json) {
+      console.log(JSON.stringify({ error: msg }));
+    } else {
+      console.error(chalk.red(msg));
+    }
+    process.exit(1);
+  }
+
+  const body = result.body as PipelineMetricsResponse;
+
+  if (opts.json) {
+    console.log(JSON.stringify(body, null, 2));
+    return;
+  }
+
+  const pm = body.pipeline_metrics;
+  const updated = pm.emitted_at
+    ? new Date(pm.emitted_at).toLocaleString()
+    : "—";
+
+  console.log(chalk.bold("Pipeline Metrics"));
+  console.log(chalk.dim(`Updated: ${updated}\n`));
+
+  console.log(chalk.bold("Per-Phase Breakdown"));
+  renderPhaseTable(pm.phases);
+  console.log();
+
+  console.log(chalk.bold("Top Failure Reasons"));
+  console.log(chalk.dim("  COUNT  PHASE             REASON"));
+  renderFailureReasons(pm.top_failure_reasons);
+  console.log();
+
+  console.log(chalk.bold("Stuck Tasks by Reason"));
+  console.log(chalk.dim("  COUNT  PHASE             REASON"));
+  renderStuckByReason(pm.stuck_by_reason);
+  console.log();
+
+  console.log(chalk.bold("Recent Pipeline Bottlenecks (most recent first)"));
+  renderBottlenecks(pm.recent_bottlenecks);
+}
+
 // ── Command ──────────────────────────────────────────────────────────────
 
 export const metricsCommand = new Command("metrics")
-  .description("Show per-phase pipeline metrics (pass/fail rate, retries, turns, cost) from the Elixir server")
-  .option("--json", "Output raw JSON from the server")
+  .description("Show Foreman pipeline metrics, or task-store cost/token metrics with --costs/filters")
+  .option("--json", "Output JSON")
+  .option("--compact", "Output task-store cost metrics as a single-line key=value string (for scripts)")
+  .option("--costs", "Show task-store cost/token metrics instead of pipeline metrics")
+  .option("--since <iso-timestamp>", "Show cost metrics since this ISO timestamp (e.g., 2026-06-01T00:00:00Z)")
+  .option("--phase <phase-name>", "Filter cost metrics to a specific phase (explorer, developer, qa, reviewer, finalize)")
+  .option("--agent <agent-id>", "Filter cost metrics to a specific agent/model (e.g., claude-sonnet-4-6)")
+  .option("--task-type <type>", "Filter cost metrics to tasks of a specific type (feature, bug, chore, task)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (opts: {
-    json?: boolean;
-    project?: string;
-    projectPath?: string;
-  }) => {
-    const manager = new ElixirServerManager();
-    const status = manager.status();
-
-    if (!status.running) {
-      const msg = "Elixir server is not running. Start it with 'foreman server start'.";
-      if (opts.json) {
-        console.log(JSON.stringify({ error: msg }));
+  .action(async (opts: MetricsCommandOptions) => {
+    try {
+      const costMode = Boolean(opts.costs || opts.compact || opts.since || opts.phase || opts.agent || opts.taskType);
+      if (costMode) {
+        await renderTaskStoreMetrics(opts);
       } else {
-        console.error(chalk.red(msg));
+        await renderPipelineMetrics(opts);
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (opts.json || opts.compact) {
+        console.error(JSON.stringify({ error: message }));
+      } else {
+        console.error(chalk.red(message));
       }
       process.exit(1);
     }
-
-    const result = await manager.pipelineMetrics();
-
-    if (!result.ok) {
-      const msg = result.error ?? "Failed to fetch pipeline metrics";
-      if (opts.json) {
-        console.log(JSON.stringify({ error: msg }));
-      } else {
-        console.error(chalk.red(msg));
-      }
-      process.exit(1);
-    }
-
-    const body = result.body as PipelineMetricsResponse;
-
-    if (opts.json) {
-      console.log(JSON.stringify(body, null, 2));
-      return;
-    }
-
-    const pm = body.pipeline_metrics;
-    const updated = pm.emitted_at
-      ? new Date(pm.emitted_at).toLocaleString()
-      : "—";
-
-    console.log(chalk.bold("Pipeline Metrics"));
-    console.log(chalk.dim(`Updated: ${updated}\n`));
-
-    // Phase breakdown table
-    console.log(chalk.bold("Per-Phase Breakdown"));
-    renderPhaseTable(pm.phases);
-    console.log();
-
-    // Top failure reasons
-    console.log(chalk.bold("Top Failure Reasons"));
-    console.log(chalk.dim("  COUNT  PHASE             REASON"));
-    renderFailureReasons(pm.top_failure_reasons);
-    console.log();
-
-    // Stuck by reason
-    console.log(chalk.bold("Stuck Tasks by Reason"));
-    console.log(chalk.dim("  COUNT  PHASE             REASON"));
-    renderStuckByReason(pm.stuck_by_reason);
-    console.log();
-
-    // Recent bottlenecks
-    console.log(chalk.bold("Recent Pipeline Bottlenecks (most recent first)"));
-    renderBottlenecks(pm.recent_bottlenecks);
   });

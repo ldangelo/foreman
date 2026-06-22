@@ -59,13 +59,13 @@ import { importCommand } from "./commands/import.js";
 import { issueCommand } from "./commands/issue.js";
 import { projectCommand } from "./commands/project.js";
 import { taskCommand } from "./commands/task.js";
+import { metricsCommand } from "./commands/metrics.js";
 import { recoverCommand } from "./commands/recover.js";
 import { daemonCommand } from "./commands/daemon.js";
 import { jiraCommand } from "./commands/jira.js";
 import { logsCommand } from "./commands/logs.js";
 import { serverCommand } from "./commands/server.js";
 import { mcpCommand } from "./commands/mcp.js";
-import { metricsCommand } from "./commands/metrics.js";
 import { maybeDelegateToLegacyTs } from "./legacy-coexistence.js";
 function isCliEntrypoint(): boolean {
   try {
@@ -123,13 +123,13 @@ program.addCommand(importCommand, { hidden: true });
 program.addCommand(issueCommand);
 program.addCommand(projectCommand);
 program.addCommand(taskCommand);
+program.addCommand(metricsCommand);
 program.addCommand(recoverCommand);
 program.addCommand(daemonCommand);
 program.addCommand(jiraCommand);
 program.addCommand(logsCommand);
 program.addCommand(serverCommand);
 program.addCommand(mcpCommand);
-program.addCommand(metricsCommand);
 
 program.addHelpText(
   "after",
@@ -138,7 +138,7 @@ Domain groups:
   Setup/health:     init, doctor, daemon, server, metrics
   Planning:         plan, sling
   Execution:        run, retry, reset, stop, recover
-  Tasks/views:      task, status, board, watch, logs, runs
+  Tasks/views:      task, status, metrics, board, watch, logs, runs
   Collaboration:    inbox, attach, debug, mcp
   Delivery/VCS:     worktree, merge, pr
 

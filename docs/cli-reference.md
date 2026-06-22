@@ -189,6 +189,65 @@ Active Agents
   Files      3
 ```
 
+### `foreman metrics`
+
+Show per-phase pipeline metrics from the Elixir server by default. Add `--costs` (or any cost filter such as `--since`, `--phase`, `--agent`, `--task-type`, or `--compact`) to show cost and token usage aggregated from the task store.
+
+```bash
+foreman metrics                         # Human-readable pipeline metrics dashboard
+foreman metrics --json                  # Raw pipeline metrics JSON from the server
+foreman metrics --costs                 # Human-readable cost/token metrics summary
+foreman metrics --costs --json          # Cost/token JSON with timestamp/projectId
+foreman metrics --compact               # Cost/token single-line key=value format for scripts
+foreman metrics --since 2026-06-01      # Filter cost metrics since this date
+foreman metrics --phase explorer        # Filter cost metrics to a specific phase
+foreman metrics --agent claude-sonnet-4-6       # Filter cost metrics by agent model
+foreman metrics --task-type feature     # Filter cost metrics to a specific task type
+foreman metrics --project my-project    # Metrics for a registered project
+foreman metrics --project-path /abs/path # Metrics for a project at an absolute path
+foreman metrics --costs --json --since 2026-06-01 --phase developer --task-type bug  # Combine cost filters
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--json` | — | Output JSON: pipeline JSON by default, cost/token JSON in cost mode |
+| `--compact` | — | Output cost/token metrics as a single-line `key=value` string for scripting (e.g., `cost=1.2300 tokens=12345 phases=3 agents=1 filters=since=X,phase=Y`) |
+| `--costs` | — | Show task-store cost/token metrics instead of pipeline metrics |
+| `--since <iso-timestamp>` | — | Include cost metrics since this ISO timestamp; implies cost mode |
+| `--phase <phase-name>` | — | Filter cost metrics to a specific phase (explorer, developer, qa, reviewer, finalize); implies cost mode |
+| `--agent <type>` | — | Filter cost metrics to a specific agent model (e.g., claude-sonnet-4-6); implies cost mode |
+| `--task-type <type>` | — | Filter cost metrics to tasks of a specific type (feature, bug, chore, task); implies cost mode |
+| `--project <name-or-path>` | — | Show metrics for a registered project name |
+| `--project-path <absolute-path>` | — | Show metrics for a project at an absolute path (advanced/script usage) |
+
+Pipeline output sections:
+- **Per-Phase Breakdown** — pass rate, fail count, timeout count, retry count, avg turns, avg cost, total runs
+- **Top Failure Reasons** — grouped by phase, sorted by frequency
+- **Stuck Tasks by Reason** — phases stuck due to timeout or failure
+- **Recent Pipeline Bottlenecks** — most recently started phases (last 5)
+
+**Cost metrics example output:**
+
+```
+Metrics (since 2026-06-01, phase=developer, agent=claude-sonnet-4-6, task-type=bug)
+  Total Cost:   $4.56
+  Total Tokens: 123.5k
+
+By Phase
+  explorer    $0.31
+  developer   $3.25
+  qa          $1.00
+
+By Agent
+  claude-haiku-4-5       $0.31
+  claude-sonnet-4-6      $4.25
+
+Tasks by Status
+  ready       3
+  in-progress 2
+  completed   50
+```
+
 ### `foreman watch`
 
 Single-pane unified live dashboard: agents, board summary, inbox, and pipeline events. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
@@ -385,27 +444,6 @@ foreman doctor --json             # Machine-readable output
 | `--fix` | Auto-fix issues (install missing prompts, migrate stores, etc.) |
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
-
-### `foreman metrics`
-
-Show per-phase pipeline metrics from the Elixir server. Requires `foreman server start` (or `foreman server doctor --auto-start`).
-
-```bash
-foreman metrics                    # Human-readable dashboard
-foreman metrics --json             # Raw JSON from the server
-```
-
-| Option | Description |
-|--------|-------------|
-| `--json` | Output raw JSON from the server |
-| `--project <name>` | Registered project name (default: current directory) |
-| `--project-path <absolute-path>` | Absolute project path |
-
-Output sections:
-- **Per-Phase Breakdown** — pass rate, fail count, timeout count, retry count, avg turns, avg cost, total runs
-- **Top Failure Reasons** — grouped by phase, sorted by frequency
-- **Stuck Tasks by Reason** — phases stuck due to timeout or failure
-- **Recent Pipeline Bottlenecks** — most recently started phases (last 5)
 
 ### `foreman server`
 
