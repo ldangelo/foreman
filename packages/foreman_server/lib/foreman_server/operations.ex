@@ -115,11 +115,18 @@ defmodule ForemanServer.Operations do
     top_failures = top_failure_reasons(events, 5)
     stuck_by_reason = stuck_by_reason(events)
     bottlenecks = recent_bottlenecks(events, 5)
+    blocked_reasons = blocked_reasons(events)
 
     %{
       phases: by_phase,
       top_failure_reasons: top_failures,
       stuck_by_reason: stuck_by_reason,
+      blocked_by_reason: blocked_reasons,
+      retry_details: %{
+        stuck_by_reason: stuck_by_reason,
+        blocked_by_reason: blocked_reasons,
+        qa_environment_blocked: count_qa_environment_blocked(events)
+      },
       recent_bottlenecks: bottlenecks,
       emitted_at: DateTime.utc_now()
     }
@@ -143,7 +150,9 @@ defmodule ForemanServer.Operations do
       retries: count(events, "PhaseRetried"),
       failures: Enum.count(events, &MapSet.member?(@failure_events, &1.event_type)),
       recoveries: Enum.count(events, &MapSet.member?(@recovery_events, &1.event_type)),
-      worker_restarts: count(events, "WorkerRestarted")
+      worker_restarts: count(events, "WorkerRestarted"),
+      circuit_breaker_hits: count(events, "CircuitBreakerTripped"),
+      qa_environment_blocked: count_qa_environment_blocked(events)
     }
   end
 
@@ -393,6 +402,35 @@ defmodule ForemanServer.Operations do
       %{reason: reason, phase: phase, count: length(items)}
     end)
     |> Enum.sort_by(&(-&1.count))
+  end
+
+  defp blocked_reasons(events) do
+    events
+    |> Enum.filter(fn %Event{} = e ->
+      e.event_type in ["PhaseFailed", "PhaseTimedOut"] and
+        Map.get(e.payload, :blocked) == true
+    end)
+    |> Enum.map(fn %Event{} = e ->
+      reason = Map.get(e.payload, :failure_reason) || "unknown"
+      phase = Map.get(e.payload, :phase_id) || "unknown"
+      %{reason: reason, phase: phase, count: 1}
+    end)
+    |> Enum.group_by(&{&1.reason, &1.phase})
+    |> Enum.map(fn {{reason, phase}, items} ->
+      %{reason: reason, phase: phase, count: length(items)}
+    end)
+    |> Enum.sort_by(&(-&1.count))
+  end
+
+  defp count_qa_environment_blocked(events) do
+    Enum.count(events, fn %Event{} = e ->
+      phase_id = Map.get(e.payload, :phase_id)
+
+      e.event_type in ["PhaseFailed", "PhaseTimedOut"] and
+        is_binary(phase_id) and
+        String.contains?(phase_id, "qa") and
+        Map.get(e.payload, :environment_blocked) == true
+    end)
   end
 
   defp recent_bottlenecks(events, limit) do

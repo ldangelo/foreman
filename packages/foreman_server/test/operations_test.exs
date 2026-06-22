@@ -56,12 +56,43 @@ defmodule ForemanServer.OperationsTest do
     assert metrics.counters.failures == 1
     assert metrics.counters.recoveries == 1
     assert metrics.counters.worker_restarts == 1
+    assert is_integer(metrics.counters.circuit_breaker_hits)
+    assert is_integer(metrics.counters.qa_environment_blocked)
     assert metrics.gauges.projection_lag == 0
 
     assert [%{run_id: "run-metrics", phase_id: "build", duration_ms: duration}] =
              metrics.timers.phase_duration_ms
 
     assert duration >= 1_000
+  end
+
+  test "metrics counters include circuit_breaker_hits and qa_environment_blocked" do
+    seed_run_events("run-cb")
+
+    # Circuit breaker trip
+    append_run_event("CircuitBreakerTripped", %{
+      run_id: "run-cb",
+      phase_id: "explorer",
+      reason: "too many failures"
+    })
+
+    append_run_event("CircuitBreakerTripped", %{
+      run_id: "run-cb",
+      phase_id: "developer",
+      reason: "too many failures"
+    })
+
+    # QA environment blocked
+    append_run_event("PhaseFailed", %{
+      run_id: "run-cb",
+      phase_id: "qa-check",
+      failure_reason: "env blocked",
+      environment_blocked: true
+    })
+
+    assert {:ok, metrics} = Operations.metrics()
+    assert metrics.counters.circuit_breaker_hits == 2
+    assert metrics.counters.qa_environment_blocked == 1
   end
 
   test "debug timeline identifies first inconsistent transition" do
@@ -208,6 +239,62 @@ defmodule ForemanServer.OperationsTest do
 
     # recent bottlenecks: most recent is qa phase
     assert length(pm.recent_bottlenecks) >= 1
+  end
+
+  test "pipeline_metrics includes retry_details with stuck, blocked, and qa_environment_blocked" do
+    # Stuck failure
+    append_run_event("PhaseFailed", %{
+      run_id: "pm-retry",
+      phase_id: "developer",
+      failure_reason: "unresponsive agent",
+      stuck: true
+    })
+
+    append_run_event("PhaseFailed", %{
+      run_id: "pm-retry2",
+      phase_id: "developer",
+      failure_reason: "unresponsive agent",
+      stuck: true
+    })
+
+    # Blocked failure
+    append_run_event("PhaseTimedOut", %{
+      run_id: "pm-retry3",
+      phase_id: "qa",
+      failure_reason: "env mismatch",
+      blocked: true
+    })
+
+    # QA environment blocked (counts separately, not as stuck/blocked)
+    append_run_event("PhaseFailed", %{
+      run_id: "pm-retry4",
+      phase_id: "qa-check",
+      failure_reason: "env blocked",
+      environment_blocked: true
+    })
+
+    assert {:ok, pm} = Operations.pipeline_metrics()
+
+    # retry_details present
+    assert is_map(pm.retry_details)
+    assert is_list(pm.retry_details.stuck_by_reason)
+    assert is_list(pm.retry_details.blocked_by_reason)
+    assert is_integer(pm.retry_details.qa_environment_blocked)
+
+    # stuck_by_reason: developer, "unresponsive agent", count 2
+    stuck = pm.retry_details.stuck_by_reason
+    assert Enum.any?(stuck, &(&1.phase == "developer" and &1.reason == "unresponsive agent" and &1.count == 2))
+
+    # blocked_by_reason: qa, "env mismatch", count 1
+    blocked = pm.retry_details.blocked_by_reason
+    assert Enum.any?(blocked, &(&1.phase == "qa" and &1.reason == "env mismatch" and &1.count == 1))
+
+    # qa_environment_blocked count
+    assert pm.retry_details.qa_environment_blocked == 1
+
+    # top-level shortcuts also present
+    assert is_list(pm.blocked_by_reason)
+    assert Enum.any?(pm.blocked_by_reason, &(&1.phase == "qa" and &1.reason == "env mismatch"))
   end
 
   defp seed_run_events(run_id) do
