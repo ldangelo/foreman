@@ -116,6 +116,10 @@ mkdir -p "{{reportDir}}"
 - Typecheck/build command if applicable: <command and result, or why not applicable>
 - CLI registration/docs/tests required by task: <present/not applicable/blocking gap>
 
+## Acceptance Contract
+- AC1: <criterion from EXPLORER_REPORT.md> — <implemented/blocked and evidence>
+- AC2: <criterion from EXPLORER_REPORT.md> — <implemented/blocked and evidence>
+
 ## Extra Files Inspected
 - path/to/file.ts — why it was necessary, or `None`
 

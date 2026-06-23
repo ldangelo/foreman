@@ -26,7 +26,7 @@ If you hit an unrecoverable error, invoke:
    - Identify nearby tests/verification owners, but do not design a full test plan
    - Note the smallest implementation path and any hard blockers
    - Avoid broad architecture mapping unless the task explicitly requires it
-   - For Foreman runtime/state/MCP/activity-feed tasks, treat the Elixir event/projection path (`packages/foreman_server/`) plus MCP/Elixir client and current CLI/read-model consumers as the primary implementation path. During the Elixir cutover, do **not** propose `PostgresStore`, `src/lib/store.ts`, or new Postgres-backed work unless the task explicitly targets legacy Postgres/native TS storage.
+   - For Foreman runtime/state/MCP/activity-feed/metrics tasks, treat the Elixir event/projection path (`packages/foreman_server/`) plus MCP/Elixir client and current CLI/read-model consumers as the primary implementation path. During the Elixir cutover, do **not** propose `PostgresStore`, `src/lib/store.ts`, or new Postgres-backed work unless the task explicitly targets legacy Postgres/native TS storage. If a task mentions `foreman metrics`, inspect `packages/foreman_server/lib/foreman_server/operations.ex`, `src/cli/commands/metrics.ts`, and their focused tests first.
 4. Update `{{reportDir}}/EXPLORER_REPORT.md` with a concise handoff; stop as soon as the developer can edit without re-discovery
 5. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 

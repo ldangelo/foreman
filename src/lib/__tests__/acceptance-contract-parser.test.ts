@@ -23,4 +23,14 @@ describe("acceptance contract parser", () => {
     expect(result.ok).toBe(false);
     expect(result.missing.map((criterion) => criterion.id)).toEqual(["AC2", "AC3"]);
   });
+
+  it("allows phase-limited reports to defer out-of-scope criteria explicitly", () => {
+    const phaseReport = `# Test Review\n\n## Verdict: PASS\n\n## Acceptance Contract\n- AC2: Focused regression tests cover the parser — verified by failing red test.\n- AC3: Typecheck passes with npx tsc --noEmit — DEFERRED to Developer.\n`;
+    const result = validateAcceptanceCoverage(explorer, phaseReport, {
+      relevant: (criterion) => criterion.id !== "AC1",
+      allowDeferred: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
 });

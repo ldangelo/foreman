@@ -12,7 +12,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 
@@ -200,6 +200,16 @@ export class WorktreeManager {
     }
   }
 
+  #syncForemanRuntimeConfig(repoPath: string, worktreePath: string): void {
+    for (const name of ["workflows", "prompts"] as const) {
+      const source = join(repoPath, ".foreman", name);
+      if (!existsSync(source)) continue;
+      const target = join(worktreePath, ".foreman", name);
+      rmSync(target, { recursive: true, force: true });
+      cpSync(source, target, { recursive: true });
+    }
+  }
+
   /**
    * Get the worktree directory for a specific project+bead.
    */
@@ -247,6 +257,7 @@ export class WorktreeManager {
     // If worktree already exists — reuse it with rebase
     if (existsSync(worktreePath)) {
       await this._rebaseWorktree(worktreePath, startPoint);
+      this.#syncForemanRuntimeConfig(resolvedRepoPath, worktreePath);
       return { projectId, beadId, branchName, path: worktreePath, exists: true, created: false };
     }
 
@@ -275,6 +286,8 @@ export class WorktreeManager {
         throw err;
       }
     }
+
+    this.#syncForemanRuntimeConfig(resolvedRepoPath, worktreePath);
 
     return { projectId, beadId, branchName, path: worktreePath, exists: true, created: true };
   }

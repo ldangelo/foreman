@@ -35,6 +35,13 @@ export interface AcceptanceCoverageResult {
   reportHasAcceptanceSection: boolean;
 }
 
+export interface AcceptanceCoverageOptions {
+  /** Only these criteria must be covered for the current phase. */
+  relevant?: (criterion: AcceptanceCriterion) => boolean;
+  /** Treat explicit deferred/not-in-scope notes as covered for phase-limited gates. */
+  allowDeferred?: boolean;
+}
+
 /**
  * Parse a QA_REPORT.md markdown string into structured failure items.
  * Also extracts the verdict (PASS/FAIL) from the report.
@@ -173,7 +180,11 @@ export function parseAcceptanceContract(content: string): AcceptanceCriterion[] 
   return criteria;
 }
 
-export function validateAcceptanceCoverage(explorerReport: string, phaseReport: string): AcceptanceCoverageResult {
+export function validateAcceptanceCoverage(
+  explorerReport: string,
+  phaseReport: string,
+  options: AcceptanceCoverageOptions = {},
+): AcceptanceCoverageResult {
   const criteria = parseAcceptanceContract(explorerReport);
   if (criteria.length === 0) {
     return { ok: true, criteria, missing: [], reportHasAcceptanceSection: true };
@@ -181,13 +192,31 @@ export function validateAcceptanceCoverage(explorerReport: string, phaseReport: 
 
   const reportHasAcceptanceSection = /^##\s+Acceptance Contract\b/im.test(phaseReport);
   const normalizedReport = normalizeAcceptanceText(phaseReport);
-  const missing = criteria.filter((criterion) => !criterionCovered(criterion, normalizedReport));
+  const criteriaToCheck = options.relevant ? criteria.filter(options.relevant) : criteria;
+  const missing = criteriaToCheck.filter((criterion) => {
+    if (criterionCovered(criterion, normalizedReport)) return false;
+    return !(options.allowDeferred && criterionDeferred(criterion, phaseReport));
+  });
   return {
     ok: reportHasAcceptanceSection && missing.length === 0,
     criteria,
     missing,
     reportHasAcceptanceSection,
   };
+}
+
+function criterionDeferred(criterion: AcceptanceCriterion, phaseReport: string): boolean {
+  const section = phaseReport.match(/(?:^|\n)##\s+Acceptance Contract\s*\n([\s\S]*?)(?=\n##\s+|$)/i)?.[1] ?? phaseReport;
+  const normalizedId = normalizeAcceptanceText(criterion.id);
+  const normalizedCriterion = normalizeAcceptanceText(criterion.text);
+  const deferredPattern = /\b(deferred|not\s+in\s+(?:test\s+)?scope|blocked\s+on\s+implementation|requires?\s+developer|developer\s+implementation|not\s+applicable|n\/a)\b/i;
+  return section.split(/\r?\n/).some((line) => {
+    const normalizedLine = normalizeAcceptanceText(line);
+    if (!deferredPattern.test(line)) return false;
+    if (normalizedId && normalizedLine.includes(normalizedId)) return true;
+    if (normalizedCriterion && normalizedLine.includes(normalizedCriterion)) return true;
+    return false;
+  });
 }
 
 function criterionCovered(criterion: AcceptanceCriterion, normalizedReport: string): boolean {

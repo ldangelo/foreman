@@ -10,8 +10,8 @@ import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
-import { existsSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { PIPELINE_LIMITS } from "../../lib/config.js";
@@ -49,6 +49,30 @@ interface ResetMergeQueue {
   list(): Promise<Array<{ id: number; seed_id: string; status: string }>>;
   remove(id: number): Promise<void>;
   missingFromQueue(): Promise<Array<{ run_id: string; seed_id: string }>>;
+}
+
+export interface PreservedWorktreeConfigSyncResult {
+  synced: string[];
+  skipped: string[];
+}
+
+export function syncPreservedWorktreeConfig(
+  projectPath: string,
+  worktreePath: string,
+): PreservedWorktreeConfigSyncResult {
+  const result: PreservedWorktreeConfigSyncResult = { synced: [], skipped: [] };
+  for (const name of ["workflows", "prompts"] as const) {
+    const source = join(projectPath, ".foreman", name);
+    const target = join(worktreePath, ".foreman", name);
+    if (!existsSync(source)) {
+      result.skipped.push(name);
+      continue;
+    }
+    rmSync(target, { recursive: true, force: true });
+    cpSync(source, target, { recursive: true });
+    result.synced.push(name);
+  }
+  return result;
 }
 
 function wrapLocalMergeQueue(queue: MergeQueue): ResetMergeQueue {
@@ -968,6 +992,18 @@ export const resetCommand = new Command("reset")
         if (run.worktree_path) {
           if (preserveWorktree) {
             console.log(`    ${chalk.dim("preserve")} worktree ${run.worktree_path}`);
+            if (!dryRun) {
+              try {
+                const syncResult = syncPreservedWorktreeConfig(projectPath, run.worktree_path);
+                if (syncResult.synced.length > 0) {
+                  console.log(`    ${chalk.dim("sync")} .foreman/${syncResult.synced.join(", .foreman/")}`);
+                }
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                errors.push(`Failed to sync preserved worktree config for ${run.seed_id}: ${msg}`);
+                console.log(`    ${chalk.red("error")} syncing worktree config: ${msg}`);
+              }
+            }
           } else {
             console.log(`    ${chalk.yellow("remove")} worktree ${run.worktree_path}`);
           }

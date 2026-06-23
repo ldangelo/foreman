@@ -551,15 +551,17 @@ export function buildPhasePrompt(
     : context.feedbackContext
       ? `2. Read the cited feedback artifact/report first; do not re-explore the codebase`
       : `2. If EXPLORER_REPORT.md is missing, report blocked instead of exploring the codebase`;
+  const reportDir = context.reportDir ?? "";
+  const runId = context.runId ?? "";
   const explorerPreflightSection = context.requiresExplorerReport
     ? `## Pre-flight: Check EXPLORER_REPORT.md
-After verifying /send-mail, check if \`{{reportDir}}/EXPLORER_REPORT.md\` exists:
+After verifying /send-mail, check if \`${reportDir}/EXPLORER_REPORT.md\` exists:
 \`\`\`bash
-test -f "{{reportDir}}/EXPLORER_REPORT.md" || echo "MISSING"
+test -f "${reportDir}/EXPLORER_REPORT.md" || echo "MISSING"
 \`\`\`
 If it is missing, invoke and stop — do not proceed with implementation:
 \`\`\`
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
+/send-mail --run-id "${runId}" --from "${phaseName}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"${context.seedId}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
 \`\`\`
 Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     : "";
@@ -575,11 +577,11 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     explorerInstruction,
     explorerPreflightSection,
     feedbackSection,
-    runId: context.runId ?? "",
+    runId,
     agentRole: phaseName,
     baseBranch: context.baseBranch ?? "main",
     worktreePath: context.worktreePath ?? "",
-    reportDir: context.reportDir ?? "",
+    reportDir,
     seedType: context.seedType ?? "",
     // VCS finalize command variables (TRD-026)
     vcsStageCommand: context.vcsStageCommand ?? "git add -A",

@@ -17,8 +17,8 @@ If you hit an unrecoverable error, invoke:
 
 ## Instructions
 1. Read TASK.md for the original task description
-2. Read EXPLORER_REPORT.md (if exists) for architecture context
-3. Read QA_REPORT.md for test results
+2. Read `{{reportDir}}/EXPLORER_REPORT.md` (if exists) for architecture context
+3. Read `{{reportDir}}/QA_REPORT.md` for test results
 4. Review the changed files for this task (use git diff against the base branch). For narrow tasks, keep review scoped to the task-relevant changed files plus any directly affected neighbors.
    - For Foreman runtime/state/MCP/activity-feed work during the Elixir cutover, review the Elixir server (`packages/foreman_server/`), MCP/Elixir client, and current CLI/read-model consumer paths actually changed by the implementation. Do **not** fail a review because `PostgresStore`, `src/lib/store.ts`, or other legacy Postgres/native TS storage was not changed unless the task explicitly targets that legacy path.
    - If the implementation uses Elixir lifecycle events, MCP inbox/events, or log-derived activity messages, evaluate whether that current path satisfies the requirement instead of requiring a new legacy TS `ActivityFeedService`.

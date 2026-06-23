@@ -416,7 +416,8 @@ function deterministicPolicy(config: PhaseControlConfig, telemetry: PhaseTelemet
   if (shouldForceArtifact && !isArtifactWrite) {
     return { allow: false, reason: steeringMessage(config, validation) };
   }
-  if (config.artifact && summary.steers >= forceAfter && !isArtifactWrite) {
+  const shouldForceAfterSteers = config.phaseName === "explorer" || nearMaxTurns;
+  if (shouldForceAfterSteers && config.artifact && summary.steers >= forceAfter && !isArtifactWrite) {
     return { allow: false, reason: `Overwatch: no more unbounded work in ${config.phaseName}. Write ${config.artifact} with current evidence.` };
   }
   if (maxToolCalls !== undefined && summary.toolCalls >= maxToolCalls && !isArtifactWrite) {

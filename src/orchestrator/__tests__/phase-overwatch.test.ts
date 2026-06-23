@@ -92,6 +92,20 @@ describe("phase overwatch artifact validation", () => {
     expect(policy?.beforeTool("bash", { command: "rg activity src/orchestrator/phase-overwatch.ts" })).toBeUndefined();
   });
 
+  it("does not force developer straight to report after two denied discovery attempts", () => {
+    const worktreePath = tempWorktree();
+    const policy = createPhaseToolPolicy({
+      phaseName: "developer",
+      worktreePath,
+      artifact: "DEVELOPER_REPORT.md",
+      overwatch: { enabled: true, mode: "enforce" },
+    });
+
+    expect(policy?.beforeTool("bash", { command: "find . -name '*.ts'" })).toContain("broad repo discovery");
+    expect(policy?.beforeTool("bash", { command: "rg activity" })).toContain("broad repo discovery");
+    expect(policy?.beforeTool("edit", { path: join(worktreePath, "src/lib/store.ts"), oldText: "a", newText: "b" })).toBeUndefined();
+  });
+
   it("blocks QA broad discovery tools", () => {
     const worktreePath = tempWorktree();
     const policy = createPhaseToolPolicy({

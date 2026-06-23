@@ -73,6 +73,28 @@ describe("pi observability trace", () => {
     expect(trace.commandHonored).toBe(true);
   });
 
+  it("detects absolute expected artifact paths outside the worktree", async () => {
+    const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
+    const reportDir = await mkdtemp(join(tmpdir(), "foreman-reports-"));
+    const artifactPath = join(reportDir, "REVIEW.md");
+    await writeFile(artifactPath, "# Review\n", "utf-8");
+    const trace = createPhaseTrace({
+      runId: "run-absolute",
+      seedId: "foreman-56b46",
+      phase: "reviewer",
+      phaseType: "prompt",
+      model: "minimax/MiniMax-M2.7",
+      worktreePath,
+      rawPrompt: "Review the implementation",
+      expectedArtifact: artifactPath,
+      systemPrompt: "You are the reviewer",
+    });
+
+    finalizePhaseTrace(trace, { success: true, finalMessage: "Wrote REVIEW.md." });
+
+    expect(trace.artifactPresent).toBe(true);
+  });
+
   it("writes json and markdown trace artifacts under Foreman reports", async () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
     const trace = createPhaseTrace({

@@ -204,7 +204,7 @@ foreman run --yes                 # Auto-confirm run prompts for scripts/non-int
 foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
 ```
 
-Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors. Prompt-backed phases also enable phase overwatch: Foreman tracks tool calls, validates required reports, blocks known drift patterns such as Developer test runs or QA broad full-suite commands, steers runaway work through blocked tool-call messages, treats valid-artifact stop instructions as non-error terminal guidance, and can continue after a max-turn stop when the required artifact is already valid. Developer may author focused tests when the task or Explorer handoff explicitly requires coverage, but QA/finalize own test execution. Optional `FOREMAN_MAX_PIPELINE_*` budgets can still stop runaway wall-clock, cost, tool-call, or retry/review loops.
+Bundled workflows use a TDD red/green shape before QA: after Explorer, `test-red` writes only focused failing tests and `test-review` confirms those tests cover the acceptance contract and fail for the expected missing behavior before Developer implements the fix. Foreman gates the red phase on test-only diffs plus expected failing-test evidence; synced runtime config under `.foreman/workflows/**` and `.foreman/prompts/**` is ignored for this diff check. Test Review acceptance checks are phase-aware: implementation/docs/typespec criteria may be explicitly marked deferred/not in test scope, while test-relevant criteria must be covered before Developer runs. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors. Prompt-backed phases also enable phase overwatch: Foreman tracks tool calls, validates required reports, blocks known drift patterns such as Developer test runs or QA broad full-suite commands, steers runaway work through blocked tool-call messages, treats valid-artifact stop instructions as non-error terminal guidance, and can continue after a max-turn stop when the required artifact is already valid. Developer should implement against the reviewed red tests; QA/finalize own test execution. Optional `FOREMAN_MAX_PIPELINE_*` budgets can still stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
 ### 7. Monitor Progress
 
@@ -280,7 +280,7 @@ Use retry/reset surgically.
 
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
 - Use `foreman reset --bead <task-id>` to clear failed/stuck run state and make the task retryable.
-- Use `foreman reset --bead <task-id> --preserve-worktree` (or `--retry-failed-phase`) when a repair should keep the failed run's branch/worktree instead of starting from a clean checkout.
+- Use `foreman reset --bead <task-id> --preserve-worktree` (or `--retry-failed-phase`) when a repair should keep the failed run's branch/worktree instead of starting from a clean checkout. Preserved worktrees refresh `.foreman/workflows` and `.foreman/prompts` from the project before the next dispatch.
 - Use `--dry-run` before destructive cleanup.
 - Do not reset active work with uncommitted controller changes unless those changes are committed or exported.
 

@@ -494,8 +494,11 @@ interface PhaseSequenceResult {
 }
 
 function isGeneratedWorkflowArtifact(filePath: string): boolean {
+  const normalizedPath = filePath.replace(/\\/g, "/");
   const name = basename(filePath);
   return (
+    normalizedPath.startsWith(".foreman/workflows/") ||
+    normalizedPath.startsWith(".foreman/prompts/") ||
     name.endsWith("_REPORT.md") ||
     name.endsWith("_SESSION_SUMMARY.md") ||
     /^.+\.attempt-\d+\.md$/.test(name) ||
@@ -563,7 +566,11 @@ function gitChangedFiles(worktreePath: string): string[] | null {
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean);
-    if (uncommitted.length > 0) return uncommitted;
+    const untracked = execSync("git ls-files --others --exclude-standard", { cwd: worktreePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (uncommitted.length > 0) return [...new Set([...uncommitted, ...untracked])];
 
     for (const baseRef of ["origin/dev", "dev", "origin/main", "main"]) {
       try {
@@ -572,13 +579,13 @@ function gitChangedFiles(worktreePath: string): string[] | null {
           .split("\n")
           .map((line) => line.trim())
           .filter(Boolean);
-        if (committed.length > 0) return committed;
+        if (committed.length > 0) return [...new Set([...committed, ...untracked])];
       } catch {
         // Try the next common base ref.
       }
     }
 
-    return [];
+    return untracked;
   } catch {
     return null;
   }
@@ -630,6 +637,61 @@ export interface DeveloperGateResult {
   typecheckRun: boolean;
   typecheckPassed?: boolean;
   typecheckOutput?: string;
+}
+
+export interface RedPhaseGateResult {
+  ok: boolean;
+  reasons: string[];
+  changedFiles: string[];
+  testFiles: string[];
+}
+
+function isTestFile(file: string): boolean {
+  return /(^|\/)(__tests__|test|tests)\//.test(file)
+    || /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
+    || /_test\.exs$/.test(file)
+    || /_test\.(ex|erl)$/.test(file)
+    || /(^|\/)test_.*\.py$/.test(file)
+    || /(^|\/)tests?\/.*\.(py|rb|go|rs)$/.test(file);
+}
+
+function redReportHasExpectedFailureEvidence(report: string): boolean {
+  return /(exit status|exit code)\s*:\s*(?!0\b)\S+/i.test(report)
+    || /\b(result|status)\s*:\s*(failed|failure|non-zero|nonzero)/i.test(report)
+    || /\bfailed as expected\b/i.test(report)
+    || /\bnon[- ]zero\b/i.test(report);
+}
+
+export function validateRedPhaseCompletion(worktreePath: string, reportPath: string): RedPhaseGateResult {
+  const reasons: string[] = [];
+  const rawChangedFiles = gitChangedFiles(worktreePath);
+  if (rawChangedFiles === null) {
+    return { ok: true, reasons: [], changedFiles: [], testFiles: [] };
+  }
+
+  const changedFiles = rawChangedFiles.filter((file) => !isGeneratedWorkflowArtifact(file));
+  const testFiles = changedFiles.filter(isTestFile);
+  const nonTestFiles = changedFiles.filter((file) => !isTestFile(file));
+  const report = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
+
+  if (!report) reasons.push(`Red phase report missing: ${reportPath}`);
+  if (report && !/^##\s+Verdict:\s+RED\b/im.test(report)) {
+    reasons.push("Red phase report must contain `## Verdict: RED` for accepted failing tests.");
+  }
+  if (report && !/expected failure evidence/i.test(report)) {
+    reasons.push("Red phase report missing Expected Failure Evidence section.");
+  }
+  if (testFiles.length === 0) {
+    reasons.push("No test diff found after red phase.");
+  }
+  if (nonTestFiles.length > 0) {
+    reasons.push(`Red phase may only change test files; non-test files changed: ${nonTestFiles.join(", ")}`);
+  }
+  if (report && !redReportHasExpectedFailureEvidence(report)) {
+    reasons.push("Red phase report must show focused test failure evidence (non-zero exit status/code, failed result/status, or failed-as-expected summary).");
+  }
+
+  return { ok: reasons.length === 0, reasons, changedFiles, testFiles };
 }
 
 export function validateDeveloperCompletion(worktreePath: string, reportPath: string, taskDescription = ""): DeveloperGateResult {
@@ -696,17 +758,43 @@ function formatDeveloperGateFeedback(result: DeveloperGateResult): string {
   ].join("\n");
 }
 
-function acceptanceCoverageFailure(_worktreePath: string, reportPath: string): string | null {
+function formatRedPhaseGateFeedback(result: RedPhaseGateResult): string {
+  return [
+    "Red phase gate failed before test review.",
+    "",
+    "Fix every item below, then update RED_REPORT.md Expected Failure Evidence:",
+    ...result.reasons.map((reason) => `- ${reason}`),
+    "",
+    `Changed files detected: ${result.changedFiles.length > 0 ? result.changedFiles.join(", ") : "(none)"}`,
+    `Test files detected: ${result.testFiles.length > 0 ? result.testFiles.join(", ") : "(none)"}`,
+  ].join("\n");
+}
+
+function phaseLimitedAcceptanceCriterion(phaseName: string, text: string): boolean {
+  const normalized = text.toLowerCase();
+  if (phaseName !== "test-review") return true;
+  if (/\b(typespecs?|docs?|documentation|cli reference|user-facing docs?)\b/.test(normalized)) return false;
+  return true;
+}
+
+function acceptanceCoverageFailure(_worktreePath: string, reportPath: string, phaseName: string): string | null {
   const explorerPath = join(dirname(reportPath), "EXPLORER_REPORT.md");
   if (!existsSync(explorerPath) || !existsSync(reportPath)) return null;
   const coverage = validateAcceptanceCoverage(
     readFileSync(explorerPath, "utf8"),
     readFileSync(reportPath, "utf8"),
+    {
+      relevant: (criterion) => phaseLimitedAcceptanceCriterion(phaseName, criterion.text),
+      allowDeferred: phaseName === "test-review",
+    },
   );
   if (coverage.ok) return null;
   const missing = coverage.missing.map((criterion) => `- ${criterion.id}: ${criterion.text}`).join("\n");
   const sectionReason = coverage.reportHasAcceptanceSection ? "" : "Missing `## Acceptance Contract` section.\n";
-  return `Acceptance contract coverage missing. ${sectionReason}Unaddressed criteria:\n${missing || "- (none parsed)"}`;
+  const phaseHint = phaseName === "test-review"
+    ? "Test-review reports may mark implementation/docs/typespec criteria as deferred/not in test scope, but must explicitly cover or defer every test-relevant criterion.\n"
+    : "";
+  return `Acceptance contract coverage missing. ${sectionReason}${phaseHint}Unaddressed criteria:\n${missing || "- (none parsed)"}`;
 }
 
 function developerGateRetryLimit(phases: WorkflowPhaseConfig[], phaseName: string): number {
@@ -1979,6 +2067,19 @@ async function runPhaseSequence(
     }
 
     let developerGateFeedback: string | undefined;
+    let redPhaseGateFeedback: string | undefined;
+    if (phaseSucceeded && phaseName === "test-red") {
+      if (interpolatedArtifact) {
+        const redReportPath = resolveArtifactPath(worktreePath, interpolatedArtifact);
+        const gate = validateRedPhaseCompletion(worktreePath, redReportPath);
+        if (!gate.ok) {
+          phaseSucceeded = false;
+          redPhaseGateFeedback = formatRedPhaseGateFeedback(gate);
+          phaseError = redPhaseGateFeedback;
+        }
+      }
+    }
+
     if (phaseSucceeded && phaseName === "developer") {
       const debugArtifacts = findDebugArtifacts(worktreePath);
       if (debugArtifacts.length > 0) {
@@ -1991,7 +2092,7 @@ async function runPhaseSequence(
           developerReportPath,
           `${description}\n${comments ?? ""}`,
         );
-        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, developerReportPath);
+        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, developerReportPath, "developer");
         if (!gate.ok || acceptanceFailure) {
           phaseSucceeded = false;
           developerGateFeedback = [
@@ -2112,6 +2213,21 @@ async function runPhaseSequence(
     if (!phaseSucceeded) {
       const errorMsg = phaseError ?? `${phaseName} failed`;
       const isRateLimit = isRateLimitError(errorMsg);
+
+      if (phaseName === "test-red" && redPhaseGateFeedback) {
+        const retryCountKey = "test-red-gate";
+        const currentRetries = retryCounts[retryCountKey] ?? 0;
+        const maxRetries = phase.retryOnFail ?? 2;
+        if (currentRetries < maxRetries) {
+          retryCounts[retryCountKey] = currentRetries + 1;
+          feedbackContext = redPhaseGateFeedback;
+          ctx.sendMailText(agentMailClient, `${phaseName}-${seedId}`, `Red Phase Gate Feedback - Retry ${currentRetries + 1}`, redPhaseGateFeedback);
+          ctx.log(`[TEST-RED] Gate failed — retrying red phase before test review (retry ${currentRetries + 1}/${maxRetries})`);
+          await appendFile(logFile, `\n[PIPELINE] red phase gate failed before test review, retrying test-red (retry ${currentRetries + 1}/${maxRetries})\n`);
+          i = phaseIndex.get(phaseName) ?? i;
+          continue;
+        }
+      }
 
       if (phaseName === "developer" && developerGateFeedback) {
         const retryCountKey = "developer-gate";
@@ -2332,8 +2448,8 @@ async function runPhaseSequence(
       const report = readReport(worktreePath, interpolatedArtifact);
       let verdict = report ? parseVerdict(report) : "unknown";
 
-      if ((phaseName === "qa" || phaseName === "finalize" || phaseName === "reviewer") && report && verdict !== "fail") {
-        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, reportPath);
+      if ((phaseName === "test-review" || phaseName === "qa" || phaseName === "finalize" || phaseName === "reviewer") && report && verdict !== "fail") {
+        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, reportPath, phaseName);
         if (acceptanceFailure) {
           verdict = "fail";
           feedbackContext = acceptanceFailure;

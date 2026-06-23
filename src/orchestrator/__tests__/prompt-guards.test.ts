@@ -6,6 +6,8 @@ const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const EXPLORER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "explorer.md");
 const DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "developer.md");
 const QA_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "qa.md");
+const TEST_RED_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "test-red.md");
+const TEST_REVIEW_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "test-review.md");
 const FINALIZE_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "finalize.md");
 
 describe("explorer prompt narrowing", () => {
@@ -63,6 +65,30 @@ describe("developer prompt guardrails", () => {
     expect(prompt).toContain("## Acceptance Contract");
     expect(prompt).toContain("Validate your implementation against those criteria before reporting done");
     expect(prompt).toContain("Carry the same acceptance contract through to QA and finalize");
+  });
+});
+
+describe("tdd red prompt validation", () => {
+  const redPrompt = readFileSync(TEST_RED_PROMPT, "utf-8");
+  const reviewPrompt = readFileSync(TEST_REVIEW_PROMPT, "utf-8");
+
+  it("red phase writes only focused failing tests", () => {
+    expect(redPrompt).toContain("TDD **red** phase");
+    expect(redPrompt).toContain("Write or update only focused test files");
+    expect(redPrompt).toContain("Do **not** edit production/source implementation files");
+    expect(redPrompt).toContain("Expected Failure Evidence");
+    expect(redPrompt).toContain("## Acceptance Contract");
+    expect(redPrompt).toContain("DEFERRED to Developer");
+  });
+
+  it("test review verifies acceptance coverage and expected red failure", () => {
+    expect(reviewPrompt).toContain("validate the red-phase tests before implementation");
+    expect(reviewPrompt).toContain("Confirm the tests map to the Explorer acceptance contract");
+    expect(reviewPrompt).toContain("expected unmet behavior, not syntax/import/mock/setup error");
+    expect(reviewPrompt).toContain("## Verdict: PASS | FAIL");
+    expect(reviewPrompt).toContain("## Acceptance Contract");
+    expect(reviewPrompt).toContain("DEFERRED to Developer");
+    expect(reviewPrompt).toContain("not in test scope");
   });
 });
 

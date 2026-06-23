@@ -910,6 +910,90 @@ describe("verdict-triggered retry", () => {
     expect(result.changedFiles).toContain("README.md");
   });
 
+  it("red phase gate requires only failing test diffs", async () => {
+    const { validateRedPhaseCompletion } = await import("../pipeline-executor.js");
+    execSync("git init", { cwd: tmpDir, stdio: "ignore" });
+    execSync("git config user.email test@example.com", { cwd: tmpDir });
+    execSync("git config user.name Test", { cwd: tmpDir });
+    writeFileSync(join(tmpDir, "README.md"), "initial\n");
+    execSync("git add . && git commit -m init", { cwd: tmpDir, stdio: "ignore" });
+    mkdirSync(join(tmpDir, "src", "__tests__"), { recursive: true });
+    writeFileSync(join(tmpDir, "src", "__tests__", "feature.test.ts"), "expect(false).toBe(true);\n");
+    writeFileSync(
+      join(tmpDir, "RED_REPORT.md"),
+      [
+        "# Red Phase Report",
+        "",
+        "## Verdict: RED",
+        "",
+        "## Expected Failure Evidence",
+        "- Command run: `npx vitest run src/__tests__/feature.test.ts`",
+        "- Exit status: 1",
+        "- Failure summary: expected false to be true",
+        "",
+      ].join("\n"),
+    );
+
+    const result = validateRedPhaseCompletion(tmpDir, join(tmpDir, "RED_REPORT.md"));
+
+    expect(result.ok).toBe(true);
+    expect(result.testFiles).toEqual(["src/__tests__/feature.test.ts"]);
+  });
+
+  it("red phase gate rejects production diffs", async () => {
+    const { validateRedPhaseCompletion } = await import("../pipeline-executor.js");
+    execSync("git init", { cwd: tmpDir, stdio: "ignore" });
+    execSync("git config user.email test@example.com", { cwd: tmpDir });
+    execSync("git config user.name Test", { cwd: tmpDir });
+    writeFileSync(join(tmpDir, "README.md"), "initial\n");
+    execSync("git add . && git commit -m init", { cwd: tmpDir, stdio: "ignore" });
+    mkdirSync(join(tmpDir, "src"), { recursive: true });
+    writeFileSync(join(tmpDir, "src", "feature.ts"), "export const value = 1;\n");
+    writeFileSync(join(tmpDir, "RED_REPORT.md"), "# Red Phase Report\n\n## Verdict: RED\n\n## Expected Failure Evidence\n- Exit status: 1\n");
+
+    const result = validateRedPhaseCompletion(tmpDir, join(tmpDir, "RED_REPORT.md"));
+
+    expect(result.ok).toBe(false);
+    expect(result.reasons.join("\n")).toContain("may only change test files");
+  });
+
+  it("red phase gate ignores synced Foreman workflow and prompt config", async () => {
+    const { validateRedPhaseCompletion } = await import("../pipeline-executor.js");
+    execSync("git init", { cwd: tmpDir, stdio: "ignore" });
+    execSync("git config user.email test@example.com", { cwd: tmpDir });
+    execSync("git config user.name Test", { cwd: tmpDir });
+    writeFileSync(join(tmpDir, "README.md"), "initial\n");
+    execSync("git add . && git commit -m init", { cwd: tmpDir, stdio: "ignore" });
+    mkdirSync(join(tmpDir, "src", "__tests__"), { recursive: true });
+    mkdirSync(join(tmpDir, ".foreman", "workflows"), { recursive: true });
+    mkdirSync(join(tmpDir, ".foreman", "prompts", "default"), { recursive: true });
+    writeFileSync(join(tmpDir, "src", "__tests__", "feature.test.ts"), "expect(false).toBe(true);\n");
+    writeFileSync(join(tmpDir, ".foreman", "workflows", "feature.yaml"), "name: feature\n");
+    writeFileSync(join(tmpDir, ".foreman", "prompts", "default", "test-red.md"), "# prompt\n");
+    writeFileSync(join(tmpDir, "RED_REPORT.md"), "# Red Phase Report\n\n## Verdict: RED\n\n## Expected Failure Evidence\n- Result: failed as expected\n");
+
+    const result = validateRedPhaseCompletion(tmpDir, join(tmpDir, "RED_REPORT.md"));
+
+    expect(result.ok).toBe(true);
+    expect(result.changedFiles).toEqual(["src/__tests__/feature.test.ts"]);
+  });
+
+  it("red phase gate accepts failed-as-expected evidence without exact exit status wording", async () => {
+    const { validateRedPhaseCompletion } = await import("../pipeline-executor.js");
+    execSync("git init", { cwd: tmpDir, stdio: "ignore" });
+    execSync("git config user.email test@example.com", { cwd: tmpDir });
+    execSync("git config user.name Test", { cwd: tmpDir });
+    writeFileSync(join(tmpDir, "README.md"), "initial\n");
+    execSync("git add . && git commit -m init", { cwd: tmpDir, stdio: "ignore" });
+    mkdirSync(join(tmpDir, "src", "__tests__"), { recursive: true });
+    writeFileSync(join(tmpDir, "src", "__tests__", "feature.test.ts"), "expect(false).toBe(true);\n");
+    writeFileSync(join(tmpDir, "RED_REPORT.md"), "# Red Phase Report\n\n## Verdict: RED\n\n## Expected Failure Evidence\n- Result: failed as expected; assertion missing field\n");
+
+    const result = validateRedPhaseCompletion(tmpDir, join(tmpDir, "RED_REPORT.md"));
+
+    expect(result.ok).toBe(true);
+  });
+
   it("developer gate ignores prose/example filenames outside explicit claimed-file evidence", async () => {
     const { validateDeveloperCompletion } = await import("../pipeline-executor.js");
     execSync("git init", { cwd: tmpDir, stdio: "ignore" });

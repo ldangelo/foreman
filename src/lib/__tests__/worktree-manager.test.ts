@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,6 +70,29 @@ describe("WorktreeManager", () => {
 
     expect(git(worktree.path, ["rev-parse", "HEAD"])).toBe(newHead);
     expect(git(repo, ["rev-parse", "main"])).toBe(newHead);
+  });
+
+  it("syncs local Foreman workflows and prompts into created worktrees", async () => {
+    const repo = join(tmpDir("foreman-repo-"), "repo");
+    execFileSync("git", ["init", "--initial-branch=main", repo], { stdio: "pipe" });
+    git(repo, ["config", "user.email", "test@example.com"]);
+    git(repo, ["config", "user.name", "Test User"]);
+    commitFile(repo, "file.txt", "initial\n", "initial");
+    mkdirSync(join(repo, ".foreman", "workflows"), { recursive: true });
+    mkdirSync(join(repo, ".foreman", "prompts"), { recursive: true });
+    writeFileSync(join(repo, ".foreman", "workflows", "feature.yaml"), "local workflow");
+    writeFileSync(join(repo, ".foreman", "prompts", "reviewer.md"), "local prompt");
+
+    const manager = new WorktreeManager({ root: join(tmpDir("foreman-worktrees-"), "worktrees") });
+    const worktree = await manager.createWorktree({
+      projectId: "proj",
+      beadId: "seed-1",
+      repoPath: repo,
+      baseBranch: "main",
+    });
+
+    expect(readFileSync(join(worktree.path, ".foreman", "workflows", "feature.yaml"), "utf8")).toBe("local workflow");
+    expect(readFileSync(join(worktree.path, ".foreman", "prompts", "reviewer.md"), "utf8")).toBe("local prompt");
   });
 
   it("prunes stale git worktree registrations before reusing a leftover branch", async () => {

@@ -3,7 +3,7 @@ import type {
   ExtensionFactory,
 } from "@mariozechner/pi-coding-agent";
 import { existsSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 
 import type {
   FinalizePhaseTraceOptions,
@@ -257,7 +257,7 @@ export function finalizePhaseTrace(trace: PhaseTrace, options: FinalizePhaseTrac
   }
 
   trace.artifactPresent = trace.expectedArtifact
-    ? existsSync(join(trace.worktreePath, trace.expectedArtifact))
+    ? existsSync(isAbsolute(trace.expectedArtifact) ? trace.expectedArtifact : join(trace.worktreePath, trace.expectedArtifact))
     : undefined;
 
   const wroteExpectedArtifact = trace.expectedArtifact

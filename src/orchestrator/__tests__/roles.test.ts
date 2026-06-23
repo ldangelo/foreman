@@ -207,6 +207,25 @@ describe("buildPhasePrompt — worktreePath propagation", () => {
     expect(prompt).toContain("My task");
   });
 
+  it("interpolates developer explorer-report preflight paths", () => {
+    const prompt = buildPhasePrompt("developer", {
+      seedId: "bd-abc",
+      seedTitle: "My task",
+      seedDescription: "desc",
+      runId: "run-1",
+      reportDir: "/tmp/foreman/reports/bd-abc/run-1",
+      requiresExplorerReport: true,
+    });
+
+    expect(prompt).toContain('test -f "/tmp/foreman/reports/bd-abc/run-1/EXPLORER_REPORT.md"');
+    expect(prompt).toContain('/send-mail --run-id "run-1" --from "developer"');
+    expect(prompt).toContain('"seedId":"bd-abc"');
+    expect(prompt).not.toContain("{{reportDir}}");
+    expect(prompt).not.toContain("{{runId}}");
+    expect(prompt).not.toContain("{{seedId}}");
+    expect(prompt).not.toContain("{{agentRole}}");
+  });
+
   it("produces empty string for worktreePath when omitted", () => {
     // buildPhasePrompt should not leave {{worktreePath}} un-interpolated
     const prompt = buildPhasePrompt("finalize", {

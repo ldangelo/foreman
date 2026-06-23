@@ -5,7 +5,7 @@ end
 defmodule ForemanServer.SchedulerTest do
   use ExUnit.Case
 
-  alias ForemanServer.{EventStore, ProjectionStore, RunActor, Scheduler}
+  alias ForemanServer.{EventStore, ProjectionStore, Scheduler}
 
   setup do
     tmp_dir =
@@ -35,14 +35,15 @@ defmodule ForemanServer.SchedulerTest do
     :ok
   end
 
-  test "tick claims ready tasks and starts run actors when capacity exists" do
+  test "tick claims ready tasks and records run without pre-starting a phase" do
     create_task("task-a", %{project_id: "alpha", status: "ready"})
 
     assert {:ok, %{claimed: [%{task_id: "task-a", run_id: run_id}], skipped: []}} =
              Scheduler.tick(max_concurrent: 2, default_phases: ["dev", "qa"])
 
     assert run_id =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-    assert %{current_phase: "dev", phase_order: ["dev", "qa"]} = RunActor.state(run_id)
+    assert %{current_phase: nil, phase_order: ["dev", "qa"]} = ProjectionStore.snapshot().runs[run_id]
+    refute Enum.any?(EventStore.stream("run:#{run_id}"), &(&1.event_type == "PhaseStarted"))
     assert ProjectionStore.snapshot().tasks["task-a"].status == "in_progress"
   end
 
@@ -181,7 +182,8 @@ defmodule ForemanServer.SchedulerTest do
 
     assert_receive_tick(fn -> ProjectionStore.snapshot().tasks["task-auto"].status end)
     run_id = ProjectionStore.snapshot().tasks["task-auto"].run_id
-    assert %{current_phase: "developer"} = RunActor.state(run_id)
+    assert %{current_phase: nil} = ProjectionStore.snapshot().runs[run_id]
+    refute Enum.any?(EventStore.stream("run:#{run_id}"), &(&1.event_type == "PhaseStarted"))
   end
 
   defp assert_receive_tick(fun, attempts \\ 20)

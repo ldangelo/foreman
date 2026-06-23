@@ -72,9 +72,18 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp foreman_executable do
-    case System.find_executable("foreman") do
-      nil -> {:error, :foreman_executable_not_found}
-      path -> {:ok, path}
+    cond do
+      worker_bin = System.get_env("FOREMAN_WORKER_BIN") ->
+        {:ok, worker_bin}
+
+      File.exists?(Path.expand("bin/foreman", File.cwd!())) ->
+        {:ok, Path.expand("bin/foreman", File.cwd!())}
+
+      path = System.find_executable("foreman") ->
+        {:ok, path}
+
+      true ->
+        {:error, :foreman_executable_not_found}
     end
   end
 

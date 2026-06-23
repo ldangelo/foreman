@@ -79,7 +79,7 @@ foreman project edit <project-id> --default-branch dev
 
 Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, skips ready tasks whose dependency blockers are not closed, monitors agents, and auto-merges completed work. The daemon uses the same dependency-filtered ready queue and logs both dispatched task IDs and skipped-task reasons each dispatch cycle.
 
-Default workflows include a `documentation` phase after finalization and before PR creation. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer owns code discovery; Developer and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Developer may still author focused tests when the task/handoff requires coverage. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests, and TypeScript compilation when TS/JS files changed. Verdict phases that report PASS must also carry and address the Explorer acceptance criteria. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
+Default workflows include TDD red/review phases before implementation plus a `documentation` phase after finalization and before PR creation. After Explorer, `test-red` writes only focused failing tests and `test-review` verifies those tests cover the acceptance contract and fail for the expected missing behavior. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer owns code discovery; Test Red, Developer, and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Before Test Review, Foreman gates Red completion on test-only diffs and expected failing-test evidence. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests, and TypeScript compilation when TS/JS files changed. Verdict phases that report PASS must also carry and address the Explorer acceptance criteria. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
 
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
@@ -479,7 +479,7 @@ Elixir backend roles: the **Node CLI** parses commands/renders projections, the 
 
 ### `foreman reset`
 
-Reset failed or stuck runs. By default this cleans up worktrees, deletes branches, and resets task status to a dispatchable state. Use `--preserve-worktree`/`--retry-failed-phase` for focused repair when you want to keep the current branch and worktree after a phase failure.
+Reset failed or stuck runs. By default this cleans up worktrees, deletes branches, and resets task status to a dispatchable state. Use `--preserve-worktree`/`--retry-failed-phase` for focused repair when you want to keep the current branch and worktree after a phase failure; preserved worktrees refresh their `.foreman/workflows` and `.foreman/prompts` from the project before redispatch.
 
 ```bash
 foreman reset                     # Reset all failed/stuck runs
@@ -500,8 +500,8 @@ foreman reset --dry-run           # Preview what would be reset
 | `--detect-stuck` | — | Run stuck detection first |
 | `--timeout <minutes>` | `15` | Stuck detection timeout |
 | `--dry-run` | — | Preview changes |
-| `--preserve-worktree` | — | Reset task/run state without removing the worktree or branch |
-| `--retry-failed-phase` | — | Focused repair reset; preserves the worktree and branch for the next dispatch |
+| `--preserve-worktree` | — | Reset task/run state without removing the worktree or branch; refreshes preserved `.foreman/workflows` and `.foreman/prompts` |
+| `--retry-failed-phase` | — | Focused repair reset; preserves the worktree and branch for the next dispatch and refreshes workflow/prompt config |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
 ### `foreman retry`

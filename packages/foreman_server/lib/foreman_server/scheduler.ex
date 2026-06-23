@@ -3,7 +3,7 @@ defmodule ForemanServer.Scheduler do
 
   use GenServer
 
-  alias ForemanServer.{EventStore, LogReconciler, ProjectionStore, RunActor}
+  alias ForemanServer.{EventStore, LogReconciler, ProjectionStore}
 
   @default_phases ["developer"]
   @default_tick_interval_ms 5_000
@@ -189,16 +189,30 @@ defmodule ForemanServer.Scheduler do
                idempotency_key: "claim:#{task.task_id}:#{run_id}"
              }
            }),
-         {:ok, _pid} <-
-           RunActor.start_run(%{
-             run_id: run_id,
-             task_id: task.task_id,
-             phases: effective_phases
+         {:ok, _run} <-
+           EventStore.append(%{
+             stream_id: "run:#{run_id}",
+             event_type: "RunStarted",
+             payload: %{
+               run_id: run_id,
+               task_id: task.task_id,
+               project_id: Map.get(task, :project_id),
+               phase_order: Enum.map(effective_phases, &phase_id/1),
+               current_phase: nil
+             },
+             metadata: %{
+               correlation_id: run_id,
+               idempotency_key: "run-start:#{run_id}"
+             }
            }),
          {:ok, _launch} <- worker_launcher.launch(task, run_id, effective_phases) do
       {:ok, run_id}
     end
   end
+
+  defp phase_id(phase) when is_map(phase), do: Map.get(phase, :id) || Map.get(phase, :name) || Map.get(phase, "id") || Map.get(phase, "name")
+  defp phase_id(phase) when is_binary(phase), do: phase
+  defp phase_id(phase), do: to_string(phase)
 
   defp skip(task, reason, skipped, claimed, active_count, project_counts) do
     payload = %{task_id: task.task_id, project_id: Map.get(task, :project_id), reason: reason}

@@ -8,8 +8,11 @@
  * keep-set and get destroyed as "orphans".
  */
 
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, it, expect, vi } from "vitest";
-import { cleanOrphanWorktrees } from "../commands/reset.js";
+import { cleanOrphanWorktrees, syncPreservedWorktreeConfig } from "../commands/reset.js";
 import type { Run } from "../../lib/store.js";
 
 function makeRun(overrides: Partial<Run> = {}): Run {
@@ -114,5 +117,31 @@ describe("cleanOrphanWorktrees — keep-set from the async (helper) store", () =
     expect(result.worktreesRemoved).toBe(1);
     // "failed"/"stuck" must NOT be consulted as active statuses.
     expect(store.getRunsByStatus).not.toHaveBeenCalledWith("failed", "proj-1");
+  });
+});
+
+describe("syncPreservedWorktreeConfig", () => {
+  it("refreshes workflows and prompts in a preserved worktree", () => {
+    const root = mkdtempSync(join(tmpdir(), "foreman-reset-sync-"));
+    try {
+      const project = join(root, "project");
+      const worktree = join(root, "worktree");
+      mkdirSync(join(project, ".foreman", "workflows"), { recursive: true });
+      mkdirSync(join(project, ".foreman", "prompts"), { recursive: true });
+      mkdirSync(join(worktree, ".foreman", "workflows"), { recursive: true });
+      mkdirSync(join(worktree, ".foreman", "prompts"), { recursive: true });
+      writeFileSync(join(project, ".foreman", "workflows", "feature.yaml"), "new workflow");
+      writeFileSync(join(project, ".foreman", "prompts", "default.md"), "new prompt");
+      writeFileSync(join(worktree, ".foreman", "workflows", "feature.yaml"), "stale workflow");
+      writeFileSync(join(worktree, ".foreman", "prompts", "default.md"), "stale prompt");
+
+      const result = syncPreservedWorktreeConfig(project, worktree);
+
+      expect(result.synced).toEqual(["workflows", "prompts"]);
+      expect(readFileSync(join(worktree, ".foreman", "workflows", "feature.yaml"), "utf8")).toBe("new workflow");
+      expect(readFileSync(join(worktree, ".foreman", "prompts", "default.md"), "utf8")).toBe("new prompt");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
