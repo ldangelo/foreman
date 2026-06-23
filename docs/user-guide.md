@@ -214,6 +214,7 @@ foreman board
 foreman watch
 foreman runs
 foreman logs <run-id>
+foreman logs <run-id> --compact       # Compact/plain tail without message_update noise
 foreman attach <run-id>
 foreman metrics
 ```

@@ -369,6 +369,28 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 - Agent worker logs (`~/.foreman/logs/<runId>.log`)
 - Bead info from `br show`
 
+### `foreman logs`
+
+Show run logs and debugging summaries.
+
+```bash
+foreman logs <task-or-run-id>          # Summary with phase/tool activity
+foreman logs <run-id> --compact        # Compact event-backed tail, no message_update noise
+foreman logs <run-id> --plain          # Alias for --compact
+foreman logs <run-id> --view plain     # Explicit plain compact view
+foreman logs <run-id> --raw --tail 200 # Raw JSON tail
+```
+
+| Option | Description |
+|--------|-------------|
+| `--run <id>` | Run ID, overriding the positional task/run ID |
+| `--tail <n>` | Number of entries/lines to show |
+| `--compact` | Fetch the compact event-backed view and strip `message_update` noise |
+| `--plain` | Alias for `--compact` |
+| `--view <compact|plain|raw>` | Select event-backed log view |
+| `--raw` | Print raw worker JSON log lines |
+| `--follow` | Follow the raw worker log after the summary |
+
 ### `foreman doctor`
 
 Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, workflow configs, and duplicate workflow YAML `task_type` declarations.

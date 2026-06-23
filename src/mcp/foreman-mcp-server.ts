@@ -321,12 +321,13 @@ export class ForemanMcpServer {
         description: "Show event-backed logs for one run, or tail logs for recent runs when run_id is omitted.",
         inputSchema: {
           type: "object",
-          properties: { run_id: { type: "string" }, project_id: { type: "string" }, project: { type: "string" }, view: { type: "string", enum: ["compact", "raw"] }, limit: { type: "number", default: 100 }, runs: { type: "number", default: 20 } },
+          properties: { run_id: { type: "string" }, project_id: { type: "string" }, project: { type: "string" }, view: { type: "string", enum: ["compact", "plain", "raw"] }, limit: { type: "number", default: 100 }, runs: { type: "number", default: 20 } },
           additionalProperties: false,
         },
         futureUseCases: ["operator debugging", "run log tailing", "support bundles"],
         handler: async (args) => {
-          const view = optionalString(args.view) === "raw" ? "raw" : "compact";
+          const requestedView = optionalString(args.view);
+          const view = requestedView === "raw" ? "raw" : requestedView === "plain" ? "plain" : "compact";
           const limit = boundedNumberParam(args, "limit", 50, 1, view === "raw" ? 20 : 50);
           const runId = optionalString(args.run_id);
           if (runId) return await this.runLogBundle(runId, view, limit);
@@ -448,9 +449,10 @@ export class ForemanMcpServer {
     return header === `Bearer ${token}`;
   }
 
-  private async runLogBundle(runId: string, view: "compact" | "raw", limit: number): Promise<unknown> {
+  private async runLogBundle(runId: string, view: "compact" | "plain" | "raw", limit: number): Promise<unknown> {
     const files = await tailRunLogFiles(runId, limit);
-    const eventLogs = tailRunLogs(await this.client.getRunLogs(runId, view), limit);
+    const eventView = view === "plain" ? "compact" : view;
+    const eventLogs = tailRunLogs(await this.client.getRunLogs(runId, eventView), limit, view);
     return { run_id: runId, source: files.length ? "files+events" : "events", files, events: eventLogs };
   }
 
@@ -660,12 +662,22 @@ function mergeInbox(...args: unknown[]): Array<Record<string, unknown>> {
     .slice(0, limit);
 }
 
-function tailRunLogs(logs: unknown, limit: number): unknown {
-  if (Array.isArray(logs)) return logs.slice(-limit);
+function isMessageUpdateLog(entry: unknown): boolean {
+  const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+  return record?.type === "message_update" || record?.stream === "message_update" || record?.sub_type === "message_update";
+}
+
+export function tailRunLogs(logs: unknown, limit: number, view: "compact" | "plain" | "raw" = "compact"): unknown {
+  const filterNoise = view === "plain";
+  if (Array.isArray(logs)) {
+    const entries = filterNoise ? logs.filter((entry) => !isMessageUpdateLog(entry)) : logs;
+    return entries.slice(-limit);
+  }
   if (logs && typeof logs === "object") {
     const record = logs as Record<string, unknown>;
     if (Array.isArray(record.entries)) {
-      return { ...record, entries: record.entries.slice(-limit), tailed: record.entries.length > limit, total_entries: record.entries.length };
+      const entries = filterNoise ? record.entries.filter((entry) => !isMessageUpdateLog(entry)) : record.entries;
+      return { ...record, mode: view, entries: entries.slice(-limit), tailed: entries.length > limit, total_entries: entries.length };
     }
   }
   return logs;
