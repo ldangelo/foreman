@@ -184,14 +184,14 @@ function compactEntries(logs: unknown): CompactLogEntry[] {
   return [];
 }
 
-function isMessageUpdateEntry(entry: CompactLogEntry): boolean {
+export function isMessageUpdateEntry(entry: CompactLogEntry): boolean {
   return entry.type === "message_update" || entry.stream === "message_update";
 }
 
 export async function renderCompactView(runId: string, tailCount: number, view: "compact" | "plain" = "compact"): Promise<void> {
   try {
     const manager = new ElixirServerManager();
-    const logs = await new ElixirServerClient(manager.url).getRunLogs(runId, view === "plain" ? "compact" : view);
+    const logs = await new ElixirServerClient(manager.url).getRunLogs(runId, view);
     const entries = compactEntries(logs).filter((entry) => !isMessageUpdateEntry(entry)).slice(-tailCount);
     if (entries.length === 0) {
       console.log(chalk.dim("(no compact log entries)"));

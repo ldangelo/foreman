@@ -455,9 +455,9 @@ foreman logs <run-id> --raw --tail 200 # Raw JSON tail
 | Option | Description |
 |--------|-------------|
 | `--run <id>` | Run ID, overriding the positional task/run ID |
-| `--tail <n>` | Number of entries/lines to show |
+| `--tail <n>` | Number of entries/lines to show (applied after `message_update` filtering in compact/plain view) |
 | `--compact` | Fetch the compact event-backed view and strip `message_update` noise |
-| `--plain` | Alias for `--compact` |
+| `--plain` | Alias for `--compact`; also used by `--view plain` for human-readable compact output |
 | `--view <compact|plain|raw>` | Select event-backed log view |
 | `--raw` | Print raw worker JSON log lines |
 | `--follow` | Follow the raw worker log after the summary |
