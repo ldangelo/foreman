@@ -52,6 +52,7 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
     bug: ["fix-issue"],
     chore: ["fix-issue"],
     smoke: ["explorer", "developer", "qa", "reviewer", "documentation", "finalize"],
+    tdd: ["explorer", "test-red", "test-review", "developer", "qa", "reviewer", "documentation", "finalize"],
   };
 
 /**

@@ -74,7 +74,9 @@ describe("tdd red prompt validation", () => {
 
   it("red phase writes only focused failing tests", () => {
     expect(redPrompt).toContain("TDD **red** phase");
-    expect(redPrompt).toContain("Write or update only focused test files");
+    expect(redPrompt).toContain("Write or update at most **1–3 focused tests**");
+    expect(redPrompt).toContain("Stop after the first valid expected failure is proven");
+    expect(redPrompt).toContain("Verdict: BLOCKED");
     expect(redPrompt).toContain("Do **not** edit production/source implementation files");
     expect(redPrompt).toContain("Expected Failure Evidence");
     expect(redPrompt).toContain("## Acceptance Contract");

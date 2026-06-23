@@ -10,6 +10,7 @@
 # Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
 
 name: bug
+task_type: bug
 merge: auto
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -21,74 +22,38 @@ setupCache:
 
 phases:
 
-  - name: test-red
-    prompt: test-red.md
-    tools:
-      allowed: [Bash, Edit, Read, Write]
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 80
-    retryAfterCooldown: true
-    retryOnFail: 2
-    artifact: "{task.projectReportsDir}/RED_REPORT.md"
-    contract:
-      requiredSections: [Verdict, Test Scope, Acceptance Contract Coverage, Expected Failure Evidence, Files Changed, Non-Test Files Changed, QA-Test Review Handoff]
-      completion:
-        requireFilesChanged: true
-    overwatch:
-      enabled: true
-      mode: enforce
-      continueIfArtifactValidOnBudgetStop: true
-      forceArtifactAfterToolCalls: 35
-      maxToolCalls: 120
-      repeatedCommandLimit: 2
-    mail:
-      onStart: true
-      onComplete: true
-      forwardArtifactTo: test-review
-
-  - name: test-review
-    prompt: test-review.md
-    tools:
-      allowed: [Bash, Read, Write]
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 30
-    retryAfterCooldown: true
-    artifact: "{task.projectReportsDir}/TEST_REVIEW_REPORT.md"
-    contract:
-      requiredSections: [Verdict, Acceptance Contract, Red Failure Verification, Test Quality Findings, Implementation Handoff]
-    overwatch:
-      enabled: true
-      mode: enforce
-      continueIfArtifactValidOnBudgetStop: true
-      forceArtifactAfterToolCalls: 20
-      maxToolCalls: 30
-      repeatedCommandLimit: 2
-    verdict: true
-    retryWith: test-red
-    retryOnFail: 2
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: test-red
-      forwardArtifactTo: fix
-
   # ── Phase 1: fix ────────────────────────────────────────────────────────
   # Uses the workflow-scoped fix-issue prompt so the artifact contract is
   # explicit and isolated from other workflows.
   - name: fix
     prompt: fix-issue.md
     tools:
-      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
+      allowed: [Bash, Edit, Read, Write]
     models:
       default: MiniMax
       P0: MiniMax
       P4: MiniMax
     maxTurns: 80
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    contract:
+      requiredSections: [Approach, Explorer Plan Followed, Files Changed, Extra Files Inspected, QA Handoff, Decisions, Known Limitations]
+      completion:
+        requireFilesChanged: true
+        requireValidationNotes: true
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 45
+      maxToolCalls: 65
+      repeatedCommandLimit: 2
+      blockedCommands:
+        - "(^|\\s)(npm|pnpm|yarn)\\s+(test|vitest)\\b"
+        - "(^|\\s)npx\\s+vitest\\b"
+        - "(^|\\s)mix\\s+test\\b"
+        - "(^|\\s)cargo\\s+test\\b"
+        - "(^|\\s)go\\s+test\\b"
     mail:
       onStart: true
       onComplete: true
@@ -101,13 +66,32 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
+      allowed: [Bash, Edit, Read, Write]
     models:
       default: MiniMax
       P0: MiniMax
       P4: MiniMax
     maxTurns: 120
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    contract:
+      requiredSections: [Approach, Explorer Plan Followed, Files Changed, Extra Files Inspected, QA Handoff, Decisions, Known Limitations]
+      completion:
+        requireFilesChanged: true
+        requireValidationNotes: true
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 35
+      maxToolCalls: 90
+      repeatedCommandLimit: 2
+      blockedCommands:
+        - "(^|\\s)(npm|pnpm|yarn)\\s+(test|vitest)\\b"
+        - "(^|\\s)npx\\s+vitest\\b"
+        - "(^|\\s)mix\\s+test\\b"
+        - "(^|\\s)cargo\\s+test\\b"
+        - "(^|\\s)go\\s+test\\b"
     mail:
       onStart: true
       onComplete: true
@@ -116,30 +100,26 @@ phases:
       leaseSecs: 600
 
   # ── Phase 3: QA validation ──────────────────────────────────────────────
-  - name: documentation
-    prompt: documentation.md
-    tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, Write]
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 40
-    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
-    mail:
-      onStart: true
-      onComplete: true
-      forwardArtifactTo: foreman
-
   - name: qa
     prompt: qa.md
     tools:
-      allowed: [Bash, Glob, Grep, Read, Write]
+      allowed: [Bash, Read, Write]
     models:
       default: MiniMax
       P0: MiniMax
       P4: MiniMax
     maxTurns: 60
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Test Results, Changed Files Reviewed, Issues Found, Files Modified]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 30
+      maxToolCalls: 45
+      repeatedCommandLimit: 2
     verdict: true
     retryWith: developer
     retryOnFail: 3
@@ -179,6 +159,31 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
+
+  - name: documentation
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    retryAfterCooldown: true
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Documentation Updated, Documentation Not Needed, Checks]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 20
+      maxToolCalls: 30
+      repeatedCommandLimit: 2
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
@@ -211,7 +216,17 @@ phases:
     models:
       default: MiniMax
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Findings Reviewed, Actions Taken, Validation, Remaining Blocking Items]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 20
+      maxToolCalls: 30
+      repeatedCommandLimit: 2
     verdict: true
     retryWith: developer
     retryOnFail: 3

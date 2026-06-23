@@ -1,14 +1,21 @@
-# Feature workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
+# TDD workflow: Explorer → Test Red → Test Review → Developer ⇄ QA → Reviewer → Finalize
 #
-# Full feature development pipeline. Identical to the default workflow but
-# explicitly selects this workflow when bead type is "feature".
+# Opt-in workflow for tasks where pre-implementation failing tests reduce risk.
+# Select with `foreman run --workflow tdd`, a `workflow:tdd` label, or task type `tdd`.
+# Default/feature/bug workflows intentionally use the faster Developer-first path.
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
 # Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
-
-name: feature
-task_type: feature
-merge: auto
+#
+# Optional: specify VCS backend for this workflow.
+# Overrides the global ~/.foreman/config.yaml setting if set.
+# Values: 'auto' (detect from repo), 'git', 'jujutsu'.
+# When absent, project config or auto-detection is used.
+#
+# vcs:
+#   backend: auto
+name: tdd
+task_type: tdd
 onError: stop
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -45,10 +52,65 @@ phases:
       forceArtifactAfterToolCalls: 10
       maxToolCalls: 20
       repeatedCommandLimit: 2
-    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: EXPLORER_REPORT.md
     mail:
       onStart: true
       onComplete: true
+      forwardArtifactTo: developer
+
+  - name: test-red
+    prompt: test-red.md
+    tools:
+      allowed: [Bash, Edit, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 80
+    retryAfterCooldown: true
+    retryOnFail: 1
+    artifact: "{task.projectReportsDir}/RED_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Test Scope, Acceptance Contract Coverage, Expected Failure Evidence, Files Changed, Non-Test Files Changed, QA-Test Review Handoff]
+      completion:
+        requireFilesChanged: true
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 35
+      maxToolCalls: 120
+      repeatedCommandLimit: 2
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: test-review
+
+  - name: test-review
+    prompt: test-review.md
+    tools:
+      allowed: [Bash, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 30
+    retryAfterCooldown: true
+    artifact: "{task.projectReportsDir}/TEST_REVIEW_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Acceptance Contract, Red Failure Verification, Test Quality Findings, Implementation Handoff]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 20
+      maxToolCalls: 30
+      repeatedCommandLimit: 2
+    verdict: true
+    retryWith: test-red
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: test-red
       forwardArtifactTo: developer
 
   - name: developer
@@ -58,7 +120,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 60
+    maxTurns: 50
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     contract:
@@ -85,6 +147,86 @@ phases:
     files:
       reserve: true
       leaseSecs: 600
+
+  - name: auto-smoke
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    bash: |
+      set -euo pipefail
+      trap 'echo "## Verdict: FAIL"' ERR
+
+      # ── 1. git diff --check: catch whitespace / blank-line errors ─────────
+      echo "=== git diff --check ==="
+      git diff --check || { echo "FAIL: whitespace errors in diff"; exit 1; }
+      echo "PASS"
+
+      # ── 2. Conflict-marker scan ───────────────────────────────────────────
+      echo "=== conflict-marker scan ==="
+      CONFLICTS=$(grep -r "^<<<<<<\|^======\|^>>>>>>" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.yaml" --include="*.yml" . 2>/dev/null | head -20 || true)
+      if [ -n "$CONFLICTS" ]; then
+        echo "FAIL: conflict markers found:"
+        echo "$CONFLICTS"
+        exit 1
+      fi
+      echo "PASS"
+
+      # ── 3. Check that DEVELOPER_REPORT.md exists ──────────────────────────
+      echo "=== DEVELOPER_REPORT.md existence ==="
+      REPORT_FILE="{task.projectReportsDir}/DEVELOPER_REPORT.md"
+      if [ ! -f "$REPORT_FILE" ]; then
+        echo "FAIL: $REPORT_FILE not found"
+        exit 1
+      fi
+      echo "PASS"
+
+      # ── 4. Targeted typecheck (when tsconfig.json exists) ───────────────
+      echo "=== typecheck (tsc --noEmit) ==="
+      if [ -f "tsconfig.json" ]; then
+        TSC_OUTPUT=$(npx tsc --noEmit 2>&1 | head -30 || true)
+        if [ -n "$TSC_OUTPUT" ]; then
+          echo "FAIL: TypeScript errors detected:"
+          echo "$TSC_OUTPUT"
+          exit 1
+        fi
+        echo "PASS"
+      else
+        echo "SKIPPED (no tsconfig.json)"
+      fi
+
+      # ── 5. CLI --help for touched commands (from DEVELOPER_REPORT.md) ──────
+      echo "=== CLI --help checks ==="
+      if [ -f "$REPORT_FILE" ]; then
+        # Extract CLI commands from Files Changed section
+        CLI_COMMANDS=$(grep -E "(foreman|foremanctl|foreman-server)" "$REPORT_FILE" | grep -oE "foreman(-[a-z]+)+" | sort -u || true)
+        if [ -n "$CLI_COMMANDS" ]; then
+          for cmd in $CLI_COMMANDS; do
+            echo "Checking: $cmd --help"
+            if command -v "$cmd" &>/dev/null; then
+              "$cmd" --help > /dev/null 2>&1 || { echo "FAIL: $cmd --help failed"; exit 1; }
+              echo "  PASS"
+            else
+              echo "  SKIPPED (not in PATH)"
+            fi
+          done
+        else
+          echo "SKIPPED (no CLI commands claimed in report)"
+        fi
+      else
+        echo "SKIPPED (no report file)"
+      fi
+
+      echo "=== ALL CHECKS PASSED ==="
+      echo "## Verdict: PASS"
+    artifact: "{task.projectReportsDir}/AUTO_SMOKE_REPORT.md"
+    verdict: true
+    timeoutSecs: 120
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
 
   - name: qa
     prompt: qa.md
@@ -120,7 +262,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 40
+    maxTurns: 50
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/REVIEW.md"
     contract:
@@ -148,6 +290,12 @@ phases:
     verdict: true
     retryWith: developer
     retryOnFail: 2
+    # Enable cooldown retry: when cli-review fails with a rate limit (e.g. CodeRabbit CLI
+    # "Rate limit exceeded"), the task is placed in cooldown state instead of being marked
+    # failed. The dispatcher will not re-dispatch until the cooldown period (5 minutes) expires.
+    retryAfterCooldown: true
+    # Optional: customize cooldown duration (default is 300 seconds if not specified)
+    # cooldownSeconds: 600
     mail:
       onStart: true
       onComplete: true

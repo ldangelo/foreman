@@ -109,13 +109,13 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 **Default pipeline phases:**
 
 1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
-2. **Test Red** — writes only focused failing tests for acceptance criteria → RED_REPORT.md
-3. **Test Review** — verifies red tests map to acceptance criteria and fail for the expected reason; impl/docs/typespec ACs may be explicitly deferred/not in test scope → TEST_REVIEW_REPORT.md (verdict: PASS/FAIL)
-4. **Developer** (Sonnet) — implementation only; obey Overwatch stop/report instructions as terminal guidance; QA/finalize own test execution → DEVELOPER_REPORT.md
-5. **auto-smoke** (Bash, $0.50) — lightweight deterministic post-Developer check: `git diff --check`, conflict-marker scan, DEVELOPER_REPORT.md existence, targeted `tsc --noEmit`, CLI `--help` for claimed commands → AUTO_SMOKE_REPORT.md (verdict: PASS/FAIL; retry with Developer on failure)
-6. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
-7. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
-8. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
+2. **Developer** (Sonnet) — implementation only; obey Overwatch stop/report instructions as terminal guidance; QA/finalize own test execution → DEVELOPER_REPORT.md
+3. **auto-smoke** (Bash, $0.50) — lightweight deterministic post-Developer check: `git diff --check`, conflict-marker scan, DEVELOPER_REPORT.md existence, targeted `tsc --noEmit`, CLI `--help` for claimed commands → AUTO_SMOKE_REPORT.md (verdict: PASS/FAIL; retry with Developer on failure)
+4. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
+5. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
+6. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
+
+**Opt-in TDD workflow:** `foreman run --workflow tdd`, `workflow:tdd`, or task type `tdd` inserts **Test Red** and **Test Review** between Explorer and Developer. Test Red is capped to 1–3 focused tests; Test Review retries Red once.
 
 After finalize: autoMerge triggers immediately → refinery merges to dev → bead closed.
 
