@@ -241,6 +241,42 @@ defmodule ForemanServer.OperationsTest do
     assert length(pm.recent_bottlenecks) >= 1
   end
 
+  test "pipeline_metrics includes top-level counters map with circuit_breaker_hits and qa_environment_blocked" do
+    # Circuit breaker trips
+    append_run_event("CircuitBreakerTripped", %{
+      run_id: "pm-counters",
+      phase_id: "explorer",
+      reason: "too many failures"
+    })
+
+    append_run_event("CircuitBreakerTripped", %{
+      run_id: "pm-counters2",
+      phase_id: "developer",
+      reason: "too many failures"
+    })
+
+    # QA environment blocked
+    append_run_event("PhaseFailed", %{
+      run_id: "pm-counters3",
+      phase_id: "qa-check",
+      failure_reason: "env blocked",
+      environment_blocked: true
+    })
+
+    assert {:ok, pm} = Operations.pipeline_metrics()
+
+    # counters must be present at top level of pipeline_metrics map
+    assert is_map(pm.counters)
+    assert is_integer(pm.counters.circuit_breaker_hits)
+    assert is_integer(pm.counters.qa_environment_blocked)
+    assert is_integer(pm.counters.retries)
+    assert is_integer(pm.counters.failures)
+    assert is_integer(pm.counters.worker_restarts)
+
+    assert pm.counters.circuit_breaker_hits == 2
+    assert pm.counters.qa_environment_blocked == 1
+  end
+
   test "pipeline_metrics includes retry_details with stuck, blocked, and qa_environment_blocked" do
     # Stuck failure
     append_run_event("PhaseFailed", %{

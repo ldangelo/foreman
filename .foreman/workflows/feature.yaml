@@ -32,6 +32,61 @@ phases:
       onComplete: true
       forwardArtifactTo: developer
 
+  - name: test-red
+    prompt: test-red.md
+    tools:
+      allowed: [Bash, Edit, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 40
+    retryAfterCooldown: true
+    retryOnFail: 2
+    artifact: "{task.projectReportsDir}/RED_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Test Scope, Acceptance Contract Coverage, Expected Failure Evidence, Files Changed, Non-Test Files Changed, QA-Test Review Handoff]
+      completion:
+        requireFilesChanged: true
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 25
+      maxToolCalls: 35
+      repeatedCommandLimit: 2
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: test-review
+
+  - name: test-review
+    prompt: test-review.md
+    tools:
+      allowed: [Bash, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 30
+    retryAfterCooldown: true
+    artifact: "{task.projectReportsDir}/TEST_REVIEW_REPORT.md"
+    contract:
+      requiredSections: [Verdict, Acceptance Contract, Red Failure Verification, Test Quality Findings, Implementation Handoff]
+    overwatch:
+      enabled: true
+      mode: enforce
+      continueIfArtifactValidOnBudgetStop: true
+      forceArtifactAfterToolCalls: 20
+      maxToolCalls: 30
+      repeatedCommandLimit: 2
+    verdict: true
+    retryWith: test-red
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: test-red
+      forwardArtifactTo: developer
+
   - name: developer
     prompt: developer.md
     models:

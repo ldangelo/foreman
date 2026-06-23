@@ -127,6 +127,7 @@ defmodule ForemanServer.Operations do
         blocked_by_reason: blocked_reasons,
         qa_environment_blocked: count_qa_environment_blocked(events)
       },
+      counters: counters(events),
       recent_bottlenecks: bottlenecks,
       emitted_at: DateTime.utc_now()
     }

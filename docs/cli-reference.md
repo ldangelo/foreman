@@ -406,6 +406,17 @@ Output sections:
 - **Top Failure Reasons** — grouped by phase, sorted by frequency
 - **Stuck Tasks by Reason** — phases stuck due to timeout or failure
 - **Recent Pipeline Bottlenecks** — most recently started phases (last 5)
+- **Retry Attempts** — aggregate total retry attempts across all phases
+- **Circuit Breaker** — count of same-failure circuit breaker hits
+- **QA Environment Blocked** — count of environment-blocked QA outcomes
+- **Blocked Retries by Reason** — retries blocked by phase/failure reason
+
+**JSON output** (`--json`) exposes these fields in `pipeline_metrics`:
+- `counters.circuit_breaker_hits` — same-failure circuit breaker hit count
+- `counters.qa_environment_blocked` — environment-blocked QA outcome count
+- `retry_details.stuck_by_reason` — stuck retries grouped by phase/reason
+- `retry_details.blocked_by_reason` — blocked retries grouped by phase/reason
+- `retry_details.qa_environment_blocked` — QA environment-blocked count
 
 ### `foreman server`
 
