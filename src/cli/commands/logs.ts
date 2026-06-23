@@ -3,8 +3,10 @@ import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import chalk from "chalk";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import type { TaskRow } from "../../lib/db/postgres-adapter.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { elapsed } from "../watch-ui.js";
@@ -17,6 +19,9 @@ interface LogsOpts {
   tail?: string;
   follow?: boolean;
   raw?: boolean;
+  compact?: boolean;
+  plain?: boolean;
+  view?: "compact" | "plain" | "raw";
 }
 
 interface ResolvedRun {
@@ -161,6 +166,45 @@ function renderFileStats(runId: string): void {
     if (!existsSync(path)) continue;
     const stat = statSync(path);
     console.log(chalk.dim(`    ${suffix}: ${stat.size} bytes, updated ${elapsed(stat.mtime.toISOString())}`));
+  }
+}
+
+type CompactLogEntry = {
+  timestamp?: string;
+  stream?: string;
+  type?: string;
+  message?: string;
+  body?: string;
+};
+
+function compactEntries(logs: unknown): CompactLogEntry[] {
+  if (Array.isArray(logs)) return logs as CompactLogEntry[];
+  const record = asRecord(logs);
+  if (Array.isArray(record?.entries)) return record.entries as CompactLogEntry[];
+  return [];
+}
+
+function isMessageUpdateEntry(entry: CompactLogEntry): boolean {
+  return entry.type === "message_update" || entry.stream === "message_update";
+}
+
+export async function renderCompactView(runId: string, tailCount: number, view: "compact" | "plain" = "compact"): Promise<void> {
+  try {
+    const manager = new ElixirServerManager();
+    const logs = await new ElixirServerClient(manager.url).getRunLogs(runId, view === "plain" ? "compact" : view);
+    const entries = compactEntries(logs).filter((entry) => !isMessageUpdateEntry(entry)).slice(-tailCount);
+    if (entries.length === 0) {
+      console.log(chalk.dim("(no compact log entries)"));
+      return;
+    }
+    for (const entry of entries) {
+      const timestamp = entry.timestamp ? `${chalk.dim(new Date(entry.timestamp).toLocaleTimeString())} ` : "";
+      const stream = entry.stream ?? entry.type ?? "event";
+      const message = entry.message ?? entry.body ?? JSON.stringify(entry);
+      console.log(`${timestamp}${chalk.cyan(`[${stream}]`)} ${message}`);
+    }
+  } catch {
+    console.log(chalk.dim("(compact view unavailable — Elixir backend may not be running)"));
   }
 }
 
@@ -312,6 +356,9 @@ export const logsCommand = new Command("logs")
   .option("--tail <lines>", "Raw log lines to show", "80")
   .option("--follow", "Follow the raw JSON log after printing the summary")
   .option("--raw", "Print only the raw JSON log tail")
+  .option("--compact", "Compact plain view — strips message_update noise, fetches from Elixir backend")
+  .option("--plain", "Alias for --compact")
+  .addOption(new Option("--view <view>", "Log view for event-backed logs").choices(["compact", "plain", "raw"]))
   .action(async (id: string | undefined, opts: LogsOpts) => {
     const tailCount = parseTailCount(opts.tail);
     const resolved = await resolveRun(id, opts);
@@ -326,7 +373,13 @@ export const logsCommand = new Command("logs")
       process.exit(1);
     }
 
-    if (opts.raw) {
+    const view = opts.view;
+    const compact = opts.compact || opts.plain || view === "compact" || view === "plain";
+    const raw = opts.raw || view === "raw";
+
+    if (compact) {
+      await renderCompactView(resolved.run.id, tailCount, view === "plain" || opts.plain ? "plain" : "compact");
+    } else if (raw) {
       for (const line of tailFileLines(rawPath, tailCount)) {
         if (line.trim()) console.log(line);
       }
