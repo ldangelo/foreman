@@ -225,6 +225,17 @@ Pipeline output sections:
 - **Top Failure Reasons** — grouped by phase, sorted by frequency
 - **Stuck Tasks by Reason** — phases stuck due to timeout or failure
 - **Recent Pipeline Bottlenecks** — most recently started phases (last 5)
+- **Retry Attempts** — aggregate total retry attempts across all phases
+- **Circuit Breaker** — count of same-failure circuit breaker hits
+- **QA Environment Blocked** — count of environment-blocked QA outcomes
+- **Blocked Retries by Reason** — retries blocked by phase/failure reason
+
+**Pipeline JSON fields** (`--json`) include:
+- `pipeline_metrics.counters.circuit_breaker_hits` — same-failure circuit breaker hit count
+- `pipeline_metrics.counters.qa_environment_blocked` — environment-blocked QA outcome count
+- `pipeline_metrics.retry_details.stuck_by_reason` — stuck retries grouped by phase/reason
+- `pipeline_metrics.retry_details.blocked_by_reason` — blocked retries grouped by phase/reason
+- `pipeline_metrics.retry_details.qa_environment_blocked` — QA environment-blocked count
 
 **Cost metrics example output:**
 
@@ -462,7 +473,7 @@ foreman server stop               # Stop server started by Foreman
 | `--port <port>` | Override local HTTP port (default `4766`) |
 | `--no-auto-start` | For `doctor`, fail instead of starting a stopped server |
 
-`server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token. Binding the Elixir HTTP server beyond loopback also requires this token. Worker starts strip forbidden host variables (`FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, `DATABASE_*`) and scope explicit project/run secrets to the run. Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events.
+`server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, circuit breaker hits, QA environment blocks, and projection lag. The `/api/v1/pipeline-metrics` endpoint also exposes `retry_details` (stuck/blocked by reason) and `blocked_by_reason` as top-level shortcuts. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token. Binding the Elixir HTTP server beyond loopback also requires this token. Worker starts strip forbidden host variables (`FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, `DATABASE_*`) and scope explicit project/run secrets to the run. Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events.
 
 Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to reconcile active runs with terminal worker-log markers, claim `ready` tasks within capacity, and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the default backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start` unless `FOREMAN_BACKEND=node` is set explicitly. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 

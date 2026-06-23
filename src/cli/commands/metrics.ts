@@ -26,6 +26,21 @@ export interface PipelineMetricsResponse {
     stuck_by_reason: Array<{ reason: string; phase: string; count: number }>;
     recent_bottlenecks: Array<{ phase_id: string; run_id: string; started_at: string }>;
     emitted_at: string;
+    retry_details: {
+      stuck_by_reason: Array<{ reason: string; phase: string; count: number }>;
+      blocked_by_reason: Array<{ reason: string; phase: string; count: number }>;
+      qa_environment_blocked: number;
+    };
+    counters: {
+      phases_started: number;
+      phases_completed: number;
+      retries: number;
+      failures: number;
+      recoveries: number;
+      worker_restarts: number;
+      circuit_breaker_hits: number;
+      qa_environment_blocked: number;
+    };
   };
 }
 
@@ -291,6 +306,47 @@ function renderBottlenecks(
   }
 }
 
+// ── Retry UX render helpers ─────────────────────────────────────────────
+
+export function renderRetryAttempts(
+  phases: PipelineMetricsResponse["pipeline_metrics"]["phases"],
+): void {
+  const total = Object.values(phases).reduce((sum, p) => sum + (p.retry_count || 0), 0);
+  console.log(`  Total: ${chalk.cyan(total)} retry attempts`);
+}
+
+export function renderCircuitBreakerHits(
+  counters: PipelineMetricsResponse["pipeline_metrics"]["counters"],
+): void {
+  const hits = counters.circuit_breaker_hits || 0;
+  const label = hits === 1 ? "hit" : "hits";
+  console.log(`  Same-failure circuit breaker ${label}: ${chalk.yellow(hits)}`);
+}
+
+export function renderQAEnvironmentBlocked(
+  counters: PipelineMetricsResponse["pipeline_metrics"]["counters"],
+): void {
+  const blocked = counters.qa_environment_blocked || 0;
+  const label = blocked === 1 ? "outcome" : "outcomes";
+  console.log(`  QA environment-blocked ${label}: ${chalk.yellow(blocked)}`);
+}
+
+export function renderBlockedByReason(
+  retryDetails: PipelineMetricsResponse["pipeline_metrics"]["retry_details"],
+): void {
+  const blocked = retryDetails.blocked_by_reason || [];
+  if (blocked.length === 0) {
+    console.log(chalk.dim("  (no blocked retries recorded)"));
+    return;
+  }
+  for (const b of blocked) {
+    const reason = b.reason.length > 60 ? b.reason.slice(0, 57) + "…" : b.reason;
+    console.log(
+      `  ${chalk.red(padCell(String(b.count), 5))}  ${chalk.dim(padCell(b.phase, 16))}  ${reason}`,
+    );
+  }
+}
+
 async function renderPipelineMetrics(opts: MetricsCommandOptions): Promise<void> {
   const manager = new ElixirServerManager();
   const status = manager.status();
@@ -348,6 +404,23 @@ async function renderPipelineMetrics(opts: MetricsCommandOptions): Promise<void>
 
   console.log(chalk.bold("Recent Pipeline Bottlenecks (most recent first)"));
   renderBottlenecks(pm.recent_bottlenecks);
+  console.log();
+
+  console.log(chalk.bold("Retry Attempts"));
+  renderRetryAttempts(pm.phases);
+  console.log();
+
+  console.log(chalk.bold("Circuit Breaker"));
+  renderCircuitBreakerHits(pm.counters);
+  console.log();
+
+  console.log(chalk.bold("QA Environment Blocked"));
+  renderQAEnvironmentBlocked(pm.counters);
+  console.log();
+
+  console.log(chalk.bold("Blocked Retries by Reason"));
+  console.log(chalk.dim("  COUNT  PHASE             REASON"));
+  renderBlockedByReason(pm.retry_details);
 }
 
 // ── Command ──────────────────────────────────────────────────────────────
