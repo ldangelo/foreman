@@ -17,6 +17,15 @@ describe("acceptance contract parser", () => {
     expect(validateAcceptanceCoverage(explorer, phaseReport)).toMatchObject({ ok: true, missing: [] });
   });
 
+  it("accepts acceptance contract headings with verification suffixes", () => {
+    const phaseReport = `# QA\n\n## Verdict: PASS\n\n## Acceptance Contract Verification\n- AC1: CLI command is registered and documented — verified.\n- AC2: Focused regression tests cover the parser — verified.\n- AC3: Typecheck passes with npx tsc --noEmit — verified.\n`;
+    expect(validateAcceptanceCoverage(explorer, phaseReport)).toMatchObject({
+      ok: true,
+      missing: [],
+      reportHasAcceptanceSection: true,
+    });
+  });
+
   it("reports missing criteria", () => {
     const phaseReport = `# QA\n\n## Verdict: PASS\n\n## Acceptance Contract\n- AC1: CLI command is registered and documented — verified.\n`;
     const result = validateAcceptanceCoverage(explorer, phaseReport);

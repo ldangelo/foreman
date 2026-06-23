@@ -159,8 +159,11 @@ export function diffQAFailures(
   return tracked;
 }
 
+const ACCEPTANCE_SECTION_RE = /(?:^|\n)##\s+Acceptance Contract\b[^\n]*\n([\s\S]*?)(?=\n##\s+|$)/i;
+const HAS_ACCEPTANCE_SECTION_RE = /^##\s+Acceptance Contract\b/im;
+
 export function parseAcceptanceContract(content: string): AcceptanceCriterion[] {
-  const section = content.match(/(?:^|\n)##\s+Acceptance Contract\s*\n([\s\S]*?)(?=\n##\s+|$)/i)?.[1] ?? "";
+  const section = content.match(ACCEPTANCE_SECTION_RE)?.[1] ?? "";
   if (!section.trim()) return [];
 
   const criteria: AcceptanceCriterion[] = [];
@@ -190,7 +193,7 @@ export function validateAcceptanceCoverage(
     return { ok: true, criteria, missing: [], reportHasAcceptanceSection: true };
   }
 
-  const reportHasAcceptanceSection = /^##\s+Acceptance Contract\b/im.test(phaseReport);
+  const reportHasAcceptanceSection = HAS_ACCEPTANCE_SECTION_RE.test(phaseReport);
   const normalizedReport = normalizeAcceptanceText(phaseReport);
   const criteriaToCheck = options.relevant ? criteria.filter(options.relevant) : criteria;
   const missing = criteriaToCheck.filter((criterion) => {
@@ -206,7 +209,7 @@ export function validateAcceptanceCoverage(
 }
 
 function criterionDeferred(criterion: AcceptanceCriterion, phaseReport: string): boolean {
-  const section = phaseReport.match(/(?:^|\n)##\s+Acceptance Contract\s*\n([\s\S]*?)(?=\n##\s+|$)/i)?.[1] ?? phaseReport;
+  const section = phaseReport.match(ACCEPTANCE_SECTION_RE)?.[1] ?? phaseReport;
   const normalizedId = normalizeAcceptanceText(criterion.id);
   const normalizedCriterion = normalizeAcceptanceText(criterion.text);
   const deferredPattern = /\b(deferred|not\s+in\s+(?:test\s+)?scope|blocked\s+on\s+implementation|requires?\s+developer|developer\s+implementation|not\s+applicable|n\/a)\b/i;

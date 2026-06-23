@@ -29,7 +29,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 40
+    maxTurns: 80
     retryAfterCooldown: true
     retryOnFail: 2
     artifact: "{task.projectReportsDir}/RED_REPORT.md"
@@ -41,8 +41,8 @@ phases:
       enabled: true
       mode: enforce
       continueIfArtifactValidOnBudgetStop: true
-      forceArtifactAfterToolCalls: 25
-      maxToolCalls: 35
+      forceArtifactAfterToolCalls: 35
+      maxToolCalls: 120
       repeatedCommandLimit: 2
     mail:
       onStart: true
@@ -139,7 +139,7 @@ phases:
       mode: enforce
       continueIfArtifactValidOnBudgetStop: true
       forceArtifactAfterToolCalls: 35
-      maxToolCalls: 50
+      maxToolCalls: 90
       repeatedCommandLimit: 2
       blockedCommands:
         - "(^|\\s)(npm|pnpm|yarn)\\s+(test|vitest)\\b"
