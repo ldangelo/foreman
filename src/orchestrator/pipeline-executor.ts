@@ -717,9 +717,12 @@ export function validateDeveloperCompletion(worktreePath: string, reportPath: st
   }
 
   const descriptionLower = taskDescription.toLowerCase();
+  const reportClaimsDocsNotNeeded = /\b(no|not)\s+(docs?|documentation)\s+(change|changes|update|updates)?\s*(needed|required|warranted)\b/i.test(report)
+    || /\bdocs?\s+(not|not required|not needed|unnecessary)\b/i.test(report);
   if (/\bdocs?\b|documentation|readme|user guide|cli reference/.test(descriptionLower)
-      && !changedFiles.some((file) => file.endsWith(".md") || file.startsWith("docs/"))) {
-    reasons.push("Task asks for docs, but no documentation file changed.");
+      && !changedFiles.some((file) => file.endsWith(".md") || file.startsWith("docs/"))
+      && !reportClaimsDocsNotNeeded) {
+    reasons.push("Task asks for docs, but no documentation file changed. Update the smallest relevant docs file (README.md, CLAUDE.md, AGENTS.md, docs/user-guide.md, docs/cli-reference.md, or docs/*), or explicitly state in DEVELOPER_REPORT.md Self-Check Evidence why no docs change is needed.");
   }
   if (/\btests?\b|smoke|coverage|regression/.test(descriptionLower)
       && !changedFiles.some((file) => /(__tests__|\.test\.|\.spec\.|test\/)/.test(file))) {

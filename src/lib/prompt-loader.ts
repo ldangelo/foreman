@@ -61,8 +61,10 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
  */
 const REQUIRED_PROMPT_MARKERS: Readonly<Record<string, Readonly<Record<string, ReadonlyArray<string>>>>> = {
   default: {
-    developer: ["EXPLORER_REPORT.md", "Implementation Plan"],
-    explorer: ["## Implementation Plan", "Likely Edit Files"],
+    developer: ["EXPLORER_REPORT.md", "Implementation Plan", "## Acceptance Contract"],
+    explorer: ["## Implementation Plan", "Likely Edit Files", "## Acceptance Contract"],
+    qa: ["## Acceptance Contract"],
+    reviewer: ["## Acceptance Contract"],
   },
 };
 
@@ -369,32 +371,31 @@ export function findMissingPrompts(_projectRoot: string): string[] {
  * current runtime expectations (e.g. missing critical placeholder markers that
  * newer pipeline code depends on).
  */
-export function findStalePrompts(_projectRoot: string): string[] {
-  const stale: string[] = [];
+export function findStalePrompts(projectRoot: string): string[] {
+  const stale = new Set<string>();
 
   for (const [workflow, phases] of Object.entries(REQUIRED_PROMPT_MARKERS)) {
     for (const [phase, markers] of Object.entries(phases)) {
-      const localPromptPath = join(
-        "prompts",
-        workflow,
-        `${phase}.md`,
-      );
-      const globalPromptPath = getForemanHomePath(localPromptPath);
-      if (!existsSync(globalPromptPath)) continue;
+      const relativePromptPath = join("prompts", workflow, `${phase}.md`);
+      const candidatePaths = [
+        join(projectRoot, ".foreman", relativePromptPath),
+        getForemanHomePath(relativePromptPath),
+      ];
 
-      try {
-        const content = readFileSync(globalPromptPath, "utf-8");
-        const missingMarker = markers.find((marker) => !content.includes(marker));
-        if (missingMarker) {
-          stale.push(`${workflow}/${phase}.md`);
+      for (const promptPath of candidatePaths) {
+        if (!existsSync(promptPath)) continue;
+        try {
+          const content = readFileSync(promptPath, "utf-8");
+          const missingMarker = markers.find((marker) => !content.includes(marker));
+          if (missingMarker) stale.add(`${workflow}/${phase}.md`);
+        } catch {
+          // Let missing/parse issues be surfaced by the existing prompt checks.
         }
-      } catch {
-        // Let missing/parse issues be surfaced by the existing prompt checks.
       }
     }
   }
 
-  return stale;
+  return [...stale];
 }
 
 // ── Pi skill management ───────────────────────────────────────────────────────

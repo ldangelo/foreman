@@ -114,16 +114,31 @@ describe("prompt loader", () => {
     expect(stale).toContain("default/developer.md");
   });
 
+  it("flags stale project-local default prompts that are missing runtime contract markers", () => {
+    makeForemanHome();
+    const projectRoot = mkdtempSync(join(tmpdir(), "foreman-project-prompts-"));
+    tempDirs.push(projectRoot);
+    mkdirSync(join(projectRoot, ".foreman", "prompts", "default"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, ".foreman", "prompts", "default", "qa.md"),
+      "# QA Agent\n\n## Implementation Verification\n",
+      "utf8",
+    );
+
+    const stale = findStalePrompts(projectRoot);
+    expect(stale).toContain("default/qa.md");
+  });
+
   it("does not flag prompts that preserve explorer-plan markers", () => {
     const foremanHome = makeForemanHome();
     writeFileSync(
       join(foremanHome, "prompts", "default", "developer.md"),
-      "# Developer Agent\nRead EXPLORER_REPORT.md\nImplementation Plan",
+      "# Developer Agent\nRead EXPLORER_REPORT.md\nImplementation Plan\n## Acceptance Contract",
       "utf8",
     );
     writeFileSync(
       join(foremanHome, "prompts", "default", "explorer.md"),
-      "# Explorer Agent\n## Implementation Plan\n### Likely Edit Files",
+      "# Explorer Agent\n## Implementation Plan\n### Likely Edit Files\n## Acceptance Contract",
       "utf8",
     );
 

@@ -124,6 +124,11 @@ export interface AutoMergeOpts {
    * committed/visible when autoMerge queries for the run by ID.
    */
   overrideRun?: Run;
+  /**
+   * When true, process only opts.runId from the merge queue. Used by per-task
+   * worker merge phases so one task run cannot drain unrelated queued merges.
+   */
+  targetOnly?: boolean;
 }
 
 /** Result summary returned by autoMerge(). */
@@ -152,6 +157,13 @@ interface MergeQueueLike {
     operation?: "auto_merge" | "create_pr";
   } | null>;
   updateStatus(id: number, status: "pending" | "merging" | "merged" | "conflict" | "failed", extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }): Promise<void>;
+  list(status?: "pending" | "merging" | "merged" | "conflict" | "failed"): Promise<Array<{
+    id: number;
+    branch_name: string;
+    seed_id: string;
+    run_id: string;
+    operation?: "auto_merge" | "create_pr";
+  }>>;
   getRetryableEntries(): Promise<Array<{ id: number; seed_id: string; retry_count: number }>>;
   reEnqueue(id: number): Promise<boolean>;
 }
@@ -161,6 +173,7 @@ function wrapLocalMergeQueue(queue: MergeQueue, store: ForemanStore, projectPath
     reconcile: async () => queue.reconcile(store.getDb(), projectPath),
     dequeue: async () => queue.dequeue(),
     updateStatus: async (id, status, extra) => queue.updateStatus(id, status, extra),
+    list: async (status) => queue.list(status),
     getRetryableEntries: async () => queue.getRetryableEntries(),
     reEnqueue: async (id) => queue.reEnqueue(id),
   };
@@ -197,6 +210,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     readLookup = store,
     overrideRun,
     runId: optsRunId,
+    targetOnly = false,
   } = opts;
   const vcs = await createAutoMergeVcsBackend(projectPath);
   const targetBranch = opts.targetBranch ?? await vcs.detectDefaultBranch(projectPath);
@@ -229,7 +243,16 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
     ? { runId: optsRunId, merged: 0, conflicts: 0, failed: 0 }
     : undefined;
 
-  let entry = await mq.dequeue();
+  const claimTargetEntry = async () => {
+    if (!optsRunId) return null;
+    const pending = await mq.list("pending");
+    const targetEntry = pending.find((candidate) => candidate.run_id === optsRunId);
+    if (!targetEntry) return null;
+    await mq.updateStatus(targetEntry.id, "merging", { lastAttemptedAt: new Date().toISOString() });
+    return targetEntry;
+  };
+
+  let entry = targetOnly ? await claimTargetEntry() : await mq.dequeue();
   while (entry) {
     const currentEntry = entry;
     // Track the failure reason to attach as a bead note (if any failure occurs).
@@ -255,7 +278,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       mergedCount += 1;
       if (target && currentEntry.run_id === target.runId) target.merged += 1;
       mergeSucceeded = true;
-      entry = await mq.dequeue();
+      entry = targetOnly ? null : await mq.dequeue();
       continue;
     }
 
@@ -285,7 +308,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         });
         conflictCount += 1;
         if (target && currentEntry.run_id === target.runId) target.conflicts += 1;
-        entry = await mq.dequeue();
+        entry = targetOnly ? null : await mq.dequeue();
         continue;
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -293,7 +316,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         await mq.updateStatus(currentEntry.id, 'failed', { error: message });
         failedCount += 1;
         if (target && currentEntry.run_id === target.runId) target.failed += 1;
-        entry = await mq.dequeue();
+        entry = targetOnly ? null : await mq.dequeue();
         continue;
       }
     }
@@ -462,7 +485,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       }
     }
 
-    entry = await mq.dequeue();
+    entry = targetOnly ? null : await mq.dequeue();
   }
 
   return {

@@ -26,10 +26,12 @@ const {
   mockMergeQueueReconcile,
   mockMergeQueueDequeue,
   mockMergeQueueUpdateStatus,
+  mockMergeQueueList,
   MockMergeQueue,
   mockPostgresMergeQueueReconcile,
   mockPostgresMergeQueueDequeue,
   mockPostgresMergeQueueUpdateStatus,
+  mockPostgresMergeQueueList,
   MockPostgresMergeQueue,
   mockRefineryMergeCompleted,
   mockRefineryEnsurePullRequest,
@@ -61,19 +63,23 @@ const {
   const mockAddNotesToBead = vi.fn();
   const mockSetBeadStatus = vi.fn();
   const mockMergeQueueUpdateStatus = vi.fn();
+  const mockMergeQueueList = vi.fn().mockReturnValue([]);
   const MockMergeQueue = vi.fn(function (this: Record<string, unknown>) {
     this.reconcile = mockMergeQueueReconcile;
     this.dequeue = mockMergeQueueDequeue;
     this.updateStatus = mockMergeQueueUpdateStatus;
+    this.list = mockMergeQueueList;
   });
 
   const mockPostgresMergeQueueReconcile = vi.fn().mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   const mockPostgresMergeQueueDequeue = vi.fn().mockReturnValue(null);
   const mockPostgresMergeQueueUpdateStatus = vi.fn();
+  const mockPostgresMergeQueueList = vi.fn().mockResolvedValue([]);
   const MockPostgresMergeQueue = vi.fn(function (this: Record<string, unknown>) {
     this.reconcile = mockPostgresMergeQueueReconcile;
     this.dequeue = mockPostgresMergeQueueDequeue;
     this.updateStatus = mockPostgresMergeQueueUpdateStatus;
+    this.list = mockPostgresMergeQueueList;
   });
 
   const mockRefineryMergeCompleted = vi.fn().mockResolvedValue({
@@ -113,10 +119,12 @@ const {
     mockMergeQueueReconcile,
     mockMergeQueueDequeue,
     mockMergeQueueUpdateStatus,
+    mockMergeQueueList,
     MockMergeQueue,
     mockPostgresMergeQueueReconcile,
     mockPostgresMergeQueueDequeue,
     mockPostgresMergeQueueUpdateStatus,
+    mockPostgresMergeQueueList,
     MockPostgresMergeQueue,
     mockRefineryMergeCompleted,
     mockRefineryEnsurePullRequest,
@@ -228,9 +236,11 @@ function resetMocks(): void {
   mockMergeQueueReconcile.mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   mockMergeQueueDequeue.mockReturnValue(null);
   mockMergeQueueUpdateStatus.mockReturnValue(undefined);
+  mockMergeQueueList.mockReturnValue([]);
   mockPostgresMergeQueueReconcile.mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   mockPostgresMergeQueueDequeue.mockReturnValue(null);
   mockPostgresMergeQueueUpdateStatus.mockReturnValue(undefined);
+  mockPostgresMergeQueueList.mockResolvedValue([]);
   mockRefineryMergeCompleted.mockResolvedValue({
     merged: [],
     conflicts: [],
@@ -323,6 +333,65 @@ describe("autoMerge() — project registered, empty queue", () => {
     }));
 
     expect(mockDetectDefaultBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe("autoMerge() — target-only mode", () => {
+  beforeEach(() => {
+    resetMocks();
+    mockGetProjectByPath.mockReturnValue({ id: "p" });
+  });
+
+  it("claims and merges only the requested run", async () => {
+    mockMergeQueueList.mockReturnValue([
+      { id: 1, branch_name: "foreman/other", seed_id: "other", run_id: "run-other", operation: "auto_merge" },
+      { id: 2, branch_name: "foreman/target", seed_id: "target", run_id: "run-target", operation: "auto_merge" },
+    ]);
+    mockRefineryMergeCompleted.mockResolvedValue({
+      merged: [{ seedId: "target", branchName: "foreman/target" }],
+      conflicts: [],
+      testFailures: [],
+      unexpectedErrors: [],
+      prsCreated: [],
+    });
+
+    const result = await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+      runId: "run-target",
+      targetOnly: true,
+    }));
+
+    expect(mockMergeQueueDequeue).not.toHaveBeenCalled();
+    expect(mockMergeQueueUpdateStatus).toHaveBeenNthCalledWith(1, 2, "merging", expect.objectContaining({ lastAttemptedAt: expect.any(String) }));
+    expect(mockRefineryMergeCompleted).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-target" }));
+    expect(result).toEqual({
+      merged: 1,
+      conflicts: 0,
+      failed: 0,
+      target: { runId: "run-target", merged: 1, conflicts: 0, failed: 0 },
+    });
+  });
+
+  it("leaves unrelated pending entries untouched when target is absent", async () => {
+    mockMergeQueueList.mockReturnValue([
+      { id: 1, branch_name: "foreman/other", seed_id: "other", run_id: "run-other", operation: "auto_merge" },
+    ]);
+
+    const result = await autoMerge(makeOpts({
+      store: makeStore({ getProjectByPath: mockGetProjectByPath }) as never,
+      runId: "run-target",
+      targetOnly: true,
+    }));
+
+    expect(mockMergeQueueDequeue).not.toHaveBeenCalled();
+    expect(mockMergeQueueUpdateStatus).not.toHaveBeenCalled();
+    expect(mockRefineryMergeCompleted).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      merged: 0,
+      conflicts: 0,
+      failed: 0,
+      target: { runId: "run-target", merged: 0, conflicts: 0, failed: 0 },
+    });
   });
 });
 

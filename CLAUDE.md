@@ -274,6 +274,7 @@ npx tsc --noEmit       # Type-check without building
 - Agent stuck in Developer phase → `foreman retry <seed>` or `foreman reset --bead <bead>`
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
+- Worker merge phases use target-only autoMerge: one task run should merge only its own queued PR/branch, not drain unrelated queue entries.
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)
 - br state diverged from git → `br sync --flush-only && git add .beads/ && git commit -m "sync beads"`
 - agent-worker crash on startup/finalize → check `~/.foreman/logs/<runId>.err`; fatal handlers print stack traces when available

@@ -1647,11 +1647,12 @@ async function runMergeBuiltinPhase(args: {
       ? { registeredProjectId, readLookup: registeredAutoMergeReadStore }
       : {}),
     runId: config.runId,
+    targetOnly: true,
     ...(currentRun ? { overrideRun: currentRun } : {}),
   });
 
   const targetMergeResult = mergeResult.target;
-  const details = `Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`
+  const details = `Immediate target merge result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`
     + (targetMergeResult
       ? `; target=${targetMergeResult.runId} merged=${targetMergeResult.merged}, conflicts=${targetMergeResult.conflicts}, failed=${targetMergeResult.failed}`
       : "");
@@ -2281,10 +2282,11 @@ async function runPipeline(
                     ? { registeredProjectId, readLookup: registeredAutoMergeReadStore }
                     : {}),
                   runId,
+                  targetOnly: true,
                   ...(currentRun ? { overrideRun: currentRun } : {}),
                 });
                 log(
-                  `[FINALIZE] Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`,
+                  `[FINALIZE] Immediate target merge result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`,
                 );
               } catch (drainErr: unknown) {
                 const drainMsg = drainErr instanceof Error ? drainErr.message : String(drainErr);

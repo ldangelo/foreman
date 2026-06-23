@@ -910,6 +910,37 @@ describe("verdict-triggered retry", () => {
     expect(result.changedFiles).toContain("README.md");
   });
 
+  it("developer docs gate accepts explicit no-docs-needed evidence", async () => {
+    const { validateDeveloperCompletion } = await import("../pipeline-executor.js");
+    execSync("git init", { cwd: tmpDir, stdio: "ignore" });
+    execSync("git config user.email test@example.com", { cwd: tmpDir });
+    execSync("git config user.name Test", { cwd: tmpDir });
+    writeFileSync(join(tmpDir, "README.md"), "initial\n");
+    execSync("git add README.md && git commit -m init", { cwd: tmpDir, stdio: "ignore" });
+    writeFileSync(join(tmpDir, "package.json"), "{\"name\":\"tmp\"}\n");
+    writeFileSync(
+      join(tmpDir, "DEVELOPER_REPORT.md"),
+      [
+        "# Developer Report",
+        "",
+        "## Changed Files",
+        "- `package.json`",
+        "",
+        "## Self-Check Evidence",
+        "- No documentation change needed: internal-only implementation detail.",
+        "",
+      ].join("\n"),
+    );
+
+    const result = validateDeveloperCompletion(
+      tmpDir,
+      join(tmpDir, "DEVELOPER_REPORT.md"),
+      "Update docs if behavior changes",
+    );
+
+    expect(result.reasons.join("\n")).not.toContain("Task asks for docs");
+  });
+
   it("red phase gate requires only failing test diffs", async () => {
     const { validateRedPhaseCompletion } = await import("../pipeline-executor.js");
     execSync("git init", { cwd: tmpDir, stdio: "ignore" });
