@@ -451,8 +451,7 @@ export class ForemanMcpServer {
 
   private async runLogBundle(runId: string, view: "compact" | "plain" | "raw", limit: number): Promise<unknown> {
     const files = await tailRunLogFiles(runId, limit);
-    const eventView = view === "plain" ? "compact" : view;
-    const eventLogs = tailRunLogs(await this.client.getRunLogs(runId, eventView), limit, view);
+    const eventLogs = tailRunLogs(await this.client.getRunLogs(runId, view), limit, view);
     return { run_id: runId, source: files.length ? "files+events" : "events", files, events: eventLogs };
   }
 
