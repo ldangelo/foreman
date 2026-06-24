@@ -3,8 +3,9 @@
  *
  * Loads and validates workflow YAML files from:
  *   1. Explicit absolute or project-relative YAML path
- *   2. ~/.foreman/workflows/{name}.yaml              (global override)
- *   3. Bundled defaults in src/defaults/workflows/{name}.yaml
+ *   2. .foreman/workflows/{name}.yaml                (project override)
+ *   3. ~/.foreman/workflows/{name}.yaml              (global override)
+ *   4. Bundled defaults in src/defaults/workflows/{name}.yaml
  *
  * Workflow files define the ordered phase sequence for a pipeline run,
  * along with per-phase configuration (model, maxTurns, retryOnFail, etc.).
@@ -964,8 +965,10 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
  * Load and validate a workflow config.
  *
  * Resolution order:
- *   1. ~/.foreman/workflows/{name}.yaml              (global override)
- *   2. Bundled default: src/defaults/workflows/{name}.yaml
+ *   1. Explicit absolute or project-relative YAML path
+ *   2. .foreman/workflows/{name}.yaml                (project override)
+ *   3. ~/.foreman/workflows/{name}.yaml              (global override)
+ *   4. Bundled default: src/defaults/workflows/{name}.yaml
  *
  * @param workflowName - Workflow name (e.g. "default", "smoke").
  * @param projectRoot  - Absolute path to the project root.
@@ -989,7 +992,20 @@ export function loadWorkflowConfig(
     }
   }
 
-  // Tier 1: global override
+  // Tier 1: project override
+  const projectPath = projectRoot ? join(projectRoot, ".foreman", "workflows", `${workflowName}.yaml`) : null;
+  if (projectPath && existsSync(projectPath)) {
+    try {
+      const raw = yamlLoad(readFileSync(projectPath, "utf-8"));
+      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: projectPath };
+    } catch (err) {
+      if (err instanceof WorkflowConfigError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new WorkflowConfigError(workflowName, `failed to parse ${projectPath}: ${msg}`);
+    }
+  }
+
+  // Tier 2: global override
   const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
   if (existsSync(globalPath)) {
     try {
@@ -1002,7 +1018,7 @@ export function loadWorkflowConfig(
     }
   }
 
-  // Tier 2: bundled default
+  // Tier 3: bundled default
   const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${workflowName}.yaml`);
   if (existsSync(bundledPath)) {
     try {
@@ -1017,7 +1033,7 @@ export function loadWorkflowConfig(
 
   throw new WorkflowConfigError(
     workflowName,
-    `no workflow config found at ${globalPath} or bundled defaults`,
+    `no workflow config found at ${projectPath ?? "<no project>"}, ${globalPath}, or bundled defaults`,
   );
 }
 
@@ -1083,10 +1099,23 @@ export function installBundledWorkflows(
 
 /**
  * List all workflow names available to the loader: bundled defaults plus any
- * YAML files installed in ~/.foreman/workflows/. Sorted and deduplicated.
+ * YAML files installed in ~/.foreman/workflows/ and, when projectRoot is provided,
+ * .foreman/workflows/. Sorted and deduplicated.
  */
-export function listAvailableWorkflows(): string[] {
+export function listAvailableWorkflows(projectRoot?: string): string[] {
   const names = new Set<string>();
+
+  if (projectRoot) {
+    try {
+      for (const file of readdirSync(join(projectRoot, ".foreman", "workflows"))) {
+        if (file.endsWith(".yaml") || file.endsWith(".yml")) {
+          names.add(file.replace(/\.ya?ml$/, ""));
+        }
+      }
+    } catch {
+      // project .foreman/workflows/ not created yet — non-fatal
+    }
+  }
 
   try {
     for (const file of readdirSync(BUNDLED_WORKFLOWS_DIR)) {

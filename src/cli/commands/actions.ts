@@ -31,7 +31,7 @@ function actionFiles(dir: string): string[] {
 
 export function findUnresolvedWorkflowActions(projectPath: string): string[] {
   const unresolved = new Set<string>();
-  for (const workflowName of listAvailableWorkflows()) {
+  for (const workflowName of listAvailableWorkflows(projectPath)) {
     try {
       const workflow = loadWorkflowConfig(workflowName, projectPath);
       for (const phase of workflow.phases) {

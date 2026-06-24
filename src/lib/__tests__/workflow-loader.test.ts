@@ -550,6 +550,27 @@ phases:
     expect(() => loadWorkflowConfig("nonexistent-workflow", tmpDir)).toThrow(WorkflowConfigError);
   });
 
+  it("project workflow takes precedence over global and bundled defaults", () => {
+    writeWorkflowFile(tmpDir, "default", `
+name: global-default
+phases:
+  - name: global-phase
+    prompt: developer.md
+`);
+    mkdirSync(join(tmpDir, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, ".foreman", "workflows", "default.yaml"), `
+name: project-default
+phases:
+  - name: project-phase
+    prompt: developer.md
+`);
+
+    const config = loadWorkflowConfig("default", tmpDir);
+    expect(config.name).toBe("project-default");
+    expect(config.sourcePath).toBe(join(tmpDir, ".foreman", "workflows", "default.yaml"));
+    expect(config.phases.map((phase) => phase.name)).toEqual(["project-phase"]);
+  });
+
   it("global file takes precedence over bundled defaults", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: custom-default
@@ -1212,6 +1233,13 @@ describe("listAvailableWorkflows", () => {
     writeWorkflowFile(tmpDir, "my-custom", "name: my-custom\nphases:\n  - name: finalize\n    builtin: true\n");
     const available = listAvailableWorkflows();
     expect(available).toContain("my-custom");
+  });
+
+  it("includes custom workflows installed in project .foreman/workflows/", () => {
+    mkdirSync(join(tmpDir, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, ".foreman", "workflows", "project-custom.yaml"), "name: project-custom\nphases:\n  - name: finalize\n    builtin: true\n");
+    const available = listAvailableWorkflows(tmpDir);
+    expect(available).toContain("project-custom");
   });
 
   it("deduplicates names present in both global and bundled locations", () => {
