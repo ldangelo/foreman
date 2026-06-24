@@ -76,18 +76,21 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "default-value.js"), "const run = 1; export default run;\n");
     writeFileSync(join(project, ".foreman", "actions", "run-value.js"), "export const run = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "missing-run.js"), "export { run };\n");
+    writeFileSync(join(project, ".foreman", "actions", "commented-export.js"), "// export default async function run() {}\nconst nope = 1;\n");
+    writeFileSync(join(project, ".foreman", "actions", "string-export.js"), "const sample = 'export async function run() {}';\n");
+    writeFileSync(join(project, ".foreman", "actions", "block-comment-export.js"), "/* export const run = async () => ({ success: true }); */\nconst nope = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "dup.js"), "export default async () => ({ success: true });\n");
     writeFileSync(join(project, ".foreman", "actions", "dup.mjs"), "export default async () => ({ success: true });\n");
     writeFileSync(join(project, ".foreman", "actions", "bad$name.js"), "export default function run() {}\n");
 
     expect(validateProjectActions(project)).toEqual({
       invalidNames: ["bad$name.js"],
-      invalidExports: ["bad.js", "default-value.js", "missing-run.js", "run-value.js"],
+      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-run.js", "run-value.js", "string-export.js"],
       duplicateNames: ["dup"],
     });
     expect(validateActionsInDir(join(project, ".foreman", "actions"))).toEqual({
       invalidNames: ["bad$name.js"],
-      invalidExports: ["bad.js", "default-value.js", "missing-run.js", "run-value.js"],
+      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-run.js", "run-value.js", "string-export.js"],
       duplicateNames: ["dup"],
     });
   });

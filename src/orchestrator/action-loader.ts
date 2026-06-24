@@ -70,6 +70,79 @@ export interface ActionValidationResult {
   duplicateNames: string[];
 }
 
+function stripJsNonCode(source: string): string {
+  let output = "";
+  let mode: "code" | "lineComment" | "blockComment" | "single" | "double" | "template" = "code";
+  let escaped = false;
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i] ?? "";
+    const next = source[i + 1] ?? "";
+    if (mode === "code") {
+      if (char === "/" && next === "/") {
+        mode = "lineComment";
+        output += "  ";
+        i += 1;
+        continue;
+      }
+      if (char === "/" && next === "*") {
+        mode = "blockComment";
+        output += "  ";
+        i += 1;
+        continue;
+      }
+      if (char === "'") {
+        mode = "single";
+        escaped = false;
+        output += " ";
+        continue;
+      }
+      if (char === '"') {
+        mode = "double";
+        escaped = false;
+        output += " ";
+        continue;
+      }
+      if (char === "`") {
+        mode = "template";
+        escaped = false;
+        output += " ";
+        continue;
+      }
+      output += char;
+      continue;
+    }
+    if (mode === "lineComment") {
+      if (char === "\n") {
+        mode = "code";
+        output += "\n";
+      } else {
+        output += " ";
+      }
+      continue;
+    }
+    if (mode === "blockComment") {
+      if (char === "*" && next === "/") {
+        mode = "code";
+        output += "  ";
+        i += 1;
+      } else {
+        output += char === "\n" ? "\n" : " ";
+      }
+      continue;
+    }
+    const quote = mode === "single" ? "'" : mode === "double" ? '"' : "`";
+    if (!escaped && char === quote) {
+      mode = "code";
+      output += " ";
+      continue;
+    }
+    escaped = !escaped && char === "\\";
+    if (char !== "\\") escaped = false;
+    output += char === "\n" ? "\n" : " ";
+  }
+  return output;
+}
+
 export function validateActionsInDir(dir: string): ActionValidationResult {
   const invalidNames: string[] = [];
   const invalidExports: string[] = [];
@@ -94,7 +167,7 @@ export function validateActionsInDir(dir: string): ActionValidationResult {
       invalidNames.push(file);
       continue;
     }
-    const source = readFileSync(join(dir, file), "utf8");
+    const source = stripJsNonCode(readFileSync(join(dir, file), "utf8"));
     if (!/export\s+default\s+(async\s+)?function\b/.test(source)
       && !/export\s+default\s+(async\s+)?\([^)]*\)\s*=>/.test(source)
       && !/export\s+(async\s+)?function\s+run\b/.test(source)
