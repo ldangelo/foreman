@@ -164,6 +164,22 @@ describe("validateWorkflowConfig", () => {
     }
   });
 
+  it("rejects empty phase string controls", () => {
+    for (const phase of [
+      { name: "developer", prompt: "" },
+      { name: "developer", action: "prompt-agent", model: "" },
+      { name: "developer", prompt: "developer.md", skipIfArtifact: "" },
+      { name: "developer", prompt: "developer.md", artifact: "" },
+      { name: "developer", prompt: "developer.md", retryWith: "" },
+      { name: "auto-smoke", bash: "" },
+      { name: "plan", command: "" },
+      { name: "qa", prompt: "qa.md", mail: { onFail: "" } },
+      { name: "qa", prompt: "qa.md", mail: { forwardArtifactTo: "" } },
+    ]) {
+      expect(() => validateWorkflowConfig({ name: "default", phases: [phase] }, "default")).toThrow(WorkflowConfigError);
+    }
+  });
+
   it("rejects invalid numeric phase controls", () => {
     for (const phase of [
       { name: "developer", prompt: "developer.md", maxTurns: 0 },

@@ -619,8 +619,14 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         return capability;
       });
     }
-    if (typeof p["prompt"] === "string") phase.prompt = p["prompt"];
-    if (typeof p["model"] === "string") phase.model = p["model"];
+    if (p["prompt"] !== undefined) {
+      if (typeof p["prompt"] !== "string" || !p["prompt"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].prompt must be a non-empty string`);
+      phase.prompt = p["prompt"];
+    }
+    if (p["model"] !== undefined) {
+      if (typeof p["model"] !== "string" || !p["model"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].model must be a non-empty string`);
+      phase.model = p["model"];
+    }
 
     // Parse priority-based models map (takes precedence over single model field)
     const phaseModels = parseModelsMap(p["models"], workflowName, `phases[${i}].models`);
@@ -634,11 +640,20 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (!isPositiveNumber(p["timeoutSecs"])) throw new WorkflowConfigError(workflowName, `phases[${i}].timeoutSecs must be a positive number`);
       phase.timeoutSecs = p["timeoutSecs"];
     }
-    if (typeof p["skipIfArtifact"] === "string") phase.skipIfArtifact = p["skipIfArtifact"];
+    if (p["skipIfArtifact"] !== undefined) {
+      if (typeof p["skipIfArtifact"] !== "string" || !p["skipIfArtifact"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].skipIfArtifact must be a non-empty string`);
+      phase.skipIfArtifact = p["skipIfArtifact"];
+    }
     if (typeof p["retryOnly"] === "boolean") phase.retryOnly = p["retryOnly"];
-    if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
+    if (p["artifact"] !== undefined) {
+      if (typeof p["artifact"] !== "string" || !p["artifact"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].artifact must be a non-empty string`);
+      phase.artifact = p["artifact"];
+    }
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
-    if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
+    if (p["retryWith"] !== undefined) {
+      if (typeof p["retryWith"] !== "string" || !p["retryWith"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].retryWith must be a non-empty string`);
+      phase.retryWith = p["retryWith"];
+    }
     if (p["retryOnFail"] !== undefined) {
       if (!isNonNegativeInteger(p["retryOnFail"])) throw new WorkflowConfigError(workflowName, `phases[${i}].retryOnFail must be a non-negative integer`);
       phase.retryOnFail = p["retryOnFail"];
@@ -651,8 +666,14 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       phase.cooldownSeconds = p["cooldownSeconds"];
     }
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
-    if (typeof p["bash"] === "string") phase.bash = p["bash"];
-    if (typeof p["command"] === "string") phase.command = p["command"];
+    if (p["bash"] !== undefined) {
+      if (typeof p["bash"] !== "string" || !p["bash"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].bash must be a non-empty string`);
+      phase.bash = p["bash"];
+    }
+    if (p["command"] !== undefined) {
+      if (typeof p["command"] !== "string" || !p["command"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].command must be a non-empty string`);
+      phase.command = p["command"];
+    }
 
     if (isRecord(p["tools"])) {
       const toolsRaw = p["tools"];
@@ -808,8 +829,14 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       phase.mail = {};
       if (typeof m["onStart"] === "boolean") phase.mail.onStart = m["onStart"];
       if (typeof m["onComplete"] === "boolean") phase.mail.onComplete = m["onComplete"];
-      if (typeof m["onFail"] === "string") phase.mail.onFail = m["onFail"];
-      if (typeof m["forwardArtifactTo"] === "string") phase.mail.forwardArtifactTo = m["forwardArtifactTo"];
+      if (m["onFail"] !== undefined) {
+        if (typeof m["onFail"] !== "string" || !m["onFail"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].mail.onFail must be a non-empty string`);
+        phase.mail.onFail = m["onFail"];
+      }
+      if (m["forwardArtifactTo"] !== undefined) {
+        if (typeof m["forwardArtifactTo"] !== "string" || !m["forwardArtifactTo"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].mail.forwardArtifactTo must be a non-empty string`);
+        phase.mail.forwardArtifactTo = m["forwardArtifactTo"];
+      }
     }
 
     // Parse file reservation config
