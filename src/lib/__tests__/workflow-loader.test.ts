@@ -374,6 +374,17 @@ phases:
     expect(config.phases[1].builtin).toBe(true);
   });
 
+  it("rejects unsafe workflow lookup names", () => {
+    mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
+    writeFileSync(join(tmpDir, ".foreman", "escape.yaml"), "name: escape\nphases:\n  - name: finalize\n    builtin: true\n");
+
+    expect(() => loadWorkflowConfig("../escape", tmpDir)).toThrow(WorkflowConfigError);
+  });
+
+  it("rejects explicit project-relative workflow paths outside the project", () => {
+    expect(() => loadWorkflowConfig("../escape.yaml", tmpDir)).toThrow(WorkflowConfigError);
+  });
+
   it("loads an explicit project-relative workflow YAML path", () => {
     mkdirSync(join(tmpDir, "custom"), { recursive: true });
     writeFileSync(join(tmpDir, "custom", "manual.yaml"), `

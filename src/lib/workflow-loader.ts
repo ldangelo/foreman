@@ -44,7 +44,7 @@ import {
   copyFileSync,
   readdirSync,
 } from "node:fs";
-import { join, dirname, isAbsolute } from "node:path";
+import { join, dirname, isAbsolute, resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as yamlLoad } from "js-yaml";
 import { getForemanHomePath } from "./foreman-paths.js";
@@ -461,6 +461,11 @@ export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = [
 
 export function isSafeWorkflowName(workflow: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(workflow) && workflow.length > 0;
+}
+
+function staysWithinDir(parent: string, child: string): boolean {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 /**
@@ -967,6 +972,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 // ── Loader ────────────────────────────────────────────────────────────────────
 
 function findWorkflowFileInDir(dir: string, workflowName: string): string | null {
+  if (!isSafeWorkflowName(workflowName)) return null;
   const yamlPath = join(dir, `${workflowName}.yaml`);
   if (existsSync(yamlPath)) return yamlPath;
   const ymlPath = join(dir, `${workflowName}.yml`);
@@ -992,8 +998,14 @@ export function loadWorkflowConfig(
   projectRoot: string,
 ): WorkflowConfig {
   const directPath = workflowName.endsWith(".yaml") || workflowName.endsWith(".yml")
-    ? isAbsolute(workflowName) ? workflowName : join(projectRoot, workflowName)
+    ? isAbsolute(workflowName) ? workflowName : resolve(projectRoot, workflowName)
     : null;
+  if (directPath && !isAbsolute(workflowName) && !staysWithinDir(projectRoot, directPath)) {
+    throw new WorkflowConfigError(workflowName, "workflow path must stay within the project root");
+  }
+  if (!directPath && !isSafeWorkflowName(workflowName)) {
+    throw new WorkflowConfigError(workflowName, "unsafe workflow name");
+  }
   if (directPath && existsSync(directPath)) {
     try {
       const raw = yamlLoad(readFileSync(directPath, "utf-8"));
