@@ -17,6 +17,10 @@ describe("phase actions", () => {
     expect(getPhaseActionDescriptor(phase)).toMatchObject({ kind: "prompt" });
   });
 
+  it("classifies custom actions without prompt/bash/command as builtin execution path", () => {
+    expect(getPhaseActionDescriptor({ name: "notify", action: "notify-slack" })).toMatchObject({ kind: "builtin" });
+  });
+
   it("classifies execution paths by action kind", () => {
     expect(isCommandPhaseAction({ name: "prd", action: "command-agent", command: "/skill:create-prd" })).toBe(true);
     expect(isBashPhaseAction({ name: "smoke", action: "bash", bash: "npm test" })).toBe(true);

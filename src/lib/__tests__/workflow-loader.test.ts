@@ -78,6 +78,14 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[1].action).toBe("bash");
   });
 
+  it("allows custom project actions without prompt/bash/command", () => {
+    const config = validateWorkflowConfig({
+      name: "custom",
+      phases: [{ name: "notify", action: "notify-slack" }],
+    }, "custom");
+    expect(config.phases[0].action).toBe("notify-slack");
+  });
+
   it("parses action capabilities", () => {
     const raw = {
       name: "default",

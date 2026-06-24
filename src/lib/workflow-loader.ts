@@ -683,7 +683,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     const hasBash = typeof p["bash"] === "string";
     const hasCommand = typeof p["command"] === "string";
     const isBuiltin = typeof p["builtin"] === "boolean" && p["builtin"];
-    const isWorkspaceAction = typeof p["action"] === "string" && WORKSPACE_ACTIONS.has(p["action"]);
+    const hasAction = typeof p["action"] === "string" && p["action"].trim().length > 0;
+    const isWorkspaceAction = hasAction && WORKSPACE_ACTIONS.has(p["action"] as string);
     if (hasBash && hasPrompt) {
       throw new WorkflowConfigError(
         workflowName,
@@ -702,8 +703,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         `phases[${i}].${p["name"]} has both 'command:' and 'prompt:' — only one is allowed`,
       );
     }
-    // builtin/workspace action phases don't need a prompt/bash/command field
-    if (!hasPrompt && !hasBash && !hasCommand && !isBuiltin && !isWorkspaceAction) {
+    // builtin/action phases don't need a prompt/bash/command field. Unknown actions are resolved at runtime from .foreman/actions.
+    if (!hasPrompt && !hasBash && !hasCommand && !isBuiltin && !hasAction && !isWorkspaceAction) {
       throw new WorkflowConfigError(
         workflowName,
         `phases[${i}].${p["name"]} must have one of 'prompt:', 'bash:', or 'command:'`,
