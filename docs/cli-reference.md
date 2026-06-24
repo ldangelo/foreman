@@ -479,6 +479,28 @@ foreman doctor --json             # Machine-readable output
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
 
+### `foreman actions`
+
+Manage workflow action modules. Project modules live in `.foreman/actions`; global modules live in `~/.foreman/actions`; project wins over global, and both win over bundled implementations.
+
+```bash
+foreman actions list                    # Show bundled/project/global resolution
+foreman actions show finalize           # Show resolved module path/source
+foreman actions validate                # Validate exports and workflow refs
+foreman actions install                 # Install bundled stubs into .foreman/actions
+foreman actions install --global        # Install bundled stubs into ~/.foreman/actions
+foreman actions create notify-slack     # Create .foreman/actions/notify-slack.js
+foreman actions create notify-slack --global  # Create ~/.foreman/actions/notify-slack.js
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list [--json]` | List known action names and whether project, global, bundled, or missing resolves |
+| `show <action> [--json]` | Show one action's resolved source/path; exits nonzero when missing or unsafe |
+| `validate [--json]` | Validate project/global module names, exports, and unresolved workflow action refs |
+| `install [--force] [--global] [--json]` | Install bundled editable stubs; `--force` overwrites existing files |
+| `create <action> [--force] [--global] [--json]` | Create a custom action stub; `--force` overwrites existing files |
+
 ### `foreman server`
 
 Manage the experimental Elixir orchestration server used by TRD-2026-014.

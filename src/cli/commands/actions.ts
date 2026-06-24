@@ -63,7 +63,7 @@ export function listActions(projectPath: string): ActionListRow[] {
 }
 
 export const actionsCommand = new Command("actions")
-  .description("List and validate Foreman workflow action modules");
+  .description("Manage Foreman workflow action modules");
 
 actionsCommand
   .command("list")
