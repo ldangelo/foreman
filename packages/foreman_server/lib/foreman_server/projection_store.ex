@@ -3,7 +3,7 @@ defmodule ForemanServer.ProjectionStore do
 
   use GenServer
 
-  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked"])
+  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged"])
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -141,7 +141,14 @@ defmodule ForemanServer.ProjectionStore do
       migration_imports: %{},
       migration_records: %{},
       authorization_audits: [],
-      status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0, environment_blocked: 0},
+      status_counts: %{
+        active: 0,
+        in_progress: 0,
+        failed: 0,
+        blocked: 0,
+        completed: 0,
+        environment_blocked: 0
+      },
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
       last_sequence: 0
     }
@@ -1209,7 +1216,14 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp recompute_status_counts(projection) do
-    counts = %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0, environment_blocked: 0}
+    counts = %{
+      active: 0,
+      in_progress: 0,
+      failed: 0,
+      blocked: 0,
+      completed: 0,
+      environment_blocked: 0
+    }
 
     status_counts =
       Enum.reduce(projection.runs, counts, fn {_run_id, run}, acc ->
@@ -1229,7 +1243,10 @@ defmodule ForemanServer.ProjectionStore do
   defp increment_run_status(counts, "failed"), do: Map.update!(counts, :failed, &(&1 + 1))
   defp increment_run_status(counts, "blocked"), do: Map.update!(counts, :blocked, &(&1 + 1))
   defp increment_run_status(counts, "completed"), do: Map.update!(counts, :completed, &(&1 + 1))
-  defp increment_run_status(counts, "environment_blocked"), do: Map.update!(counts, :environment_blocked, &(&1 + 1))
+
+  defp increment_run_status(counts, "environment_blocked"),
+    do: Map.update!(counts, :environment_blocked, &(&1 + 1))
+
   defp increment_run_status(counts, _status), do: counts
 
   defp maybe_increment_active(counts, status) do
