@@ -95,6 +95,17 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].action).toBe("notify-slack");
   });
 
+  it("rejects invalid action capabilities", () => {
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [{ name: "notify", action: "notify", capabilities: ["mail", ""] }],
+    }, "default")).toThrow(WorkflowConfigError);
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [{ name: "notify", action: "notify", capabilities: "mail" }],
+    }, "default")).toThrow(WorkflowConfigError);
+  });
+
   it("parses action capabilities", () => {
     const raw = {
       name: "default",

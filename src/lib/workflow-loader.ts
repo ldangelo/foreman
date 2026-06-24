@@ -569,8 +569,16 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       }
       phase.action = p["action"];
     }
-    if (Array.isArray(p["capabilities"])) {
-      phase.capabilities = p["capabilities"].filter((capability): capability is string => typeof capability === "string" && capability.trim().length > 0);
+    if (p["capabilities"] !== undefined) {
+      if (!Array.isArray(p["capabilities"])) {
+        throw new WorkflowConfigError(workflowName, `phases[${i}].capabilities must be an array of strings`);
+      }
+      phase.capabilities = p["capabilities"].map((capability, capabilityIndex) => {
+        if (typeof capability !== "string" || !capability.trim()) {
+          throw new WorkflowConfigError(workflowName, `phases[${i}].capabilities[${capabilityIndex}] must be a non-empty string`);
+        }
+        return capability;
+      });
     }
     if (typeof p["prompt"] === "string") phase.prompt = p["prompt"];
     if (typeof p["model"] === "string") phase.model = p["model"];
