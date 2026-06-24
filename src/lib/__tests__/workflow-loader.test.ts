@@ -179,10 +179,13 @@ describe("validateWorkflowConfig", () => {
   it("rejects invalid workflow-level controls", () => {
     const basePhase = { name: "developer", prompt: "developer.md" };
     for (const raw of [
+      { name: "default", setup: [{ command: "" }], phases: [basePhase] },
+      { name: "default", setup: [{ command: "   " }], phases: [basePhase] },
       { name: "default", setupCache: [], phases: [basePhase] },
       { name: "default", setupCache: { key: "", path: "node_modules" }, phases: [basePhase] },
       { name: "default", setupCache: { key: "package-lock.json", path: "" }, phases: [basePhase] },
       { name: "default", taskTimeout: Number.POSITIVE_INFINITY, phases: [basePhase] },
+      { name: "default", onFailure: [], phases: [basePhase] },
       { name: "default", onFailure: { name: "bad phase" }, phases: [basePhase] },
       { name: "default", onFailure: { name: "recover", prompt: "" }, phases: [basePhase] },
       { name: "default", onFailure: { name: "recover", maxTurns: 0 }, phases: [basePhase] },

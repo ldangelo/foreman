@@ -554,7 +554,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (!isRecord(s)) {
         throw new WorkflowConfigError(workflowName, `setup[${i}] must be an object`);
       }
-      if (typeof s["command"] !== "string" || !s["command"]) {
+      if (typeof s["command"] !== "string" || !s["command"].trim()) {
         throw new WorkflowConfigError(
           workflowName,
           `setup[${i}].command must be a non-empty string`,
@@ -869,6 +869,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   }
 
   // ── Parse optional onFailure block ────────────────────────────────────────
+  if (raw["onFailure"] !== undefined && !isRecord(raw["onFailure"])) {
+    throw new WorkflowConfigError(workflowName, "onFailure must be an object");
+  }
   if (isRecord(raw["onFailure"])) {
     const of_ = raw["onFailure"];
     if (typeof of_["name"] !== "string" || !of_["name"].trim()) {
