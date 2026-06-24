@@ -454,6 +454,7 @@ export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = [
   "chore",
   "docs",
   "question",
+  "tdd",
 ];
 
 // ── Validation ────────────────────────────────────────────────────────────────

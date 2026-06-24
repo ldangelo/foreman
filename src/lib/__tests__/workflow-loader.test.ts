@@ -521,7 +521,7 @@ phases:
       expect(documentationIdx, workflowName).toBeGreaterThanOrEqual(0);
       expect(finalizeIdx, workflowName).toBeGreaterThanOrEqual(0);
       const createPrIdx = phaseNames.indexOf("create-pr");
-      if (["default", "feature", "bug"].includes(workflowName)) {
+      if (["default", "feature", "bug", "tdd"].includes(workflowName)) {
         expect(documentationIdx, workflowName).toBeGreaterThan(finalizeIdx);
         if (createPrIdx >= 0) {
           expect(documentationIdx, workflowName).toBeLessThan(createPrIdx);
