@@ -1283,12 +1283,12 @@ export interface TaskTypeUniquenessResult {
  *
  * @returns Map of `taskType → workflowName` for workflows that declare `task_type`.
  */
-function collectTaskTypeDeclarations(): Map<string, string[]> {
+function collectTaskTypeDeclarations(projectRoot?: string): Map<string, string[]> {
   const result = new Map<string, string[]>();
 
-  for (const workflowName of listAvailableWorkflows()) {
+  for (const workflowName of listAvailableWorkflows(projectRoot)) {
     try {
-      const config = loadWorkflowConfig(workflowName, "");
+      const config = loadWorkflowConfig(workflowName, projectRoot ?? "");
       if (!config.taskType) continue;
       const workflows = result.get(config.taskType) ?? [];
       workflows.push(config.name);
@@ -1302,10 +1302,10 @@ function collectTaskTypeDeclarations(): Map<string, string[]> {
   return result;
 }
 
-export function buildTaskTypeWorkflowMap(): Map<string, string> {
+export function buildTaskTypeWorkflowMap(projectRoot?: string): Map<string, string> {
   const result = new Map<string, string>();
 
-  for (const [taskType, workflows] of collectTaskTypeDeclarations()) {
+  for (const [taskType, workflows] of collectTaskTypeDeclarations(projectRoot)) {
     if (workflows.length === 1) {
       result.set(taskType, workflows[0]!);
     }
@@ -1325,10 +1325,10 @@ export function buildTaskTypeWorkflowMap(): Map<string, string> {
  *
  * @returns Validation result describing any duplicate task type declarations.
  */
-export function validateTaskTypeUniqueness(): TaskTypeUniquenessResult {
+export function validateTaskTypeUniqueness(projectRoot?: string): TaskTypeUniquenessResult {
   const duplicates: Array<{ taskType: string; workflows: string[] }> = [];
 
-  for (const [taskType, workflows] of collectTaskTypeDeclarations()) {
+  for (const [taskType, workflows] of collectTaskTypeDeclarations(projectRoot)) {
     if (workflows.length > 1) {
       duplicates.push({ taskType, workflows: [...workflows].sort() });
     }
@@ -1391,7 +1391,7 @@ export function resolveWorkflowName(
   // 2. Workflow-declared task_type mapping. An explicitly provided map is used
   // by tests/callers that already loaded workflows; otherwise build it from the
   // available workflow YAML files.
-  const declaredWorkflow = workflowDeclaredMap?.[seedType] ?? buildTaskTypeWorkflowMap().get(seedType);
+  const declaredWorkflow = workflowDeclaredMap?.[seedType] ?? buildTaskTypeWorkflowMap(projectRoot).get(seedType);
   if (declaredWorkflow && hasWorkflowConfig(declaredWorkflow, projectRoot)) {
     return declaredWorkflow;
   }

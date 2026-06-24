@@ -1221,7 +1221,7 @@ export class Doctor {
    * requires user intent (which workflow should own the task type?).
    */
   async checkTaskTypeUniqueness(): Promise<CheckResult> {
-    const result = validateTaskTypeUniqueness();
+    const result = validateTaskTypeUniqueness(this.projectPath);
 
     if (result.valid) {
       return {

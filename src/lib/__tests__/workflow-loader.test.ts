@@ -1330,6 +1330,22 @@ describe("workflow task_type routing", () => {
     expect(resolveWorkflowName("bug", [], { bug: "quick" })).toBe("bug");
   });
 
+  it("loads project workflow task_type declarations when projectRoot is provided", () => {
+    mkdirSync(join(tmpDir, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, ".foreman", "workflows", "support.yaml"), `
+name: support
+kind: task
+version: 1
+task_type: support
+phases:
+  - name: finalize
+    builtin: true
+`);
+
+    expect(buildTaskTypeWorkflowMap(tmpDir).get("support")).toBe("support");
+    expect(resolveWorkflowName("support", [], undefined, undefined, undefined, tmpDir)).toBe("support");
+  });
+
   it("detects duplicate task_type declarations", () => {
     const quickPath = join(tmpDir, "workflows", "quick.yaml");
     const quick = readFileSync(quickPath, "utf-8").replace("task_type: quick", "task_type: bug");
