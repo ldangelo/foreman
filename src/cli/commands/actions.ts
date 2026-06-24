@@ -100,13 +100,14 @@ actionsCommand
     const row = listActions(projectPath).find((candidate) => candidate.action === action);
     const resolvedPath = findProjectActionPath(projectPath, action);
     const result = row ?? { action, source: resolvedPath ? "project" : "missing", path: resolvedPath ?? null };
-    if (opts.json) {
-      console.log(JSON.stringify(result, null, 2));
+    if (!isSafeActionName(action)) {
+      if (opts.json) console.log(JSON.stringify({ ...result, error: "unsafe action name" }, null, 2));
+      else console.error(chalk.red(`Unsafe action name: ${action}`));
+      process.exitCode = 1;
       return;
     }
-    if (!isSafeActionName(action)) {
-      console.error(chalk.red(`Unsafe action name: ${action}`));
-      process.exitCode = 1;
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
       return;
     }
     if (!row && !resolvedPath) {

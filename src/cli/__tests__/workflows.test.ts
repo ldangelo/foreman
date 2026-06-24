@@ -116,6 +116,21 @@ describe("workflows command helpers", () => {
     }
   });
 
+  it("rejects unsafe workflow names from show json", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-workflows-unsafe-show-"));
+    const cwd = process.cwd();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    process.chdir(project);
+    try {
+      await workflowsCommand.parseAsync(["node", "foreman", "show", "../escape", "--json"]);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.chdir(cwd);
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it("rejects unsafe workflow names from the create command", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-workflows-unsafe-create-"));
     const cwd = process.cwd();

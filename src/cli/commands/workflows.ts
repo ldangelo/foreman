@@ -141,13 +141,14 @@ workflowsCommand
   .action((workflow: string, opts: { json?: boolean }) => {
     const row = listWorkflows(process.cwd()).find((candidate) => candidate.workflow === workflow)
       ?? { workflow, source: "missing" as const, path: null };
-    if (opts.json) {
-      console.log(JSON.stringify(row, null, 2));
+    if (!isSafeWorkflowName(workflow)) {
+      if (opts.json) console.log(JSON.stringify({ ...row, error: "unsafe workflow name" }, null, 2));
+      else console.error(chalk.red(`Unsafe workflow name: ${workflow}`));
+      process.exitCode = 1;
       return;
     }
-    if (!isSafeWorkflowName(workflow)) {
-      console.error(chalk.red(`Unsafe workflow name: ${workflow}`));
-      process.exitCode = 1;
+    if (opts.json) {
+      console.log(JSON.stringify(row, null, 2));
       return;
     }
     if (row.source === "missing") {

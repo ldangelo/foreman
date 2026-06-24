@@ -60,6 +60,21 @@ describe("actions command helpers", () => {
     }
   });
 
+  it("rejects unsafe action names from show json", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-actions-unsafe-show-"));
+    const cwd = process.cwd();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    process.chdir(project);
+    try {
+      await actionsCommand.parseAsync(["node", "foreman", "show", "../escape", "--json"]);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.chdir(cwd);
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it("creates a custom project action stub from the command", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-actions-create-"));
     const cwd = process.cwd();
