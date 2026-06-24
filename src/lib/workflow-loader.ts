@@ -764,6 +764,22 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     throw new WorkflowConfigError(workflowName, "phases array must not be empty");
   }
 
+  const phaseNames = new Set<string>();
+  for (const phase of phases) {
+    if (phaseNames.has(phase.name)) {
+      throw new WorkflowConfigError(workflowName, `duplicate phase name '${phase.name}'`);
+    }
+    phaseNames.add(phase.name);
+  }
+  for (const phase of phases) {
+    if (phase.retryWith && !phaseNames.has(phase.retryWith)) {
+      throw new WorkflowConfigError(workflowName, `phase '${phase.name}' retryWith references unknown phase '${phase.retryWith}'`);
+    }
+    if (phase.mail?.onFail && !phaseNames.has(phase.mail.onFail)) {
+      throw new WorkflowConfigError(workflowName, `phase '${phase.name}' mail.onFail references unknown phase '${phase.mail.onFail}'`);
+    }
+  }
+
   const config: WorkflowConfig = { name, phases };
   if (setup !== undefined) config.setup = setup;
   if (setupCache !== undefined) config.setupCache = setupCache;

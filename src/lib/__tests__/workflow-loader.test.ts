@@ -95,6 +95,34 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].action).toBe("notify-slack");
   });
 
+  it("rejects duplicate phase names", () => {
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [
+        { name: "developer", prompt: "developer.md" },
+        { name: "developer", prompt: "developer.md" },
+      ],
+    }, "default")).toThrow(/duplicate phase name/);
+  });
+
+  it("rejects retryWith references to unknown phases", () => {
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [
+        { name: "qa", prompt: "qa.md", retryWith: "developer" },
+      ],
+    }, "default")).toThrow(/retryWith references unknown phase/);
+  });
+
+  it("rejects mail.onFail references to unknown phases", () => {
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [
+        { name: "qa", prompt: "qa.md", mail: { onFail: "developer" } },
+      ],
+    }, "default")).toThrow(/mail\.onFail references unknown phase/);
+  });
+
   it("rejects invalid action capabilities", () => {
     expect(() => validateWorkflowConfig({
       name: "default",

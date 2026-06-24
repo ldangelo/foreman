@@ -111,12 +111,12 @@ phases:
         skipDeveloperRetryOnUnrelatedFinalizeFailure: true
         terminalOnFailExhausted: true
     verdict: true
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 6
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: fix
   - name: create-pr
     action: create-pr
     builtin: true
