@@ -42,10 +42,11 @@ Foreman CLI / Dispatcher
   │       Tools: read, write, edit, bash, grep, find, ls, send_mail
   │
   ├─ Pipeline Executor (workflow YAML-driven)
-  │    Phases defined in ~/.foreman/workflows/*.yaml
+  │    Phases defined in .foreman/workflows/*.yaml or ~/.foreman/workflows/*.yaml
   │    Phase actions (prompt-agent, bash, finalize, PR gates, merge) bind YAML labels to code
   │    Workspace prep, model selection, retries, validation policies, mail hooks, artifacts — all YAML config
   │    Workflow YAML resolves explicit path → project .foreman/workflows → global ~/.foreman/workflows → bundled
+  │    Project/global workflows can be managed with `foreman workflows list|show|validate|install|create`
   │    Project/global actions in .foreman/actions or ~/.foreman/actions can override phase behavior without rebuild (`foreman actions list|show|validate|install|create`, use --global for global stubs)
   │    Per-phase reports/traces → ~/.foreman/reports/... (outside repo commits)
   │

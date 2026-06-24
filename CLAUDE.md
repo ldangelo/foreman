@@ -100,7 +100,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 
 **Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
 
-- Phase sequence, reusable action (`prepare-worktree`, `setup-workspace`, `write-task-context`, `prompt-agent`, `bash`, `finalize`, PR gates, merge), models, retries, validation policies, mail hooks, artifacts all defined in YAML; workflow YAML resolves explicit path → project `.foreman/workflows` → global `~/.foreman/workflows` → bundled; project/global `.foreman/actions` / `~/.foreman/actions` JS/MJS overrides load at runtime without rebuild, stubs install by init/doctor/`foreman actions install`, and `foreman actions validate` checks exports plus unresolved workflow action refs
+- Phase sequence, reusable action (`prepare-worktree`, `setup-workspace`, `write-task-context`, `prompt-agent`, `bash`, `finalize`, PR gates, merge), models, retries, validation policies, mail hooks, artifacts all defined in YAML; workflow YAML resolves explicit path → project `.foreman/workflows` → global `~/.foreman/workflows` → bundled; `foreman workflows list|show|validate|install|create` manages project/global YAML; project/global `.foreman/actions` / `~/.foreman/actions` JS/MJS overrides load at runtime without rebuild, stubs install by init/doctor/`foreman actions install`, and `foreman actions validate` checks exports plus unresolved workflow action refs
 - No hardcoded prompt phase names in the executor — new prompt phases need only YAML + prompt file
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
 - Retry loops: QA⇄Developer and Reviewer⇄Developer with feedback mail

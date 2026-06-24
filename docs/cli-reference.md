@@ -79,7 +79,7 @@ foreman project edit <project-id> --default-branch dev
 
 Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, skips ready tasks whose dependency blockers are not closed, monitors agents, and merges each completed task's own queued PR/branch. The daemon uses the same dependency-filtered ready queue and logs both dispatched task IDs and skipped-task reasons each dispatch cycle.
 
-Default workflows are YAML-defined phase/action sequences, including dispatcher workspace actions before agent launch. Workflow YAML resolves from explicit path, project `.foreman/workflows` (`.yaml|.yml`), global `~/.foreman/workflows` (`.yaml|.yml`), then bundled defaults. Editable action modules in `.foreman/actions/*.js|*.mjs` or `~/.foreman/actions/*.js|*.mjs` are loaded at runtime when present (project wins); `foreman init`, `foreman doctor --fix`, and `foreman actions install [--global]` install bundled stubs. `foreman actions list` shows resolution, `foreman actions show <action>` prints one resolved path, `foreman actions validate` checks project/global action modules plus unresolved workflow action references, `foreman actions create <action> [--global]` creates a new stub, and `foreman doctor` validates the same action issues. The bundled fast path has Explorer (when present) hand off directly to Developer, then QA/review/finalize/documentation. TDD red/review phases are opt-in via `foreman run --workflow tdd`, a `workflow:tdd` label, or task type `tdd`. In the TDD workflow, `test-red` writes at most a few focused failing tests and `test-review` verifies those tests cover the acceptance contract and fail for the expected missing behavior, with one Red retry. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer, Developer, and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests (or an explicit no-docs-needed self-check), and TypeScript compilation when TS/JS files changed. Runtime preflight also fails on stale project/global prompt overrides that are missing required acceptance-contract markers. Verdict phases with `contract.policy.acceptanceCoverage` must carry and address the Explorer acceptance criteria; missing coverage overrides PASS to FAIL and is recorded as phase failure/retry events. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
+Default workflows are YAML-defined phase/action sequences, including dispatcher workspace actions before agent launch. Workflow YAML resolves from explicit path, project `.foreman/workflows` (`.yaml|.yml`), global `~/.foreman/workflows` (`.yaml|.yml`), then bundled defaults. Use `foreman workflows list|show|validate|install|create` to inspect, validate, install, or create project/global workflow YAML. Editable action modules in `.foreman/actions/*.js|*.mjs` or `~/.foreman/actions/*.js|*.mjs` are loaded at runtime when present (project wins); `foreman init`, `foreman doctor --fix`, and `foreman actions install [--global]` install bundled stubs. `foreman actions list` shows resolution, `foreman actions show <action>` prints one resolved path, `foreman actions validate` checks project/global action modules plus unresolved workflow action references, `foreman actions create <action> [--global]` creates a new stub, and `foreman doctor` validates the same action issues. The bundled fast path has Explorer (when present) hand off directly to Developer, then QA/review/finalize/documentation. TDD red/review phases are opt-in via `foreman run --workflow tdd`, a `workflow:tdd` label, or task type `tdd`. In the TDD workflow, `test-red` writes at most a few focused failing tests and `test-review` verifies those tests cover the acceptance contract and fail for the expected missing behavior, with one Red retry. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer, Developer, and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests (or an explicit no-docs-needed self-check), and TypeScript compilation when TS/JS files changed. Runtime preflight also fails on stale project/global prompt overrides that are missing required acceptance-contract markers. Verdict phases with `contract.policy.acceptanceCoverage` must carry and address the Explorer acceptance criteria; missing coverage overrides PASS to FAIL and is recorded as phase failure/retry events. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
 
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
@@ -500,6 +500,28 @@ foreman actions create notify-slack --global  # Create ~/.foreman/actions/notify
 | `validate [--json]` | Validate project/global module names, exports, and unresolved workflow action refs |
 | `install [--force] [--global] [--json]` | Install bundled editable stubs; `--force` overwrites existing files |
 | `create <action> [--force] [--global] [--json]` | Create a custom action stub; `--force` overwrites existing files |
+
+### `foreman workflows`
+
+Manage workflow YAML files. Project workflows live in `.foreman/workflows`; global workflows live in `~/.foreman/workflows`; project wins over global, and both win over bundled defaults.
+
+```bash
+foreman workflows list                    # Show bundled/project/global resolution
+foreman workflows show default            # Show resolved workflow path/source
+foreman workflows validate                # Validate loadable workflow YAML
+foreman workflows install                 # Install bundled YAML into .foreman/workflows
+foreman workflows install --global        # Install bundled YAML into ~/.foreman/workflows
+foreman workflows create custom-flow      # Create .foreman/workflows/custom-flow.yaml
+foreman workflows create custom-flow --global  # Create ~/.foreman/workflows/custom-flow.yaml
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list [--json]` | List workflow names and whether project, global, bundled, or missing resolves |
+| `show <workflow> [--json]` | Show one workflow's resolved source/path; exits nonzero when missing |
+| `validate [--json]` | Validate loadable project, global, and bundled workflow YAML |
+| `install [--force] [--global] [--json]` | Install bundled editable YAML; `--force` overwrites existing files |
+| `create <workflow> [--force] [--global] [--json]` | Create a workflow YAML stub; `--force` overwrites existing files |
 
 ### `foreman server`
 
