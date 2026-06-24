@@ -95,6 +95,13 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].action).toBe("notify-slack");
   });
 
+  it("rejects unsafe phase names", () => {
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [{ name: "bad phase", prompt: "developer.md" }],
+    }, "default")).toThrow(/safe phase name/);
+  });
+
   it("rejects duplicate phase names", () => {
     expect(() => validateWorkflowConfig({
       name: "default",

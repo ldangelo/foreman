@@ -568,6 +568,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["name"] !== "string" || !p["name"]) {
       throw new WorkflowConfigError(workflowName, `phases[${i}].name must be a non-empty string`);
     }
+    if (!isSafeActionName(p["name"])) {
+      throw new WorkflowConfigError(workflowName, `phases[${i}].name must be a safe phase name`);
+    }
 
     const phase: WorkflowPhaseConfig = { name: p["name"] as string };
 
