@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { actionsCommand, customActionStub, listActions } from "../commands/actions.js";
+import { actionsCommand, customActionStub, findUnresolvedWorkflowActions, listActions } from "../commands/actions.js";
 
 describe("actions command helpers", () => {
   it("loads command with list/show/install subcommands", () => {
@@ -20,6 +20,11 @@ describe("actions command helpers", () => {
     const rows = listActions(project);
     expect(rows.find((row) => row.action === "create-pr")).toMatchObject({ source: "project" });
     expect(rows.some((row) => row.action === "finalize")).toBe(true);
+  });
+
+  it("reports no unresolved workflow actions for bundled workflows", () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-actions-unresolved-"));
+    expect(findUnresolvedWorkflowActions(project)).toEqual([]);
   });
 
   it("renders a valid custom action stub", () => {

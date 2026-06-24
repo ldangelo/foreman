@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
+import { listAvailableWorkflows, loadWorkflowConfig } from "../../lib/workflow-loader.js";
 import { actionCandidates, findProjectActionPath, installBundledActions, installBundledActionsToDir, isSafeActionName, listBundledActionFiles, validateGlobalActions, validateProjectActions } from "../../orchestrator/action-loader.js";
+import { PHASE_ACTIONS } from "../../orchestrator/phase-actions.js";
 
 export interface ActionListRow {
   action: string;
@@ -25,6 +27,23 @@ function actionFiles(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+export function findUnresolvedWorkflowActions(projectPath: string): string[] {
+  const unresolved = new Set<string>();
+  for (const workflowName of listAvailableWorkflows()) {
+    try {
+      const workflow = loadWorkflowConfig(workflowName, projectPath);
+      for (const phase of workflow.phases) {
+        const action = phase.action;
+        if (!action || PHASE_ACTIONS[action]) continue;
+        if (!findProjectActionPath(projectPath, action)) unresolved.add(`${workflow.name}:${phase.name}:${action}`);
+      }
+    } catch {
+      // Workflow errors are reported by workflow validation/doctor.
+    }
+  }
+  return [...unresolved].sort();
 }
 
 export function listActions(projectPath: string): ActionListRow[] {
@@ -122,17 +141,19 @@ actionsCommand
   .action((opts: { json?: boolean }) => {
     const project = validateProjectActions(process.cwd());
     const global = validateGlobalActions();
+    const unresolved = findUnresolvedWorkflowActions(process.cwd());
     const ok = project.invalidNames.length === 0
       && project.invalidExports.length === 0
       && global.invalidNames.length === 0
-      && global.invalidExports.length === 0;
-    const result = { ok, project, global };
+      && global.invalidExports.length === 0
+      && unresolved.length === 0;
+    const result = { ok, project, global, unresolved };
     if (opts.json) {
       console.log(JSON.stringify(result, null, 2));
     } else if (ok) {
       console.log(chalk.green("Action modules valid"));
     } else {
-      console.error(chalk.red(`Invalid actions: projectNames=${project.invalidNames.join(", ") || "none"} projectExports=${project.invalidExports.join(", ") || "none"} globalNames=${global.invalidNames.join(", ") || "none"} globalExports=${global.invalidExports.join(", ") || "none"}`));
+      console.error(chalk.red(`Invalid actions: projectNames=${project.invalidNames.join(", ") || "none"} projectExports=${project.invalidExports.join(", ") || "none"} globalNames=${global.invalidNames.join(", ") || "none"} globalExports=${global.invalidExports.join(", ") || "none"} unresolved=${unresolved.join(", ") || "none"}`));
     }
     if (!ok) process.exitCode = 1;
   });
