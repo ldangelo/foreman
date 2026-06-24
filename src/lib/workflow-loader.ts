@@ -989,6 +989,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (typeof pName !== "string" || !pName) {
         throw new WorkflowConfigError(workflowName, `taskPhases[${j}] must be a non-empty string`);
       }
+      if (taskPhases.includes(pName)) {
+        throw new WorkflowConfigError(workflowName, `taskPhases[${j}] duplicates phase '${pName}'`);
+      }
       // Validate that referenced phase exists in the phases array
       if (!phases.some((p) => p.name === pName)) {
         throw new WorkflowConfigError(
@@ -1011,6 +1014,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       const pName = raw["finalPhases"][j];
       if (typeof pName !== "string" || !pName) {
         throw new WorkflowConfigError(workflowName, `finalPhases[${j}] must be a non-empty string`);
+      }
+      if (finalPhases.includes(pName)) {
+        throw new WorkflowConfigError(workflowName, `finalPhases[${j}] duplicates phase '${pName}'`);
       }
       if (!phases.some((p) => p.name === pName)) {
         throw new WorkflowConfigError(

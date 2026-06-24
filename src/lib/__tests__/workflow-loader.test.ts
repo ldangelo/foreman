@@ -116,6 +116,26 @@ describe("validateWorkflowConfig", () => {
     }, "default")).toThrow(/duplicate phase name/);
   });
 
+  it("rejects duplicate task/final phase references", () => {
+    expect(() => validateWorkflowConfig({
+      name: "epic",
+      phases: [
+        { name: "developer", prompt: "developer.md" },
+        { name: "finalize", builtin: true },
+      ],
+      taskPhases: ["developer", "developer"],
+    }, "epic")).toThrow(/taskPhases\[1\] duplicates phase 'developer'/);
+
+    expect(() => validateWorkflowConfig({
+      name: "epic",
+      phases: [
+        { name: "developer", prompt: "developer.md" },
+        { name: "finalize", builtin: true },
+      ],
+      finalPhases: ["finalize", "finalize"],
+    }, "epic")).toThrow(/finalPhases\[1\] duplicates phase 'finalize'/);
+  });
+
   it("rejects retryWith references to unknown phases", () => {
     expect(() => validateWorkflowConfig({
       name: "default",
