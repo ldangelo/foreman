@@ -66,6 +66,7 @@ import { jiraCommand } from "./commands/jira.js";
 import { logsCommand } from "./commands/logs.js";
 import { serverCommand } from "./commands/server.js";
 import { mcpCommand } from "./commands/mcp.js";
+import { actionsCommand } from "./commands/actions.js";
 import { maybeDelegateToLegacyTs } from "./legacy-coexistence.js";
 function isCliEntrypoint(): boolean {
   try {
@@ -128,6 +129,7 @@ program.addCommand(recoverCommand);
 program.addCommand(daemonCommand);
 program.addCommand(jiraCommand);
 program.addCommand(logsCommand);
+program.addCommand(actionsCommand);
 program.addCommand(serverCommand);
 program.addCommand(mcpCommand);
 
