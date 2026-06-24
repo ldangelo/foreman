@@ -75,6 +75,22 @@ describe("actions command helpers", () => {
     }
   });
 
+  it("rejects unsafe action names from create json", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-actions-unsafe-create-"));
+    const cwd = process.cwd();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    process.chdir(project);
+    try {
+      await actionsCommand.parseAsync(["node", "foreman", "create", "../escape", "--json"]);
+      expect(process.exitCode).toBe(1);
+      expect(existsSync(join(project, ".foreman", "escape.js"))).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it("creates a custom project action stub from the command", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-actions-create-"));
     const cwd = process.cwd();

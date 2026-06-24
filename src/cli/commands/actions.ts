@@ -168,7 +168,8 @@ actionsCommand
   .option("--json", "Output JSON")
   .action((action: string, opts: { force?: boolean; global?: boolean; json?: boolean }) => {
     if (!isSafeActionName(action)) {
-      console.error(chalk.red(`Unsafe action name: ${action}`));
+      if (opts.json) console.log(JSON.stringify({ action, created: false, error: "unsafe action name" }, null, 2));
+      else console.error(chalk.red(`Unsafe action name: ${action}`));
       process.exitCode = 1;
       return;
     }

@@ -193,7 +193,8 @@ workflowsCommand
   .option("--json", "Output JSON")
   .action((workflow: string, opts: { force?: boolean; global?: boolean; json?: boolean }) => {
     if (!isSafeWorkflowName(workflow)) {
-      console.error(chalk.red(`Unsafe workflow name: ${workflow}`));
+      if (opts.json) console.log(JSON.stringify({ workflow, created: false, error: "unsafe workflow name" }, null, 2));
+      else console.error(chalk.red(`Unsafe workflow name: ${workflow}`));
       process.exitCode = 1;
       return;
     }
