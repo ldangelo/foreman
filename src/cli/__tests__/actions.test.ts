@@ -39,6 +39,22 @@ describe("actions command helpers", () => {
     }
   });
 
+  it("installs global bundled action stubs from the command", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-actions-global-install-"));
+    const cwd = process.cwd();
+    const oldHome = process.env.FOREMAN_HOME;
+    process.env.FOREMAN_HOME = join(project, "foreman-home");
+    process.chdir(project);
+    try {
+      await actionsCommand.parseAsync(["node", "foreman", "install", "--global"]);
+      expect(existsSync(join(project, "foreman-home", "actions", "create-pr.js"))).toBe(true);
+    } finally {
+      process.chdir(cwd);
+      if (oldHome === undefined) delete process.env.FOREMAN_HOME;
+      else process.env.FOREMAN_HOME = oldHome;
+    }
+  });
+
   it("creates a custom project action stub from the command", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-actions-create-"));
     const cwd = process.cwd();
@@ -48,6 +64,22 @@ describe("actions command helpers", () => {
       expect(existsSync(join(project, ".foreman", "actions", "notify-slack.js"))).toBe(true);
     } finally {
       process.chdir(cwd);
+    }
+  });
+
+  it("creates a custom global action stub from the command", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-actions-global-create-"));
+    const cwd = process.cwd();
+    const oldHome = process.env.FOREMAN_HOME;
+    process.env.FOREMAN_HOME = join(project, "foreman-home");
+    process.chdir(project);
+    try {
+      await actionsCommand.parseAsync(["node", "foreman", "create", "notify-global", "--global", "--force"]);
+      expect(existsSync(join(project, "foreman-home", "actions", "notify-global.js"))).toBe(true);
+    } finally {
+      process.chdir(cwd);
+      if (oldHome === undefined) delete process.env.FOREMAN_HOME;
+      else process.env.FOREMAN_HOME = oldHome;
     }
   });
 });

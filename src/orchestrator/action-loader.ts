@@ -95,13 +95,12 @@ export function validateProjectActions(projectRoot: string): ActionValidationRes
   return { invalidNames, invalidExports };
 }
 
-export function installBundledActions(
-  projectRoot: string,
+export function installBundledActionsToDir(
+  destDir: string,
   force = false,
 ): { installed: string[]; skipped: string[] } {
   const installed: string[] = [];
   const skipped: string[] = [];
-  const destDir = join(projectRoot, ".foreman", "actions");
   mkdirSync(destDir, { recursive: true });
   const files = listBundledActionFiles();
   for (const file of files) {
@@ -114,4 +113,11 @@ export function installBundledActions(
     }
   }
   return { installed, skipped };
+}
+
+export function installBundledActions(
+  projectRoot: string,
+  force = false,
+): { installed: string[]; skipped: string[] } {
+  return installBundledActionsToDir(join(projectRoot, ".foreman", "actions"), force);
 }

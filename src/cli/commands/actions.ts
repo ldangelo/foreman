@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
-import { actionCandidates, findProjectActionPath, installBundledActions, isSafeActionName, listBundledActionFiles, validateProjectActions } from "../../orchestrator/action-loader.js";
+import { actionCandidates, findProjectActionPath, installBundledActions, installBundledActionsToDir, isSafeActionName, listBundledActionFiles, validateProjectActions } from "../../orchestrator/action-loader.js";
 
 export interface ActionListRow {
   action: string;
@@ -100,10 +100,13 @@ actionsCommand
 actionsCommand
   .command("install")
   .description("Install bundled editable action stubs into .foreman/actions")
-  .option("--force", "Overwrite existing project action files")
+  .option("--force", "Overwrite existing action files")
+  .option("--global", "Install into ~/.foreman/actions instead of project .foreman/actions")
   .option("--json", "Output JSON")
-  .action((opts: { force?: boolean; json?: boolean }) => {
-    const result = installBundledActions(process.cwd(), !!opts.force);
+  .action((opts: { force?: boolean; global?: boolean; json?: boolean }) => {
+    const result = opts.global
+      ? installBundledActionsToDir(getForemanHomePath("actions"), !!opts.force)
+      : installBundledActions(process.cwd(), !!opts.force);
     if (opts.json) {
       console.log(JSON.stringify(result, null, 2));
       return;
@@ -115,16 +118,17 @@ actionsCommand
   .command("create")
   .description("Create a new project action stub in .foreman/actions")
   .argument("<action>", "Action name")
-  .option("--force", "Overwrite an existing project action file")
+  .option("--force", "Overwrite an existing action file")
+  .option("--global", "Create in ~/.foreman/actions instead of project .foreman/actions")
   .option("--json", "Output JSON")
-  .action((action: string, opts: { force?: boolean; json?: boolean }) => {
+  .action((action: string, opts: { force?: boolean; global?: boolean; json?: boolean }) => {
     if (!isSafeActionName(action)) {
       console.error(chalk.red(`Unsafe action name: ${action}`));
       process.exitCode = 1;
       return;
     }
     const projectPath = process.cwd();
-    const dir = join(projectPath, ".foreman", "actions");
+    const dir = opts.global ? getForemanHomePath("actions") : join(projectPath, ".foreman", "actions");
     const file = join(dir, `${action}.js`);
     mkdirSync(dir, { recursive: true });
     if (existsSync(file) && !opts.force) {
