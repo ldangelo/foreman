@@ -996,7 +996,7 @@ describe("validateWorkflowConfig — models map", () => {
     const config = loadWorkflowConfig("default", tmpDir2);
     rmSync(tmpDir2, { recursive: true, force: true });
     for (const phase of config.phases) {
-      if (!phase.builtin) {
+      if (phase.prompt) {
         expect(phase.models).toBeDefined();
         expect(phase.models!["default"]).toBeTruthy();
       }
