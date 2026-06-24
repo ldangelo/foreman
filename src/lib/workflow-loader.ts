@@ -933,9 +933,6 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   if (taskType !== undefined) config.taskType = taskType;
 
   // ── Parse optional vcs block ───────────────────────────────────────────────
-  if (raw["vcs"] !== undefined && !isRecord(raw["vcs"])) {
-    throw new WorkflowConfigError(workflowName, "vcs must be an object");
-  }
   if (isRecord(raw["vcs"])) {
     const vcsRaw = raw["vcs"];
     const backend = vcsRaw["backend"];

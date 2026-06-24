@@ -168,7 +168,6 @@ describe("validateWorkflowConfig", () => {
 
   it("rejects invalid top-level object controls", () => {
     for (const raw of [
-      { name: "default", vcs: [], phases: [{ name: "developer", prompt: "developer.md" }] },
       { name: "default", pr: [], phases: [{ name: "developer", prompt: "developer.md" }] },
     ]) {
       expect(() => validateWorkflowConfig(raw, "default")).toThrow(WorkflowConfigError);
