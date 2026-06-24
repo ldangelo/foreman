@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
@@ -49,6 +49,37 @@ export function listBundledActionFiles(): string[] {
 
 export function findMissingActions(projectRoot: string): string[] {
   return listBundledActionFiles().filter((file) => !existsSync(join(projectRoot, ".foreman", "actions", file)));
+}
+
+export interface ActionValidationResult {
+  invalidNames: string[];
+  invalidExports: string[];
+}
+
+export function validateProjectActions(projectRoot: string): ActionValidationResult {
+  const dir = join(projectRoot, ".foreman", "actions");
+  const invalidNames: string[] = [];
+  const invalidExports: string[] = [];
+  let files: string[] = [];
+  try {
+    files = readdirSync(dir).filter((file) => file.endsWith(".js") || file.endsWith(".mjs"));
+  } catch {
+    return { invalidNames, invalidExports };
+  }
+  for (const file of files) {
+    const actionName = file.replace(/\.(mjs|js)$/i, "");
+    if (!isSafeActionName(actionName)) {
+      invalidNames.push(file);
+      continue;
+    }
+    const source = readFileSync(join(dir, file), "utf8");
+    if (!/export\s+default\s+(async\s+)?function\b/.test(source)
+      && !/export\s+(async\s+)?function\s+run\b/.test(source)
+      && !/export\s*\{[^}]*\brun\b[^}]*\}/.test(source)) {
+      invalidExports.push(file);
+    }
+  }
+  return { invalidNames, invalidExports };
 }
 
 export function installBundledActions(

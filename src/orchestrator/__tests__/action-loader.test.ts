@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { installBundledActions, loadProjectAction } from "../action-loader.js";
+import { installBundledActions, loadProjectAction, validateProjectActions } from "../action-loader.js";
 
 describe("project action loader", () => {
   it("loads editable project actions from .foreman/actions", async () => {
@@ -20,6 +20,19 @@ describe("project action loader", () => {
   it("ignores unsafe action names", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-action-"));
     await expect(loadProjectAction(project, "../create-pr")).resolves.toBeUndefined();
+  });
+
+  it("validates action module names and exports", () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-action-validate-"));
+    mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "actions", "good.js"), "export async function run(ctx) { return ctx.internal.runBuiltin(); }\n");
+    writeFileSync(join(project, ".foreman", "actions", "bad.js"), "export const nope = 1;\n");
+    writeFileSync(join(project, ".foreman", "actions", "bad$name.js"), "export default function run() {}\n");
+
+    expect(validateProjectActions(project)).toEqual({
+      invalidNames: ["bad$name.js"],
+      invalidExports: ["bad.js"],
+    });
   });
 
   it("installs bundled action stubs into project .foreman/actions", () => {

@@ -15,7 +15,7 @@ import type { ITaskClient } from "../lib/task-client.js";
 import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
-import { findMissingActions, installBundledActions } from "./action-loader.js";
+import { findMissingActions, installBundledActions, validateProjectActions } from "./action-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
@@ -1137,24 +1137,32 @@ export class Doctor {
   async checkActions(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
     const missing = findMissingActions(this.projectPath);
-    if (missing.length === 0) {
+    const invalid = validateProjectActions(this.projectPath);
+    const invalidCount = invalid.invalidNames.length + invalid.invalidExports.length;
+    if (missing.length === 0 && invalidCount === 0) {
       return {
         name: "action modules (.foreman/actions/)",
         status: "pass",
         message: "All bundled action modules are installed",
       };
     }
+    const invalidDesc = [
+      invalid.invalidNames.length > 0 ? `unsafe names: ${invalid.invalidNames.join(", ")}` : "",
+      invalid.invalidExports.length > 0 ? `missing run/default export: ${invalid.invalidExports.join(", ")}` : "",
+    ].filter(Boolean).join("; ");
     if (dryRun) {
       return {
         name: "action modules (.foreman/actions/)",
         status: "fail",
-        message: `${missing.length} missing action module(s): ${missing.join(", ")}. Would install (dry-run).`,
+        message: `${missing.length} missing action module(s): ${missing.join(", ") || "none"}${invalidDesc ? `; ${invalidDesc}` : ""}. Would install missing stubs (dry-run).`,
       };
     }
     if (fix) {
       const { installed } = installBundledActions(this.projectPath, false);
       const stillMissing = findMissingActions(this.projectPath);
-      return stillMissing.length === 0
+      const stillInvalid = validateProjectActions(this.projectPath);
+      const stillInvalidCount = stillInvalid.invalidNames.length + stillInvalid.invalidExports.length;
+      return stillMissing.length === 0 && stillInvalidCount === 0
         ? {
             name: "action modules (.foreman/actions/)",
             status: "fixed",
@@ -1164,13 +1172,13 @@ export class Doctor {
         : {
             name: "action modules (.foreman/actions/)",
             status: "fail",
-            message: `Action modules still missing after install: ${stillMissing.join(", ")}`,
+            message: `Action module issues remain after install: missing=${stillMissing.join(", ") || "none"} invalidNames=${stillInvalid.invalidNames.join(", ") || "none"} invalidExports=${stillInvalid.invalidExports.join(", ") || "none"}`,
           };
     }
     return {
       name: "action modules (.foreman/actions/)",
       status: "fail",
-      message: `${missing.length} missing action module(s): ${missing.join(", ")}. Run 'foreman init' or 'foreman doctor --fix' to install.`,
+      message: `${missing.length} missing action module(s): ${missing.join(", ") || "none"}${invalidDesc ? `; ${invalidDesc}` : ""}. Run 'foreman init' or 'foreman doctor --fix' to install missing stubs; edit invalid action modules to export default run(ctx) or run(ctx).`,
     };
   }
 
