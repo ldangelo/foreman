@@ -52,6 +52,11 @@ describe("validateWorkflowConfig", () => {
     expect(() => validateWorkflowConfig({ name: "../escape", phases: [{ name: "developer", prompt: "developer.md" }] }, "custom")).toThrow(/safe workflow name/);
   });
 
+  it("rejects malformed workflow config names", () => {
+    expect(() => validateWorkflowConfig({ name: 42, phases: [{ name: "developer", prompt: "developer.md" }] }, "custom")).toThrow(/name must be a non-empty string/);
+    expect(() => validateWorkflowConfig({ name: "", phases: [{ name: "developer", prompt: "developer.md" }] }, "custom")).toThrow(/name must be a non-empty string/);
+  });
+
   it("rejects malformed task_type declarations", () => {
     expect(() => validateWorkflowConfig({
       name: "default",
@@ -210,6 +215,7 @@ describe("validateWorkflowConfig", () => {
 
   it("rejects invalid contract and overwatch controls", () => {
     for (const phase of [
+      { name: "developer", prompt: "developer.md", contract: { goal: "" } },
       { name: "developer", prompt: "developer.md", contract: { requiredSections: [""] } },
       { name: "developer", prompt: "developer.md", contract: { completion: { minEditTargets: 2, maxEditTargets: 1 } } },
       { name: "developer", prompt: "developer.md", contract: { allowedScope: { canWriteOnly: [""] } } },
@@ -277,6 +283,7 @@ describe("validateWorkflowConfig", () => {
     for (const raw of [
       { name: "default", setup: [{ command: "" }], phases: [basePhase] },
       { name: "default", setup: [{ command: "   " }], phases: [basePhase] },
+      { name: "default", setup: [{ command: "npm install", description: "" }], phases: [basePhase] },
       { name: "default", setupCache: [], phases: [basePhase] },
       { name: "default", setupCache: { key: "", path: "node_modules" }, phases: [basePhase] },
       { name: "default", setupCache: { key: "package-lock.json", path: "" }, phases: [basePhase] },
@@ -288,6 +295,7 @@ describe("validateWorkflowConfig", () => {
       { name: "default", onFailure: { name: "recover", artifact: "" }, phases: [basePhase] },
       { name: "default", onFailure: { name: "recover", models: { P9: "sonnet" } }, phases: [basePhase] },
       { name: "default", onFailure: { name: "recover", models: { default: "" } }, phases: [basePhase] },
+      { name: "default", pr: { timing: true }, phases: [basePhase] },
     ]) {
       expect(() => validateWorkflowConfig(raw, "default")).toThrow(WorkflowConfigError);
     }

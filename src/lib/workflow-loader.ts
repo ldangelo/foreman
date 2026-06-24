@@ -538,6 +538,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     throw new WorkflowConfigError(workflowName, "must be a YAML object");
   }
 
+  if (raw["name"] !== undefined && (typeof raw["name"] !== "string" || !raw["name"].trim())) {
+    throw new WorkflowConfigError(workflowName, "name must be a non-empty string");
+  }
   const name = typeof raw["name"] === "string" ? raw["name"] : workflowName;
   if (!isSafeWorkflowName(name)) {
     throw new WorkflowConfigError(workflowName, "name must be a safe workflow name");
@@ -573,7 +576,12 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       const step: WorkflowSetupStep = { command: s["command"] as string };
       const failFatal = parseOptionalBoolean(s["failFatal"], workflowName, `setup[${i}].failFatal`);
       if (failFatal !== undefined) step.failFatal = failFatal;
-      if (typeof s["description"] === "string") step.description = s["description"];
+      if (s["description"] !== undefined) {
+        if (typeof s["description"] !== "string" || !s["description"].trim()) {
+          throw new WorkflowConfigError(workflowName, `setup[${i}].description must be a non-empty string`);
+        }
+        step.description = s["description"];
+      }
       setup.push(step);
     }
   }
@@ -718,7 +726,12 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (isRecord(p["contract"])) {
       const c = p["contract"];
       phase.contract = {};
-      if (typeof c["goal"] === "string") phase.contract.goal = c["goal"];
+      if (c["goal"] !== undefined) {
+        if (typeof c["goal"] !== "string" || !c["goal"].trim()) {
+          throw new WorkflowConfigError(workflowName, `phases[${i}].contract.goal must be a non-empty string`);
+        }
+        phase.contract.goal = c["goal"];
+      }
       if (c["requiredSections"] !== undefined) {
         if (!Array.isArray(c["requiredSections"])) {
           throw new WorkflowConfigError(workflowName, `phases[${i}].contract.requiredSections must be an array of strings`);
@@ -1077,7 +1090,10 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     const prRaw = raw["pr"];
     config.pr = {};
     config.pr.timing = "create-at-finalize";
-    if (typeof prRaw["timing"] === "string") {
+    if (prRaw["timing"] !== undefined) {
+      if (typeof prRaw["timing"] !== "string" || !prRaw["timing"].trim()) {
+        throw new WorkflowConfigError(workflowName, "pr.timing must be a non-empty string");
+      }
       const timing = prRaw["timing"];
       if (timing === "draft-after-developer" || timing === "create-at-finalize" || timing === "never") {
         config.pr.timing = timing;
