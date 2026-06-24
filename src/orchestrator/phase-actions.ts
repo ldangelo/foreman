@@ -106,7 +106,9 @@ export function getPhaseActionDescriptor(phase: WorkflowPhaseConfig): PhaseActio
   const actionType = inferPhaseActionType(phase);
   return PHASE_ACTIONS[actionType] ?? {
     type: actionType,
-    kind: DISPATCHER_PHASE_ACTIONS.has(actionType) ? "dispatcher" : phase.bash ? "bash" : phase.command ? "command" : phase.prompt ? "prompt" : "builtin",
+    kind: phase.action
+      ? (DISPATCHER_PHASE_ACTIONS.has(actionType) ? "dispatcher" : "builtin")
+      : phase.bash ? "bash" : phase.command ? "command" : phase.prompt ? "prompt" : "builtin",
     description: `Custom phase action: ${actionType}`,
   };
 }

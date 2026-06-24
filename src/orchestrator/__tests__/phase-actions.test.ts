@@ -17,8 +17,9 @@ describe("phase actions", () => {
     expect(getPhaseActionDescriptor(phase)).toMatchObject({ kind: "prompt" });
   });
 
-  it("classifies custom actions without prompt/bash/command as builtin execution path", () => {
+  it("classifies custom actions as builtin execution path even with config fields", () => {
     expect(getPhaseActionDescriptor({ name: "notify", action: "notify-slack" })).toMatchObject({ kind: "builtin" });
+    expect(getPhaseActionDescriptor({ name: "notify", action: "notify-slack", prompt: "notify.md" })).toMatchObject({ kind: "builtin" });
   });
 
   it("classifies execution paths by action kind", () => {
