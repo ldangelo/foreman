@@ -70,17 +70,20 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "good.js"), "export async function run(ctx) { return ctx.internal.runBuiltin(); }\n");
     writeFileSync(join(project, ".foreman", "actions", "arrow.js"), "export default async (ctx) => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "const-run.js"), "export const run = async (ctx) => ctx.internal.runBuiltin();\n");
+    writeFileSync(join(project, ".foreman", "actions", "re-export-run.js"), "const run = async (ctx) => ctx.internal.runBuiltin(); export { run };\n");
     writeFileSync(join(project, ".foreman", "actions", "bad.js"), "export const nope = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "default-value.js"), "const run = 1; export default run;\n");
+    writeFileSync(join(project, ".foreman", "actions", "run-value.js"), "export const run = 1;\n");
+    writeFileSync(join(project, ".foreman", "actions", "missing-run.js"), "export { run };\n");
     writeFileSync(join(project, ".foreman", "actions", "bad$name.js"), "export default function run() {}\n");
 
     expect(validateProjectActions(project)).toEqual({
       invalidNames: ["bad$name.js"],
-      invalidExports: ["bad.js", "default-value.js"],
+      invalidExports: ["bad.js", "default-value.js", "missing-run.js", "run-value.js"],
     });
     expect(validateActionsInDir(join(project, ".foreman", "actions"))).toEqual({
       invalidNames: ["bad$name.js"],
-      invalidExports: ["bad.js", "default-value.js"],
+      invalidExports: ["bad.js", "default-value.js", "missing-run.js", "run-value.js"],
     });
   });
 

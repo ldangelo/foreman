@@ -88,8 +88,8 @@ export function validateActionsInDir(dir: string): ActionValidationResult {
     if (!/export\s+default\s+(async\s+)?function\b/.test(source)
       && !/export\s+default\s+(async\s+)?\([^)]*\)\s*=>/.test(source)
       && !/export\s+(async\s+)?function\s+run\b/.test(source)
-      && !/export\s+(const|let|var)\s+run\s*=/.test(source)
-      && !/export\s*\{[^}]*\brun\b[^}]*\}/.test(source)) {
+      && !/export\s+(const|let|var)\s+run\s*=\s*(async\s*)?(function\b|\([^)]*\)\s*=>|[a-zA-Z_$][\w$]*\s*=>)/.test(source)
+      && !/((async\s+)?function\s+run\b|(const|let|var)\s+run\s*=\s*(async\s*)?(function\b|\([^)]*\)\s*=>|[a-zA-Z_$][\w$]*\s*=>))[\s\S]*export\s*\{[^}]*\brun\b[^}]*\}/.test(source)) {
       invalidExports.push(file);
     }
   }
