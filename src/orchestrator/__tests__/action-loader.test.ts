@@ -75,15 +75,19 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "default-value.js"), "const run = 1; export default run;\n");
     writeFileSync(join(project, ".foreman", "actions", "run-value.js"), "export const run = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "missing-run.js"), "export { run };\n");
+    writeFileSync(join(project, ".foreman", "actions", "dup.js"), "export default async () => ({ success: true });\n");
+    writeFileSync(join(project, ".foreman", "actions", "dup.mjs"), "export default async () => ({ success: true });\n");
     writeFileSync(join(project, ".foreman", "actions", "bad$name.js"), "export default function run() {}\n");
 
     expect(validateProjectActions(project)).toEqual({
       invalidNames: ["bad$name.js"],
       invalidExports: ["bad.js", "default-value.js", "missing-run.js", "run-value.js"],
+      duplicateNames: ["dup"],
     });
     expect(validateActionsInDir(join(project, ".foreman", "actions"))).toEqual({
       invalidNames: ["bad$name.js"],
       invalidExports: ["bad.js", "default-value.js", "missing-run.js", "run-value.js"],
+      duplicateNames: ["dup"],
     });
   });
 

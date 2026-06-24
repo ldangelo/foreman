@@ -67,16 +67,26 @@ export function findMissingActions(projectRoot: string): string[] {
 export interface ActionValidationResult {
   invalidNames: string[];
   invalidExports: string[];
+  duplicateNames: string[];
 }
 
 export function validateActionsInDir(dir: string): ActionValidationResult {
   const invalidNames: string[] = [];
   const invalidExports: string[] = [];
+  const duplicateNames: string[] = [];
   let files: string[] = [];
   try {
-    files = readdirSync(dir).filter((file) => file.endsWith(".js") || file.endsWith(".mjs"));
+    files = readdirSync(dir).filter((file) => file.endsWith(".js") || file.endsWith(".mjs")).sort();
   } catch {
-    return { invalidNames, invalidExports };
+    return { invalidNames, invalidExports, duplicateNames };
+  }
+  const actionCounts = new Map<string, number>();
+  for (const file of files) {
+    const actionName = file.replace(/\.(mjs|js)$/i, "");
+    actionCounts.set(actionName, (actionCounts.get(actionName) ?? 0) + 1);
+  }
+  for (const [actionName, count] of actionCounts.entries()) {
+    if (count > 1) duplicateNames.push(actionName);
   }
   for (const file of files) {
     const actionName = file.replace(/\.(mjs|js)$/i, "");
@@ -93,7 +103,7 @@ export function validateActionsInDir(dir: string): ActionValidationResult {
       invalidExports.push(file);
     }
   }
-  return { invalidNames, invalidExports };
+  return { invalidNames, invalidExports, duplicateNames };
 }
 
 export function validateProjectActions(projectRoot: string): ActionValidationResult {

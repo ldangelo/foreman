@@ -85,8 +85,8 @@ actionsCommand
     }
     const invalid = validateProjectActions(projectPath);
     const invalidGlobal = validateGlobalActions();
-    if (invalid.invalidNames.length || invalid.invalidExports.length || invalidGlobal.invalidNames.length || invalidGlobal.invalidExports.length) {
-      console.error(chalk.red(`\nInvalid actions: projectNames=${invalid.invalidNames.join(", ") || "none"} projectExports=${invalid.invalidExports.join(", ") || "none"} globalNames=${invalidGlobal.invalidNames.join(", ") || "none"} globalExports=${invalidGlobal.invalidExports.join(", ") || "none"}`));
+    if (invalid.invalidNames.length || invalid.invalidExports.length || invalid.duplicateNames.length || invalidGlobal.invalidNames.length || invalidGlobal.invalidExports.length || invalidGlobal.duplicateNames.length) {
+      console.error(chalk.red(`\nInvalid actions: projectNames=${invalid.invalidNames.join(", ") || "none"} projectExports=${invalid.invalidExports.join(", ") || "none"} projectDuplicates=${invalid.duplicateNames.join(", ") || "none"} globalNames=${invalidGlobal.invalidNames.join(", ") || "none"} globalExports=${invalidGlobal.invalidExports.join(", ") || "none"} globalDuplicates=${invalidGlobal.duplicateNames.join(", ") || "none"}`));
       process.exitCode = 1;
     }
   });
@@ -146,8 +146,10 @@ actionsCommand
     const unresolved = findUnresolvedWorkflowActions(process.cwd());
     const ok = project.invalidNames.length === 0
       && project.invalidExports.length === 0
+      && project.duplicateNames.length === 0
       && global.invalidNames.length === 0
       && global.invalidExports.length === 0
+      && global.duplicateNames.length === 0
       && unresolved.length === 0;
     const result = { ok, project, global, unresolved };
     if (opts.json) {
@@ -155,7 +157,7 @@ actionsCommand
     } else if (ok) {
       console.log(chalk.green("Action modules valid"));
     } else {
-      console.error(chalk.red(`Invalid actions: projectNames=${project.invalidNames.join(", ") || "none"} projectExports=${project.invalidExports.join(", ") || "none"} globalNames=${global.invalidNames.join(", ") || "none"} globalExports=${global.invalidExports.join(", ") || "none"} unresolved=${unresolved.join(", ") || "none"}`));
+      console.error(chalk.red(`Invalid actions: projectNames=${project.invalidNames.join(", ") || "none"} projectExports=${project.invalidExports.join(", ") || "none"} projectDuplicates=${project.duplicateNames.join(", ") || "none"} globalNames=${global.invalidNames.join(", ") || "none"} globalExports=${global.invalidExports.join(", ") || "none"} globalDuplicates=${global.duplicateNames.join(", ") || "none"} unresolved=${unresolved.join(", ") || "none"}`));
     }
     if (!ok) process.exitCode = 1;
   });

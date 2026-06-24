@@ -1184,7 +1184,7 @@ export class Doctor {
     const invalid = validateProjectActions(this.projectPath);
     const invalidGlobal = validateGlobalActions();
     const unresolved = this.findUnresolvedWorkflowActions();
-    const invalidCount = invalid.invalidNames.length + invalid.invalidExports.length + invalidGlobal.invalidNames.length + invalidGlobal.invalidExports.length;
+    const invalidCount = invalid.invalidNames.length + invalid.invalidExports.length + invalid.duplicateNames.length + invalidGlobal.invalidNames.length + invalidGlobal.invalidExports.length + invalidGlobal.duplicateNames.length;
     if (missing.length === 0 && invalidCount === 0 && unresolved.length === 0) {
       return {
         name: "action modules (.foreman/actions/)",
@@ -1195,8 +1195,10 @@ export class Doctor {
     const invalidDesc = [
       invalid.invalidNames.length > 0 ? `unsafe project names: ${invalid.invalidNames.join(", ")}` : "",
       invalid.invalidExports.length > 0 ? `project missing run/default export: ${invalid.invalidExports.join(", ")}` : "",
+      invalid.duplicateNames.length > 0 ? `duplicate project action variants: ${invalid.duplicateNames.join(", ")}` : "",
       invalidGlobal.invalidNames.length > 0 ? `unsafe global names: ${invalidGlobal.invalidNames.join(", ")}` : "",
       invalidGlobal.invalidExports.length > 0 ? `global missing run/default export: ${invalidGlobal.invalidExports.join(", ")}` : "",
+      invalidGlobal.duplicateNames.length > 0 ? `duplicate global action variants: ${invalidGlobal.duplicateNames.join(", ")}` : "",
       unresolved.length > 0 ? `unresolved workflow actions: ${unresolved.join(", ")}` : "",
     ].filter(Boolean).join("; ");
     if (dryRun) {
@@ -1212,7 +1214,7 @@ export class Doctor {
       const stillInvalid = validateProjectActions(this.projectPath);
       const stillInvalidGlobal = validateGlobalActions();
       const stillUnresolved = this.findUnresolvedWorkflowActions();
-      const stillInvalidCount = stillInvalid.invalidNames.length + stillInvalid.invalidExports.length + stillInvalidGlobal.invalidNames.length + stillInvalidGlobal.invalidExports.length;
+      const stillInvalidCount = stillInvalid.invalidNames.length + stillInvalid.invalidExports.length + stillInvalid.duplicateNames.length + stillInvalidGlobal.invalidNames.length + stillInvalidGlobal.invalidExports.length + stillInvalidGlobal.duplicateNames.length;
       return stillMissing.length === 0 && stillInvalidCount === 0 && stillUnresolved.length === 0
         ? {
             name: "action modules (.foreman/actions/)",
@@ -1223,7 +1225,7 @@ export class Doctor {
         : {
             name: "action modules (.foreman/actions/)",
             status: "fail",
-            message: `Action module issues remain after install: missing=${stillMissing.join(", ") || "none"} projectInvalidNames=${stillInvalid.invalidNames.join(", ") || "none"} projectInvalidExports=${stillInvalid.invalidExports.join(", ") || "none"} globalInvalidNames=${stillInvalidGlobal.invalidNames.join(", ") || "none"} globalInvalidExports=${stillInvalidGlobal.invalidExports.join(", ") || "none"} unresolved=${stillUnresolved.join(", ") || "none"}`,
+            message: `Action module issues remain after install: missing=${stillMissing.join(", ") || "none"} projectInvalidNames=${stillInvalid.invalidNames.join(", ") || "none"} projectInvalidExports=${stillInvalid.invalidExports.join(", ") || "none"} projectDuplicates=${stillInvalid.duplicateNames.join(", ") || "none"} globalInvalidNames=${stillInvalidGlobal.invalidNames.join(", ") || "none"} globalInvalidExports=${stillInvalidGlobal.invalidExports.join(", ") || "none"} globalDuplicates=${stillInvalidGlobal.duplicateNames.join(", ") || "none"} unresolved=${stillUnresolved.join(", ") || "none"}`,
           };
     }
     return {
