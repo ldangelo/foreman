@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
@@ -143,6 +144,20 @@ function stripJsNonCode(source: string): string {
   return output;
 }
 
+function hasValidActionSyntax(filePath: string): boolean {
+  try {
+    execFileSync(process.execPath, [
+      "--experimental-vm-modules",
+      "-e",
+      "const fs=require('fs'),vm=require('vm'); new vm.SourceTextModule(fs.readFileSync(process.argv[1],'utf8'),{identifier:process.argv[1]});",
+      filePath,
+    ], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function hasValidActionExport(source: string): boolean {
   if (/export\s+default\s+(async\s+)?function\b/.test(source)) return true;
   if (/export\s+default\s+(async\s+)?(\([^)]*\)|[a-zA-Z_$][\w$]*)\s*=>/.test(source)) return true;
@@ -188,7 +203,12 @@ export function validateActionsInDir(dir: string): ActionValidationResult {
       invalidNames.push(file);
       continue;
     }
-    const source = stripJsNonCode(readFileSync(join(dir, file), "utf8"));
+    const filePath = join(dir, file);
+    if (!hasValidActionSyntax(filePath)) {
+      invalidExports.push(file);
+      continue;
+    }
+    const source = stripJsNonCode(readFileSync(filePath, "utf8"));
     if (!hasValidActionExport(source)) invalidExports.push(file);
   }
   return { invalidNames, invalidExports, duplicateNames };
