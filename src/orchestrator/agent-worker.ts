@@ -66,6 +66,7 @@ import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-confi
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
 import { inferPhaseActionType } from "./phase-actions.js";
 import { loadProjectAction } from "./action-loader.js";
+import { assertPhaseActionResult } from "./action-results.js";
 import { deriveFallbackRefineryOptions, runCliReviewBuiltinPhase, runCreatePrBuiltinPhase, runFinalizeBuiltinPhase, runMergeBuiltinPhase, runPrWaitBuiltinPhase, runPreparePrReviewBuiltinPhase, validatePrReviewGate, workerReportDir } from "./actions/builtin-worker-actions.js";
 import { ElixirServerClient } from "../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
@@ -1269,7 +1270,7 @@ async function runPipeline(
           };
           const runner = actionRunners[actionType];
           if (externalAction) {
-            return await externalAction({
+            const result = await externalAction({
               actionType,
               phase,
               progress,
@@ -1284,13 +1285,14 @@ async function runPipeline(
               internal: {
                 runBuiltin: async () => {
                   if (!runner) throw new Error(`Unknown builtin action: ${actionType} (phase ${phase.name})`);
-                  return runner();
+                  return assertPhaseActionResult(actionType, await runner());
                 },
               },
             });
+            return assertPhaseActionResult(actionType, result);
           }
           if (!runner) return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `Unknown builtin action: ${actionType} (phase ${phase.name})` };
-          return await runner();
+          return assertPhaseActionResult(actionType, await runner());
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: msg };
