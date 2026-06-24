@@ -89,6 +89,19 @@ describe("Doctor.checkWorkflows()", () => {
     });
   });
 
+  it("detects unsafe workflow filenames", async () => {
+    installBundledWorkflows(tmpDir, true);
+    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+    mkdirSync(workflowsDir, { recursive: true });
+    writeFileSync(join(workflowsDir, "bad name.yaml"), "name: bad-name\nphases:\n  - name: finalize\n    builtin: true\n");
+
+    const { doctor } = makeMocks(tmpDir);
+    const result = await doctor.checkWorkflows();
+    expect(result.status).toBe("fail");
+    expect(result.message).toMatch(/unsafe workflow filenames/i);
+    expect(result.message).toContain("project/bad name.yaml");
+  });
+
   it("detects stale workflow missing verdict/retryWith on reviewer phase", () => {
     // Install a default.yaml that exists but has a reviewer phase without verdict/retryWith
     const workflowsDir = join(tmpDir, "workflows");

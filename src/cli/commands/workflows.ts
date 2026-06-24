@@ -3,16 +3,14 @@ import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
-import { getBundledWorkflowPath, listAvailableWorkflows, listBundledWorkflowNames, loadWorkflowConfig, validateTaskTypeUniqueness } from "../../lib/workflow-loader.js";
+import { getBundledWorkflowPath, isSafeWorkflowName, listAvailableWorkflows, listBundledWorkflowNames, loadWorkflowConfig, validateTaskTypeUniqueness } from "../../lib/workflow-loader.js";
+
+export { isSafeWorkflowName };
 
 export interface WorkflowListRow {
   workflow: string;
   source: "project" | "global" | "bundled" | "missing";
   path: string | null;
-}
-
-export function isSafeWorkflowName(workflow: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(workflow) && workflow.length > 0;
 }
 
 function workflowNameFromFile(file: string): string {

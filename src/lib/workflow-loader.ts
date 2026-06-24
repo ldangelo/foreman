@@ -459,6 +459,10 @@ export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = [
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
+export function isSafeWorkflowName(workflow: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(workflow) && workflow.length > 0;
+}
+
 /**
  * Error thrown when a workflow config file is missing or invalid.
  */

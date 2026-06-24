@@ -14,13 +14,14 @@ import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn, ReconcileResult } fr
 import type { ITaskClient } from "../lib/task-client.js";
 import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
-import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, listAvailableWorkflows, loadWorkflowConfig, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
+import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, isSafeWorkflowName, listAvailableWorkflows, loadWorkflowConfig, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
 import { findMissingActions, findProjectActionPath, installBundledActions, validateGlobalActions, validateProjectActions } from "./action-loader.js";
 import { PHASE_ACTIONS } from "./phase-actions.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
 import { GhCli } from "../lib/gh-cli.js";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 import { JiraApiClient } from "../daemon/jira-api-client.js";
 
@@ -1057,6 +1058,25 @@ export class Doctor {
     };
   }
 
+  private async findUnsafeWorkflowFiles(): Promise<string[]> {
+    const result: string[] = [];
+    const scan = async (label: string, dir: string) => {
+      try {
+        const files = await readdir(dir);
+        for (const file of files) {
+          if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
+          const workflowName = file.replace(/\.ya?ml$/, "");
+          if (!isSafeWorkflowName(workflowName)) result.push(`${label}/${file}`);
+        }
+      } catch {
+        // Optional workflow directory missing — non-fatal.
+      }
+    };
+    await scan("project", join(this.projectPath, ".foreman", "workflows"));
+    await scan("global", getForemanHomePath("workflows"));
+    return result.sort();
+  }
+
   /**
    * Check that all bundled workflow YAML files are installed in ~/.foreman/workflows/
    * and that locally installed files have the required verdict/retry config fields.
@@ -1069,8 +1089,9 @@ export class Doctor {
 
     const missing = findMissingWorkflows(this.projectPath);
     const stale = findStaleWorkflows(this.projectPath);
+    const unsafe = await this.findUnsafeWorkflowFiles();
 
-    const problemCount = missing.length + stale.length;
+    const problemCount = missing.length + stale.length + unsafe.length;
 
     if (problemCount === 0) {
       return {
@@ -1082,9 +1103,11 @@ export class Doctor {
 
     const missingList = missing.map((n) => `${n}.yaml`).join(", ");
     const staleList = stale.map((n) => `${n}.yaml`).join(", ");
+    const unsafeList = unsafe.join(", ");
     const problemDesc = [
       missing.length > 0 ? `missing: ${missingList}` : "",
       stale.length > 0 ? `stale (missing verdict/retry config): ${staleList}` : "",
+      unsafe.length > 0 ? `unsafe workflow filenames: ${unsafeList}` : "",
     ]
       .filter(Boolean)
       .join("; ");
@@ -1105,7 +1128,8 @@ export class Doctor {
         const { installed } = installBundledWorkflows(this.projectPath, true);
         const stillMissing = findMissingWorkflows(this.projectPath);
         const stillStale = findStaleWorkflows(this.projectPath);
-        if (stillMissing.length === 0 && stillStale.length === 0) {
+        const stillUnsafe = await this.findUnsafeWorkflowFiles();
+        if (stillMissing.length === 0 && stillStale.length === 0 && stillUnsafe.length === 0) {
           return {
             name: "workflow configs (~/.foreman/workflows/)",
             status: "fixed",
@@ -1116,7 +1140,7 @@ export class Doctor {
         return {
           name: "workflow configs (~/.foreman/workflows/)",
           status: "fail",
-          message: `Workflow config issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")}`,
+          message: `Workflow config issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")} unsafe=${stillUnsafe.join(", ")}`,
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
