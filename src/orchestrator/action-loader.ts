@@ -86,7 +86,10 @@ export function validateActionsInDir(dir: string): ActionValidationResult {
     }
     const source = readFileSync(join(dir, file), "utf8");
     if (!/export\s+default\s+(async\s+)?function\b/.test(source)
+      && !/export\s+default\s+(async\s+)?\([^)]*\)\s*=>/.test(source)
+      && !/export\s+default\s+[a-zA-Z_$][\w$]*\s*;?/.test(source)
       && !/export\s+(async\s+)?function\s+run\b/.test(source)
+      && !/export\s+(const|let|var)\s+run\s*=/.test(source)
       && !/export\s*\{[^}]*\brun\b[^}]*\}/.test(source)) {
       invalidExports.push(file);
     }
