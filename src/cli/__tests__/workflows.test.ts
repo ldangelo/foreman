@@ -75,6 +75,7 @@ describe("workflows command helpers", () => {
     try {
       await workflowsCommand.parseAsync(["node", "foreman", "install"]);
       expect(existsSync(join(project, ".foreman", "workflows", "default.yaml"))).toBe(true);
+      expect(existsSync(join(project, ".foreman", "workflows", "tdd.yaml"))).toBe(true);
     } finally {
       process.chdir(cwd);
     }

@@ -1111,6 +1111,17 @@ export function installBundledWorkflows(
  * YAML files installed in ~/.foreman/workflows/ and, when projectRoot is provided,
  * .foreman/workflows/. Sorted and deduplicated.
  */
+export function listBundledWorkflowNames(): string[] {
+  try {
+    return readdirSync(BUNDLED_WORKFLOWS_DIR)
+      .filter((file) => file.endsWith(".yaml") || file.endsWith(".yml"))
+      .map((file) => file.replace(/\.ya?ml$/, ""))
+      .sort();
+  } catch {
+    return [...BUNDLED_WORKFLOW_NAMES].sort();
+  }
+}
+
 export function listAvailableWorkflows(projectRoot?: string): string[] {
   const names = new Set<string>();
 

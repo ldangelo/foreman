@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
-import { BUNDLED_WORKFLOW_NAMES, getBundledWorkflowPath, listAvailableWorkflows, loadWorkflowConfig, validateTaskTypeUniqueness } from "../../lib/workflow-loader.js";
+import { getBundledWorkflowPath, listAvailableWorkflows, listBundledWorkflowNames, loadWorkflowConfig, validateTaskTypeUniqueness } from "../../lib/workflow-loader.js";
 
 export interface WorkflowListRow {
   workflow: string;
@@ -60,7 +60,7 @@ function installBundledWorkflowsToDir(destDir: string, force = false): { install
   const installed: string[] = [];
   const skipped: string[] = [];
   mkdirSync(destDir, { recursive: true });
-  for (const name of BUNDLED_WORKFLOW_NAMES) {
+  for (const name of listBundledWorkflowNames()) {
     const src = getBundledWorkflowPath(name);
     if (!src) continue;
     const file = `${name}.yaml`;
