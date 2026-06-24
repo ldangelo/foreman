@@ -511,6 +511,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   }
 
   const name = typeof raw["name"] === "string" ? raw["name"] : workflowName;
+  if (!isSafeWorkflowName(name)) {
+    throw new WorkflowConfigError(workflowName, "name must be a safe workflow name");
+  }
 
   // ── Parse optional task_type declaration ──────────────────────────────────
   const taskType = typeof raw["task_type"] === "string" && raw["task_type"].trim()

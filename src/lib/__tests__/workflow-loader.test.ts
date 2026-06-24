@@ -48,6 +48,10 @@ function writeWorkflowFile(foremanHome: string, name: string, content: string): 
 // ── validateWorkflowConfig ────────────────────────────────────────────────────
 
 describe("validateWorkflowConfig", () => {
+  it("rejects unsafe workflow config names", () => {
+    expect(() => validateWorkflowConfig({ name: "../escape", phases: [{ name: "developer", prompt: "developer.md" }] }, "custom")).toThrow(/safe workflow name/);
+  });
+
   it("accepts a valid workflow config", () => {
     const raw = {
       name: "default",
