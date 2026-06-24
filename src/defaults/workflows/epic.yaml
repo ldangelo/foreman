@@ -44,6 +44,7 @@ phases:
   # PRD skill writes to docs/PRD/PRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/PRD/PRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: prd
+    action: command-agent
     command: "/skill:ensemble-create-prd {task.title}"
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -60,6 +61,7 @@ phases:
   # TRD skill writes to docs/TRD/TRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/TRD/TRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: trd
+    action: command-agent
     command: "/skill:ensemble-create-trd"
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -78,6 +80,7 @@ phases:
   # Implement skill writes an IMPLEMENT_REPORT.md to the current working directory.
   # Move it to the runtime report directory so it is not committed with the worktree.
   - name: implement
+    action: command-agent
     command: "mkdir -p \"{task.projectReportsDir}\" && /skill:ensemble-implement-trd && mv IMPLEMENT_REPORT.md \"{task.projectReportsDir}/IMPLEMENT_REPORT.md\" 2>/dev/null || true"
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -96,6 +99,7 @@ phases:
 
   # ── Phase 4: Developer (fix issues from finalize / qa) ──────────────────
   - name: developer
+    action: prompt-agent
     prompt: developer.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -114,6 +118,7 @@ phases:
 
   # ── Phase 5: QA ──────────────────────────────────────────────────────────
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -129,6 +134,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: qa
+    action: prompt-agent
     prompt: qa.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
@@ -148,6 +154,7 @@ phases:
 
   # ── Phase 6: finalize ───────────────────────────────────────────────────
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
@@ -159,6 +166,7 @@ phases:
       onComplete: true
       onFail: developer
   - name: create-pr
+    action: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
     mail:
@@ -166,6 +174,7 @@ phases:
       onComplete: true
 
   - name: pr-wait
+    action: pr-wait
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
@@ -177,6 +186,7 @@ phases:
       onFail: developer
 
   - name: prepare-pr-review
+    action: prepare-pr-review
     builtin: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
     mail:
@@ -184,6 +194,7 @@ phases:
       onComplete: true
 
   - name: pr-review
+    action: prompt-agent
     prompt: pr-review.md
     tools:
       allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
@@ -202,6 +213,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: merge
+    action: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
     mail:

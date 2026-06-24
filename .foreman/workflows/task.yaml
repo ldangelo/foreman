@@ -23,6 +23,7 @@ phases:
   # Uses the workflow-scoped fix-issue prompt so the artifact contract is
   # explicit and isolated from other workflows.
   - name: fix
+    action: prompt-agent
     prompt: fix-issue.md
     tools:
       allowed:
@@ -54,6 +55,7 @@ phases:
   # sequential execution; activated only when a later phase fails and uses
   # retryWith: developer.
   - name: developer
+    action: prompt-agent
     retryOnly: true
     prompt: developer.md
     tools:
@@ -85,6 +87,7 @@ phases:
       leaseSecs: 600
 
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -99,6 +102,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: qa
+    action: prompt-agent
     prompt: qa.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
@@ -116,6 +120,7 @@ phases:
       onFail: developer
 
   - name: reviewer
+    action: prompt-agent
     prompt: reviewer.md
     tools:
       allowed: [Glob, Grep, Read, Write]
@@ -135,6 +140,7 @@ phases:
 
   # ── Phase 3: cli-review (builtin) ───────────────────────────────────────
   - name: cli-review
+    action: cli-review
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
@@ -149,6 +155,7 @@ phases:
   # ── Phase 4: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
@@ -160,6 +167,7 @@ phases:
       onComplete: true
       onFail: developer
   - name: create-pr
+    action: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
     mail:
@@ -167,6 +175,7 @@ phases:
       onComplete: true
 
   - name: pr-wait
+    action: pr-wait
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
@@ -178,6 +187,7 @@ phases:
       onFail: developer
 
   - name: prepare-pr-review
+    action: prepare-pr-review
     builtin: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
     mail:
@@ -185,6 +195,7 @@ phases:
       onComplete: true
 
   - name: pr-review
+    action: prompt-agent
     prompt: pr-review.md
     tools:
       allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
@@ -202,6 +213,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: merge
+    action: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
     mail:

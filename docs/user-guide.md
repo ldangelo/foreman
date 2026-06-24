@@ -44,7 +44,7 @@ foreman task list
 
 ### Workflows
 
-A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation.
+A workflow is a YAML phase sequence. Each phase names a reusable `action` (`prompt-agent`, `command-agent`, `bash`, `finalize`, PR gate actions, or `merge`) so Foreman's engine stays generic while YAML defines the steps. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation.
 
 Important phase reports:
 

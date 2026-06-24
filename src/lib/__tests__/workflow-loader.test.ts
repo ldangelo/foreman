@@ -27,6 +27,7 @@ import {
   type WorkflowSetupStep,
   type WorkflowPhaseConfig,
 } from "../workflow-loader.js";
+import { inferPhaseActionType } from "../../orchestrator/phase-actions.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -62,6 +63,19 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].skipIfArtifact).toBe("EXPLORER_REPORT.md");
     expect(config.phases[2].retryOnFail).toBe(2);
     expect(config.phases[3].builtin).toBe(true);
+  });
+
+  it("parses explicit phase action declarations", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        { name: "reviewer", action: "prompt-agent", prompt: "reviewer.md" },
+        { name: "auto-smoke", action: "bash", bash: "npm test" },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+    expect(config.phases[0].action).toBe("prompt-agent");
+    expect(config.phases[1].action).toBe("bash");
   });
 
   it("parses retryAfterCooldown and cooldownSeconds from phase config", () => {
@@ -415,6 +429,16 @@ phases:
     const mergePhase = config.phases.find((phase) => phase.name === "merge");
     expect(mergePhase?.builtin).toBe(true);
     expect(mergePhase?.artifact).toBe("{task.projectReportsDir}/MERGE_REPORT.md");
+  });
+
+  it("bundled workflows declare reusable action types for every phase", () => {
+    for (const workflowName of BUNDLED_WORKFLOW_NAMES) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      for (const phase of config.phases) {
+        expect(phase.action, `${workflowName}.${phase.name}`).toBeTruthy();
+        expect(inferPhaseActionType(phase), `${workflowName}.${phase.name}`).toBe(phase.action);
+      }
+    }
   });
 
   it("bundled auto-merge workflows expose cli-review, PR review, and merge phases", () => {

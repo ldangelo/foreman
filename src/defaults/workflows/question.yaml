@@ -16,6 +16,7 @@ phases:
   # ── Phase 1: explore ────────────────────────────────────────────────────
   # Investigate the question and produce a written analysis.
   - name: explore
+    action: prompt-agent
     prompt: explorer.md
     tools:
       allowed: [Glob, Grep, Read, Write]
@@ -33,6 +34,7 @@ phases:
   # ── Phase 2: finalize ───────────────────────────────────────────────────
   # Summarise findings. No merge — merge_strategy is "none".
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -48,6 +50,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30

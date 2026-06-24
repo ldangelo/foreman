@@ -27,6 +27,8 @@ export interface PhaseRecord {
   name: string;
   /** Execution surface used for this phase. */
   phaseType?: "prompt" | "command" | "bash" | "builtin";
+  /** Reusable workflow action type, e.g. prompt-agent, bash, finalize. */
+  actionType?: string;
   /** True if this phase was skipped */
   skipped: boolean;
   /** Who performed the action (e.g., "foreman", "scheduler", "worker", "operator") */
@@ -434,7 +436,7 @@ export async function generateActivityLog(
 export function createPhaseRecord(
   name: string,
   model?: string,
-  extra?: Pick<PhaseRecord, "phaseType" | "commandsRun" | "artifactExpected" | "workflowName" | "workflowPath">,
+  extra?: Pick<PhaseRecord, "phaseType" | "actionType" | "commandsRun" | "artifactExpected" | "workflowName" | "workflowPath">,
 ): PhaseRecord {
   return {
     name,
@@ -442,6 +444,7 @@ export function createPhaseRecord(
     startedAt: new Date().toISOString(),
     model,
     phaseType: extra?.phaseType,
+    actionType: extra?.actionType,
     commandsRun: extra?.commandsRun,
     artifactExpected: extra?.artifactExpected,
     workflowName: extra?.workflowName,

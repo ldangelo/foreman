@@ -15,6 +15,7 @@ setupCache:
   path: node_modules
 phases:
   - name: explorer
+    action: prompt-agent
     prompt: explorer.md
     tools:
       allowed: [Glob, Grep, Read, Write]
@@ -30,6 +31,7 @@ phases:
       forwardArtifactTo: developer
 
   - name: developer
+    action: prompt-agent
     prompt: developer.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -43,6 +45,7 @@ phases:
       onComplete: true
 
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -58,6 +61,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: qa
+    action: prompt-agent
     prompt: qa.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
@@ -75,6 +79,7 @@ phases:
       onFail: developer
 
   - name: reviewer
+    action: prompt-agent
     prompt: reviewer.md
     tools:
       allowed: [Glob, Grep, Read, Write]
@@ -93,6 +98,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30

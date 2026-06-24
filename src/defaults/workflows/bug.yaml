@@ -26,6 +26,7 @@ phases:
   # Uses the workflow-scoped fix-issue prompt so the artifact contract is
   # explicit and isolated from other workflows.
   - name: fix
+    action: prompt-agent
     prompt: fix-issue.md
     tools:
       allowed: [Bash, Edit, Read, Write]
@@ -63,6 +64,7 @@ phases:
   # sequential execution; activated only when a later phase fails and uses
   # retryWith: developer.
   - name: developer
+    action: prompt-agent
     retryOnly: true
     prompt: developer.md
     tools:
@@ -101,6 +103,7 @@ phases:
 
   # ── Phase 3: QA validation ──────────────────────────────────────────────
   - name: qa
+    action: prompt-agent
     prompt: qa.md
     tools:
       allowed: [Bash, Read, Write]
@@ -132,6 +135,7 @@ phases:
   # Run CodeRabbit CLI before finalize so the developer remediation loop can
   # address findings before PR creation and merge gates.
   - name: cli-review
+    action: cli-review
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
@@ -149,6 +153,7 @@ phases:
   # contract check (Target Integration / Test Validation sections + Verdict).
   # FINALIZE_REPORT.md is also written by the agent as a human-readable summary.
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
@@ -161,6 +166,7 @@ phases:
       onFail: developer
 
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -185,6 +191,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: create-pr
+    action: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
     mail:
@@ -192,6 +199,7 @@ phases:
       onComplete: true
 
   - name: pr-wait
+    action: pr-wait
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
@@ -203,6 +211,7 @@ phases:
       onFail: developer
 
   - name: prepare-pr-review
+    action: prepare-pr-review
     builtin: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
     mail:
@@ -210,6 +219,7 @@ phases:
       onComplete: true
 
   - name: pr-review
+    action: prompt-agent
     prompt: pr-review.md
     tools:
       allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
@@ -237,6 +247,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: merge
+    action: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
     mail:

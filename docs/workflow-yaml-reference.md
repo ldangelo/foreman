@@ -270,14 +270,15 @@ setupCache:
 
 ## Phases
 
-The `phases` array defines the ordered sequence of pipeline phases. Most phases run an AI agent with a prompt, model, and constraints. Builtin phases run deterministic TypeScript code instead. **New prompt phases require zero TypeScript changes** — just add a YAML entry and a prompt file.
+The `phases` array defines the ordered sequence of pipeline phases. Each phase binds a workflow label (`name`) to a reusable execution `action`. Most phases use the `prompt-agent` action with a prompt, model, and constraints. Builtin phases use deterministic TypeScript actions such as `finalize`, `create-pr`, or `merge`. **New prompt phases require zero TypeScript changes** — just add a YAML entry and a prompt file.
 
 ### Phase Fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | *required* | Phase identifier (used in logs, mail, labels) |
-| `prompt` | string | — | Prompt file name in `~/.foreman/prompts/{workflow}/` |
+| `action` | string | inferred | Reusable execution action (`prompt-agent`, `command-agent`, `bash`, `finalize`, `cli-review`, `create-pr`, `pr-wait`, `prepare-pr-review`, `merge`, or custom) |
+| `prompt` | string | — | Prompt file name in `~/.foreman/prompts/{workflow}/` for `prompt-agent` phases |
 | `model` | string | — | Single model shorthand or full ID (deprecated, use `models`) |
 | `models` | map | — | Priority-based model overrides (see below) |
 | `maxTurns` | number | — | Maximum agent turns before timeout |
@@ -290,7 +291,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Most phases 
 | `files` | object | — | File reservation configuration (see below) |
 | `contract` | object | — | Optional artifact completion contract used by phase overwatch |
 | `overwatch` | object | — | Optional runtime supervisor/policy controls for runaway phase prevention |
-| `builtin` | boolean | `false` | Phase implemented in TypeScript, not as agent prompt |
+| `builtin` | boolean | `false` | Backward-compatible marker for TypeScript-backed phases; prefer explicit `action` in new workflows |
 
 ### Phase Overwatch
 

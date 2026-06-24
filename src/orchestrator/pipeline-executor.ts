@@ -49,6 +49,7 @@ import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig 
 import { SandboxProviderFactory } from "../lib/sandbox-providers/index.js";
 import type { SandboxProviderConfig } from "../lib/sandbox-provider.js";
 import { parseQAFailures, formatFailureChecklist, diffQAFailures, validateAcceptanceCoverage, type QAFailureItem, type TrackedFailureItem } from "../lib/report-parser.js";
+import { getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction } from "./phase-actions.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -826,7 +827,7 @@ export function applyEffectiveSandboxConfig(ctx: PipelineContext): void {
   const effectiveSandbox = resolveProjectSandboxConfig(ctx.workflowConfig.sandbox, projectSandbox);
   if (!effectiveSandbox) return;
 
-  const hostPhases = ctx.workflowConfig.phases.filter((phase) => !phase.bash).map((phase) => phase.name);
+  const hostPhases = ctx.workflowConfig.phases.filter((phase) => !isBashPhaseAction(phase)).map((phase) => phase.name);
   if (hostPhases.length > 0) {
     throw new Error(`Sandbox is only supported for bash phases; host-executed phases are not isolated: ${hostPhases.join(", ")}`);
   }
@@ -1474,13 +1475,9 @@ async function runPhaseSequence(
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
     const agentName = `${phaseName}-${seedId}`;
-    const phaseType = phase.bash
-      ? "bash"
-      : phase.command
-        ? "command"
-        : phase.builtin
-          ? "builtin"
-          : "prompt";
+    const phaseAction = getPhaseActionDescriptor(phase);
+    const phaseActionType = inferPhaseActionType(phase);
+    const phaseType = phaseAction.kind;
     const phaseMeta: TaskMeta = {
       id: seedId,
       title: seedTitle,
@@ -1621,9 +1618,9 @@ async function runPhaseSequence(
     // TRD-004/TRD-005: Build prompt only for prompt:-based phases.
     // Bash, command, and builtin phases handle their own execution without buildPhasePrompt.
     let prompt = "";
-    if (!phase.bash && !phase.builtin) {
-      prompt = phase.command
-        ? interpolateTaskPlaceholders(phase.command, phaseMeta)
+    if (!isBashPhaseAction(phase) && !isBuiltinPhaseAction(phase)) {
+      prompt = isCommandPhaseAction(phase)
+        ? interpolateTaskPlaceholders(phase.command ?? "", phaseMeta)
         : buildPhasePrompt(phaseName, {
           seedId,
           seedTitle,
@@ -1670,9 +1667,10 @@ async function runPhaseSequence(
     // FR-4: Create initial activity phase record
     const activityPhase = createPhaseRecord(phaseName, phaseModel, {
       phaseType,
-      commandsRun: phase.bash
-        ? [interpolateTaskPlaceholders(phase.bash, phaseMeta)]
-        : phase.command
+      actionType: phaseActionType,
+      commandsRun: isBashPhaseAction(phase)
+        ? [interpolateTaskPlaceholders(phase.bash ?? "", phaseMeta)]
+        : isCommandPhaseAction(phase)
           ? [prompt]
           : undefined,
       artifactExpected: interpolatedArtifact,
@@ -1725,7 +1723,7 @@ async function runPhaseSequence(
       (phaseConfig as typeof phaseConfig & { allowedTools?: string[] }).allowedTools = phase.tools.allowed;
     }
 
-    if (phase.builtin) {
+    if (isBuiltinPhaseAction(phase)) {
       if (!ctx.runBuiltinPhase) {
         const errorMsg = `Builtin phase ${phaseName} is not supported by this runner`;
         ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
@@ -1870,10 +1868,10 @@ async function runPhaseSequence(
     }
 
     // TRD-004: Bash phase — execute via execFile instead of SDK agent
-    if (phase.bash) {
-      const resolvedBashCommand = interpolateTaskPlaceholders(phase.bash, phaseMeta);
+    if (isBashPhaseAction(phase)) {
+      const resolvedBashCommand = interpolateTaskPlaceholders(phase.bash ?? "", phaseMeta);
       const bashResult = await runBashPhase(
-        phase.bash,
+        phase.bash ?? "",
         ctx.taskMeta,
         worktreePath,
         phase.artifact,
@@ -2010,7 +2008,7 @@ async function runPhaseSequence(
     const observabilityInput: PhaseObservabilityInput = {
       phaseType,
       expectedArtifact: interpolatedArtifact,
-      resolvedCommand: phase.command ? prompt : undefined,
+      resolvedCommand: isCommandPhaseAction(phase) ? prompt : undefined,
       workflowName: workflowConfig.name,
       workflowPath: workflowConfig.sourcePath,
     };
@@ -2036,14 +2034,14 @@ async function runPhaseSequence(
     activityPhase.traceMarkdownFile = result.traceMarkdownFile;
     activityPhase.phaseWarnings = result.traceWarnings;
     activityPhase.commandHonored = result.commandHonored;
-    if (phase.command && result.success && interpolatedArtifact && artifactPresent === false) {
+    if (isCommandPhaseAction(phase) && result.success && interpolatedArtifact && artifactPresent === false) {
       const artifactWarning = `[PIPELINE] WARNING — command phase ${phaseName} succeeded without artifact ${interpolatedArtifact}`;
       ctx.log(artifactWarning);
       await appendFile(logFile, `\n${artifactWarning}\n`);
     }
 
     const commandPhaseContractReasons: string[] = [];
-    if (phase.command && result.success) {
+    if (isCommandPhaseAction(phase) && result.success) {
       if (result.commandHonored === false && (result.traceWarnings?.length ?? 0) > 0) {
         commandPhaseContractReasons.push(...(result.traceWarnings ?? []));
       }
@@ -2127,7 +2125,7 @@ async function runPhaseSequence(
       costUsd: result.costUsd,
       turns: result.turns,
       error: phaseError,
-      commandsRun: phase.command ? [prompt] : undefined,
+      commandsRun: isCommandPhaseAction(phase) ? [prompt] : undefined,
       artifactExpected: interpolatedArtifact,
       artifactPresent,
       traceFile: result.traceFile,

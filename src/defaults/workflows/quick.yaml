@@ -22,6 +22,7 @@ setupCache:
 
 phases:
   - name: developer
+    action: prompt-agent
     prompt: developer.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -39,6 +40,7 @@ phases:
       leaseSecs: 600
 
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -54,6 +56,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: qa
+    action: prompt-agent
     prompt: qa.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
@@ -72,6 +75,7 @@ phases:
       onFail: developer
 
   - name: cli-review
+    action: cli-review
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
@@ -88,6 +92,7 @@ phases:
       onFail: developer
 
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
@@ -99,6 +104,7 @@ phases:
       onComplete: true
       onFail: developer
   - name: create-pr
+    action: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
     mail:
@@ -106,6 +112,7 @@ phases:
       onComplete: true
 
   - name: pr-wait
+    action: pr-wait
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
@@ -117,6 +124,7 @@ phases:
       onFail: developer
 
   - name: prepare-pr-review
+    action: prepare-pr-review
     builtin: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
     mail:
@@ -124,6 +132,7 @@ phases:
       onComplete: true
 
   - name: pr-review
+    action: prompt-agent
     prompt: pr-review.md
     tools:
       allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
@@ -142,6 +151,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: merge
+    action: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
     mail:

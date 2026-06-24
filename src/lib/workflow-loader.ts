@@ -148,6 +148,8 @@ export interface WorkflowPhaseOverwatchConfig {
 export interface WorkflowPhaseConfig {
   /** Phase name: "explorer" | "developer" | "qa" | "reviewer" | "finalize" | custom */
   name: string;
+  /** Reusable execution action type. Defaults from prompt/bash/command/builtin fields when omitted. */
+  action?: string;
   /**
    * Prompt file name (relative to .foreman/prompts/{workflow}/).
    * Omitted for builtin phases (e.g., finalize).
@@ -526,6 +528,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 
     const phase: WorkflowPhaseConfig = { name: p["name"] as string };
 
+    if (typeof p["action"] === "string") phase.action = p["action"];
     if (typeof p["prompt"] === "string") phase.prompt = p["prompt"];
     if (typeof p["model"] === "string") phase.model = p["model"];
 

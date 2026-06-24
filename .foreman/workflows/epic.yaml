@@ -42,6 +42,7 @@ phases:
   # PRD skill writes to docs/PRD/PRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/PRD/PRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: prd
+    action: command-agent
     command: "/ensemble:create-prd {task.title}"
     models:
       default: MiniMax
@@ -56,6 +57,7 @@ phases:
   # TRD skill writes to docs/TRD/TRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/TRD/TRD-{yyyymm}-{title-slug}.md (skill's output path)
   - name: trd
+    action: command-agent
     command: "/ensemble:create-trd"
     models:
       default: MiniMax
@@ -72,6 +74,7 @@ phases:
   # Implement skill writes an IMPLEMENT_REPORT.md to the current working directory.
   # Move it to the runtime report directory so it is not committed with the worktree.
   - name: implement
+    action: command-agent
     command: "mkdir -p \"{task.projectReportsDir}\" && /ensemble:implement-trd && mv IMPLEMENT_REPORT.md \"{task.projectReportsDir}/IMPLEMENT_REPORT.md\" 2>/dev/null || true"
     models:
       default: MiniMax
@@ -88,6 +91,7 @@ phases:
 
   # ── Phase 4: Developer (fix issues from finalize / qa) ──────────────────
   - name: developer
+    action: prompt-agent
     prompt: developer.md
     models:
       default: MiniMax
@@ -103,6 +107,7 @@ phases:
 
   # ── Phase 5: QA ──────────────────────────────────────────────────────────
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -117,6 +122,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: qa
+    action: prompt-agent
     prompt: qa.md
     models:
       default: MiniMax
@@ -133,6 +139,7 @@ phases:
 
   # ── Phase 6: finalize ───────────────────────────────────────────────────
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30

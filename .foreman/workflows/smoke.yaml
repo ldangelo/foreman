@@ -14,6 +14,7 @@ setupCache:
   path: node_modules
 phases:
   - name: explorer
+    action: prompt-agent
     prompt: explorer.md
     models:
       default: haiku
@@ -26,6 +27,7 @@ phases:
       forwardArtifactTo: developer
 
   - name: developer
+    action: prompt-agent
     prompt: developer.md
     models:
       default: haiku
@@ -36,6 +38,7 @@ phases:
       onComplete: true
 
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -50,6 +53,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: qa
+    action: prompt-agent
     prompt: qa.md
     models:
       default: haiku
@@ -64,6 +68,7 @@ phases:
       onFail: developer
 
   - name: reviewer
+    action: prompt-agent
     prompt: reviewer.md
     models:
       default: sonnet
@@ -79,6 +84,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30

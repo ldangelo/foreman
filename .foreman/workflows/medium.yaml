@@ -13,6 +13,7 @@ setupCache:
 
 phases:
   - name: developer
+    action: prompt-agent
     prompt: developer.md
     models:
       default: MiniMax
@@ -27,6 +28,7 @@ phases:
       leaseSecs: 600
 
   - name: documentation
+    action: prompt-agent
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -41,6 +43,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: qa
+    action: prompt-agent
     prompt: qa.md
     models:
       default: MiniMax
@@ -56,6 +59,7 @@ phases:
       onFail: developer
 
   - name: finalize
+    action: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
