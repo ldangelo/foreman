@@ -21,6 +21,15 @@ setupCache:
   path: node_modules
 
 phases:
+  - name: prepare-worktree
+    action: prepare-worktree
+
+  - name: setup-workspace
+    action: setup-workspace
+
+  - name: write-task-context
+    action: write-task-context
+
   - name: developer
     action: prompt-agent
     prompt: developer.md

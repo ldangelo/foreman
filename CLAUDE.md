@@ -100,7 +100,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 
 **Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
 
-- Phase sequence, reusable action (`prompt-agent`, `bash`, `finalize`, PR gates, merge), models, retries, validation policies, mail hooks, artifacts all defined in YAML
+- Phase sequence, reusable action (`prepare-worktree`, `setup-workspace`, `write-task-context`, `prompt-agent`, `bash`, `finalize`, PR gates, merge), models, retries, validation policies, mail hooks, artifacts all defined in YAML
 - No hardcoded prompt phase names in the executor — new prompt phases need only YAML + prompt file
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
 - Retry loops: QA⇄Developer and Reviewer⇄Developer with feedback mail

@@ -1,6 +1,6 @@
 import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 
-export type PhaseActionKind = "prompt" | "command" | "bash" | "builtin";
+export type PhaseActionKind = "dispatcher" | "prompt" | "command" | "bash" | "builtin";
 
 export interface PhaseActionDescriptor {
   /** Reusable action implementation key used by workflow YAML. */
@@ -20,7 +20,28 @@ const BUILTIN_PHASE_ACTIONS = new Set([
   "merge",
 ]);
 
+export const DISPATCHER_PHASE_ACTIONS = new Set([
+  "prepare-worktree",
+  "setup-workspace",
+  "write-task-context",
+]);
+
 export const PHASE_ACTIONS: Record<string, PhaseActionDescriptor> = {
+  "prepare-worktree": {
+    type: "prepare-worktree",
+    kind: "dispatcher",
+    description: "Create or reuse the task worktree and branch",
+  },
+  "setup-workspace": {
+    type: "setup-workspace",
+    kind: "dispatcher",
+    description: "Run workflow setup, dependency install, and afterCreate hook",
+  },
+  "write-task-context": {
+    type: "write-task-context",
+    kind: "dispatcher",
+    description: "Write TASK.md/context files into the workspace",
+  },
   "prompt-agent": {
     type: "prompt-agent",
     kind: "prompt",
@@ -85,13 +106,17 @@ export function getPhaseActionDescriptor(phase: WorkflowPhaseConfig): PhaseActio
   const actionType = inferPhaseActionType(phase);
   return PHASE_ACTIONS[actionType] ?? {
     type: actionType,
-    kind: phase.bash ? "bash" : phase.command ? "command" : phase.builtin ? "builtin" : "prompt",
+    kind: DISPATCHER_PHASE_ACTIONS.has(actionType) ? "dispatcher" : phase.bash ? "bash" : phase.command ? "command" : phase.builtin ? "builtin" : "prompt",
     description: `Custom phase action: ${actionType}`,
   };
 }
 
 export function phaseActionKind(phase: WorkflowPhaseConfig): PhaseActionKind {
   return getPhaseActionDescriptor(phase).kind;
+}
+
+export function isDispatcherPhaseAction(phase: WorkflowPhaseConfig): boolean {
+  return phaseActionKind(phase) === "dispatcher";
 }
 
 export function isBuiltinPhaseAction(phase: WorkflowPhaseConfig): boolean {

@@ -13,6 +13,15 @@ setup: []
 # No install needed for research-only tasks
 
 phases:
+  - name: prepare-worktree
+    action: prepare-worktree
+
+  - name: setup-workspace
+    action: setup-workspace
+
+  - name: write-task-context
+    action: write-task-context
+
   # ── Phase 1: explore ────────────────────────────────────────────────────
   # Investigate the question and produce a written analysis.
   - name: explore

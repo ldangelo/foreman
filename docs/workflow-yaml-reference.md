@@ -277,7 +277,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Each phase b
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | *required* | Phase identifier (used in logs, mail, labels) |
-| `action` | string | inferred | Reusable execution action (`prompt-agent`, `command-agent`, `bash`, `finalize`, `cli-review`, `create-pr`, `pr-wait`, `prepare-pr-review`, `merge`, or custom) |
+| `action` | string | inferred | Reusable execution action (`prepare-worktree`, `setup-workspace`, `write-task-context`, `prompt-agent`, `command-agent`, `bash`, `finalize`, `cli-review`, `create-pr`, `pr-wait`, `prepare-pr-review`, `merge`, or custom) |
 | `prompt` | string | — | Prompt file name in `~/.foreman/prompts/{workflow}/` for `prompt-agent` phases |
 | `model` | string | — | Single model shorthand or full ID (deprecated, use `models`) |
 | `models` | map | — | Priority-based model overrides (see below) |
@@ -321,7 +321,7 @@ Bundled default/feature/bug workflows enable overwatch across prompt-backed phas
       repeatedCommandLimit: 2
 ```
 
-Additional `contract.completion` fields include `requireFilesChanged` and `requireValidationNotes` for handoff-style phases. `contract.policy` declares engine-level validation behavior that used to be tied to specific phase names: `requiresExplorerReport`, `explorerCircuitBreaker`, `developerCompletion`, `redPhaseCompletion`, `acceptanceCoverage`, `allowDeferredAcceptance`, `testEvidence`, `captureQaTarget`, `finalizeValidation`, `skipDeveloperRetryOnUnrelatedFinalizeFailure`, `structuredFailureChecklist`, and `terminalOnFailExhausted`. Additional `overwatch` controls include `forceArtifactAfterToolCalls`, `maxToolCalls`, `repeatedCommandLimit`, and `blockedCommands` (regular-expression strings matched against normalized shell commands).
+Additional `contract.completion` fields include `requireFilesChanged` and `requireValidationNotes` for handoff-style phases. `contract.policy` declares engine-level validation behavior that used to be tied to specific phase names: `requiresExplorerReport`, `explorerCircuitBreaker`, `developerCompletion`, `redPhaseCompletion`, `acceptanceCoverage`, `allowDeferredAcceptance`, `testEvidence`, `captureQaTarget`, `finalizeValidation`, `skipDeveloperRetryOnUnrelatedFinalizeFailure`, `structuredFailureChecklist`, and `terminalOnFailExhausted`. Dispatcher actions (`prepare-worktree`, `setup-workspace`, `write-task-context`) run before worker launch and may omit `prompt`, `bash`, `command`, and `builtin`. Additional `overwatch` controls include `forceArtifactAfterToolCalls`, `maxToolCalls`, `repeatedCommandLimit`, and `blockedCommands` (regular-expression strings matched against normalized shell commands).
 
 ### Documentation Phase
 

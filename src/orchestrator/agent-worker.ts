@@ -1854,8 +1854,8 @@ async function runPipeline(
       async runBuiltinPhase(phase: WorkflowPhaseConfig, progress?: RunProgress) {
         try {
           const actionType = inferPhaseActionType(phase);
-          if (actionType === "create-pr") {
-            return await runCreatePrBuiltinPhase({
+          const actionRunners: Record<string, () => Promise<import("./pipeline-executor.js").PhaseResult>> = {
+            "create-pr": () => runCreatePrBuiltinPhase({
               config,
               store,
               runtimeTaskClient,
@@ -1866,22 +1866,12 @@ async function runPipeline(
               workflowConfig,
               log,
               agentMailClient,
-            });
-          }
-          if (actionType === "pr-wait") {
-            return await runPrWaitBuiltinPhase({ config, phase, pipelineProjectPath, log });
-          }
-          if (actionType === "cli-review") {
-            return await runCliReviewBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log });
-          }
-          if (actionType === "finalize") {
-            return await runFinalizeBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log, progress });
-          }
-          if (actionType === "prepare-pr-review") {
-            return await runPreparePrReviewBuiltinPhase({ config, pipelineProjectPath, log });
-          }
-          if (actionType === "merge") {
-            return await runMergeBuiltinPhase({
+            }),
+            "pr-wait": () => runPrWaitBuiltinPhase({ config, phase, pipelineProjectPath, log }),
+            "cli-review": () => runCliReviewBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log }),
+            finalize: () => runFinalizeBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log, progress }),
+            "prepare-pr-review": () => runPreparePrReviewBuiltinPhase({ config, pipelineProjectPath, log }),
+            merge: () => runMergeBuiltinPhase({
               config,
               store,
               pipelineProjectPath,
@@ -1891,9 +1881,11 @@ async function runPipeline(
               workflowConfig,
               log,
               agentMailClient,
-            });
-          }
-          return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `Unknown builtin action: ${actionType} (phase ${phase.name})` };
+            }),
+          };
+          const runner = actionRunners[actionType];
+          if (!runner) return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `Unknown builtin action: ${actionType} (phase ${phase.name})` };
+          return await runner();
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: msg };

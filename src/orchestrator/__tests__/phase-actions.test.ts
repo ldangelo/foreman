@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction } from "../phase-actions.js";
+import { getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction, isDispatcherPhaseAction } from "../phase-actions.js";
 import type { WorkflowPhaseConfig } from "../../lib/workflow-loader.js";
 
 describe("phase actions", () => {
@@ -21,5 +21,6 @@ describe("phase actions", () => {
     expect(isCommandPhaseAction({ name: "prd", action: "command-agent", command: "/skill:create-prd" })).toBe(true);
     expect(isBashPhaseAction({ name: "smoke", action: "bash", bash: "npm test" })).toBe(true);
     expect(isBuiltinPhaseAction({ name: "merge", action: "merge", builtin: true })).toBe(true);
+    expect(isDispatcherPhaseAction({ name: "prepare-worktree", action: "prepare-worktree" })).toBe(true);
   });
 });

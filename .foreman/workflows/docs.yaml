@@ -12,6 +12,15 @@ setup: []
 # No dependencies needed for docs-only changes
 
 phases:
+  - name: prepare-worktree
+    action: prepare-worktree
+
+  - name: setup-workspace
+    action: setup-workspace
+
+  - name: write-task-context
+    action: write-task-context
+
   # ── Phase 1: develop ────────────────────────────────────────────────────
   # The agent writes or updates documentation based on the task title/description.
   - name: develop

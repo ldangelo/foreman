@@ -49,6 +49,8 @@ import { load as yamlLoad } from "js-yaml";
 import { getForemanHomePath } from "./foreman-paths.js";
 import type { SandboxConfig } from "./project-config.js";
 
+const WORKSPACE_ACTIONS = new Set(["prepare-worktree", "setup-workspace", "write-task-context"]);
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -676,6 +678,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     const hasBash = typeof p["bash"] === "string";
     const hasCommand = typeof p["command"] === "string";
     const isBuiltin = typeof p["builtin"] === "boolean" && p["builtin"];
+    const isWorkspaceAction = typeof p["action"] === "string" && WORKSPACE_ACTIONS.has(p["action"]);
     if (hasBash && hasPrompt) {
       throw new WorkflowConfigError(
         workflowName,
@@ -694,8 +697,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         `phases[${i}].${p["name"]} has both 'command:' and 'prompt:' — only one is allowed`,
       );
     }
-    // builtin: true phases don't need a prompt/bash/command field
-    if (!hasPrompt && !hasBash && !hasCommand && !isBuiltin) {
+    // builtin/workspace action phases don't need a prompt/bash/command field
+    if (!hasPrompt && !hasBash && !hasCommand && !isBuiltin && !isWorkspaceAction) {
       throw new WorkflowConfigError(
         workflowName,
         `phases[${i}].${p["name"]} must have one of 'prompt:', 'bash:', or 'command:'`,

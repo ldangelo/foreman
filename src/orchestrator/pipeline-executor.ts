@@ -49,7 +49,7 @@ import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig 
 import { SandboxProviderFactory } from "../lib/sandbox-providers/index.js";
 import type { SandboxProviderConfig } from "../lib/sandbox-provider.js";
 import { parseQAFailures, formatFailureChecklist, diffQAFailures, validateAcceptanceCoverage, type QAFailureItem, type TrackedFailureItem } from "../lib/report-parser.js";
-import { getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction } from "./phase-actions.js";
+import { getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction, isDispatcherPhaseAction } from "./phase-actions.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1529,7 +1529,7 @@ async function runPhaseSequence(
     const agentName = `${phaseName}-${seedId}`;
     const phaseAction = getPhaseActionDescriptor(phase);
     const phaseActionType = inferPhaseActionType(phase);
-    const phaseType = phaseAction.kind;
+    const phaseType = phaseAction.kind === "dispatcher" ? "builtin" : phaseAction.kind;
     const phaseMeta: TaskMeta = {
       id: seedId,
       title: seedTitle,
@@ -1542,6 +1542,13 @@ async function runPhaseSequence(
     const projectReportsDir = phaseMeta.projectReportsDir ?? getRunReportsDir(projectId, seedId, runId);
     const hasExplorerReport = existsSync(join(projectReportsDir, "EXPLORER_REPORT.md"))
       || existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
+
+    if (isDispatcherPhaseAction(phase)) {
+      ctx.log(`[${phaseName.toUpperCase()}] Skipping — dispatcher action already handled before worker launch`);
+      phaseRecords.push({ name: phaseName, skipped: true });
+      i++;
+      continue;
+    }
 
     if (phase.retryOnly && !retryOnlyActivations.has(phaseName)) {
       ctx.log(`[${phaseName.toUpperCase()}] Skipping — retryOnly phase not activated by retryWith`);

@@ -12,13 +12,15 @@ import type { RunStatus } from "./read-models.js";
 import type { DispatcherStoreDeps } from "./dispatcher-dependencies.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, PIPELINE_TIMEOUTS, getDefaultModel } from "../lib/config.js";
 import type { BvClient } from "../lib/bv.js";
-import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
+import { runWorkspaceHook } from "../lib/setup.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { workerAgentMd } from "./templates.js";
+import { getPhaseActionDescriptor, inferPhaseActionType } from "./phase-actions.js";
+import { runWorkspaceAction, type WorkspaceActionContext } from "./workspace-actions.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
-import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
+import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig, type WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { getPoolConfig } from "../lib/db/pool-manager.js";
 import type { EpicTask } from "./pipeline-executor.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
@@ -859,6 +861,7 @@ export class Dispatcher {
           projectCfg?.taskTypeWorkflowMap,
           opts?.workflow,
         );
+        let wfConfig: WorkflowConfig | undefined;
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
         let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
@@ -867,7 +870,7 @@ export class Dispatcher {
         // projectHooks is used in afterCreate/beforeRun hooks below the try block
         const projectHooks: import("../lib/project-config.js").ProjectHooksConfig | undefined = projectCfg?.hooks;
         try {
-          const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
+          wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
           workflowMerge = wfConfig.merge ?? 'auto';
@@ -897,47 +900,39 @@ export class Dispatcher {
           log(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
         }
 
-        // 2. Create worktree at ~/.foreman/worktrees/<projectId>/<beadId> via WorktreeManager (TRD-037)
-        const worktreeManager = new WorktreeManager();
-        const worktreeInfo = await worktreeManager.createWorktree({
+        // 2. Run dispatcher-bound workspace actions before spawning the worker.
+        const defaultDispatcherPhases: WorkflowPhaseConfig[] = [
+          { name: "prepare-worktree", action: "prepare-worktree" },
+          { name: "setup-workspace", action: "setup-workspace" },
+          { name: "write-task-context", action: "write-task-context" },
+        ];
+        const configuredDispatcherPhases = wfConfig?.phases.filter((phase) => getPhaseActionDescriptor(phase).kind === "dispatcher") ?? [];
+        const dispatcherPhases = configuredDispatcherPhases.length > 0 ? configuredDispatcherPhases : defaultDispatcherPhases;
+        let workspaceContext: WorkspaceActionContext = {
           projectId,
-          beadId: seed.id,
+          seedId: seed.id,
           repoPath: this.projectPath,
-          baseBranch: baseBranch ?? defaultBranch,
-        });
-        const worktreePath = worktreeInfo.path;
-        const branchName = worktreeInfo.branchName;
-        const workspaceWasCreated = worktreeInfo.created ?? !worktreeInfo.exists;
-
-        // Run setup steps / install dependencies (not part of VcsBackend interface)
-        if (opts?.runtimeMode === "test") {
-          log(`[foreman] Skipping workflow setup/install for ${seed.id} in test runtime`);
-        } else if (setupSteps && setupSteps.length > 0) {
-          await runSetupWithCache(worktreePath, this.projectPath, setupSteps, setupCache);
-        } else {
-          await installDependencies(worktreePath);
+          baseBranch,
+          defaultBranch,
+          runtimeMode: opts?.runtimeMode,
+          setupSteps,
+          setupCache,
+          projectHooks,
+          attemptNumber,
+          seedInfo,
+          model,
+          log,
+        };
+        for (const phase of dispatcherPhases) {
+          const actionType = inferPhaseActionType(phase);
+          log(`[foreman] Workspace action ${actionType} for ${seed.id}`);
+          workspaceContext = await runWorkspaceAction(actionType, workspaceContext);
         }
-
-        // Run afterCreate hook (one-time setup after workspace created)
-        // Failures are fatal — block agent spawn
-        if (workspaceWasCreated && projectHooks?.afterCreate) {
-          const hookEnv: Record<string, string> = {
-            FOREMAN_WORKSPACE_PATH: worktreePath,
-            FOREMAN_ISSUE_ID: seed.id,
-            FOREMAN_ISSUE_IDENTIFIER: seed.id,
-            FOREMAN_ATTEMPT: String(attemptNumber),
-          };
-          try {
-            await runWorkspaceHook(projectHooks, "afterCreate", worktreePath, hookEnv);
-          } catch (hookErr: unknown) {
-            const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
-            throw new Error(`afterCreate hook failed for ${seed.id}: ${hookMsg}`);
-          }
+        if (!workspaceContext.worktreePath || !workspaceContext.branchName) {
+          throw new Error(`Workspace actions did not produce worktree metadata for ${seed.id}`);
         }
-
-        // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
-        const taskMd = workerAgentMd(seedInfo, worktreePath, model);
-        await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
+        const worktreePath = workspaceContext.worktreePath;
+        const branchName = workspaceContext.branchName;
 
         // 4. Record run in store (include base_branch for stacking awareness)
         // TRD-007: pass merge_strategy from workflow config

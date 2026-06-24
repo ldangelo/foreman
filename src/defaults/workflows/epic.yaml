@@ -40,6 +40,15 @@ finalPhases:
   - finalize
 
 phases:
+  - name: prepare-worktree
+    action: prepare-worktree
+
+  - name: setup-workspace
+    action: setup-workspace
+
+  - name: write-task-context
+    action: write-task-context
+
   # ── Phase 1: PRD ──────────────────────────────────────────────────────────
   # PRD skill writes to docs/PRD/PRD-{yyyymm}-{title-slug}.md
   # skipIfArtifact checks for docs/PRD/PRD-{yyyymm}-{title-slug}.md (skill's output path)

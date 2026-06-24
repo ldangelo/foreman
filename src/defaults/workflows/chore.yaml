@@ -18,6 +18,15 @@ setupCache:
   path: node_modules
 
 phases:
+  - name: prepare-worktree
+    action: prepare-worktree
+
+  - name: setup-workspace
+    action: setup-workspace
+
+  - name: write-task-context
+    action: write-task-context
+
   # ── Phase 1: fix ────────────────────────────────────────────────────────
   # Uses the workflow-scoped fix-issue prompt so the artifact contract is
   # explicit and isolated from other workflows.
