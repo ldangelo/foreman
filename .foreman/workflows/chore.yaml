@@ -1,12 +1,13 @@
-# Chore workflow: command phase → bash phase → finalize → auto-merge
+# Chore workflow: fix prompt → bash phase → finalize → auto-merge
 #
 # Lean pipeline for refactors, dependency updates, tooling, and other
-# maintenance tasks. Uses command + bash phases for efficiency (TRD-2026-008).
+# maintenance tasks. Uses a workflow-scoped fix prompt plus bash validation.
 # No explorer (scope is already known) and no reviewer (changes are well-scoped).
 #
 # Auto-selected when bead type is "chore".
 
 name: chore
+task_type: chore
 merge: auto
 setup:
   - command: npm install --prefer-offline --no-audit
@@ -26,17 +27,20 @@ phases:
   - name: write-task-context
     action: write-task-context
 
-  # ── Phase 1: fix (command phase — TRD-005) ───────────────────────────────
-  # Uses /ensemble:fix-issue as the agent prompt, with task metadata interpolated.
-  # Use /ensemble:refactor or /ensemble:chore for refactoring-specific agents.
+  # ── Phase 1: fix ────────────────────────────────────────────────────────
+  # Uses the workflow-scoped fix-issue prompt so the artifact contract is
+  # explicit and isolated from other workflows.
   - name: fix
-    action: command-agent
-    command: "/ensemble:fix-issue {task.title} {task.description}"
+    action: prompt-agent
+    prompt: fix-issue.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: sonnet
       P0: opus
       P4: haiku
     maxTurns: 60
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     contract:
       policy:
@@ -47,7 +51,7 @@ phases:
       onComplete: true
 
   # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
-  # Runs the project's test suite to validate the chore.
+  # Runs the project's unit test suite to validate the chore quickly.
   - name: documentation
     action: prompt-agent
     prompt: documentation.md
@@ -57,6 +61,7 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
@@ -65,7 +70,9 @@ phases:
 
   - name: test
     action: bash
-    bash: "npm run test"
+    bash: "npm run test:unit"
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
     artifact: "{task.projectReportsDir}/TEST_RESULTS.md"
     verdict: true
     retryWith: fix
@@ -74,7 +81,24 @@ phases:
       onStart: false
       onComplete: true
 
-  # ── Phase 3: finalize ───────────────────────────────────────────────────
+  # ── Phase 3: cli-review ──────────────────────────────────────────────────
+  - name: cli-review
+    action: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    contract:
+      policy:
+        terminalOnFailExhausted: true
+    verdict: true
+    retryWith: fix
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: fix
+
+  # ── Phase 4: finalize ───────────────────────────────────────────────────
   # Summarises changes for auto-merge.
   - name: finalize
     action: finalize
@@ -87,9 +111,66 @@ phases:
         skipDeveloperRetryOnUnrelatedFinalizeFailure: true
         terminalOnFailExhausted: true
     verdict: true
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 6
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: fix
+  - name: create-pr
+    action: create-pr
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-wait
+    action: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    timeoutSecs: 1200
+    retryWith: fix
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: fix
+
+  - name: prepare-pr-review
+    action: prepare-pr-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-review
+    action: prompt-agent
+    prompt: pr-review.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
+    models:
+      default: MiniMax
+    maxTurns: 40
+    retryAfterCooldown: true
+    artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    contract:
+      policy:
+        terminalOnFailExhausted: true
+    verdict: true
+    retryWith: fix
+    retryOnFail: 3
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: fix
+      forwardArtifactTo: foreman
+
+  - name: merge
+    action: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true

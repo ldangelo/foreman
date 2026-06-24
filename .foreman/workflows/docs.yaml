@@ -7,6 +7,7 @@
 # Auto-selected when bead type is "docs".
 
 name: docs
+task_type: docs
 merge: auto
 setup: []
 # No dependencies needed for docs-only changes
@@ -26,11 +27,14 @@ phases:
   - name: develop
     action: prompt-agent
     prompt: developer.md
+    tools:
+      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: sonnet
       P0: opus
       P4: haiku
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -39,8 +43,7 @@ phases:
       reserve: true
       leaseSecs: 300
 
-  # ── Phase 2: finalize ───────────────────────────────────────────────────
-  # Quick validation: verify docs build or lint, then auto-merge.
+  # ── Phase 2: cli-review ──────────────────────────────────────────────────
   - name: documentation
     action: prompt-agent
     prompt: documentation.md
@@ -50,12 +53,31 @@ phases:
       default: MiniMax
       P0: MiniMax-highspeed
     maxTurns: 40
+    retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
       onComplete: true
       forwardArtifactTo: foreman
 
+  - name: cli-review
+    action: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    contract:
+      policy:
+        terminalOnFailExhausted: true
+    verdict: true
+    retryWith: develop
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: develop
+
+  # ── Phase 3: finalize ───────────────────────────────────────────────────
+  # Quick validation: verify docs build or lint, then auto-merge.
   - name: finalize
     action: finalize
     builtin: true
@@ -67,9 +89,66 @@ phases:
         skipDeveloperRetryOnUnrelatedFinalizeFailure: true
         terminalOnFailExhausted: true
     verdict: true
-    retryWith: developer
+    retryWith: develop
     retryOnFail: 6
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: develop
+  - name: create-pr
+    action: create-pr
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-wait
+    action: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    timeoutSecs: 1200
+    retryWith: develop
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: develop
+
+  - name: prepare-pr-review
+    action: prepare-pr-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
+    mail:
+      onStart: true
+      onComplete: true
+
+  - name: pr-review
+    action: prompt-agent
+    prompt: pr-review.md
+    tools:
+      allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
+    models:
+      default: MiniMax
+    maxTurns: 40
+    retryAfterCooldown: true
+    artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    contract:
+      policy:
+        terminalOnFailExhausted: true
+    verdict: true
+    retryWith: develop
+    retryOnFail: 3
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: develop
+      forwardArtifactTo: foreman
+
+  - name: merge
+    action: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
