@@ -18,6 +18,7 @@ import {
   findMissingWorkflows,
   resolveWorkflowName,
   resolvePhaseModel,
+  hasWorkflowConfig,
   listAvailableWorkflows,
   ensureBundledWorkflowsInstalled,
   WorkflowConfigError,
@@ -753,6 +754,19 @@ describe("resolveWorkflowName", () => {
 
   it("returns workflow when labels is undefined", () => {
     expect(resolveWorkflowName("feature", undefined)).toBe("feature");
+  });
+
+  it("uses a workflow file installed in project .foreman/workflows when projectRoot is provided", () => {
+    mkdirSync(join(tmpDir, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, ".foreman", "workflows", "project-seed.yaml"), `
+name: project-seed
+phases:
+  - name: finalize
+    builtin: true
+`);
+
+    expect(resolveWorkflowName("project-seed", undefined, undefined, undefined, undefined, tmpDir)).toBe("project-seed");
+    expect(hasWorkflowConfig("project-seed", tmpDir)).toBe(true);
   });
 
   it("uses a workflow file installed in the global foreman home", () => {

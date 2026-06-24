@@ -1048,12 +1048,13 @@ export function getBundledWorkflowPath(workflowName: string): string | null {
 }
 
 /**
- * Returns true when a workflow YAML exists either in ~/.foreman/workflows/
- * or in the bundled defaults directory.
+ * Returns true when a workflow YAML exists in project .foreman/workflows/,
+ * ~/.foreman/workflows/, or bundled defaults.
  */
-export function hasWorkflowConfig(workflowName: string): boolean {
+export function hasWorkflowConfig(workflowName: string, projectRoot?: string): boolean {
+  const projectPath = projectRoot ? join(projectRoot, ".foreman", "workflows", `${workflowName}.yaml`) : null;
   const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
-  return existsSync(globalPath) || getBundledWorkflowPath(workflowName) !== null;
+  return (projectPath ? existsSync(projectPath) : false) || existsSync(globalPath) || getBundledWorkflowPath(workflowName) !== null;
 }
 
 /**
@@ -1355,7 +1356,7 @@ export function validateTaskTypeUniqueness(): TaskTypeUniquenessResult {
  *  2. `workflow:<name>` label on the task
  *  3. `taskTypeWorkflowMap[seedType]` — explicit config mapping
  *  4. `taskTypeWorkflowMap["default"]` — fallback for unknown types
- *  5. `{seedType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
+ *  5. `{seedType}.yaml` in project/global/bundled workflows
  *  6. "default" (hard fallback)
  *
  * When `taskTypeWorkflowMap` is not provided (undefined), steps 3–4 are skipped
@@ -1370,6 +1371,7 @@ export function resolveWorkflowName(
   taskTypeWorkflowMap?: Record<string, string>,
   workflowOverride?: string,
   workflowDeclaredMap?: Record<string, string>,
+  projectRoot?: string,
 ): string {
   // 0. Explicit override (e.g. `foreman run --workflow quick`) — top priority
   const override = workflowOverride?.trim();
@@ -1390,33 +1392,26 @@ export function resolveWorkflowName(
   // by tests/callers that already loaded workflows; otherwise build it from the
   // available workflow YAML files.
   const declaredWorkflow = workflowDeclaredMap?.[seedType] ?? buildTaskTypeWorkflowMap().get(seedType);
-  if (declaredWorkflow && hasWorkflowConfig(declaredWorkflow)) {
+  if (declaredWorkflow && hasWorkflowConfig(declaredWorkflow, projectRoot)) {
     return declaredWorkflow;
   }
 
   // 3. Explicit taskTypeWorkflowMap mapping remains a compatibility fallback.
   if (taskTypeWorkflowMap) {
     const mappedWorkflow = taskTypeWorkflowMap[seedType];
-    if (mappedWorkflow && hasWorkflowConfig(mappedWorkflow)) {
+    if (mappedWorkflow && hasWorkflowConfig(mappedWorkflow, projectRoot)) {
       return mappedWorkflow;
     }
     // 4. Default fallback from config mapping
     const defaultWorkflow = taskTypeWorkflowMap["default"];
-    if (defaultWorkflow && hasWorkflowConfig(defaultWorkflow)) {
+    if (defaultWorkflow && hasWorkflowConfig(defaultWorkflow, projectRoot)) {
       return defaultWorkflow;
     }
   }
 
   // 5. File-existence fallback (backward compatible with pre-config behavior)
-  if (seedType) {
-    const globalPath = getForemanHomePath("workflows", `${seedType}.yaml`);
-    if (existsSync(globalPath)) {
-      return seedType;
-    }
-    const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${seedType}.yaml`);
-    if (existsSync(bundledPath)) {
-      return seedType;
-    }
+  if (seedType && hasWorkflowConfig(seedType, projectRoot)) {
+    return seedType;
   }
 
   // 5. Hard fallback to default

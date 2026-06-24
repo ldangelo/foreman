@@ -1130,6 +1130,9 @@ async function runPipeline(
     config.seedType ?? "feature",
     config.seedLabels,
     projectTaskTypeWorkflowMap,
+    undefined,
+    undefined,
+    pipelineProjectPath,
   );
   const workflowLookup = config.workflowPath ?? resolvedWorkflow;
   // Load the workflow config (phase sequence + per-phase overrides).

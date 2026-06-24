@@ -860,6 +860,8 @@ export class Dispatcher {
           seedInfo.labels,
           projectCfg?.taskTypeWorkflowMap,
           opts?.workflow,
+          undefined,
+          this.projectPath,
         );
         let wfConfig: WorkflowConfig | undefined;
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
