@@ -778,6 +778,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (phase.mail?.onFail && !phaseNames.has(phase.mail.onFail)) {
       throw new WorkflowConfigError(workflowName, `phase '${phase.name}' mail.onFail references unknown phase '${phase.mail.onFail}'`);
     }
+    if (phase.mail?.forwardArtifactTo && phase.mail.forwardArtifactTo !== "foreman" && !phaseNames.has(phase.mail.forwardArtifactTo)) {
+      throw new WorkflowConfigError(workflowName, `phase '${phase.name}' mail.forwardArtifactTo references unknown phase '${phase.mail.forwardArtifactTo}'`);
+    }
   }
 
   const config: WorkflowConfig = { name, phases };

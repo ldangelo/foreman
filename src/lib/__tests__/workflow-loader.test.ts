@@ -123,6 +123,23 @@ describe("validateWorkflowConfig", () => {
     }, "default")).toThrow(/mail\.onFail references unknown phase/);
   });
 
+  it("rejects mail.forwardArtifactTo references to unknown phases except foreman", () => {
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [
+        { name: "explorer", prompt: "explorer.md", mail: { forwardArtifactTo: "developer" } },
+      ],
+    }, "default")).toThrow(/mail\.forwardArtifactTo references unknown phase/);
+
+    const config = validateWorkflowConfig({
+      name: "default",
+      phases: [
+        { name: "explorer", prompt: "explorer.md", mail: { forwardArtifactTo: "foreman" } },
+      ],
+    }, "default");
+    expect(config.phases[0].mail?.forwardArtifactTo).toBe("foreman");
+  });
+
   it("rejects invalid action capabilities", () => {
     expect(() => validateWorkflowConfig({
       name: "default",
