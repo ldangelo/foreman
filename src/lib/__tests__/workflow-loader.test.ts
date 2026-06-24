@@ -204,6 +204,29 @@ describe("validateWorkflowConfig", () => {
     }
   });
 
+  it("rejects invalid boolean controls", () => {
+    const basePhase = { name: "developer", prompt: "developer.md" };
+    for (const raw of [
+      { name: "default", setup: [{ command: "npm test", failFatal: "yes" }], phases: [basePhase] },
+      { name: "default", phases: [{ ...basePhase, retryOnly: "no" }] },
+      { name: "default", phases: [{ ...basePhase, verdict: "true" }] },
+      { name: "default", phases: [{ ...basePhase, stopOnFailExhausted: 1 }] },
+      { name: "default", phases: [{ ...basePhase, sameFailureCircuitBreaker: "false" }] },
+      { name: "default", phases: [{ ...basePhase, retryAfterCooldown: "false" }] },
+      { name: "default", phases: [{ ...basePhase, builtin: "true" }] },
+      { name: "default", phases: [{ ...basePhase, contract: { policy: { acceptanceCoverage: "true" } } }] },
+      { name: "default", phases: [{ ...basePhase, contract: { completion: { requireFilesChanged: "true" } } }] },
+      { name: "default", phases: [{ ...basePhase, contract: { allowedScope: { canRead: "true" } } }] },
+      { name: "default", phases: [{ ...basePhase, overwatch: { enabled: "true" } }] },
+      { name: "default", phases: [{ ...basePhase, overwatch: { mode: "strict" } }] },
+      { name: "default", phases: [{ ...basePhase, overwatch: { forceArtifactNearMaxTurns: "true" } }] },
+      { name: "default", phases: [{ ...basePhase, mail: { onStart: "true" } }] },
+      { name: "default", phases: [{ ...basePhase, files: { reserve: "true" } }] },
+    ]) {
+      expect(() => validateWorkflowConfig(raw, "default")).toThrow(WorkflowConfigError);
+    }
+  });
+
   it("rejects invalid numeric phase controls", () => {
     for (const phase of [
       { name: "developer", prompt: "developer.md", maxTurns: 0 },

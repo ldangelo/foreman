@@ -480,6 +480,12 @@ function isNonNegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) >= 0;
 }
 
+function parseOptionalBoolean(raw: unknown, workflowName: string, path: string): boolean | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "boolean") throw new WorkflowConfigError(workflowName, `${path} must be a boolean`);
+  return raw;
+}
+
 function parseModelsMap(raw: unknown, workflowName: string, path: string): Record<string, string> | undefined {
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) {
@@ -561,7 +567,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         );
       }
       const step: WorkflowSetupStep = { command: s["command"] as string };
-      if (typeof s["failFatal"] === "boolean") step.failFatal = s["failFatal"];
+      const failFatal = parseOptionalBoolean(s["failFatal"], workflowName, `setup[${i}].failFatal`);
+      if (failFatal !== undefined) step.failFatal = failFatal;
       if (typeof s["description"] === "string") step.description = s["description"];
       setup.push(step);
     }
@@ -644,12 +651,14 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (typeof p["skipIfArtifact"] !== "string" || !p["skipIfArtifact"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].skipIfArtifact must be a non-empty string`);
       phase.skipIfArtifact = p["skipIfArtifact"];
     }
-    if (typeof p["retryOnly"] === "boolean") phase.retryOnly = p["retryOnly"];
+    const retryOnly = parseOptionalBoolean(p["retryOnly"], workflowName, `phases[${i}].retryOnly`);
+    if (retryOnly !== undefined) phase.retryOnly = retryOnly;
     if (p["artifact"] !== undefined) {
       if (typeof p["artifact"] !== "string" || !p["artifact"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].artifact must be a non-empty string`);
       phase.artifact = p["artifact"];
     }
-    if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
+    const verdict = parseOptionalBoolean(p["verdict"], workflowName, `phases[${i}].verdict`);
+    if (verdict !== undefined) phase.verdict = verdict;
     if (p["retryWith"] !== undefined) {
       if (typeof p["retryWith"] !== "string" || !p["retryWith"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].retryWith must be a non-empty string`);
       phase.retryWith = p["retryWith"];
@@ -658,14 +667,18 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (!isNonNegativeInteger(p["retryOnFail"])) throw new WorkflowConfigError(workflowName, `phases[${i}].retryOnFail must be a non-negative integer`);
       phase.retryOnFail = p["retryOnFail"];
     }
-    if (typeof p["stopOnFailExhausted"] === "boolean") phase.stopOnFailExhausted = p["stopOnFailExhausted"];
-    if (typeof p["sameFailureCircuitBreaker"] === "boolean") phase.sameFailureCircuitBreaker = p["sameFailureCircuitBreaker"];
-    if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
+    const stopOnFailExhausted = parseOptionalBoolean(p["stopOnFailExhausted"], workflowName, `phases[${i}].stopOnFailExhausted`);
+    if (stopOnFailExhausted !== undefined) phase.stopOnFailExhausted = stopOnFailExhausted;
+    const sameFailureCircuitBreaker = parseOptionalBoolean(p["sameFailureCircuitBreaker"], workflowName, `phases[${i}].sameFailureCircuitBreaker`);
+    if (sameFailureCircuitBreaker !== undefined) phase.sameFailureCircuitBreaker = sameFailureCircuitBreaker;
+    const retryAfterCooldown = parseOptionalBoolean(p["retryAfterCooldown"], workflowName, `phases[${i}].retryAfterCooldown`);
+    if (retryAfterCooldown !== undefined) phase.retryAfterCooldown = retryAfterCooldown;
     if (p["cooldownSeconds"] !== undefined) {
       if (!isPositiveNumber(p["cooldownSeconds"])) throw new WorkflowConfigError(workflowName, `phases[${i}].cooldownSeconds must be a positive number`);
       phase.cooldownSeconds = p["cooldownSeconds"];
     }
-    if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
+    const builtin = parseOptionalBoolean(p["builtin"], workflowName, `phases[${i}].builtin`);
+    if (builtin !== undefined) phase.builtin = builtin;
     if (p["bash"] !== undefined) {
       if (typeof p["bash"] !== "string" || !p["bash"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].bash must be a non-empty string`);
       phase.bash = p["bash"];
@@ -733,7 +746,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
           "structuredFailureChecklist",
           "terminalOnFailExhausted",
         ] as const) {
-          if (typeof policyRaw[key] === "boolean") policy[key] = policyRaw[key];
+          const policyValue = parseOptionalBoolean(policyRaw[key], workflowName, `phases[${i}].contract.policy.${key}`);
+          if (policyValue !== undefined) policy[key] = policyValue;
         }
         if (Object.keys(policy).length > 0) phase.contract.policy = policy;
       }
@@ -754,9 +768,12 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         if (phase.contract.completion.minEditTargets !== undefined && phase.contract.completion.maxEditTargets !== undefined && phase.contract.completion.maxEditTargets < phase.contract.completion.minEditTargets) {
           throw new WorkflowConfigError(workflowName, `phases[${i}].contract.completion.maxEditTargets must be greater than or equal to minEditTargets`);
         }
-        if (typeof completion["requireTestTargets"] === "boolean") phase.contract.completion.requireTestTargets = completion["requireTestTargets"];
-        if (typeof completion["requireFilesChanged"] === "boolean") phase.contract.completion.requireFilesChanged = completion["requireFilesChanged"];
-        if (typeof completion["requireValidationNotes"] === "boolean") phase.contract.completion.requireValidationNotes = completion["requireValidationNotes"];
+        const requireTestTargets = parseOptionalBoolean(completion["requireTestTargets"], workflowName, `phases[${i}].contract.completion.requireTestTargets`);
+        if (requireTestTargets !== undefined) phase.contract.completion.requireTestTargets = requireTestTargets;
+        const requireFilesChanged = parseOptionalBoolean(completion["requireFilesChanged"], workflowName, `phases[${i}].contract.completion.requireFilesChanged`);
+        if (requireFilesChanged !== undefined) phase.contract.completion.requireFilesChanged = requireFilesChanged;
+        const requireValidationNotes = parseOptionalBoolean(completion["requireValidationNotes"], workflowName, `phases[${i}].contract.completion.requireValidationNotes`);
+        if (requireValidationNotes !== undefined) phase.contract.completion.requireValidationNotes = requireValidationNotes;
       }
       if (c["allowedScope"] !== undefined && !isRecord(c["allowedScope"])) {
         throw new WorkflowConfigError(workflowName, `phases[${i}].contract.allowedScope must be an object`);
@@ -764,7 +781,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (isRecord(c["allowedScope"])) {
         const allowedScope = c["allowedScope"];
         phase.contract.allowedScope = {};
-        if (typeof allowedScope["canRead"] === "boolean") phase.contract.allowedScope.canRead = allowedScope["canRead"];
+        const canRead = parseOptionalBoolean(allowedScope["canRead"], workflowName, `phases[${i}].contract.allowedScope.canRead`);
+        if (canRead !== undefined) phase.contract.allowedScope.canRead = canRead;
         if (allowedScope["canWriteOnly"] !== undefined) {
           if (!Array.isArray(allowedScope["canWriteOnly"])) {
             throw new WorkflowConfigError(workflowName, `phases[${i}].contract.allowedScope.canWriteOnly must be an array of strings`);
@@ -785,14 +803,20 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (isRecord(p["overwatch"])) {
       const o = p["overwatch"];
       phase.overwatch = {};
-      if (typeof o["enabled"] === "boolean") phase.overwatch.enabled = o["enabled"];
-      if (o["mode"] === "off" || o["mode"] === "warn" || o["mode"] === "enforce") phase.overwatch.mode = o["mode"];
+      const overwatchEnabled = parseOptionalBoolean(o["enabled"], workflowName, `phases[${i}].overwatch.enabled`);
+      if (overwatchEnabled !== undefined) phase.overwatch.enabled = overwatchEnabled;
+      if (o["mode"] !== undefined) {
+        if (o["mode"] !== "off" && o["mode"] !== "warn" && o["mode"] !== "enforce") throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.mode must be 'off', 'warn', or 'enforce'`);
+        phase.overwatch.mode = o["mode"];
+      }
       if (o["checkEveryTurns"] !== undefined) {
         if (!isPositiveNumber(o["checkEveryTurns"])) throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.checkEveryTurns must be a positive number`);
         phase.overwatch.checkEveryTurns = o["checkEveryTurns"];
       }
-      if (typeof o["forceArtifactNearMaxTurns"] === "boolean") phase.overwatch.forceArtifactNearMaxTurns = o["forceArtifactNearMaxTurns"];
-      if (typeof o["continueIfArtifactValidOnBudgetStop"] === "boolean") phase.overwatch.continueIfArtifactValidOnBudgetStop = o["continueIfArtifactValidOnBudgetStop"];
+      const forceArtifactNearMaxTurns = parseOptionalBoolean(o["forceArtifactNearMaxTurns"], workflowName, `phases[${i}].overwatch.forceArtifactNearMaxTurns`);
+      if (forceArtifactNearMaxTurns !== undefined) phase.overwatch.forceArtifactNearMaxTurns = forceArtifactNearMaxTurns;
+      const continueIfArtifactValidOnBudgetStop = parseOptionalBoolean(o["continueIfArtifactValidOnBudgetStop"], workflowName, `phases[${i}].overwatch.continueIfArtifactValidOnBudgetStop`);
+      if (continueIfArtifactValidOnBudgetStop !== undefined) phase.overwatch.continueIfArtifactValidOnBudgetStop = continueIfArtifactValidOnBudgetStop;
       for (const key of ["maxSteersPerPhase", "forceArtifactAfterSteers", "forceArtifactAfterToolCalls", "repeatedCommandLimit", "maxToolCalls"] as const) {
         if (o[key] !== undefined) {
           if (!isNonNegativeInteger(o[key])) throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.${key} must be a non-negative integer`);
@@ -848,8 +872,10 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (isRecord(p["mail"])) {
       const m = p["mail"];
       phase.mail = {};
-      if (typeof m["onStart"] === "boolean") phase.mail.onStart = m["onStart"];
-      if (typeof m["onComplete"] === "boolean") phase.mail.onComplete = m["onComplete"];
+      const onStart = parseOptionalBoolean(m["onStart"], workflowName, `phases[${i}].mail.onStart`);
+      if (onStart !== undefined) phase.mail.onStart = onStart;
+      const onComplete = parseOptionalBoolean(m["onComplete"], workflowName, `phases[${i}].mail.onComplete`);
+      if (onComplete !== undefined) phase.mail.onComplete = onComplete;
       if (m["onFail"] !== undefined) {
         if (typeof m["onFail"] !== "string" || !m["onFail"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].mail.onFail must be a non-empty string`);
         phase.mail.onFail = m["onFail"];
@@ -867,7 +893,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (isRecord(p["files"])) {
       const f = p["files"];
       phase.files = {};
-      if (typeof f["reserve"] === "boolean") phase.files.reserve = f["reserve"];
+      const reserve = parseOptionalBoolean(f["reserve"], workflowName, `phases[${i}].files.reserve`);
+      if (reserve !== undefined) phase.files.reserve = reserve;
       if (f["leaseSecs"] !== undefined) {
         if (!isPositiveNumber(f["leaseSecs"])) throw new WorkflowConfigError(workflowName, `phases[${i}].files.leaseSecs must be a positive number`);
         phase.files.leaseSecs = f["leaseSecs"];
