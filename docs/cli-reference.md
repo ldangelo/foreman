@@ -497,7 +497,7 @@ foreman actions create notify-slack --global  # Create ~/.foreman/actions/notify
 |------------|-------------|
 | `list [--json]` | List known action names and whether project, global, bundled, or missing resolves |
 | `show <action> [--json]` | Show one action's resolved source/path; exits nonzero when missing or unsafe |
-| `validate [--json]` | Validate project/global module names, exports, and unresolved workflow action refs |
+| `validate [--json]` | Validate project/global module names, function exports, duplicate `.js`/`.mjs` variants, and unresolved workflow action refs |
 | `install [--force] [--global] [--json]` | Install bundled editable stubs; `--force` overwrites existing files |
 | `create <action> [--force] [--global] [--json]` | Create a custom action stub; `--force` overwrites existing files |
 

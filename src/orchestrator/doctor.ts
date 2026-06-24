@@ -1258,7 +1258,7 @@ export class Doctor {
     return {
       name: "action modules (.foreman/actions/)",
       status: "fail",
-      message: `${missing.length} missing action module(s): ${missing.join(", ") || "none"}${invalidDesc ? `; ${invalidDesc}` : ""}. Run 'foreman init' or 'foreman doctor --fix' to install missing stubs; edit invalid action modules to export default run(ctx) or run(ctx).`,
+      message: `${missing.length} missing action module(s): ${missing.join(", ") || "none"}${invalidDesc ? `; ${invalidDesc}` : ""}. Run 'foreman init' or 'foreman doctor --fix' to install missing stubs; edit invalid action modules to export a default function or named run function.`,
     };
   }
 
