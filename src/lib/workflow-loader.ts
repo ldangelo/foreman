@@ -665,8 +665,16 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       const c = p["contract"];
       phase.contract = {};
       if (typeof c["goal"] === "string") phase.contract.goal = c["goal"];
-      if (Array.isArray(c["requiredSections"])) {
-        phase.contract.requiredSections = c["requiredSections"].filter((section): section is string => typeof section === "string" && section.trim().length > 0);
+      if (c["requiredSections"] !== undefined) {
+        if (!Array.isArray(c["requiredSections"])) {
+          throw new WorkflowConfigError(workflowName, `phases[${i}].contract.requiredSections must be an array of strings`);
+        }
+        phase.contract.requiredSections = c["requiredSections"].map((section, sectionIndex) => {
+          if (typeof section !== "string" || !section.trim()) {
+            throw new WorkflowConfigError(workflowName, `phases[${i}].contract.requiredSections[${sectionIndex}] must be a non-empty string`);
+          }
+          return section;
+        });
       }
       if (isRecord(c["policy"])) {
         const policyRaw = c["policy"];
@@ -692,8 +700,17 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (isRecord(c["completion"])) {
         const completion = c["completion"];
         phase.contract.completion = {};
-        if (typeof completion["minEditTargets"] === "number") phase.contract.completion.minEditTargets = completion["minEditTargets"];
-        if (typeof completion["maxEditTargets"] === "number") phase.contract.completion.maxEditTargets = completion["maxEditTargets"];
+        if (completion["minEditTargets"] !== undefined) {
+          if (!isNonNegativeInteger(completion["minEditTargets"])) throw new WorkflowConfigError(workflowName, `phases[${i}].contract.completion.minEditTargets must be a non-negative integer`);
+          phase.contract.completion.minEditTargets = completion["minEditTargets"];
+        }
+        if (completion["maxEditTargets"] !== undefined) {
+          if (!isNonNegativeInteger(completion["maxEditTargets"])) throw new WorkflowConfigError(workflowName, `phases[${i}].contract.completion.maxEditTargets must be a non-negative integer`);
+          phase.contract.completion.maxEditTargets = completion["maxEditTargets"];
+        }
+        if (phase.contract.completion.minEditTargets !== undefined && phase.contract.completion.maxEditTargets !== undefined && phase.contract.completion.maxEditTargets < phase.contract.completion.minEditTargets) {
+          throw new WorkflowConfigError(workflowName, `phases[${i}].contract.completion.maxEditTargets must be greater than or equal to minEditTargets`);
+        }
         if (typeof completion["requireTestTargets"] === "boolean") phase.contract.completion.requireTestTargets = completion["requireTestTargets"];
         if (typeof completion["requireFilesChanged"] === "boolean") phase.contract.completion.requireFilesChanged = completion["requireFilesChanged"];
         if (typeof completion["requireValidationNotes"] === "boolean") phase.contract.completion.requireValidationNotes = completion["requireValidationNotes"];
@@ -702,8 +719,16 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         const allowedScope = c["allowedScope"];
         phase.contract.allowedScope = {};
         if (typeof allowedScope["canRead"] === "boolean") phase.contract.allowedScope.canRead = allowedScope["canRead"];
-        if (Array.isArray(allowedScope["canWriteOnly"])) {
-          phase.contract.allowedScope.canWriteOnly = allowedScope["canWriteOnly"].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+        if (allowedScope["canWriteOnly"] !== undefined) {
+          if (!Array.isArray(allowedScope["canWriteOnly"])) {
+            throw new WorkflowConfigError(workflowName, `phases[${i}].contract.allowedScope.canWriteOnly must be an array of strings`);
+          }
+          phase.contract.allowedScope.canWriteOnly = allowedScope["canWriteOnly"].map((item, itemIndex) => {
+            if (typeof item !== "string" || !item.trim()) {
+              throw new WorkflowConfigError(workflowName, `phases[${i}].contract.allowedScope.canWriteOnly[${itemIndex}] must be a non-empty string`);
+            }
+            return item;
+          });
         }
       }
     }
@@ -713,16 +738,24 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       phase.overwatch = {};
       if (typeof o["enabled"] === "boolean") phase.overwatch.enabled = o["enabled"];
       if (o["mode"] === "off" || o["mode"] === "warn" || o["mode"] === "enforce") phase.overwatch.mode = o["mode"];
-      if (typeof o["checkEveryTurns"] === "number") phase.overwatch.checkEveryTurns = o["checkEveryTurns"];
+      if (o["checkEveryTurns"] !== undefined) {
+        if (!isPositiveNumber(o["checkEveryTurns"])) throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.checkEveryTurns must be a positive number`);
+        phase.overwatch.checkEveryTurns = o["checkEveryTurns"];
+      }
       if (typeof o["forceArtifactNearMaxTurns"] === "boolean") phase.overwatch.forceArtifactNearMaxTurns = o["forceArtifactNearMaxTurns"];
       if (typeof o["continueIfArtifactValidOnBudgetStop"] === "boolean") phase.overwatch.continueIfArtifactValidOnBudgetStop = o["continueIfArtifactValidOnBudgetStop"];
-      if (typeof o["maxSteersPerPhase"] === "number") phase.overwatch.maxSteersPerPhase = o["maxSteersPerPhase"];
-      if (typeof o["forceArtifactAfterSteers"] === "number") phase.overwatch.forceArtifactAfterSteers = o["forceArtifactAfterSteers"];
-      if (typeof o["forceArtifactAfterToolCalls"] === "number") phase.overwatch.forceArtifactAfterToolCalls = o["forceArtifactAfterToolCalls"];
-      if (typeof o["repeatedCommandLimit"] === "number") phase.overwatch.repeatedCommandLimit = o["repeatedCommandLimit"];
-      if (typeof o["maxToolCalls"] === "number") phase.overwatch.maxToolCalls = o["maxToolCalls"];
-      if (Array.isArray(o["blockedCommands"])) {
-        phase.overwatch.blockedCommands = o["blockedCommands"].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+      for (const key of ["maxSteersPerPhase", "forceArtifactAfterSteers", "forceArtifactAfterToolCalls", "repeatedCommandLimit", "maxToolCalls"] as const) {
+        if (o[key] !== undefined) {
+          if (!isNonNegativeInteger(o[key])) throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.${key} must be a non-negative integer`);
+          phase.overwatch[key] = o[key];
+        }
+      }
+      if (o["blockedCommands"] !== undefined) {
+        if (!Array.isArray(o["blockedCommands"])) throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.blockedCommands must be an array of strings`);
+        phase.overwatch.blockedCommands = o["blockedCommands"].map((item, itemIndex) => {
+          if (typeof item !== "string" || !item.trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.blockedCommands[${itemIndex}] must be a non-empty string`);
+          return item;
+        });
       }
     }
 

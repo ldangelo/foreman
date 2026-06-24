@@ -140,6 +140,19 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].mail?.forwardArtifactTo).toBe("foreman");
   });
 
+  it("rejects invalid contract and overwatch controls", () => {
+    for (const phase of [
+      { name: "developer", prompt: "developer.md", contract: { requiredSections: [""] } },
+      { name: "developer", prompt: "developer.md", contract: { completion: { minEditTargets: 2, maxEditTargets: 1 } } },
+      { name: "developer", prompt: "developer.md", contract: { allowedScope: { canWriteOnly: [""] } } },
+      { name: "developer", prompt: "developer.md", overwatch: { checkEveryTurns: 0 } },
+      { name: "developer", prompt: "developer.md", overwatch: { maxToolCalls: -1 } },
+      { name: "developer", prompt: "developer.md", overwatch: { blockedCommands: [""] } },
+    ]) {
+      expect(() => validateWorkflowConfig({ name: "default", phases: [phase] }, "default")).toThrow(WorkflowConfigError);
+    }
+  });
+
   it("rejects invalid numeric phase controls", () => {
     for (const phase of [
       { name: "developer", prompt: "developer.md", maxTurns: 0 },
