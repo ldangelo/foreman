@@ -171,6 +171,9 @@ function hasValidActionExport(source: string): boolean {
   for (const match of source.matchAll(/(?:const|let|var)\s+([a-zA-Z_$][\w$]*)\s*=\s*(async\s*)?(?:function\b|\([^)]*\)\s*=>|[a-zA-Z_$][\w$]*\s*=>)/g)) {
     callableNames.add(match[1] ?? "");
   }
+  for (const name of callableNames) {
+    if (new RegExp(`export\\s+default\\s+${name}\\b`).test(source)) return true;
+  }
   for (const exportBlock of source.matchAll(/export\s*\{([^}]*)\}/g)) {
     for (const name of callableNames) {
       if (new RegExp(`(^|,)\\s*${name}\\s+as\\s+(run|default)\\s*(,|$)`).test(exportBlock[1] ?? "")) return true;
