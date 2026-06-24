@@ -78,6 +78,22 @@ export async function runWriteTaskContextAction(ctx: WorkspaceActionContext): Pr
   return ctx;
 }
 
+function assertWorkspaceActionResult(action: string, result: unknown): WorkspaceActionContext {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error(`Workspace action ${action} must return a workspace context object`);
+  }
+  const ctx = result as Partial<WorkspaceActionContext>;
+  for (const key of ["projectId", "seedId", "repoPath", "attemptNumber", "seedInfo", "model", "log"] as const) {
+    if (ctx[key] === undefined || ctx[key] === null) {
+      throw new Error(`Workspace action ${action} returned invalid context: missing ${key}`);
+    }
+  }
+  if (typeof ctx.log !== "function") {
+    throw new Error(`Workspace action ${action} returned invalid context: log must be a function`);
+  }
+  return result as WorkspaceActionContext;
+}
+
 export async function runWorkspaceAction(action: string, ctx: WorkspaceActionContext): Promise<WorkspaceActionContext> {
   const externalAction = await loadProjectAction<WorkspaceActionContext & { actionType: string; internal: { runBuiltin: () => Promise<WorkspaceActionContext> } }, WorkspaceActionContext>(ctx.repoPath, action);
   const runBuiltin = async (): Promise<WorkspaceActionContext> => {
@@ -92,8 +108,8 @@ export async function runWorkspaceAction(action: string, ctx: WorkspaceActionCon
         throw new Error(`Unknown workspace action: ${action}`);
     }
   };
-  if (externalAction) {
-    return externalAction({ ...ctx, actionType: action, internal: { runBuiltin } });
-  }
-  return runBuiltin();
+  const result = externalAction
+    ? await externalAction({ ...ctx, actionType: action, internal: { runBuiltin } })
+    : await runBuiltin();
+  return assertWorkspaceActionResult(action, result);
 }

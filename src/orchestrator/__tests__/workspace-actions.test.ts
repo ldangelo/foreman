@@ -44,6 +44,19 @@ export async function run(ctx) {
     expect(result.branchName).toBe("notify-done");
   });
 
+  it("rejects custom workspace actions that return invalid context", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "foreman-workspace-action-repo-"));
+    dirs.push(repo);
+    mkdirSync(join(repo, ".foreman", "actions"), { recursive: true });
+    writeFileSync(join(repo, ".foreman", "actions", "bad-workspace.js"), `
+export default async function run() {
+  return { success: true };
+}
+`);
+
+    await expect(runWorkspaceAction("bad-workspace", makeCtx(repo))).rejects.toThrow(/missing projectId/);
+  });
+
   it("lets project workspace action overrides wrap built-in behavior", async () => {
     const repo = mkdtempSync(join(tmpdir(), "foreman-workspace-action-repo-"));
     const worktree = mkdtempSync(join(tmpdir(), "foreman-workspace-action-worktree-"));
