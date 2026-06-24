@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
-import { actionCandidates, isSafeActionName, listBundledActionFiles, validateProjectActions } from "../../orchestrator/action-loader.js";
+import { actionCandidates, findProjectActionPath, installBundledActions, isSafeActionName, listBundledActionFiles, validateProjectActions } from "../../orchestrator/action-loader.js";
 
 export interface ActionListRow {
   action: string;
@@ -64,4 +64,45 @@ actionsCommand
       console.error(chalk.red(`\nInvalid project actions: names=${invalid.invalidNames.join(", ") || "none"} exports=${invalid.invalidExports.join(", ") || "none"}`));
       process.exitCode = 1;
     }
+  });
+
+actionsCommand
+  .command("show")
+  .description("Show the resolved module path for one action")
+  .argument("<action>", "Action name")
+  .option("--json", "Output JSON")
+  .action((action: string, opts: { json?: boolean }) => {
+    const projectPath = process.cwd();
+    const row = listActions(projectPath).find((candidate) => candidate.action === action);
+    const resolvedPath = findProjectActionPath(projectPath, action);
+    const result = row ?? { action, source: resolvedPath ? "project" : "missing", path: resolvedPath ?? null };
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    if (!isSafeActionName(action)) {
+      console.error(chalk.red(`Unsafe action name: ${action}`));
+      process.exitCode = 1;
+      return;
+    }
+    if (!row && !resolvedPath) {
+      console.error(chalk.red(`Action not found: ${action}`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`${result.action}: ${result.path ?? result.source}`);
+  });
+
+actionsCommand
+  .command("install")
+  .description("Install bundled editable action stubs into .foreman/actions")
+  .option("--force", "Overwrite existing project action files")
+  .option("--json", "Output JSON")
+  .action((opts: { force?: boolean; json?: boolean }) => {
+    const result = installBundledActions(process.cwd(), !!opts.force);
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(`Installed ${result.installed.length} action module(s); skipped ${result.skipped.length}.`);
   });

@@ -137,7 +137,7 @@ program.addHelpText(
   "after",
   `
 Domain groups:
-  Setup/health:     init, doctor, daemon, server, metrics
+  Setup/health:     init, doctor, actions, daemon, server, metrics
   Planning:         plan, sling
   Execution:        run, retry, reset, stop, recover
   Tasks/views:      task, status, metrics, board, watch, logs, runs

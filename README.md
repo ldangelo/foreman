@@ -45,7 +45,7 @@ Foreman CLI / Dispatcher
   │    Phases defined in ~/.foreman/workflows/*.yaml
   │    Phase actions (prompt-agent, bash, finalize, PR gates, merge) bind YAML labels to code
   │    Workspace prep, model selection, retries, validation policies, mail hooks, artifacts — all YAML config
-  │    Project/global actions in .foreman/actions or ~/.foreman/actions can override phase behavior without rebuild
+  │    Project/global actions in .foreman/actions or ~/.foreman/actions can override phase behavior without rebuild (`foreman actions list|show|install`)
   │    Per-phase reports/traces → ~/.foreman/reports/... (outside repo commits)
   │
   ├─ TrpcClient (CLI → daemon transport)
