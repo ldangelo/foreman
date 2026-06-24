@@ -78,6 +78,34 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[1].action).toBe("bash");
   });
 
+  it("parses declarative contract policies", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        {
+          name: "qa",
+          action: "prompt-agent",
+          prompt: "qa.md",
+          contract: {
+            policy: {
+              acceptanceCoverage: true,
+              testEvidence: true,
+              captureQaTarget: true,
+              terminalOnFailExhausted: true,
+            },
+          },
+        },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+    expect(config.phases[0].contract?.policy).toMatchObject({
+      acceptanceCoverage: true,
+      testEvidence: true,
+      captureQaTarget: true,
+      terminalOnFailExhausted: true,
+    });
+  });
+
   it("parses retryAfterCooldown and cooldownSeconds from phase config", () => {
     const raw = {
       name: "default",
@@ -439,6 +467,13 @@ phases:
         expect(inferPhaseActionType(phase), `${workflowName}.${phase.name}`).toBe(phase.action);
       }
     }
+  });
+
+  it("bundled default workflow declares phase validation policies", () => {
+    const config = loadWorkflowConfig("default", tmpDir);
+    expect(config.phases.find((phase) => phase.name === "developer")?.contract?.policy).toMatchObject({ developerCompletion: true });
+    expect(config.phases.find((phase) => phase.name === "qa")?.contract?.policy).toMatchObject({ testEvidence: true, captureQaTarget: true });
+    expect(config.phases.find((phase) => phase.name === "finalize")?.contract?.policy).toMatchObject({ finalizeValidation: true });
   });
 
   it("bundled auto-merge workflows expose cli-review, PR review, and merge phases", () => {

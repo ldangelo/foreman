@@ -44,7 +44,7 @@ Foreman CLI / Dispatcher
   ├─ Pipeline Executor (workflow YAML-driven)
   │    Phases defined in ~/.foreman/workflows/*.yaml
   │    Phase actions (prompt-agent, bash, finalize, PR gates, merge) bind YAML labels to code
-  │    Model selection, retries, mail hooks, artifacts — all YAML config
+  │    Model selection, retries, validation policies, mail hooks, artifacts — all YAML config
   │    Per-phase reports/traces → ~/.foreman/reports/... (outside repo commits)
   │
   ├─ TrpcClient (CLI → daemon transport)

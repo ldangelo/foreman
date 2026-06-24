@@ -33,7 +33,7 @@ foreman plan X         # PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
 foreman server doctor # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
-# Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces acceptance-contract coverage, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
+# Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces declared acceptance-contract coverage, records PASS→FAIL override/retry reasons, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
@@ -100,7 +100,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 
 **Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
 
-- Phase sequence, reusable action (`prompt-agent`, `bash`, `finalize`, PR gates, merge), models, retries, mail hooks, artifacts all defined in YAML
+- Phase sequence, reusable action (`prompt-agent`, `bash`, `finalize`, PR gates, merge), models, retries, validation policies, mail hooks, artifacts all defined in YAML
 - No hardcoded prompt phase names in the executor — new prompt phases need only YAML + prompt file
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
 - Retry loops: QA⇄Developer and Reviewer⇄Developer with feedback mail

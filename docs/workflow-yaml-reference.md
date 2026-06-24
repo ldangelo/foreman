@@ -321,7 +321,7 @@ Bundled default/feature/bug workflows enable overwatch across prompt-backed phas
       repeatedCommandLimit: 2
 ```
 
-Additional `contract.completion` fields include `requireFilesChanged` and `requireValidationNotes` for handoff-style phases. Additional `overwatch` controls include `forceArtifactAfterToolCalls`, `maxToolCalls`, `repeatedCommandLimit`, and `blockedCommands` (regular-expression strings matched against normalized shell commands).
+Additional `contract.completion` fields include `requireFilesChanged` and `requireValidationNotes` for handoff-style phases. `contract.policy` declares engine-level validation behavior that used to be tied to specific phase names: `requiresExplorerReport`, `explorerCircuitBreaker`, `developerCompletion`, `redPhaseCompletion`, `acceptanceCoverage`, `allowDeferredAcceptance`, `testEvidence`, `captureQaTarget`, `finalizeValidation`, `skipDeveloperRetryOnUnrelatedFinalizeFailure`, `structuredFailureChecklist`, and `terminalOnFailExhausted`. Additional `overwatch` controls include `forceArtifactAfterToolCalls`, `maxToolCalls`, `repeatedCommandLimit`, and `blockedCommands` (regular-expression strings matched against normalized shell commands).
 
 ### Documentation Phase
 

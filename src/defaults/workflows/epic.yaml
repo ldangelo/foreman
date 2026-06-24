@@ -109,6 +109,11 @@ phases:
     maxTurns: 80
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    contract:
+      policy:
+        requiresExplorerReport: true
+        developerCompletion: true
+        acceptanceCoverage: true
     verdict: false
     retryWith: implement
     retryOnFail: 2
@@ -144,6 +149,13 @@ phases:
     maxTurns: 30
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
+    contract:
+      policy:
+        acceptanceCoverage: true
+        testEvidence: true
+        captureQaTarget: true
+        structuredFailureChecklist: true
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 3
@@ -158,6 +170,11 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
+    contract:
+      policy:
+        finalizeValidation: true
+        skipDeveloperRetryOnUnrelatedFinalizeFailure: true
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 6
@@ -203,6 +220,9 @@ phases:
     maxTurns: 40
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    contract:
+      policy:
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 3

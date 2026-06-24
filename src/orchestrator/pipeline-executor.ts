@@ -16,7 +16,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { execFile, execFileSync, execSync } from "node:child_process";
 import { appendFile } from "node:fs/promises";
 import { dirname, join, basename } from "node:path";
-import type { WorkflowConfig, WorkflowPhaseConfig, WorkflowSandboxConfig } from "../lib/workflow-loader.js";
+import type { WorkflowConfig, WorkflowPhaseConfig, WorkflowPhaseContractPolicyConfig, WorkflowSandboxConfig } from "../lib/workflow-loader.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import type { ProjectHooksConfig } from "../lib/project-config.js";
 import { interpolateTaskPlaceholders } from "../lib/interpolate.js";
@@ -122,7 +122,7 @@ export interface PhaseObservabilityInput {
 
 export interface PipelineObservabilityWriter {
   updateProgress?: (progress: RunProgress) => Promise<void> | void;
-  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat", data: Record<string, unknown>) => Promise<void> | void;
+  logEvent?: (eventType: "phase-start" | "phase-fail" | "phase-retry" | "complete" | "heartbeat", data: Record<string, unknown>) => Promise<void> | void;
 }
 
 /** A child task within an epic pipeline run. */
@@ -469,7 +469,7 @@ async function writeNormalPhaseEvent(
   store: ForemanStore,
   projectId: string,
   runId: string,
-  eventType: "phase-start" | "complete",
+  eventType: "phase-start" | "phase-fail" | "phase-retry" | "complete",
   data: Record<string, unknown>,
   observabilityWriter?: PipelineObservabilityWriter,
 ): Promise<void> {
@@ -774,31 +774,83 @@ function formatRedPhaseGateFeedback(result: RedPhaseGateResult): string {
   ].join("\n");
 }
 
-function phaseLimitedAcceptanceCriterion(phaseName: string, text: string): boolean {
+function phasePolicy(phase: WorkflowPhaseConfig) {
+  return phase.contract?.policy ?? {};
+}
+
+function phasePolicyEnabled(phase: WorkflowPhaseConfig, key: keyof WorkflowPhaseContractPolicyConfig, fallback = false): boolean {
+  return phasePolicy(phase)[key] ?? fallback;
+}
+
+function phaseDeclaresAcceptanceCoverage(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "acceptanceCoverage", !!phase.contract?.requiredSections?.some((section) => /^Acceptance Contract\b/i.test(section)));
+}
+
+function phaseLimitedAcceptanceCriterion(phase: WorkflowPhaseConfig, text: string): boolean {
   const normalized = text.toLowerCase();
-  if (phaseName !== "test-review") return true;
+  if (!phasePolicyEnabled(phase, "allowDeferredAcceptance", phase.name === "test-review")) return true;
   if (/\b(typespecs?|docs?|documentation|cli reference|user-facing docs?)\b/.test(normalized)) return false;
   return true;
 }
 
-function acceptanceCoverageFailure(_worktreePath: string, reportPath: string, phaseName: string): string | null {
+function acceptanceCoverageFailure(_worktreePath: string, reportPath: string, phase: WorkflowPhaseConfig): string | null {
   const explorerPath = join(dirname(reportPath), "EXPLORER_REPORT.md");
   if (!existsSync(explorerPath) || !existsSync(reportPath)) return null;
   const coverage = validateAcceptanceCoverage(
     readFileSync(explorerPath, "utf8"),
     readFileSync(reportPath, "utf8"),
     {
-      relevant: (criterion) => phaseLimitedAcceptanceCriterion(phaseName, criterion.text),
-      allowDeferred: phaseName === "test-review",
+      relevant: (criterion) => phaseLimitedAcceptanceCriterion(phase, criterion.text),
+      allowDeferred: phasePolicyEnabled(phase, "allowDeferredAcceptance", phase.name === "test-review"),
     },
   );
   if (coverage.ok) return null;
   const missing = coverage.missing.map((criterion) => `- ${criterion.id}: ${criterion.text}`).join("\n");
   const sectionReason = coverage.reportHasAcceptanceSection ? "" : "Missing `## Acceptance Contract` section.\n";
-  const phaseHint = phaseName === "test-review"
+  const phaseHint = phasePolicyEnabled(phase, "allowDeferredAcceptance", phase.name === "test-review")
     ? "Test-review reports may mark implementation/docs/typespec criteria as deferred/not in test scope, but must explicitly cover or defer every test-relevant criterion.\n"
     : "";
   return `Acceptance contract coverage missing. ${sectionReason}${phaseHint}Unaddressed criteria:\n${missing || "- (none parsed)"}`;
+}
+
+function requiresExplorerReport(workflowConfig: WorkflowConfig, phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "requiresExplorerReport", ["default", "feature"].includes(workflowConfig.name) && phase.name === "developer" && !phase.retryOnly);
+}
+
+function usesExplorerCircuitBreaker(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "explorerCircuitBreaker", phase.name === "explorer");
+}
+
+function usesDeveloperCompletionGate(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "developerCompletion", phase.name === "developer");
+}
+
+function usesRedPhaseCompletionGate(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "redPhaseCompletion", phase.name === "test-red");
+}
+
+function requiresTestEvidence(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "testEvidence", phase.name === "qa");
+}
+
+function capturesQaTarget(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "captureQaTarget", phase.name === "qa");
+}
+
+function usesFinalizeValidation(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "finalizeValidation", phase.name === "finalize");
+}
+
+function skipsDeveloperRetryOnUnrelatedFailure(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "skipDeveloperRetryOnUnrelatedFinalizeFailure", phase.name === "finalize");
+}
+
+function usesStructuredFailureChecklist(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "structuredFailureChecklist", phase.name === "qa" || phase.name === "reviewer");
+}
+
+function stopsOnFailExhausted(phase: WorkflowPhaseConfig): boolean {
+  return phasePolicyEnabled(phase, "terminalOnFailExhausted", ["qa", "reviewer", "cli-review", "pr-review", "finalize"].includes(phase.name));
 }
 
 function developerGateRetryLimit(phases: WorkflowPhaseConfig[], phaseName: string): number {
@@ -1629,7 +1681,7 @@ async function runPhaseSequence(
           seedType: config.seedType,
           runId,
           hasExplorerReport,
-          requiresExplorerReport: ["default", "feature"].includes(workflowConfig.name) && phaseName === "developer" && !phase.retryOnly,
+          requiresExplorerReport: requiresExplorerReport(workflowConfig, phase),
           feedbackContext,
           worktreePath,
           reportDir: phaseMeta.projectReportsDir,
@@ -1680,7 +1732,7 @@ async function runPhaseSequence(
 
     // P1: Explorer circuit breaker - fail fast if Explorer has failed 3 times
     // This prevents empty branch pollution when Explorer keeps failing
-    if (phaseName === "explorer") {
+    if (usesExplorerCircuitBreaker(phase)) {
       const recentExplorerFailures = explorerFailures.filter(
         (t) => Date.now() - new Date(t).getTime() < 60 * 60 * 1000, // Within last hour
       );
@@ -1966,7 +2018,7 @@ async function runPhaseSequence(
       if (result.success) {
         // AC-6: Capture branch HEAD SHA at finalize success (durable PR identity metadata).
         // This stores the commit_sha on the run record so PR reuse can verify SHA match later.
-        if (phaseName === "finalize" && result.success && config.vcsBackend) {
+        if (usesFinalizeValidation(phase) && result.success && config.vcsBackend) {
           try {
             const finalizedHead = await config.vcsBackend.getHeadId(worktreePath);
             store.updateRun(runId, { commit_sha: finalizedHead });
@@ -2069,7 +2121,7 @@ async function runPhaseSequence(
 
     let developerGateFeedback: string | undefined;
     let redPhaseGateFeedback: string | undefined;
-    if (phaseSucceeded && phaseName === "test-red") {
+    if (phaseSucceeded && usesRedPhaseCompletionGate(phase)) {
       if (interpolatedArtifact) {
         const redReportPath = resolveArtifactPath(worktreePath, interpolatedArtifact);
         const gate = validateRedPhaseCompletion(worktreePath, redReportPath);
@@ -2081,7 +2133,7 @@ async function runPhaseSequence(
       }
     }
 
-    if (phaseSucceeded && phaseName === "developer") {
+    if (phaseSucceeded && usesDeveloperCompletionGate(phase)) {
       const debugArtifacts = findDebugArtifacts(worktreePath);
       if (debugArtifacts.length > 0) {
         phaseSucceeded = false;
@@ -2093,7 +2145,7 @@ async function runPhaseSequence(
           developerReportPath,
           `${description}\n${comments ?? ""}`,
         );
-        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, developerReportPath, "developer");
+        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, developerReportPath, phase);
         if (!gate.ok || acceptanceFailure) {
           phaseSucceeded = false;
           developerGateFeedback = [
@@ -2215,7 +2267,7 @@ async function runPhaseSequence(
       const errorMsg = phaseError ?? `${phaseName} failed`;
       const isRateLimit = isRateLimitError(errorMsg);
 
-      if (phaseName === "test-red" && redPhaseGateFeedback) {
+      if (usesRedPhaseCompletionGate(phase) && redPhaseGateFeedback) {
         const retryCountKey = "test-red-gate";
         const currentRetries = retryCounts[retryCountKey] ?? 0;
         const maxRetries = phase.retryOnFail ?? 2;
@@ -2230,7 +2282,7 @@ async function runPhaseSequence(
         }
       }
 
-      if (phaseName === "developer" && developerGateFeedback) {
+      if (usesDeveloperCompletionGate(phase) && developerGateFeedback) {
         const retryCountKey = "developer-gate";
         const currentRetries = retryCounts[retryCountKey] ?? 0;
         const maxRetries = developerGateRetryLimit(phases, phaseName);
@@ -2246,7 +2298,7 @@ async function runPhaseSequence(
       }
 
       // P1: Track Explorer failures for circuit breaker
-      if (phaseName === "explorer") {
+      if (usesExplorerCircuitBreaker(phase)) {
         explorerFailures.push(new Date().toISOString());
       }
 
@@ -2449,22 +2501,38 @@ async function runPhaseSequence(
       const report = readReport(worktreePath, interpolatedArtifact);
       let verdict = report ? parseVerdict(report) : "unknown";
 
-      if ((phaseName === "test-review" || phaseName === "qa" || phaseName === "finalize" || phaseName === "reviewer") && report && verdict !== "fail") {
-        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, reportPath, phaseName);
+      if (phaseDeclaresAcceptanceCoverage(phase) && report && verdict !== "fail") {
+        const originalVerdict = verdict;
+        const acceptanceFailure = acceptanceCoverageFailure(worktreePath, reportPath, phase);
         if (acceptanceFailure) {
           verdict = "fail";
           feedbackContext = acceptanceFailure;
-          ctx.log(`[${phaseName.toUpperCase()}] FAIL — acceptance contract coverage missing`);
+          const overrideReason = `acceptance contract coverage missing: ${acceptanceFailure}`;
+          ctx.log(`[${phaseName.toUpperCase()}] ${originalVerdict.toUpperCase()} overridden to FAIL — ${overrideReason}`);
+          await appendFile(logFile, `\n[PIPELINE] ${phaseName} ${originalVerdict.toUpperCase()} overridden to FAIL — ${overrideReason}\n`);
+          await writeNormalPhaseEvent(store, config.projectId, runId, "phase-fail", {
+            seedId,
+            phase: phaseName,
+            reason: overrideReason,
+            parsedVerdict: "fail",
+            originalVerdict,
+            retryable: !!phase.retryWith,
+          }, observabilityWriter);
+          await writeTaskPhaseNote(phaseName, "failure", `${phaseName} ${originalVerdict.toUpperCase()} overridden to FAIL — ${overrideReason}`, {
+            retryable: !!phase.retryWith,
+            reason: overrideReason,
+            originalVerdict,
+          });
         }
       }
 
-      if (phaseName === "qa" && report && verdict !== "fail" && !qaReportHasTestEvidence(report)) {
+      if (requiresTestEvidence(phase) && report && verdict !== "fail" && !qaReportHasTestEvidence(report)) {
         verdict = "fail";
         feedbackContext = "QA report invalid: missing explicit test command/output evidence with pass/fail counts.";
         ctx.log("[QA] FAIL — report missing test command evidence");
       }
 
-      if (phaseName === "finalize" && report) {
+      if (usesFinalizeValidation(phase) && report) {
         const expectedSkippedValidation = !!progress.qaValidatedTargetRef && !!progress.qaValidatedTargetBranch && progress.qaValidatedTargetRef === progress.currentTargetRef;
         const validationStatus = parseFinalizeValidationStatus(report);
         const integrationStatus = parseFinalizeIntegrationStatus(report);
@@ -2509,7 +2577,7 @@ async function runPhaseSequence(
         }
       }
 
-      if (phaseName === "qa") {
+      if (capturesQaTarget(phase)) {
         qaVerdictForLog = verdict as "pass" | "fail" | "unknown";
         if (verdict === "pass" && config.vcsBackend) {
           const detectDefaultBranch = (
@@ -2546,11 +2614,11 @@ async function runPhaseSequence(
         const maxRetries = phase.retryOnFail ?? 0;
         const retryCountKey = retryBudgetKey(phaseName);
         const currentRetries = retryCounts[retryCountKey] ?? 0;
-        const finalizeFailureScope = phaseName === "finalize" && report
+        const finalizeFailureScope = usesFinalizeValidation(phase) && report
           ? parseFinalizeFailureScope(report)
           : "unknown";
 
-        if (phaseName === "finalize" && finalizeFailureScope === "unrelated_files") {
+        if (skipsDeveloperRetryOnUnrelatedFailure(phase) && finalizeFailureScope === "unrelated_files") {
           ctx.log(`[FINALIZE] FAIL — unrelated/pre-existing test failures detected, skipping developer retry`);
           await appendFile(logFile, `\n[PIPELINE] finalize failed due to unrelated/pre-existing test failures — no developer retry\n`);
           return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
@@ -2566,7 +2634,7 @@ async function runPhaseSequence(
             let feedbackBody = report;
 
             // Inject structured checklist for QA/reviewer failures targeting developer
-            if ((phaseName === "qa" || phaseName === "reviewer") && parsedReport.items.length > 0) {
+            if (usesStructuredFailureChecklist(phase) && parsedReport.items.length > 0) {
               // Diff against previous QA failure items to track resolution
               const trackedItems: TrackedFailureItem[] = previousQAFailureItems.length > 0
                 ? diffQAFailures(previousQAFailureItems, parsedReport.items)
@@ -2591,7 +2659,7 @@ async function runPhaseSequence(
                     ctx.log(`[${phaseName.toUpperCase()}] SAME-FAILURE CIRCUIT BREAKER — repeated failure signatures detected on retry ${currentRetries + 1}: ${repeatedKeys.join(", ")}`);
                     await appendFile(logFile, `\n[PIPELINE] ${phaseName} same-failure circuit breaker tripped — repeated failures: ${repeatedKeys.join(", ")}\n`);
                     // Stop early instead of consuming remaining retry budget
-                    const terminalVerdictFailure = phase.stopOnFailExhausted === true;
+                    const terminalVerdictFailure = phase.stopOnFailExhausted === true || stopsOnFailExhausted(phase);
                     if (failOnRetriesExhausted || terminalVerdictFailure) {
                       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
                     }
@@ -2618,6 +2686,20 @@ async function runPhaseSequence(
 
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
+          await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", {
+            seedId,
+            phase: phaseName,
+            retryTarget,
+            retry: currentRetries + 1,
+            maxRetries,
+            reason: feedbackContext ?? "verdict failed",
+          }, observabilityWriter);
+          await writeTaskPhaseNote(phaseName, "progress", `${phaseName} retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries}).`, {
+            retryTarget,
+            retry: currentRetries + 1,
+            maxRetries,
+            reason: feedbackContext ?? "verdict failed",
+          });
 
           const targetIdx = phaseIndex.get(retryTarget);
           if (targetIdx !== undefined) {
@@ -2627,9 +2709,7 @@ async function runPhaseSequence(
           }
           ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — continuing`);
         } else {
-          const terminalVerdictFailure = phaseName === "finalize"
-            || phase.stopOnFailExhausted === true
-            || ["qa", "reviewer", "cli-review", "pr-review"].includes(phaseName);
+          const terminalVerdictFailure = phase.stopOnFailExhausted === true || stopsOnFailExhausted(phase);
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — max retries (${maxRetries}) exhausted${failOnRetriesExhausted || terminalVerdictFailure ? "" : ", continuing"}`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted || terminalVerdictFailure ? "" : ", continuing"}\n`);
           feedbackContext = undefined;

@@ -33,6 +33,10 @@ phases:
     maxTurns: 60
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    contract:
+      policy:
+        developerCompletion: true
+        acceptanceCoverage: true
     mail:
       onStart: true
       onComplete: true
@@ -74,6 +78,9 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
+    contract:
+      policy:
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: fix
     retryOnFail: 2
@@ -89,6 +96,11 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
+    contract:
+      policy:
+        finalizeValidation: true
+        skipDeveloperRetryOnUnrelatedFinalizeFailure: true
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 6
@@ -134,6 +146,9 @@ phases:
     maxTurns: 40
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
+    contract:
+      policy:
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: fix
     retryOnFail: 3

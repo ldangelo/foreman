@@ -77,7 +77,7 @@ For architecture details, deprecated command mappings, and troubleshooting examp
 
 ### Documentation Gate
 
-Foreman workflows include a documentation phase after finalization and before PR creation. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`. Explorer also writes an Acceptance Contract in `EXPLORER_REPORT.md`; Developer, QA, review, and finalize reports must carry and address those criteria before Foreman accepts a passing phase. Runtime preflight flags stale project/global prompt overrides when they are missing required acceptance-contract markers.
+Foreman workflows include a documentation phase after finalization and before PR creation. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`. Explorer also writes an Acceptance Contract in `EXPLORER_REPORT.md`; phases with `contract.policy.acceptanceCoverage` must carry and address those criteria before Foreman accepts a passing phase. If a PASS artifact misses declared coverage, Foreman records phase failure/retry events with the override reason. Runtime preflight flags stale project/global prompt overrides when they are missing required acceptance-contract markers.
 
 Docs that must be considered for every fix or feature:
 

@@ -54,6 +54,11 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
+    contract:
+      policy:
+        finalizeValidation: true
+        skipDeveloperRetryOnUnrelatedFinalizeFailure: true
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 6

@@ -114,9 +114,25 @@ export interface WorkflowPhaseTools {
   allowed?: string[];
 }
 
+export interface WorkflowPhaseContractPolicyConfig {
+  requiresExplorerReport?: boolean;
+  explorerCircuitBreaker?: boolean;
+  developerCompletion?: boolean;
+  redPhaseCompletion?: boolean;
+  acceptanceCoverage?: boolean;
+  allowDeferredAcceptance?: boolean;
+  testEvidence?: boolean;
+  captureQaTarget?: boolean;
+  finalizeValidation?: boolean;
+  skipDeveloperRetryOnUnrelatedFinalizeFailure?: boolean;
+  structuredFailureChecklist?: boolean;
+  terminalOnFailExhausted?: boolean;
+}
+
 export interface WorkflowPhaseContractConfig {
   goal?: string;
   requiredSections?: string[];
+  policy?: WorkflowPhaseContractPolicyConfig;
   completion?: {
     minEditTargets?: number;
     maxEditTargets?: number;
@@ -596,6 +612,27 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       if (typeof c["goal"] === "string") phase.contract.goal = c["goal"];
       if (Array.isArray(c["requiredSections"])) {
         phase.contract.requiredSections = c["requiredSections"].filter((section): section is string => typeof section === "string" && section.trim().length > 0);
+      }
+      if (isRecord(c["policy"])) {
+        const policyRaw = c["policy"];
+        const policy: WorkflowPhaseContractPolicyConfig = {};
+        for (const key of [
+          "requiresExplorerReport",
+          "explorerCircuitBreaker",
+          "developerCompletion",
+          "redPhaseCompletion",
+          "acceptanceCoverage",
+          "allowDeferredAcceptance",
+          "testEvidence",
+          "captureQaTarget",
+          "finalizeValidation",
+          "skipDeveloperRetryOnUnrelatedFinalizeFailure",
+          "structuredFailureChecklist",
+          "terminalOnFailExhausted",
+        ] as const) {
+          if (typeof policyRaw[key] === "boolean") policy[key] = policyRaw[key];
+        }
+        if (Object.keys(policy).length > 0) phase.contract.policy = policy;
       }
       if (isRecord(c["completion"])) {
         const completion = c["completion"];

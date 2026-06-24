@@ -1703,7 +1703,15 @@ function createPipelineObservabilityWriter(opts: {
       }
     },
     async logEvent(eventType, data) {
-      const commandType = eventType === "phase-start" ? "phase.start" : eventType === "complete" ? "phase.complete" : undefined;
+      const commandType = eventType === "phase-start"
+        ? "phase.start"
+        : eventType === "phase-fail"
+          ? "phase.fail"
+          : eventType === "phase-retry"
+            ? "phase.retry"
+            : eventType === "complete"
+              ? "phase.complete"
+              : undefined;
       if (commandType) {
         try {
           await elixirClient.sendCommand({

@@ -25,6 +25,9 @@ phases:
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: EXPLORER_REPORT.md
+    contract:
+      policy:
+        explorerCircuitBreaker: true
     mail:
       onStart: true
       onComplete: true
@@ -40,6 +43,11 @@ phases:
     maxTurns: 5
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    contract:
+      policy:
+        requiresExplorerReport: true
+        developerCompletion: true
+        acceptanceCoverage: true
     mail:
       onStart: true
       onComplete: true
@@ -70,6 +78,13 @@ phases:
     maxTurns: 5
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
+    contract:
+      policy:
+        acceptanceCoverage: true
+        testEvidence: true
+        captureQaTarget: true
+        structuredFailureChecklist: true
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 3
@@ -88,6 +103,11 @@ phases:
     maxTurns: 5
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/REVIEW.md"
+    contract:
+      policy:
+        acceptanceCoverage: true
+        structuredFailureChecklist: true
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -102,6 +122,11 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
+    contract:
+      policy:
+        finalizeValidation: true
+        skipDeveloperRetryOnUnrelatedFinalizeFailure: true
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 6

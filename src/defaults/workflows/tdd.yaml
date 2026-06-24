@@ -37,6 +37,8 @@ phases:
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     contract:
+      policy:
+        explorerCircuitBreaker: true
       requiredSections: [Summary, Likely edit targets, Test targets, Risks]
       completion:
         minEditTargets: 1
@@ -72,6 +74,8 @@ phases:
     retryOnFail: 1
     artifact: "{task.projectReportsDir}/RED_REPORT.md"
     contract:
+      policy:
+        redPhaseCompletion: true
       requiredSections: [Verdict, Test Scope, Acceptance Contract Coverage, Expected Failure Evidence, Files Changed, Non-Test Files Changed, QA-Test Review Handoff]
       completion:
         requireFilesChanged: true
@@ -99,6 +103,10 @@ phases:
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/TEST_REVIEW_REPORT.md"
     contract:
+      policy:
+        acceptanceCoverage: true
+        allowDeferredAcceptance: true
+        terminalOnFailExhausted: true
       requiredSections: [Verdict, Acceptance Contract, Red Failure Verification, Test Quality Findings, Implementation Handoff]
     overwatch:
       enabled: true
@@ -128,6 +136,10 @@ phases:
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     contract:
+      policy:
+        requiresExplorerReport: true
+        developerCompletion: true
+        acceptanceCoverage: true
       requiredSections: [Approach, Explorer Plan Followed, Files Changed, Extra Files Inspected, QA Handoff, Decisions, Known Limitations]
       completion:
         requireFilesChanged: true
@@ -245,6 +257,12 @@ phases:
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     contract:
+      policy:
+        acceptanceCoverage: true
+        testEvidence: true
+        captureQaTarget: true
+        structuredFailureChecklist: true
+        terminalOnFailExhausted: true
       requiredSections: [Verdict, Test Results, Changed Files Reviewed, Issues Found, Files Modified]
     overwatch:
       enabled: true
@@ -273,6 +291,10 @@ phases:
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/REVIEW.md"
     contract:
+      policy:
+        acceptanceCoverage: true
+        structuredFailureChecklist: true
+        terminalOnFailExhausted: true
       requiredSections: [Verdict, Summary, Issues]
     overwatch:
       enabled: true
@@ -295,6 +317,9 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
+    contract:
+      policy:
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 2
@@ -314,6 +339,11 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 30
+    contract:
+      policy:
+        finalizeValidation: true
+        skipDeveloperRetryOnUnrelatedFinalizeFailure: true
+        terminalOnFailExhausted: true
     verdict: true
     retryWith: developer
     retryOnFail: 6
@@ -386,6 +416,8 @@ phases:
     retryAfterCooldown: true
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
     contract:
+      policy:
+        terminalOnFailExhausted: true
       requiredSections: [Verdict, Findings Reviewed, Actions Taken, Validation, Remaining Blocking Items]
     overwatch:
       enabled: true

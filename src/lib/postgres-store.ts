@@ -48,6 +48,8 @@ export type EventType =
   | "sentinel-pass"
   | "sentinel-fail"
   | "phase-start"
+  | "phase-fail"
+  | "phase-retry"
   | "heartbeat";
 
 /**

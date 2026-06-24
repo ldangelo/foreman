@@ -170,6 +170,8 @@ export type EventType =
   | "worktree-rebased"
   | "worktree-rebase-failed"
   | "phase-start"
+  | "phase-fail"
+  | "phase-retry"
   | "phase-complete"
   | "cooldown";
 
