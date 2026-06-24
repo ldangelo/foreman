@@ -460,7 +460,7 @@ export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = [
 // ── Validation ────────────────────────────────────────────────────────────────
 
 export function isSafeWorkflowName(workflow: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(workflow) && workflow.length > 0;
+  return /^[A-Za-z0-9._-]+$/.test(workflow) && /[A-Za-z0-9]/.test(workflow);
 }
 
 function staysWithinDir(parent: string, child: string): boolean {
@@ -469,7 +469,7 @@ function staysWithinDir(parent: string, child: string): boolean {
 }
 
 function isSafeActionName(action: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(action) && action.length > 0;
+  return /^[A-Za-z0-9._-]+$/.test(action) && /[A-Za-z0-9]/.test(action);
 }
 
 function isPositiveNumber(value: unknown): value is number {

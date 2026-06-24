@@ -16,6 +16,7 @@ describe("workflows command helpers", () => {
     expect(isSafeWorkflowName("../escape")).toBe(false);
     expect(isSafeWorkflowName("bad/name")).toBe(false);
     expect(isSafeWorkflowName("bad name")).toBe(false);
+    expect(isSafeWorkflowName("...")).toBe(false);
   });
 
   it("lists project workflow overrides before bundled workflows", () => {

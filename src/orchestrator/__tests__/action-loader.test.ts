@@ -62,6 +62,7 @@ describe("project action loader", () => {
   it("ignores unsafe action names", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-action-"));
     await expect(loadProjectAction(project, "../create-pr")).resolves.toBeUndefined();
+    await expect(loadProjectAction(project, "...")).resolves.toBeUndefined();
   });
 
   it("validates action module names and exports", () => {

@@ -13,7 +13,7 @@ export interface ExternalActionModule<Context, Result> {
 }
 
 export function isSafeActionName(actionType: string): boolean {
-  return /^[a-zA-Z0-9._-]+$/.test(actionType);
+  return /^[a-zA-Z0-9._-]+$/.test(actionType) && /[a-zA-Z0-9]/.test(actionType);
 }
 
 export function projectActionCandidates(projectPath: string, actionType: string): string[] {
