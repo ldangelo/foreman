@@ -759,22 +759,6 @@ export class Refinery {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (!this.isTestRuntime()) {
-        const existingPr = await this.getExistingPrState(branchName);
-        const currentBranchHead = existingPr?.headRefOid
-          ? await this.vcsBackend.resolveRef(this.projectPath, branchName).catch(() => null)
-          : null;
-
-        if (existingPr?.state === "MERGED" && (currentBranchHead === null || currentBranchHead === existingPr.headRefOid)) {
-          await this.persistRunEvent(run, "merge-cleanup-fallback", { seedId: run.seed_id, branchName, error: message.slice(0, 400), prState: existingPr.state });
-          await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
-          merged.push({
-            runId: run.id,
-            seedId: run.seed_id,
-            branchName,
-          });
-          return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
-        }
-
         if (isGhAuthFailure(err)) {
           await this.persistRunEvent(run, "merge-auth-fallback", { seedId: run.seed_id, branchName, targetBranch, error: message.slice(0, 400) });
           const report = await this.mergeCompleted({
@@ -788,6 +772,25 @@ export class Refinery {
           conflicts.push(...report.conflicts);
           testFailures.push(...report.testFailures);
           unexpectedErrors.push(...report.unexpectedErrors);
+          return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
+        }
+
+        const existingPr = await this.getExistingPrState(branchName).catch((stateErr: unknown) => {
+          if (isGhAuthFailure(stateErr)) return null;
+          throw stateErr;
+        });
+        const currentBranchHead = existingPr?.headRefOid
+          ? await this.vcsBackend.resolveRef(this.projectPath, branchName).catch(() => null)
+          : null;
+
+        if (existingPr?.state === "MERGED" && (currentBranchHead === null || currentBranchHead === existingPr.headRefOid)) {
+          await this.persistRunEvent(run, "merge-cleanup-fallback", { seedId: run.seed_id, branchName, error: message.slice(0, 400), prState: existingPr.state });
+          await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
+          merged.push({
+            runId: run.id,
+            seedId: run.seed_id,
+            branchName,
+          });
           return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
         }
 

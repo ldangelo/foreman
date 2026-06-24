@@ -46,6 +46,12 @@ describe("agent-worker.ts — merge queue handoff", () => {
     expect(builtinSource).toContain("readLookup: registeredAutoMergeReadStore");
   });
 
+  it("turns final PR gate exceptions into merge reports", () => {
+    expect(builtinSource).toContain("pr_review_gate_auth_unavailable");
+    expect(builtinSource).toContain("pr_review_gate_error");
+    expect(builtinSource).toContain("status: \"FAIL\", details, prNumber");
+  });
+
   it("enqueues merge intent with an explicit operation", () => {
     expect(source).toContain("operation: \"auto_merge\"");
     expect(source).toContain("const pr = await refinery.ensurePullRequestForRun");

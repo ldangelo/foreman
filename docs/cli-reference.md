@@ -614,7 +614,7 @@ foreman stop --dry-run            # Preview
 
 ### `foreman merge`
 
-Merge completed agent work into the target branch via the refinery. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`. If GitHub CLI PR merge authentication fails, Foreman falls back to its direct VCS merge path for the same branch; if a PR was merged manually, the PR merge event marks the linked run and task as `merged` in projections.
+Merge completed agent work into the target branch via the refinery. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`. If this final PR gate cannot authenticate to GitHub, Foreman writes a failing `MERGE_REPORT.md` instead of crashing the pipeline. If GitHub CLI PR merge authentication fails after the final gate, Foreman falls back to its direct VCS merge path for the same branch; if a PR was merged manually, the PR merge event marks the linked run and task as `merged` in projections.
 
 ```bash
 foreman merge                     # Process merge queue

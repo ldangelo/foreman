@@ -12,7 +12,7 @@ import { resolveProjectDatabaseUrl } from "../../lib/project-mail-client.js";
 import type { AgentMailClient } from "../../lib/agent-mail-client.js";
 import type { WorkflowConfig, WorkflowPhaseConfig } from "../../lib/workflow-loader.js";
 import { getRunReportsDir, resolveArtifactPath } from "../../lib/report-paths.js";
-import { Refinery } from "../refinery.js";
+import { isGhAuthFailure, Refinery } from "../refinery.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
@@ -576,6 +576,12 @@ export async function runMergeBuiltinPhase(args: {
     pipelineProjectPath,
     log,
     reportDir: workerReportDir(config),
+  }).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    const reason = isGhAuthFailure(err)
+      ? `pr_review_gate_auth_unavailable: ${message}`
+      : `pr_review_gate_error: ${message}`;
+    return { success: false, reason };
   });
   if (!gate.success) {
     const details = gate.reason ?? "pr_review_gate_failed";
