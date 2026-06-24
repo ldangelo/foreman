@@ -47,7 +47,7 @@ Foreman CLI / Dispatcher
   │    Workspace prep, model selection, retries, validation policies, mail hooks, artifacts — all YAML config
   │    Workflow YAML resolves explicit path → project .foreman/workflows → global ~/.foreman/workflows → bundled
   │    Project/global workflows can be managed with `foreman workflows list|show|validate|install|create`
-  │    Project/global JS/MJS/TS actions in .foreman/actions or ~/.foreman/actions can override phase behavior without rebuild (`foreman actions list|show|validate|install|create`, use --global for global stubs; validation checks JS/TS syntax/exports, and action names allow letters/numbers plus `.`, `_`, `-`, with at least one letter/number)
+  │    Project/global JS/MJS/TS actions in .foreman/actions or ~/.foreman/actions can override phase behavior without rebuild (`foreman actions list|show|validate|install|create`, use --global for global stubs; validation checks JS/TS syntax/imports/exports, and action names allow letters/numbers plus `.`, `_`, `-`, with at least one letter/number)
   │    Per-phase reports/traces → ~/.foreman/reports/... (outside repo commits)
   │
   ├─ TrpcClient (CLI → daemon transport)

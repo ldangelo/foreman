@@ -1,11 +1,10 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildSync, transformSync } from "esbuild";
+import { buildSync } from "esbuild";
 import { getForemanHomePath } from "../lib/foreman-paths.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -172,16 +171,15 @@ function stripJsNonCode(source: string): string {
 
 function hasValidActionSyntax(filePath: string): boolean {
   try {
-    if (filePath.endsWith(".ts")) {
-      transformSync(readFileSync(filePath, "utf8"), { loader: "ts", format: "esm", target: "node20" });
-    } else {
-      execFileSync(process.execPath, [
-        "--experimental-vm-modules",
-        "-e",
-        "const fs=require('fs'),vm=require('vm'); new vm.SourceTextModule(fs.readFileSync(process.argv[1],'utf8'),{identifier:process.argv[1]});",
-        filePath,
-      ], { stdio: "ignore" });
-    }
+    buildSync({
+      entryPoints: [filePath],
+      bundle: true,
+      write: false,
+      platform: "node",
+      format: "esm",
+      target: "node20",
+      logLevel: "silent",
+    });
     return true;
   } catch {
     return false;
