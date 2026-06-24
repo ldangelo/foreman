@@ -158,7 +158,7 @@ function hasValidActionExport(source: string): boolean {
   }
   for (const exportBlock of source.matchAll(/export\s*\{([^}]*)\}/g)) {
     for (const name of callableNames) {
-      if (new RegExp(`(^|,)\\s*${name}\\s+as\\s+run\\s*(,|$)`).test(exportBlock[1] ?? "")) return true;
+      if (new RegExp(`(^|,)\\s*${name}\\s+as\\s+(run|default)\\s*(,|$)`).test(exportBlock[1] ?? "")) return true;
     }
   }
   return false;
