@@ -14,7 +14,7 @@ export interface ActionListRow {
 }
 
 function actionNameFromFile(file: string): string {
-  return file.replace(/\.(mjs|js)$/i, "");
+  return file.replace(/\.(mjs|js|ts)$/i, "");
 }
 
 export function customActionStub(action: string): string {
@@ -29,7 +29,7 @@ export function customActionStub(action: string): string {
 
 function actionFiles(dir: string): string[] {
   try {
-    return readdirSync(dir).filter((file) => file.endsWith(".js") || file.endsWith(".mjs"));
+    return readdirSync(dir).filter((file) => file.endsWith(".js") || file.endsWith(".mjs") || file.endsWith(".ts"));
   } catch {
     return [];
   }
@@ -59,10 +59,10 @@ export function listActions(projectPath: string): ActionListRow[] {
   for (const file of actionFiles(getForemanHomePath("actions"))) names.add(actionNameFromFile(file));
 
   return [...names].sort().map((action) => {
-    const [projectMjs, projectJs, globalMjs, globalJs] = actionCandidates(projectPath, action);
-    const resolved = [projectMjs, projectJs, globalMjs, globalJs].find((candidate) => candidate && existsSync(candidate));
-    if (resolved && (resolved === projectMjs || resolved === projectJs)) return { action, source: "project", path: resolved };
-    if (resolved && (resolved === globalMjs || resolved === globalJs)) return { action, source: "global", path: resolved };
+    const candidates = actionCandidates(projectPath, action);
+    const resolved = candidates.find((candidate) => candidate && existsSync(candidate));
+    if (resolved && candidates.slice(0, 3).includes(resolved)) return { action, source: "project", path: resolved };
+    if (resolved && candidates.slice(3).includes(resolved)) return { action, source: "global", path: resolved };
     const bundled = listBundledActionFiles().find((file) => actionNameFromFile(file) === action);
     return { action, source: bundled ? "bundled" : "missing", path: bundled ? `<bundled>/${bundled}` : null };
   });

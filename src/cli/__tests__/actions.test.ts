@@ -16,9 +16,11 @@ describe("actions command helpers", () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-actions-list-"));
     mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
     writeFileSync(join(project, ".foreman", "actions", "create-pr.js"), "export default function run(ctx) { return ctx.internal.runBuiltin(); }\n");
+    writeFileSync(join(project, ".foreman", "actions", "notify.ts"), "export const run = async () => ({ success: true });\n");
 
     const rows = listActions(project);
     expect(rows.find((row) => row.action === "create-pr")).toMatchObject({ source: "project" });
+    expect(rows.find((row) => row.action === "notify")).toMatchObject({ source: "project" });
     expect(rows.some((row) => row.action === "finalize")).toBe(true);
   });
 

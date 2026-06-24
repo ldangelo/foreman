@@ -45,6 +45,15 @@ describe("project action loader", () => {
     await expect(action?.({ actionType: "notify" })).resolves.toEqual({ success: true, outputText: "notify" });
   });
 
+  it("loads TypeScript action modules", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-action-project-"));
+    mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "actions", "typed.ts"), "type Ctx = { actionType: string };\nexport const run = async (ctx: Ctx): Promise<{ success: boolean; outputText: string }> => ({ success: true, outputText: `ts:${ctx.actionType}` });\n");
+
+    const action = await loadProjectAction<{ actionType: string }, { success: boolean; outputText: string }>(project, "typed");
+    await expect(action?.({ actionType: "typed" })).resolves.toEqual({ success: true, outputText: "ts:typed" });
+  });
+
   it("prefers project actions over global actions", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-action-project-"));
     const home = mkdtempSync(join(tmpdir(), "foreman-action-home-"));
@@ -63,8 +72,10 @@ describe("project action loader", () => {
     expect(actionCandidates(project, "create-pr")).toEqual([
       join(project, ".foreman", "actions", "create-pr.mjs"),
       join(project, ".foreman", "actions", "create-pr.js"),
+      join(project, ".foreman", "actions", "create-pr.ts"),
       getForemanHomePath("actions", "create-pr.mjs"),
       getForemanHomePath("actions", "create-pr.js"),
+      getForemanHomePath("actions", "create-pr.ts"),
     ]);
   });
 
@@ -81,6 +92,7 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "arrow.js"), "export default async (ctx) => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "identifier-arrow.js"), "export default async ctx => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "const-run.js"), "export const run = async (ctx) => ctx.internal.runBuiltin();\n");
+    writeFileSync(join(project, ".foreman", "actions", "typed.ts"), "export const run: unknown = async (ctx) => ctx;\n");
     writeFileSync(join(project, ".foreman", "actions", "re-export-run.js"), "const run = async (ctx) => ctx.internal.runBuiltin(); export { run };\n");
     writeFileSync(join(project, ".foreman", "actions", "re-export-before-run.js"), "export { run }; const run = async (ctx) => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "alias-run.js"), "const execute = async (ctx) => ctx.internal.runBuiltin(); export { execute as run };\n");
@@ -95,6 +107,7 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "commented-export.js"), "// export default async function run() {}\nconst nope = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "string-export.js"), "const sample = 'export async function run() {}';\n");
     writeFileSync(join(project, ".foreman", "actions", "syntax.js"), "export async function run(ctx) { return ctx.internal.runBuiltin();\n");
+    writeFileSync(join(project, ".foreman", "actions", "syntax-ts.ts"), "export const run: = async (ctx) => ctx;\n");
     writeFileSync(join(project, ".foreman", "actions", "block-comment-export.js"), "/* export const run = async () => ({ success: true }); */\nconst nope = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "dup.js"), "export default async () => ({ success: true });\n");
     writeFileSync(join(project, ".foreman", "actions", "dup.mjs"), "export default async () => ({ success: true });\n");
@@ -102,12 +115,12 @@ describe("project action loader", () => {
 
     expect(validateProjectActions(project)).toEqual({
       invalidNames: ["bad$name.js"],
-      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-run.js", "run-value.js", "string-export.js", "syntax.js"],
+      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-run.js", "run-value.js", "string-export.js", "syntax-ts.ts", "syntax.js"],
       duplicateNames: ["dup"],
     });
     expect(validateActionsInDir(join(project, ".foreman", "actions"))).toEqual({
       invalidNames: ["bad$name.js"],
-      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-run.js", "run-value.js", "string-export.js", "syntax.js"],
+      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-run.js", "run-value.js", "string-export.js", "syntax-ts.ts", "syntax.js"],
       duplicateNames: ["dup"],
     });
   });
