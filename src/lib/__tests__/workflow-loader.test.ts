@@ -52,6 +52,20 @@ describe("validateWorkflowConfig", () => {
     expect(() => validateWorkflowConfig({ name: "../escape", phases: [{ name: "developer", prompt: "developer.md" }] }, "custom")).toThrow(/safe workflow name/);
   });
 
+  it("rejects malformed task_type declarations", () => {
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      task_type: "",
+      phases: [{ name: "developer", prompt: "developer.md" }],
+    }, "default")).toThrow(/task_type must be a non-empty string/);
+
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      task_type: 42,
+      phases: [{ name: "developer", prompt: "developer.md" }],
+    }, "default")).toThrow(/task_type must be a non-empty string/);
+  });
+
   it("accepts a valid workflow config", () => {
     const raw = {
       name: "default",

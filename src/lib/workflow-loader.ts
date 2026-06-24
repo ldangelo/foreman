@@ -544,9 +544,13 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   }
 
   // ── Parse optional task_type declaration ──────────────────────────────────
-  const taskType = typeof raw["task_type"] === "string" && raw["task_type"].trim()
-    ? raw["task_type"].trim()
-    : undefined;
+  let taskType: string | undefined;
+  if (raw["task_type"] !== undefined) {
+    if (typeof raw["task_type"] !== "string" || !raw["task_type"].trim()) {
+      throw new WorkflowConfigError(workflowName, "task_type must be a non-empty string");
+    }
+    taskType = raw["task_type"].trim();
+  }
 
   // ── Parse optional setup block ─────────────────────────────────────────────
   let setup: WorkflowSetupStep[] | undefined;
