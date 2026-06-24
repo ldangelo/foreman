@@ -143,6 +143,27 @@ function stripJsNonCode(source: string): string {
   return output;
 }
 
+function hasValidActionExport(source: string): boolean {
+  if (/export\s+default\s+(async\s+)?function\b/.test(source)) return true;
+  if (/export\s+default\s+(async\s+)?(\([^)]*\)|[a-zA-Z_$][\w$]*)\s*=>/.test(source)) return true;
+  if (/export\s+(async\s+)?function\s+run\b/.test(source)) return true;
+  if (/export\s+(const|let|var)\s+run\s*=\s*(async\s*)?(function\b|\([^)]*\)\s*=>|[a-zA-Z_$][\w$]*\s*=>)/.test(source)) return true;
+  if (/((async\s+)?function\s+run\b|(const|let|var)\s+run\s*=\s*(async\s*)?(function\b|\([^)]*\)\s*=>|[a-zA-Z_$][\w$]*\s*=>))[\s\S]*export\s*\{[^}]*\brun\b[^}]*\}/.test(source)) return true;
+  const callableNames = new Set<string>();
+  for (const match of source.matchAll(/(?:async\s+)?function\s+([a-zA-Z_$][\w$]*)\b/g)) {
+    callableNames.add(match[1] ?? "");
+  }
+  for (const match of source.matchAll(/(?:const|let|var)\s+([a-zA-Z_$][\w$]*)\s*=\s*(async\s*)?(?:function\b|\([^)]*\)\s*=>|[a-zA-Z_$][\w$]*\s*=>)/g)) {
+    callableNames.add(match[1] ?? "");
+  }
+  for (const exportBlock of source.matchAll(/export\s*\{([^}]*)\}/g)) {
+    for (const name of callableNames) {
+      if (new RegExp(`(^|,)\\s*${name}\\s+as\\s+run\\s*(,|$)`).test(exportBlock[1] ?? "")) return true;
+    }
+  }
+  return false;
+}
+
 export function validateActionsInDir(dir: string): ActionValidationResult {
   const invalidNames: string[] = [];
   const invalidExports: string[] = [];
@@ -168,13 +189,7 @@ export function validateActionsInDir(dir: string): ActionValidationResult {
       continue;
     }
     const source = stripJsNonCode(readFileSync(join(dir, file), "utf8"));
-    if (!/export\s+default\s+(async\s+)?function\b/.test(source)
-      && !/export\s+default\s+(async\s+)?(\([^)]*\)|[a-zA-Z_$][\w$]*)\s*=>/.test(source)
-      && !/export\s+(async\s+)?function\s+run\b/.test(source)
-      && !/export\s+(const|let|var)\s+run\s*=\s*(async\s*)?(function\b|\([^)]*\)\s*=>|[a-zA-Z_$][\w$]*\s*=>)/.test(source)
-      && !/((async\s+)?function\s+run\b|(const|let|var)\s+run\s*=\s*(async\s*)?(function\b|\([^)]*\)\s*=>|[a-zA-Z_$][\w$]*\s*=>))[\s\S]*export\s*\{[^}]*\brun\b[^}]*\}/.test(source)) {
-      invalidExports.push(file);
-    }
+    if (!hasValidActionExport(source)) invalidExports.push(file);
   }
   return { invalidNames, invalidExports, duplicateNames };
 }
