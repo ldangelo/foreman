@@ -36,6 +36,15 @@ describe("project action loader", () => {
     await expect(action?.({ actionType: "notify" })).resolves.toEqual({ success: true, outputText: "global:notify" });
   });
 
+  it("loads named run when a non-function default export is present", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-action-project-"));
+    mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "actions", "notify.js"), "export default 1; export async function run(ctx) { return { success: true, outputText: ctx.actionType }; }\n");
+
+    const action = await loadProjectAction<{ actionType: string }, { success: boolean; outputText: string }>(project, "notify");
+    await expect(action?.({ actionType: "notify" })).resolves.toEqual({ success: true, outputText: "notify" });
+  });
+
   it("prefers project actions over global actions", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-action-project-"));
     const home = mkdtempSync(join(tmpdir(), "foreman-action-home-"));

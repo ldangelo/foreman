@@ -45,8 +45,8 @@ export async function loadProjectAction<Context, Result = unknown>(projectPath: 
   for (const candidate of actionCandidates(projectPath, actionType)) {
     if (!existsSync(candidate)) continue;
     const mod = await import(`${pathToFileURL(candidate).href}?t=${Date.now()}`) as ExternalActionModule<Context, Result>;
-    const runner = mod.default ?? mod.run;
-    if (typeof runner !== "function") throw new Error(`Action ${actionType} at ${candidate} must export default(ctx) or run(ctx)`);
+    const runner = typeof mod.default === "function" ? mod.default : typeof mod.run === "function" ? mod.run : undefined;
+    if (!runner) throw new Error(`Action ${actionType} at ${candidate} must export a default function or named run function`);
     return runner;
   }
   return undefined;
