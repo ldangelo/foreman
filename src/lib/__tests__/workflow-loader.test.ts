@@ -66,6 +66,13 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[3].builtin).toBe(true);
   });
 
+  it("rejects unsafe phase action declarations", () => {
+    expect(() => validateWorkflowConfig({
+      name: "custom",
+      phases: [{ name: "notify", action: "../notify" }],
+    }, "custom")).toThrow(WorkflowConfigError);
+  });
+
   it("parses explicit phase action declarations", () => {
     const raw = {
       name: "default",

@@ -468,6 +468,10 @@ function staysWithinDir(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
+function isSafeActionName(action: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(action) && action.length > 0;
+}
+
 /**
  * Error thrown when a workflow config file is missing or invalid.
  */
@@ -559,7 +563,12 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 
     const phase: WorkflowPhaseConfig = { name: p["name"] as string };
 
-    if (typeof p["action"] === "string") phase.action = p["action"];
+    if (p["action"] !== undefined) {
+      if (typeof p["action"] !== "string" || !isSafeActionName(p["action"])) {
+        throw new WorkflowConfigError(workflowName, `phases[${i}].action must be a safe non-empty action name`);
+      }
+      phase.action = p["action"];
+    }
     if (Array.isArray(p["capabilities"])) {
       phase.capabilities = p["capabilities"].filter((capability): capability is string => typeof capability === "string" && capability.trim().length > 0);
     }
