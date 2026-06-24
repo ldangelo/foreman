@@ -65,6 +65,7 @@ import { runWorkspaceHook } from "../lib/setup.js";
 import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
 import { inferPhaseActionType } from "./phase-actions.js";
+import { loadProjectAction } from "./action-loader.js";
 import { ElixirServerClient } from "../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
 
@@ -1854,6 +1855,20 @@ async function runPipeline(
       async runBuiltinPhase(phase: WorkflowPhaseConfig, progress?: RunProgress) {
         try {
           const actionType = inferPhaseActionType(phase);
+          const externalAction = await loadProjectAction<{
+            actionType: string;
+            phase: WorkflowPhaseConfig;
+            progress?: RunProgress;
+            config: WorkerConfig;
+            projectPath: string;
+            workflowConfig: WorkflowConfig;
+            store: ForemanStore;
+            taskClient: ITaskClient;
+            vcsBackend?: VcsBackend;
+            mail: { send: typeof sendMail; sendText: typeof sendMailText; client: AnyMailClient | null };
+            log: (message: string) => void;
+            internal: { runBuiltin: () => Promise<import("./pipeline-executor.js").PhaseResult> };
+          }, import("./pipeline-executor.js").PhaseResult>(pipelineProjectPath, actionType);
           const actionRunners: Record<string, () => Promise<import("./pipeline-executor.js").PhaseResult>> = {
             "create-pr": () => runCreatePrBuiltinPhase({
               config,
@@ -1884,6 +1899,27 @@ async function runPipeline(
             }),
           };
           const runner = actionRunners[actionType];
+          if (externalAction) {
+            return await externalAction({
+              actionType,
+              phase,
+              progress,
+              config,
+              projectPath: pipelineProjectPath,
+              workflowConfig,
+              store,
+              taskClient: runtimeTaskClient,
+              vcsBackend,
+              mail: { send: sendMail, sendText: sendMailText, client: agentMailClient },
+              log,
+              internal: {
+                runBuiltin: async () => {
+                  if (!runner) throw new Error(`Unknown builtin action: ${actionType} (phase ${phase.name})`);
+                  return runner();
+                },
+              },
+            });
+          }
           if (!runner) return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `Unknown builtin action: ${actionType} (phase ${phase.name})` };
           return await runner();
         } catch (err: unknown) {

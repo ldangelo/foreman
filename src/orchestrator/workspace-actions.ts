@@ -6,6 +6,7 @@ import type { WorkflowSetupCache, WorkflowSetupStep } from "../lib/workflow-load
 import type { ProjectHooksConfig } from "../lib/project-config.js";
 import type { ModelSelection, SeedInfo } from "./types.js";
 import { workerAgentMd } from "./templates.js";
+import { loadProjectAction } from "./action-loader.js";
 
 export interface WorkspaceActionContext {
   projectId: string;
@@ -78,14 +79,21 @@ export async function runWriteTaskContextAction(ctx: WorkspaceActionContext): Pr
 }
 
 export async function runWorkspaceAction(action: string, ctx: WorkspaceActionContext): Promise<WorkspaceActionContext> {
-  switch (action) {
+  const externalAction = await loadProjectAction<WorkspaceActionContext & { actionType: string; internal: { runBuiltin: () => Promise<WorkspaceActionContext> } }, WorkspaceActionContext>(ctx.repoPath, action);
+  const runBuiltin = async (): Promise<WorkspaceActionContext> => {
+    switch (action) {
     case "prepare-worktree":
       return runPrepareWorktreeAction(ctx);
     case "setup-workspace":
       return runSetupWorkspaceAction(ctx);
     case "write-task-context":
       return runWriteTaskContextAction(ctx);
-    default:
-      throw new Error(`Unknown workspace action: ${action}`);
+      default:
+        throw new Error(`Unknown workspace action: ${action}`);
+    }
+  };
+  if (externalAction) {
+    return externalAction({ ...ctx, actionType: action, internal: { runBuiltin } });
   }
+  return runBuiltin();
 }
