@@ -89,6 +89,20 @@ describe("Doctor.checkWorkflows()", () => {
     });
   });
 
+  it("detects duplicate workflow file variants", async () => {
+    installBundledWorkflows(tmpDir, true);
+    const workflowsDir = join(tmpDir, ".foreman", "workflows");
+    mkdirSync(workflowsDir, { recursive: true });
+    writeFileSync(join(workflowsDir, "custom.yaml"), "name: custom\nphases:\n  - name: finalize\n    builtin: true\n");
+    writeFileSync(join(workflowsDir, "custom.yml"), "name: custom\nphases:\n  - name: finalize\n    builtin: true\n");
+
+    const { doctor } = makeMocks(tmpDir);
+    const result = await doctor.checkWorkflows();
+    expect(result.status).toBe("fail");
+    expect(result.message).toMatch(/duplicate workflow variants/i);
+    expect(result.message).toContain("project/custom");
+  });
+
   it("detects unsafe workflow filenames", async () => {
     installBundledWorkflows(tmpDir, true);
     const workflowsDir = join(tmpDir, ".foreman", "workflows");

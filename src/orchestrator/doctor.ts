@@ -1058,6 +1058,29 @@ export class Doctor {
     };
   }
 
+  private async findDuplicateWorkflowVariants(): Promise<string[]> {
+    const result: string[] = [];
+    const scan = async (label: string, dir: string) => {
+      try {
+        const files = await readdir(dir);
+        const counts = new Map<string, number>();
+        for (const file of files) {
+          if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
+          const workflowName = file.replace(/\.ya?ml$/, "");
+          counts.set(workflowName, (counts.get(workflowName) ?? 0) + 1);
+        }
+        for (const [workflowName, count] of counts.entries()) {
+          if (count > 1) result.push(`${label}/${workflowName}`);
+        }
+      } catch {
+        // Optional workflow directory missing — non-fatal.
+      }
+    };
+    await scan("project", join(this.projectPath, ".foreman", "workflows"));
+    await scan("global", getForemanHomePath("workflows"));
+    return result.sort();
+  }
+
   private async findUnsafeWorkflowFiles(): Promise<string[]> {
     const result: string[] = [];
     const scan = async (label: string, dir: string) => {
@@ -1090,8 +1113,9 @@ export class Doctor {
     const missing = findMissingWorkflows(this.projectPath);
     const stale = findStaleWorkflows(this.projectPath);
     const unsafe = await this.findUnsafeWorkflowFiles();
+    const duplicates = await this.findDuplicateWorkflowVariants();
 
-    const problemCount = missing.length + stale.length + unsafe.length;
+    const problemCount = missing.length + stale.length + unsafe.length + duplicates.length;
 
     if (problemCount === 0) {
       return {
@@ -1104,10 +1128,12 @@ export class Doctor {
     const missingList = missing.map((n) => `${n}.yaml`).join(", ");
     const staleList = stale.map((n) => `${n}.yaml`).join(", ");
     const unsafeList = unsafe.join(", ");
+    const duplicateList = duplicates.join(", ");
     const problemDesc = [
       missing.length > 0 ? `missing: ${missingList}` : "",
       stale.length > 0 ? `stale (missing verdict/retry config): ${staleList}` : "",
       unsafe.length > 0 ? `unsafe workflow filenames: ${unsafeList}` : "",
+      duplicates.length > 0 ? `duplicate workflow variants: ${duplicateList}` : "",
     ]
       .filter(Boolean)
       .join("; ");
@@ -1129,7 +1155,8 @@ export class Doctor {
         const stillMissing = findMissingWorkflows(this.projectPath);
         const stillStale = findStaleWorkflows(this.projectPath);
         const stillUnsafe = await this.findUnsafeWorkflowFiles();
-        if (stillMissing.length === 0 && stillStale.length === 0 && stillUnsafe.length === 0) {
+        const stillDuplicates = await this.findDuplicateWorkflowVariants();
+        if (stillMissing.length === 0 && stillStale.length === 0 && stillUnsafe.length === 0 && stillDuplicates.length === 0) {
           return {
             name: "workflow configs (~/.foreman/workflows/)",
             status: "fixed",
@@ -1140,7 +1167,7 @@ export class Doctor {
         return {
           name: "workflow configs (~/.foreman/workflows/)",
           status: "fail",
-          message: `Workflow config issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")} unsafe=${stillUnsafe.join(", ")}`,
+          message: `Workflow config issues remain after reinstall: missing=${stillMissing.join(", ")} stale=${stillStale.join(", ")} unsafe=${stillUnsafe.join(", ")} duplicates=${stillDuplicates.join(", ")}`,
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

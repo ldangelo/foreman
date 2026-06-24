@@ -19,10 +19,22 @@ function workflowNameFromFile(file: string): string {
 
 function workflowFiles(dir: string): string[] {
   try {
-    return readdirSync(dir).filter((file) => file.endsWith(".yaml") || file.endsWith(".yml"));
+    return readdirSync(dir).filter((file) => file.endsWith(".yaml") || file.endsWith(".yml")).sort();
   } catch {
     return [];
   }
+}
+
+export function findDuplicateWorkflowVariants(dir: string, label: string): string[] {
+  const counts = new Map<string, number>();
+  for (const file of workflowFiles(dir)) {
+    const workflow = workflowNameFromFile(file);
+    counts.set(workflow, (counts.get(workflow) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([workflow]) => `${label}/${workflow}`)
+    .sort();
 }
 
 function firstExisting(candidates: string[]): string | undefined {
@@ -89,6 +101,13 @@ export function validateWorkflows(projectPath: string): { ok: boolean; invalid: 
       invalid.push(`${label}: ${msg}`);
     }
   };
+
+  for (const duplicate of findDuplicateWorkflowVariants(join(projectPath, ".foreman", "workflows"), "project")) {
+    invalid.push(`${duplicate}: duplicate workflow variants (.yaml/.yml)`);
+  }
+  for (const duplicate of findDuplicateWorkflowVariants(getForemanHomePath("workflows"), "global")) {
+    invalid.push(`${duplicate}: duplicate workflow variants (.yaml/.yml)`);
+  }
 
   for (const file of workflowFiles(join(projectPath, ".foreman", "workflows"))) {
     const workflow = workflowNameFromFile(file);

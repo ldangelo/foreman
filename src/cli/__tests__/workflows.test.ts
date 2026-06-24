@@ -56,6 +56,23 @@ describe("workflows command helpers", () => {
     }
   });
 
+  it("validates duplicate workflow file variants", () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-workflows-duplicate-variants-"));
+    const oldHome = process.env.FOREMAN_HOME;
+    process.env.FOREMAN_HOME = join(project, "foreman-home");
+    mkdirSync(join(project, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "workflows", "custom.yaml"), workflowStub("custom"));
+    writeFileSync(join(project, ".foreman", "workflows", "custom.yml"), workflowStub("custom"));
+    try {
+      const result = validateWorkflows(project);
+      expect(result.ok).toBe(false);
+      expect(result.invalid.some((line) => line.includes("project/custom: duplicate workflow variants"))).toBe(true);
+    } finally {
+      if (oldHome === undefined) delete process.env.FOREMAN_HOME;
+      else process.env.FOREMAN_HOME = oldHome;
+    }
+  });
+
   it("validates duplicate task_type declarations", () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-workflows-duplicate-task-type-"));
     const oldHome = process.env.FOREMAN_HOME;
