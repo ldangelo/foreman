@@ -1137,7 +1137,7 @@ export class Doctor {
 
   private findUnresolvedWorkflowActions(): string[] {
     const unresolved = new Set<string>();
-    for (const workflowName of listAvailableWorkflows()) {
+    for (const workflowName of listAvailableWorkflows(this.projectPath)) {
       try {
         const workflow = loadWorkflowConfig(workflowName, this.projectPath);
         for (const phase of workflow.phases) {

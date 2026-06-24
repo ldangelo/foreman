@@ -6,7 +6,9 @@ Workflow YAML files define the complete pipeline configuration for Foreman: whic
 
 | Location | Purpose |
 |----------|---------|
-| `~/.foreman/workflows/{name}.yaml` | Global overrides (highest priority) |
+| Explicit YAML path | Highest priority for one run/command |
+| `.foreman/workflows/{name}.yaml|.yml` | Project overrides |
+| `~/.foreman/workflows/{name}.yaml|.yml` | Global overrides |
 | `src/defaults/workflows/{name}.yaml` | Bundled defaults (installed by `foreman init`) |
 
 Foreman ships with bundled workflows for common task types:

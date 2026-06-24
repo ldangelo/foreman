@@ -526,7 +526,7 @@ export async function checkBranchMismatch(
  * Validate a `--workflow <name>` override before dispatch.
  *
  * Fails fast when the named workflow cannot be loaded (not bundled, not in
- * ~/.foreman/workflows/, not a valid YAML path), returning an error message
+ * project/global workflows, not bundled, not a valid YAML path), returning an error message
  * that lists the available workflow names.
  */
 export function validateWorkflowOverride(
@@ -538,7 +538,7 @@ export function validateWorkflowOverride(
     return { ok: true };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
-    const available = listAvailableWorkflows();
+    const available = listAvailableWorkflows(projectPath);
     return {
       ok: false,
       message:

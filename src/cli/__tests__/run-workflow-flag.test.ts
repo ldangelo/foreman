@@ -8,7 +8,7 @@
  * YAML-first replacement.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -106,6 +106,13 @@ describe("validateWorkflowOverride", () => {
 
   it("accepts a bundled workflow name", () => {
     const result = validateWorkflowOverride("quick", foremanHome);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts a project workflow name", () => {
+    mkdirSync(join(foremanHome, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(foremanHome, ".foreman", "workflows", "local.yaml"), "name: local\nphases:\n  - name: finalize\n    builtin: true\n");
+    const result = validateWorkflowOverride("local", foremanHome);
     expect(result.ok).toBe(true);
   });
 
