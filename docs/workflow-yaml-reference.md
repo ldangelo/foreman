@@ -61,7 +61,7 @@ phases: [...]                    # Phase sequence (required)
 
 ### `name` (required)
 
-The workflow identifier. Must match the filename (e.g. `default.yaml` → `name: default`).
+The workflow identifier. It must be a safe string. By convention it matches the filename (e.g. `default.yaml` → `name: default`), but explicit/project/global overrides may carry a custom display name.
 
 ```yaml
 name: default
