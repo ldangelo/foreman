@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
@@ -13,6 +13,10 @@ export interface ActionListRow {
 
 function actionNameFromFile(file: string): string {
   return file.replace(/\.(mjs|js)$/i, "");
+}
+
+export function customActionStub(action: string): string {
+  return `/**\n * Custom Foreman action: ${action}\n *\n * ctx fields include actionType, phase, config, workflowConfig, log, mail, and internal.runBuiltin().\n * Return { success: boolean, outputText?: string, error?: string, costUsd?: number, turns?: number }.\n */\nexport default async function run(ctx) {\n  ctx.log?.(\`[ACTION:${action}] custom action starting\`);\n  // Wrap existing built-in behavior when overriding bundled actions:\n  // return ctx.internal.runBuiltin();\n  return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: \"${action} completed\" };\n}\n`;
 }
 
 function actionFiles(dir: string): string[] {
@@ -105,4 +109,33 @@ actionsCommand
       return;
     }
     console.log(`Installed ${result.installed.length} action module(s); skipped ${result.skipped.length}.`);
+  });
+
+actionsCommand
+  .command("create")
+  .description("Create a new project action stub in .foreman/actions")
+  .argument("<action>", "Action name")
+  .option("--force", "Overwrite an existing project action file")
+  .option("--json", "Output JSON")
+  .action((action: string, opts: { force?: boolean; json?: boolean }) => {
+    if (!isSafeActionName(action)) {
+      console.error(chalk.red(`Unsafe action name: ${action}`));
+      process.exitCode = 1;
+      return;
+    }
+    const projectPath = process.cwd();
+    const dir = join(projectPath, ".foreman", "actions");
+    const file = join(dir, `${action}.js`);
+    mkdirSync(dir, { recursive: true });
+    if (existsSync(file) && !opts.force) {
+      const result = { action, path: file, created: false, reason: "exists" };
+      if (opts.json) console.log(JSON.stringify(result, null, 2));
+      else console.error(chalk.yellow(`Action already exists: ${file} (use --force to overwrite)`));
+      process.exitCode = 1;
+      return;
+    }
+    writeFileSync(file, customActionStub(action), "utf8");
+    const result = { action, path: file, created: true };
+    if (opts.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(`Created action: ${file}`);
   });

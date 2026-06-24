@@ -4,12 +4,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { actionsCommand, listActions } from "../commands/actions.js";
+import { actionsCommand, customActionStub, listActions } from "../commands/actions.js";
 
 describe("actions command helpers", () => {
   it("loads command with list/show/install subcommands", () => {
     expect(actionsCommand.name()).toBe("actions");
-    expect(actionsCommand.commands.map((cmd) => cmd.name())).toEqual(["list", "show", "install"]);
+    expect(actionsCommand.commands.map((cmd) => cmd.name())).toEqual(["list", "show", "install", "create"]);
   });
 
   it("lists project overrides before bundled actions", () => {
@@ -22,6 +22,11 @@ describe("actions command helpers", () => {
     expect(rows.some((row) => row.action === "finalize")).toBe(true);
   });
 
+  it("renders a valid custom action stub", () => {
+    expect(customActionStub("notify-slack")).toContain("export default async function run(ctx)");
+    expect(customActionStub("notify-slack")).toContain("notify-slack completed");
+  });
+
   it("installs bundled action stubs from the command", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-actions-install-"));
     const cwd = process.cwd();
@@ -29,6 +34,18 @@ describe("actions command helpers", () => {
     try {
       await actionsCommand.parseAsync(["node", "foreman", "install"]);
       expect(existsSync(join(project, ".foreman", "actions", "create-pr.js"))).toBe(true);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it("creates a custom project action stub from the command", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-actions-create-"));
+    const cwd = process.cwd();
+    process.chdir(project);
+    try {
+      await actionsCommand.parseAsync(["node", "foreman", "create", "notify-slack"]);
+      expect(existsSync(join(project, ".foreman", "actions", "notify-slack.js"))).toBe(true);
     } finally {
       process.chdir(cwd);
     }
