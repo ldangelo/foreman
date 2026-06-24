@@ -18,8 +18,13 @@ function actionNameFromFile(file: string): string {
 }
 
 export function customActionStub(action: string): string {
+  const descriptor = PHASE_ACTIONS[action];
+  const wrapsBuiltin = descriptor?.kind === "dispatcher" || descriptor?.kind === "builtin";
+  const returnBody = wrapsBuiltin
+    ? "  // Default safe override: preserve built-in behavior, then customize around it.\n  return ctx.internal.runBuiltin();"
+    : `  return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: "${action} completed" };`;
   return `/**\n * Custom Foreman action: ${action}\n *\n * ctx fields include actionType, phase, config, workflowConfig, log, mail, and internal.runBuiltin().\n * Worker-phase actions return { success, costUsd, turns, tokensIn, tokensOut, outputText?, error? }.
- * Workspace actions return the updated workspace context object.\n */\nexport default async function run(ctx) {\n  ctx.log?.(\`[ACTION:${action}] custom action starting\`);\n  // Wrap existing built-in behavior when overriding bundled actions:\n  // return ctx.internal.runBuiltin();\n  return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: \"${action} completed\" };\n}\n`;
+ * Workspace actions return the updated workspace context object.\n */\nexport default async function run(ctx) {\n  ctx.log?.(\`[ACTION:${action}] custom action starting\`);\n${returnBody}\n}\n`;
 }
 
 function actionFiles(dir: string): string[] {

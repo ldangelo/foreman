@@ -32,6 +32,11 @@ describe("actions command helpers", () => {
     expect(customActionStub("notify-slack")).toContain("notify-slack completed");
   });
 
+  it("renders safe wrapper stubs for builtin and workspace action overrides", () => {
+    expect(customActionStub("prepare-worktree")).toContain("return ctx.internal.runBuiltin();");
+    expect(customActionStub("finalize")).toContain("return ctx.internal.runBuiltin();");
+  });
+
   it("installs bundled action stubs from the command", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-actions-install-"));
     const cwd = process.cwd();
