@@ -15,6 +15,7 @@ import type { ITaskClient } from "../lib/task-client.js";
 import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
+import { findMissingActions, installBundledActions } from "./action-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
@@ -1133,6 +1134,46 @@ export class Doctor {
     };
   }
 
+  async checkActions(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
+    const { fix = false, dryRun = false } = opts;
+    const missing = findMissingActions(this.projectPath);
+    if (missing.length === 0) {
+      return {
+        name: "action modules (.foreman/actions/)",
+        status: "pass",
+        message: "All bundled action modules are installed",
+      };
+    }
+    if (dryRun) {
+      return {
+        name: "action modules (.foreman/actions/)",
+        status: "fail",
+        message: `${missing.length} missing action module(s): ${missing.join(", ")}. Would install (dry-run).`,
+      };
+    }
+    if (fix) {
+      const { installed } = installBundledActions(this.projectPath, false);
+      const stillMissing = findMissingActions(this.projectPath);
+      return stillMissing.length === 0
+        ? {
+            name: "action modules (.foreman/actions/)",
+            status: "fixed",
+            message: `${missing.length} missing action module(s)`,
+            fixApplied: `Installed ${installed.length} action module(s) from bundled defaults`,
+          }
+        : {
+            name: "action modules (.foreman/actions/)",
+            status: "fail",
+            message: `Action modules still missing after install: ${stillMissing.join(", ")}`,
+          };
+    }
+    return {
+      name: "action modules (.foreman/actions/)",
+      status: "fail",
+      message: `${missing.length} missing action module(s): ${missing.join(", ")}. Run 'foreman init' or 'foreman doctor --fix' to install.`,
+    };
+  }
+
   /**
    * Check that no two workflows declare the same `task_type`.
    *
@@ -1175,6 +1216,7 @@ export class Doctor {
     results.push(await this.checkPrompts(opts));
     results.push(await this.checkPiSkills(opts));
     results.push(await this.checkWorkflows(opts));
+    results.push(await this.checkActions(opts));
     results.push(await this.checkTaskTypeUniqueness());
     return results;
   }

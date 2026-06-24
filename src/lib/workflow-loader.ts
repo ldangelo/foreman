@@ -168,6 +168,8 @@ export interface WorkflowPhaseConfig {
   name: string;
   /** Reusable execution action type. Defaults from prompt/bash/command/builtin fields when omitted. */
   action?: string;
+  /** Declared host capabilities used by project/custom actions (advisory for now). */
+  capabilities?: string[];
   /**
    * Prompt file name (relative to .foreman/prompts/{workflow}/).
    * Omitted for builtin phases (e.g., finalize).
@@ -547,6 +549,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     const phase: WorkflowPhaseConfig = { name: p["name"] as string };
 
     if (typeof p["action"] === "string") phase.action = p["action"];
+    if (Array.isArray(p["capabilities"])) {
+      phase.capabilities = p["capabilities"].filter((capability): capability is string => typeof capability === "string" && capability.trim().length > 0);
+    }
     if (typeof p["prompt"] === "string") phase.prompt = p["prompt"];
     if (typeof p["model"] === "string") phase.model = p["model"];
 

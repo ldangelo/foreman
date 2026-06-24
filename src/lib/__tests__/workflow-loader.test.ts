@@ -78,6 +78,17 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[1].action).toBe("bash");
   });
 
+  it("parses action capabilities", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        { name: "create-pr", action: "create-pr", builtin: true, capabilities: ["vcs", "mail", "network"] },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+    expect(config.phases[0].capabilities).toEqual(["vcs", "mail", "network"]);
+  });
+
   it("parses declarative contract policies", () => {
     const raw = {
       name: "default",

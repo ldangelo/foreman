@@ -14,6 +14,7 @@ import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
 import { installBundledWorkflows, BUNDLED_WORKFLOW_NAMES } from "../../lib/workflow-loader.js";
+import { installBundledActions } from "../../orchestrator/action-loader.js";
 import { DatabaseConfigError, DatabaseError } from "../../lib/db/pool-manager.js";
 import { ensureCliPostgresPool } from "./project-task-support.js";
 import { encrypt } from "../../lib/encryption.js";
@@ -416,6 +417,21 @@ export const initCommand = new Command("init")
       }
     } catch (e) {
       workflowSpinner.warn(`Failed to install workflow configs: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Install editable project action stubs to .foreman/actions/
+    const actionSpinner = ora("Installing action modules...").start();
+    try {
+      const { installed: actionsInstalled, skipped: actionsSkipped } = installBundledActions(projectDir, force);
+      if (actionsInstalled.length > 0) {
+        actionSpinner.succeed(`Installed ${actionsInstalled.length} action module(s) to .foreman/actions/`);
+      } else if (actionsSkipped.length > 0) {
+        actionSpinner.info(`Action modules already installed (${actionsSkipped.length} skipped). Use --force to overwrite.`);
+      } else {
+        actionSpinner.succeed("Action modules installed");
+      }
+    } catch (e) {
+      actionSpinner.warn(`Failed to install action modules: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     console.log();
