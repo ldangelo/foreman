@@ -2,12 +2,19 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
 import { actionCandidates, installBundledActions, loadProjectAction, validateActionsInDir, validateProjectActions } from "../action-loader.js";
 
 describe("project action loader", () => {
+  const oldHome = process.env.FOREMAN_HOME;
+
+  afterEach(() => {
+    if (oldHome === undefined) delete process.env.FOREMAN_HOME;
+    else process.env.FOREMAN_HOME = oldHome;
+  });
+
   it("loads editable project actions from .foreman/actions", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-action-"));
     mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
@@ -16,6 +23,30 @@ describe("project action loader", () => {
     const action = await loadProjectAction<{ actionType: string }, { success: boolean; outputText: string }>(project, "create-pr");
     expect(action).toBeDefined();
     await expect(action?.({ actionType: "create-pr" })).resolves.toEqual({ success: true, outputText: "create-pr" });
+  });
+
+  it("loads global actions when no project action exists", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-action-project-"));
+    const home = mkdtempSync(join(tmpdir(), "foreman-action-home-"));
+    process.env.FOREMAN_HOME = home;
+    mkdirSync(join(home, "actions"), { recursive: true });
+    writeFileSync(join(home, "actions", "notify.js"), "export const run = async (ctx) => ({ success: true, outputText: `global:${ctx.actionType}` });\n");
+
+    const action = await loadProjectAction<{ actionType: string }, { success: boolean; outputText: string }>(project, "notify");
+    await expect(action?.({ actionType: "notify" })).resolves.toEqual({ success: true, outputText: "global:notify" });
+  });
+
+  it("prefers project actions over global actions", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-action-project-"));
+    const home = mkdtempSync(join(tmpdir(), "foreman-action-home-"));
+    process.env.FOREMAN_HOME = home;
+    mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
+    mkdirSync(join(home, "actions"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "actions", "notify.js"), "export default async () => ({ success: true, outputText: 'project' });\n");
+    writeFileSync(join(home, "actions", "notify.js"), "export default async () => ({ success: true, outputText: 'global' });\n");
+
+    const action = await loadProjectAction<unknown, { success: boolean; outputText: string }>(project, "notify");
+    await expect(action?.({})).resolves.toEqual({ success: true, outputText: "project" });
   });
 
   it("includes project actions before global actions in resolution candidates", () => {
