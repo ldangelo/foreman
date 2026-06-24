@@ -5,7 +5,7 @@ import { load as loadYaml } from "js-yaml";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 
-type Workflow = { task_type?: string; phases: Array<{ name: string; prompt?: string; artifact?: string; verdict?: boolean; retryWith?: string; retryOnFail?: number }> };
+type Workflow = { task_type?: string; phases: Array<{ name: string; action?: string; prompt?: string; artifact?: string; verdict?: boolean; retryWith?: string; retryOnFail?: number }> };
 
 function workflow(name: string): Workflow {
   return loadYaml(readFileSync(join(PROJECT_ROOT, "src", "defaults", "workflows", `${name}.yaml`), "utf8")) as Workflow;
@@ -28,7 +28,8 @@ describe("bundled workflow TDD routing", () => {
 
   it("bug workflow uses the fast fix path by default", () => {
     const names = phaseNames("bug");
-    expect(names[0]).toBe("fix");
+    const workerNames = workflow("bug").phases.filter((phase) => !["prepare-worktree", "setup-workspace", "write-task-context"].includes(phase.action ?? phase.name)).map((phase) => phase.name);
+    expect(workerNames[0]).toBe("fix");
     expect(names).not.toContain("test-red");
     expect(names).not.toContain("test-review");
   });

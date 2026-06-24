@@ -24,16 +24,18 @@ import { join } from "node:path";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+const BUILTIN_ACTIONS_SRC = join(PROJECT_ROOT, "src", "orchestrator", "actions", "builtin-worker-actions.ts");
 
 describe("agent-worker.ts — create-pr registered run lookup fix (foreman-63432)", () => {
   const source = readFileSync(WORKER_SRC, "utf-8");
+  const builtinSource = readFileSync(BUILTIN_ACTIONS_SRC, "utf-8");
 
   it("deriveFallbackRefineryOptions helper function exists before runCreatePrBuiltinPhase", () => {
     // The helper function should be defined before runCreatePrBuiltinPhase
-    const helperIdx = source.indexOf("function deriveFallbackRefineryOptions(");
+    const helperIdx = builtinSource.indexOf("export function deriveFallbackRefineryOptions(");
     expect(helperIdx).toBeGreaterThan(-1);
 
-    const funcIdx = source.indexOf("async function runCreatePrBuiltinPhase");
+    const funcIdx = builtinSource.indexOf("export async function runCreatePrBuiltinPhase");
     expect(funcIdx).toBeGreaterThan(-1);
 
     // Helper should come before the function that uses it
@@ -42,11 +44,11 @@ describe("agent-worker.ts — create-pr registered run lookup fix (foreman-63432
 
   it("deriveFallbackRefineryOptions contains the fallback logic with error handling", () => {
     // Find the helper function
-    const helperIdx = source.indexOf("function deriveFallbackRefineryOptions(");
+    const helperIdx = builtinSource.indexOf("export function deriveFallbackRefineryOptions(");
     expect(helperIdx).toBeGreaterThan(-1);
 
     // Extract the helper function body (next 1500 chars should cover it)
-    const helperBlock = source.slice(helperIdx, helperIdx + 1500);
+    const helperBlock = builtinSource.slice(helperIdx, helperIdx + 1500);
 
     // The helper should contain the fallback logic
     expect(helperBlock).toContain("fallbackRegisteredProjectId");
@@ -60,10 +62,10 @@ describe("agent-worker.ts — create-pr registered run lookup fix (foreman-63432
   });
 
   it("deriveFallbackRefineryOptions includes try-catch error handling for PostgresStore.forProject", () => {
-    const helperIdx = source.indexOf("function deriveFallbackRefineryOptions(");
+    const helperIdx = builtinSource.indexOf("export function deriveFallbackRefineryOptions(");
     expect(helperIdx).toBeGreaterThan(-1);
 
-    const helperBlock = source.slice(helperIdx, helperIdx + 1500);
+    const helperBlock = builtinSource.slice(helperIdx, helperIdx + 1500);
 
     // Should have try-catch around PostgresStore.forProject
     expect(helperBlock).toContain("try {");
@@ -75,11 +77,11 @@ describe("agent-worker.ts — create-pr registered run lookup fix (foreman-63432
   });
 
   it("runCreatePrBuiltinPhase calls deriveFallbackRefineryOptions for fallback logic", () => {
-    const idx = source.indexOf("async function runCreatePrBuiltinPhase");
+    const idx = builtinSource.indexOf("export async function runCreatePrBuiltinPhase");
     expect(idx).toBeGreaterThan(-1);
 
     // Extract the function body (first 3000 chars should cover the Refinery construction)
-    const block = source.slice(idx, idx + 3000);
+    const block = builtinSource.slice(idx, idx + 3000);
 
     // Should call the helper function
     expect(block).toContain("deriveFallbackRefineryOptions(");
@@ -91,9 +93,9 @@ describe("agent-worker.ts — create-pr registered run lookup fix (foreman-63432
   });
 
   it("runCreatePrBuiltinPhase passes registeredRefineryOptions to Refinery constructor", () => {
-    const idx = source.indexOf("async function runCreatePrBuiltinPhase");
+    const idx = builtinSource.indexOf("export async function runCreatePrBuiltinPhase");
     expect(idx).toBeGreaterThan(-1);
-    const block = source.slice(idx, idx + 3000);
+    const block = builtinSource.slice(idx, idx + 3000);
 
     // The fix should use registeredRefineryOptions variable instead of inline conditional
     expect(block).toContain("registeredRefineryOptions,");
@@ -123,27 +125,29 @@ describe("agent-worker.ts — create-pr registered run lookup fix (foreman-63432
 
   it("no duplicate fallback logic blocks remain - only one definition of deriveFallbackRefineryOptions", () => {
     // There should be exactly one definition of deriveFallbackRefineryOptions
-    const firstIdx = source.indexOf("function deriveFallbackRefineryOptions(");
+    const firstIdx = builtinSource.indexOf("export function deriveFallbackRefineryOptions(");
     expect(firstIdx).toBeGreaterThan(-1);
 
     // Search for another occurrence after the first
-    const secondIdx = source.indexOf("function deriveFallbackRefineryOptions(", firstIdx + 1);
+    const secondIdx = builtinSource.indexOf("export function deriveFallbackRefineryOptions(", firstIdx + 1);
     expect(secondIdx).toBe(-1); // Should not find another one
 
     // There should be exactly two calls to deriveFallbackRefineryOptions (runCreatePrBuiltinPhase and runPipeline)
     // Call pattern is "const ... = deriveFallbackRefineryOptions("
     const callPattern = "deriveFallbackRefineryOptions(";
     let callCount = 0;
-    let searchFrom = 0;
-    while (true) {
-      const callIdx = source.indexOf(callPattern, searchFrom);
-      if (callIdx === -1) break;
-      // Check it's not the definition (which is "function deriveFallbackRefineryOptions(")
-      const prev15 = source.slice(Math.max(0, callIdx - 15), callIdx);
-      if (!prev15.includes("function")) {
-        callCount++;
+    for (const body of [source, builtinSource]) {
+      let searchFrom = 0;
+      while (true) {
+        const callIdx = body.indexOf(callPattern, searchFrom);
+        if (callIdx === -1) break;
+        // Check it's not the definition (which is "function deriveFallbackRefineryOptions(")
+        const prev20 = body.slice(Math.max(0, callIdx - 20), callIdx);
+        if (!prev20.includes("function")) {
+          callCount++;
+        }
+        searchFrom = callIdx + 1;
       }
-      searchFrom = callIdx + 1;
     }
     expect(callCount).toBe(2); // One in runCreatePrBuiltinPhase, one in runPipeline
   });

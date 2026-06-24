@@ -78,7 +78,18 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 vi.mock("../../lib/workflow-loader.js", () => ({
-  loadWorkflowConfig: vi.fn().mockReturnValue({ setup: [], setupCache: undefined, vcs: undefined }),
+  loadWorkflowConfig: vi.fn().mockReturnValue({
+    name: "default",
+    setup: [],
+    setupCache: undefined,
+    vcs: undefined,
+    phases: [
+      { name: "prepare-worktree", action: "prepare-worktree" },
+      { name: "setup-workspace", action: "setup-workspace" },
+      { name: "write-task-context", action: "write-task-context" },
+      { name: "developer", action: "prompt-agent", prompt: "developer.md" },
+    ],
+  }),
   resolveWorkflowName: vi.fn().mockReturnValue("default"),
 }));
 

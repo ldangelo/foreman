@@ -19,6 +19,7 @@ import { join } from "node:path";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+const BUILTIN_ACTIONS_SRC = join(PROJECT_ROOT, "src", "orchestrator", "actions", "builtin-worker-actions.ts");
 const FINALIZE_PROMPT = join(
   PROJECT_ROOT,
   "src",
@@ -30,6 +31,7 @@ const FINALIZE_PROMPT = join(
 
 describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)", () => {
   const source = readFileSync(WORKER_SRC, "utf-8");
+  const builtinSource = readFileSync(BUILTIN_ACTIONS_SRC, "utf-8");
 
   it("checks for nothing_to_commit error in finalize outcome handling", () => {
     expect(source).toContain('errorDetail === "nothing_to_commit"');
@@ -72,9 +74,9 @@ describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)
   });
 
   it("skips PR creation and stops the pipeline successfully when a post-finalize branch has no changes", () => {
-    const idx = source.indexOf("async function runCreatePrBuiltinPhase");
+    const idx = builtinSource.indexOf("export async function runCreatePrBuiltinPhase");
     expect(idx).toBeGreaterThan(-1);
-    const block = source.slice(idx, idx + 3500);
+    const block = builtinSource.slice(idx, idx + 3500);
     expect(block).toContain("hasChangesAgainstBase");
     expect(block).toContain("no_changes_against_base");
     expect(block).toContain("runtimeTaskClient.close");

@@ -15,9 +15,11 @@ import { join } from "node:path";
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
 const AUTO_MERGE_SRC = join(PROJECT_ROOT, "src", "orchestrator", "auto-merge.ts");
+const BUILTIN_ACTIONS_SRC = join(PROJECT_ROOT, "src", "orchestrator", "actions", "builtin-worker-actions.ts");
 
 describe("agent-worker.ts — merge queue handoff", () => {
   const source = readFileSync(WORKER_SRC, "utf-8");
+  const builtinSource = readFileSync(BUILTIN_ACTIONS_SRC, "utf-8");
 
   it("imports the shared task-client factory for runtime backend selection", () => {
     expect(source).toContain('from "../lib/task-client-factory.js"');
@@ -35,19 +37,19 @@ describe("agent-worker.ts — merge queue handoff", () => {
   });
 
   it("supports an explicit merge builtin that merges only the target run", () => {
-    expect(source).toContain("async function runMergeBuiltinPhase");
-    expect(source).toContain('if (phase.name === "merge")');
-    expect(source).toContain("await autoMerge(");
-    expect(source).toContain("Immediate target merge result: merged=");
-    expect(source).toContain("targetOnly: true");
-    expect(source).toContain("registeredProjectId,");
-    expect(source).toContain("readLookup: registeredAutoMergeReadStore");
+    expect(builtinSource).toContain("export async function runMergeBuiltinPhase");
+    expect(source).toContain('merge: () => runMergeBuiltinPhase');
+    expect(builtinSource).toContain("await autoMerge(");
+    expect(builtinSource).toContain("Immediate target merge result: merged=");
+    expect(builtinSource).toContain("targetOnly: true");
+    expect(builtinSource).toContain("registeredProjectId,");
+    expect(builtinSource).toContain("readLookup: registeredAutoMergeReadStore");
   });
 
   it("enqueues merge intent with an explicit operation", () => {
     expect(source).toContain("operation: \"auto_merge\"");
     expect(source).toContain("const pr = await refinery.ensurePullRequestForRun");
-    expect(source).toContain("MERGE_REPORT.md");
+    expect(builtinSource).toContain("MERGE_REPORT.md");
   });
 
   it("publishes a PR and skips merge queue enqueue for non-auto strategies", () => {
