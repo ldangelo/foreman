@@ -519,7 +519,7 @@ foreman workflows create custom-flow --global  # Create ~/.foreman/workflows/cus
 |------------|-------------|
 | `list [--json]` | List workflow names and whether project, global, bundled, or missing resolves |
 | `show <workflow> [--json]` | Show one workflow's resolved source/path; exits nonzero when missing |
-| `validate [--json]` | Validate loadable project, global, and bundled workflow YAML |
+| `validate [--json]` | Validate loadable project, global, and bundled workflow YAML plus duplicate `task_type` declarations |
 | `install [--force] [--global] [--json]` | Install bundled editable YAML; `--force` overwrites existing files |
 | `create <workflow> [--force] [--global] [--json]` | Create a workflow YAML stub; `--force` overwrites existing files |
 

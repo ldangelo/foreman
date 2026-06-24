@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
-import { BUNDLED_WORKFLOW_NAMES, getBundledWorkflowPath, listAvailableWorkflows, loadWorkflowConfig } from "../../lib/workflow-loader.js";
+import { BUNDLED_WORKFLOW_NAMES, getBundledWorkflowPath, listAvailableWorkflows, loadWorkflowConfig, validateTaskTypeUniqueness } from "../../lib/workflow-loader.js";
 
 export interface WorkflowListRow {
   workflow: string;
@@ -96,6 +96,11 @@ export function validateWorkflows(projectPath: string): { ok: boolean; invalid: 
   }
   for (const workflow of listAvailableWorkflows(projectPath)) {
     validate(workflow, workflow);
+  }
+
+  const taskTypes = validateTaskTypeUniqueness(projectPath);
+  for (const duplicate of taskTypes.duplicates) {
+    invalid.push(`task_type/${duplicate.taskType}: declared by multiple workflows: ${duplicate.workflows.join(", ")}`);
   }
   return { ok: invalid.length === 0, invalid };
 }
