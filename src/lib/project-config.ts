@@ -388,7 +388,7 @@ const VALID_BACKENDS = new Set<string>(["git", "jujutsu", "auto"]);
  *
  * @throws ProjectConfigError on structural/type violations.
  */
-function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
+function validateProjectConfig(raw: unknown, filePath: string, projectRoot?: string): ProjectConfig {
   // Empty YAML files parse to null — treat as an empty config object (no error)
   if (raw === null || raw === undefined) {
     return {};
@@ -881,7 +881,7 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
       if (typeof k !== "string" || typeof v !== "string") {
         throw new ProjectConfigError(filePath, "'taskTypeWorkflowMap' entries must be string->string");
       }
-      if (!hasWorkflowConfig(v)) {
+      if (!hasWorkflowConfig(v, projectRoot)) {
         throw new ProjectConfigError(
           filePath,
           `taskTypeWorkflowMap entry '${k}' references unknown workflow '${v}'`,
@@ -976,13 +976,13 @@ function validateProjectConfig(raw: unknown, filePath: string): ProjectConfig {
  * @returns Parsed `ProjectConfig`, or `null` if no config file found.
  * @throws ProjectConfigError if the config file exists but is malformed.
  */
-export function loadProjectConfig(_projectPath: string): ProjectConfig | null {
+export function loadProjectConfig(projectPath: string): ProjectConfig | null {
   // Prefer YAML
   const yamlPath = getForemanHomePath("config.yaml");
   if (existsSync(yamlPath)) {
     try {
       const raw = yamlLoad(readFileSync(yamlPath, "utf-8"));
-      return validateProjectConfig(raw, yamlPath);
+      return validateProjectConfig(raw, yamlPath, projectPath);
     } catch (err) {
       if (err instanceof ProjectConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
@@ -995,7 +995,7 @@ export function loadProjectConfig(_projectPath: string): ProjectConfig | null {
   if (existsSync(jsonPath)) {
     try {
       const raw: unknown = JSON.parse(readFileSync(jsonPath, "utf-8"));
-      return validateProjectConfig(raw, jsonPath);
+      return validateProjectConfig(raw, jsonPath, projectPath);
     } catch (err) {
       if (err instanceof ProjectConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);

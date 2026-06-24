@@ -260,6 +260,14 @@ describe("loadProjectConfig", () => {
     });
   });
 
+  it("loads taskTypeWorkflowMap entries that reference project workflows", () => {
+    mkdirSync(join(tmpDir, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, ".foreman", "workflows", "project-custom.yaml"), "name: project-custom\nphases:\n  - name: finalize\n    builtin: true\n");
+    writeForemanConfig(tmpDir, "taskTypeWorkflowMap:\n  custom: project-custom");
+    const cfg = loadProjectConfig(tmpDir);
+    expect(cfg?.taskTypeWorkflowMap).toEqual({ custom: "project-custom" });
+  });
+
   it("loads taskTypeWorkflowMap with remapping (docs → task)", () => {
     writeForemanConfig(
       tmpDir,
