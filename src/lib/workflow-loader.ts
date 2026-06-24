@@ -480,6 +480,28 @@ function isNonNegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) >= 0;
 }
 
+function parseModelsMap(raw: unknown, workflowName: string, path: string): Record<string, string> | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) {
+    throw new WorkflowConfigError(workflowName, `${path} must be an object`);
+  }
+  const models: Record<string, string> = {};
+  const validKeys = new Set(["default", "P0", "P1", "P2", "P3", "P4"]);
+  for (const [key, value] of Object.entries(raw)) {
+    if (!validKeys.has(key)) {
+      throw new WorkflowConfigError(
+        workflowName,
+        `${path} key '${key}' is invalid; must be 'default' or 'P0'–'P4'`,
+      );
+    }
+    if (typeof value !== "string" || !value.trim()) {
+      throw new WorkflowConfigError(workflowName, `${path}.${key} must be a non-empty string`);
+    }
+    models[key] = value;
+  }
+  return Object.keys(models).length > 0 ? models : undefined;
+}
+
 /**
  * Error thrown when a workflow config file is missing or invalid.
  */
@@ -547,12 +569,15 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 
   // ── Parse optional setupCache block ──────────────────────────────────────────
   let setupCache: WorkflowSetupCache | undefined;
+  if (raw["setupCache"] !== undefined && !isRecord(raw["setupCache"])) {
+    throw new WorkflowConfigError(workflowName, "setupCache must be an object");
+  }
   if (isRecord(raw["setupCache"])) {
     const c = raw["setupCache"];
-    if (typeof c["key"] !== "string" || !c["key"]) {
+    if (typeof c["key"] !== "string" || !c["key"].trim()) {
       throw new WorkflowConfigError(workflowName, "setupCache.key must be a non-empty string");
     }
-    if (typeof c["path"] !== "string" || !c["path"]) {
+    if (typeof c["path"] !== "string" || !c["path"].trim()) {
       throw new WorkflowConfigError(workflowName, "setupCache.path must be a non-empty string");
     }
     setupCache = { key: c["key"], path: c["path"] };
@@ -598,29 +623,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["model"] === "string") phase.model = p["model"];
 
     // Parse priority-based models map (takes precedence over single model field)
-    if (isRecord(p["models"])) {
-      const modelsRaw = p["models"];
-      const models: Record<string, string> = {};
-      const validKeys = new Set(["default", "P0", "P1", "P2", "P3", "P4"]);
-      for (const [key, value] of Object.entries(modelsRaw)) {
-        if (!validKeys.has(key)) {
-          throw new WorkflowConfigError(
-            workflowName,
-            `phases[${i}].models key '${key}' is invalid; must be 'default' or 'P0'–'P4'`,
-          );
-        }
-        if (typeof value !== "string" || !value) {
-          throw new WorkflowConfigError(
-            workflowName,
-            `phases[${i}].models.${key} must be a non-empty string`,
-          );
-        }
-        models[key] = value;
-      }
-      if (Object.keys(models).length > 0) {
-        phase.models = models;
-      }
-    }
+    const phaseModels = parseModelsMap(p["models"], workflowName, `phases[${i}].models`);
+    if (phaseModels) phase.models = phaseModels;
 
     if (p["maxTurns"] !== undefined) {
       if (!isPositiveNumber(p["maxTurns"])) throw new WorkflowConfigError(workflowName, `phases[${i}].maxTurns must be a positive number`);
@@ -867,22 +871,29 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   // ── Parse optional onFailure block ────────────────────────────────────────
   if (isRecord(raw["onFailure"])) {
     const of_ = raw["onFailure"];
-    if (typeof of_["name"] !== "string" || !of_["name"]) {
+    if (typeof of_["name"] !== "string" || !of_["name"].trim()) {
       throw new WorkflowConfigError(workflowName, "onFailure.name must be a non-empty string");
     }
-    const onFailure: OnFailureConfig = {
-      name: of_["name"] as string,
-      prompt: typeof of_["prompt"] === "string" ? of_["prompt"] : `${of_["name"] as string}.md`,
-    };
-    if (typeof of_["maxTurns"] === "number") onFailure.maxTurns = of_["maxTurns"];
-    if (typeof of_["artifact"] === "string") onFailure.artifact = of_["artifact"];
-    if (isRecord(of_["models"])) {
-      const models: Record<string, string> = {};
-      for (const [k, v] of Object.entries(of_["models"])) {
-        if (typeof v === "string") models[k] = v;
-      }
-      onFailure.models = models;
+    if (!isSafeActionName(of_["name"])) {
+      throw new WorkflowConfigError(workflowName, "onFailure.name must be a safe phase name");
     }
+    if (of_["prompt"] !== undefined && (typeof of_["prompt"] !== "string" || !of_["prompt"].trim())) {
+      throw new WorkflowConfigError(workflowName, "onFailure.prompt must be a non-empty string");
+    }
+    const onFailure: OnFailureConfig = {
+      name: of_["name"],
+      prompt: typeof of_["prompt"] === "string" ? of_["prompt"] : `${of_["name"]}.md`,
+    };
+    if (of_["maxTurns"] !== undefined) {
+      if (!isPositiveNumber(of_["maxTurns"])) throw new WorkflowConfigError(workflowName, "onFailure.maxTurns must be a positive number");
+      onFailure.maxTurns = of_["maxTurns"];
+    }
+    if (of_["artifact"] !== undefined) {
+      if (typeof of_["artifact"] !== "string" || !of_["artifact"].trim()) throw new WorkflowConfigError(workflowName, "onFailure.artifact must be a non-empty string");
+      onFailure.artifact = of_["artifact"];
+    }
+    const onFailureModels = parseModelsMap(of_["models"], workflowName, "onFailure.models");
+    if (onFailureModels) onFailure.models = onFailureModels;
     config.onFailure = onFailure;
   }
 
@@ -935,7 +946,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 
   // ── Parse optional taskTimeout ─────────────────────────────────────────
   if (raw["taskTimeout"] !== undefined) {
-    if (typeof raw["taskTimeout"] !== "number" || raw["taskTimeout"] <= 0) {
+    if (!isPositiveNumber(raw["taskTimeout"])) {
       throw new WorkflowConfigError(workflowName, "taskTimeout must be a positive number (seconds)");
     }
     config.taskTimeout = raw["taskTimeout"];
