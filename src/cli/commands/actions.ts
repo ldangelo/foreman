@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
-import { actionCandidates, findProjectActionPath, installBundledActions, installBundledActionsToDir, isSafeActionName, listBundledActionFiles, validateProjectActions } from "../../orchestrator/action-loader.js";
+import { actionCandidates, findProjectActionPath, installBundledActions, installBundledActionsToDir, isSafeActionName, listBundledActionFiles, validateGlobalActions, validateProjectActions } from "../../orchestrator/action-loader.js";
 
 export interface ActionListRow {
   action: string;
@@ -64,8 +64,9 @@ actionsCommand
       console.log(`${row.action.padEnd(22)} ${source} ${row.path ?? ""}${unsafe}`);
     }
     const invalid = validateProjectActions(projectPath);
-    if (invalid.invalidNames.length || invalid.invalidExports.length) {
-      console.error(chalk.red(`\nInvalid project actions: names=${invalid.invalidNames.join(", ") || "none"} exports=${invalid.invalidExports.join(", ") || "none"}`));
+    const invalidGlobal = validateGlobalActions();
+    if (invalid.invalidNames.length || invalid.invalidExports.length || invalidGlobal.invalidNames.length || invalidGlobal.invalidExports.length) {
+      console.error(chalk.red(`\nInvalid actions: projectNames=${invalid.invalidNames.join(", ") || "none"} projectExports=${invalid.invalidExports.join(", ") || "none"} globalNames=${invalidGlobal.invalidNames.join(", ") || "none"} globalExports=${invalidGlobal.invalidExports.join(", ") || "none"}`));
       process.exitCode = 1;
     }
   });

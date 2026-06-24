@@ -15,7 +15,7 @@ import type { ITaskClient } from "../lib/task-client.js";
 import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, listAvailableWorkflows, loadWorkflowConfig, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
-import { findMissingActions, findProjectActionPath, installBundledActions, validateProjectActions } from "./action-loader.js";
+import { findMissingActions, findProjectActionPath, installBundledActions, validateGlobalActions, validateProjectActions } from "./action-loader.js";
 import { PHASE_ACTIONS } from "./phase-actions.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
@@ -1158,8 +1158,9 @@ export class Doctor {
     const { fix = false, dryRun = false } = opts;
     const missing = findMissingActions(this.projectPath);
     const invalid = validateProjectActions(this.projectPath);
+    const invalidGlobal = validateGlobalActions();
     const unresolved = this.findUnresolvedWorkflowActions();
-    const invalidCount = invalid.invalidNames.length + invalid.invalidExports.length;
+    const invalidCount = invalid.invalidNames.length + invalid.invalidExports.length + invalidGlobal.invalidNames.length + invalidGlobal.invalidExports.length;
     if (missing.length === 0 && invalidCount === 0 && unresolved.length === 0) {
       return {
         name: "action modules (.foreman/actions/)",
@@ -1168,8 +1169,10 @@ export class Doctor {
       };
     }
     const invalidDesc = [
-      invalid.invalidNames.length > 0 ? `unsafe names: ${invalid.invalidNames.join(", ")}` : "",
-      invalid.invalidExports.length > 0 ? `missing run/default export: ${invalid.invalidExports.join(", ")}` : "",
+      invalid.invalidNames.length > 0 ? `unsafe project names: ${invalid.invalidNames.join(", ")}` : "",
+      invalid.invalidExports.length > 0 ? `project missing run/default export: ${invalid.invalidExports.join(", ")}` : "",
+      invalidGlobal.invalidNames.length > 0 ? `unsafe global names: ${invalidGlobal.invalidNames.join(", ")}` : "",
+      invalidGlobal.invalidExports.length > 0 ? `global missing run/default export: ${invalidGlobal.invalidExports.join(", ")}` : "",
       unresolved.length > 0 ? `unresolved workflow actions: ${unresolved.join(", ")}` : "",
     ].filter(Boolean).join("; ");
     if (dryRun) {
@@ -1183,8 +1186,9 @@ export class Doctor {
       const { installed } = installBundledActions(this.projectPath, false);
       const stillMissing = findMissingActions(this.projectPath);
       const stillInvalid = validateProjectActions(this.projectPath);
+      const stillInvalidGlobal = validateGlobalActions();
       const stillUnresolved = this.findUnresolvedWorkflowActions();
-      const stillInvalidCount = stillInvalid.invalidNames.length + stillInvalid.invalidExports.length;
+      const stillInvalidCount = stillInvalid.invalidNames.length + stillInvalid.invalidExports.length + stillInvalidGlobal.invalidNames.length + stillInvalidGlobal.invalidExports.length;
       return stillMissing.length === 0 && stillInvalidCount === 0 && stillUnresolved.length === 0
         ? {
             name: "action modules (.foreman/actions/)",
@@ -1195,7 +1199,7 @@ export class Doctor {
         : {
             name: "action modules (.foreman/actions/)",
             status: "fail",
-            message: `Action module issues remain after install: missing=${stillMissing.join(", ") || "none"} invalidNames=${stillInvalid.invalidNames.join(", ") || "none"} invalidExports=${stillInvalid.invalidExports.join(", ") || "none"} unresolved=${stillUnresolved.join(", ") || "none"}`,
+            message: `Action module issues remain after install: missing=${stillMissing.join(", ") || "none"} projectInvalidNames=${stillInvalid.invalidNames.join(", ") || "none"} projectInvalidExports=${stillInvalid.invalidExports.join(", ") || "none"} globalInvalidNames=${stillInvalidGlobal.invalidNames.join(", ") || "none"} globalInvalidExports=${stillInvalidGlobal.invalidExports.join(", ") || "none"} unresolved=${stillUnresolved.join(", ") || "none"}`,
           };
     }
     return {

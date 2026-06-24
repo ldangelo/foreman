@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
-import { actionCandidates, installBundledActions, loadProjectAction, validateProjectActions } from "../action-loader.js";
+import { actionCandidates, installBundledActions, loadProjectAction, validateActionsInDir, validateProjectActions } from "../action-loader.js";
 
 describe("project action loader", () => {
   it("loads editable project actions from .foreman/actions", async () => {
@@ -41,6 +41,10 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "bad$name.js"), "export default function run() {}\n");
 
     expect(validateProjectActions(project)).toEqual({
+      invalidNames: ["bad$name.js"],
+      invalidExports: ["bad.js"],
+    });
+    expect(validateActionsInDir(join(project, ".foreman", "actions"))).toEqual({
       invalidNames: ["bad$name.js"],
       invalidExports: ["bad.js"],
     });

@@ -69,8 +69,7 @@ export interface ActionValidationResult {
   invalidExports: string[];
 }
 
-export function validateProjectActions(projectRoot: string): ActionValidationResult {
-  const dir = join(projectRoot, ".foreman", "actions");
+export function validateActionsInDir(dir: string): ActionValidationResult {
   const invalidNames: string[] = [];
   const invalidExports: string[] = [];
   let files: string[] = [];
@@ -93,6 +92,14 @@ export function validateProjectActions(projectRoot: string): ActionValidationRes
     }
   }
   return { invalidNames, invalidExports };
+}
+
+export function validateProjectActions(projectRoot: string): ActionValidationResult {
+  return validateActionsInDir(join(projectRoot, ".foreman", "actions"));
+}
+
+export function validateGlobalActions(): ActionValidationResult {
+  return validateActionsInDir(getForemanHomePath("actions"));
 }
 
 export function installBundledActionsToDir(
