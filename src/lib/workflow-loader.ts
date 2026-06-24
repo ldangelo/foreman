@@ -486,6 +486,22 @@ function parseOptionalBoolean(raw: unknown, workflowName: string, path: string):
   return raw;
 }
 
+function parseStringArray(raw: unknown, workflowName: string, path: string): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) throw new WorkflowConfigError(workflowName, `${path} must be an array of strings`);
+  const seen = new Set<string>();
+  return raw.map((item, itemIndex) => {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new WorkflowConfigError(workflowName, `${path}[${itemIndex}] must be a non-empty string`);
+    }
+    if (seen.has(item)) {
+      throw new WorkflowConfigError(workflowName, `${path}[${itemIndex}] duplicates '${item}'`);
+    }
+    seen.add(item);
+    return item;
+  });
+}
+
 function parseModelsMap(raw: unknown, workflowName: string, path: string): Record<string, string> | undefined {
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) {
@@ -627,17 +643,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       }
       phase.action = p["action"];
     }
-    if (p["capabilities"] !== undefined) {
-      if (!Array.isArray(p["capabilities"])) {
-        throw new WorkflowConfigError(workflowName, `phases[${i}].capabilities must be an array of strings`);
-      }
-      phase.capabilities = p["capabilities"].map((capability, capabilityIndex) => {
-        if (typeof capability !== "string" || !capability.trim()) {
-          throw new WorkflowConfigError(workflowName, `phases[${i}].capabilities[${capabilityIndex}] must be a non-empty string`);
-        }
-        return capability;
-      });
-    }
+    const capabilities = parseStringArray(p["capabilities"], workflowName, `phases[${i}].capabilities`);
+    if (capabilities) phase.capabilities = capabilities;
     if (p["prompt"] !== undefined) {
       if (typeof p["prompt"] !== "string" || !p["prompt"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].prompt must be a non-empty string`);
       phase.prompt = p["prompt"];
@@ -705,19 +712,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     }
     if (isRecord(p["tools"])) {
       const toolsRaw = p["tools"];
-      const allowedRaw = toolsRaw["allowed"];
-      if (allowedRaw !== undefined) {
-        if (!Array.isArray(allowedRaw)) {
-          throw new WorkflowConfigError(workflowName, `phases[${i}].tools.allowed must be an array of strings`);
-        }
-        const allowed = allowedRaw.map((tool, toolIndex) => {
-          if (typeof tool !== "string" || !tool.trim()) {
-            throw new WorkflowConfigError(workflowName, `phases[${i}].tools.allowed[${toolIndex}] must be a non-empty string`);
-          }
-          return tool;
-        });
-        phase.tools = { allowed };
-      }
+      const allowed = parseStringArray(toolsRaw["allowed"], workflowName, `phases[${i}].tools.allowed`);
+      if (allowed) phase.tools = { allowed };
     }
 
     if (p["contract"] !== undefined && !isRecord(p["contract"])) {
@@ -732,17 +728,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         }
         phase.contract.goal = c["goal"];
       }
-      if (c["requiredSections"] !== undefined) {
-        if (!Array.isArray(c["requiredSections"])) {
-          throw new WorkflowConfigError(workflowName, `phases[${i}].contract.requiredSections must be an array of strings`);
-        }
-        phase.contract.requiredSections = c["requiredSections"].map((section, sectionIndex) => {
-          if (typeof section !== "string" || !section.trim()) {
-            throw new WorkflowConfigError(workflowName, `phases[${i}].contract.requiredSections[${sectionIndex}] must be a non-empty string`);
-          }
-          return section;
-        });
-      }
+      const requiredSections = parseStringArray(c["requiredSections"], workflowName, `phases[${i}].contract.requiredSections`);
+      if (requiredSections) phase.contract.requiredSections = requiredSections;
       if (c["policy"] !== undefined && !isRecord(c["policy"])) {
         throw new WorkflowConfigError(workflowName, `phases[${i}].contract.policy must be an object`);
       }
@@ -800,17 +787,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         phase.contract.allowedScope = {};
         const canRead = parseOptionalBoolean(allowedScope["canRead"], workflowName, `phases[${i}].contract.allowedScope.canRead`);
         if (canRead !== undefined) phase.contract.allowedScope.canRead = canRead;
-        if (allowedScope["canWriteOnly"] !== undefined) {
-          if (!Array.isArray(allowedScope["canWriteOnly"])) {
-            throw new WorkflowConfigError(workflowName, `phases[${i}].contract.allowedScope.canWriteOnly must be an array of strings`);
-          }
-          phase.contract.allowedScope.canWriteOnly = allowedScope["canWriteOnly"].map((item, itemIndex) => {
-            if (typeof item !== "string" || !item.trim()) {
-              throw new WorkflowConfigError(workflowName, `phases[${i}].contract.allowedScope.canWriteOnly[${itemIndex}] must be a non-empty string`);
-            }
-            return item;
-          });
-        }
+        const canWriteOnly = parseStringArray(allowedScope["canWriteOnly"], workflowName, `phases[${i}].contract.allowedScope.canWriteOnly`);
+        if (canWriteOnly) phase.contract.allowedScope.canWriteOnly = canWriteOnly;
       }
     }
 
@@ -840,13 +818,8 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
           phase.overwatch[key] = o[key];
         }
       }
-      if (o["blockedCommands"] !== undefined) {
-        if (!Array.isArray(o["blockedCommands"])) throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.blockedCommands must be an array of strings`);
-        phase.overwatch.blockedCommands = o["blockedCommands"].map((item, itemIndex) => {
-          if (typeof item !== "string" || !item.trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch.blockedCommands[${itemIndex}] must be a non-empty string`);
-          return item;
-        });
-      }
+      const blockedCommands = parseStringArray(o["blockedCommands"], workflowName, `phases[${i}].overwatch.blockedCommands`);
+      if (blockedCommands) phase.overwatch.blockedCommands = blockedCommands;
     }
 
     // Exactly one of bash, command, or prompt must be set (unless builtin: true)

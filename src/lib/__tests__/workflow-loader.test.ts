@@ -222,6 +222,10 @@ describe("validateWorkflowConfig", () => {
       { name: "developer", prompt: "developer.md", overwatch: { checkEveryTurns: 0 } },
       { name: "developer", prompt: "developer.md", overwatch: { maxToolCalls: -1 } },
       { name: "developer", prompt: "developer.md", overwatch: { blockedCommands: [""] } },
+      { name: "developer", prompt: "developer.md", tools: { allowed: ["Read", "Read"] } },
+      { name: "developer", prompt: "developer.md", contract: { requiredSections: ["A", "A"] } },
+      { name: "developer", prompt: "developer.md", contract: { allowedScope: { canWriteOnly: ["src", "src"] } } },
+      { name: "developer", prompt: "developer.md", overwatch: { blockedCommands: ["npm test", "npm test"] } },
     ]) {
       expect(() => validateWorkflowConfig({ name: "default", phases: [phase] }, "default")).toThrow(WorkflowConfigError);
     }
@@ -305,6 +309,10 @@ describe("validateWorkflowConfig", () => {
     expect(() => validateWorkflowConfig({
       name: "default",
       phases: [{ name: "notify", action: "notify", capabilities: ["mail", ""] }],
+    }, "default")).toThrow(WorkflowConfigError);
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [{ name: "notify", action: "notify", capabilities: ["mail", "mail"] }],
     }, "default")).toThrow(WorkflowConfigError);
     expect(() => validateWorkflowConfig({
       name: "default",
