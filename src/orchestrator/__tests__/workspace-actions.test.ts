@@ -57,6 +57,19 @@ export default async function run() {
     await expect(runWorkspaceAction("bad-workspace", makeCtx(repo))).rejects.toThrow(/missing projectId/);
   });
 
+  it("rejects malformed custom workspace context fields", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "foreman-workspace-action-repo-"));
+    dirs.push(repo);
+    mkdirSync(join(repo, ".foreman", "actions"), { recursive: true });
+    writeFileSync(join(repo, ".foreman", "actions", "bad-fields.js"), `
+export default async function run(ctx) {
+  return { ...ctx, repoPath: "", attemptNumber: Number.NaN, seedInfo: "bad" };
+}
+`);
+
+    await expect(runWorkspaceAction("bad-fields", makeCtx(repo))).rejects.toThrow(/repoPath must be a non-empty string/);
+  });
+
   it("lets project workspace action overrides wrap built-in behavior", async () => {
     const repo = mkdtempSync(join(tmpdir(), "foreman-workspace-action-repo-"));
     const worktree = mkdtempSync(join(tmpdir(), "foreman-workspace-action-worktree-"));

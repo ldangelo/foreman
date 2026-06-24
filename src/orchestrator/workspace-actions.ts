@@ -88,6 +88,22 @@ function assertWorkspaceActionResult(action: string, result: unknown): Workspace
       throw new Error(`Workspace action ${action} returned invalid context: missing ${key}`);
     }
   }
+  for (const key of ["projectId", "seedId", "repoPath", "model"] as const) {
+    if (typeof ctx[key] !== "string" || !ctx[key].trim()) {
+      throw new Error(`Workspace action ${action} returned invalid context: ${key} must be a non-empty string`);
+    }
+  }
+  for (const key of ["baseBranch", "defaultBranch", "worktreePath", "branchName", "runtimeMode"] as const) {
+    if (ctx[key] !== undefined && ctx[key] !== null && (typeof ctx[key] !== "string" || !ctx[key].trim())) {
+      throw new Error(`Workspace action ${action} returned invalid context: ${key} must be a non-empty string`);
+    }
+  }
+  if (typeof ctx.attemptNumber !== "number" || !Number.isFinite(ctx.attemptNumber)) {
+    throw new Error(`Workspace action ${action} returned invalid context: attemptNumber must be a finite number`);
+  }
+  if (!ctx.seedInfo || typeof ctx.seedInfo !== "object" || Array.isArray(ctx.seedInfo)) {
+    throw new Error(`Workspace action ${action} returned invalid context: seedInfo must be an object`);
+  }
   if (typeof ctx.log !== "function") {
     throw new Error(`Workspace action ${action} returned invalid context: log must be a function`);
   }
@@ -104,8 +120,8 @@ export async function runWorkspaceAction(action: string, ctx: WorkspaceActionCon
       return runSetupWorkspaceAction(ctx);
     case "write-task-context":
       return runWriteTaskContextAction(ctx);
-      default:
-        throw new Error(`Unknown workspace action: ${action}`);
+    default:
+      throw new Error(`Unknown workspace action: ${action}`);
     }
   };
   const result = externalAction
