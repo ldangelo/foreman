@@ -151,6 +151,30 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].mail?.forwardArtifactTo).toBe("foreman");
   });
 
+  it("rejects invalid phase object controls", () => {
+    for (const phase of [
+      { name: "developer", prompt: "developer.md", tools: [] },
+      { name: "developer", prompt: "developer.md", contract: [] },
+      { name: "developer", prompt: "developer.md", contract: { policy: [] } },
+      { name: "developer", prompt: "developer.md", contract: { completion: [] } },
+      { name: "developer", prompt: "developer.md", contract: { allowedScope: [] } },
+      { name: "developer", prompt: "developer.md", overwatch: [] },
+      { name: "developer", prompt: "developer.md", mail: [] },
+      { name: "developer", prompt: "developer.md", files: [] },
+    ]) {
+      expect(() => validateWorkflowConfig({ name: "default", phases: [phase] }, "default")).toThrow(WorkflowConfigError);
+    }
+  });
+
+  it("rejects invalid top-level object controls", () => {
+    for (const raw of [
+      { name: "default", vcs: [], phases: [{ name: "developer", prompt: "developer.md" }] },
+      { name: "default", pr: [], phases: [{ name: "developer", prompt: "developer.md" }] },
+    ]) {
+      expect(() => validateWorkflowConfig(raw, "default")).toThrow(WorkflowConfigError);
+    }
+  });
+
   it("rejects invalid contract and overwatch controls", () => {
     for (const phase of [
       { name: "developer", prompt: "developer.md", contract: { requiredSections: [""] } },

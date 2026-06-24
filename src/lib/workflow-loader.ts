@@ -675,6 +675,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       phase.command = p["command"];
     }
 
+    if (p["tools"] !== undefined && !isRecord(p["tools"])) {
+      throw new WorkflowConfigError(workflowName, `phases[${i}].tools must be an object`);
+    }
     if (isRecord(p["tools"])) {
       const toolsRaw = p["tools"];
       const allowedRaw = toolsRaw["allowed"];
@@ -692,6 +695,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       }
     }
 
+    if (p["contract"] !== undefined && !isRecord(p["contract"])) {
+      throw new WorkflowConfigError(workflowName, `phases[${i}].contract must be an object`);
+    }
     if (isRecord(p["contract"])) {
       const c = p["contract"];
       phase.contract = {};
@@ -706,6 +712,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
           }
           return section;
         });
+      }
+      if (c["policy"] !== undefined && !isRecord(c["policy"])) {
+        throw new WorkflowConfigError(workflowName, `phases[${i}].contract.policy must be an object`);
       }
       if (isRecord(c["policy"])) {
         const policyRaw = c["policy"];
@@ -728,6 +737,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         }
         if (Object.keys(policy).length > 0) phase.contract.policy = policy;
       }
+      if (c["completion"] !== undefined && !isRecord(c["completion"])) {
+        throw new WorkflowConfigError(workflowName, `phases[${i}].contract.completion must be an object`);
+      }
       if (isRecord(c["completion"])) {
         const completion = c["completion"];
         phase.contract.completion = {};
@@ -745,6 +757,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
         if (typeof completion["requireTestTargets"] === "boolean") phase.contract.completion.requireTestTargets = completion["requireTestTargets"];
         if (typeof completion["requireFilesChanged"] === "boolean") phase.contract.completion.requireFilesChanged = completion["requireFilesChanged"];
         if (typeof completion["requireValidationNotes"] === "boolean") phase.contract.completion.requireValidationNotes = completion["requireValidationNotes"];
+      }
+      if (c["allowedScope"] !== undefined && !isRecord(c["allowedScope"])) {
+        throw new WorkflowConfigError(workflowName, `phases[${i}].contract.allowedScope must be an object`);
       }
       if (isRecord(c["allowedScope"])) {
         const allowedScope = c["allowedScope"];
@@ -764,6 +779,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       }
     }
 
+    if (p["overwatch"] !== undefined && !isRecord(p["overwatch"])) {
+      throw new WorkflowConfigError(workflowName, `phases[${i}].overwatch must be an object`);
+    }
     if (isRecord(p["overwatch"])) {
       const o = p["overwatch"];
       phase.overwatch = {};
@@ -824,6 +842,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     }
 
     // Parse mail hooks
+    if (p["mail"] !== undefined && !isRecord(p["mail"])) {
+      throw new WorkflowConfigError(workflowName, `phases[${i}].mail must be an object`);
+    }
     if (isRecord(p["mail"])) {
       const m = p["mail"];
       phase.mail = {};
@@ -840,6 +861,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     }
 
     // Parse file reservation config
+    if (p["files"] !== undefined && !isRecord(p["files"])) {
+      throw new WorkflowConfigError(workflowName, `phases[${i}].files must be an object`);
+    }
     if (isRecord(p["files"])) {
       const f = p["files"];
       phase.files = {};
@@ -882,6 +906,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   if (taskType !== undefined) config.taskType = taskType;
 
   // ── Parse optional vcs block ───────────────────────────────────────────────
+  if (raw["vcs"] !== undefined && !isRecord(raw["vcs"])) {
+    throw new WorkflowConfigError(workflowName, "vcs must be an object");
+  }
   if (isRecord(raw["vcs"])) {
     const vcsRaw = raw["vcs"];
     const backend = vcsRaw["backend"];
@@ -1009,6 +1036,9 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
   }
 
   // ── Parse optional pr.timing ───────────────────────────────────────────
+  if (raw["pr"] !== undefined && !isRecord(raw["pr"])) {
+    throw new WorkflowConfigError(workflowName, "pr must be an object");
+  }
   if (isRecord(raw["pr"])) {
     const prRaw = raw["pr"];
     config.pr = {};
