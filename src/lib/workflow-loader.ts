@@ -1077,6 +1077,7 @@ export function loadWorkflowConfig(
  * @returns Absolute path, or null if not found.
  */
 export function getBundledWorkflowPath(workflowName: string): string | null {
+  if (!isSafeWorkflowName(workflowName)) return null;
   const p = join(BUNDLED_WORKFLOWS_DIR, `${workflowName}.yaml`);
   return existsSync(p) ? p : null;
 }

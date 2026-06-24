@@ -23,6 +23,7 @@ import {
   ensureBundledWorkflowsInstalled,
   WorkflowConfigError,
   BUNDLED_WORKFLOW_NAMES,
+  getBundledWorkflowPath,
   buildTaskTypeWorkflowMap,
   validateTaskTypeUniqueness,
   type WorkflowSetupStep,
@@ -379,6 +380,11 @@ phases:
     expect(config.phases).toHaveLength(2);
     expect(config.phases[0].name).toBe("developer");
     expect(config.phases[1].builtin).toBe(true);
+  });
+
+  it("does not resolve unsafe names through bundled workflow paths", () => {
+    expect(getBundledWorkflowPath("../escape")).toBeNull();
+    expect(hasWorkflowConfig("../escape", tmpDir)).toBe(false);
   });
 
   it("rejects unsafe workflow lookup names", () => {
