@@ -14,8 +14,9 @@ import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn, ReconcileResult } fr
 import type { ITaskClient } from "../lib/task-client.js";
 import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
-import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
-import { findMissingActions, installBundledActions, validateProjectActions } from "./action-loader.js";
+import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, listAvailableWorkflows, loadWorkflowConfig, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
+import { findMissingActions, findProjectActionPath, installBundledActions, validateProjectActions } from "./action-loader.js";
+import { PHASE_ACTIONS } from "./phase-actions.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
@@ -1134,12 +1135,32 @@ export class Doctor {
     };
   }
 
+  private findUnresolvedWorkflowActions(): string[] {
+    const unresolved = new Set<string>();
+    for (const workflowName of listAvailableWorkflows()) {
+      try {
+        const workflow = loadWorkflowConfig(workflowName, this.projectPath);
+        for (const phase of workflow.phases) {
+          const action = phase.action;
+          if (!action || PHASE_ACTIONS[action]) continue;
+          if (!findProjectActionPath(this.projectPath, action)) {
+            unresolved.add(`${workflow.name}:${phase.name}:${action}`);
+          }
+        }
+      } catch {
+        // Workflow syntax/config errors are reported by the workflow checks.
+      }
+    }
+    return [...unresolved].sort();
+  }
+
   async checkActions(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
     const missing = findMissingActions(this.projectPath);
     const invalid = validateProjectActions(this.projectPath);
+    const unresolved = this.findUnresolvedWorkflowActions();
     const invalidCount = invalid.invalidNames.length + invalid.invalidExports.length;
-    if (missing.length === 0 && invalidCount === 0) {
+    if (missing.length === 0 && invalidCount === 0 && unresolved.length === 0) {
       return {
         name: "action modules (.foreman/actions/)",
         status: "pass",
@@ -1149,6 +1170,7 @@ export class Doctor {
     const invalidDesc = [
       invalid.invalidNames.length > 0 ? `unsafe names: ${invalid.invalidNames.join(", ")}` : "",
       invalid.invalidExports.length > 0 ? `missing run/default export: ${invalid.invalidExports.join(", ")}` : "",
+      unresolved.length > 0 ? `unresolved workflow actions: ${unresolved.join(", ")}` : "",
     ].filter(Boolean).join("; ");
     if (dryRun) {
       return {
@@ -1161,8 +1183,9 @@ export class Doctor {
       const { installed } = installBundledActions(this.projectPath, false);
       const stillMissing = findMissingActions(this.projectPath);
       const stillInvalid = validateProjectActions(this.projectPath);
+      const stillUnresolved = this.findUnresolvedWorkflowActions();
       const stillInvalidCount = stillInvalid.invalidNames.length + stillInvalid.invalidExports.length;
-      return stillMissing.length === 0 && stillInvalidCount === 0
+      return stillMissing.length === 0 && stillInvalidCount === 0 && stillUnresolved.length === 0
         ? {
             name: "action modules (.foreman/actions/)",
             status: "fixed",
@@ -1172,7 +1195,7 @@ export class Doctor {
         : {
             name: "action modules (.foreman/actions/)",
             status: "fail",
-            message: `Action module issues remain after install: missing=${stillMissing.join(", ") || "none"} invalidNames=${stillInvalid.invalidNames.join(", ") || "none"} invalidExports=${stillInvalid.invalidExports.join(", ") || "none"}`,
+            message: `Action module issues remain after install: missing=${stillMissing.join(", ") || "none"} invalidNames=${stillInvalid.invalidNames.join(", ") || "none"} invalidExports=${stillInvalid.invalidExports.join(", ") || "none"} unresolved=${stillUnresolved.join(", ") || "none"}`,
           };
     }
     return {
