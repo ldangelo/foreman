@@ -3,12 +3,19 @@ import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { listWorkflows, workflowsCommand, workflowStub, validateWorkflows } from "../commands/workflows.js";
+import { isSafeWorkflowName, listWorkflows, workflowsCommand, workflowStub, validateWorkflows } from "../commands/workflows.js";
 
 describe("workflows command helpers", () => {
   it("loads workflow management subcommands", () => {
     expect(workflowsCommand.name()).toBe("workflows");
     expect(workflowsCommand.commands.map((cmd) => cmd.name())).toEqual(["list", "show", "validate", "install", "create"]);
+  });
+
+  it("validates workflow names for generated files", () => {
+    expect(isSafeWorkflowName("custom-flow_1.2")).toBe(true);
+    expect(isSafeWorkflowName("../escape")).toBe(false);
+    expect(isSafeWorkflowName("bad/name")).toBe(false);
+    expect(isSafeWorkflowName("bad name")).toBe(false);
   });
 
   it("lists project workflow overrides before bundled workflows", () => {
@@ -90,6 +97,22 @@ describe("workflows command helpers", () => {
       expect(existsSync(join(project, ".foreman", "workflows", "custom-flow.yaml"))).toBe(true);
     } finally {
       process.chdir(cwd);
+    }
+  });
+
+  it("rejects unsafe workflow names from the create command", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-workflows-unsafe-create-"));
+    const cwd = process.cwd();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    process.chdir(project);
+    try {
+      await workflowsCommand.parseAsync(["node", "foreman", "create", "../escape"]);
+      expect(process.exitCode).toBe(1);
+      expect(existsSync(join(project, ".foreman", "escape.yaml"))).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      process.exitCode = previousExitCode;
     }
   });
 

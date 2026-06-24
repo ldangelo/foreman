@@ -11,6 +11,10 @@ export interface WorkflowListRow {
   path: string | null;
 }
 
+export function isSafeWorkflowName(workflow: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(workflow) && workflow.length > 0;
+}
+
 function workflowNameFromFile(file: string): string {
   return file.replace(/\.ya?ml$/i, "");
 }
@@ -137,6 +141,11 @@ workflowsCommand
       console.log(JSON.stringify(row, null, 2));
       return;
     }
+    if (!isSafeWorkflowName(workflow)) {
+      console.error(chalk.red(`Unsafe workflow name: ${workflow}`));
+      process.exitCode = 1;
+      return;
+    }
     if (row.source === "missing") {
       console.error(chalk.red(`Workflow not found: ${workflow}`));
       process.exitCode = 1;
@@ -178,6 +187,11 @@ workflowsCommand
   .option("--global", "Create in ~/.foreman/workflows instead of project .foreman/workflows")
   .option("--json", "Output JSON")
   .action((workflow: string, opts: { force?: boolean; global?: boolean; json?: boolean }) => {
+    if (!isSafeWorkflowName(workflow)) {
+      console.error(chalk.red(`Unsafe workflow name: ${workflow}`));
+      process.exitCode = 1;
+      return;
+    }
     const destDir = opts.global ? getForemanHomePath("workflows") : join(process.cwd(), ".foreman", "workflows");
     const path = join(destDir, `${workflow}.yaml`);
     mkdirSync(destDir, { recursive: true });
