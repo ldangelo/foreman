@@ -551,6 +551,20 @@ phases:
     expect(() => loadWorkflowConfig("nonexistent-workflow", tmpDir)).toThrow(WorkflowConfigError);
   });
 
+  it("loads project .yml workflow overrides", () => {
+    mkdirSync(join(tmpDir, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, ".foreman", "workflows", "short.yml"), `
+name: short
+phases:
+  - name: finalize
+    builtin: true
+`);
+
+    const config = loadWorkflowConfig("short", tmpDir);
+    expect(config.name).toBe("short");
+    expect(config.sourcePath).toBe(join(tmpDir, ".foreman", "workflows", "short.yml"));
+  });
+
   it("project workflow takes precedence over global and bundled defaults", () => {
     writeWorkflowFile(tmpDir, "default", `
 name: global-default

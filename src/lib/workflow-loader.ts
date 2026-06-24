@@ -961,6 +961,14 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
 
 // ── Loader ────────────────────────────────────────────────────────────────────
 
+function findWorkflowFileInDir(dir: string, workflowName: string): string | null {
+  const yamlPath = join(dir, `${workflowName}.yaml`);
+  if (existsSync(yamlPath)) return yamlPath;
+  const ymlPath = join(dir, `${workflowName}.yml`);
+  if (existsSync(ymlPath)) return ymlPath;
+  return null;
+}
+
 /**
  * Load and validate a workflow config.
  *
@@ -993,8 +1001,8 @@ export function loadWorkflowConfig(
   }
 
   // Tier 1: project override
-  const projectPath = projectRoot ? join(projectRoot, ".foreman", "workflows", `${workflowName}.yaml`) : null;
-  if (projectPath && existsSync(projectPath)) {
+  const projectPath = projectRoot ? findWorkflowFileInDir(join(projectRoot, ".foreman", "workflows"), workflowName) : null;
+  if (projectPath) {
     try {
       const raw = yamlLoad(readFileSync(projectPath, "utf-8"));
       return { ...validateWorkflowConfig(raw, workflowName), sourcePath: projectPath };
@@ -1006,7 +1014,7 @@ export function loadWorkflowConfig(
   }
 
   // Tier 2: global override
-  const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
+  const globalPath = findWorkflowFileInDir(getForemanHomePath("workflows"), workflowName) ?? getForemanHomePath("workflows", `${workflowName}.yaml`);
   if (existsSync(globalPath)) {
     try {
       const raw = yamlLoad(readFileSync(globalPath, "utf-8"));
@@ -1052,9 +1060,9 @@ export function getBundledWorkflowPath(workflowName: string): string | null {
  * ~/.foreman/workflows/, or bundled defaults.
  */
 export function hasWorkflowConfig(workflowName: string, projectRoot?: string): boolean {
-  const projectPath = projectRoot ? join(projectRoot, ".foreman", "workflows", `${workflowName}.yaml`) : null;
-  const globalPath = getForemanHomePath("workflows", `${workflowName}.yaml`);
-  return (projectPath ? existsSync(projectPath) : false) || existsSync(globalPath) || getBundledWorkflowPath(workflowName) !== null;
+  const projectPath = projectRoot ? findWorkflowFileInDir(join(projectRoot, ".foreman", "workflows"), workflowName) : null;
+  const globalPath = findWorkflowFileInDir(getForemanHomePath("workflows"), workflowName);
+  return projectPath !== null || globalPath !== null || getBundledWorkflowPath(workflowName) !== null;
 }
 
 /**
