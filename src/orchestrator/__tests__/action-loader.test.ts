@@ -70,6 +70,7 @@ describe("project action loader", () => {
     mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
     writeFileSync(join(project, ".foreman", "actions", "good.js"), "export async function run(ctx) { return ctx.internal.runBuiltin(); }\n");
     writeFileSync(join(project, ".foreman", "actions", "arrow.js"), "export default async (ctx) => ctx.internal.runBuiltin();\n");
+    writeFileSync(join(project, ".foreman", "actions", "identifier-arrow.js"), "export default async ctx => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "const-run.js"), "export const run = async (ctx) => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "re-export-run.js"), "const run = async (ctx) => ctx.internal.runBuiltin(); export { run };\n");
     writeFileSync(join(project, ".foreman", "actions", "bad.js"), "export const nope = 1;\n");
