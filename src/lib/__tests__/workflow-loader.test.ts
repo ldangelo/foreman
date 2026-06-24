@@ -140,6 +140,18 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[0].mail?.forwardArtifactTo).toBe("foreman");
   });
 
+  it("rejects invalid numeric phase controls", () => {
+    for (const phase of [
+      { name: "developer", prompt: "developer.md", maxTurns: 0 },
+      { name: "developer", prompt: "developer.md", timeoutSecs: -1 },
+      { name: "developer", prompt: "developer.md", retryOnFail: 1.5 },
+      { name: "developer", prompt: "developer.md", cooldownSeconds: 0 },
+      { name: "developer", prompt: "developer.md", files: { leaseSecs: 0 } },
+    ]) {
+      expect(() => validateWorkflowConfig({ name: "default", phases: [phase] }, "default")).toThrow(WorkflowConfigError);
+    }
+  });
+
   it("rejects invalid action capabilities", () => {
     expect(() => validateWorkflowConfig({
       name: "default",

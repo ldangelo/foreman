@@ -472,6 +472,14 @@ function isSafeActionName(action: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(action) && action.length > 0;
 }
 
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
 /**
  * Error thrown when a workflow config file is missing or invalid.
  */
@@ -608,18 +616,30 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       }
     }
 
-    if (typeof p["maxTurns"] === "number") phase.maxTurns = p["maxTurns"];
-    if (typeof p["timeoutSecs"] === "number") phase.timeoutSecs = p["timeoutSecs"];
+    if (p["maxTurns"] !== undefined) {
+      if (!isPositiveNumber(p["maxTurns"])) throw new WorkflowConfigError(workflowName, `phases[${i}].maxTurns must be a positive number`);
+      phase.maxTurns = p["maxTurns"];
+    }
+    if (p["timeoutSecs"] !== undefined) {
+      if (!isPositiveNumber(p["timeoutSecs"])) throw new WorkflowConfigError(workflowName, `phases[${i}].timeoutSecs must be a positive number`);
+      phase.timeoutSecs = p["timeoutSecs"];
+    }
     if (typeof p["skipIfArtifact"] === "string") phase.skipIfArtifact = p["skipIfArtifact"];
     if (typeof p["retryOnly"] === "boolean") phase.retryOnly = p["retryOnly"];
     if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
-    if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
+    if (p["retryOnFail"] !== undefined) {
+      if (!isNonNegativeInteger(p["retryOnFail"])) throw new WorkflowConfigError(workflowName, `phases[${i}].retryOnFail must be a non-negative integer`);
+      phase.retryOnFail = p["retryOnFail"];
+    }
     if (typeof p["stopOnFailExhausted"] === "boolean") phase.stopOnFailExhausted = p["stopOnFailExhausted"];
     if (typeof p["sameFailureCircuitBreaker"] === "boolean") phase.sameFailureCircuitBreaker = p["sameFailureCircuitBreaker"];
     if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
-    if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];
+    if (p["cooldownSeconds"] !== undefined) {
+      if (!isPositiveNumber(p["cooldownSeconds"])) throw new WorkflowConfigError(workflowName, `phases[${i}].cooldownSeconds must be a positive number`);
+      phase.cooldownSeconds = p["cooldownSeconds"];
+    }
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
     if (typeof p["bash"] === "string") phase.bash = p["bash"];
     if (typeof p["command"] === "string") phase.command = p["command"];
@@ -754,7 +774,10 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       const f = p["files"];
       phase.files = {};
       if (typeof f["reserve"] === "boolean") phase.files.reserve = f["reserve"];
-      if (typeof f["leaseSecs"] === "number") phase.files.leaseSecs = f["leaseSecs"];
+      if (f["leaseSecs"] !== undefined) {
+        if (!isPositiveNumber(f["leaseSecs"])) throw new WorkflowConfigError(workflowName, `phases[${i}].files.leaseSecs must be a positive number`);
+        phase.files.leaseSecs = f["leaseSecs"];
+      }
     }
 
     phases.push(phase);
