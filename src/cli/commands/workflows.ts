@@ -93,9 +93,13 @@ export function validateWorkflows(projectPath: string): { ok: boolean; invalid: 
   };
 
   for (const file of workflowFiles(join(projectPath, ".foreman", "workflows"))) {
+    const workflow = workflowNameFromFile(file);
+    if (!isSafeWorkflowName(workflow)) invalid.push(`project/${file}: unsafe workflow name`);
     validate(`project/${file}`, join(projectPath, ".foreman", "workflows", file));
   }
   for (const file of workflowFiles(getForemanHomePath("workflows"))) {
+    const workflow = workflowNameFromFile(file);
+    if (!isSafeWorkflowName(workflow)) invalid.push(`global/${file}: unsafe workflow name`);
     validate(`global/${file}`, getForemanHomePath("workflows", file));
   }
   for (const workflow of listAvailableWorkflows(projectPath)) {

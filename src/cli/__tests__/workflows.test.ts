@@ -40,6 +40,22 @@ describe("workflows command helpers", () => {
     }
   });
 
+  it("validates unsafe workflow filenames", () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-workflows-unsafe-name-"));
+    const oldHome = process.env.FOREMAN_HOME;
+    process.env.FOREMAN_HOME = join(project, "foreman-home");
+    mkdirSync(join(project, ".foreman", "workflows"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "workflows", "bad name.yaml"), workflowStub("bad-name"));
+    try {
+      const result = validateWorkflows(project);
+      expect(result.ok).toBe(false);
+      expect(result.invalid.some((line) => line.includes("project/bad name.yaml: unsafe workflow name"))).toBe(true);
+    } finally {
+      if (oldHome === undefined) delete process.env.FOREMAN_HOME;
+      else process.env.FOREMAN_HOME = oldHome;
+    }
+  });
+
   it("validates duplicate task_type declarations", () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-workflows-duplicate-task-type-"));
     const oldHome = process.env.FOREMAN_HOME;
