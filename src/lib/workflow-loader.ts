@@ -1160,7 +1160,7 @@ export function loadWorkflowConfig(
   if (existsSync(bundledPath)) {
     try {
       const raw = yamlLoad(readFileSync(bundledPath, "utf-8"));
-    return { ...validateWorkflowConfig(raw, workflowName), sourcePath: bundledPath };
+      return { ...validateWorkflowConfig(raw, workflowName), sourcePath: bundledPath };
     } catch (err) {
       if (err instanceof WorkflowConfigError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
