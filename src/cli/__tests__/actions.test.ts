@@ -9,7 +9,7 @@ import { actionsCommand, customActionStub, listActions } from "../commands/actio
 describe("actions command helpers", () => {
   it("loads command with list/show/install subcommands", () => {
     expect(actionsCommand.name()).toBe("actions");
-    expect(actionsCommand.commands.map((cmd) => cmd.name())).toEqual(["list", "show", "install", "create"]);
+    expect(actionsCommand.commands.map((cmd) => cmd.name())).toEqual(["list", "show", "install", "validate", "create"]);
   });
 
   it("lists project overrides before bundled actions", () => {

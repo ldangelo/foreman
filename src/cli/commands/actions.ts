@@ -116,6 +116,28 @@ actionsCommand
   });
 
 actionsCommand
+  .command("validate")
+  .description("Validate project and global action module names/exports")
+  .option("--json", "Output JSON")
+  .action((opts: { json?: boolean }) => {
+    const project = validateProjectActions(process.cwd());
+    const global = validateGlobalActions();
+    const ok = project.invalidNames.length === 0
+      && project.invalidExports.length === 0
+      && global.invalidNames.length === 0
+      && global.invalidExports.length === 0;
+    const result = { ok, project, global };
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (ok) {
+      console.log(chalk.green("Action modules valid"));
+    } else {
+      console.error(chalk.red(`Invalid actions: projectNames=${project.invalidNames.join(", ") || "none"} projectExports=${project.invalidExports.join(", ") || "none"} globalNames=${global.invalidNames.join(", ") || "none"} globalExports=${global.invalidExports.join(", ") || "none"}`));
+    }
+    if (!ok) process.exitCode = 1;
+  });
+
+actionsCommand
   .command("create")
   .description("Create a new project action stub in .foreman/actions")
   .argument("<action>", "Action name")
