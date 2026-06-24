@@ -175,8 +175,10 @@ function hasValidActionExport(source: string): boolean {
     if (new RegExp(`export\\s+default\\s+${name}\\b`).test(source)) return true;
   }
   for (const exportBlock of source.matchAll(/export\s*\{([^}]*)\}/g)) {
+    const exports = exportBlock[1] ?? "";
+    if (callableNames.has("run") && /(^|,)\s*run\s*(,|$)/.test(exports)) return true;
     for (const name of callableNames) {
-      if (new RegExp(`(^|,)\\s*${name}\\s+as\\s+(run|default)\\s*(,|$)`).test(exportBlock[1] ?? "")) return true;
+      if (new RegExp(`(^|,)\\s*${name}\\s+as\\s+(run|default)\\s*(,|$)`).test(exports)) return true;
     }
   }
   return false;

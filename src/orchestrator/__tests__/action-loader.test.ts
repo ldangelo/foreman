@@ -82,6 +82,7 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "identifier-arrow.js"), "export default async ctx => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "const-run.js"), "export const run = async (ctx) => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "re-export-run.js"), "const run = async (ctx) => ctx.internal.runBuiltin(); export { run };\n");
+    writeFileSync(join(project, ".foreman", "actions", "re-export-before-run.js"), "export { run }; const run = async (ctx) => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "alias-run.js"), "const execute = async (ctx) => ctx.internal.runBuiltin(); export { execute as run };\n");
     writeFileSync(join(project, ".foreman", "actions", "function-alias-run.js"), "function execute(ctx) { return ctx.internal.runBuiltin(); } export { execute as run };\n");
     writeFileSync(join(project, ".foreman", "actions", "alias-default.js"), "const execute = async (ctx) => ctx.internal.runBuiltin(); export { execute as default };\n");
