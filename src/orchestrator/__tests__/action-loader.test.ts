@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { installBundledActions, loadProjectAction, validateProjectActions } from "../action-loader.js";
+import { getForemanHomePath } from "../../lib/foreman-paths.js";
+import { actionCandidates, installBundledActions, loadProjectAction, validateProjectActions } from "../action-loader.js";
 
 describe("project action loader", () => {
   it("loads editable project actions from .foreman/actions", async () => {
@@ -15,6 +16,16 @@ describe("project action loader", () => {
     const action = await loadProjectAction<{ actionType: string }, { success: boolean; outputText: string }>(project, "create-pr");
     expect(action).toBeDefined();
     await expect(action?.({ actionType: "create-pr" })).resolves.toEqual({ success: true, outputText: "create-pr" });
+  });
+
+  it("includes project actions before global actions in resolution candidates", () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-action-"));
+    expect(actionCandidates(project, "create-pr")).toEqual([
+      join(project, ".foreman", "actions", "create-pr.mjs"),
+      join(project, ".foreman", "actions", "create-pr.js"),
+      getForemanHomePath("actions", "create-pr.mjs"),
+      getForemanHomePath("actions", "create-pr.js"),
+    ]);
   });
 
   it("ignores unsafe action names", async () => {

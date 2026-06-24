@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { getForemanHomePath } from "../lib/foreman-paths.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -23,13 +24,25 @@ export function projectActionCandidates(projectPath: string, actionType: string)
   ];
 }
 
+export function globalActionCandidates(actionType: string): string[] {
+  if (!isSafeActionName(actionType)) return [];
+  return [
+    getForemanHomePath("actions", `${actionType}.mjs`),
+    getForemanHomePath("actions", `${actionType}.js`),
+  ];
+}
+
+export function actionCandidates(projectPath: string, actionType: string): string[] {
+  return [...projectActionCandidates(projectPath, actionType), ...globalActionCandidates(actionType)];
+}
+
 export function findProjectActionPath(projectPath: string, actionType: string): string | undefined {
-  return projectActionCandidates(projectPath, actionType).find((candidate) => existsSync(candidate));
+  return actionCandidates(projectPath, actionType).find((candidate) => existsSync(candidate));
 }
 
 export async function loadProjectAction<Context, Result = unknown>(projectPath: string, actionType: string): Promise<((ctx: Context) => Promise<Result> | Result) | undefined> {
   if (!isSafeActionName(actionType)) return undefined;
-  for (const candidate of projectActionCandidates(projectPath, actionType)) {
+  for (const candidate of actionCandidates(projectPath, actionType)) {
     if (!existsSync(candidate)) continue;
     const mod = await import(`${pathToFileURL(candidate).href}?t=${Date.now()}`) as ExternalActionModule<Context, Result>;
     const runner = mod.default ?? mod.run;
