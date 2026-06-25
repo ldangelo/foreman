@@ -70,6 +70,22 @@ export default async function run(ctx) {
     await expect(runWorkspaceAction("bad-fields", makeCtx(repo))).rejects.toThrow(/repoPath must be a non-empty string/);
   });
 
+  it("passes declared capabilities to custom workspace actions", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "foreman-workspace-action-repo-"));
+    dirs.push(repo);
+    mkdirSync(join(repo, ".foreman", "actions"), { recursive: true });
+    writeFileSync(join(repo, ".foreman", "actions", "needs-exec.js"), `
+export async function run(ctx) {
+  ctx.requireCapability("exec");
+  return { ...ctx, branchName: ctx.capabilities.join(",") };
+}
+`);
+
+    await expect(runWorkspaceAction("needs-exec", makeCtx(repo))).rejects.toThrow(/requires capability 'exec'/);
+    const result = await runWorkspaceAction("needs-exec", makeCtx(repo), ["exec"]);
+    expect(result.branchName).toBe("exec");
+  });
+
   it("lets project workspace action overrides wrap built-in behavior", async () => {
     const repo = mkdtempSync(join(tmpdir(), "foreman-workspace-action-repo-"));
     const worktree = mkdtempSync(join(tmpdir(), "foreman-workspace-action-worktree-"));

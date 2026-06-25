@@ -928,7 +928,7 @@ export class Dispatcher {
         for (const phase of dispatcherPhases) {
           const actionType = inferPhaseActionType(phase);
           log(`[foreman] Workspace action ${actionType} for ${seed.id}`);
-          workspaceContext = await runWorkspaceAction(actionType, workspaceContext);
+          workspaceContext = await runWorkspaceAction(actionType, workspaceContext, phase.capabilities);
         }
         if (!workspaceContext.worktreePath || !workspaceContext.branchName) {
           throw new Error(`Workspace actions did not produce worktree metadata for ${seed.id}`);

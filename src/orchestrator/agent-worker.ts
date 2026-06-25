@@ -67,6 +67,7 @@ import { nativeTaskStatusForPhase } from "./task-phase-status.js";
 import { inferPhaseActionType } from "./phase-actions.js";
 import { loadProjectAction } from "./action-loader.js";
 import { assertPhaseActionResult } from "./action-results.js";
+import type { ActionCapability } from "./workspace-actions.js";
 import { deriveFallbackRefineryOptions, runCliReviewBuiltinPhase, runCreatePrBuiltinPhase, runFinalizeBuiltinPhase, runMergeBuiltinPhase, runPrWaitBuiltinPhase, runPreparePrReviewBuiltinPhase, validatePrReviewGate, workerReportDir } from "./actions/builtin-worker-actions.js";
 import { ElixirServerClient } from "../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
@@ -1236,8 +1237,17 @@ async function runPipeline(
             vcsBackend?: VcsBackend;
             mail: { send: typeof sendMail; sendText: typeof sendMailText; client: AnyMailClient | null };
             log: (message: string) => void;
+            capabilities: string[];
+            requireCapability: (capability: ActionCapability) => void;
             internal: { runBuiltin: () => Promise<import("./pipeline-executor.js").PhaseResult> };
           }, import("./pipeline-executor.js").PhaseResult>(pipelineProjectPath, actionType);
+          const declaredCapabilities = phase.capabilities ?? [];
+          const declaredCapabilitySet = new Set(declaredCapabilities);
+          const requireCapability = (capability: ActionCapability): void => {
+            if (!declaredCapabilitySet.has(capability)) {
+              throw new Error(`Action ${actionType} requires capability '${capability}' but phase '${phase.name}' did not declare it`);
+            }
+          };
           const actionRunners: Record<string, () => Promise<import("./pipeline-executor.js").PhaseResult>> = {
             "create-pr": () => runCreatePrBuiltinPhase({
               config,
@@ -1282,6 +1292,8 @@ async function runPipeline(
               vcsBackend,
               mail: { send: sendMail, sendText: sendMailText, client: agentMailClient },
               log,
+              capabilities: declaredCapabilities,
+              requireCapability,
               internal: {
                 runBuiltin: async () => {
                   if (!runner) throw new Error(`Unknown builtin action: ${actionType} (phase ${phase.name})`);

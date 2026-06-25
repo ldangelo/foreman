@@ -8,6 +8,8 @@ import type { ModelSelection, SeedInfo } from "./types.js";
 import { workerAgentMd } from "./templates.js";
 import { loadProjectAction } from "./action-loader.js";
 
+export type ActionCapability = "vcs" | "mail" | "task-store" | "network" | "exec";
+
 export interface WorkspaceActionContext {
   projectId: string;
   seedId: string;
@@ -25,6 +27,19 @@ export interface WorkspaceActionContext {
   seedInfo: SeedInfo;
   model: ModelSelection;
   log: (message: string) => void;
+}
+
+function actionCapabilityHelpers(action: string, capabilities: string[] | undefined): { capabilities: string[]; requireCapability: (capability: ActionCapability) => void } {
+  const declared = capabilities ?? [];
+  const declaredSet = new Set(declared);
+  return {
+    capabilities: declared,
+    requireCapability(capability: ActionCapability) {
+      if (!declaredSet.has(capability)) {
+        throw new Error(`Action ${action} requires capability '${capability}' but the workflow phase did not declare it`);
+      }
+    },
+  };
 }
 
 export async function runPrepareWorktreeAction(ctx: WorkspaceActionContext): Promise<WorkspaceActionContext> {
@@ -110,8 +125,8 @@ function assertWorkspaceActionResult(action: string, result: unknown): Workspace
   return result as WorkspaceActionContext;
 }
 
-export async function runWorkspaceAction(action: string, ctx: WorkspaceActionContext): Promise<WorkspaceActionContext> {
-  const externalAction = await loadProjectAction<WorkspaceActionContext & { actionType: string; internal: { runBuiltin: () => Promise<WorkspaceActionContext> } }, WorkspaceActionContext>(ctx.repoPath, action);
+export async function runWorkspaceAction(action: string, ctx: WorkspaceActionContext, capabilities?: string[]): Promise<WorkspaceActionContext> {
+  const externalAction = await loadProjectAction<WorkspaceActionContext & { actionType: string; capabilities: string[]; requireCapability: (capability: ActionCapability) => void; internal: { runBuiltin: () => Promise<WorkspaceActionContext> } }, WorkspaceActionContext>(ctx.repoPath, action);
   const runBuiltin = async (): Promise<WorkspaceActionContext> => {
     switch (action) {
     case "prepare-worktree":
@@ -125,7 +140,7 @@ export async function runWorkspaceAction(action: string, ctx: WorkspaceActionCon
     }
   };
   const result = externalAction
-    ? await externalAction({ ...ctx, actionType: action, internal: { runBuiltin } })
+    ? await externalAction({ ...ctx, actionType: action, ...actionCapabilityHelpers(action, capabilities), internal: { runBuiltin } })
     : await runBuiltin();
   return assertWorkspaceActionResult(action, result);
 }
