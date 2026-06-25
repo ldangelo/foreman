@@ -156,9 +156,11 @@ const task = {
 };
 
 describe("run task command", () => {
+  const originalBackend = process.env["FOREMAN_BACKEND"];
   let testProjectPath: string;
 
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
 
     testProjectPath = join(tmpdir(), `foreman-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -188,6 +190,8 @@ phases:
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     rmSync(testProjectPath, { recursive: true, force: true });
   });
 

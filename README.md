@@ -661,13 +661,13 @@ foreman worktree clean --all             # Remove all including active ones
 ```
 
 ### `foreman sentinel`
-QA sentinel for continuous testing on the main branch. Sentinel run history is stored in `sentinel_runs`, with start/pass/fail events recorded for observability.
+Legacy QA sentinel for continuous testing on the main branch. Default Elixir mode blocks this path; use Elixir scheduler/status/recover flows by default, or set `FOREMAN_BACKEND=node` for legacy sentinel commands.
 
 ```bash
-foreman sentinel run-once               # Run tests once and exit
-foreman sentinel start                   # Background daemon mode
-foreman sentinel stop                    # Stop background sentinel
-foreman sentinel status                  # Show sentinel status
+FOREMAN_BACKEND=node foreman sentinel run-once               # Run tests once and exit
+FOREMAN_BACKEND=node foreman sentinel start                  # Background daemon mode
+FOREMAN_BACKEND=node foreman sentinel stop                   # Stop background sentinel
+FOREMAN_BACKEND=node foreman sentinel status                 # Show sentinel status
 ```
 
 ### `foreman reset`
@@ -919,10 +919,10 @@ phases:
     retryOnFail: 3
 ```
 
-Direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks:
+Legacy direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks. Default Elixir mode blocks this path; let the Elixir scheduler launch workers, or set `FOREMAN_BACKEND=node` for direct legacy execution:
 
 ```bash
-foreman run task <task-id> <workflow-path> --project <name> --no-watch
+FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> --project <name> --no-watch
 ```
 
 **Key behaviors:**
@@ -941,13 +941,13 @@ foreman run task <task-id> <workflow-path> --project <name> --no-watch
 
 ```bash
 # Run a closed task with the task workflow
-foreman run task foreman-12345 task --project my-project --no-watch
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --project my-project --no-watch
 
 # Run with a custom workflow path
-foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml --target-branch main
+FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml --target-branch main
 
 # Dry run to preview
-foreman run task foreman-12345 task --dry-run
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --dry-run
 ```
 
 The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.

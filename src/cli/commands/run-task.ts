@@ -45,6 +45,7 @@ import { autoMerge } from "../../orchestrator/auto-merge.js";
 import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
 
@@ -231,6 +232,11 @@ export async function runTaskAction(
     project,
     projectPath: optsProjectPath,
   } = opts;
+
+  if (foremanBackendMode() === "elixir" && !requestedRunId) {
+    console.error(chalk.red("foreman run task uses the legacy Node worker bridge directly. Let the Elixir scheduler launch workers, or set FOREMAN_BACKEND=node for direct legacy task execution."));
+    return 1;
+  }
 
   // ── Deprecated flag warning ───────────────────────────────────────────
   const deprecationWarning = skipFlagsDeprecationWarning(opts, "task");

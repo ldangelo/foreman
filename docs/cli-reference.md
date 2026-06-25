@@ -132,11 +132,11 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 
 ### `foreman run task`
 
-Run a specific task through an explicit workflow, bypassing scheduler state gates. This is intended for debugging, recovery, and manual reruns where the task may be `failed`, `closed`, `in-progress`, or otherwise not `ready`. Worktree/run locking still applies. When the Elixir scheduler launches the legacy Node worker bridge and the task only exists in Elixir projections, Foreman mirrors that task into the Postgres worker store before execution so prompts receive title/type/priority/description metadata.
+Legacy direct task execution through the Node worker bridge, bypassing scheduler state gates. In default Elixir mode, let the Elixir scheduler launch workers; this command fails fast unless `FOREMAN_BACKEND=node` is set (the hidden `--run-id` path is reserved for the Elixir scheduler bridge).
 
 ```bash
-foreman run task foreman-12345 task --project foreman --no-watch
-foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --project foreman --no-watch
+FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
 ```
 
 | Option | Default | Description |
@@ -297,25 +297,25 @@ foreman watch --no-events         # Hide the pipeline events panel
 
 ### `foreman sentinel`
 
-Continuous QA testing agent that monitors a branch for test failures and auto-creates follow-up fix tasks.
+Legacy continuous QA testing agent that monitors a branch for test failures and auto-creates follow-up fix tasks. Default Elixir mode blocks sentinel commands; use Elixir scheduler/status/recover flows by default, or set `FOREMAN_BACKEND=node` for legacy sentinel.
 
 ```bash
 # Run once
-foreman sentinel run-once
-foreman sentinel run-once --branch dev --test-command "npm test"
-foreman sentinel run-once --dry-run
+FOREMAN_BACKEND=node foreman sentinel run-once
+FOREMAN_BACKEND=node foreman sentinel run-once --branch dev --test-command "npm test"
+FOREMAN_BACKEND=node foreman sentinel run-once --dry-run
 
 # Start background daemon
-foreman sentinel start
-foreman sentinel start --interval 15 --failure-threshold 3
+FOREMAN_BACKEND=node foreman sentinel start
+FOREMAN_BACKEND=node foreman sentinel start --interval 15 --failure-threshold 3
 
 # Check sentinel status
-foreman sentinel status
-foreman sentinel status --json --limit 20
+FOREMAN_BACKEND=node foreman sentinel status
+FOREMAN_BACKEND=node foreman sentinel status --json --limit 20
 
 # Stop background daemon
-foreman sentinel stop
-foreman sentinel stop --force
+FOREMAN_BACKEND=node foreman sentinel stop
+FOREMAN_BACKEND=node foreman sentinel stop --force
 ```
 
 **`sentinel run-once` options:**

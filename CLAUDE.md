@@ -24,7 +24,7 @@ FOREMAN_BACKEND=node foreman run          # Legacy Node dispatcher
 FOREMAN_BACKEND=node foreman run --bead X # Legacy dispatch specific task
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard (Elixir projections by default; 'dashboard' is a deprecated alias)
-foreman sentinel       # Background health daemon
+FOREMAN_BACKEND=node foreman sentinel # Legacy background health daemon
 FOREMAN_BACKEND=node foreman reset          # Legacy cleanup failed/stuck runs
 FOREMAN_BACKEND=node foreman reset --detect-stuck  # Legacy detect + reset stuck runs
 FOREMAN_BACKEND=node foreman reset --task X --preserve-worktree  # Legacy reset, keep worktree/branch

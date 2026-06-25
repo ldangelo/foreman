@@ -292,10 +292,10 @@ Transient failures include provider rate limits, provider overloads (`529 overlo
 
 ### Direct Task Execution with `foreman run task`
 
-For debugging, recovery, and manual reruns where the task may be in any state (failed, closed, in-progress, backlog, etc.), use `foreman run task`:
+For legacy debugging, recovery, and manual reruns where the task may be in any state (failed, closed, in-progress, backlog, etc.), use `foreman run task` with explicit Node backend opt-in. In default Elixir mode, let the scheduler launch workers:
 
 ```bash
-foreman run task <task-id> <workflow-path> [options]
+FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> [options]
 ```
 
 **Key behaviors:**
@@ -313,16 +313,16 @@ foreman run task <task-id> <workflow-path> [options]
 
 ```bash
 # Run a closed task with the default task workflow
-foreman run task foreman-12345 task --project my-project --no-watch
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --project my-project --no-watch
 
 # Run with a custom workflow path
-foreman run task foreman-12345 ~/.foreman/workflows/custom.yaml --target-branch main
+FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/custom.yaml --target-branch main
 
 # Dry run to preview without executing
-foreman run task foreman-12345 task --dry-run
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --dry-run
 
 # Run with a specific model override
-foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
 ```
 
 **When to use `foreman run task` vs `foreman run --task`:**
@@ -330,7 +330,7 @@ foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
 | Command | State gating | Workflow selection | Typical use |
 |---------|--------------|--------------------|-------------|
 | `foreman run --task <id>` | Yes (task must be `ready`) | `--workflow` flag | Normal dispatch |
-| `foreman run task <id> <workflow>` | No (any state) | Positional argument | Debug, recovery, testing |
+| `FOREMAN_BACKEND=node foreman run task <id> <workflow>` | No (any state) | Positional argument | Legacy debug, recovery, testing |
 
 ## Run Archiving and Filtering
 

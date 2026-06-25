@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
@@ -13,7 +14,13 @@ import { ensureCliPostgresPool, listRegisteredProjects } from "./project-task-su
 import { findRegisteredProjectByFlagOrCwd } from "./project-context.js";
 
 export const sentinelCommand = new Command("sentinel")
-  .description("QA sentinel: continuous testing agent for main/master branch");
+  .description("QA sentinel: continuous testing agent for main/master branch")
+  .hook("preAction", () => {
+    if (foremanBackendMode() === "elixir") {
+      console.error(chalk.red("foreman sentinel uses the legacy SentinelAgent and Postgres/local sentinel stores. Use Elixir scheduler/status/recover flows, or set FOREMAN_BACKEND=node for legacy sentinel commands."));
+      process.exit(1);
+    }
+  });
 
 export interface SentinelCommandTaskClient extends ITaskClient {
   create(

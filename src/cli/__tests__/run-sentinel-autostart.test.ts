@@ -216,7 +216,10 @@ async function invokeRun(args: string[]): Promise<void> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("sentinel auto-start in foreman run", () => {
+  const originalBackend = process.env["FOREMAN_BACKEND"];
+
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -288,6 +291,8 @@ describe("sentinel auto-start in foreman run", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     vi.restoreAllMocks();
   });
 
