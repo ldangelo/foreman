@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { resolveProjectContext } from "./project-context.js";
@@ -837,6 +838,12 @@ export const resetCommand = new Command("reset")
     const beadFilter = (opts.task ?? opts.bead) as string | undefined;
     const preserveWorktree = Boolean(opts.preserveWorktree || opts.retryFailedPhase);
     const timeoutMinutes = parseInt(opts.timeout as string, 10);
+
+    if (foremanBackendMode() === "elixir") {
+      console.error(chalk.red("foreman reset mutates legacy run/task/merge-queue stores. Use Elixir-backed retry/recover/task commands, or set FOREMAN_BACKEND=node for legacy reset cleanup."));
+      process.exitCode = 1;
+      return;
+    }
 
     if (isNaN(timeoutMinutes)) {
       console.error(

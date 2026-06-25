@@ -195,7 +195,10 @@ vi.mock("../../lib/registered-project-checkout.js", () => ({
 import { runCommand } from "../commands/run.js";
 
 describe("foreman run startup refinery lookup", () => {
+  const originalBackend = process.env["FOREMAN_BACKEND"];
+
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
     mockSyncRegisteredProjectCheckout.mockReset();
     mockProjectsList.mockResolvedValue([]);
@@ -217,6 +220,8 @@ describe("foreman run startup refinery lookup", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     vi.restoreAllMocks();
   });
 

@@ -254,7 +254,10 @@ async function runReset(args: string[]): Promise<void> {
 }
 
 describe("foreman reset — native backend", () => {
+  const originalBackend = process.env["FOREMAN_BACKEND"];
+
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
     backendState.current = "native";
     mockResolveRepoRootProjectPath.mockResolvedValue("/mock/project");
@@ -272,6 +275,8 @@ describe("foreman reset — native backend", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     vi.restoreAllMocks();
   });
 

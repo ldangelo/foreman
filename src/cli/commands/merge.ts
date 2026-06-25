@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient } from "../../lib/task-client.js";
@@ -95,6 +96,14 @@ export const mergeCommand = new Command("merge")
   .option("--json", "Output stats in JSON format")
   .action(async (opts) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        const message = "foreman merge uses the legacy Refinery and merge queue. Let the Elixir scheduler/finalize workflow handle merge/PR state, or set FOREMAN_BACKEND=node for legacy merge operations.";
+        if (opts.json) console.error(JSON.stringify({ error: message }));
+        else console.error(chalk.red(message));
+        process.exitCode = 1;
+        return;
+      }
+
       const projectPath = await resolveRepoRootProjectPath({});
       const projectCfg = loadProjectConfig(projectPath);
       const vcs = await createMergeVcsBackend(projectPath);

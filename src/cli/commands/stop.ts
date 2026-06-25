@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { Command } from "commander";
 import chalk from "chalk";
 
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ForemanStore, type Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
@@ -243,6 +244,11 @@ export async function listActiveRuns(store: StopStore, projectPath: string): Pro
 }
 
 export async function stopCommandAction(id: string | undefined, opts: StopOpts): Promise<number> {
+  if (foremanBackendMode() === "elixir") {
+    console.error(chalk.red("foreman stop uses legacy run stores and process metadata. Use Elixir-backed attach/recover/status flows, or set FOREMAN_BACKEND=node for legacy stop cleanup."));
+    return 1;
+  }
+
   let projectPath: string;
   let isGitRepo = true;
   try {

@@ -36,6 +36,7 @@ async function run(
       FOREMAN_TASK_BACKEND: undefined,
       DATABASE_URL: undefined,
       FOREMAN_REGISTRY_BASE_DIR: registryBaseDir,
+      FOREMAN_BACKEND: "node",
     },
     encoding: "utf8",
   });

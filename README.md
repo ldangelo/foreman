@@ -70,13 +70,13 @@ TRD-2026-014 adds an Elixir/OTP orchestration server alongside the existing Node
 
 See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) for the migration architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
 
-**ForemanDaemon lifecycle:**
-- `foreman daemon start` — validates Postgres, starts Fastify + Unix socket listener
-- `foreman daemon stop` — clean shutdown (release pool, close socket)
-- `foreman daemon status` — PID, socket path, health endpoint
+**Legacy ForemanDaemon lifecycle (`FOREMAN_BACKEND=node` only):**
+- `FOREMAN_BACKEND=node foreman daemon start` — validates Postgres, starts Fastify + Unix socket listener
+- `FOREMAN_BACKEND=node foreman daemon stop` — clean shutdown (release pool, close socket)
+- `FOREMAN_BACKEND=node foreman daemon status` — PID, socket path, health endpoint
 - Auto-restart on unexpected exit (detected via `foreman doctor`)
 
-> **Note:** Foreman uses PostgreSQL via `DATABASE_URL`. The daemon owns the shared Postgres pool and exposes a tRPC layer for CLI commands, avoiding per-invocation connection overhead and enabling multi-project aggregation.
+> **Note:** Default Elixir mode uses the Elixir server for shared state/scheduling. The legacy daemon uses PostgreSQL via `DATABASE_URL`, owns the shared Postgres pool, and exposes a tRPC layer for explicit `FOREMAN_BACKEND=node` operation.
 
 **Default pipeline phases** (orchestrated by TypeScript, not AI):
 1. **Explorer** (Haiku, 20 turns emergency fuse, read-only) — owns code discovery and writes concise edit/verification targets → `EXPLORER_REPORT.md`
@@ -90,11 +90,11 @@ TDD is now opt-in via `foreman run --workflow tdd`, a `workflow:tdd` label, or t
 
 ## Dispatch Flow
 
-The following diagram shows the full lifecycle of a task from `foreman run` to merged branch (daemon is optional — shown if running):
+The following legacy diagram shows the full Node-backed lifecycle from `FOREMAN_BACKEND=node foreman run` to merged branch (daemon shown in legacy mode):
 
 ```mermaid
 flowchart TD
-    subgraph DAEMON["foreman daemon start"]
+    subgraph DAEMON["FOREMAN_BACKEND=node foreman daemon start"]
         DA[Initialize PoolManager → Postgres]
         DB[Start Fastify + Unix socket: ~/.foreman/daemon.sock]
         DC[Health check endpoint responds]
@@ -234,7 +234,7 @@ re-dispatch later]
 ## Prerequisites
 
 - **Node.js 20+**
-- **PostgreSQL 15+** — required only when running the daemon (`foreman daemon start`); optional otherwise
+- **PostgreSQL 15+** — required only when running the legacy daemon (`FOREMAN_BACKEND=node foreman daemon start`); optional otherwise
   ```bash
   # macOS
   brew install postgresql@15
@@ -328,8 +328,8 @@ foreman doctor              # Check installation and dependencies
 cd ~/your-project
 foreman init --name my-project
 
-# 2. Start the Foreman daemon (validates Postgres, starts tRPC)
-foreman daemon start
+# 2. Start the Elixir orchestration server/scheduler
+foreman server start
 
 # 3. Create or import tasks
 foreman task create "Add user auth" --type feature --priority 1
@@ -337,17 +337,17 @@ foreman task create "Write auth tests" --type task --priority 2
 # or migrate an existing beads project
 foreman task import --from-beads
 
-# 4. Dispatch agents to ready tasks
-foreman run
+# 4. Approve ready tasks; the Elixir scheduler claims them
+foreman task approve <task-id>
 
 # 5. Monitor progress
 foreman status
 
-# 6. Merge completed branches (runs automatically in foreman run loop)
-foreman merge
+# 6. Let the Elixir finalize workflow handle merge/PR state
+foreman status --live
 ```
 
-> **Note:** The daemon is required for full multi-project orchestration. Without it, Foreman uses project-level PostgreSQL for single-project development.
+> **Note:** The Elixir server is the default multi-project orchestrator after cutover. The legacy Node daemon/Postgres scheduler is available only with `FOREMAN_BACKEND=node` for explicit legacy operation.
 
 ## Messaging
 
@@ -490,17 +490,16 @@ foreman project edit <project-id> --default-branch dev  # Change base for new wo
 ```
 
 ### `foreman run`
-Dispatch AI coding agents to ready tasks. Enters a watch loop that auto-merges completed branches.
+Legacy Node dispatcher for ready tasks. In default Elixir mode, use `foreman server start` and let the Elixir scheduler claim approved tasks; set `FOREMAN_BACKEND=node` only for explicit legacy dispatch.
 
 ```bash
-foreman run                              # Dispatch to all ready tasks
-foreman run --project my-project         # Dispatch without cd into a registered project
-foreman run --task task-abc              # Dispatch one specific task
-foreman run --max-agents 3               # Limit concurrent agents
-foreman run --yes                        # Auto-confirm run prompts for non-interactive use
-foreman run --model claude-opus-4-6      # Override model for all agents
-foreman run --no-tests                   # Skip test suite in merge step
-foreman run --dry-run                    # Preview without dispatching
+FOREMAN_BACKEND=node foreman run                              # Dispatch to all ready tasks
+FOREMAN_BACKEND=node foreman run --project my-project         # Dispatch without cd into a registered project
+FOREMAN_BACKEND=node foreman run --task task-abc              # Dispatch one specific task
+FOREMAN_BACKEND=node foreman run --max-agents 3               # Limit concurrent agents
+FOREMAN_BACKEND=node foreman run --yes                        # Auto-confirm run prompts for non-interactive use
+FOREMAN_BACKEND=node foreman run --model claude-opus-4-6      # Override model for all agents
+FOREMAN_BACKEND=node foreman run --dry-run                    # Preview without dispatching
 ```
 
 Each agent gets:
@@ -548,16 +547,16 @@ foreman watch --project <id>              # Filter to a specific project
 foreman status --watch                    # Compact refreshing status view
 ```
 
-Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `--project <name-or-path>`. Registered names resolve through `~/.foreman/projects.json`; absolute paths still work for direct one-off targeting.
+Project-aware operator commands (`status`, `retry`, and legacy `FOREMAN_BACKEND=node` run/reset paths) accept `--project <name-or-path>`. Registered names resolve through the active backend; absolute paths still work for direct one-off targeting.
 
 ### `foreman merge`
-Merge completed work branches back to main. Runs automatically in the `foreman run` loop.
+Legacy Node Refinery merge queue. In default Elixir mode, merge/PR state is handled by the Elixir scheduler/finalize workflow; set `FOREMAN_BACKEND=node` for explicit legacy merge operations.
 
 ```bash
-foreman merge                           # Merge all completed
-foreman merge --target-branch develop    # Merge to develop
-foreman merge --no-tests                 # Skip test suite
-foreman merge --test-command "npm test"  # Custom test command
+FOREMAN_BACKEND=node foreman merge                           # Merge all completed
+FOREMAN_BACKEND=node foreman merge --target-branch develop    # Merge to develop
+FOREMAN_BACKEND=node foreman merge --no-tests                 # Skip test suite
+FOREMAN_BACKEND=node foreman merge --test-command "npm test"  # Custom test command
 ```
 
 Auto-merge tiers (T1–T4):
@@ -590,7 +589,7 @@ foreman import --to-elixir --from-node --project foreman  # snapshot current Nod
 
 The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. While migration is incomplete, set `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` to delegate supported commands (`run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`) to the legacy TS CLI.
 
-Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira start the local server before reading HTTP projections, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy task generators/sync paths such as `foreman sling`, default `foreman plan <description>`, `foreman issue`, and metrics cost mode require `FOREMAN_BACKEND=node` until Elixir routes land. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as `foreman run`, `foreman reset`, `foreman stop`, `foreman merge`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, `foreman issue`, and metrics cost mode require `FOREMAN_BACKEND=node` until Elixir routes land. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
 Parse a TRD and create a native task hierarchy.
@@ -608,13 +607,13 @@ Configure and inspect Jira integration. In default Elixir mode, configure/status
 Manage the ForemanDaemon background process (Postgres-backed state).
 
 ```bash
-foreman daemon start          # Start daemon in background (validates Postgres)
-foreman daemon stop           # Stop running daemon
-foreman daemon status         # Show PID, socket path, health
-foreman daemon restart        # Stop + start
+FOREMAN_BACKEND=node foreman daemon start          # Start daemon in background (validates Postgres)
+FOREMAN_BACKEND=node foreman daemon stop           # Stop running daemon
+FOREMAN_BACKEND=node foreman daemon status         # Show PID, socket path, health
+FOREMAN_BACKEND=node foreman daemon restart        # Stop + start
 ```
 
-> Most legacy Node-backed commands (`foreman task`, `foreman status`, `foreman inbox`, etc.) require the daemon to be running. Start it once with `foreman daemon start`. After Elixir cutover, `foreman daemon start|restart` is blocked by default; use `foreman server start` instead. Set `FOREMAN_BACKEND=node` only for explicit legacy daemon operation.
+> The Elixir server is the default backend for `task`, `status`, `inbox`, and scheduler views after cutover; start it with `foreman server start`. The Node daemon is legacy-only and `foreman daemon start|restart` is blocked by default unless `FOREMAN_BACKEND=node` is set explicitly.
 
 ### `foreman server`
 Manage the experimental Elixir orchestration server.
@@ -672,15 +671,15 @@ foreman sentinel status                  # Show sentinel status
 ```
 
 ### `foreman reset`
-Reset failed/stuck runs: kill agents, remove worktrees, reset tasks to a dispatchable state. For focused repair after a phase failure, use `--preserve-worktree` or `--retry-failed-phase` to keep the branch/worktree intact; preserved worktrees refresh `.foreman/workflows` and `.foreman/prompts` from the project before redispatch.
+Legacy Node reset for failed/stuck runs: kill agents, remove worktrees, reset tasks to a dispatchable state. Default Elixir mode blocks this path; use `foreman retry`, `foreman recover`, and Elixir task/status flows by default, or set `FOREMAN_BACKEND=node` for legacy cleanup. For focused legacy repair after a phase failure, use `--preserve-worktree` or `--retry-failed-phase` to keep the branch/worktree intact.
 
 ```bash
-foreman reset                           # Reset failed/stuck runs
-foreman reset --project my-project      # Reset runs in a registered project without cd
-foreman reset --all                     # Reset ALL active runs
-foreman reset --detect-stuck            # Detect stuck runs first, then reset
-foreman reset --detect-stuck --timeout 20  # Stuck after 20 minutes
-foreman reset --task task-abc --preserve-worktree  # Keep branch/worktree for repair
+FOREMAN_BACKEND=node foreman reset                           # Reset failed/stuck legacy runs
+FOREMAN_BACKEND=node foreman reset --project my-project      # Reset runs in a registered project without cd
+FOREMAN_BACKEND=node foreman reset --all                     # Reset ALL active runs
+FOREMAN_BACKEND=node foreman reset --detect-stuck            # Detect stuck runs first, then reset
+FOREMAN_BACKEND=node foreman reset --detect-stuck --timeout 20  # Stuck after 20 minutes
+FOREMAN_BACKEND=node foreman reset --task task-abc --preserve-worktree  # Keep branch/worktree for repair
 ```
 
 ### `foreman retry`
@@ -693,10 +692,10 @@ foreman retry task-abc --dry-run        # Preview the retry flow
 ```
 
 ### `foreman pr`
-Create pull requests for completed branches that couldn't be auto-merged.
+Legacy Node PR creation for completed branches that could not be auto-merged. Default Elixir mode blocks this path; let the Elixir finalize workflow manage PR state, or set `FOREMAN_BACKEND=node` for legacy PR creation.
 
 ```bash
-foreman pr
+FOREMAN_BACKEND=node foreman pr
 ```
 
 ### `foreman debug`

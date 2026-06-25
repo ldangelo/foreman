@@ -19,16 +19,17 @@ foreman init           # Initialize project + beads
 foreman project add owner/repo  # Clone/register project (Elixir-backed by default)
 foreman project list   # List registered projects (Elixir-backed by default)
 foreman project sync <project-id>  # Fetch checkout + update Elixir last_sync_at
-foreman run            # Dispatch ready tasks to agents
-foreman run --bead X   # Dispatch specific task
+foreman server start   # Start Elixir scheduler; claims approved ready tasks
+FOREMAN_BACKEND=node foreman run          # Legacy Node dispatcher
+FOREMAN_BACKEND=node foreman run --bead X # Legacy dispatch specific task
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard (Elixir projections by default; 'dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
-foreman reset          # Clean up failed/stuck runs
-foreman reset --detect-stuck  # Detect + reset stuck runs (replaces 'foreman monitor')
-foreman reset --task X --preserve-worktree  # Reset state, keep worktree/branch, refresh prompts/workflows
+FOREMAN_BACKEND=node foreman reset          # Legacy cleanup failed/stuck runs
+FOREMAN_BACKEND=node foreman reset --detect-stuck  # Legacy detect + reset stuck runs
+FOREMAN_BACKEND=node foreman reset --task X --preserve-worktree  # Legacy reset, keep worktree/branch
 foreman retry <seed>   # Re-run a failed pipeline phase
-foreman stop           # Gracefully stop all agents
+FOREMAN_BACKEND=node foreman stop           # Legacy stop via process metadata
 foreman doctor         # Health checks (br, Pi, DB integrity)
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
 FOREMAN_BACKEND=node foreman sling trd X # Legacy TRD -> task hierarchy
@@ -38,8 +39,8 @@ foreman jira status  # Jira integration status (Elixir event-backed by default)
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
 foreman server doctor # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 # Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces declared acceptance-contract coverage, records PASS→FAIL override/retry reasons, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
-foreman merge          # Merge completed branches
-foreman pr             # Create PRs for completed work
+FOREMAN_BACKEND=node foreman merge          # Legacy Refinery merge queue
+FOREMAN_BACKEND=node foreman pr             # Legacy Refinery PR creation
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
 foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead'); task create/list/show/update/approve/close/dep route through Elixir by default
@@ -249,8 +250,8 @@ foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 # Stuck or failed runs
 foreman doctor         # Check br binary, Pi binary, DB integrity
 foreman status         # See all active/failed agents
-foreman reset          # Reset all failed/stuck runs to open
-foreman reset --bead X # Reset a specific run
+FOREMAN_BACKEND=node foreman reset          # Legacy reset failed/stuck runs
+FOREMAN_BACKEND=node foreman reset --bead X # Legacy reset a specific run
 foreman retry <seed>   # Re-run a specific pipeline phase
 
 # Agent logs (streamed during run)
@@ -275,8 +276,8 @@ npx tsc --noEmit       # Type-check without building
 
 **Common failure modes:**
 
-- Agent stuck in Developer phase → `foreman retry <seed>` or `foreman reset --bead <bead>`
-- Branch not merged after completion → `foreman merge` to trigger manually
+- Agent stuck in Developer phase → `foreman retry <seed>`; legacy cleanup uses `FOREMAN_BACKEND=node foreman reset --bead <bead>`
+- Branch not merged after completion → inspect Elixir finalize/merge reports; legacy manual merge uses `FOREMAN_BACKEND=node foreman merge`
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Worker merge phases use target-only autoMerge: one task run should merge only its own queued PR/branch, not drain unrelated queue entries.
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)

@@ -89,24 +89,24 @@ foreman project remove <project-id>
 
 ### `foreman run`
 
-Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, skips ready tasks whose dependency blockers are not closed, monitors agents, and merges each completed task's own queued PR/branch. The daemon uses the same dependency-filtered ready queue and logs both dispatched task IDs and skipped-task reasons each dispatch cycle.
+Legacy Node dispatcher for ready tasks. In default Elixir mode, use `foreman server start` and let the Elixir scheduler claim approved tasks; this command fails fast unless `FOREMAN_BACKEND=node` is set.
 
 Default workflows are YAML-defined phase/action sequences, including dispatcher workspace actions before agent launch. Workflow YAML resolves from explicit path, project `.foreman/workflows` (`.yaml|.yml`), global `~/.foreman/workflows` (`.yaml|.yml`), then bundled defaults; project-relative explicit paths must stay inside the project root. Use `foreman workflows list|show|validate|install|create` to inspect, validate, install, or create project/global workflow YAML. Editable action modules in `.foreman/actions/*.js|*.mjs|*.ts` or `~/.foreman/actions/*.js|*.mjs|*.ts` are bundled and loaded at runtime when present (project wins), so JS/MJS actions may import TS helper files kept outside the actions directory (every direct `.js`/`.mjs`/`.ts` file there is treated as an action); `foreman init`, `foreman doctor --fix`, and `foreman actions install [--global]` install bundled stubs. `foreman actions list` shows resolution, `foreman actions show <action>` prints one resolved path, `foreman actions validate` checks project/global action module names, JS/TS syntax/import resolution, function exports, duplicate `.js`/`.mjs`/`.ts` variants, and unresolved workflow action references, `foreman actions create <action> [--global]` creates a new stub (action names may contain letters, numbers, `.`, `_`, and `-`, with at least one letter/number; known builtin/workspace actions wrap `ctx.internal.runBuiltin()` by default), and `foreman doctor` validates the same action issues. The bundled `qlty` action runs `qlty check` (qlty CLI from https://qlty.sh/ must be on `PATH`), writes `QLTY_REPORT.md`, and bundled developer workflows retry Developer when it fails. Before retrying a target phase or forwarding an artifact to a phase, Foreman writes a normalized `{TARGET_PHASE}_TASK.md` input file in the run report directory (for example `DEVELOPER_TASK.md`) with the source phase/artifact, failure, retry attempt, and feedback content. The bundled fast path has Explorer (when present) hand off directly to Developer, then QA/review/finalize/documentation. TDD red/review phases are opt-in via `foreman run --workflow tdd`, a `workflow:tdd` label, or task type `tdd`. In the TDD workflow, `test-red` writes at most a few focused failing tests and `test-review` verifies those tests cover the acceptance contract and fail for the expected missing behavior, with one Red retry. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer, Developer, and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests (or an explicit no-docs-needed self-check), and TypeScript compilation when TS/JS files changed. Runtime preflight also fails on stale project/global prompt overrides that are missing required acceptance-contract markers. Verdict phases with `contract.policy.acceptanceCoverage` must carry and address the Explorer acceptance criteria; missing coverage overrides PASS to FAIL and is recorded as phase failure/retry events. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
 
 ```bash
-foreman run                       # Dispatch all ready tasks (up to max-agents)
-foreman run --project my-project   # Dispatch against a registered project without cd
-foreman run --task bd-abc1        # Dispatch a specific task by ID
-foreman run --dry-run             # Preview what would be dispatched
-foreman run --max-agents 3        # Limit concurrent agents to 3
-foreman run --resume              # Resume stuck/rate-limited runs
-foreman run --resume-failed       # Also resume permanently failed runs
-foreman run --no-watch            # Dispatch once and exit (don't monitor)
-foreman run --yes                 # Auto-confirm run prompts for non-interactive use
-foreman run --no-pipeline         # Single agent mode (no explorer/qa/reviewer)
-foreman run --workflow quick      # Run all dispatched tasks with the quick workflow
-foreman run --workflow tdd        # Opt into Red/Test Review before Developer
-foreman run --model anthropic/claude-opus-4-6  # Force a specific model
+FOREMAN_BACKEND=node foreman run                       # Dispatch all ready tasks (up to max-agents)
+FOREMAN_BACKEND=node foreman run --project my-project   # Dispatch against a registered project without cd
+FOREMAN_BACKEND=node foreman run --task bd-abc1        # Dispatch a specific task by ID
+FOREMAN_BACKEND=node foreman run --dry-run             # Preview what would be dispatched
+FOREMAN_BACKEND=node foreman run --max-agents 3        # Limit concurrent agents to 3
+FOREMAN_BACKEND=node foreman run --resume              # Resume stuck/rate-limited runs
+FOREMAN_BACKEND=node foreman run --resume-failed       # Also resume permanently failed runs
+FOREMAN_BACKEND=node foreman run --no-watch            # Dispatch once and exit (don't monitor)
+FOREMAN_BACKEND=node foreman run --yes                 # Auto-confirm run prompts for non-interactive use
+FOREMAN_BACKEND=node foreman run --no-pipeline         # Single agent mode (no explorer/qa/reviewer)
+FOREMAN_BACKEND=node foreman run --workflow quick      # Run all dispatched tasks with the quick workflow
+FOREMAN_BACKEND=node foreman run --workflow tdd        # Opt into Red/Test Review before Developer
+FOREMAN_BACKEND=node foreman run --model anthropic/claude-opus-4-6  # Force a specific model
 ```
 
 | Option | Default | Description |
@@ -354,7 +354,7 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman runs`
 
-Operator traceability dashboard for active Foreman runs. Lists pending/running runs with task ID, phase, elapsed time, last activity, and stuck/fatal indicators. Makes scheduler/worker activity observable even when inbox messages are sparse.
+Operator traceability dashboard for active Foreman runs. In Elixir mode this reads Elixir run projections directly; legacy Node fallback requires `FOREMAN_RUNS_NODE_FALLBACK=true`. Lists pending/running runs with task ID, phase, elapsed time, last activity, and stuck/fatal indicators.
 
 ```bash
 foreman runs                              # List active runs
@@ -567,17 +567,17 @@ Elixir backend roles: the **Node CLI** parses commands/renders projections, the 
 
 ### `foreman reset`
 
-Reset failed or stuck runs. By default this cleans up worktrees, deletes branches, and resets task status to a dispatchable state. Use `--preserve-worktree`/`--retry-failed-phase` for focused repair when you want to keep the current branch and worktree after a phase failure; preserved worktrees refresh their `.foreman/workflows` and `.foreman/prompts` from the project before redispatch.
+Legacy Node reset for failed/stuck runs. It mutates legacy run/task/merge-queue stores and is blocked in default Elixir mode; use Elixir-backed `retry`, `recover`, and task commands by default, or set `FOREMAN_BACKEND=node` for legacy cleanup.
 
 ```bash
-foreman reset                     # Reset all failed/stuck runs
-foreman reset --project my-project # Reset runs in a registered project without cd
-foreman reset --task bd-abc1      # Reset a specific task by ID
-foreman reset --all               # Reset ALL active runs (nuclear option)
-foreman reset --detect-stuck      # Find and reset stuck agents
-foreman reset --preserve-worktree --task bd-abc1  # Reset state but keep branch/worktree
-foreman reset --retry-failed-phase --task bd-abc1 # Alias for focused phase repair reset
-foreman reset --dry-run           # Preview what would be reset
+FOREMAN_BACKEND=node foreman reset                     # Reset all failed/stuck runs
+FOREMAN_BACKEND=node foreman reset --project my-project # Reset runs in a registered project without cd
+FOREMAN_BACKEND=node foreman reset --task bd-abc1      # Reset a specific task by ID
+FOREMAN_BACKEND=node foreman reset --all               # Reset ALL active runs (nuclear option)
+FOREMAN_BACKEND=node foreman reset --detect-stuck      # Find and reset stuck agents
+FOREMAN_BACKEND=node foreman reset --preserve-worktree --task bd-abc1  # Reset state but keep branch/worktree
+FOREMAN_BACKEND=node foreman reset --retry-failed-phase --task bd-abc1 # Alias for focused phase repair reset
+FOREMAN_BACKEND=node foreman reset --dry-run           # Preview what would be reset
 ```
 
 | Option | Default | Description |
@@ -613,14 +613,14 @@ foreman retry bd-abc1 --dry-run   # Preview
 
 ### `foreman stop`
 
-Gracefully stop running agents.
+Legacy Node stop for running agents. It uses legacy run stores/process metadata and is blocked in default Elixir mode; use Elixir-backed attach/recover/status flows by default, or set `FOREMAN_BACKEND=node` for legacy cleanup.
 
 ```bash
-foreman stop                      # Stop all running agents
-foreman stop bd-abc1              # Stop a specific task's agent
-foreman stop --list               # List active runs
-foreman stop --force              # Force kill with SIGKILL
-foreman stop --dry-run            # Preview
+FOREMAN_BACKEND=node foreman stop                      # Stop all running agents
+FOREMAN_BACKEND=node foreman stop bd-abc1              # Stop a specific task's agent
+FOREMAN_BACKEND=node foreman stop --list               # List active runs
+FOREMAN_BACKEND=node foreman stop --force              # Force kill with SIGKILL
+FOREMAN_BACKEND=node foreman stop --dry-run            # Preview
 ```
 
 | Option | Description |
@@ -635,17 +635,17 @@ foreman stop --dry-run            # Preview
 
 ### `foreman merge`
 
-Merge completed agent work into the target branch via the refinery. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`. If this final PR gate cannot authenticate to GitHub, Foreman writes a failing `MERGE_REPORT.md` instead of crashing the pipeline. If GitHub CLI PR merge authentication fails after the final gate, Foreman falls back to its direct VCS merge path for the same branch; if a PR was merged manually, the PR merge event marks the linked run and task as `merged` in projections.
+Legacy Node Refinery merge queue. In default Elixir mode, merge/PR state is handled by the Elixir scheduler/finalize workflow; set `FOREMAN_BACKEND=node` for explicit legacy merge operations.
 
 ```bash
-foreman merge                     # Process merge queue
-foreman merge --task bd-abc1      # Merge a specific task by ID
-foreman merge --list              # List tasks ready to merge
-foreman merge --dry-run           # Preview merge operations
-foreman merge --target-branch dev # Merge into dev instead of main
-foreman merge --no-tests          # Skip test validation
-foreman merge --stats             # Show merge cost statistics
-foreman merge --stats weekly      # Weekly cost breakdown
+FOREMAN_BACKEND=node foreman merge                     # Process merge queue
+FOREMAN_BACKEND=node foreman merge --task bd-abc1      # Merge a specific task by ID
+FOREMAN_BACKEND=node foreman merge --list              # List tasks ready to merge
+FOREMAN_BACKEND=node foreman merge --dry-run           # Preview merge operations
+FOREMAN_BACKEND=node foreman merge --target-branch dev # Merge into dev instead of main
+FOREMAN_BACKEND=node foreman merge --no-tests          # Skip test validation
+FOREMAN_BACKEND=node foreman merge --stats             # Show merge cost statistics
+FOREMAN_BACKEND=node foreman merge --stats weekly      # Weekly cost breakdown
 ```
 
 | Option | Default | Description |
@@ -665,12 +665,12 @@ foreman merge --stats weekly      # Weekly cost breakdown
 
 ### `foreman pr`
 
-Create GitHub pull requests for completed work.
+Legacy Node Refinery PR creation. In default Elixir mode, PR state is handled by the Elixir scheduler/finalize workflow; set `FOREMAN_BACKEND=node` for explicit legacy PR creation.
 
 ```bash
-foreman pr                        # Create PRs for all completed tasks
-foreman pr --draft                # Create as draft PRs
-foreman pr --base-branch dev      # PR against dev instead of main
+FOREMAN_BACKEND=node foreman pr                        # Create PRs for all completed tasks
+FOREMAN_BACKEND=node foreman pr --draft                # Create as draft PRs
+FOREMAN_BACKEND=node foreman pr --base-branch dev      # PR against dev instead of main
 ```
 
 | Option | Default | Description |
@@ -893,7 +893,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman watch` and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Legacy-only paths such as `foreman sling`, default `foreman plan <description>`, `foreman issue` Postgres sync commands, and metrics cost mode fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Legacy-only paths such as `foreman run`, `foreman reset`, `foreman stop`, `foreman merge`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, `foreman issue` Postgres sync commands, and metrics cost mode fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land.
 
 ---
 

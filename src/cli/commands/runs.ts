@@ -23,6 +23,7 @@ import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { elapsed } from "../watch-ui.js";
 import { getLastPiActivity } from "./status.js";
 import {
+  listRegisteredProjects,
   resolveRepoRootProjectPath,
   requireProjectOrAllInMultiMode,
 } from "./project-task-support.js";
@@ -326,33 +327,50 @@ export const runsCommand = new Command("runs")
   }) => {
     await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
 
-    const projectPath = await resolveRepoRootProjectPath({
-      project: opts.project,
-      projectPath: opts.projectPath,
-    });
-
-    const store = ForemanStore.forProject(projectPath);
-    const project = store.getProjectByPath(projectPath);
-
-    if (!project) {
-      console.error(chalk.red(`Project at '${projectPath}' is not registered. Run 'foreman init' first.`));
-      store.close();
-      process.exit(1);
-    }
+    const useElixirRuns = foremanBackendMode() === "elixir" && process.env.FOREMAN_RUNS_NODE_FALLBACK !== "true";
+    const skipProjectResolution = useElixirRuns && opts.all && !opts.project && !opts.projectPath;
+    const projectPath = skipProjectResolution
+      ? process.cwd()
+      : await resolveRepoRootProjectPath({
+          project: opts.project,
+          projectPath: opts.projectPath,
+        });
 
     let rows: RunRow[] = [];
-    try {
-      if (foremanBackendMode() === "elixir" && process.env.FOREMAN_RUNS_NODE_FALLBACK !== "true") {
-        const manager = new ElixirServerManager();
-        const status = await manager.ensureRunning();
-        if (!status.running) {
-          throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
-        }
-        const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
-        const elixirRuns = (await client.listRuns(project.id)).filter((run) => opts.all || isElixirActiveRun(run));
-        const visibleRuns = opts.stuck ? elixirRuns.filter(isElixirStuckRun) : elixirRuns;
-        rows = visibleRuns.map(elixirRunToRow);
-      } else {
+    if (useElixirRuns) {
+      const projects = await listRegisteredProjects();
+      const registered = skipProjectResolution
+        ? undefined
+        : opts.project
+          ? projects.find((project) => project.id === opts.project || project.name === opts.project || project.path === projectPath)
+          : opts.projectPath
+            ? projects.find((project) => project.path === projectPath)
+            : projects.find((project) => project.path === projectPath);
+      if (!registered && !(opts.all && !opts.project && !opts.projectPath)) {
+        console.error(chalk.red(`Project at '${projectPath}' is not registered in Elixir. Run 'foreman project add' first.`));
+        process.exit(1);
+      }
+
+      const manager = new ElixirServerManager();
+      const status = await manager.ensureRunning();
+      if (!status.running) {
+        throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+      }
+      const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+      const elixirRuns = (await client.listRuns(registered?.id)).filter((run) => opts.all || isElixirActiveRun(run));
+      const visibleRuns = opts.stuck ? elixirRuns.filter(isElixirStuckRun) : elixirRuns;
+      rows = visibleRuns.map(elixirRunToRow);
+    } else {
+      const store = ForemanStore.forProject(projectPath);
+      const project = store.getProjectByPath(projectPath);
+
+      if (!project) {
+        console.error(chalk.red(`Project at '${projectPath}' is not registered. Run 'foreman init' first.`));
+        store.close();
+        process.exit(1);
+      }
+
+      try {
         const allRuns = opts.all
           ? store.getRunsByStatuses(
               ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created"],
@@ -367,9 +385,9 @@ export const runsCommand = new Command("runs")
 
         const activeRuns = opts.stuck ? filterStuckRuns(allRuns, progressByRunId) : allRuns;
         rows = await Promise.all(activeRuns.map((run) => nodeRunToRow(run, progressByRunId.get(run.id) ?? null)));
+      } finally {
+        store.close();
       }
-    } finally {
-      store.close();
     }
 
     if (opts.json) {

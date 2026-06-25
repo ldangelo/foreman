@@ -52,9 +52,11 @@ async function runCommand(args: string[] = []): Promise<void> {
 }
 
 describe("pr command registered context", () => {
+  const originalBackend = process.env["FOREMAN_BACKEND"];
   let exitCalled = false;
 
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
     exitCalled = false;
 
@@ -76,6 +78,8 @@ describe("pr command registered context", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     vi.restoreAllMocks();
   });
 

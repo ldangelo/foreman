@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
@@ -14,6 +15,12 @@ export const prCommand = new Command("pr")
   .option("--draft", "Create draft PRs")
   .action(async (opts) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        console.error(chalk.red("foreman pr uses the legacy Refinery PR path. Let the Elixir scheduler/finalize workflow handle PR state, or set FOREMAN_BACKEND=node for legacy PR creation."));
+        process.exitCode = 1;
+        return;
+      }
+
       const projectPath = await resolveRepoRootProjectPath({});
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);

@@ -91,22 +91,22 @@ Docs that must be considered for every fix or feature:
 
 ## Day-to-Day Workflow
 
-### 1. Start or Check the Daemon
+### 1. Start or Check the Elixir Server
 
-Foreman uses PostgreSQL and usually runs through the daemon for shared project state.
+Foreman uses the Elixir server for shared project state and scheduling by default after cutover.
 
 ```bash
-foreman daemon status
-foreman daemon start
+foreman server status
+foreman server start
+foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
 foreman doctor
 ```
 
-If commands report daemon or database issues, run `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
+If commands report server or database issues, run `foreman server doctor` / `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
 
-Elixir backend work uses a separate local server. Elixir is the default backend after cutover; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
+Legacy Node daemon operation is explicit only: set `FOREMAN_BACKEND=node` before `foreman daemon start|restart` or other daemon-backed commands. Default Elixir mode blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
 
 ```bash
-foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
 foreman server stop
 ```
 
@@ -190,21 +190,20 @@ foreman task approve <task-id>
 ### 6. Dispatch Work
 
 ```bash
-foreman run --project my-project
+foreman server start              # Elixir scheduler claims approved tasks
 ```
 
-Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers stay queued until the blocker closes. The daemon uses the same queue and writes dispatch/skip summaries to its logs so stalled cycles are diagnosable.
-
-Useful variants:
+Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers stay queued until the blocker closes. In default Elixir mode the server scheduler owns dispatch. The legacy Node dispatcher is still available for explicit legacy operation only:
 
 ```bash
-foreman run --bead <task-id>      # Dispatch one task
-foreman run --max-agents 2        # Limit concurrency
-foreman run --dry-run             # Preview dispatch
-foreman run --no-watch            # Dispatch and exit
-foreman run --yes                 # Auto-confirm run prompts for scripts/non-interactive use
-foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
-foreman run --workflow tdd        # Opt into Red/Test Review before Developer
+FOREMAN_BACKEND=node foreman run --project my-project
+FOREMAN_BACKEND=node foreman run --bead <task-id>      # Dispatch one task
+FOREMAN_BACKEND=node foreman run --max-agents 2        # Limit concurrency
+FOREMAN_BACKEND=node foreman run --dry-run             # Preview dispatch
+FOREMAN_BACKEND=node foreman run --no-watch            # Dispatch and exit
+FOREMAN_BACKEND=node foreman run --yes                 # Auto-confirm run prompts for scripts/non-interactive use
+FOREMAN_BACKEND=node foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
+FOREMAN_BACKEND=node foreman run --workflow tdd        # Opt into Red/Test Review before Developer
 ```
 
 Bundled `default`, `feature`, and `bug` workflows now use the fast path by default: Explorer/fix hands off directly to Developer, then QA/review/finalize validate the patch. TDD is opt-in via `--workflow tdd`, `workflow:tdd`, or task type `tdd`; that workflow inserts `test-red` and `test-review` before Developer, caps Red to a few focused tests, and retries Red once. Provider-backed prompt phases opt into cooldown retry for transient rate-limit/overload errors. Prompt-backed phases also enable phase overwatch: Foreman tracks tool calls, validates required reports, blocks known drift patterns such as Developer test runs or QA broad full-suite commands, steers runaway work through blocked tool-call messages, treats valid-artifact stop instructions as non-error terminal guidance, and can continue after a max-turn stop when the required artifact is already valid. QA/finalize own test execution. Developer docs gates now accept either a real docs diff or explicit self-check evidence explaining why no docs change is needed. Optional `FOREMAN_MAX_PIPELINE_*` budgets can still stop runaway wall-clock, cost, tool-call, or retry/review loops.
@@ -223,7 +222,7 @@ foreman metrics
 FOREMAN_BACKEND=node foreman metrics --costs --since 2026-06-01
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman task create|list|show|approve|update|note|close` for scriptable Elixir-backed task management; created tasks use the standard compact project-prefixed ID format and appear on the board. Legacy task generators such as `foreman sling`, default `foreman plan <description>`, and `foreman issue` Postgres sync require `FOREMAN_BACKEND=node`; use Elixir-backed `task`, `project`, `plan prd/trd`, and `jira` flows by default. Use `foreman inbox --task <id>` for Elixir-backed run messages plus current lifecycle/terminal events; `inbox send` records operator-to-worker messages in the Elixir inbox stream, and `--ack` records Elixir read markers. Use `foreman attach --list|--stream|--worktree` for Elixir-backed run/session inspection, or default attach to request and resume an exposed Pi session. Use `foreman status`, `foreman status --live`, or `foreman watch` when you need Elixir-backed execution health and active run state. Use `foreman runs` to see a traceability dashboard listing all active runs with their phase, elapsed time, last activity, and stuck/fatal indicators — useful for observing scheduler/worker activity even when inbox messages are sparse. Add `--verbose` to show cost, turns, and log/report paths; add `--stuck` to filter to likely-stuck runs. Use `foreman metrics` for a per-phase pipeline observability view showing pass/fail rates, retry counts, average turns/cost, top failure reasons, stuck tasks by reason, recent bottlenecks, aggregate retry attempts, circuit breaker hits, QA environment-blocked outcomes, and blocked retry reasons by phase; add `--json` for `counters.circuit_breaker_hits`, `counters.qa_environment_blocked`, and `retry_details` fields; set `FOREMAN_BACKEND=node` with `--costs` or cost filters such as `--since`, `--phase`, `--agent`, or `--task-type` to view legacy task-store cost/token metrics in human-readable, `--json`, or `--compact` form. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-logs [run-id]`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
+Use `foreman board` for kanban-style task triage. Use `foreman task create|list|show|approve|update|note|close` for scriptable Elixir-backed task management; created tasks use the standard compact project-prefixed ID format and appear on the board. Legacy dispatcher/destructive/manual queue paths such as `foreman run`, `foreman reset`, `foreman stop`, `foreman merge`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, and `foreman issue` Postgres sync require `FOREMAN_BACKEND=node`; use Elixir-backed `server`, `task`, `project`, `plan prd/trd`, `retry`, `recover`, and `jira` flows by default. Use `foreman inbox --task <id>` for Elixir-backed run messages plus current lifecycle/terminal events; `inbox send` records operator-to-worker messages in the Elixir inbox stream, and `--ack` records Elixir read markers. Use `foreman attach --list|--stream|--worktree` for Elixir-backed run/session inspection, or default attach to request and resume an exposed Pi session. Use `foreman status`, `foreman status --live`, or `foreman watch` when you need Elixir-backed execution health and active run state. Use `foreman runs` to see a traceability dashboard listing all active runs with their phase, elapsed time, last activity, and stuck/fatal indicators — useful for observing scheduler/worker activity even when inbox messages are sparse. Add `--verbose` to show cost, turns, and log/report paths; add `--stuck` to filter to likely-stuck runs. Use `foreman metrics` for a per-phase pipeline observability view showing pass/fail rates, retry counts, average turns/cost, top failure reasons, stuck tasks by reason, recent bottlenecks, aggregate retry attempts, circuit breaker hits, QA environment-blocked outcomes, and blocked retry reasons by phase; add `--json` for `counters.circuit_breaker_hits`, `counters.qa_environment_blocked`, and `retry_details` fields; set `FOREMAN_BACKEND=node` with `--costs` or cost filters such as `--since`, `--phase`, `--agent`, or `--task-type` to view legacy task-store cost/token metrics in human-readable, `--json`, or `--compact` form. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-logs [run-id]`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. For stuck runs in Elixir mode, inspect `status`/`runs`, then use `foreman recover` or `foreman retry`; legacy stuck detection/reset requires `FOREMAN_BACKEND=node foreman reset --detect-stuck`.
 
 
 ### 8. Triage Failures
@@ -239,7 +238,7 @@ Recommended order:
 
 ```bash
 foreman logs <run-id>
-foreman reset --bead <task-id> --dry-run
+FOREMAN_BACKEND=node foreman reset --bead <task-id> --dry-run
 foreman retry <task-id> --dispatch
 ```
 
@@ -252,8 +251,9 @@ Developer and QA phases are intentionally handoff-driven. Explorer performs code
 Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If the final gate cannot authenticate to GitHub, Foreman writes a failing `MERGE_REPORT.md`; if only `gh pr merge` authentication fails after the gate, Foreman falls back to its direct VCS merge path for the same branch. If an operator merges the PR manually, the PR merge event updates the linked run and task to `merged`. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
 
 ```bash
-foreman merge
-foreman pr
+# Default Elixir mode: merge/PR state is handled by finalize workflow phases.
+FOREMAN_BACKEND=node foreman merge
+FOREMAN_BACKEND=node foreman pr
 ```
 
 ## Operating the Board
@@ -283,8 +283,8 @@ The board also monitors agent inbox updates and task `updated_at` changes. When 
 Use retry/reset surgically.
 
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun. In Elixir mode this records task/run retry events and lets the scheduler pick up the ready task on its next tick.
-- Use `foreman reset --bead <task-id>` to clear failed/stuck run state and make the task retryable.
-- Use `foreman reset --bead <task-id> --preserve-worktree` (or `--retry-failed-phase`) when a repair should keep the failed run's branch/worktree instead of starting from a clean checkout. Preserved worktrees refresh `.foreman/workflows` and `.foreman/prompts` from the project before the next dispatch.
+- Use `foreman retry <task-id>` to clear Elixir failed/stuck task state and make the task retryable.
+- Use `FOREMAN_BACKEND=node foreman reset --bead <task-id> --preserve-worktree` (or `--retry-failed-phase`) only for legacy cleanup when a repair should keep the failed run's branch/worktree instead of starting from a clean checkout. Preserved worktrees refresh `.foreman/workflows` and `.foreman/prompts` from the project before the next dispatch.
 - Use `--dry-run` before destructive cleanup.
 - Do not reset active work with uncommitted controller changes unless those changes are committed or exported.
 

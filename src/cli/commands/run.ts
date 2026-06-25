@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import chalk from "chalk";
 
 import { BvClient } from "../../lib/bv.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
@@ -594,6 +595,12 @@ export const runCommand = new Command("run")
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
     const runtimeMode = resolveRuntimeMode(opts.runtimeMode as string | undefined);
     const assumeYes = opts.yes === true;
+
+    if (foremanBackendMode() === "elixir") {
+      console.error(chalk.red("foreman run uses the legacy Node dispatcher. In Elixir mode, start/use the Elixir scheduler with 'foreman server start' (or MCP /foreman-tick), or set FOREMAN_BACKEND=node for the legacy dispatcher."));
+      process.exitCode = 1;
+      return;
+    }
 
     // P1: Parse stagger delay for preventing thundering herd on Haiku quotas
     // Accept formats like "30s", "1m", "2m30s"
