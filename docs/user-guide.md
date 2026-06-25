@@ -24,12 +24,13 @@ Common commands:
 
 ```bash
 foreman init --name my-project
+foreman project add owner/repo --name my-project
 foreman project list
 foreman project edit <project-id> --default-branch dev
 foreman status --project my-project
 ```
 
-The project default branch is the base for newly created task worktrees and finalization targets. In Elixir mode, `foreman project list`, `edit`, and `remove` read/write the Elixir project projection; `remove` archives the project.
+The project default branch is the base for newly created task worktrees and finalization targets. In Elixir mode, `foreman project add` clones with GitHub CLI into `~/.foreman/projects/<project-id>` and registers through Elixir; `list`, `edit`, and `remove` read/write the Elixir project projection; `remove` archives the project.
 
 ### Tasks
 

@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { listProjects, sendCommand, ensureRunning } = vi.hoisted(() => ({
+const { listProjects, sendCommand, ensureRunning, checkAuth, getRepoMetadata, repoClone } = vi.hoisted(() => ({
   listProjects: vi.fn(),
   sendCommand: vi.fn(),
   ensureRunning: vi.fn(),
+  checkAuth: vi.fn(),
+  getRepoMetadata: vi.fn(),
+  repoClone: vi.fn(),
 }));
 
 vi.mock("../../lib/backend-mode.js", () => ({
@@ -28,6 +31,15 @@ vi.mock("../../lib/trpc-client.js", () => ({
   }),
 }));
 
+vi.mock("../../lib/gh-cli.js", () => ({
+  GhCli: vi.fn(function MockGhCli() {
+    return { checkAuth, getRepoMetadata, repoClone };
+  }),
+  GhError: class GhError extends Error {},
+  GhNotAuthenticatedError: class GhNotAuthenticatedError extends Error {},
+  GhNotInstalledError: class GhNotInstalledError extends Error {},
+}));
+
 describe("foreman project Elixir backend parity", () => {
   let originalLog: typeof console.log;
   let originalError: typeof console.error;
@@ -38,6 +50,9 @@ describe("foreman project Elixir backend parity", () => {
     listProjects.mockReset();
     sendCommand.mockReset();
     ensureRunning.mockReset().mockResolvedValue({ running: true, url: "http://127.0.0.1:4766" });
+    checkAuth.mockReset().mockResolvedValue(undefined);
+    getRepoMetadata.mockReset().mockResolvedValue({ defaultBranch: "main", visibility: "public", fullName: "owner/repo" });
+    repoClone.mockReset().mockResolvedValue(undefined);
     originalLog = console.log;
     originalError = console.error;
     originalExit = process.exit;
@@ -69,6 +84,28 @@ describe("foreman project Elixir backend parity", () => {
     expect(output).toContain("Projects (1)");
     expect(output).toContain("Alpha");
     expect(output).not.toContain("beta");
+  });
+
+  it("adds projects through Elixir commands after cloning", async () => {
+    sendCommand.mockResolvedValue({ ok: true, events: ["event-1"], projection_version: 1, correlation_id: "corr" });
+
+    const { projectCommand } = await import("../commands/project.js");
+    await projectCommand.parseAsync(["add", "owner/repo", "--name", "Display", "--default-branch", "dev"], { from: "user" });
+
+    expect(checkAuth).toHaveBeenCalledOnce();
+    expect(getRepoMetadata).toHaveBeenCalledWith("owner", "repo");
+    expect(repoClone).toHaveBeenCalledWith("owner/repo", expect.stringMatching(/\.foreman\/projects\/display-[a-f0-9]{5}$/));
+    expect(sendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "project.register",
+      payload: expect.objectContaining({
+        project_id: expect.stringMatching(/^display-[a-f0-9]{5}$/),
+        name: "Display",
+        path: expect.stringMatching(/\.foreman\/projects\/display-[a-f0-9]{5}$/),
+        github_url: "owner/repo",
+        default_branch: "dev",
+        status: "active",
+      }),
+    }));
   });
 
   it("updates and archives projects through Elixir commands", async () => {

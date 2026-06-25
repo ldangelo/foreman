@@ -11,7 +11,9 @@
  * @module src/cli/commands/project
  */
 import chalk from "chalk";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { homedir } from "node:os";
+import { mkdir } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
@@ -19,6 +21,12 @@ import { encrypt } from "../../lib/encryption.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerClient, type ElixirProject } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import {
+  GhCli,
+  GhError,
+  GhNotAuthenticatedError,
+  GhNotInstalledError,
+} from "../../lib/gh-cli.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,8 +51,20 @@ interface ProjectRow {
   github_url?: string | null;
 }
 
+interface ProjectAddInput {
+  githubUrl: string;
+  name?: string;
+  defaultBranch?: string;
+  status?: "active" | "paused" | "archived";
+}
+
+interface ProjectAddResult extends ProjectRow {
+  default_branch?: string | null;
+}
+
 interface ProjectCommandClient {
   backend: "node" | "elixir";
+  add(input: ProjectAddInput): Promise<ProjectAddResult>;
   list(input?: { status?: "active" | "paused" | "archived"; search?: string }): Promise<ProjectRow[]>;
   update(id: string, updates: Record<string, unknown>): Promise<void>;
   remove(id: string, force?: boolean): Promise<void>;
@@ -87,6 +107,112 @@ function printProjectTable(projects: ProjectRow[], label?: string): void {
   }
 }
 
+function generateProjectId(name: string): string {
+  const normalized = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-+/g, "-");
+
+  const hex5 = randomBytes(3).toString("hex").slice(0, 5);
+  return `${normalized || "project"}-${hex5}`;
+}
+
+function parseGitHubUrl(url: string): { owner: string; repo: string } {
+  const httpsMatch = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/.]+)/i);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1]!, repo: httpsMatch[2]!.replace(/\.git$/, "") };
+  }
+
+  const sshMatch = url.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return { owner: sshMatch[1]!, repo: sshMatch[2]! };
+  }
+
+  const shortcutMatch = url.match(/^([^/]+)\/(.+)$/);
+  if (shortcutMatch) {
+    return { owner: shortcutMatch[1]!, repo: shortcutMatch[2]! };
+  }
+
+  throw new Error(
+    `Invalid GitHub URL '${url}'. Expected formats: "owner/repo", "https://github.com/owner/repo", or "git@github.com:owner/repo"`,
+  );
+}
+
+function toRepoKey(owner: string, repo: string): string {
+  return `${owner}/${repo}`.toLowerCase();
+}
+
+async function addElixirProject(
+  client: ElixirServerClient,
+  input: ProjectAddInput,
+): Promise<ProjectAddResult> {
+  const gh = new GhCli();
+
+  try {
+    await gh.checkAuth();
+  } catch (err) {
+    if (err instanceof GhNotInstalledError) {
+      throw new Error("GitHub CLI (gh) is required but not installed. Install it from https://cli.github.com");
+    }
+    if (err instanceof GhNotAuthenticatedError) {
+      throw new Error(`${err.message}. Run 'gh auth login' first.`);
+    }
+    throw err;
+  }
+
+  const parsed = parseGitHubUrl(input.githubUrl);
+  const repoKey = toRepoKey(parsed.owner, parsed.repo);
+  let defaultBranch = input.defaultBranch ?? "main";
+  let displayName = input.name ?? parsed.repo;
+
+  try {
+    const meta = await gh.getRepoMetadata(parsed.owner, parsed.repo);
+    defaultBranch = input.defaultBranch ?? meta.defaultBranch;
+    displayName = input.name ?? parsed.repo;
+  } catch (err) {
+    if (err instanceof GhError) {
+      throw new Error(`Failed to fetch repository metadata for '${input.githubUrl}': ${err.message}`);
+    }
+    throw err;
+  }
+
+  const projectId = generateProjectId(displayName);
+  const clonePath = join(homedir(), ".foreman", "projects", projectId);
+  await mkdir(join(homedir(), ".foreman", "projects"), { recursive: true });
+
+  try {
+    await gh.repoClone(input.githubUrl, clonePath);
+  } catch (err) {
+    if (err instanceof GhNotAuthenticatedError) {
+      throw new Error(`GitHub authentication required to clone '${input.githubUrl}'. Run 'gh auth login' first.`);
+    }
+    if (err instanceof GhError) {
+      throw new Error(`Failed to clone repository '${input.githubUrl}': ${err.message}`);
+    }
+    throw err;
+  }
+
+  await sendElixirProjectCommand(client, "project.register", {
+    project_id: projectId,
+    name: displayName,
+    path: clonePath,
+    github_url: input.githubUrl,
+    default_branch: defaultBranch,
+    status: input.status ?? "active",
+    config: { repo_key: repoKey },
+  });
+
+  return {
+    id: projectId,
+    name: displayName,
+    path: clonePath,
+    github_url: input.githubUrl,
+    default_branch: defaultBranch,
+    status: input.status ?? "active",
+  };
+}
+
 function rowFromElixirProject(project: ElixirProject): ProjectRow {
   const id = project.project_id ?? project.id ?? "unknown";
   return {
@@ -122,6 +248,7 @@ async function getProjectClient(): Promise<ProjectCommandClient> {
     const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
     return {
       backend: "elixir",
+      add: (input) => addElixirProject(client, input),
       async list(input = {}) {
         let rows = (await client.listProjects()).map(rowFromElixirProject);
         if (input.status) rows = rows.filter((project) => project.status === input.status);
@@ -146,6 +273,7 @@ async function getProjectClient(): Promise<ProjectCommandClient> {
   const client = createTrpcClient();
   return {
     backend: "node",
+    add: (input) => client.projects.add(input) as Promise<ProjectAddResult>,
     list: (input) => client.projects.list(input) as Promise<ProjectRow[]>,
     update: async (id, updates) => {
       await client.projects.update({ id, updates });
@@ -240,26 +368,14 @@ const addCommand = new Command("add")
   .option("--jira-webhook-enabled", "Enable webhook-based triggers")
   .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
   .action(async (githubUrl: string, opts) => {
-    if (foremanBackendMode() === "elixir") {
-      console.error(
-        chalk.red("Error: Elixir backend parity gap: 'foreman project add' still requires the legacy Node daemon clone/register flow. Set FOREMAN_BACKEND=node for explicit legacy operation."),
-      );
-      process.exit(1);
-    }
-
-    const client = createTrpcClient();
     try {
-      const result = (await client.projects.add({
+      const client = await getProjectClient();
+      const result = await client.add({
         githubUrl,
         name: opts.name,
         defaultBranch: opts.defaultBranch,
         status: opts.status as "active" | "paused" | "archived",
-      })) as {
-        id: string;
-        name: string;
-        path: string | null;
-        default_branch: string | null;
-      };
+      });
       console.log(
         chalk.green(
           `✓ Project '${result.name}' added as '${result.id}'`
@@ -277,10 +393,7 @@ const addCommand = new Command("add")
       // Apply Jira configuration if provided
       const jiraUpdates = await buildJiraUpdates(opts);
       if (jiraUpdates) {
-        await client.projects.update({
-          id: result.id,
-          updates: { jira: jiraUpdates },
-        });
+        await client.update(result.id, { jira: jiraUpdates });
         console.log(chalk.dim("  Jira: configured"));
       }
     } catch (err) {
