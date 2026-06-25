@@ -240,6 +240,8 @@ defmodule ForemanServer.ProjectionStore do
       |> maybe_put(:planning_kind, Map.get(payload, :planning_kind))
       |> maybe_put(:planning_phase_id, Map.get(payload, :planning_phase_id))
       |> maybe_put(:trace_event_id, Map.get(payload, :trace_event_id))
+      |> maybe_put(:workflow, Map.get(payload, :workflow))
+      |> maybe_put(:labels, Map.get(payload, :labels))
 
     put_in(projection, [:tasks, task_id], task)
   end

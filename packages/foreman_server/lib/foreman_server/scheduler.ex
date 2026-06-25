@@ -225,7 +225,7 @@ defmodule ForemanServer.Scheduler do
   end
 
   defp workflow_path(task) do
-    workflow = Map.get(task, :workflow) || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
+    workflow = workflow_name(task)
 
     with {:ok, project_path} <- task_project_path(task) do
       project_workflow = Path.join([project_path, ".foreman", "workflows", "#{workflow}.yaml"])
@@ -237,6 +237,19 @@ defmodule ForemanServer.Scheduler do
         true -> {:error, :workflow_not_found}
       end
     end
+  end
+
+  defp workflow_name(task) do
+    label_workflow =
+      task
+      |> Map.get(:labels, [])
+      |> List.wrap()
+      |> Enum.find_value(fn
+        "workflow:" <> workflow when workflow != "" -> workflow
+        _ -> nil
+      end)
+
+    Map.get(task, :workflow) || label_workflow || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
   end
 
   defp task_project_path(task) do

@@ -176,7 +176,9 @@ defmodule ForemanServer.CommandRouter do
          planning_run_id: Map.get(payload, :planning_run_id),
          planning_kind: Map.get(payload, :planning_kind),
          planning_phase_id: Map.get(payload, :planning_phase_id),
-         trace_event_id: Map.get(payload, :trace_event_id)
+         trace_event_id: Map.get(payload, :trace_event_id),
+         workflow: Map.get(payload, :workflow),
+         labels: Map.get(payload, :labels, [])
        }, "task:#{task_id}"}
     else
       command_accepted("task.create", payload)

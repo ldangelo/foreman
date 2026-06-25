@@ -230,7 +230,7 @@ export async function fetchStatusCounts(projectPath: string): Promise<StatusCoun
   if (foremanBackendMode() === "elixir") {
     try {
       const snapshot = await fetchElixirStatusSnapshot(projectPath);
-      if (snapshot && (snapshot.counts.total > 0 || snapshot.activeRuns.length > 0)) return snapshot.counts;
+      if (snapshot) return snapshot.counts;
     } catch {
       // Fall back to daemon/project-local status when the Elixir read endpoint is unavailable.
     }
@@ -616,7 +616,7 @@ export const statusCommand = new Command("status")
           if (foremanBackendMode() === "elixir") {
             try {
               const elixirSnapshot = await fetchElixirStatusSnapshot(projectPath);
-              if (elixirSnapshot && (elixirSnapshot.counts.total > 0 || elixirSnapshot.activeRuns.length > 0)) {
+              if (elixirSnapshot) {
                 process.stdout.write("\x1B[2J\x1B[H");
                 console.log(chalk.bold("Project Status") + chalk.dim(`  (Elixir live view every ${seconds}s — Ctrl+C to stop)\n`));
                 await renderStatus(projectPath);

@@ -45,6 +45,8 @@ import { renderWatch } from "./render.js";
 import { approveTask, retryTask } from "./actions.js";
 import { printDeprecationNotice } from "../cli-output.js";
 import { foremanBackendMode } from "../../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirEvent, type ElixirInboxMessage, type ElixirRun, type ElixirTask } from "../../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../../lib/elixir-server-manager.js";
 
 /**
  * `foreman dashboard` is a deprecated alias of `foreman watch`. When the
@@ -60,6 +62,105 @@ import { foremanBackendMode } from "../../../lib/backend-mode.js";
 export function maybePrintDashboardAliasNotice(argv: readonly string[] = process.argv): void {
   if (argv[2] === "dashboard") {
     printDeprecationNotice("foreman dashboard", "foreman watch");
+  }
+}
+
+function normalizeStatus(value: string | undefined): string {
+  return (value ?? "").toLowerCase().replaceAll("_", "-");
+}
+
+function activeElixirRuns(runs: ElixirRun[]): ElixirRun[] {
+  return runs.filter((run) => ["pending", "running"].includes(normalizeStatus(run.status)));
+}
+
+function renderElixirWatchSnapshot(input: {
+  projects: Array<{ project_id?: string; id?: string; name?: string }>;
+  tasks: ElixirTask[];
+  runs: ElixirRun[];
+  inbox: ElixirInboxMessage[];
+  events: ElixirEvent[];
+  options: WatchOptions;
+}): string {
+  const { projects, tasks, runs, inbox, events, options } = input;
+  const activeRuns = activeElixirRuns(runs);
+  const counts = tasks.reduce<Record<string, number>>((acc, task) => {
+    const status = normalizeStatus(task.status || "backlog");
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {});
+
+  const lines = [
+    `${chalk.bold.cyan("FOREMAN WATCH")} — ${chalk.bold("Elixir")}`,
+    chalk.dim("─".repeat(Math.min(process.stdout.columns || 120, 80))),
+    chalk.dim(`Projects: ${projects.map((project) => project.name || project.project_id || project.id).filter(Boolean).join(", ") || "—"}`),
+    "",
+    chalk.bold("Agents"),
+  ];
+
+  if (activeRuns.length === 0) {
+    lines.push(chalk.dim("  (no active runs)"));
+  } else {
+    for (const run of activeRuns.slice(0, 8)) {
+      lines.push(`  ${chalk.cyan(String(run.task_id || run.run_id || run.id))} ${chalk.yellow(String(run.status || "pending"))} ${chalk.dim(String(run.run_id || run.id || ""))}`);
+    }
+  }
+
+  if (!options.noBoard) {
+    lines.push("", chalk.bold("Board"));
+    lines.push(`  Total: ${tasks.length}  Ready: ${counts.ready || 0}  In progress: ${counts["in-progress"] || counts.running || 0}  Failed: ${counts.failed || counts.conflict || 0}  Closed: ${counts.closed || counts.merged || counts.completed || 0}`);
+  }
+
+  if (!options.noInbox) {
+    lines.push("", chalk.bold("Inbox"));
+    for (const msg of inbox.slice(0, options.inboxLimit)) {
+      lines.push(`  ${chalk.cyan(String(msg.run_id || "—"))} ${String(msg.type || msg.subject || msg.event_type || "message")}`);
+    }
+    if (inbox.length === 0) lines.push(chalk.dim("  (no messages)"));
+  }
+
+  if (!options.noEvents) {
+    lines.push("", chalk.bold("Events"));
+    for (const event of events.slice(0, options.eventsLimit)) {
+      lines.push(`  ${chalk.cyan(String(event.run_id || "—"))} ${String(event.type || event.event_type || "event")}`);
+    }
+    if (events.length === 0) lines.push(chalk.dim("  (no events)"));
+  }
+
+  lines.push("", chalk.dim(`Last updated: ${new Date().toLocaleTimeString()}  |  Ctrl+C to quit`));
+  return lines.join("\n");
+}
+
+async function renderElixirWatch(options: WatchOptions): Promise<void> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  let stopped = false;
+  const onSigint = () => {
+    stopped = true;
+    process.stdout.write("\x1b[?25h\n");
+  };
+  process.once("SIGINT", onSigint);
+  if (process.stdout.isTTY) process.stdout.write("\x1b[?25l");
+
+  try {
+    do {
+      const [projects, allTasks, allRuns, inbox, events] = await Promise.all([
+        client.listProjects(),
+        client.listTasks(),
+        client.listRuns(options.projectId),
+        options.noInbox ? Promise.resolve([]) : client.listInbox({ projectId: options.projectId, limit: options.inboxLimit }),
+        options.noEvents ? Promise.resolve([]) : client.listEvents({ projectId: options.projectId, limit: options.eventsLimit }),
+      ]);
+      const tasks = options.projectId ? allTasks.filter((task) => (task.project_id ?? options.projectId) === options.projectId) : allTasks;
+      const runs = options.projectId ? allRuns.filter((run) => (run.project_id ?? options.projectId) === options.projectId) : allRuns;
+      const display = renderElixirWatchSnapshot({ projects, tasks, runs, inbox, events, options });
+      process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
+      if (options.noWatch) break;
+      await new Promise((resolve) => setTimeout(resolve, options.refreshMs));
+    } while (!stopped);
+  } finally {
+    if (process.stdout.isTTY) process.stdout.write("\x1b[?25h");
+    process.off("SIGINT", onSigint);
   }
 }
 
@@ -87,12 +188,6 @@ export const watchCommand = new Command("watch")
     project?: string;
   }) => {
     maybePrintDashboardAliasNotice();
-
-    if (foremanBackendMode() === "elixir") {
-      console.error(chalk.red("Error: foreman watch is not supported by the Elixir backend yet."));
-      console.error(chalk.dim("Use 'foreman status --live' for the Elixir live view, or set FOREMAN_BACKEND=node for the legacy dashboard."));
-      process.exit(1);
-    }
 
     const projectPath = await resolveRepoRootProjectPath({ project: opts.project });
 
@@ -136,6 +231,11 @@ export const watchCommand = new Command("watch")
       noEvents,
       projectId,
     };
+
+    if (foremanBackendMode() === "elixir") {
+      await renderElixirWatch(options);
+      return;
+    }
 
     // Postgres-backed store is only still needed for inbox fallback.
     const store = noInbox ? null : ForemanStore.forProject(projectPath);
