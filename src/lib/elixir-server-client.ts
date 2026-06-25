@@ -91,6 +91,18 @@ export type ElixirEvent = Record<string, unknown> & {
   event_type?: string;
 };
 
+export type ElixirAttachResult = Record<string, unknown> & {
+  status?: "ready" | "unsupported" | string;
+  run_id?: string;
+  worker_id?: string;
+  phase_id?: string;
+  mode?: "interactive" | "streaming" | string;
+  session_id?: string;
+  reason?: string;
+  alternatives?: string[];
+  attach?: Record<string, unknown>;
+};
+
 export class ElixirServerClient {
   constructor(
     private readonly baseUrl: string,
@@ -195,6 +207,16 @@ export class ElixirServerClient {
   async getDebugTimeline(runId: string): Promise<unknown> {
     const body = await this.getJson<{ ok: true; debug: unknown }>(`/api/v1/runs/${encodeURIComponent(runId)}/debug`);
     return body.debug;
+  }
+
+  async getRunAttach(runId: string, workerId?: string): Promise<ElixirAttachResult> {
+    const params = new URLSearchParams();
+    if (workerId) params.set("worker_id", workerId);
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; attach: ElixirAttachResult }>(
+      `/api/v1/runs/${encodeURIComponent(runId)}/attach${query ? `?${query}` : ""}`,
+    );
+    return body.attach;
   }
 
   private async getJson<T>(path: string): Promise<T> {

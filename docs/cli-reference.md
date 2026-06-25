@@ -863,7 +863,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, and `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, and `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
 
 ---
 
@@ -871,7 +871,7 @@ Elixir is the default backend after cutover, so legacy delegation is disabled an
 
 ### `foreman attach`
 
-Attach to a running or completed agent session to inspect its state.
+Attach to a running or completed agent session to inspect its state. In Elixir mode, `--list`, `--stream`, and `--worktree` read Elixir projections; default attach records an attach request and resumes an exposed Pi session when the worker heartbeat includes one.
 
 ```bash
 foreman attach                    # Attach to latest session

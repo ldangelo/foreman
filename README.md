@@ -705,7 +705,7 @@ foreman debug task-abc --model sonnet   # Cheaper model for analysis
 ```
 
 ### `foreman attach`
-Attach to a running agent session for live interaction.
+Attach to a running agent session for live interaction. In Elixir mode, listing/stream/worktree use Elixir projections and default attach records an Elixir attach request before resuming an exposed Pi session.
 
 ```bash
 foreman attach <run-id>                 # Attach to a running session

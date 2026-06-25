@@ -60,6 +60,25 @@ describe("ElixirServerClient", () => {
     }));
   });
 
+  it("reads run attach requests from the Elixir server", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ ok: true, attach: { status: "ready", run_id: "run-1", session_id: "sess-1" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ElixirServerClient("http://127.0.0.1:4000", "secret");
+    await expect(client.getRunAttach("run-1", "worker-1")).resolves.toMatchObject({
+      status: "ready",
+      session_id: "sess-1",
+    });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.toString()).toBe("http://127.0.0.1:4000/api/v1/runs/run-1/attach?worker_id=worker-1");
+    expect(init.headers).toMatchObject({ authorization: "Bearer secret" });
+  });
+
   it("returns server error envelopes without throwing", async () => {
     vi.stubGlobal(
       "fetch",

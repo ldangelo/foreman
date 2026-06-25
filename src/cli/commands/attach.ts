@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { ForemanStore, type Run, type RunProgress, type Message } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { ElixirServerClient, type ElixirInboxMessage, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { resolveRepoRootProjectPath, listRegisteredProjects } from "./project-task-support.js";
 import { getWorkspacePath } from "../../lib/workspace-paths.js";
 
@@ -27,6 +30,12 @@ interface DaemonRunRow {
 
 interface DaemonAttachContext {
   client: ReturnType<typeof createTrpcClient>;
+  projectId: string;
+  projectPath: string;
+}
+
+interface ElixirAttachContext {
+  client: ElixirServerClient;
   projectId: string;
   projectPath: string;
 }
@@ -70,12 +79,30 @@ function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
 }
 
 async function resolveDaemonAttachContext(projectPath: string): Promise<DaemonAttachContext | null> {
+  if (foremanBackendMode() === "elixir") return null;
   try {
     const projects = await listRegisteredProjects();
     const project = projects.find((record) => record.path === projectPath);
     if (!project) return null;
     return {
       client: createTrpcClient(),
+      projectId: project.id,
+      projectPath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveElixirAttachContext(projectPath: string): Promise<ElixirAttachContext | null> {
+  if (foremanBackendMode() !== "elixir") return null;
+  try {
+    const projects = await listRegisteredProjects();
+    const project = projects.find((record) => record.path === projectPath);
+    if (!project) return null;
+    const manager = new ElixirServerManager();
+    return {
+      client: new ElixirServerClient(manager.url, manager.authToken),
       projectId: project.id,
       projectPath,
     };
@@ -102,6 +129,72 @@ function adaptDaemonMessage(row: DaemonMailMessage): Message {
     created_at: row.created_at,
     deleted_at: row.deleted_at,
   };
+}
+
+function adaptElixirRun(row: ElixirRun, projectPath: string): Run {
+  const runId = String(row.run_id ?? row.id ?? "");
+  const taskId = typeof row.task_id === "string" ? row.task_id : runId;
+  return {
+    id: runId,
+    project_id: typeof row.project_id === "string" ? row.project_id : "",
+    seed_id: taskId,
+    agent_type: typeof row.agent_type === "string" ? row.agent_type : "elixir",
+    session_key: typeof row.session_key === "string" ? row.session_key : null,
+    worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : getWorkspacePath(projectPath, taskId),
+    status: normalizeRunStatus(row.status),
+    started_at: typeof row.started_at === "string" ? row.started_at : null,
+    completed_at: typeof row.finished_at === "string" ? row.finished_at : null,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date(0).toISOString(),
+    progress: typeof row.progress === "string" ? row.progress : null,
+    base_branch: typeof row.base_branch === "string" ? row.base_branch : null,
+    merge_strategy: null,
+  };
+}
+
+function adaptElixirMessage(row: ElixirInboxMessage): Message {
+  const body = typeof row.body === "string" ? row.body : JSON.stringify(row);
+  return {
+    id: String(row.message_id ?? row.id ?? `${row.run_id ?? "run"}-${row.created_at ?? Date.now()}`),
+    run_id: String(row.run_id ?? ""),
+    sender_agent_type: typeof row.sender_agent_type === "string" ? row.sender_agent_type : String(row.sender ?? "agent"),
+    recipient_agent_type: typeof row.recipient_agent_type === "string" ? row.recipient_agent_type : String(row.recipient ?? "foreman"),
+    subject: typeof row.subject === "string" ? row.subject : String(row.event_type ?? "message"),
+    body,
+    read: row.unread === true ? 0 : 1,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date().toISOString(),
+    deleted_at: null,
+  };
+}
+
+function normalizeRunStatus(status: unknown): Run["status"] {
+  const value = typeof status === "string" ? status : "pending";
+  const statusMap: Record<string, Run["status"]> = {
+    pending: "pending",
+    queued: "pending",
+    in_progress: "running",
+    running: "running",
+    success: "completed",
+    completed: "completed",
+    failure: "failed",
+    failed: "failed",
+    blocked: "stuck",
+    stuck: "stuck",
+    cancelled: "reset",
+    canceled: "reset",
+    reset: "reset",
+    merged: "merged",
+    conflict: "conflict",
+  };
+  return statusMap[value] ?? "failed";
+}
+
+async function resolveElixirRun(context: ElixirAttachContext, id: string): Promise<Run | null> {
+  const runs = await context.client.listRuns(context.projectId);
+  const row = runs.find((run) => {
+    const runId = String(run.run_id ?? run.id ?? "");
+    return runId === id || runId.startsWith(id) || run.task_id === id;
+  });
+  return row ? adaptElixirRun(row, context.projectPath) : null;
 }
 
 // ── Exported action for testing ─────────────────────────────────────────
@@ -267,8 +360,15 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
 
 export async function listSessionsEnhancedDaemon(context: DaemonAttachContext): Promise<void> {
   const rows = await context.client.runs.list({ projectId: context.projectId, limit: 100 }) as DaemonRunRow[];
-  const allRuns = rows.map((row) => adaptDaemonRun(row, context.projectPath));
+  listRunRows(rows.map((row) => adaptDaemonRun(row, context.projectPath)));
+}
 
+export async function listSessionsEnhancedElixir(context: ElixirAttachContext): Promise<void> {
+  const rows = await context.client.listRuns(context.projectId);
+  listRunRows(rows.map((row) => adaptElixirRun(row, context.projectPath)));
+}
+
+function listRunRows(allRuns: Run[]): void {
   if (allRuns.length === 0) {
     console.log("No sessions found.");
     return;
@@ -494,6 +594,40 @@ async function handleStreamDaemon(
   signal?: AbortSignal,
   pollIntervalMs = 1000,
 ): Promise<number> {
+  return handleStreamRemote(
+    run,
+    signal,
+    pollIntervalMs,
+    async () => (await context.client.mail.list({ projectId: context.projectId, runId: run.id }) as DaemonMailMessage[]).map(adaptDaemonMessage),
+    async () => {
+      const latest = await context.client.runs.get({ runId: run.id }) as DaemonRunRow | null;
+      return latest ? adaptDaemonRun(latest, context.projectPath).status : null;
+    },
+  );
+}
+
+async function handleStreamElixir(
+  run: Run,
+  context: ElixirAttachContext,
+  signal?: AbortSignal,
+  pollIntervalMs = 1000,
+): Promise<number> {
+  return handleStreamRemote(
+    run,
+    signal,
+    pollIntervalMs,
+    async () => (await context.client.listInbox({ projectId: context.projectId, runId: run.id })).map(adaptElixirMessage),
+    async () => (await resolveElixirRun(context, run.id))?.status ?? null,
+  );
+}
+
+async function handleStreamRemote(
+  run: Run,
+  signal: AbortSignal | undefined,
+  pollIntervalMs: number,
+  listMessages: () => Promise<Message[]>,
+  getStatus: () => Promise<Run["status"] | null>,
+): Promise<number> {
   const terminalStatuses = new Set(["completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
 
   console.log(`Streaming agent mail for ${run.seed_id} [${run.id}] | Ctrl+C to stop`);
@@ -504,19 +638,15 @@ async function handleStreamDaemon(
   console.log();
 
   const seenIds = new Set<string>();
-  const existing = await context.client.mail.list({ projectId: context.projectId, runId: run.id }) as DaemonMailMessage[];
-  for (const msg of existing.map(adaptDaemonMessage)) {
+  for (const msg of await listMessages()) {
     seenIds.add(msg.id);
     printMessage(msg);
   }
 
-  const currentRun = await context.client.runs.get({ runId: run.id }) as DaemonRunRow | null;
-  if (currentRun) {
-    const adapted = adaptDaemonRun(currentRun, context.projectPath);
-    if (terminalStatuses.has(adapted.status)) {
-      console.log(`\nRun ${run.seed_id} is already ${adapted.status}.`);
-      return 0;
-    }
+  const currentStatus = await getStatus();
+  if (currentStatus && terminalStatuses.has(currentStatus)) {
+    console.log(`\nRun ${run.seed_id} is already ${currentStatus}.`);
+    return 0;
   }
 
   return new Promise<number>((resolve) => {
@@ -535,21 +665,17 @@ async function handleStreamDaemon(
 
     const poll = () => {
       void (async () => {
-        const messages = await context.client.mail.list({ projectId: context.projectId, runId: run.id }) as DaemonMailMessage[];
-        for (const msg of messages.map(adaptDaemonMessage)) {
+        for (const msg of await listMessages()) {
           if (!seenIds.has(msg.id)) {
             seenIds.add(msg.id);
             printMessage(msg);
           }
         }
 
-        const latestRun = await context.client.runs.get({ runId: run.id }) as DaemonRunRow | null;
-        if (latestRun) {
-          const adapted = adaptDaemonRun(latestRun, context.projectPath);
-          if (terminalStatuses.has(adapted.status)) {
-            console.log(`\nRun ${run.seed_id} reached terminal state: ${adapted.status}`);
-            cleanup(0);
-          }
+        const latestStatus = await getStatus();
+        if (latestStatus && terminalStatuses.has(latestStatus)) {
+          console.log(`\nRun ${run.seed_id} reached terminal state: ${latestStatus}`);
+          cleanup(0);
         }
       })().catch(() => undefined);
     };
@@ -563,6 +689,54 @@ async function handleStreamDaemon(
       });
     }
   });
+}
+
+async function handleDefaultAttachElixir(run: Run, context: ElixirAttachContext): Promise<number> {
+  const attach = await context.client.getRunAttach(run.id);
+  if (attach.status === "unsupported") {
+    console.error(`Attach unsupported for ${run.id}: ${attach.reason ?? "no attach target available"}`);
+    const alternatives = Array.isArray(attach.alternatives) ? attach.alternatives : [];
+    for (const alternative of alternatives) console.error(`  ${alternative}`);
+    return 1;
+  }
+
+  const attachMap = attach.attach ?? {};
+  const sessionId = typeof attach.session_id === "string"
+    ? attach.session_id
+    : typeof attachMap.session_id === "string"
+      ? attachMap.session_id
+      : null;
+  if (sessionId) {
+    console.log(`Attaching to ${run.seed_id} [${run.agent_type}] session=${sessionId}`);
+    console.log(`  Status: ${run.status}`);
+    if (run.worktree_path) console.log(`  Worktree: ${run.worktree_path}`);
+    console.log();
+
+    return new Promise<number>((resolve) => {
+      const child = spawn("claude", ["--resume", sessionId], {
+        cwd: run.worktree_path ?? process.cwd(),
+        stdio: "inherit",
+      });
+
+      child.on("error", (err) => {
+        console.error(`Failed to launch claude: ${err.message}`);
+        console.error("Ensure 'claude' CLI is installed and in your PATH.");
+        resolve(1);
+      });
+
+      child.on("exit", (code) => resolve(code ?? 0));
+    });
+  }
+
+  const streamUrl = typeof attachMap.stream_url === "string" ? attachMap.stream_url : null;
+  if (streamUrl) {
+    console.log(`Attach stream available for ${run.seed_id}: ${streamUrl}`);
+    return 0;
+  }
+
+  console.log(`Attach request recorded for ${run.seed_id}. No resumable session id exposed.`);
+  console.log(`Use 'foreman logs ${run.id}' for log output.`);
+  return 0;
 }
 
 /**
@@ -717,12 +891,15 @@ export const attachCommand = new Command("attach")
   .option("--worktree", "Open a shell in the agent's worktree instead of attaching")
   .action(async (id: string | undefined, opts: AttachOpts) => {
     const projectPath = await resolveRepoRootProjectPath({});
-    const daemon = await resolveDaemonAttachContext(projectPath);
+    const elixir = await resolveElixirAttachContext(projectPath);
+    const daemon = elixir ? null : await resolveDaemonAttachContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 
     if (opts.list) {
       try {
-        if (daemon) {
+        if (elixir) {
+          await listSessionsEnhancedElixir(elixir);
+        } else if (daemon) {
           await listSessionsEnhancedDaemon(daemon);
         } else {
           listSessionsEnhanced(store, projectPath);
@@ -742,6 +919,25 @@ export const attachCommand = new Command("attach")
       console.error("       foreman attach --kill <id>");
       store.close();
       process.exit(1);
+    }
+
+    if (elixir && !opts.kill) {
+      try {
+        const elixirRun = await resolveElixirRun(elixir, id);
+        if (elixirRun) {
+          const exitCode = opts.stream
+            ? await handleStreamElixir(elixirRun, elixir, opts._signal, opts._pollIntervalMs)
+            : opts.worktree
+              ? await handleWorktree(elixirRun)
+              : opts.follow
+                ? await handleFollow(elixirRun, opts._signal)
+                : await handleDefaultAttachElixir(elixirRun, elixir);
+          store.close();
+          process.exit(exitCode);
+        }
+      } catch {
+        // Fall back to the local store path when Elixir lookup fails.
+      }
     }
 
     if (daemon && !opts.kill) {
