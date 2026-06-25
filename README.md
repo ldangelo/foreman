@@ -542,7 +542,7 @@ Tools cover one-call smoke status, health, scheduler status/tick, projects, task
 Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
 
 ```bash
-foreman watch                             # Live unified dashboard (legacy Node backend)
+foreman watch                             # Live unified dashboard (Elixir projections by default)
 foreman watch --no-watch                  # One-shot snapshot, no polling
 foreman watch --project <id>              # Filter to a specific project
 foreman status --watch                    # Compact refreshing status view

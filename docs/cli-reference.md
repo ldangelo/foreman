@@ -277,7 +277,7 @@ Tasks by Status
 Single-pane unified live dashboard: agents, board summary, inbox, and pipeline events. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
 
 ```bash
-foreman watch                     # Live unified dashboard (legacy Node backend)
+foreman watch                     # Live unified dashboard (Elixir projections by default)
 foreman watch --no-watch          # One-shot snapshot, no polling
 foreman watch --refresh 5000      # Refresh every 5 seconds
 foreman watch --no-events         # Hide the pipeline events panel
@@ -738,7 +738,7 @@ foreman inbox --ack               # Mark shown messages as read
 
 ### `foreman inbox send`
 
-`inbox send` is a legacy Node-backend Agent Mail helper. In Elixir mode it exits with an unsupported message; use Elixir lifecycle/worker protocol events for server-backed phase communication.
+`inbox send` records an operator-to-worker message in the Elixir inbox stream by default. The message is stored even when direct worker delivery is unsupported; inspect `delivery_status` in the inbox projection for delivery state. `foreman inbox --ack` remains legacy Node-backend only until Elixir read acknowledgements land.
 
 
 Send an Agent Mail message within a pipeline run (replaces the removed `foreman mail send`).
@@ -893,7 +893,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman watch` and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
 
 ---
 

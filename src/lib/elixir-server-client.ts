@@ -173,6 +173,20 @@ export class ElixirServerClient {
     return body.skips;
   }
 
+  async sendInboxMessage(input: { runId: string; from: string; to: string; subject: string; body: string }): Promise<ForemanServerResponse> {
+    return this.sendCommand({
+      command_id: `inbox-send-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command_type: "inbox.send",
+      payload: {
+        run_id: input.runId,
+        from: input.from,
+        to: input.to,
+        subject: input.subject,
+        body: input.body,
+      },
+    });
+  }
+
   async listInbox(opts: { runId?: string; projectId?: string; limit?: number; unread?: boolean } = {}): Promise<ElixirInboxMessage[]> {
     const params = new URLSearchParams();
     if (opts.runId) params.set("run_id", opts.runId);

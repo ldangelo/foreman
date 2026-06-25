@@ -65,6 +65,7 @@ defmodule ForemanServer.Inbox do
         phase_id: fetch(input, :phase_id),
         from: fetch(input, :from, "operator"),
         to: fetch(input, :to, "worker"),
+        subject: fetch(input, :subject, "operator-message"),
         body: body,
         direction: "operator_to_worker",
         delivery_status: status,

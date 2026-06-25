@@ -3,6 +3,7 @@ defmodule ForemanServer.CommandRouter do
 
   alias ForemanServer.{
     EventStore,
+    Inbox,
     IntegrationIngestion,
     MigrationImporter,
     PlanningFlow,
@@ -85,6 +86,17 @@ defmodule ForemanServer.CommandRouter do
     |> external_trigger_payload()
     |> Map.put_new(:command_id, command_id)
     |> handle_external_trigger(metadata)
+  end
+
+  def handle(%{command_id: command_id, command_type: "inbox.send"} = command)
+      when is_binary(command_id) do
+    payload =
+      command
+      |> Map.get(:payload, %{})
+      |> normalize_payload()
+      |> Map.put_new(:message_id, command_id)
+
+    Inbox.send_operator_message(payload)
   end
 
   def handle(%{command_id: command_id, command_type: command_type} = command)
@@ -424,6 +436,7 @@ defmodule ForemanServer.CommandRouter do
       :kind,
       :idempotency_key,
       :integration_event_type,
+      :message_id,
       :metadata,
       :migration_id,
       :name,
@@ -452,11 +465,13 @@ defmodule ForemanServer.CommandRouter do
       :status,
       :task_id,
       :task_type,
+      :subject,
       :threshold,
       :title,
       :trace_event_id,
       :priority,
       :task_type,
+      :to,
       :type,
       :transition_id,
       :url,
@@ -464,7 +479,8 @@ defmodule ForemanServer.CommandRouter do
       :adapter,
       :compatibility_mode,
       :from_prd,
-      :provider
+      :provider,
+      :worker_supports_receiving
     ]
   end
 end

@@ -18,6 +18,8 @@ import type { Message, Run } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirInboxMessage } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import type { AgentMessageRow, RunRow } from "../../lib/db/postgres-adapter.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, ensureCliPostgresPool } from "./project-task-support.js";
@@ -994,6 +996,104 @@ function fetchEventsFromStoreForRun(store: ForemanStore, runId: string, limit: n
  * The --run-id flag falls back to the FOREMAN_RUN_ID environment variable when
  * not provided.
  */
+function adaptElixirInboxMessage(message: ElixirInboxMessage): Message {
+  const body = typeof message.body === "string" ? message.body : JSON.stringify(message.body ?? {});
+  return {
+    id: String(message.message_id ?? message.id ?? `${message.run_id ?? "run"}-${message.created_at ?? Date.now()}`),
+    run_id: String(message.run_id ?? ""),
+    sender_agent_type: String(message.from ?? message.sender_agent_type ?? message.actor ?? "foreman"),
+    recipient_agent_type: String(message.to ?? message.recipient_agent_type ?? "agent"),
+    subject: String(message.subject ?? message.type ?? message.event_type ?? "message"),
+    body,
+    read: message.read_at || message.unread === false ? 1 : 0,
+    created_at: String(message.created_at ?? message.timestamp ?? new Date().toISOString()),
+    deleted_at: null,
+  };
+}
+
+async function renderElixirInbox(options: {
+  agent?: string;
+  run?: string;
+  task?: string;
+  bead?: string;
+  all?: boolean;
+  watch?: boolean;
+  unread?: boolean;
+  limit?: string;
+  ack?: boolean;
+  full?: boolean;
+  project?: string;
+  events?: boolean;
+  "events-limit"?: string;
+}, limit: number, eventsLimit: number, fullPayload: boolean, showEvents: boolean, taskFilter: string | undefined, projectPath: string): Promise<void> {
+  if (options.ack) {
+    console.error("inbox error: --ack is not supported by the Elixir backend yet.");
+    process.exit(1);
+  }
+
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const projects = await client.listProjects();
+  const resolvedPath = resolve(projectPath);
+  const selectedProject = projects.find((project) =>
+    (options.project && (project.project_id === options.project || project.id === options.project || project.name === options.project)) ||
+    (project.path && resolve(project.path) === resolvedPath)
+  );
+  const projectId = selectedProject?.project_id ?? selectedProject?.id ?? options.project;
+
+  const resolveRunId = async (): Promise<string | undefined> => {
+    if (options.all) return undefined;
+    if (options.run) return options.run;
+    const runs = await client.listRuns(projectId);
+    if (taskFilter) {
+      const run = [...runs].reverse().find((entry) => entry.task_id === taskFilter || entry.seed_id === taskFilter);
+      return typeof run?.run_id === "string" ? run.run_id : typeof run?.id === "string" ? run.id : undefined;
+    }
+    const run = [...runs].reverse().find((entry) => !["completed", "failed", "merged", "closed"].includes(String(entry.status ?? "").toLowerCase())) ?? runs.at(-1);
+    return typeof run?.run_id === "string" ? run.run_id : typeof run?.id === "string" ? run.id : undefined;
+  };
+
+  const render = async (known?: Set<string>): Promise<Set<string>> => {
+    const runId = await resolveRunId();
+    const raw = await client.listInbox({ runId, projectId, unread: options.unread, limit });
+    let messages = raw.map(adaptElixirInboxMessage);
+    if (options.agent) messages = messages.filter((m) => m.recipient_agent_type === options.agent || m.sender_agent_type === options.agent);
+    if (known) messages = messages.filter((m) => !known.has(m.id));
+
+    if (messages.length === 0) {
+      console.log(`No ${options.unread ? "unread " : ""}messages${runId ? ` for run ${runId}` : ""}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+    } else if (fullPayload) {
+      for (const msg of messages) console.log(formatMessage(msg, true));
+      console.log(`${messages.length} message(s) shown.`);
+    } else {
+      console.log(new TableFormatter({ terminalWidth: process.stdout.columns || 120 }).formatTable(messages));
+      console.log(`${messages.length} message(s) shown.`);
+    }
+
+    if (showEvents) {
+      const events = await client.listEvents({ runId, projectId, limit: eventsLimit });
+      if (events.length > 0) {
+        console.log(`\n── lifecycle events ${"─".repeat(49)}`);
+        for (const event of events) console.log(`${event.created_at ?? ""} ${event.type ?? event.event_type ?? "event"} ${event.run_id ?? ""}`.trim());
+      }
+    }
+
+    return new Set(raw.map((message) => String(message.message_id ?? message.id)));
+  };
+
+  if (!options.watch) {
+    await render();
+    return;
+  }
+
+  console.log("Watching Elixir inbox... (Ctrl-C to stop)\n");
+  let seen = await render();
+  setInterval(async () => {
+    seen = new Set([...seen, ...(await render(seen))]);
+  }, 2000);
+}
+
 const inboxSendCommand = new Command("send")
   .description("Send an Agent Mail message within a pipeline run")
   .option("--run-id <id>", "Run ID (falls back to FOREMAN_RUN_ID env var)")
@@ -1031,10 +1131,24 @@ const inboxSendCommand = new Command("send")
     }
 
     if (foremanBackendMode() === "elixir") {
-      process.stderr.write(
-        "inbox send error: inbox send is not supported by the Elixir backend yet. Use FOREMAN_BACKEND=node for legacy agent mail send.\n",
-      );
-      process.exit(1);
+      try {
+        const manager = new ElixirServerManager();
+        const status = await manager.ensureRunning();
+        const client = new ElixirServerClient(status.url, manager.authToken);
+        const response = await client.sendInboxMessage({
+          runId,
+          from: options.from,
+          to: options.to,
+          subject: options.subject,
+          body: parsedBody,
+        });
+        if (!response.ok) throw new Error(response.error.message);
+        process.exit(0);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`inbox send error: ${msg}\n`);
+        process.exit(1);
+      }
       return;
     }
 
@@ -1121,9 +1235,12 @@ export const inboxCommand = new Command("inbox")
       projectPath = process.cwd();
     }
 
-    const postgres = foremanBackendMode() === "elixir"
-      ? await resolvePostgresInboxProject(projectPath, options.project)
-      : null;
+    if (foremanBackendMode() === "elixir") {
+      await renderElixirInbox(options, limit, eventsLimit, fullPayload, showEvents, taskFilter, projectPath);
+      return;
+    }
+
+    const postgres = null as unknown as { adapter: PostgresAdapter; projectId: string } | null;
     const daemon = postgres ? null : await resolveDaemonInboxContext(projectPath, options.project);
     const store = daemon || postgres ? null : ForemanStore.forProject(projectPath);
 
