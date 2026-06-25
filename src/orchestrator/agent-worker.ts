@@ -1232,10 +1232,10 @@ async function runPipeline(
             config: WorkerConfig;
             projectPath: string;
             workflowConfig: WorkflowConfig;
-            store: ForemanStore;
-            taskClient: ITaskClient;
+            store?: ForemanStore;
+            taskClient?: ITaskClient;
             vcsBackend?: VcsBackend;
-            mail: { send: typeof sendMail; sendText: typeof sendMailText; client: AnyMailClient | null };
+            mail?: { send: typeof sendMail; sendText: typeof sendMailText; client: AnyMailClient | null };
             log: (message: string) => void;
             capabilities: string[];
             requireCapability: (capability: ActionCapability) => void;
@@ -1280,17 +1280,28 @@ async function runPipeline(
           };
           const runner = actionRunners[actionType];
           if (externalAction) {
-            const result = await externalAction({
+            const externalContext: {
+              actionType: string;
+              phase: WorkflowPhaseConfig;
+              progress?: RunProgress;
+              config: WorkerConfig;
+              projectPath: string;
+              workflowConfig: WorkflowConfig;
+              log: (message: string) => void;
+              capabilities: string[];
+              requireCapability: (capability: ActionCapability) => void;
+              internal: { runBuiltin: () => Promise<import("./pipeline-executor.js").PhaseResult> };
+              store?: ForemanStore;
+              taskClient?: ITaskClient;
+              vcsBackend?: VcsBackend;
+              mail?: { send: typeof sendMail; sendText: typeof sendMailText; client: AnyMailClient | null };
+            } = {
               actionType,
               phase,
               progress,
               config,
               projectPath: pipelineProjectPath,
               workflowConfig,
-              store,
-              taskClient: runtimeTaskClient,
-              vcsBackend,
-              mail: { send: sendMail, sendText: sendMailText, client: agentMailClient },
               log,
               capabilities: declaredCapabilities,
               requireCapability,
@@ -1300,7 +1311,14 @@ async function runPipeline(
                   return assertPhaseActionResult(actionType, await runner());
                 },
               },
+            };
+            Object.defineProperties(externalContext, {
+              store: { enumerable: true, get: () => { requireCapability("task-store"); return store; } },
+              taskClient: { enumerable: true, get: () => { requireCapability("task-store"); return runtimeTaskClient; } },
+              vcsBackend: { enumerable: true, get: () => { requireCapability("vcs"); return vcsBackend; } },
+              mail: { enumerable: true, get: () => { requireCapability("mail"); return { send: sendMail, sendText: sendMailText, client: agentMailClient }; } },
             });
+            const result = await externalAction(externalContext);
             return assertPhaseActionResult(actionType, result);
           }
           if (!runner) return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `Unknown builtin action: ${actionType} (phase ${phase.name})` };
