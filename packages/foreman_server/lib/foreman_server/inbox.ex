@@ -74,6 +74,21 @@ defmodule ForemanServer.Inbox do
     end
   end
 
+  @spec mark_read(map()) :: {:ok, map()} | {:error, term()}
+  def mark_read(input) when is_map(input) do
+    with {:ok, message_id} <- required_binary(fetch(input, :message_id), :message_id),
+         {:ok, message} <- existing_message(message_id) do
+      append_delivery_update(%{
+        message_id: message_id,
+        run_id: message.run_id,
+        read_at: fetch(input, :read_at, DateTime.utc_now()),
+        delivery_status: fetch(message, :delivery_status, "read"),
+        delivery: fetch(message, :delivery, %{}),
+        reason: fetch(input, :reason, "marked_read")
+      })
+    end
+  end
+
   @spec update_delivery(map()) :: {:ok, map()} | {:error, term()}
   def update_delivery(input) when is_map(input) do
     with {:ok, message_id} <- required_binary(fetch(input, :message_id), :message_id),

@@ -187,6 +187,14 @@ export class ElixirServerClient {
     });
   }
 
+  async markInboxRead(messageId: string): Promise<ForemanServerResponse> {
+    return this.sendCommand({
+      command_id: `inbox-read-${messageId}-${Date.now()}`,
+      command_type: "inbox.mark_read",
+      payload: { message_id: messageId },
+    });
+  }
+
   async listInbox(opts: { runId?: string; projectId?: string; limit?: number; unread?: boolean } = {}): Promise<ElixirInboxMessage[]> {
     const params = new URLSearchParams();
     if (opts.runId) params.set("run_id", opts.runId);

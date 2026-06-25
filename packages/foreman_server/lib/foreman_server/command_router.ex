@@ -99,6 +99,14 @@ defmodule ForemanServer.CommandRouter do
     Inbox.send_operator_message(payload)
   end
 
+  def handle(%{command_id: command_id, command_type: "inbox.mark_read"} = command)
+      when is_binary(command_id) do
+    command
+    |> Map.get(:payload, %{})
+    |> normalize_payload()
+    |> Inbox.mark_read()
+  end
+
   def handle(%{command_id: command_id, command_type: command_type} = command)
       when is_binary(command_id) and is_binary(command_type) do
     payload =

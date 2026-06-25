@@ -108,6 +108,26 @@ defmodule ForemanServer.InboxTest do
     assert Enum.any?(messages, &(&1.body == "Build phase failed" and &1.hook == "phase_failed"))
   end
 
+  test "mark_read appends delivery update with read_at", %{fixture: fixture} do
+    assert {:ok, _pid} = WorkflowInterpreter.start_run(fixture["run_id"], %{phase_order: [fixture["phase_id"]], retry_rules: %{}, mail_hooks: %{}})
+
+    assert {:ok, %{result: message}} =
+             Inbox.send_operator_message(%{
+               run_id: fixture["run_id"],
+               from: "operator",
+               to: "developer",
+               subject: "ack me",
+               body: "{}"
+             })
+
+    assert {:ok, %{result: update}} = Inbox.mark_read(%{message_id: message.message_id})
+    assert update.message_id == message.message_id
+    assert update.read_at
+
+    stored = Enum.find(Inbox.list(fixture["run_id"]), &(&1.message_id == message.message_id))
+    assert stored.read_at
+  end
+
   test "phase mail hooks append durable messages and project to inbox", %{fixture: fixture} do
     assert {:ok, [%{result: message}]} =
              Inbox.append_phase_mail(

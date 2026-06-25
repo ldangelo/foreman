@@ -738,7 +738,7 @@ foreman inbox --ack               # Mark shown messages as read
 
 ### `foreman inbox send`
 
-`inbox send` records an operator-to-worker message in the Elixir inbox stream by default. The message is stored even when direct worker delivery is unsupported; inspect `delivery_status` in the inbox projection for delivery state. `foreman inbox --ack` remains legacy Node-backend only until Elixir read acknowledgements land.
+`inbox send` records an operator-to-worker message in the Elixir inbox stream by default. The message is stored even when direct worker delivery is unsupported; inspect `delivery_status` in the inbox projection for delivery state. `foreman inbox --ack` records Elixir read markers, so later `--unread` views hide acknowledged messages.
 
 
 Send an Agent Mail message within a pipeline run (replaces the removed `foreman mail send`).

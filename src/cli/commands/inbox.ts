@@ -1026,11 +1026,6 @@ async function renderElixirInbox(options: {
   events?: boolean;
   "events-limit"?: string;
 }, limit: number, eventsLimit: number, fullPayload: boolean, showEvents: boolean, taskFilter: string | undefined, projectPath: string): Promise<void> {
-  if (options.ack) {
-    console.error("inbox error: --ack is not supported by the Elixir backend yet.");
-    process.exit(1);
-  }
-
   const manager = new ElixirServerManager();
   const status = await manager.ensureRunning();
   const client = new ElixirServerClient(status.url, manager.authToken);
@@ -1069,6 +1064,16 @@ async function renderElixirInbox(options: {
     } else {
       console.log(new TableFormatter({ terminalWidth: process.stdout.columns || 120 }).formatTable(messages));
       console.log(`${messages.length} message(s) shown.`);
+    }
+
+    if (options.ack && raw.length > 0) {
+      for (const msg of raw) {
+        const messageId = String(msg.message_id ?? msg.id ?? "");
+        if (!messageId) continue;
+        const response = await client.markInboxRead(messageId);
+        if (!response.ok) throw new Error(response.error.message);
+      }
+      console.log(`Marked ${raw.length} message(s) as read.`);
     }
 
     if (showEvents) {
