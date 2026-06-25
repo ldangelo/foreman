@@ -916,7 +916,7 @@ foreman attach --kill             # Kill the agent process
 | `--follow` | Follow log file (like `tail -f`) |
 | `--stream` | Stream Agent Mail messages in real time |
 | `--worktree` | Open an interactive shell in the worktree |
-| `--kill` | Kill the agent process |
+| `--kill` | Kill the agent process (legacy Node backend only; Elixir backend reports unsupported) |
 
 ---
 

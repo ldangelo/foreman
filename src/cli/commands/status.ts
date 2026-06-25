@@ -15,6 +15,7 @@ import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { listRegisteredProjects } from "./project-task-support.js";
 import { fetchDaemonDashboardState, pollDashboard, renderDashboard } from "../dashboard-state.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
 
@@ -227,6 +228,11 @@ export function renderDaemonRunCard(run: DaemonRunSummary): string {
  */
 export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
   try {
+    if (foremanBackendMode() === "elixir") {
+      const snapshot = await fetchElixirStatusSnapshot(projectPath);
+      if (snapshot) return snapshot.counts;
+    }
+
     const projects = await listRegisteredProjects();
     const project = resolveRegisteredProject(projects, projectPath);
     if (project) {
@@ -467,22 +473,42 @@ export const statusCommand = new Command("status")
       let totalStuck = 0;
       let totalActiveAgents = 0;
 
-      for (const proj of projects) {
-        try {
-          const client = createTrpcClient();
-          const stats = await client.projects.stats({ projectId: proj.id }) as ProjectStats;
-          const needsHuman = await client.projects.listNeedsHuman({ projectId: proj.id }) as Array<{ status: string }>;
-          const activeRuns = await client.runs.listActive({ projectId: proj.id }) as DaemonRunSummary[];
-          aggregated.total += stats.tasks.total;
-          aggregated.ready += stats.tasks.ready;
-          aggregated.inProgress += stats.tasks.inProgress;
-          aggregated.completed += stats.tasks.merged + stats.tasks.closed;
-          aggregated.blocked += stats.tasks.backlog;
-          totalFailed += needsHuman.filter((task) => task.status === "failed" || task.status === "conflict").length;
-          totalStuck += needsHuman.filter((task) => task.status === "stuck").length;
-          totalActiveAgents += (await activeRuns).length;
-        } catch {
-          // Ignore stale/inaccessible projects in aggregated status.
+      if (foremanBackendMode() === "elixir") {
+        const manager = new ElixirServerManager();
+        const status = await manager.ensureRunning();
+        const client = new ElixirServerClient(status.url, manager.authToken);
+        const [tasks, runs] = await Promise.all([client.listTasks(), client.listRuns()]);
+
+        for (const proj of projects) {
+          const projectTasks = tasks.filter((task) => (task.project_id ?? proj.id) === proj.id);
+          const counts = countsFromElixirTasks(projectTasks);
+          aggregated.total += counts.total;
+          aggregated.ready += counts.ready;
+          aggregated.inProgress += counts.inProgress;
+          aggregated.completed += counts.completed;
+          aggregated.blocked += counts.blocked;
+          totalFailed += projectTasks.filter((task) => ["failed", "conflict"].includes(normalizeStatus(task.status))).length;
+          totalStuck += projectTasks.filter((task) => normalizeStatus(task.status) === "stuck").length;
+          totalActiveAgents += activeRunsFromElixir(runs.filter((run) => (run.project_id ?? proj.id) === proj.id)).length;
+        }
+      } else {
+        for (const proj of projects) {
+          try {
+            const client = createTrpcClient();
+            const stats = await client.projects.stats({ projectId: proj.id }) as ProjectStats;
+            const needsHuman = await client.projects.listNeedsHuman({ projectId: proj.id }) as Array<{ status: string }>;
+            const activeRuns = await client.runs.listActive({ projectId: proj.id }) as DaemonRunSummary[];
+            aggregated.total += stats.tasks.total;
+            aggregated.ready += stats.tasks.ready;
+            aggregated.inProgress += stats.tasks.inProgress;
+            aggregated.completed += stats.tasks.merged + stats.tasks.closed;
+            aggregated.blocked += stats.tasks.backlog;
+            totalFailed += needsHuman.filter((task) => task.status === "failed" || task.status === "conflict").length;
+            totalStuck += needsHuman.filter((task) => task.status === "stuck").length;
+            totalActiveAgents += (await activeRuns).length;
+          } catch {
+            // Ignore stale/inaccessible projects in aggregated status.
+          }
         }
       }
 
@@ -588,7 +614,7 @@ export const statusCommand = new Command("status")
             counts = await fetchStatusCounts(projectPath);
           } catch { /* br not available — show zero counts */ }
 
-          const daemonDashboard = await fetchDaemonDashboardState(projectPath);
+          const daemonDashboard = foremanBackendMode() === "elixir" ? null : await fetchDaemonDashboardState(projectPath);
           const dashState = daemonDashboard ?? (() => {
             const store = ForemanStore.forDashboard(projectPath);
             try {

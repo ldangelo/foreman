@@ -197,7 +197,8 @@ export async function renderCompactView(runId: string, tailCount: number, view: 
   try {
     const manager = new ElixirServerManager();
     const status = await manager.ensureRunning();
-    const logs = await new ElixirServerClient(status.url, manager.authToken).getRunLogs(runId, view);
+    const serverView = view === "plain" ? "compact" : view;
+    const logs = await new ElixirServerClient(status.url, manager.authToken).getRunLogs(runId, serverView);
     const entries = compactEntries(logs).filter((entry) => view === "raw" || !isMessageUpdateEntry(entry)).slice(-tailCount);
     if (entries.length === 0) {
       console.log(chalk.dim(view === "raw" ? "(no raw log entries)" : "(no compact log entries)"));

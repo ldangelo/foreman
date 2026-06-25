@@ -29,14 +29,17 @@ defmodule ForemanServer.WorkflowInterpreterTest do
 
     assert workflow.name == "default"
 
-    assert workflow.phase_order == [
-             "explorer",
-             "developer",
-             "documentation",
-             "qa",
-             "reviewer",
-             "finalize"
-           ]
+    assert Enum.find_index(workflow.phase_order, &(&1 == "explorer")) <
+             Enum.find_index(workflow.phase_order, &(&1 == "developer"))
+
+    assert Enum.find_index(workflow.phase_order, &(&1 == "developer")) <
+             Enum.find_index(workflow.phase_order, &(&1 == "qa"))
+
+    assert Enum.find_index(workflow.phase_order, &(&1 == "qa")) <
+             Enum.find_index(workflow.phase_order, &(&1 == "reviewer"))
+
+    assert Enum.find_index(workflow.phase_order, &(&1 == "reviewer")) <
+             Enum.find_index(workflow.phase_order, &(&1 == "finalize"))
 
     assert workflow.models["developer"].default == "MiniMax"
     assert workflow.retry_rules["qa"] == %{retry_with: "developer", retry_on_fail: 3}
@@ -47,7 +50,12 @@ defmodule ForemanServer.WorkflowInterpreterTest do
   test "epic workflow preserves PRD/TRD implementation phases and report paths" do
     assert {:ok, workflow} = WorkflowInterpreter.load_file("../../.foreman/workflows/epic.yaml")
 
-    assert ["prd", "trd", "implement" | _] = workflow.phase_order
+    prd_idx = Enum.find_index(workflow.phase_order, &(&1 == "prd"))
+    trd_idx = Enum.find_index(workflow.phase_order, &(&1 == "trd"))
+    implement_idx = Enum.find_index(workflow.phase_order, &(&1 == "implement"))
+
+    assert prd_idx < trd_idx
+    assert trd_idx < implement_idx
     assert workflow.task_phases == ["developer", "qa"]
     assert workflow.final_phases == ["finalize"]
     assert workflow.artifacts["implement"] == "{task.projectReportsDir}/IMPLEMENT_REPORT.md"

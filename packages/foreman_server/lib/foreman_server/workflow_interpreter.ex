@@ -182,9 +182,23 @@ defmodule ForemanServer.WorkflowInterpreter do
             {k, v} = split_pair(trimmed)
             {root |> flush_phase(phase) |> Map.put(key(k), scalar(v)), nil, nil, nil}
 
-          section == :phases and String.starts_with?(trimmed, "- ") ->
+          section == :phases and indent == 2 and String.starts_with?(trimmed, "- ") ->
             new_phase = trimmed |> String.trim_leading("- ") |> pair_to_map()
             {flush_phase(root, phase), section, new_phase, nil}
+
+          section == :phases and phase != nil and indent > 2 and String.starts_with?(trimmed, "- ") ->
+            value = trimmed |> String.trim_leading("- ") |> scalar()
+
+            if nested do
+              next_phase = Map.update(phase, nested, [value], fn
+                existing when is_list(existing) -> existing ++ [value]
+                _existing -> [value]
+              end)
+
+              {root, section, next_phase, nested}
+            else
+              {root, section, phase, nested}
+            end
 
           section in [:task_phases, :final_phases] and String.starts_with?(trimmed, "- ") ->
             value = trimmed |> String.trim_leading("- ") |> scalar()

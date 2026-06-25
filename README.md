@@ -715,7 +715,7 @@ Attach to a running agent session for live interaction. In Elixir mode, listing/
 foreman attach <run-id>                 # Attach to a running session
 foreman attach --list                   # List available sessions
 foreman attach --follow <id>            # Follow log output
-foreman attach --kill <id>              # Kill a running agent
+foreman attach --kill <id>              # Kill a running agent (legacy Node backend)
 ```
 
 ## GitHub Integration

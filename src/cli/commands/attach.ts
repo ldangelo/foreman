@@ -922,7 +922,14 @@ export const attachCommand = new Command("attach")
       process.exit(1);
     }
 
-    if (elixir && !opts.kill) {
+    if (elixir && opts.kill) {
+      console.error("Error: attach --kill is not supported by the Elixir backend yet.");
+      console.error("Use FOREMAN_BACKEND=node for legacy daemon kill control, or stop the process directly.");
+      store.close();
+      process.exit(1);
+    }
+
+    if (elixir) {
       try {
         const elixirRun = await resolveElixirRun(elixir, id);
         if (elixirRun) {
