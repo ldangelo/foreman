@@ -6,6 +6,10 @@ import chalk from "chalk";
 import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { encrypt } from "../../lib/encryption.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirEvent } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { JiraApiClient } from "../../daemon/jira-api-client.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +47,36 @@ function parseIssueTypeWorkflow(options: string[]): Record<string, string> {
   return result;
 }
 
+function createElixirClient(): ElixirServerClient {
+  const manager = new ElixirServerManager();
+  return new ElixirServerClient(manager.url, manager.authToken);
+}
+
+async function sendElixirJiraCommand(commandType: string, payload: Record<string, unknown>): Promise<void> {
+  const client = createElixirClient();
+  const response = await client.sendCommand({
+    command_id: `cli-${commandType}-${Date.now()}`,
+    command_type: commandType,
+    payload,
+    metadata: { source: "foreman jira" },
+  });
+  if (!response.ok) throw new Error(response.error.message);
+}
+
+function commandPayload(event: ElixirEvent): Record<string, unknown> | null {
+  const payload = event.payload;
+  if (!payload || typeof payload !== "object") return null;
+  const typed = payload as Record<string, unknown>;
+  return typed.input && typeof typed.input === "object" ? typed.input as Record<string, unknown> : typed;
+}
+
+function commandType(event: ElixirEvent): string | null {
+  const payload = event.payload;
+  if (!payload || typeof payload !== "object") return null;
+  const typed = payload as Record<string, unknown>;
+  return typeof typed.command_type === "string" ? typed.command_type : null;
+}
+
 // ── foreman jira configure ─────────────────────────────────────────────────────
 
 const configureCommand = new Command("configure")
@@ -71,8 +105,6 @@ const configureCommand = new Command("configure")
   .option("--webhook-secret-env <name>", "Environment variable name containing webhook secret")
   .option("--poll-interval <seconds>", "Poll interval in seconds (default: 60, min: 30)", (val) => parseInt(val, 10))
   .action(async (opts: JiraConfigureOptions) => {
-    const client = createTrpcClient();
-
     // Parse issue type workflow mapping
     const issueTypeWorkflowMap = parseIssueTypeWorkflow(opts.issueTypeWorkflow);
     if (Object.keys(issueTypeWorkflowMap).length === 0) {
@@ -89,7 +121,7 @@ const configureCommand = new Command("configure")
       debounceWindowSeconds: opts.debounceSeconds,
     }));
     try {
-      await client.jira.configure({
+      const payload = {
         apiUrl: opts.apiUrl,
         email: opts.email,
         apiToken: encryptedApiToken,
@@ -97,7 +129,13 @@ const configureCommand = new Command("configure")
         webhookEnabled: opts.webhookEnabled ?? false,
         webhookSecretEnvVar: opts.webhookSecretEnv,
         pollIntervalSeconds: opts.pollInterval,
-      });
+      };
+      if (foremanBackendMode() === "elixir") {
+        await sendElixirJiraCommand("jira.configure", payload);
+      } else {
+        const client = createTrpcClient();
+        await client.jira.configure(payload);
+      }
       console.log(chalk.green("✓ Jira monitoring configured successfully"));
       console.log(chalk.dim(`  API URL: ${opts.apiUrl}`));
       console.log(chalk.dim(`  Projects: ${opts.project.join(", ")}`));
@@ -126,10 +164,10 @@ const statusCommand = new Command("status")
   .description("Show Jira monitor status")
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
-    const client = createTrpcClient();
-
     try {
-      const status = await client.jira.getStatus({}) as JiraStatusResult;
+      const status = foremanBackendMode() === "elixir"
+        ? await getElixirJiraStatus()
+        : await createTrpcClient().jira.getStatus({}) as JiraStatusResult;
 
       if (opts.json) {
         console.log(JSON.stringify(status, null, 2));
@@ -173,16 +211,15 @@ const testCommand = new Command("test")
   .requiredOption("--api-token <token>", "Jira API token (will be encrypted)")
   .option("--json", "Output as JSON")
   .action(async (opts: { apiUrl: string; email: string; apiToken: string; json?: boolean }) => {
-    const client = createTrpcClient();
     console.log(chalk.dim("Testing Jira connection..."));
     try {
-      // Encrypt the token for transmission
-      const encryptedApiToken = await encrypt(opts.apiToken);
-      const result = await client.jira.testConnection({
-        apiUrl: opts.apiUrl,
-        email: opts.email,
-        apiToken: encryptedApiToken,
-      }) as JiraTestResult;
+      const result = foremanBackendMode() === "elixir"
+        ? await testJiraConnection(opts)
+        : await createTrpcClient().jira.testConnection({
+            apiUrl: opts.apiUrl,
+            email: opts.email,
+            apiToken: await encrypt(opts.apiToken),
+          }) as JiraTestResult;
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
         return;
@@ -216,15 +253,14 @@ const enableWebhookCommand = new Command("enable-webhook")
   .description("Enable Jira webhook for real-time triggers")
   .option("--secret-env <name>", "Env var name for webhook secret (default: FOREMAN_JIRA_WEBHOOK_SECRET)", "FOREMAN_JIRA_WEBHOOK_SECRET")
   .action(async (opts: { secretEnv: string }) => {
-    const client = createTrpcClient();
     console.log(chalk.dim("Registering Jira webhook..."));
     // Generate a random webhook secret
     const secret = generateWebhookSecret();
     console.log(chalk.dim(`  Generated webhook secret: ${secret}`));
     try {
-      const result = await client.jira.enableWebhook({
-        webhookSecret: secret,
-      }) as EnableWebhookResult;
+      const result = foremanBackendMode() === "elixir"
+        ? await enableElixirWebhook(secret)
+        : await createTrpcClient().jira.enableWebhook({ webhookSecret: secret }) as EnableWebhookResult;
       console.log(chalk.green("✓ Webhook enabled"));
       console.log(chalk.dim(`  Webhook URL: ${result.webhookUrl}`));
       console.log(chalk.bold("\n  Setup instructions:"));
@@ -245,10 +281,13 @@ const enableWebhookCommand = new Command("enable-webhook")
 const disableWebhookCommand = new Command("disable-webhook")
   .description("Disable Jira webhook")
   .action(async () => {
-    const client = createTrpcClient();
     console.log(chalk.dim("Disabling Jira webhook..."));
     try {
-      await client.jira.disableWebhook({});
+      if (foremanBackendMode() === "elixir") {
+        await sendElixirJiraCommand("jira.webhook.disable", {});
+      } else {
+        await createTrpcClient().jira.disableWebhook({});
+      }
       console.log(chalk.green("✓ Webhook disabled"));
     } catch (err) {
       const error = err as Error;
@@ -267,6 +306,39 @@ function generateWebhookSecret(): string {
     secret += chars[Math.floor(Math.random() * chars.length)];
   }
   return secret;
+}
+
+async function getElixirJiraStatus(): Promise<JiraStatusResult> {
+  const events = await createElixirClient().listEvents({ limit: 500 });
+  const latestConfigure = events.find((event) => commandType(event) === "jira.configure");
+  if (!latestConfigure) return { configured: false, projects: 0, webhookEnabled: false };
+
+  const payload = commandPayload(latestConfigure) ?? {};
+  const projects = Array.isArray(payload.projects) ? payload.projects.length : 0;
+  const latestWebhook = events.find((event) => {
+    const type = commandType(event);
+    return type === "jira.webhook.enable" || type === "jira.webhook.disable";
+  });
+  const webhookType = latestWebhook ? commandType(latestWebhook) : null;
+
+  return {
+    configured: true,
+    projects,
+    lastPoll: typeof latestConfigure.occurred_at === "string" ? latestConfigure.occurred_at : undefined,
+    webhookEnabled: webhookType === "jira.webhook.enable" ? true : webhookType === "jira.webhook.disable" ? false : payload.webhookEnabled === true,
+  };
+}
+
+async function testJiraConnection(opts: { apiUrl: string; email: string; apiToken: string }): Promise<JiraTestResult> {
+  const client = new JiraApiClient({ apiUrl: opts.apiUrl, email: opts.email, apiToken: opts.apiToken });
+  await client.authenticate();
+  const projects = await client.listProjects();
+  return { connected: true, projects };
+}
+
+async function enableElixirWebhook(secret: string): Promise<EnableWebhookResult> {
+  await sendElixirJiraCommand("jira.webhook.enable", { webhookSecret: secret });
+  return { webhookUrl: "managed by Foreman Elixir server" };
 }
 
 export const jiraCommand = new Command("jira")

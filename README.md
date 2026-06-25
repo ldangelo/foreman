@@ -590,7 +590,7 @@ foreman import --to-elixir --from-node --project foreman  # snapshot current Nod
 
 The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. While migration is incomplete, set `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` to delegate supported commands (`run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`) to the legacy TS CLI.
 
-Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; `foreman board`, `foreman project add|list|edit|remove|sync`, and core `foreman task create|list|show|approve|update|note|close|import` read/write state through Elixir after importing project state. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
 Parse a TRD and create a native task hierarchy.
@@ -600,6 +600,9 @@ foreman sling trd docs/TRD.md           # Parse and create tasks
 foreman sling trd docs/TRD.md --dry-run # Preview without creating
 foreman sling trd docs/TRD.md --auto    # Skip confirmation
 ```
+
+### `foreman jira`
+Configure and inspect Jira integration. In default Elixir mode, configure/status/test/webhook toggles avoid the legacy daemon socket: config and webhook toggles are accepted as Elixir integration events, status reads those events, and `jira test` calls Jira directly. Use `FOREMAN_BACKEND=node` for the legacy daemon-managed Jira poller/webhook runtime.
 
 ### `foreman daemon`
 Manage the ForemanDaemon background process (Postgres-backed state).

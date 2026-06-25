@@ -844,6 +844,24 @@ foreman task create --from-text "..." --no-llm      # Skip AI parsing (text beco
 
 ---
 
+## Issue Tracker Integrations
+
+### `foreman jira`
+
+Configure and inspect Jira monitoring.
+
+```bash
+foreman jira configure --api-url https://example.atlassian.net --email ops@example.com --api-token $JIRA_TOKEN --project OPS --start-status Ready --issue-type-workflow task=default
+foreman jira status [--json]
+foreman jira test --api-url https://example.atlassian.net --email ops@example.com --api-token $JIRA_TOKEN [--json]
+foreman jira enable-webhook [--secret-env FOREMAN_JIRA_WEBHOOK_SECRET]
+foreman jira disable-webhook
+```
+
+In default Elixir mode, `configure`, `enable-webhook`, and `disable-webhook` write accepted integration commands to the Elixir event store, `status` reads those events, and `test` validates credentials directly against Jira without opening the legacy daemon socket. Set `FOREMAN_BACKEND=node` for the legacy daemon-managed Jira poller/webhook implementation.
+
+---
+
 ## Migration and Coexistence
 
 ### `foreman import --to-elixir`
@@ -872,7 +890,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, and `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
 
 ---
 

@@ -150,7 +150,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman status
 ```
 
-Delegation supports legacy-only command paths only when `FOREMAN_BACKEND=node` is set for explicit legacy operation. Under the Elixir backend, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections; `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, and `project add|list|edit|remove|sync` route through Elixir project commands/projections.
+Delegation supports legacy-only command paths only when `FOREMAN_BACKEND=node` is set for explicit legacy operation. Under the Elixir backend, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections; `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `project add|list|edit|remove|sync` route through Elixir project commands/projections, and `jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Jira config and webhook toggles are recorded as Elixir integration events; use `FOREMAN_BACKEND=node` for the legacy daemon-managed Jira poller/webhook runtime.
 
 ### 4. Create a Task
 
