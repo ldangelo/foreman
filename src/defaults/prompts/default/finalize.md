@@ -13,6 +13,8 @@ If you hit an unrecoverable error, use the `send_mail` tool to report it:
 
 ## Instructions
 
+If `{{reportDir}}/FINALIZE_TASK.md` exists, read it first and treat it as this phase's normalized input/feedback contract.
+
 ### Step 0: Verify working directory
 Before running any git commands, ensure you are in the correct worktree directory.
 

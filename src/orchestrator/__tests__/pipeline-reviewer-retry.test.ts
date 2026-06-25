@@ -252,7 +252,7 @@ describe("executePipeline(): reviewer FAIL loops back to developer (regression)"
     const workflowConfig = {
       ...loaded,
       phases: loaded.phases
-        .filter((phase) => ["explorer", "developer", "qa", "reviewer", "cli-review", "finalize"].includes(phase.name))
+        .filter((phase) => ["explorer", "developer", "qa", "reviewer"].includes(phase.name))
         .map((phase) => phase.artifact ? { ...phase, artifact: phase.artifact.split("/").pop() } : phase),
     };
 
@@ -304,14 +304,17 @@ describe("executePipeline(): reviewer FAIL loops back to developer (regression)"
 
     expect(phaseOrder).toContain("reviewer");
     expect(reviewerCallCount).toBeGreaterThan(1);
-    expect(builtinOrder).toContain("cli-review");
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("FAIL — looping back to developer"),
     );
+    const developerTask = readFileSync(
+      join(tmpDir, ".foreman/reports/proj-reviewer-retry/seed-reviewer-retry/run-reviewer-retry-test/DEVELOPER_TASK.md"),
+      "utf-8",
+    );
+    expect(developerTask).toContain("# Phase Task: developer");
+    expect(developerTask).toContain("## Source Phase\nreviewer");
+    expect(developerTask).toContain("src/foo.ts:10");
 
-    const cliReviewIdx = phaseOrder.lastIndexOf("cli-review");
-    const lastReviewerIdx = phaseOrder.lastIndexOf("reviewer");
-    expect(cliReviewIdx).toBeGreaterThan(lastReviewerIdx);
   });
 
   it("reviewer PASS proceeds directly to finalize (no retry)", async () => {

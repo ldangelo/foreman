@@ -78,12 +78,13 @@ Then stop. Do NOT run smoke tests, integration tests, or targeted test commands.
 Proceed with the normal QA instructions below.
 
 ## Instructions
-1. Read TASK.md, `{{reportDir}}/EXPLORER_REPORT.md`, and `{{reportDir}}/DEVELOPER_REPORT.md` for context
-2. Review only the implementation surface:
+1. If `{{reportDir}}/QA_TASK.md` exists, read it first and treat it as this phase's normalized input/feedback contract.
+2. Read TASK.md, `{{reportDir}}/EXPLORER_REPORT.md`, and `{{reportDir}}/DEVELOPER_REPORT.md` for context
+3. Review only the implementation surface:
    - `git diff --name-only`
    - `git diff -- <changed files>` when needed to choose verification
    - For Foreman runtime/state/MCP/activity-feed work during the Elixir cutover, do not fail an implementation for missing `PostgresStore`, `src/lib/store.ts`, or legacy Postgres/native TS storage changes unless the task or Explorer explicitly targets that legacy path. Verify the Elixir server, MCP/Elixir client, and current CLI/read-model consumers named by Explorer.
-3. Choose the narrowest verification that can prove the changed behavior:
+4. Choose the narrowest verification that can prove the changed behavior:
    - Prefer targeted verification first for narrow tasks
    - Prefer the command/test target from Developer's **QA Handoff** when it matches the changed files
    - Otherwise infer one targeted command from the changed files and Explorer's verification notes
@@ -91,13 +92,13 @@ Proceed with the normal QA instructions below.
    - Do **not** run the full suite (`npm test`, `npx vitest run` without file filters, or equivalent). Finalize owns broad/full-suite validation
    - Stop after targeted evidence is sufficient; do not investigate unrelated or pre-existing failures unless a targeted check exposes them
    - If you pipe test output through another command, preserve the test command exit code. Use `set -o pipefail` with `tee`, or avoid pipes. Do **not** use patterns like `npm test ... 2>&1 | tail -30` because `tail` can return success while tests fail
-4. If targeted tests fail due to the changes, do not modify source code. Report the failure clearly and route the task back to Developer
-5. Write any additional test recommendations needed for uncovered edge cases, but do not implement source changes in QA
-6. Write your findings to **{{reportDir}}/QA_REPORT.md**. Create the directory if it doesn't exist:
+5. If targeted tests fail due to the changes, do not modify source code. Report the failure clearly and route the task back to Developer
+6. Write any additional test recommendations needed for uncovered edge cases, but do not implement source changes in QA
+7. Write your findings to **{{reportDir}}/QA_REPORT.md**. Create the directory if it doesn't exist:
    ```bash
    mkdir -p "{{reportDir}}"
    ```
-7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
+8. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## QA_REPORT.md Format
 ```markdown

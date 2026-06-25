@@ -16,20 +16,21 @@ If you hit an unrecoverable error, invoke:
 ```
 
 ## Instructions
-1. Read TASK.md for the original task description
-2. Read `{{reportDir}}/EXPLORER_REPORT.md` (if exists) for architecture context
-3. Read `{{reportDir}}/QA_REPORT.md` for test results
-4. Review the changed files for this task (use git diff against the base branch). For narrow tasks, keep review scoped to the task-relevant changed files plus any directly affected neighbors.
+1. If `{{reportDir}}/REVIEWER_TASK.md` exists, read it first and treat it as this phase's normalized input/feedback contract.
+2. Read TASK.md for the original task description
+3. Read `{{reportDir}}/EXPLORER_REPORT.md` (if exists) for architecture context
+4. Read `{{reportDir}}/QA_REPORT.md` for test results
+5. Review the changed files for this task (use git diff against the base branch). For narrow tasks, keep review scoped to the task-relevant changed files plus any directly affected neighbors.
    - For Foreman runtime/state/MCP/activity-feed work during the Elixir cutover, review the Elixir server (`packages/foreman_server/`), MCP/Elixir client, and current CLI/read-model consumer paths actually changed by the implementation. Do **not** fail a review because `PostgresStore`, `src/lib/store.ts`, or other legacy Postgres/native TS storage was not changed unless the task explicitly targets that legacy path.
    - If the implementation uses Elixir lifecycle events, MCP inbox/events, or log-derived activity messages, evaluate whether that current path satisfies the requirement instead of requiring a new legacy TS `ActivityFeedService`.
-5. Check for:
+6. Check for:
    - Bugs, logic errors, off-by-one errors
    - Security vulnerabilities (injection, XSS, etc.)
    - Missing edge cases or error handling
    - Whether the implementation actually satisfies the requirement
    - Code quality: naming, structure, unnecessary complexity
-6. Write your findings to **{{reportDir}}/REVIEW.md** (create the directory first with `mkdir -p "{{reportDir}}"`).
-7. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
+7. Write your findings to **{{reportDir}}/REVIEW.md** (create the directory first with `mkdir -p "{{reportDir}}"`).
+8. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
 
 ## REVIEW.md Format
 ```markdown

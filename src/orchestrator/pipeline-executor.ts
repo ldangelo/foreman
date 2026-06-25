@@ -25,7 +25,6 @@ import { ROLE_CONFIGS } from "./roles.js";
 import {
   buildPhasePrompt,
   parseVerdict,
-  extractIssues,
   parseFinalizeFailureScope,
   parseFinalizeIntegrationStatus,
   parseFinalizeValidationStatus,
@@ -310,6 +309,47 @@ function readRelativeFile(worktreePath: string, relativePath?: string): string |
   if (!relativePath) return null;
   const path = resolveArtifactPath(worktreePath, relativePath);
   try { return readFileSync(path, "utf-8"); } catch { return null; }
+}
+
+function phaseTaskInputFilename(phaseName: string): string {
+  const safeName = phaseName.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "phase";
+  return `${safeName.toUpperCase()}_TASK.md`;
+}
+
+export function writePhaseTaskInput(options: {
+  reportDir: string;
+  targetPhase: string;
+  sourcePhase: string;
+  sourceArtifact?: string;
+  error?: string;
+  feedback: string;
+  retryAttempt?: number;
+  maxRetries?: number;
+  mode?: "retry" | "forwarded-feedback";
+}): string {
+  const targetFile = join(options.reportDir, phaseTaskInputFilename(options.targetPhase));
+  mkdirSync(dirname(targetFile), { recursive: true });
+  const retryLine = options.retryAttempt !== undefined && options.maxRetries !== undefined
+    ? `\n## Retry Attempt\n${options.retryAttempt}/${options.maxRetries}\n`
+    : "";
+  const sourceArtifactLine = options.sourceArtifact ? `\n## Source Artifact\n${options.sourceArtifact}\n` : "";
+  const errorLine = options.error ? `\n## Failure\n${options.error}\n` : "";
+  const content = `# Phase Task: ${options.targetPhase}
+
+## Mode
+${options.mode ?? "retry"}
+
+## Source Phase
+${options.sourcePhase}
+${sourceArtifactLine}${retryLine}${errorLine}
+## Required Action
+Address the feedback below. Stay scoped to the source phase findings and do not re-triage unrelated work.
+
+## Feedback
+${options.feedback.trim() || "(no feedback content)"}
+`;
+  writeFileSync(targetFile, content, "utf-8");
+  return targetFile;
 }
 
 function sendTraceMail(
@@ -1460,6 +1500,7 @@ async function runPhaseSequence(
 ): Promise<PhaseSequenceResult> {
   const { config, workflowConfig, store, logFile, notifyClient, agentMailClient } = ctx;
   const { runId, projectId, seedId, seedTitle, worktreePath } = config;
+  const reportDir = getRunReportsDir(projectId, seedId, runId);
   const description = config.seedDescription ?? "(no description)";
   const comments = config.seedComments;
 
@@ -1875,11 +1916,21 @@ async function runPhaseSequence(
 
           if (currentRetries < maxRetries) {
             retryCounts[retryCountKey] = currentRetries + 1;
+            const taskInputPath = writePhaseTaskInput({
+              reportDir,
+              targetPhase: retryTarget,
+              sourcePhase: phaseName,
+              sourceArtifact: interpolatedArtifact,
+              error: errorMsg,
+              feedback,
+              retryAttempt: currentRetries + 1,
+              maxRetries,
+            });
             if (phase.mail?.onFail) {
               const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
               ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
             }
-            feedbackContext = feedback;
+            feedbackContext = `Read ${taskInputPath} and address only the listed ${phaseName} findings.`;
             ctx.sendMail(agentMailClient, "foreman", "agent-error", {
               seedId, phase: phaseName, error: errorMsg, retryable: true,
             });
@@ -1990,11 +2041,21 @@ async function runPhaseSequence(
 
           if (currentRetries < maxRetries) {
             retryCounts[retryCountKey] = currentRetries + 1;
+            const taskInputPath = writePhaseTaskInput({
+              reportDir,
+              targetPhase: retryTarget,
+              sourcePhase: phaseName,
+              sourceArtifact: interpolatedArtifact,
+              error: errorMsg,
+              feedback,
+              retryAttempt: currentRetries + 1,
+              maxRetries,
+            });
             if (phase.mail?.onFail) {
               const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
               ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
             }
-            feedbackContext = feedback;
+            feedbackContext = `Read ${taskInputPath} and address only the listed ${phaseName} findings.`;
             ctx.sendMail(agentMailClient, "foreman", "agent-error", {
               seedId, phase: phaseName, error: errorMsg, retryable: true,
             });
@@ -2057,6 +2118,16 @@ async function runPhaseSequence(
               ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
               : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
             ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
+            if (phase.mail.forwardArtifactTo !== "foreman") {
+              writePhaseTaskInput({
+                reportDir,
+                targetPhase: phase.mail.forwardArtifactTo,
+                sourcePhase: phaseName,
+                sourceArtifact: phase.artifact,
+                feedback: artifactContent,
+                mode: "forwarded-feedback",
+              });
+            }
           }
         }
       }
@@ -2280,7 +2351,17 @@ async function runPhaseSequence(
         const maxRetries = phase.retryOnFail ?? 2;
         if (currentRetries < maxRetries) {
           retryCounts[retryCountKey] = currentRetries + 1;
-          feedbackContext = redPhaseGateFeedback;
+          const taskInputPath = writePhaseTaskInput({
+            reportDir,
+            targetPhase: phaseName,
+            sourcePhase: phaseName,
+            sourceArtifact: interpolatedArtifact,
+            error: errorMsg,
+            feedback: redPhaseGateFeedback,
+            retryAttempt: currentRetries + 1,
+            maxRetries,
+          });
+          feedbackContext = `Read ${taskInputPath} and address only the listed ${phaseName} gate findings.`;
           ctx.sendMailText(agentMailClient, `${phaseName}-${seedId}`, `Red Phase Gate Feedback - Retry ${currentRetries + 1}`, redPhaseGateFeedback);
           ctx.log(`[TEST-RED] Gate failed — retrying red phase before test review (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] red phase gate failed before test review, retrying test-red (retry ${currentRetries + 1}/${maxRetries})\n`);
@@ -2295,7 +2376,17 @@ async function runPhaseSequence(
         const maxRetries = developerGateRetryLimit(phases, phaseName);
         if (currentRetries < maxRetries) {
           retryCounts[retryCountKey] = currentRetries + 1;
-          feedbackContext = developerGateFeedback;
+          const taskInputPath = writePhaseTaskInput({
+            reportDir,
+            targetPhase: phaseName,
+            sourcePhase: phaseName,
+            sourceArtifact: interpolatedArtifact,
+            error: errorMsg,
+            feedback: developerGateFeedback,
+            retryAttempt: currentRetries + 1,
+            maxRetries,
+          });
+          feedbackContext = `Read ${taskInputPath} and address only the listed ${phaseName} gate findings.`;
           ctx.sendMailText(agentMailClient, `${phaseName}-${seedId}`, `Developer Gate Feedback - Retry ${currentRetries + 1}`, developerGateFeedback);
           ctx.log(`[DEVELOPER] Gate failed — retrying developer before QA (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] developer gate failed before QA, retrying developer (retry ${currentRetries + 1}/${maxRetries})\n`);
@@ -2412,6 +2503,16 @@ async function runPhaseSequence(
                     ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
                     : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
                   ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
+                  if (phase.mail.forwardArtifactTo !== "foreman") {
+                    writePhaseTaskInput({
+                      reportDir,
+                      targetPhase: phase.mail.forwardArtifactTo,
+                      sourcePhase: phaseName,
+                      sourceArtifact: interpolatedArtifact,
+                      feedback: artifactContent,
+                      mode: "forwarded-feedback",
+                    });
+                  }
                 }
               }
               i++;
@@ -2633,12 +2734,12 @@ async function runPhaseSequence(
 
         if (currentRetries < maxRetries) {
           retryCounts[retryCountKey] = currentRetries + 1;
+          let feedbackBody = report ?? feedbackContext ?? `(${phaseName} failed but no report)`;
 
           if (phase.mail?.onFail && report) {
             const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
             // Parse structured failure items from QA report
             const parsedReport = parseQAFailures(report);
-            let feedbackBody = report;
 
             // Inject structured checklist for QA/reviewer failures targeting developer
             if (usesStructuredFailureChecklist(phase) && parsedReport.items.length > 0) {
@@ -2689,7 +2790,17 @@ async function runPhaseSequence(
 
             ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedbackBody);
           }
-          feedbackContext = feedbackContext ?? (report ? extractIssues(report) : `(${phaseName} failed but no report)`);
+          const taskInputPath = writePhaseTaskInput({
+            reportDir,
+            targetPhase: retryTarget,
+            sourcePhase: phaseName,
+            sourceArtifact: interpolatedArtifact,
+            error: feedbackContext,
+            feedback: feedbackBody,
+            retryAttempt: currentRetries + 1,
+            maxRetries,
+          });
+          feedbackContext = `Read ${taskInputPath} and address only the listed ${phaseName} findings.`;
 
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
@@ -2755,6 +2866,16 @@ async function runPhaseSequence(
           ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
           : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
         ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
+        if (phase.mail.forwardArtifactTo !== "foreman") {
+          writePhaseTaskInput({
+            reportDir,
+            targetPhase: phase.mail.forwardArtifactTo,
+            sourcePhase: phaseName,
+            sourceArtifact: phase.artifact,
+            feedback: artifactContent,
+            mode: "forwarded-feedback",
+          });
+        }
       }
     }
 

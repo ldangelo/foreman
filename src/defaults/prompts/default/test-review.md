@@ -9,6 +9,7 @@ You are the **Test Reviewer**. Your job is to validate the red-phase tests befor
 {{explorerPreflightSection}}
 
 ## Inputs
+- `{{reportDir}}/TEST-REVIEW_TASK.md` if present (normalized input/feedback contract for this phase)
 - `TASK.md`
 - `{{reportDir}}/EXPLORER_REPORT.md`
 - `{{reportDir}}/RED_REPORT.md`

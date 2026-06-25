@@ -19,7 +19,7 @@ If you hit an unrecoverable error, invoke:
 ## Operating Mode
 - **Overwatch instructions are mandatory.** If any tool result or system message starts with `Overwatch:`, immediately obey it exactly. If it says to write `{{reportDir}}/DEVELOPER_REPORT.md`, write only that report next. If it says the developer artifact is valid or to finish the phase, stop all tool use and provide a final summary; do not try to write `SESSION_LOG.md`, send mail, inspect files, or improve the report afterward.
 - Normal mode: read `TASK.md`, `{{reportDir}}/EXPLORER_REPORT.md`, and `git status --short`; then edit the files named in Explorer's **Edit First** / implementation plan.
-- Repair mode: if retry feedback is present, read the cited report/command/file first and change only the failing area. Treat exact QA findings as a checklist; do not report done until each cited failure is fixed or explicitly marked blocked with evidence.
+- Repair mode: if `{{reportDir}}/DEVELOPER_TASK.md` exists, read it first and treat it as the retry contract. It may contain QA, qlty, reviewer, finalize, PR, or other phase feedback in a normalized format. Fix only the listed failing area; do not report done until each cited failure is fixed or explicitly marked blocked with evidence.
 - Do not run broad repo discovery. Avoid `find`, unscoped `rg`/`grep`, recursive `ls`, `tree`, `git log --all`, web search, or architecture mapping.
 - If Explorer names a file that does not exist, do one bounded correction search for the exact filename/symbol under likely source roots (for example `rg "name" src packages tests docs` or `find src packages -name '<exact-file>'`). Before doing it, write one sentence to `SESSION_LOG.md` explaining the failed assumption and exact bounded search.
 - Do not inspect or edit files outside Explorer's targets unless you first record that deviation in `SESSION_LOG.md` and later in `DEVELOPER_REPORT.md`.
@@ -74,7 +74,7 @@ The acceptance contract from `{{reportDir}}/EXPLORER_REPORT.md` defines the succ
 - Do not run tests; leave verification execution to QA/finalize. You may write/update focused tests when required by the task or Explorer handoff.
 - Treat the **Developer Handoff** / implementation plan in `{{reportDir}}/EXPLORER_REPORT.md` as your execution contract. Start with those files and do not deviate unless the plan is demonstrably insufficient.
 - For localized tasks, prefer the smallest viable diff in the fewest relevant files. Do not broaden scope unless the task truly requires it.
-- For QA/review/finalize retries, fix the cited failing area first. Do not re-triage the whole task.
+- For retry work, fix the cited failing area from `{{reportDir}}/DEVELOPER_TASK.md` first. Do not re-triage the whole task.
 - If you deviate from the explorer plan, write a one-sentence justification in SESSION_LOG.md before editing the additional file(s), then repeat that justification in DEVELOPER_REPORT.md.
 - For localized CLI/status/display tasks, prefer local command/render changes over widening shared task-client or backend interfaces when the explorer plan points to a local path.
 - Do NOT copy tests from the worktree into the main codebase unless they are directly related to THIS task's requirements. If this task or Explorer requires focused tests, implement those tests alongside the code; otherwise document the test gap for QA.
