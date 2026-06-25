@@ -10,6 +10,11 @@ const mockForemanForProject = vi.hoisted(() => vi.fn());
 const mockPostgresForProject = vi.hoisted(() => vi.fn());
 const mockDispatcherCtor = vi.hoisted(() => vi.fn());
 const mockPostgresAdapterCtor = vi.hoisted(() => vi.fn());
+const mockElixirManagerCtor = vi.hoisted(() => vi.fn());
+const mockElixirClientCtor = vi.hoisted(() => vi.fn());
+const mockElixirGetTask = vi.hoisted(() => vi.fn());
+const mockElixirListRuns = vi.hoisted(() => vi.fn());
+const mockElixirSendCommand = vi.hoisted(() => vi.fn());
 
 const mockLocalTaskClient = {
   show: vi.fn().mockResolvedValue({ status: "open", title: "Local bead" }),
@@ -79,7 +84,17 @@ vi.mock("../../orchestrator/dispatcher.js", () => ({
   Dispatcher: mockDispatcherCtor,
 }));
 
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: mockElixirManagerCtor,
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: mockElixirClientCtor,
+}));
+
 import { retryCommand } from "../commands/retry.js";
+
+const ORIGINAL_FOREMAN_BACKEND = process.env.FOREMAN_BACKEND;
 
 async function runCommand(args: string[]): Promise<void> {
   await retryCommand.parseAsync(["node", "foreman", ...args]);
@@ -88,6 +103,7 @@ async function runCommand(args: string[]): Promise<void> {
 describe("retry command bootstrap", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.FOREMAN_BACKEND;
 
     mockRequireProjectOrAllInMultiMode.mockResolvedValue(undefined);
     mockResolveRepoRootProjectPath.mockResolvedValue("/canonical/project");
@@ -103,6 +119,15 @@ describe("retry command bootstrap", () => {
     mockPostgresAdapterCtor.mockImplementation(function MockPostgresAdapterImpl(this: Record<string, unknown>) {
       return {};
     });
+    mockElixirManagerCtor.mockImplementation(function MockElixirServerManagerImpl() {
+      return { url: "http://127.0.0.1:4777", authToken: "token" };
+    });
+    mockElixirGetTask.mockResolvedValue({ task_id: "bead-1", project_id: "proj-1", status: "failed", title: "Registered bead" });
+    mockElixirListRuns.mockResolvedValue([]);
+    mockElixirSendCommand.mockResolvedValue({ ok: true, events: ["TaskUpdated"], projection_version: 1, correlation_id: "c1" });
+    mockElixirClientCtor.mockImplementation(function MockElixirServerClientImpl() {
+      return { getTask: mockElixirGetTask, listRuns: mockElixirListRuns, sendCommand: mockElixirSendCommand };
+    });
 
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -111,10 +136,12 @@ describe("retry command bootstrap", () => {
   });
 
   afterEach(() => {
+    if (ORIGINAL_FOREMAN_BACKEND === undefined) delete process.env.FOREMAN_BACKEND;
+    else process.env.FOREMAN_BACKEND = ORIGINAL_FOREMAN_BACKEND;
     vi.restoreAllMocks();
   });
 
-  it("resolves a registered retry bootstrap to the canonical project path from a non-canonical clone", async () => {
+  it("routes registered retry through Elixir in default backend mode", async () => {
     mockResolveRepoRootProjectPath.mockResolvedValue("/canonical/project");
     mockListRegisteredProjects.mockResolvedValue([
       { id: "proj-1", name: "my-project", path: "/canonical/project/../project" },
@@ -128,17 +155,36 @@ describe("retry command bootstrap", () => {
     });
     expect(mockForemanForProject).toHaveBeenCalledWith("/canonical/project");
     expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/canonical/project");
-    expect(mockPostgresForProject).toHaveBeenCalledWith("proj-1");
+    expect(mockPostgresForProject).not.toHaveBeenCalled();
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     expect(mockCreateTaskClient).not.toHaveBeenCalled();
-    expect(mockPostgresAdapterCtor).toHaveBeenCalledTimes(1);
-    expect(mockDispatcherCtor).toHaveBeenCalledTimes(1);
-    const overrides = (mockDispatcherCtor.mock.calls as unknown[][])[0]?.[4] as Record<string, unknown>;
-    const runOps = overrides.runOps as Record<string, unknown>;
-    expect(runOps.createRun).toBeTypeOf("function");
-    expect(runOps.updateRun).toBeTypeOf("function");
-    expect(runOps.sendMessage).toBeTypeOf("function");
-    expect(runOps.logEvent).toBeTypeOf("function");
+    expect(mockPostgresAdapterCtor).not.toHaveBeenCalled();
+    expect(mockDispatcherCtor).not.toHaveBeenCalled();
+    expect(mockElixirClientCtor).toHaveBeenCalledWith("http://127.0.0.1:4777", "token");
+    expect(mockElixirGetTask).toHaveBeenCalledWith("bead-1");
 
+  });
+
+  it("sends Elixir task/run retry events for registered projects", async () => {
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "my-project", path: "/canonical/project" },
+    ]);
+    mockElixirGetTask.mockResolvedValue({ task_id: "bead-1", project_id: "proj-1", status: "failed", title: "Registered bead" });
+    mockElixirListRuns.mockResolvedValue([
+      { run_id: "run-1", task_id: "bead-1", project_id: "proj-1", status: "completed", created_at: "2026-01-01T00:00:00.000Z" },
+    ]);
+
+    await runCommand(["bead-1"]);
+
+    expect(mockElixirSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.update",
+      payload: expect.objectContaining({ project_id: "proj-1", task_id: "bead-1", status: "ready" }),
+    }));
+    expect(mockElixirSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "run.reset",
+      payload: expect.objectContaining({ project_id: "proj-1", run_id: "run-1", reason: "foreman retry" }),
+    }));
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
   });
 
   it("keeps local/unregistered behavior unchanged", async () => {

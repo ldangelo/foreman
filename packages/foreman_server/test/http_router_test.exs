@@ -101,6 +101,41 @@ defmodule ForemanServer.Http.RouterTest do
     assert ProjectionStore.snapshot().runs["run-http-fail"].status == "failed"
   end
 
+  test "authorized run.reset command marks run terminal reset" do
+    append_run_event("RunStarted", %{
+      run_id: "run-http-reset",
+      task_id: "task-http-reset",
+      project_id: "proj-http",
+      phase_order: ["developer"],
+      current_phase: "developer"
+    })
+
+    command = %{
+      "command_id" => "cmd-run-reset",
+      "command_type" => "run.reset",
+      "schema_version" => 1,
+      "payload" => %{
+        "run_id" => "run-http-reset",
+        "project_id" => "proj-http",
+        "reason" => "foreman retry"
+      },
+      "metadata" => %{"correlation_id" => "run-http-reset"}
+    }
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    projection = ProjectionStore.snapshot()
+    assert conn.status == 202
+    assert projection.runs["run-http-reset"].status == "reset"
+    assert projection.runs["run-http-reset"].current_phase == nil
+    assert projection.status_counts.active == 0
+  end
+
   test "authorized phase commands append lifecycle projection events" do
     append_run_event("RunStarted", %{
       run_id: "run-http-phase",

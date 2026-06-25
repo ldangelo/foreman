@@ -3,7 +3,7 @@ defmodule ForemanServer.ProjectionStore do
 
   use GenServer
 
-  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged"])
+  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged", "reset"])
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -427,6 +427,34 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:fatal, Map.get(payload, :fatal, true))
     end)
     |> update_task_for_terminal_run(run_id, "failed", payload)
+    |> apply_activity_and_notify(activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "RunReset", payload: %{run_id: run_id} = payload},
+         mode
+       ) do
+    activity_payload = %{
+      run_id: run_id,
+      event_type: "run_reset",
+      timestamp: Map.get(payload, :occurred_at, DateTime.utc_now()),
+      actor: Map.get(payload, :actor, "foreman"),
+      severity: "info",
+      summary: "Run reset: #{Map.get(payload, :reason, "manual retry")}",
+      phase: Map.get(payload, :phase_id),
+      source_link: Map.get(payload, :source_link),
+      log_path: Map.get(payload, :log_path)
+    }
+
+    projection
+    |> update_run_status(run_id, "reset")
+    |> update_run(run_id, fn run ->
+      run
+      |> Map.put(:current_phase, nil)
+      |> Map.put(:stuck, false)
+      |> Map.put(:fatal, false)
+    end)
     |> apply_activity_and_notify(activity_payload, mode)
   end
 

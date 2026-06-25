@@ -282,7 +282,7 @@ The board also monitors agent inbox updates and task `updated_at` changes. When 
 
 Use retry/reset surgically.
 
-- Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
+- Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun. In Elixir mode this records task/run retry events and lets the scheduler pick up the ready task on its next tick.
 - Use `foreman reset --bead <task-id>` to clear failed/stuck run state and make the task retryable.
 - Use `foreman reset --bead <task-id> --preserve-worktree` (or `--retry-failed-phase`) when a repair should keep the failed run's branch/worktree instead of starting from a clean checkout. Preserved worktrees refresh `.foreman/workflows` and `.foreman/prompts` from the project before the next dispatch.
 - Use `--dry-run` before destructive cleanup.

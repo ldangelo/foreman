@@ -203,6 +203,12 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event("run.reset", payload) do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
+      {:ok, "RunReset", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
+    end
+  end
+
   defp domain_event("phase.start", payload), do: phase_event("PhaseStarted", payload)
   defp domain_event("phase.complete", payload), do: phase_event("PhaseCompleted", payload)
   defp domain_event("phase.fail", payload), do: phase_event("PhaseFailed", payload)

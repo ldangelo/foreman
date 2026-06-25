@@ -5,6 +5,9 @@ import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
@@ -55,6 +58,99 @@ function createDaemonTaskClient(client: ReturnType<typeof createTrpcClient>, pro
     async list() { return []; },
     async close() { throw new Error("not implemented"); },
   } as ITaskClient;
+}
+
+function createElixirTaskClient(client: ElixirServerClient, projectId: string): ITaskClient {
+  async function send(commandType: string, payload: Record<string, unknown>): Promise<void> {
+    const response = await client.sendCommand({
+      command_id: `cli-retry-${commandType}-${Date.now()}`,
+      command_type: commandType,
+      payload: { project_id: projectId, ...payload },
+      metadata: { source: "foreman retry" },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+  }
+
+  return {
+    async show(id: string) {
+      const task = await client.getTask(id);
+      if (!task || (task.project_id && task.project_id !== projectId)) throw new Error(`Task '${id}' not found`);
+      return { status: task.status ?? "open", description: task.description ?? null, title: task.title };
+    },
+    async update(id: string, opts) {
+      await send("task.update", {
+        task_id: id,
+        status: opts.status,
+        title: opts.title,
+        description: opts.description ?? undefined,
+        updated_by: "foreman retry",
+      });
+    },
+    async resetToReady(id: string) {
+      await send("task.update", { task_id: id, status: "ready", updated_by: "foreman retry" });
+    },
+    async ready() { return []; },
+    async list() { return []; },
+    async close() { throw new Error("not implemented"); },
+  } as ITaskClient;
+}
+
+function adaptElixirRun(row: ElixirRun): import("../../lib/store.js").Run {
+  const runId = String(row.run_id ?? row.id ?? "");
+  const taskId = String(row.task_id ?? row.seed_id ?? "");
+  const rawStatus = String(row.status ?? "pending");
+  const status = rawStatus === "in_progress" ? "running" : rawStatus;
+  const mergeStrategy = typeof row.merge_strategy === "string" && ["auto", "pr", "none"].includes(row.merge_strategy)
+    ? row.merge_strategy as "auto" | "pr" | "none"
+    : "auto";
+  return {
+    id: runId,
+    project_id: String(row.project_id ?? ""),
+    seed_id: taskId,
+    agent_type: String(row.agent_type ?? row.model ?? "sonnet"),
+    status: status as import("../../lib/store.js").Run["status"],
+    session_key: typeof row.session_key === "string" ? row.session_key : null,
+    worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : null,
+    started_at: typeof row.started_at === "string" ? row.started_at : null,
+    completed_at: typeof row.completed_at === "string" ? row.completed_at : null,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date(0).toISOString(),
+    progress: null,
+    tmux_session: null,
+    base_branch: typeof row.base_branch === "string" ? row.base_branch : null,
+    merge_strategy: mergeStrategy,
+  };
+}
+
+function createElixirRetryStore(client: ElixirServerClient, project: { id: string; path: string }): RetryStore {
+  async function send(commandType: string, payload: Record<string, unknown>): Promise<void> {
+    const response = await client.sendCommand({
+      command_id: `cli-retry-${commandType}-${Date.now()}`,
+      command_type: commandType,
+      payload: { project_id: project.id, ...payload },
+      metadata: { source: "foreman retry" },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+  }
+
+  return {
+    async getProjectByPath(path: string) {
+      return path === project.path ? project : null;
+    },
+    async getRunsForSeed(seedId: string, projectId: string) {
+      return (await client.listRuns(projectId))
+        .filter((run) => String(run.task_id ?? run.seed_id ?? "") === seedId)
+        .map(adaptElixirRun)
+        .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+    },
+    async updateRun(runId: string, updates) {
+      if (updates.status === "reset") {
+        await send("run.reset", { run_id: runId, reason: "foreman retry" });
+      } else if (updates.status === "failed") {
+        await send("run.fail", { run_id: runId, reason: "foreman retry", fatal: false });
+      }
+    },
+    async logEvent(_projectId: string, _eventType: "restart", _data: Record<string, unknown>, _runId?: string) {},
+  };
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -233,7 +329,10 @@ export async function retryAction(
         ? new Dispatcher(beadsClient, store, projectPath)
         : null);
     if (!disp) {
-      throw new Error("Dispatcher unavailable for daemon-backed retry path.");
+      console.log(chalk.dim("  Elixir scheduler will dispatch the ready task on its next tick."));
+      console.log();
+      console.log(dryRun ? chalk.yellow("Dry run complete — no changes were made.") : chalk.green("Done."));
+      return 0;
     }
     const result = await disp.dispatch({
       maxAgents: 1,
@@ -310,11 +409,24 @@ export const retryCommand = new Command("retry")
 
     const localStore = ForemanStore.forProject(projectPath);
     const registered = await findRegisteredProjectByPath(projectPath, { normalizePaths: true });
-    const store: RetryStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(localStore);
+    const useElixir = Boolean(registered) && foremanBackendMode() === "elixir";
+    const elixirClient = useElixir
+      ? (() => {
+          const manager = new ElixirServerManager();
+          return new ElixirServerClient(manager.url, manager.authToken);
+        })()
+      : null;
+    const store: RetryStore = registered
+      ? (useElixir && elixirClient
+          ? createElixirRetryStore(elixirClient, { id: registered.id, path: projectPath })
+          : PostgresStore.forProject(registered.id))
+      : wrapLocalRunStore(localStore);
     const { taskClient, backendType } = registered
-      ? { taskClient: createDaemonTaskClient(createTrpcClient(), registered.id), backendType: "native" as const }
+      ? (useElixir && elixirClient
+          ? { taskClient: createElixirTaskClient(elixirClient, registered.id), backendType: "native" as const }
+          : { taskClient: createDaemonTaskClient(createTrpcClient(), registered.id), backendType: "native" as const })
       : await createTaskClient(projectPath);
-    const dispatcher = registered
+    const dispatcher = registered && !useElixir
       ? (() => {
           const pg = new PostgresAdapter();
           return new Dispatcher(taskClient, localStore, projectPath, null, {

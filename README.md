@@ -681,7 +681,7 @@ foreman reset --task task-abc --preserve-worktree  # Keep branch/worktree for re
 ```
 
 ### `foreman retry`
-Retry a task in place, optionally dispatching it again immediately.
+Retry a task in place. In default Elixir mode, retry writes `task.update` plus `run.fail`/`run.reset` events and the scheduler dispatches the ready task on its next tick when `--dispatch` is used.
 
 ```bash
 foreman retry task-abc                  # Reset one task to ready

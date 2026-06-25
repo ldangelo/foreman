@@ -594,7 +594,7 @@ foreman reset --dry-run           # Preview what would be reset
 
 ### `foreman retry`
 
-Reset a task and optionally re-dispatch it immediately.
+Reset a task and optionally queue it for immediate scheduler dispatch. In default Elixir mode, retry writes task/run events through the Elixir command API; `--dispatch` marks the task ready for the scheduler's next tick.
 
 ```bash
 foreman retry bd-abc1             # Reset task to ready
@@ -606,7 +606,7 @@ foreman retry bd-abc1 --dry-run   # Preview
 
 | Option | Description |
 |--------|-------------|
-| `--dispatch` | Dispatch immediately after reset |
+| `--dispatch` | Dispatch immediately after reset (Elixir: ready task is picked up on the scheduler's next tick) |
 | `--model <model>` | Override the agent model |
 | `--dry-run` | Show what would happen |
 | `--project <name-or-path>` | Target a registered project name or absolute project path |
