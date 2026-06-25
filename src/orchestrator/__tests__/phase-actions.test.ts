@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction, isDispatcherPhaseAction } from "../phase-actions.js";
+import { DEFAULT_PHASE_ACTION_CAPABILITIES, getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction, isDispatcherPhaseAction } from "../phase-actions.js";
 import type { WorkflowPhaseConfig } from "../../lib/workflow-loader.js";
 
 describe("phase actions", () => {
@@ -20,6 +20,11 @@ describe("phase actions", () => {
   it("classifies custom actions as builtin execution path even with config fields", () => {
     expect(getPhaseActionDescriptor({ name: "notify", action: "notify-slack" })).toMatchObject({ kind: "builtin" });
     expect(getPhaseActionDescriptor({ name: "notify", action: "notify-slack", prompt: "notify.md" })).toMatchObject({ kind: "builtin" });
+  });
+
+  it("declares default capabilities for privileged builtins", () => {
+    expect(DEFAULT_PHASE_ACTION_CAPABILITIES["create-pr"]).toEqual(expect.arrayContaining(["vcs", "mail", "task-store", "network"]));
+    expect(DEFAULT_PHASE_ACTION_CAPABILITIES.finalize).toEqual(expect.arrayContaining(["vcs", "exec"]));
   });
 
   it("classifies execution paths by action kind", () => {

@@ -64,7 +64,7 @@ import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { runWorkspaceHook } from "../lib/setup.js";
 import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
-import { inferPhaseActionType } from "./phase-actions.js";
+import { DEFAULT_PHASE_ACTION_CAPABILITIES, inferPhaseActionType } from "./phase-actions.js";
 import { loadProjectAction } from "./action-loader.js";
 import { assertPhaseActionResult } from "./action-results.js";
 import type { ActionCapability } from "./workspace-actions.js";
@@ -1241,7 +1241,7 @@ async function runPipeline(
             requireCapability: (capability: ActionCapability) => void;
             internal: { runBuiltin: () => Promise<import("./pipeline-executor.js").PhaseResult> };
           }, import("./pipeline-executor.js").PhaseResult>(pipelineProjectPath, actionType);
-          const declaredCapabilities = phase.capabilities ?? [];
+          const declaredCapabilities = phase.capabilities ?? DEFAULT_PHASE_ACTION_CAPABILITIES[actionType] ?? [];
           const declaredCapabilitySet = new Set(declaredCapabilities);
           const requireCapability = (capability: ActionCapability): void => {
             if (!declaredCapabilitySet.has(capability)) {

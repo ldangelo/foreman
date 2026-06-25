@@ -20,6 +20,15 @@ const BUILTIN_PHASE_ACTIONS = new Set([
   "merge",
 ]);
 
+export const DEFAULT_PHASE_ACTION_CAPABILITIES: Record<string, string[]> = {
+  "cli-review": ["vcs", "exec"],
+  finalize: ["vcs", "exec"],
+  "create-pr": ["vcs", "mail", "task-store", "network"],
+  "pr-wait": ["vcs", "network"],
+  "prepare-pr-review": ["vcs", "network"],
+  merge: ["vcs", "mail", "task-store", "network"],
+};
+
 export const DISPATCHER_PHASE_ACTIONS = new Set([
   "prepare-worktree",
   "setup-workspace",
