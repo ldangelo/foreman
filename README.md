@@ -858,6 +858,7 @@ foreman task update task-123 --status review     # branch/PR is awaiting review 
 foreman task close task-123
 foreman task dep add task-tests task-feature   # tests depend on feature
 foreman task dep list task-123                 # show dependencies
+foreman task dep remove task-tests task-feature # remove dependency
 ```
 
 All task operations route through `TrpcClient` → daemon's Postgres store when daemon is running; otherwise they use direct PostgreSQL access via ForemanStore. Native status `review` means the pipeline has finished and the branch/PR is waiting for review or merge; phase status `reviewer` is reserved for an actively running reviewer agent.

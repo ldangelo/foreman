@@ -13,10 +13,14 @@
 import chalk from "chalk";
 import ora from "ora";
 import { accessSync, constants as fsConstants, readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { normalizePriority } from "../../lib/priority.js";
 import type { Issue } from "../../lib/task-client.js";
+import { findRegisteredProjectByPath } from "./project-context.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -41,6 +45,7 @@ export interface CreateFromTextOptions {
   dryRun?: boolean;
   llm: boolean; // false when --no-llm is passed
   model?: string;
+  target?: "beads" | "elixir";
 }
 
 // ── Client factory (TRD-015) ──────────────────────────────────────────────
@@ -115,6 +120,106 @@ export function createBeadClient(
   return new LazyBeadsCommandClient(projectPath);
 }
 
+class ElixirTaskCommandClient implements BeadCommandClient {
+  private client?: ElixirServerClient;
+  private projectId?: string;
+  private projectName?: string;
+  private existingIds = new Set<string>();
+
+  constructor(private readonly projectPath: string) {}
+
+  async ensureBrInstalled(): Promise<void> {
+    const record = await findRegisteredProjectByPath(this.projectPath, {
+      normalizePaths: true,
+      initPool: false,
+    });
+    if (!record) {
+      throw new Error(`Project at '${this.projectPath}' is not registered with Foreman. Run 'foreman project list' to see registered projects.`);
+    }
+
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    if (!status.running) {
+      throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+    }
+
+    this.projectId = record.id;
+    this.projectName = record.name || basename(this.projectPath);
+    this.client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    const tasks = await this.client.listTasks();
+    this.existingIds = new Set(
+      tasks
+        .filter((task) => !task.project_id || task.project_id === this.projectId)
+        .map((task) => task.task_id ?? task.id ?? "")
+        .filter((id) => id.length > 0),
+    );
+  }
+
+  async isInitialized(): Promise<boolean> {
+    return this.client !== undefined && this.projectId !== undefined;
+  }
+
+  async create(
+    title: string,
+    opts?: {
+      type?: string;
+      priority?: string;
+      parent?: string;
+      description?: string;
+      labels?: string[];
+    },
+  ): Promise<Issue> {
+    if (!this.client || !this.projectId || !this.projectName) throw new Error("Elixir task client is not initialized.");
+    const id = this.allocateTaskId();
+    const priority = opts?.priority ? normalizePriority(opts.priority) : 2;
+    const response = await this.client.sendCommand({
+      command_id: `cli-task-create-text-${Date.now()}-${randomBytes(4).toString("hex")}`,
+      command_type: "task.create",
+      payload: {
+        task_id: id,
+        project_id: this.projectId,
+        title,
+        description: opts?.description,
+        task_type: opts?.type ?? "task",
+        priority,
+        status: "backlog",
+        dependencies: opts?.parent ? [opts.parent] : [],
+        source: "cli-from-text",
+      },
+      metadata: { correlation_id: `cli-task-create-text-${Date.now()}` },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    return { id, title } as Issue;
+  }
+
+  async addDependency(fromId: string, toId: string): Promise<void> {
+    if (!this.client) throw new Error("Elixir task client is not initialized.");
+    const response = await this.client.sendCommand({
+      command_id: `cli-task-dep-${Date.now()}-${randomBytes(4).toString("hex")}`,
+      command_type: "task.add_dependency",
+      payload: { task_id: fromId, depends_on: toId, type: "blocks" },
+      metadata: { correlation_id: `cli-task-dep-${Date.now()}` },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+  }
+
+  private allocateTaskId(): string {
+    const prefix = (this.projectName ?? "task")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "task";
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+      const candidate = `${prefix}-${randomBytes(3).toString("hex").slice(0, 5)}`;
+      if (!this.existingIds.has(candidate)) {
+        this.existingIds.add(candidate);
+        return candidate;
+      }
+    }
+    throw new Error(`Unable to allocate a unique task ID for prefix '${prefix}'.`);
+  }
+}
+
 // ── Shared action ─────────────────────────────────────────────────────────
 
 /**
@@ -144,8 +249,12 @@ export async function createTasksFromText(
     inputText = description;
   }
 
-  // Initialise BeadsRust task client
-  const beads = createBeadClient(projectPath);
+  // Initialise target task client
+  const beads = opts.target === "elixir"
+    ? new ElixirTaskCommandClient(projectPath)
+    : createBeadClient(projectPath);
+  const noun = opts.target === "elixir" ? "task" : "bead";
+  const nounPlural = opts.target === "elixir" ? "tasks" : "beads";
 
   // Validate prerequisites
   try {
@@ -207,7 +316,7 @@ export async function createTasksFromText(
 
   // ── Display planned beads ──────────────────────────────────────────
 
-  console.log(chalk.bold.cyan(`\n Beads to create:\n`));
+  console.log(chalk.bold.cyan(`\n ${nounPlural[0]!.toUpperCase()}${nounPlural.slice(1)} to create:\n`));
   for (const issue of parsedIssues) {
     console.log(`  ${chalk.bold(issue.title)}`);
     if (issue.description) {
@@ -225,13 +334,13 @@ export async function createTasksFromText(
   }
 
   if (opts.dryRun) {
-    console.log(chalk.yellow("\n--dry-run: No beads were created."));
+    console.log(chalk.yellow(`\n--dry-run: No ${nounPlural} were created.`));
     return;
   }
 
-  // ── Create beads ───────────────────────────────────────────────────
+  // ── Create tasks/beads ─────────────────────────────────────────────
 
-  const createSpinner = ora("Creating beads...").start();
+  const createSpinner = ora(`Creating ${nounPlural}...`).start();
   const createdBeads: { id: string; title: string }[] = [];
   const titleToId = new Map<string, string>();
 
@@ -246,7 +355,7 @@ export async function createTasksFromText(
       });
       createdBeads.push({ id: bead.id, title: bead.title });
       titleToId.set(issue.title, bead.id);
-      createSpinner.text = `Creating beads… (${createdBeads.length}/${parsedIssues.length})`;
+      createSpinner.text = `Creating ${nounPlural}… (${createdBeads.length}/${parsedIssues.length})`;
     }
 
     // Add dependencies in a second pass (all beads must exist first)
@@ -266,14 +375,14 @@ export async function createTasksFromText(
       }
     }
 
-    createSpinner.succeed(`Created ${createdBeads.length} bead(s)`);
+    createSpinner.succeed(`Created ${createdBeads.length} ${nounPlural}`);
   } catch (err) {
-    createSpinner.fail("Failed to create beads");
+    createSpinner.fail(`Failed to create ${nounPlural}`);
     console.error(
       chalk.red(err instanceof Error ? err.message : String(err)),
     );
     if (createdBeads.length > 0) {
-      console.error(chalk.yellow(`\nBeads created before failure:`));
+      console.error(chalk.yellow(`\n${nounPlural[0]!.toUpperCase()}${nounPlural.slice(1)} created before failure:`));
       for (const b of createdBeads) {
         console.error(chalk.dim(`  ${b.id} — ${b.title}`));
       }
@@ -284,12 +393,12 @@ export async function createTasksFromText(
 
   // ── Display results ────────────────────────────────────────────────
 
-  console.log(chalk.bold.green("\n Created beads:\n"));
+  console.log(chalk.bold.green(`\n Created ${nounPlural}:\n`));
   for (const bead of createdBeads) {
     console.log(`  ${chalk.cyan(bead.id)} — ${bead.title}`);
   }
   console.log();
-  console.log(chalk.dim("Next: foreman run  — to dispatch work on ready beads"));
+  console.log(chalk.dim(`Next: foreman task approve <id>  — to make ${nounPlural} ready for dispatch`));
 }
 
 /**

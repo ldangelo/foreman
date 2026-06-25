@@ -399,6 +399,31 @@ async function getTask(context: TaskProjectContext, taskId: string): Promise<Tas
   return await context.client!.tasks.get({ projectId: context.projectId, taskId }) as TaskRow | null;
 }
 
+async function listElixirTaskDependencies(
+  context: TaskProjectContext,
+  taskId: string,
+  direction: "incoming" | "outgoing",
+): Promise<DependencyRow[]> {
+  const tasks = await context.elixir!.listTasks();
+  const projectTasks = tasks.filter((task) => !task.project_id || task.project_id === context.projectId);
+  if (direction === "incoming") {
+    const task = projectTasks.find((row) => (row.task_id ?? row.id) === taskId);
+    return (task?.dependencies ?? []).map((dependsOn) => ({
+      from_task_id: dependsOn,
+      to_task_id: taskId,
+      type: "blocks",
+    }) as DependencyRow);
+  }
+
+  return projectTasks
+    .filter((task) => (task.dependencies ?? []).includes(taskId))
+    .map((task) => ({
+      from_task_id: taskId,
+      to_task_id: task.task_id ?? task.id ?? "unknown",
+      type: "blocks",
+    }) as DependencyRow);
+}
+
 async function sendElixirTaskCommand(
   context: TaskProjectContext,
   commandType: string,
@@ -1001,6 +1026,7 @@ const createCommand = new Command("create")
             dryRun: opts.dryRun,
             llm: opts.llm,
             model: opts.model,
+            target: foremanBackendMode() === "elixir" ? "elixir" : "beads",
           },
           opts.projectPath ? resolve(opts.projectPath) : undefined,
         );
@@ -1429,14 +1455,14 @@ const showCommand = new Command("show")
           taskId: task.id,
           direction: "outgoing",
         }) as DependencyRow[]
-        : [];
+        : await listElixirTaskDependencies(context, task.id, "outgoing");
       const incoming = context.backend === "node"
         ? await context.client!.tasks.listDependencies({
           projectId,
           taskId: task.id,
           direction: "incoming",
         }) as DependencyRow[]
-        : [];
+        : await listElixirTaskDependencies(context, task.id, "incoming");
 
       if (incoming.length > 0) {
         console.log(chalk.bold("\n  Blocked by:"));
@@ -1779,21 +1805,20 @@ const depListCommand = new Command("list")
       const rows = await listAllTasks(context);
       const resolvedId = resolveTaskId(rows, id);
 
-      if (context.backend === "elixir") {
-        console.log(chalk.dim(`Task '${formatTaskIdDisplay(resolvedId)}' dependency listing is not yet projected by the Elixir backend.`));
-        return;
-      }
-
-      const blockedBy = await context.client!.tasks.listDependencies({
-        projectId: context.projectId,
-        taskId: resolvedId,
-        direction: "incoming",
-      }) as DependencyRow[];
-      const blocking = await context.client!.tasks.listDependencies({
-        projectId: context.projectId,
-        taskId: resolvedId,
-        direction: "outgoing",
-      }) as DependencyRow[];
+      const blockedBy = context.backend === "node"
+        ? await context.client!.tasks.listDependencies({
+          projectId: context.projectId,
+          taskId: resolvedId,
+          direction: "incoming",
+        }) as DependencyRow[]
+        : await listElixirTaskDependencies(context, resolvedId, "incoming");
+      const blocking = context.backend === "node"
+        ? await context.client!.tasks.listDependencies({
+          projectId: context.projectId,
+          taskId: resolvedId,
+          direction: "outgoing",
+        }) as DependencyRow[]
+        : await listElixirTaskDependencies(context, resolvedId, "outgoing");
 
       if (blockedBy.length === 0 && blocking.length === 0) {
         console.log(chalk.dim(`Task '${formatTaskIdDisplay(resolvedId)}' has no dependencies.`));
@@ -1839,14 +1864,19 @@ const depRemoveCommand = new Command("remove")
         const resolvedFromId = resolveTaskId(rows, fromId);
         const resolvedToId = resolveTaskId(rows, toId);
         if (context.backend === "elixir") {
-          throw new Error("Elixir backend does not yet support removing task dependencies.");
+          await sendElixirTaskCommand(context, "task.remove_dependency", {
+            task_id: resolvedToId,
+            depends_on: resolvedFromId,
+            type: opts.type,
+          });
+        } else {
+          await context.client!.tasks.removeDependency({
+            projectId: context.projectId,
+            fromTaskId: resolvedFromId,
+            toTaskId: resolvedToId,
+            type: opts.type as "blocks" | "parent-child",
+          });
         }
-        await context.client!.tasks.removeDependency({
-          projectId: context.projectId,
-          fromTaskId: resolvedFromId,
-          toTaskId: resolvedToId,
-          type: opts.type as "blocks" | "parent-child",
-        });
         console.log(
           chalk.green(
             `✓ Dependency removed: '${formatTaskIdDisplay(resolvedFromId)}' → '${formatTaskIdDisplay(resolvedToId)}'.`,

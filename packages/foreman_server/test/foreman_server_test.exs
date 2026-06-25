@@ -189,4 +189,44 @@ defmodule ForemanServerTest do
              "dependent"
            ]
   end
+
+  test "task dependency remove updates projection" do
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:ok, _} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-blocker",
+               command_type: "task.create",
+               payload: %{task_id: "blocker", status: "ready"}
+             })
+
+    assert {:ok, _} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-dependent",
+               command_type: "task.create",
+               payload: %{task_id: "dependent", status: "ready"}
+             })
+
+    assert {:ok, %{projection: projection}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-add-dep",
+               command_type: "task.add_dependency",
+               payload: %{task_id: "dependent", depends_on: "blocker"}
+             })
+
+    assert projection.tasks["dependent"].dependencies == ["blocker"]
+
+    assert {:ok,
+            %{
+              event: %ForemanServer.Event{event_type: "TaskDependencyRemoved"},
+              projection: projection
+            }} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-remove-dep",
+               command_type: "task.remove_dependency",
+               payload: %{task_id: "dependent", depends_on: "blocker"}
+             })
+
+    assert projection.tasks["dependent"].dependencies == []
+  end
 end

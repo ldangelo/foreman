@@ -148,7 +148,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman status
 ```
 
-Delegation supports legacy-only command paths only when `FOREMAN_BACKEND=node` is set for explicit legacy operation. Under the Elixir backend, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections; dependency add is command-backed, while dependency listing/removal still requires legacy mode until dependency projections land.
+Delegation supports legacy-only command paths only when `FOREMAN_BACKEND=node` is set for explicit legacy operation. Under the Elixir backend, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections; `task create --from-text` creates Elixir-backed native tasks, and dependency add/list/remove are command/projection-backed.
 
 ### 4. Create a Task
 

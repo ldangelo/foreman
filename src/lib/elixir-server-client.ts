@@ -54,6 +54,7 @@ export type ElixirTask = {
   closed_at?: string | null;
   approved_at?: string | null;
   annotations?: Array<{ body: string; author?: string; created_at?: string }>;
+  dependencies?: string[];
   run_id?: string | null;
 };
 

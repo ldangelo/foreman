@@ -311,6 +311,24 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(
          projection,
+         %{
+           type: "TaskDependencyRemoved",
+           payload: %{task_id: task_id, depends_on: depends_on} = payload
+         },
+         _mode
+       ) do
+    existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
+
+    task =
+      existing
+      |> Map.update(:dependencies, [], fn deps -> Enum.reject(deps, &(&1 == depends_on)) end)
+      |> Map.put(:updated_at, Map.get(payload, :updated_at))
+
+    put_in(projection, [:tasks, task_id], task)
+  end
+
+  defp apply_domain_event(
+         projection,
          %{type: "RunStarted", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
          _mode
        ) do

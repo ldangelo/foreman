@@ -204,6 +204,14 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event("task.remove_dependency", payload) do
+    with {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id),
+         {:ok, depends_on} <- required_binary(Map.get(payload, :depends_on), :depends_on) do
+      {:ok, "TaskDependencyRemoved", %{task_id: task_id, depends_on: depends_on},
+       "task:#{task_id}"}
+    end
+  end
+
   defp domain_event(command_type, command), do: command_accepted(command_type, command)
 
   defp command_accepted(command_type, command) do

@@ -4,7 +4,7 @@ defmodule ForemanServer.Security do
   alias ForemanServer.EventStore
 
   @destructive_command_types MapSet.new(~w(
-    task.block task.close task.update task.add_dependency
+    task.block task.close task.update task.add_dependency task.remove_dependency
     run.interrupt run.resume worker.interrupt worker.stop
     project.delete task.delete run.cancel reset retry stop merge pr.merge attach.interrupt
   ))
