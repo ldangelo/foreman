@@ -65,6 +65,17 @@ describe("project action loader", () => {
     await expect(action?.({ actionType: "notify" })).resolves.toEqual({ success: true, outputText: "helper:notify" });
   });
 
+  it("loads action modules that re-export helper functions", async () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-action-project-"));
+    mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
+    mkdirSync(join(project, ".foreman", "action-lib"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "action-lib", "notify.ts"), "export const run = async (ctx: { actionType: string }) => ({ success: true, outputText: `re:${ctx.actionType}` });\n");
+    writeFileSync(join(project, ".foreman", "actions", "notify.js"), "export { run } from '../action-lib/notify.ts';\n");
+
+    const action = await loadProjectAction<{ actionType: string }, { success: boolean; outputText: string }>(project, "notify");
+    await expect(action?.({ actionType: "notify" })).resolves.toEqual({ success: true, outputText: "re:notify" });
+  });
+
   it("prefers project actions over global actions", async () => {
     const project = mkdtempSync(join(tmpdir(), "foreman-action-project-"));
     const home = mkdtempSync(join(tmpdir(), "foreman-action-home-"));
