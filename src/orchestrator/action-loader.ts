@@ -54,7 +54,6 @@ async function importActionModule<Context, Result>(candidate: string): Promise<E
     platform: "node",
     format: "esm",
     target: "node20",
-    packages: "external",
     sourcemap: "inline",
   }).outputFiles[0]?.text;
   if (!bundled) throw new Error(`Action ${candidate} failed to compile`);
@@ -183,7 +182,6 @@ function hasValidActionSyntax(filePath: string): boolean {
       platform: "node",
       format: "esm",
       target: "node20",
-      packages: "external",
       logLevel: "silent",
     });
     return true;
