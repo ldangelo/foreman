@@ -30,7 +30,7 @@ foreman reset --task X --preserve-worktree  # Reset state, keep worktree/branch,
 foreman retry <seed>   # Re-run a failed pipeline phase
 foreman stop           # Gracefully stop all agents
 foreman doctor         # Health checks (br, Pi, DB integrity)
-foreman debug <id>     # AI-powered execution analysis (Opus)
+foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
 foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
@@ -242,7 +242,7 @@ phases:
 ```bash
 # AI-powered execution analysis
 foreman debug <bead-id>         # Full Opus analysis of pipeline run
-foreman debug <bead-id> --raw   # Dump all artifacts without AI
+foreman debug <bead-id> --raw   # Dump all artifacts without AI (Elixir API first, legacy fallback)
 foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs

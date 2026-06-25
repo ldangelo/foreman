@@ -696,7 +696,7 @@ foreman pr
 ```
 
 ### `foreman debug`
-AI-powered execution analysis using Opus to investigate pipeline runs.
+AI-powered execution analysis using Opus to investigate pipeline runs. Elixir-backed projects read run, inbox, report, and raw log artifacts from the Elixir HTTP API before legacy fallback.
 
 ```bash
 foreman debug task-abc                  # Full Opus analysis of a run

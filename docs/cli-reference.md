@@ -430,7 +430,7 @@ foreman board --limit 10
 
 ### `foreman debug`
 
-AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress) for a task and sends them to an AI model for deep-dive diagnostics.
+AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress) for a task and sends them to an AI model for deep-dive diagnostics. In Elixir-backed projects, run lookup, inbox, reports, and raw logs are read from the Elixir HTTP API before falling back to legacy daemon/local stores.
 
 ```bash
 foreman debug bd-abc1             # Full AI analysis with Opus
