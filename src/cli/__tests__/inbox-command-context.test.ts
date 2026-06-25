@@ -25,6 +25,7 @@ import { inboxCommand, resolveDaemonInboxContext } from "../commands/inbox.js";
 
 describe("inbox command context", () => {
   const tempDirs: string[] = [];
+  const originalBackend = process.env["FOREMAN_BACKEND"];
 
   function makeTempDir(): string {
     const dir = mkdtempSync(join(tmpdir(), "foreman-inbox-command-context-"));
@@ -33,6 +34,7 @@ describe("inbox command context", () => {
   }
 
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
     mockListRegisteredProjects.mockReset();
     mockCreateTrpcClient.mockReset();
@@ -44,6 +46,8 @@ describe("inbox command context", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     vi.restoreAllMocks();
     for (const dir of tempDirs) {
       rmSync(dir, { recursive: true, force: true });
@@ -102,7 +106,7 @@ describe("inbox command context", () => {
 
     await inboxCommand.parseAsync(["--all", "--project-path", `${projectDir}/.`], { from: "user" });
 
-    expect(mockListRegisteredProjects).toHaveBeenCalledTimes(2);
+    expect(mockListRegisteredProjects).toHaveBeenCalledTimes(1);
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     expect(forProjectSpy).toHaveBeenCalledWith(resolve(projectDir));
     expect(localStore.getAllMessagesGlobal).toHaveBeenCalledWith(50);

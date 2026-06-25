@@ -1066,14 +1066,12 @@ async function renderElixirInbox(options: {
       console.log(`${messages.length} message(s) shown.`);
     }
 
-    if (options.ack && raw.length > 0) {
-      for (const msg of raw) {
-        const messageId = String(msg.message_id ?? msg.id ?? "");
-        if (!messageId) continue;
-        const response = await client.markInboxRead(messageId);
+    if (options.ack && messages.length > 0) {
+      for (const msg of messages) {
+        const response = await client.markInboxRead(msg.id);
         if (!response.ok) throw new Error(response.error.message);
       }
-      console.log(`Marked ${raw.length} message(s) as read.`);
+      console.log(`Marked ${messages.length} message(s) as read.`);
     }
 
     if (showEvents) {

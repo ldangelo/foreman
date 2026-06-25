@@ -25,6 +25,7 @@ import { inboxCommand } from "../commands/inbox.js";
 
 describe("foreman inbox send command context", () => {
   const tempDirs: string[] = [];
+  const originalBackend = process.env["FOREMAN_BACKEND"];
 
   function makeTempDir(): string {
     const dir = mkdtempSync(join(tmpdir(), "foreman-inbox-send-command-context-"));
@@ -33,6 +34,7 @@ describe("foreman inbox send command context", () => {
   }
 
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
     mockResolveRepoRootProjectPath.mockReset();
     mockListRegisteredProjects.mockReset();
@@ -42,6 +44,8 @@ describe("foreman inbox send command context", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     vi.restoreAllMocks();
     for (const dir of tempDirs) {
       rmSync(dir, { recursive: true, force: true });
