@@ -143,7 +143,8 @@ async function resolveElixirDebugContext(projectPath: string): Promise<ElixirDeb
     const project = projects.find((record) => record.path === projectPath);
     if (!project) return null;
     const manager = new ElixirServerManager();
-    const client = new ElixirServerClient(manager.url, manager.authToken);
+    const status = await manager.ensureRunning();
+    const client = new ElixirServerClient(status.url, manager.authToken);
     await client.listRuns(project.id);
     return { client, projectId: project.id, projectPath };
   } catch {

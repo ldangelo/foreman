@@ -159,7 +159,8 @@ async function fetchElixirStatusSnapshot(projectPath: string): Promise<DaemonSta
   if (!project) return null;
 
   const manager = new ElixirServerManager();
-  const client = new ElixirServerClient(manager.url, manager.authToken);
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, manager.authToken);
   const [allTasks, runs] = await Promise.all([
     client.listTasks(),
     client.listRuns(project.id),

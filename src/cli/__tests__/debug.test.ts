@@ -8,6 +8,15 @@ import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { debugCommand } from "../commands/debug.js";
 
+const mockEnsureRunning = vi.hoisted(() => vi.fn());
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: class {
+    authToken = "secret";
+    ensureRunning = mockEnsureRunning;
+  },
+}));
+
 describe("foreman debug", () => {
   let tmpDir: string;
 
@@ -15,6 +24,7 @@ describe("foreman debug", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-debug-test-"));
     mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
     process.chdir(tmpDir);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4000" });
   });
 
   afterEach(() => {

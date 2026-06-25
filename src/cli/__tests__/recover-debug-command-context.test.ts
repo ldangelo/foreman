@@ -18,6 +18,14 @@ const mockRunWithPiSdk = vi.hoisted(() => vi.fn().mockResolvedValue({
   costUsd: 0,
 }));
 const mockVcsFactoryCreate = vi.hoisted(() => vi.fn());
+const mockEnsureRunning = vi.hoisted(() => vi.fn());
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: class {
+    authToken = "secret";
+    ensureRunning = mockEnsureRunning;
+  },
+}));
 
 vi.mock("node:child_process", () => ({
   execFile: mockExecFile,
@@ -104,6 +112,7 @@ describe("foreman debug/recover command context", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-debug-recover-test-"));
     mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
     vi.clearAllMocks();
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4000" });
     mockRunWithPiSdk.mockResolvedValue({ success: true, outputText: "done", costUsd: 0 });
     mockExecFileSync.mockImplementation(((command: string, args?: string[]) => {
       if (command === "git" && args?.join(" ") === "status --short") {

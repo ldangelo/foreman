@@ -1,19 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockSendCommand = vi.fn();
-const mockListEvents = vi.fn();
-const mockCreateTrpcClient = vi.fn(() => {
+const mockSendCommand = vi.hoisted(() => vi.fn());
+const mockListEvents = vi.hoisted(() => vi.fn());
+const mockEnsureRunning = vi.hoisted(() => vi.fn());
+const mockCreateTrpcClient = vi.hoisted(() => vi.fn(() => {
   throw new Error("legacy tRPC should not be used in Elixir mode");
-});
-
+}));
 vi.mock("../../lib/backend-mode.js", () => ({
   foremanBackendMode: () => "elixir",
 }));
 
 vi.mock("../../lib/elixir-server-manager.js", () => ({
   ElixirServerManager: class {
-    url = "http://127.0.0.1:4000";
     authToken = "secret";
+    ensureRunning = mockEnsureRunning;
   },
 }));
 
@@ -78,6 +78,7 @@ describe("foreman jira Elixir backend parity", () => {
     mockCreateTrpcClient.mockClear();
     mockSendCommand.mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr" });
     mockListEvents.mockResolvedValue([]);
+    mockEnsureRunning.mockReset().mockResolvedValue({ running: true, url: "http://127.0.0.1:4000" });
   });
 
   it("routes configure through Elixir command API", async () => {
@@ -94,6 +95,7 @@ describe("foreman jira Elixir backend parity", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Jira monitoring configured successfully");
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(mockEnsureRunning).toHaveBeenCalled();
     expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
       command_type: "jira.configure",
       payload: expect.objectContaining({

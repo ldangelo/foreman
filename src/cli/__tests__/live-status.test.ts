@@ -34,6 +34,7 @@ const {
   mockProjectsStats,
   mockProjectsListNeedsHuman,
   mockRunsListActive,
+  mockElixirEnsureRunning,
 } = vi.hoisted(() => {
   const mockGetRepoRoot = vi.fn().mockResolvedValue("/mock/project");
   const mockCreateVcsBackend = vi.fn().mockResolvedValue({
@@ -94,6 +95,7 @@ const {
   const mockProjectsStats = vi.fn();
   const mockProjectsListNeedsHuman = vi.fn();
   const mockRunsListActive = vi.fn();
+  const mockElixirEnsureRunning = vi.fn().mockRejectedValue(new Error("Elixir unavailable"));
   const mockCreateTrpcClient = vi.fn(() => ({
     projects: {
       stats: mockProjectsStats,
@@ -132,6 +134,7 @@ const {
     mockProjectsStats,
     mockProjectsListNeedsHuman,
     mockRunsListActive,
+    mockElixirEnsureRunning,
   };
 });
 
@@ -151,6 +154,13 @@ vi.mock("../../lib/store.js", () => ({
 
 vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: mockCreateTrpcClient,
+}));
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: class {
+    authToken = "secret";
+    ensureRunning = mockElixirEnsureRunning;
+  },
 }));
 
 vi.mock("../commands/project-task-support.js", () => ({

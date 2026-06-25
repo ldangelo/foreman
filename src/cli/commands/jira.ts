@@ -47,13 +47,14 @@ function parseIssueTypeWorkflow(options: string[]): Record<string, string> {
   return result;
 }
 
-function createElixirClient(): ElixirServerClient {
+async function createElixirClient(): Promise<ElixirServerClient> {
   const manager = new ElixirServerManager();
-  return new ElixirServerClient(manager.url, manager.authToken);
+  const status = await manager.ensureRunning();
+  return new ElixirServerClient(status.url, manager.authToken);
 }
 
 async function sendElixirJiraCommand(commandType: string, payload: Record<string, unknown>): Promise<void> {
-  const client = createElixirClient();
+  const client = await createElixirClient();
   const response = await client.sendCommand({
     command_id: `cli-${commandType}-${Date.now()}`,
     command_type: commandType,
@@ -309,7 +310,8 @@ function generateWebhookSecret(): string {
 }
 
 async function getElixirJiraStatus(): Promise<JiraStatusResult> {
-  const events = await createElixirClient().listEvents({ limit: 500 });
+  const client = await createElixirClient();
+  const events = await client.listEvents({ limit: 500 });
   const latestConfigure = events.find((event) => commandType(event) === "jira.configure");
   if (!latestConfigure) return { configured: false, projects: 0, webhookEnabled: false };
 

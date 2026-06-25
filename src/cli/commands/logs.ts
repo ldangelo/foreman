@@ -196,7 +196,8 @@ export function isMessageUpdateEntry(entry: CompactLogEntry): boolean {
 export async function renderCompactView(runId: string, tailCount: number, view: "compact" | "plain" | "raw" = "compact"): Promise<void> {
   try {
     const manager = new ElixirServerManager();
-    const logs = await new ElixirServerClient(manager.url, manager.authToken).getRunLogs(runId, view);
+    const status = await manager.ensureRunning();
+    const logs = await new ElixirServerClient(status.url, manager.authToken).getRunLogs(runId, view);
     const entries = compactEntries(logs).filter((entry) => view === "raw" || !isMessageUpdateEntry(entry)).slice(-tailCount);
     if (entries.length === 0) {
       console.log(chalk.dim(view === "raw" ? "(no raw log entries)" : "(no compact log entries)"));
@@ -296,7 +297,8 @@ function adaptElixirRun(row: Record<string, unknown>): Run {
 
 async function resolveElixirRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
   const manager = new ElixirServerManager();
-  const client = new ElixirServerClient(manager.url, manager.authToken);
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, manager.authToken);
   const projects = await listRegisteredProjects();
   const projectPath = await resolveProjectPathFromOptions(opts);
   const project = projects.find((entry) => entry.path === projectPath || entry.name === opts.project || entry.id === opts.project);

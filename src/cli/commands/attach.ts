@@ -101,8 +101,9 @@ async function resolveElixirAttachContext(projectPath: string): Promise<ElixirAt
     const project = projects.find((record) => record.path === projectPath);
     if (!project) return null;
     const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
     return {
-      client: new ElixirServerClient(manager.url, manager.authToken),
+      client: new ElixirServerClient(status.url, manager.authToken),
       projectId: project.id,
       projectPath,
     };
