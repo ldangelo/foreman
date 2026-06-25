@@ -201,6 +201,20 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).toContain('enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");');
   });
 
+  it("uses merged phase action capabilities for custom worker actions", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain('import { inferPhaseActionType, phaseActionCapabilities } from "./phase-actions.js";');
+    expect(source).toContain("const declaredCapabilities = phaseActionCapabilities(actionType, phase.capabilities);");
+  });
+
+  it("keeps privileged custom-action helpers non-enumerable", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain('store: { enumerable: false, get: () => { requireCapability("task-store"); return store; } }');
+    expect(source).toContain('taskClient: { enumerable: false, get: () => { requireCapability("task-store"); return runtimeTaskClient; } }');
+    expect(source).toContain('vcsBackend: { enumerable: false, get: () => { requireCapability("vcs"); return vcsBackend; } }');
+    expect(source).toContain('mail: { enumerable: false, get: () => { requireCapability("mail"); return { send: sendMail, sendText: sendMailText, client: agentMailClient }; } }');
+  });
+
   it("routes single-agent progress and terminal observability through registered-aware helpers", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";');
