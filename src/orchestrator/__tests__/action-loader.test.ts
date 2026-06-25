@@ -93,6 +93,8 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "identifier-arrow.js"), "export default async ctx => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "const-run.js"), "export const run = async (ctx) => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "typed.ts"), "export const run: unknown = async (ctx) => ctx;\n");
+    writeFileSync(join(project, ".foreman", "actions", "typed-return.ts"), "type Result = { success: boolean }; export const run = async (ctx: unknown): Promise<Result> => ({ success: true });\n");
+    writeFileSync(join(project, ".foreman", "actions", "typed-default.ts"), "type Result = { success: boolean }; export default async (ctx: unknown): Promise<Result> => ({ success: true });\n");
     writeFileSync(join(project, ".foreman", "actions", "re-export-run.js"), "const run = async (ctx) => ctx.internal.runBuiltin(); export { run };\n");
     writeFileSync(join(project, ".foreman", "actions", "re-export-before-run.js"), "export { run }; const run = async (ctx) => ctx.internal.runBuiltin();\n");
     writeFileSync(join(project, ".foreman", "actions", "alias-run.js"), "const execute = async (ctx) => ctx.internal.runBuiltin(); export { execute as run };\n");
