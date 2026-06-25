@@ -4,6 +4,10 @@ const { mockAdd } = vi.hoisted(() => ({
   mockAdd: vi.fn(),
 }));
 
+vi.mock("../../lib/backend-mode.js", () => ({
+  foremanBackendMode: () => "node",
+}));
+
 vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: () => ({
     projects: {

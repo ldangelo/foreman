@@ -180,17 +180,35 @@ defmodule ForemanServer.ProjectionStore do
          },
          _mode
        ) do
-    project = %{
-      project_id: project_id,
-      path: Map.fetch!(payload, :path),
-      status: Map.get(payload, :status, "active"),
-      default_branch: Map.get(payload, :default_branch, "main"),
-      config: Map.get(payload, :config, %{}),
-      health: Map.get(payload, :health, %{ok: true}),
-      updated_at: Map.get(payload, :updated_at)
-    }
+    project =
+      %{
+        project_id: project_id,
+        path: Map.fetch!(payload, :path),
+        status: Map.get(payload, :status, "active"),
+        default_branch: Map.get(payload, :default_branch, "main"),
+        config: Map.get(payload, :config, %{}),
+        health: Map.get(payload, :health, %{ok: true}),
+        updated_at: Map.get(payload, :updated_at)
+      }
+      |> maybe_put(:name, Map.get(payload, :name))
+      |> maybe_put(:github_url, Map.get(payload, :github_url))
 
     put_in(projection, [:projects, project_id], project)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "ProjectUpdated",
+           payload: %{project_id: project_id} = payload
+         },
+         _mode
+       ) do
+    existing = get_in(projection, [:projects, project_id]) || %{project_id: project_id}
+
+    updates = Map.drop(payload, [:project_id, :id])
+
+    put_in(projection, [:projects, project_id], Map.merge(existing, updates))
   end
 
   defp apply_domain_event(

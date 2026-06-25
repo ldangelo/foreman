@@ -482,6 +482,7 @@ Use `--wizard` for interactive setup that writes `.foreman/config.yaml` with VCS
 ```bash
 foreman init --name "my-project"
 foreman init --wizard
+foreman project list                              # Elixir-backed project projection
 foreman project edit <project-id> --default-branch dev  # Change base for new worktrees
 ```
 

@@ -16,6 +16,7 @@ npx vitest run <file>  # run a single test file
 
 # CLI (after build or via tsx)
 foreman init           # Initialize project + beads
+foreman project list   # List registered projects (Elixir-backed by default)
 foreman run            # Dispatch ready tasks to agents
 foreman run --bead X   # Dispatch specific task
 foreman status         # Show tasks + active agents

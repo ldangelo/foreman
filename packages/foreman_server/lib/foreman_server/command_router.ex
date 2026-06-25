@@ -126,12 +126,31 @@ defmodule ForemanServer.CommandRouter do
       {:ok, "ProjectRegistered",
        %{
          project_id: project_id,
+         name: Map.get(payload, :name),
          path: path,
          status: Map.get(payload, :status, "active"),
          default_branch: Map.get(payload, :default_branch, "main"),
+         github_url: Map.get(payload, :github_url),
          config: Map.get(payload, :config, %{}),
          health: Map.get(payload, :health, %{ok: true})
        }, "project:#{project_id}"}
+    end
+  end
+
+  defp domain_event("project.update", payload) do
+    project_id = Map.get(payload, :project_id) || Map.get(payload, :id)
+
+    with {:ok, project_id} <- required_binary(project_id, :project_id) do
+      {:ok, "ProjectUpdated", Map.put(payload, :project_id, project_id), "project:#{project_id}"}
+    end
+  end
+
+  defp domain_event("project.archive", payload) do
+    project_id = Map.get(payload, :project_id) || Map.get(payload, :id)
+
+    with {:ok, project_id} <- required_binary(project_id, :project_id) do
+      {:ok, "ProjectUpdated", %{project_id: project_id, status: "archived"},
+       "project:#{project_id}"}
     end
   end
 
@@ -390,6 +409,7 @@ defmodule ForemanServer.CommandRouter do
       :external_link,
       :fingerprint,
       :health,
+      :github_url,
       :id,
       :inbox_messages,
       :input,
@@ -398,6 +418,7 @@ defmodule ForemanServer.CommandRouter do
       :integration_event_type,
       :metadata,
       :migration_id,
+      :name,
       :actor,
       :occurred_at,
       :output_dir,

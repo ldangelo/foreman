@@ -33,6 +33,7 @@ export type ElixirProject = {
   path: string;
   status?: string;
   default_branch?: string;
+  github_url?: string;
   config?: Record<string, unknown>;
   health?: Record<string, unknown>;
   updated_at?: string;

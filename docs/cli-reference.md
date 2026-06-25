@@ -57,19 +57,25 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 | `--force` | Overwrite existing prompt and workflow files |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`beads`, `jira`, or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
-### `foreman project edit`
+### `foreman project list|edit|remove`
 
-Update registered project settings. `--default-branch` controls the base branch used for new task worktrees and finalization targets.
+List and update registered project settings through the active backend. In Elixir mode, `list`, `edit`, and `remove` use the Elixir projection/command API; `remove` archives the project. `project add` still requires the legacy Node daemon clone/register flow.
 
 ```bash
+foreman project list --status active
 foreman project edit <project-id> --default-branch dev
+foreman project remove <project-id>
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--name <name>` | Project display name |
-| `--status <status>` | Project status: `active`, `paused`, or `archived` |
-| `--default-branch <branch>` | Default/base branch for new project worktrees |
+| `foreman project list --status <status>` | Filter by `active`, `paused`, or `archived` |
+| `foreman project list --search <term>` | Search by project name |
+| `foreman project list --json` | Emit JSON |
+| `foreman project edit --name <name>` | Project display name |
+| `foreman project edit --status <status>` | Project status: `active`, `paused`, or `archived` |
+| `foreman project edit --default-branch <branch>` | Default/base branch for new project worktrees |
+| `foreman project remove --force` | Accepted for legacy compatibility; Elixir archives by project ID |
 
 ---
 

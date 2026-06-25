@@ -98,9 +98,11 @@ defmodule ForemanServerTest do
                command_type: "project.register",
                payload: %{
                  project_id: "alpha",
+                 name: "Alpha",
                  path: "/repo/alpha",
                  status: "active",
                  default_branch: "main",
+                 github_url: "https://github.com/example/alpha",
                  config: %{max_agents: 3},
                  health: %{ok: true, checks: ["git"]}
                }
@@ -108,13 +110,49 @@ defmodule ForemanServerTest do
 
     assert projection.projects["alpha"] == %{
              project_id: "alpha",
+             name: "Alpha",
              path: "/repo/alpha",
              status: "active",
              default_branch: "main",
+             github_url: "https://github.com/example/alpha",
              config: %{max_agents: 3},
              health: %{ok: true, checks: ["git"]},
              updated_at: projection.projects["alpha"].updated_at
            }
+  end
+
+  test "project update and archive commands update projection" do
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:ok, _} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project-create",
+               command_type: "project.register",
+               payload: %{project_id: "alpha", name: "Alpha", path: "/repo/alpha"}
+             })
+
+    assert {:ok,
+            %{
+              event: %ForemanServer.Event{event_type: "ProjectUpdated"},
+              projection: projection
+            }} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project-update",
+               command_type: "project.update",
+               payload: %{project_id: "alpha", name: "Renamed", default_branch: "dev"}
+             })
+
+    assert projection.projects["alpha"].name == "Renamed"
+    assert projection.projects["alpha"].default_branch == "dev"
+
+    assert {:ok, %{projection: projection}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project-archive",
+               command_type: "project.archive",
+               payload: %{project_id: "alpha"}
+             })
+
+    assert projection.projects["alpha"].status == "archived"
   end
 
   test "task lifecycle commands update event and projection state atomically" do

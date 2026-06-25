@@ -11,10 +11,14 @@
  * @module src/cli/commands/project
  */
 import chalk from "chalk";
-import { resolve } from "node:path";
+import { basename } from "node:path";
+import { randomBytes } from "node:crypto";
 import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { encrypt } from "../../lib/encryption.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirProject } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,6 +39,15 @@ interface ProjectRow {
   path?: string | null;
   status?: string | null;
   addedAt?: string | null;
+  default_branch?: string | null;
+  github_url?: string | null;
+}
+
+interface ProjectCommandClient {
+  backend: "node" | "elixir";
+  list(input?: { status?: "active" | "paused" | "archived"; search?: string }): Promise<ProjectRow[]>;
+  update(id: string, updates: Record<string, unknown>): Promise<void>;
+  remove(id: string, force?: boolean): Promise<void>;
 }
 
 function printProjectTable(projects: ProjectRow[], label?: string): void {
@@ -74,8 +87,73 @@ function printProjectTable(projects: ProjectRow[], label?: string): void {
   }
 }
 
-function getClient() {
-  return createTrpcClient();
+function rowFromElixirProject(project: ElixirProject): ProjectRow {
+  const id = project.project_id ?? project.id ?? "unknown";
+  return {
+    id,
+    name: project.name ?? (project.path ? basename(project.path) : id),
+    path: project.path,
+    status: project.status ?? "active",
+    default_branch: project.default_branch ?? null,
+    github_url: project.github_url ?? null,
+  };
+}
+
+async function sendElixirProjectCommand(
+  client: ElixirServerClient,
+  commandType: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const response = await client.sendCommand({
+    command_id: `cli-${commandType}-${Date.now()}-${randomBytes(4).toString("hex")}`,
+    command_type: commandType,
+    payload,
+    metadata: { correlation_id: `cli-${commandType}-${Date.now()}` },
+  });
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
+}
+
+async function getProjectClient(): Promise<ProjectCommandClient> {
+  if (foremanBackendMode() === "elixir") {
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    return {
+      backend: "elixir",
+      async list(input = {}) {
+        let rows = (await client.listProjects()).map(rowFromElixirProject);
+        if (input.status) rows = rows.filter((project) => project.status === input.status);
+        if (input.search) {
+          const search = input.search.toLowerCase();
+          rows = rows.filter((project) => project.name.toLowerCase().includes(search));
+        }
+        return rows;
+      },
+      async update(id, updates) {
+        await sendElixirProjectCommand(client, "project.update", {
+          project_id: id,
+          ...updates,
+        });
+      },
+      async remove(id) {
+        await sendElixirProjectCommand(client, "project.archive", { project_id: id });
+      },
+    };
+  }
+
+  const client = createTrpcClient();
+  return {
+    backend: "node",
+    list: (input) => client.projects.list(input) as Promise<ProjectRow[]>,
+    update: async (id, updates) => {
+      await client.projects.update({ id, updates });
+    },
+    remove: async (id, force) => {
+      await client.projects.remove({ id, force });
+    },
+  };
 }
 
 function collectErrorDetails(err: unknown): string[] {
@@ -162,7 +240,14 @@ const addCommand = new Command("add")
   .option("--jira-webhook-enabled", "Enable webhook-based triggers")
   .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
   .action(async (githubUrl: string, opts) => {
-    const client = getClient();
+    if (foremanBackendMode() === "elixir") {
+      console.error(
+        chalk.red("Error: Elixir backend parity gap: 'foreman project add' still requires the legacy Node daemon clone/register flow. Set FOREMAN_BACKEND=node for explicit legacy operation."),
+      );
+      process.exit(1);
+    }
+
+    const client = createTrpcClient();
     try {
       const result = (await client.projects.add({
         githubUrl,
@@ -213,15 +298,12 @@ const listCommand = new Command("list")
   .option("--search <term>", "Search by name")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const client = getClient();
-
     try {
-      const result = await client.projects.list({
+      const client = await getProjectClient();
+      const projects = await client.list({
         status: opts.status as "active" | "paused" | "archived" | undefined,
         search: opts.search,
       });
-
-      const projects = result as ProjectRow[];
 
       if (opts.json) {
         console.log(JSON.stringify(projects, null, 2));
@@ -250,13 +332,9 @@ const removeCommand = new Command("remove")
   .argument("<id>", "Project ID to remove")
   .option("--force", "Force remove even if there are active agents")
   .action(async (projectId: string, opts) => {
-    const client = getClient();
-
     try {
-      await client.projects.remove({
-        id: projectId,
-        force: opts.force,
-      });
+      const client = await getProjectClient();
+      await client.remove(projectId, opts.force);
       console.log(chalk.green(`✓ Project '${projectId}' removed.`));
     } catch (err) {
       handleDaemonError(err);
@@ -322,23 +400,20 @@ const editCommand = new Command("edit")
   .option("--jira-webhook-enabled", "Enable webhook-based triggers")
   .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
   .action(async (projectId: string, opts) => {
-    const client = getClient();
     try {
+      const client = await getProjectClient();
       // Build Jira config updates if any Jira options provided
       const jiraUpdates = await buildJiraUpdates(opts);
       const updates: Record<string, unknown> = {};
       if (opts.name) updates.name = opts.name;
       if (opts.status) updates.status = opts.status;
-      if (opts.defaultBranch) updates.defaultBranch = opts.defaultBranch;
+      if (opts.defaultBranch) updates[client.backend === "elixir" ? "default_branch" : "defaultBranch"] = opts.defaultBranch;
       if (jiraUpdates) updates.jira = jiraUpdates;
       if (Object.keys(updates).length === 0) {
         console.log(chalk.yellow("No updates provided. Use --help to see available options."));
         return;
       }
-      await client.projects.update({
-        id: projectId,
-        updates,
-      });
+      await client.update(projectId, updates);
       console.log(chalk.green(`✓ Project '${projectId}' updated.`));
     } catch (err) {
       handleDaemonError(err);
