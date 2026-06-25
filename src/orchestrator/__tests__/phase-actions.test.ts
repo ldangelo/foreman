@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PHASE_ACTION_CAPABILITIES, getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction, isDispatcherPhaseAction } from "../phase-actions.js";
+import { DEFAULT_PHASE_ACTION_CAPABILITIES, getPhaseActionDescriptor, inferPhaseActionType, isBashPhaseAction, isBuiltinPhaseAction, isCommandPhaseAction, isDispatcherPhaseAction, phaseActionCapabilities } from "../phase-actions.js";
 import type { WorkflowPhaseConfig } from "../../lib/workflow-loader.js";
 
 describe("phase actions", () => {
@@ -26,6 +26,11 @@ describe("phase actions", () => {
     expect(DEFAULT_PHASE_ACTION_CAPABILITIES["create-pr"]).toEqual(expect.arrayContaining(["vcs", "mail", "task-store", "network"]));
     expect(DEFAULT_PHASE_ACTION_CAPABILITIES["prepare-worktree"]).toEqual(expect.arrayContaining(["vcs"]));
     expect(DEFAULT_PHASE_ACTION_CAPABILITIES.finalize).toEqual(expect.arrayContaining(["vcs", "exec"]));
+  });
+
+  it("merges default capabilities with declared capabilities", () => {
+    expect(phaseActionCapabilities("create-pr", ["exec", "vcs"])).toEqual(["vcs", "mail", "task-store", "network", "exec"]);
+    expect(phaseActionCapabilities("custom", ["exec"])).toEqual(["exec"]);
   });
 
   it("classifies execution paths by action kind", () => {

@@ -32,6 +32,11 @@ export const DEFAULT_PHASE_ACTION_CAPABILITIES: Record<string, string[]> = {
   merge: ["vcs", "mail", "task-store", "network"],
 };
 
+export function phaseActionCapabilities(actionType: string, declared?: string[]): string[] {
+  const defaults = DEFAULT_PHASE_ACTION_CAPABILITIES[actionType] ?? [];
+  return Array.from(new Set([...defaults, ...(declared ?? [])]));
+}
+
 export const DISPATCHER_PHASE_ACTIONS = new Set([
   "prepare-worktree",
   "setup-workspace",
