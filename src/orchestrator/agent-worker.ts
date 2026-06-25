@@ -1313,10 +1313,10 @@ async function runPipeline(
               },
             };
             Object.defineProperties(externalContext, {
-              store: { enumerable: true, get: () => { requireCapability("task-store"); return store; } },
-              taskClient: { enumerable: true, get: () => { requireCapability("task-store"); return runtimeTaskClient; } },
-              vcsBackend: { enumerable: true, get: () => { requireCapability("vcs"); return vcsBackend; } },
-              mail: { enumerable: true, get: () => { requireCapability("mail"); return { send: sendMail, sendText: sendMailText, client: agentMailClient }; } },
+              store: { enumerable: false, get: () => { requireCapability("task-store"); return store; } },
+              taskClient: { enumerable: false, get: () => { requireCapability("task-store"); return runtimeTaskClient; } },
+              vcsBackend: { enumerable: false, get: () => { requireCapability("vcs"); return vcsBackend; } },
+              mail: { enumerable: false, get: () => { requireCapability("mail"); return { send: sendMail, sendText: sendMailText, client: agentMailClient }; } },
             });
             const result = await externalAction(externalContext);
             return assertPhaseActionResult(actionType, result);
