@@ -196,6 +196,8 @@ function hasValidActionExport(source: string): boolean {
   if (/export\s+(async\s+)?function\s+run\b/.test(source)) return true;
   if (/export\s+(const|let|var)\s+run\s*(?::[^=]+)?=\s*(async\s*)?(function\b|\([^)]*\)\s*(?::[^=]+)?=>|[a-zA-Z_$][\w$]*\s*=>)/.test(source)) return true;
   if (/((async\s+)?function\s+run\b|(const|let|var)\s+run\s*(?::[^=]+)?=\s*(async\s*)?(function\b|\([^)]*\)\s*(?::[^=]+)?=>|[a-zA-Z_$][\w$]*\s*=>))[\s\S]*export\s*\{[^}]*\brun\b[^}]*\}/.test(source)) return true;
+  if (/export\s*\{[^}]*\b(default|run)\b[^}]*\}\s*from\s*[^;]+/.test(source)) return true;
+  if (/export\s*\{[^}]*\b[a-zA-Z_$][\w$]*\s+as\s+(run|default)\b[^}]*\}\s*from\s*[^;]+/.test(source)) return true;
   const callableNames = new Set<string>();
   for (const match of source.matchAll(/(?:async\s+)?function\s+([a-zA-Z_$][\w$]*)\b/g)) {
     callableNames.add(match[1] ?? "");

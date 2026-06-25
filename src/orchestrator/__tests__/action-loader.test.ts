@@ -113,6 +113,10 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "alias-default.js"), "const execute = async (ctx) => ctx.internal.runBuiltin(); export { execute as default };\n");
     writeFileSync(join(project, ".foreman", "actions", "default-identifier.js"), "const execute = async (ctx) => ctx.internal.runBuiltin(); export default execute;\n");
     writeFileSync(join(project, ".foreman", "actions", "default-function-identifier.js"), "function execute(ctx) { return ctx.internal.runBuiltin(); } export default execute;\n");
+    writeFileSync(join(project, ".foreman", "actions", "re-export-imported-run.js"), "export { run } from '../action-lib/imported-run.ts';\n");
+    writeFileSync(join(project, ".foreman", "actions", "re-export-imported-alias.js"), "export { execute as run } from '../action-lib/imported-run.ts';\n");
+    mkdirSync(join(project, ".foreman", "action-lib"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "action-lib", "imported-run.ts"), "export const run = async (ctx: unknown) => ctx; export const execute = run;\n");
     writeFileSync(join(project, ".foreman", "actions", "bad.js"), "export const nope = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "default-value.js"), "const run = 1; export default run;\n");
     writeFileSync(join(project, ".foreman", "actions", "run-value.js"), "export const run = 1;\n");
