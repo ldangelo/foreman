@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { normalizePriority } from "../../lib/priority.js";
@@ -250,6 +251,11 @@ export const planCommand = new Command("plan")
         dryRun?: boolean;
       },
     ) => {
+      if (foremanBackendMode() === "elixir") {
+        console.error(chalk.red("foreman plan <description> still uses the legacy Node planning dispatcher. Use 'foreman plan prd' or 'foreman plan trd' for Elixir-backed planning, or set FOREMAN_BACKEND=node for the legacy pipeline."));
+        process.exitCode = 1;
+        return;
+      }
       const projectPath = await resolveRepoRootProjectPath(opts.project ? { project: opts.project } : {});
       const outputDir = isAbsolute(opts.outputDir)
         ? resolve(opts.outputDir)

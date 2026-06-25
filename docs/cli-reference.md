@@ -204,7 +204,7 @@ Active Agents
 
 ### `foreman metrics`
 
-Show per-phase pipeline metrics from the Elixir server by default. Add `--costs` (or any cost filter such as `--since`, `--phase`, `--agent`, `--task-type`, or `--compact`) to show cost and token usage aggregated from the task store.
+Show per-phase pipeline metrics from the Elixir server by default. Cost mode (`--costs`, `--compact`, or filters such as `--since`, `--phase`, `--agent`, `--task-type`) reads the legacy task store and requires `FOREMAN_BACKEND=node` until Elixir cost projections land.
 
 ```bash
 foreman metrics                         # Human-readable pipeline metrics dashboard
@@ -463,7 +463,7 @@ foreman recover bd-abc1 --reason finalize-conflict --prepare-clean-replay
 
 ### `foreman logs`
 
-Show run logs and debugging summaries. Compact/plain/raw event views read from the Elixir server and do not require local `~/.foreman/logs/<run>.log` files; summary and `--follow` still use local worker log files.
+Show run logs and debugging summaries. Compact/plain/raw event views read from the Elixir server and do not require local `~/.foreman/logs/<run>.log` files; in Elixir mode the default summary falls back to the compact event view when the local worker log is absent. `--follow` still requires local worker log files.
 
 ```bash
 foreman logs <task-or-run-id>          # Summary with phase/tool activity
@@ -766,15 +766,15 @@ foreman inbox send \
 
 ### `foreman plan`
 
-Run the Ensemble PRD → TRD pipeline. Converts a product description into a Technical Requirements Document with decomposed tasks.
+Run the Ensemble PRD → TRD pipeline. The default `foreman plan <description>` pipeline is a legacy Node dispatcher path and requires `FOREMAN_BACKEND=node`; use `foreman plan prd` / `foreman plan trd` for Elixir-backed planning.
 
 ```bash
-foreman plan "Add user authentication with OAuth"
-foreman plan docs/PRD.md          # From a file
-foreman plan "..." --prd-only     # Stop after PRD generation
-foreman plan --from-prd docs/PRD.md  # Start from existing PRD
-foreman plan "..." --output-dir docs/auth  # Custom output directory
-foreman plan "..." --dry-run      # Preview steps
+FOREMAN_BACKEND=node foreman plan "Add user authentication with OAuth"
+FOREMAN_BACKEND=node foreman plan docs/PRD.md          # From a file
+FOREMAN_BACKEND=node foreman plan "..." --prd-only     # Stop after PRD generation
+FOREMAN_BACKEND=node foreman plan --from-prd docs/PRD.md  # Start from existing PRD
+FOREMAN_BACKEND=node foreman plan "..." --output-dir docs/auth  # Custom output directory
+FOREMAN_BACKEND=node foreman plan "..." --dry-run      # Preview steps
 foreman plan prd "Add user authentication"   # Server-backed PRD planning
 foreman plan trd docs/PRD.md                  # Server-backed TRD planning
 ```
@@ -793,16 +793,16 @@ Server-backed `plan prd` / `plan trd` options: `--project <path>`, `--output-dir
 
 ### `foreman sling trd`
 
-Convert a Technical Requirements Document into a native task hierarchy with dependencies.
+Convert a Technical Requirements Document into a legacy native task hierarchy with dependencies. This path still writes through the Node daemon/task store and requires `FOREMAN_BACKEND=node`.
 
 ```bash
-foreman sling trd docs/TRD.md    # Create native tasks from TRD
-foreman sling trd docs/TRD.md --dry-run  # Preview
-foreman sling trd docs/TRD.md --json     # Output parsed structure
-foreman sling trd docs/TRD.md --auto     # Skip confirmation prompts
-foreman sling trd docs/TRD.md --skip-completed   # Skip [x] items
-foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
-foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_rust only
+FOREMAN_BACKEND=node foreman sling trd docs/TRD.md    # Create native tasks from TRD
+FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --dry-run  # Preview
+FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --json     # Output parsed structure
+FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --auto     # Skip confirmation prompts
+FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --skip-completed   # Skip [x] items
+FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
+FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_rust only
 ```
 
 | Option | Description |
@@ -893,7 +893,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman watch` and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman watch` and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Legacy-only paths such as `foreman sling`, default `foreman plan <description>`, `foreman issue` Postgres sync commands, and metrics cost mode fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land.
 
 ---
 

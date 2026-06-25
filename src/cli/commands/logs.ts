@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import chalk from "chalk";
 import { Command, Option } from "commander";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import type { TaskRow } from "../../lib/db/postgres-adapter.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
@@ -431,14 +432,14 @@ export const logsCommand = new Command("logs")
     }
 
     const rawPath = logPath(resolved.run.id, "log");
-    if (shouldRequireLocalRawLog(opts) && !existsSync(rawPath)) {
-      console.error(chalk.red(`Error: Raw log not found: ${rawPath}`));
-      process.exit(1);
-    }
-
     const view = opts.view;
     const compact = opts.compact || opts.plain || view === "compact" || view === "plain";
     const raw = opts.raw || view === "raw";
+    const useElixirFallback = foremanBackendMode() === "elixir" && !opts.follow && !compact && !raw;
+    if (shouldRequireLocalRawLog(opts) && !existsSync(rawPath) && !useElixirFallback) {
+      console.error(chalk.red(`Error: Raw log not found: ${rawPath}`));
+      process.exit(1);
+    }
 
     if (compact) {
       await renderCompactView(resolved.run.id, tailCount, view === "plain" || opts.plain ? "plain" : "compact");
@@ -450,6 +451,8 @@ export const logsCommand = new Command("logs")
       } else {
         await renderCompactView(resolved.run.id, tailCount, "raw");
       }
+    } else if (useElixirFallback) {
+      await renderCompactView(resolved.run.id, tailCount, "compact");
     } else {
       renderRunHeader(resolved);
       renderSummary(resolved.run.id, tailCount);

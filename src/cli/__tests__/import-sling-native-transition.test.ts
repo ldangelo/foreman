@@ -9,7 +9,7 @@ const CLI = path.resolve(__dirname, "../index.ts");
 const SOURCE_TRD = resolve(process.cwd(), "docs/TRD/sling-trd.md");
 
 async function run(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return runTsxModule(CLI, args, { cwd, timeout: 30_000 });
+  return runTsxModule(CLI, args, { cwd, timeout: 30_000, env: { FOREMAN_BACKEND: "node" } });
 }
 
 describe("sling native task transition", () => {

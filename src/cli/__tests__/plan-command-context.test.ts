@@ -54,7 +54,10 @@ vi.mock("../../orchestrator/dispatcher.js", () => ({
 import { planCommand } from "../commands/plan.js";
 
 describe("foreman plan command context", () => {
+  const originalBackend = process.env["FOREMAN_BACKEND"];
+
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
     mockSelectTaskReadBackend.mockReturnValue("native");
     mockResolveRepoRootProjectPath.mockReset();
@@ -67,6 +70,8 @@ describe("foreman plan command context", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     vi.restoreAllMocks();
   });
 

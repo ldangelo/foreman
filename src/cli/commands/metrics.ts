@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ForemanStore, type Metrics } from "../../lib/store.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
@@ -440,6 +441,9 @@ export const metricsCommand = new Command("metrics")
     try {
       const costMode = Boolean(opts.costs || opts.compact || opts.since || opts.phase || opts.agent || opts.taskType);
       if (costMode) {
+        if (foremanBackendMode() === "elixir") {
+          throw new Error("metrics cost filters (--costs/--compact/--since/--phase/--agent/--task-type) read the legacy task store. Set FOREMAN_BACKEND=node for legacy cost metrics; default 'foreman metrics' uses Elixir pipeline metrics.");
+        }
         await renderTaskStoreMetrics(opts);
       } else {
         await renderPipelineMetrics(opts);

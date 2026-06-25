@@ -7,6 +7,7 @@ import { parseTrd } from "../../orchestrator/trd-parser.js";
 import { analyzeParallel } from "../../orchestrator/sprint-parallel.js";
 import { execute } from "../../orchestrator/sling-executor.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import type { TaskRow } from "../../lib/task-store.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
@@ -238,6 +239,10 @@ async function handleTrdImport(
     noQuality: opts.quality === false,
   };
 
+  if (foremanBackendMode() === "elixir") {
+    throw new Error("foreman sling still writes legacy daemon tasks. Set FOREMAN_BACKEND=node for sling, or use Elixir-backed plan prd/trd and task create flows.");
+  }
+
   const projects = await listRegisteredProjects();
   const project = projects.find((record) => record.path === projectPath);
   if (!project) {
@@ -426,6 +431,12 @@ const trdSubcommand = new Command("trd")
   .option("--no-risks", "Skip risk register parsing")
   .option("--no-quality", "Skip quality requirements parsing")
   .action(async (trdFile: string, opts: SlingCliOptions) => {
+    if (foremanBackendMode() === "elixir") {
+      console.error(chalk.red("foreman sling still writes legacy daemon tasks. Set FOREMAN_BACKEND=node for sling, or use Elixir-backed plan prd/trd and task create flows."));
+      process.exitCode = 1;
+      return;
+    }
+
     const projectPath = await resolveSlingProjectPath({
       project: typeof opts.project === "string" ? opts.project : undefined,
       projectPath: typeof opts.projectPath === "string" ? opts.projectPath : undefined,
@@ -461,6 +472,12 @@ const prdSubcommand = new Command("prd")
   .option("--no-risks", "Skip risk register parsing")
   .option("--no-quality", "Skip quality requirements parsing")
   .action(async (prdFile: string, opts: SlingCliOptions) => {
+    if (foremanBackendMode() === "elixir") {
+      console.error(chalk.red("foreman sling still writes legacy daemon tasks. Set FOREMAN_BACKEND=node for sling, or use Elixir-backed plan prd/trd and task create flows."));
+      process.exitCode = 1;
+      return;
+    }
+
     const projectPath = await resolveSlingProjectPath({
       project: typeof opts.project === "string" ? opts.project : undefined,
       projectPath: typeof opts.projectPath === "string" ? opts.projectPath : undefined,

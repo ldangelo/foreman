@@ -6,6 +6,9 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { initPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 export interface RegisteredProjectSummary {
   id: string;
@@ -16,6 +19,24 @@ export interface RegisteredProjectSummary {
 }
 
 export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
+  if (foremanBackendMode() === "elixir") {
+    try {
+      const manager = new ElixirServerManager();
+      const status = await manager.ensureRunning();
+      const client = new ElixirServerClient(status.url, manager.authToken);
+      const projects = await client.listProjects();
+      return projects.map((project) => ({
+        id: String(project.project_id ?? project.id ?? project.name ?? project.path),
+        name: String(project.name ?? project.project_id ?? project.id ?? project.path),
+        path: project.path,
+        githubUrl: project.github_url,
+        defaultBranch: project.default_branch,
+      }));
+    } catch {
+      // Fall through to legacy registry sources when the Elixir read model is unavailable.
+    }
+  }
+
   try {
     const client = createTrpcClient();
     const projects = await client.projects.list() as Array<{

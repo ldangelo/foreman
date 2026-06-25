@@ -13,6 +13,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ensureCliPostgresPool, resolveProjectPathFromOptions } from "./project-task-support.js";
 import {
   GhCli,
@@ -39,6 +40,12 @@ async function resolveProject(opts: {
   project?: string;
   projectPath?: string;
 }): Promise<{ projectId: string; projectPath: string }> {
+  if (foremanBackendMode() === "elixir") {
+    const message = "foreman issue writes legacy Postgres GitHub issue state. Use 'foreman jira' or Elixir-backed task/integration commands, or set FOREMAN_BACKEND=node for legacy issue sync.";
+    console.error(chalk.red(message));
+    process.exit(1);
+  }
+
   const projectPath = await resolveProjectPathFromOptions(opts);
   ensureCliPostgresPool(projectPath);
   const adapter = new PostgresAdapter();

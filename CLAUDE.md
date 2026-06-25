@@ -31,8 +31,8 @@ foreman retry <seed>   # Re-run a failed pipeline phase
 foreman stop           # Gracefully stop all agents
 foreman doctor         # Health checks (br, Pi, DB integrity)
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
-foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
-foreman plan X         # PRD -> TRD pipeline
+FOREMAN_BACKEND=node foreman sling trd X # Legacy TRD -> task hierarchy
+FOREMAN_BACKEND=node foreman plan X      # Legacy PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman jira status  # Jira integration status (Elixir event-backed by default)
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
