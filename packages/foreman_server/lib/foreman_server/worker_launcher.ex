@@ -118,7 +118,16 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp workflow_name(task) do
-    Map.get(task, :workflow) || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
+    label_workflow =
+      task
+      |> Map.get(:labels, [])
+      |> List.wrap()
+      |> Enum.find_value(fn
+        "workflow:" <> workflow when workflow != "" -> workflow
+        _ -> nil
+      end)
+
+    Map.get(task, :workflow) || label_workflow || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
   end
 
   defp worker_succeeded?(0, output) do

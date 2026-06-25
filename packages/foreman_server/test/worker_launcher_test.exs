@@ -52,6 +52,28 @@ defmodule ForemanServer.WorkerLauncherTest do
     refute match?(%{status: "completed"}, ProjectionStore.task("task-a"))
   end
 
+  test "workflow label selects launched worker workflow", %{bin_dir: bin_dir, project_dir: project_dir} do
+    foreman = Path.join(bin_dir, "foreman")
+    args_file = Path.join(project_dir, "args.txt")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    printf '%s\n' "$@" > #{args_file}
+    exit 0
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{task_id: "task-a", project_id: "project-a", project_path: project_dir, task_type: "feature", labels: ["workflow:docs"]}
+    run_id = "00000000-0000-0000-0000-000000000009"
+
+    assert {:ok, %{workflow: "docs"}} = WorkerLauncher.launch(task, run_id, ["developer"])
+
+    assert_eventually(fn -> if(File.exists?(args_file), do: File.read!(args_file), else: "") end, fn args ->
+      String.contains?(args, "run\ntask\ntask-a\ndocs\n")
+    end)
+  end
+
   test "zero-exit worker output with pipeline failure marks task failed", %{bin_dir: bin_dir, project_dir: project_dir} do
     foreman = Path.join(bin_dir, "foreman")
 

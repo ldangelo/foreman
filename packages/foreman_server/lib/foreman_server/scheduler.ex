@@ -177,6 +177,8 @@ defmodule ForemanServer.Scheduler do
 
   defp claim_task(task, phases, worker_launcher) do
     run_id = uuid()
+    workflow = workflow_name(task)
+    task = Map.put(task, :workflow, workflow)
     effective_phases = Map.get(task, :phases) || workflow_phases(task, phases)
 
     with {:ok, _event} <-
@@ -198,6 +200,7 @@ defmodule ForemanServer.Scheduler do
                task_id: task.task_id,
                project_id: Map.get(task, :project_id),
                phase_order: Enum.map(effective_phases, &phase_id/1),
+               workflow: workflow,
                current_phase: nil
              },
              metadata: %{

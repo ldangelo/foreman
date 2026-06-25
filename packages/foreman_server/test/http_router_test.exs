@@ -101,6 +101,50 @@ defmodule ForemanServer.Http.RouterTest do
     assert ProjectionStore.snapshot().runs["run-http-fail"].status == "failed"
   end
 
+  test "inbox project filter derives project from run task" do
+    append_event("project:proj-http-inbox", "ProjectRegistered", %{
+      project_id: "proj-http-inbox",
+      name: "Inbox Project",
+      path: "/tmp/inbox-project",
+      status: "active"
+    })
+
+    append_event("task:task-http-inbox", "TaskCreated", %{
+      task_id: "task-http-inbox",
+      project_id: "proj-http-inbox",
+      title: "Inbox task",
+      status: "ready"
+    })
+
+    append_run_event("RunStarted", %{
+      run_id: "run-http-inbox",
+      task_id: "task-http-inbox",
+      phase_order: ["developer"],
+      current_phase: "developer"
+    })
+
+    assert {:ok, _} =
+             ForemanServer.Inbox.send_operator_message(%{
+               run_id: "run-http-inbox",
+               from: "operator",
+               to: "developer",
+               subject: "hello",
+               body: "{}"
+             })
+
+    conn =
+      :get
+      |> conn("/api/v1/inbox?project_id=proj-http-inbox")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert [message] = body["inbox"]
+    assert message["project_id"] == "proj-http-inbox"
+    assert message["task_id"] == "task-http-inbox"
+  end
+
   test "authorized run.reset command marks run terminal reset" do
     append_run_event("RunStarted", %{
       run_id: "run-http-reset",
@@ -464,6 +508,18 @@ defmodule ForemanServer.Http.RouterTest do
       output: "http stdout",
       artifact_paths: ["http-artifact.md"],
       sequence: 1
+    })
+  end
+
+  defp append_event(stream_id, event_type, payload) do
+    ForemanServer.EventStore.append(%{
+      stream_id: stream_id,
+      event_type: event_type,
+      payload: payload,
+      metadata: %{
+        correlation_id: stream_id,
+        idempotency_key: "#{event_type}:#{System.unique_integer([:positive])}"
+      }
     })
   end
 
