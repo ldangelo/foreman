@@ -86,8 +86,15 @@ export function listBundledActionFiles(): string[] {
   }
 }
 
+function actionNameFromFile(file: string): string {
+  return file.replace(/\.(mjs|js|ts)$/i, "");
+}
+
 export function findMissingActions(projectRoot: string): string[] {
-  return listBundledActionFiles().filter((file) => !existsSync(join(projectRoot, ".foreman", "actions", file)));
+  return listBundledActionFiles().filter((file) => {
+    const actionName = actionNameFromFile(file);
+    return projectActionCandidates(projectRoot, actionName).every((candidate) => !existsSync(candidate));
+  });
 }
 
 export interface ActionValidationResult {
@@ -224,14 +231,14 @@ export function validateActionsInDir(dir: string): ActionValidationResult {
   }
   const actionCounts = new Map<string, number>();
   for (const file of files) {
-    const actionName = file.replace(/\.(mjs|js|ts)$/i, "");
+    const actionName = actionNameFromFile(file);
     actionCounts.set(actionName, (actionCounts.get(actionName) ?? 0) + 1);
   }
   for (const [actionName, count] of actionCounts.entries()) {
     if (count > 1) duplicateNames.push(actionName);
   }
   for (const file of files) {
-    const actionName = file.replace(/\.(mjs|js|ts)$/i, "");
+    const actionName = actionNameFromFile(file);
     if (!isSafeActionName(actionName)) {
       invalidNames.push(file);
       continue;

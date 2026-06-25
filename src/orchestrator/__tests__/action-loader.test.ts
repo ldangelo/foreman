@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
 import { getForemanHomePath } from "../../lib/foreman-paths.js";
-import { actionCandidates, installBundledActions, loadProjectAction, validateActionsInDir, validateProjectActions } from "../action-loader.js";
+import { actionCandidates, findMissingActions, installBundledActions, loadProjectAction, validateActionsInDir, validateProjectActions } from "../action-loader.js";
 
 describe("project action loader", () => {
   const oldHome = process.env.FOREMAN_HOME;
@@ -126,6 +126,14 @@ describe("project action loader", () => {
       invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-import.js", "missing-run.js", "run-value.js", "string-export.js", "syntax-ts.ts", "syntax.js"],
       duplicateNames: ["dup"],
     });
+  });
+
+  it("does not report bundled actions missing when another supported variant exists", () => {
+    const project = mkdtempSync(join(tmpdir(), "foreman-action-missing-"));
+    mkdirSync(join(project, ".foreman", "actions"), { recursive: true });
+    writeFileSync(join(project, ".foreman", "actions", "create-pr.ts"), "export const run = async (ctx) => ctx.internal.runBuiltin();\n");
+
+    expect(findMissingActions(project)).not.toContain("create-pr.js");
   });
 
   it("installs bundled action stubs into project .foreman/actions", () => {
