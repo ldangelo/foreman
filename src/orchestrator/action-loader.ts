@@ -47,9 +47,6 @@ export function findProjectActionPath(projectPath: string, actionType: string): 
 }
 
 async function importActionModule<Context, Result>(candidate: string): Promise<ExternalActionModule<Context, Result>> {
-  if (!candidate.endsWith(".ts")) {
-    return await import(`${pathToFileURL(candidate).href}?t=${Date.now()}`) as ExternalActionModule<Context, Result>;
-  }
   const bundled = buildSync({
     entryPoints: [candidate],
     bundle: true,
