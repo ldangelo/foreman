@@ -43,10 +43,12 @@ import { watchCommand } from "../commands/watch/index.js";
 describe("watch command bootstrap", () => {
   let tempDir: string;
   let originalCwd: string;
+  const originalBackend = process.env["FOREMAN_BACKEND"];
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "foreman-watch-command-"));
     originalCwd = process.cwd();
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
 
     mockLoadDashboardConfig.mockReturnValue({ refreshInterval: 5000 });
@@ -66,6 +68,8 @@ describe("watch command bootstrap", () => {
 
   afterEach(() => {
     process.chdir(originalCwd);
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
     rmSync(tempDir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
