@@ -318,6 +318,10 @@ describe("validateWorkflowConfig", () => {
       name: "default",
       phases: [{ name: "notify", action: "notify", capabilities: "mail" }],
     }, "default")).toThrow(WorkflowConfigError);
+    expect(() => validateWorkflowConfig({
+      name: "default",
+      phases: [{ name: "notify", action: "notify", capabilities: ["mail", "root"] }],
+    }, "default")).toThrow(/unknown capability/);
   });
 
   it("parses action capabilities", () => {

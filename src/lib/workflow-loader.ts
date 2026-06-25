@@ -51,6 +51,7 @@ import { getForemanHomePath } from "./foreman-paths.js";
 import type { SandboxConfig } from "./project-config.js";
 
 const WORKSPACE_ACTIONS = new Set(["prepare-worktree", "setup-workspace", "write-task-context"]);
+const ACTION_CAPABILITIES = new Set(["vcs", "mail", "task-store", "network", "exec"]);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -644,7 +645,14 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
       phase.action = p["action"];
     }
     const capabilities = parseStringArray(p["capabilities"], workflowName, `phases[${i}].capabilities`);
-    if (capabilities) phase.capabilities = capabilities;
+    if (capabilities) {
+      for (const capability of capabilities) {
+        if (!ACTION_CAPABILITIES.has(capability)) {
+          throw new WorkflowConfigError(workflowName, `phases[${i}].capabilities contains unknown capability '${capability}'`);
+        }
+      }
+      phase.capabilities = capabilities;
+    }
     if (p["prompt"] !== undefined) {
       if (typeof p["prompt"] !== "string" || !p["prompt"].trim()) throw new WorkflowConfigError(workflowName, `phases[${i}].prompt must be a non-empty string`);
       phase.prompt = p["prompt"];
