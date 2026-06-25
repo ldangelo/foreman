@@ -170,7 +170,7 @@ export interface WorkflowPhaseConfig {
   name: string;
   /** Reusable execution action type. Defaults from prompt/bash/command/builtin fields when omitted. */
   action?: string;
-  /** Declared host capabilities used by project/custom actions (advisory for now). */
+  /** Declared host capabilities used by project/custom actions. */
   capabilities?: string[];
   /**
    * Prompt file name (relative to .foreman/prompts/{workflow}/).
