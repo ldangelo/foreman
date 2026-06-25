@@ -68,7 +68,7 @@ import { inferPhaseActionType, phaseActionCapabilities } from "./phase-actions.j
 import { loadProjectAction } from "./action-loader.js";
 import { assertPhaseActionResult } from "./action-results.js";
 import type { ActionCapability } from "./workspace-actions.js";
-import { deriveFallbackRefineryOptions, runCliReviewBuiltinPhase, runCreatePrBuiltinPhase, runFinalizeBuiltinPhase, runMergeBuiltinPhase, runPrWaitBuiltinPhase, runPreparePrReviewBuiltinPhase, validatePrReviewGate, workerReportDir } from "./actions/builtin-worker-actions.js";
+import { deriveFallbackRefineryOptions, runCliReviewBuiltinPhase, runCreatePrBuiltinPhase, runFinalizeBuiltinPhase, runMergeBuiltinPhase, runPrWaitBuiltinPhase, runPreparePrReviewBuiltinPhase, runQltyBuiltinPhase, validatePrReviewGate, workerReportDir } from "./actions/builtin-worker-actions.js";
 import { ElixirServerClient } from "../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
 
@@ -1262,6 +1262,7 @@ async function runPipeline(
               agentMailClient,
             }),
             "pr-wait": () => runPrWaitBuiltinPhase({ config, phase, pipelineProjectPath, log }),
+            qlty: () => runQltyBuiltinPhase({ config, phase, log }),
             "cli-review": () => runCliReviewBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log }),
             finalize: () => runFinalizeBuiltinPhase({ config, pipelineProjectPath, vcsBackend, log, progress }),
             "prepare-pr-review": () => runPreparePrReviewBuiltinPhase({ config, pipelineProjectPath, log }),

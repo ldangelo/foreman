@@ -277,6 +277,51 @@ export async function runPreparePrReviewBuiltinPhase(args: {
   return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: `blocking=${context.blockingFindings.length} failedChecks=${context.failedChecks.length}` };
 }
 
+export async function runQltyBuiltinPhase(args: {
+  config: WorkerConfig;
+  phase: WorkflowPhaseConfig;
+  log: (msg: string) => void;
+}): Promise<PhaseResult> {
+  const command = args.phase.command?.trim() || "qlty check";
+  const reportDir = resolveArtifactPath(args.config.worktreePath, workerReportDir(args.config));
+  await mkdir(reportDir, { recursive: true });
+  const reportPath = join(reportDir, "QLTY_REPORT.md");
+  args.log(`[QLTY] Running ${command}`);
+  const started = Date.now();
+  let output = "";
+  let success = false;
+  try {
+    const result = await execFileAsync("/bin/bash", ["-lc", `command -v qlty >/dev/null 2>&1 || { echo "qlty CLI not found. Install from https://qlty.sh/ or run: curl https://qlty.sh | sh"; exit 127; }\n${command}`], {
+      cwd: args.config.worktreePath,
+      timeout: args.phase.timeoutSecs ? args.phase.timeoutSecs * 1000 : 5 * 60_000,
+      maxBuffer: 5 * 1024 * 1024,
+    });
+    output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+    success = true;
+  } catch (err: unknown) {
+    const e = err as { stdout?: string; stderr?: string; message?: string };
+    output = `${e.stdout ?? ""}${e.stderr ?? ""}${e.message ? `\n${e.message}` : ""}`.trim();
+  }
+  const truncated = truncateFinalizeOutput(output);
+  await writeFile(reportPath, `# Qlty Report: ${args.config.seedTitle}\n\n` +
+    `## Seed: ${args.config.seedId}\n` +
+    `## Run: ${args.config.runId}\n` +
+    `## Timestamp: ${new Date().toISOString()}\n` +
+    `## Command: ${command}\n` +
+    `## DurationMs: ${Date.now() - started}\n\n` +
+    `## Output\n\n\`\`\`text\n${truncated || "(no output)"}\n\`\`\`\n\n` +
+    `## Verdict: ${success ? "PASS" : "FAIL"}\n`, "utf8");
+  return {
+    success,
+    costUsd: 0,
+    turns: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    error: success ? undefined : truncated || "qlty check failed",
+    outputText: truncated,
+  };
+}
+
 export async function runCliReviewBuiltinPhase(args: {
   config: WorkerConfig;
   pipelineProjectPath: string;

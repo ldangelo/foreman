@@ -201,6 +201,12 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).toContain('enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");');
   });
 
+  it("routes qlty through a builtin phase handler", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain("runQltyBuiltinPhase");
+    expect(source).toContain("qlty: () => runQltyBuiltinPhase({ config, phase, log })");
+  });
+
   it("uses merged phase action capabilities for custom worker actions", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { inferPhaseActionType, phaseActionCapabilities } from "./phase-actions.js";');

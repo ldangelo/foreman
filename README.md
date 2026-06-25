@@ -43,7 +43,7 @@ Foreman CLI / Dispatcher
   │
   ├─ Pipeline Executor (workflow YAML-driven)
   │    Phases defined in .foreman/workflows/*.yaml or ~/.foreman/workflows/*.yaml
-  │    Phase actions (prompt-agent, bash, finalize, PR gates, merge) bind YAML labels to code
+  │    Phase actions (prompt-agent, bash, qlty, finalize, PR gates, merge) bind YAML labels to code
   │    Workspace prep, model selection, retries, validation policies, mail hooks, artifacts — all YAML config
   │    Workflow YAML resolves explicit path → project .foreman/workflows → global ~/.foreman/workflows → bundled
   │    Project/global workflows can be managed with `foreman workflows list|show|validate|install|create`
@@ -881,7 +881,7 @@ Foreman pipelines are configured via workflow YAML files. See the **[Workflow YA
 Workflows define:
 - **Setup steps** — dependency installation, build commands (stack-agnostic)
 - **Setup cache** — symlink dependency directories from a shared cache
-- **Phase sequence + actions** — which steps run in what order, and whether each uses `prompt-agent`, `command-agent`, `bash`, or a builtin action such as `finalize`, `create-pr`, or `merge`
+- **Phase sequence + actions** — which steps run in what order, and whether each uses `prompt-agent`, `command-agent`, `bash`, or a builtin action such as `qlty`, `finalize`, `create-pr`, or `merge`
 - **Task-type routing** — optional top-level `task_type: bug` declarations map task types to workflows; declarations must be non-empty strings and must be unique
 - **Model selection** — per-phase models with priority-based overrides
 - **Retry loops** — QA/Reviewer/PR-review failure → Developer retry with feedback

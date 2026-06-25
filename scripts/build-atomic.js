@@ -66,7 +66,7 @@ try {
 console.error('[build-atomic] Copying assets …');
 const filter = (s) => {
   const name = basename(s);
-  return !name.includes('.') || name.endsWith('.md') || name.endsWith('.yaml');
+  return !name.includes('.') || name.endsWith('.md') || name.endsWith('.yaml') || name.endsWith('.js');
 };
 
 const legacySrc = join(root, 'src', 'templates');

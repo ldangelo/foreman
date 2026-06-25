@@ -24,6 +24,7 @@ describe("phase actions", () => {
 
   it("declares default capabilities for privileged builtins", () => {
     expect(DEFAULT_PHASE_ACTION_CAPABILITIES["create-pr"]).toEqual(expect.arrayContaining(["vcs", "mail", "task-store", "network"]));
+    expect(DEFAULT_PHASE_ACTION_CAPABILITIES.qlty).toEqual(expect.arrayContaining(["exec"]));
     expect(DEFAULT_PHASE_ACTION_CAPABILITIES["prepare-worktree"]).toEqual(expect.arrayContaining(["vcs"]));
     expect(DEFAULT_PHASE_ACTION_CAPABILITIES.finalize).toEqual(expect.arrayContaining(["vcs", "exec"]));
   });
@@ -36,6 +37,7 @@ describe("phase actions", () => {
   it("classifies execution paths by action kind", () => {
     expect(isCommandPhaseAction({ name: "prd", action: "command-agent", command: "/skill:create-prd" })).toBe(true);
     expect(isBashPhaseAction({ name: "smoke", action: "bash", bash: "npm test" })).toBe(true);
+    expect(isBuiltinPhaseAction({ name: "qlty", action: "qlty" })).toBe(true);
     expect(isBuiltinPhaseAction({ name: "merge", action: "merge", builtin: true })).toBe(true);
     expect(isDispatcherPhaseAction({ name: "prepare-worktree", action: "prepare-worktree" })).toBe(true);
   });

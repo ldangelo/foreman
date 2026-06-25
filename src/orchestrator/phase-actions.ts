@@ -12,6 +12,7 @@ export interface PhaseActionDescriptor {
 }
 
 const BUILTIN_PHASE_ACTIONS = new Set([
+  "qlty",
   "cli-review",
   "finalize",
   "create-pr",
@@ -24,6 +25,7 @@ export const DEFAULT_PHASE_ACTION_CAPABILITIES: Record<string, string[]> = {
   "prepare-worktree": ["vcs"],
   "setup-workspace": ["vcs", "exec"],
   "write-task-context": ["task-store"],
+  qlty: ["exec"],
   "cli-review": ["vcs", "exec"],
   finalize: ["vcs", "exec"],
   "create-pr": ["vcs", "mail", "task-store", "network"],
@@ -78,6 +80,11 @@ export const PHASE_ACTIONS: Record<string, PhaseActionDescriptor> = {
     type: "builtin",
     kind: "builtin",
     description: "Run a built-in TypeScript phase",
+  },
+  qlty: {
+    type: "qlty",
+    kind: "builtin",
+    description: "Run qlty check and write QLTY_REPORT.md",
   },
   "cli-review": {
     type: "cli-review",
