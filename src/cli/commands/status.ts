@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import chalk from "chalk";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { ElixirServerClient, type ElixirRun, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ForemanStore, type StatusReadStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
 import { renderAgentCard, formatSuccessRate, elapsed } from "../watch-ui.js";
@@ -118,7 +120,69 @@ function resolveRegisteredProject(projects: Array<{ path: string; id: string }>,
   return projects.find((record) => resolve(record.path) === resolvedProjectPath) ?? null;
 }
 
+function normalizeStatus(status: string | undefined): string {
+  return (status ?? "").toLowerCase().replaceAll("-", "_");
+}
+
+export function countsFromElixirTasks(tasks: ElixirTask[]): StatusCounts {
+  return tasks.reduce<StatusCounts>((counts, task) => {
+    const status = normalizeStatus(task.status);
+    counts.total += 1;
+    if (status === "ready") counts.ready += 1;
+    if (status === "in_progress" || status === "running") counts.inProgress += 1;
+    if (status === "merged" || status === "closed" || status === "completed") counts.completed += 1;
+    if (status === "backlog" || status === "blocked") counts.blocked += 1;
+    return counts;
+  }, { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 });
+}
+
+export function activeRunsFromElixir(runs: ElixirRun[]): DaemonRunSummary[] {
+  return runs
+    .filter((run) => {
+      const status = normalizeStatus(run.status);
+      return status === "pending" || status === "running";
+    })
+    .map((run) => ({
+      id: String(run.run_id ?? run.id),
+      seed_id: typeof run.task_id === "string" ? run.task_id : undefined,
+      status: typeof run.status === "string" ? run.status : "pending",
+      branch: typeof run.branch === "string" ? run.branch : null,
+      started_at: typeof run.started_at === "string" ? run.started_at : null,
+      queued_at: typeof run.queued_at === "string" ? run.queued_at : undefined,
+      created_at: typeof run.created_at === "string" ? run.created_at : new Date(0).toISOString(),
+    }));
+}
+
+async function fetchElixirStatusSnapshot(projectPath: string): Promise<DaemonStatusSnapshot | null> {
+  const projects = await listRegisteredProjects();
+  const project = resolveRegisteredProject(projects, projectPath);
+  if (!project) return null;
+
+  const manager = new ElixirServerManager();
+  const client = new ElixirServerClient(manager.url, manager.authToken);
+  const [allTasks, runs] = await Promise.all([
+    client.listTasks(),
+    client.listRuns(project.id),
+  ]);
+  const tasks = allTasks.filter((task) => (task.project_id ?? project.id) === project.id);
+
+  return {
+    projectId: project.id,
+    counts: countsFromElixirTasks(tasks),
+    failed: tasks.filter((task) => ["failed", "conflict"].includes(normalizeStatus(task.status))).length,
+    stuck: tasks.filter((task) => normalizeStatus(task.status) === "stuck").length,
+    activeRuns: activeRunsFromElixir(runs),
+  };
+}
+
 export async function fetchDaemonStatusSnapshot(projectPath: string): Promise<DaemonStatusSnapshot | null> {
+  try {
+    const elixir = await fetchElixirStatusSnapshot(projectPath);
+    if (elixir) return elixir;
+  } catch {
+    // Fall back to the legacy daemon/DB projection while Elixir is unavailable.
+  }
+
   try {
     const projects = await listRegisteredProjects();
     const project = resolveRegisteredProject(projects, projectPath);

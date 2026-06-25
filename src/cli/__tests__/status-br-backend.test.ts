@@ -99,7 +99,7 @@ describe("TRD-024: status.ts native task store is the only supported backend", (
 
 // ── fetchStatusCounts tests ────────────────────────────────────────────────
 
-import { fetchStatusCounts } from "../commands/status.js";
+import { activeRunsFromElixir, countsFromElixirTasks, fetchStatusCounts } from "../commands/status.js";
 
 describe("TRD-024: fetchStatusCounts uses native task store", () => {
   const PROJECT_PATH = "/mock/project";
@@ -181,6 +181,40 @@ describe("TRD-024: fetchStatusCounts uses native task store", () => {
       expect(MockBeadsRustClient).not.toHaveBeenCalled();
       expect(mockBrList).not.toHaveBeenCalled();
       expect(mockBrReady).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Elixir status projection helpers", () => {
+    it("maps Elixir task statuses into CLI status counts", () => {
+      expect(countsFromElixirTasks([
+        { id: "r1", status: "ready" },
+        { id: "p1", status: "in-progress" },
+        { id: "p2", status: "running" },
+        { id: "m1", status: "merged" },
+        { id: "c1", status: "closed" },
+        { id: "b1", status: "backlog" },
+        { id: "b2", status: "blocked" },
+        { id: "f1", status: "failed" },
+      ])).toEqual({
+        total: 8,
+        ready: 1,
+        inProgress: 2,
+        completed: 2,
+        blocked: 2,
+      });
+    });
+
+    it("selects active Elixir runs for status output", () => {
+      const runs = activeRunsFromElixir([
+        { run_id: "run-1", task_id: "task-1", status: "running", created_at: "2026-01-01T00:00:00.000Z" },
+        { run_id: "run-2", task_id: "task-2", status: "pending", created_at: "2026-01-01T00:00:01.000Z" },
+        { run_id: "run-3", task_id: "task-3", status: "completed", created_at: "2026-01-01T00:00:02.000Z" },
+      ]);
+
+      expect(runs.map((run) => [run.id, run.seed_id, run.status])).toEqual([
+        ["run-1", "task-1", "running"],
+        ["run-2", "task-2", "pending"],
+      ]);
     });
   });
 

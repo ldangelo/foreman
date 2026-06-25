@@ -509,7 +509,7 @@ Each agent gets:
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events by default in Postgres-backed Elixir mode.
+Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. Single-project status reads Elixir task/run projections first, then falls back to legacy stores if the server is unavailable. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events by default in Postgres-backed Elixir mode.
 
 ```bash
 foreman status

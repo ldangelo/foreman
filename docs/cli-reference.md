@@ -156,7 +156,7 @@ foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch ma
 
 ### `foreman status`
 
-Show project status: task counts, active agents, cost breakdown, and tool usage.
+Show project status: task counts, active agents, cost breakdown, and tool usage. In default Elixir mode, single-project status reads Elixir task/run projections first, then falls back to legacy daemon/local stores if the server is unavailable.
 
 ```bash
 foreman status                    # Snapshot of current state
