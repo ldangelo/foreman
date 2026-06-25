@@ -22,7 +22,7 @@ foreman project sync <project-id>  # Fetch checkout + update Elixir last_sync_at
 foreman run            # Dispatch ready tasks to agents
 foreman run --bead X   # Dispatch specific task
 foreman status         # Show tasks + active agents
-foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
+foreman watch          # Legacy Node live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
 foreman reset          # Clean up failed/stuck runs
 foreman reset --detect-stuck  # Detect + reset stuck runs (replaces 'foreman monitor')
@@ -46,7 +46,7 @@ foreman task create --from-text "X"  # Natural-language task creation (replaces 
 foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
 foreman purge runs     # Remove stale failed run records
 foreman inbox          # Agent mail + selected-run lifecycle events
-foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
+foreman inbox send     # Legacy Node Agent Mail send (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
 foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
 # In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-logs [run-id], /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick

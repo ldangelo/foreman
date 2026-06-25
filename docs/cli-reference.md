@@ -277,7 +277,7 @@ Tasks by Status
 Single-pane unified live dashboard: agents, board summary, inbox, and pipeline events. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
 
 ```bash
-foreman watch                     # Live unified dashboard
+foreman watch                     # Live unified dashboard (legacy Node backend)
 foreman watch --no-watch          # One-shot snapshot, no polling
 foreman watch --refresh 5000      # Refresh every 5 seconds
 foreman watch --no-events         # Hide the pipeline events panel
@@ -737,6 +737,9 @@ foreman inbox --ack               # Mark shown messages as read
 | `--events-limit <n>` | `50` | Maximum lifecycle events to show |
 
 ### `foreman inbox send`
+
+`inbox send` is a legacy Node-backend Agent Mail helper. In Elixir mode it exits with an unsupported message; use Elixir lifecycle/worker protocol events for server-backed phase communication.
+
 
 Send an Agent Mail message within a pipeline run (replaces the removed `foreman mail send`).
 

@@ -1030,6 +1030,14 @@ const inboxSendCommand = new Command("send")
       return;
     }
 
+    if (foremanBackendMode() === "elixir") {
+      process.stderr.write(
+        "inbox send error: inbox send is not supported by the Elixir backend yet. Use FOREMAN_BACKEND=node for legacy agent mail send.\n",
+      );
+      process.exit(1);
+      return;
+    }
+
     const projectPath = await resolveRepoRootProjectPath({});
     try {
       const resolvedProjectPath = resolve(projectPath);

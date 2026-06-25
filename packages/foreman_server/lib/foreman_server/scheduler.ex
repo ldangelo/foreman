@@ -3,7 +3,7 @@ defmodule ForemanServer.Scheduler do
 
   use GenServer
 
-  alias ForemanServer.{EventStore, LogReconciler, ProjectionStore}
+  alias ForemanServer.{EventStore, LogReconciler, ProjectionStore, WorkflowInterpreter}
 
   @default_phases ["developer"]
   @default_tick_interval_ms 5_000
@@ -177,7 +177,7 @@ defmodule ForemanServer.Scheduler do
 
   defp claim_task(task, phases, worker_launcher) do
     run_id = uuid()
-    effective_phases = Map.get(task, :phases, phases)
+    effective_phases = Map.get(task, :phases) || workflow_phases(task, phases)
 
     with {:ok, _event} <-
            EventStore.append(%{
@@ -213,6 +213,49 @@ defmodule ForemanServer.Scheduler do
   defp phase_id(phase) when is_map(phase), do: Map.get(phase, :id) || Map.get(phase, :name) || Map.get(phase, "id") || Map.get(phase, "name")
   defp phase_id(phase) when is_binary(phase), do: phase
   defp phase_id(phase), do: to_string(phase)
+
+  defp workflow_phases(task, fallback) do
+    with {:ok, path} <- workflow_path(task),
+         {:ok, workflow} <- WorkflowInterpreter.load_file(path),
+         [_ | _] = phase_order <- Map.get(workflow, :phase_order) do
+      phase_order
+    else
+      _ -> fallback
+    end
+  end
+
+  defp workflow_path(task) do
+    workflow = Map.get(task, :workflow) || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
+
+    with {:ok, project_path} <- task_project_path(task) do
+      project_workflow = Path.join([project_path, ".foreman", "workflows", "#{workflow}.yaml"])
+      bundled_workflow = Path.expand("../../src/defaults/workflows/#{workflow}.yaml", File.cwd!())
+
+      cond do
+        File.exists?(project_workflow) -> {:ok, project_workflow}
+        File.exists?(bundled_workflow) -> {:ok, bundled_workflow}
+        true -> {:error, :workflow_not_found}
+      end
+    end
+  end
+
+  defp task_project_path(task) do
+    project_id = Map.get(task, :project_id)
+
+    cond do
+      is_binary(Map.get(task, :project_path)) ->
+        {:ok, Map.get(task, :project_path)}
+
+      is_binary(project_id) ->
+        case ProjectionStore.project(project_id) do
+          %{path: path} when is_binary(path) -> {:ok, path}
+          _ -> {:error, {:missing_project_path, project_id}}
+        end
+
+      true ->
+        {:error, :missing_project_id}
+    end
+  end
 
   defp skip(task, reason, skipped, claimed, active_count, project_counts) do
     payload = %{task_id: task.task_id, project_id: Map.get(task, :project_id), reason: reason}

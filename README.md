@@ -542,7 +542,7 @@ Tools cover one-call smoke status, health, scheduler status/tick, projects, task
 Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
 
 ```bash
-foreman watch                             # Live unified dashboard
+foreman watch                             # Live unified dashboard (legacy Node backend)
 foreman watch --no-watch                  # One-shot snapshot, no polling
 foreman watch --project <id>              # Filter to a specific project
 foreman status --watch                    # Compact refreshing status view
@@ -649,7 +649,7 @@ foreman inbox                            # Latest run's messages
 foreman inbox --task task-abc           # Messages for a specific task
 foreman inbox --all                     # All runs
 foreman inbox --all --watch             # Live stream across all runs
-foreman inbox send --from qa --to developer --subject fix-needed  # Send a message (--run-id or FOREMAN_RUN_ID)
+foreman inbox send --from qa --to developer --subject fix-needed  # Legacy Node backend send (--run-id or FOREMAN_RUN_ID)
 ```
 
 ### `foreman worktree`

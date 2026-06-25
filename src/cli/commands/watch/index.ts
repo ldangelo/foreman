@@ -44,6 +44,7 @@ import {
 import { renderWatch } from "./render.js";
 import { approveTask, retryTask } from "./actions.js";
 import { printDeprecationNotice } from "../cli-output.js";
+import { foremanBackendMode } from "../../../lib/backend-mode.js";
 
 /**
  * `foreman dashboard` is a deprecated alias of `foreman watch`. When the
@@ -86,6 +87,12 @@ export const watchCommand = new Command("watch")
     project?: string;
   }) => {
     maybePrintDashboardAliasNotice();
+
+    if (foremanBackendMode() === "elixir") {
+      console.error(chalk.red("Error: foreman watch is not supported by the Elixir backend yet."));
+      console.error(chalk.dim("Use 'foreman status --live' for the Elixir live view, or set FOREMAN_BACKEND=node for the legacy dashboard."));
+      process.exit(1);
+    }
 
     const projectPath = await resolveRepoRootProjectPath({ project: opts.project });
 

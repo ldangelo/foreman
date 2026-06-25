@@ -195,7 +195,8 @@ export class ElixirServerClient {
   }
 
   async getRunLogs(runId: string, view: "compact" | "plain" | "raw" = "compact"): Promise<unknown> {
-    const body = await this.getJson<{ ok: true; logs: unknown }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?view=${view}`);
+    const serverView = view === "plain" ? "compact" : view;
+    const body = await this.getJson<{ ok: true; logs: unknown }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?view=${serverView}`);
     return body.logs;
   }
 

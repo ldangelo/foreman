@@ -227,12 +227,16 @@ export function renderDaemonRunCard(run: DaemonRunSummary): string {
  * Fetch task status counts using the shared task backend selector.
  */
 export async function fetchStatusCounts(projectPath: string): Promise<StatusCounts> {
-  try {
-    if (foremanBackendMode() === "elixir") {
+  if (foremanBackendMode() === "elixir") {
+    try {
       const snapshot = await fetchElixirStatusSnapshot(projectPath);
-      if (snapshot) return snapshot.counts;
+      if (snapshot && (snapshot.counts.total > 0 || snapshot.activeRuns.length > 0)) return snapshot.counts;
+    } catch {
+      // Fall back to daemon/project-local status when the Elixir read endpoint is unavailable.
     }
+  }
 
+  try {
     const projects = await listRegisteredProjects();
     const project = resolveRegisteredProject(projects, projectPath);
     if (project) {
@@ -609,12 +613,28 @@ export const statusCommand = new Command("status")
 
       try {
         while (!detach.isDetached()) {
+          if (foremanBackendMode() === "elixir") {
+            try {
+              const elixirSnapshot = await fetchElixirStatusSnapshot(projectPath);
+              if (elixirSnapshot && (elixirSnapshot.counts.total > 0 || elixirSnapshot.activeRuns.length > 0)) {
+                process.stdout.write("\x1B[2J\x1B[H");
+                console.log(chalk.bold("Project Status") + chalk.dim(`  (Elixir live view every ${seconds}s — Ctrl+C to stop)\n`));
+                await renderStatus(projectPath);
+                console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
+                await sleepOrDetach(seconds * 1000, detach);
+                continue;
+              }
+            } catch {
+              // Fall back to the legacy dashboard view when Elixir is unavailable.
+            }
+          }
+
           let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
           try {
             counts = await fetchStatusCounts(projectPath);
           } catch { /* br not available — show zero counts */ }
 
-          const daemonDashboard = foremanBackendMode() === "elixir" ? null : await fetchDaemonDashboardState(projectPath);
+          const daemonDashboard = await fetchDaemonDashboardState(projectPath);
           const dashState = daemonDashboard ?? (() => {
             const store = ForemanStore.forDashboard(projectPath);
             try {
