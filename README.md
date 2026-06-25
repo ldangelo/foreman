@@ -881,7 +881,7 @@ Foreman pipelines are configured via workflow YAML files. See the **[Workflow YA
 Workflows define:
 - **Setup steps** — dependency installation, build commands (stack-agnostic)
 - **Setup cache** — symlink dependency directories from a shared cache
-- **Phase sequence + actions** — which steps run in what order, and whether each uses `prompt-agent`, `command-agent`, `bash`, or a builtin action such as `qlty`, `finalize`, `create-pr`, or `merge`
+- **Phase sequence + actions** — which steps run in what order, and whether each uses `prompt-agent`, `command-agent`, `bash`, or a builtin action such as `qlty` (retry Developer with `QLTY_REPORT.md` on failure), `finalize`, `create-pr`, or `merge`
 - **Task-type routing** — optional top-level `task_type: bug` declarations map task types to workflows; declarations must be non-empty strings and must be unique
 - **Model selection** — per-phase models with priority-based overrides
 - **Retry loops** — QA/Reviewer/PR-review failure → Developer retry with feedback

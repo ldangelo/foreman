@@ -698,11 +698,12 @@ phases:
     }
   });
 
-  it("feature workflow inserts cli-review, PR review, and merge phases after reviewer", () => {
+  it("feature workflow inserts qlty, cli-review, PR review, and merge phases after reviewer", () => {
     const config = loadWorkflowConfig("feature", tmpDir);
     const phaseNames = config.phases.map((phase) => phase.name);
     expect(phaseNames.slice(phaseNames.indexOf("reviewer"))).toEqual([
       "reviewer",
+      "qlty",
       "cli-review",
       "finalize",
       "documentation",
@@ -747,6 +748,18 @@ phases:
     expect(config.phases.find((phase) => phase.name === "developer")?.contract?.policy).toMatchObject({ developerCompletion: true });
     expect(config.phases.find((phase) => phase.name === "qa")?.contract?.policy).toMatchObject({ testEvidence: true, captureQaTarget: true });
     expect(config.phases.find((phase) => phase.name === "finalize")?.contract?.policy).toMatchObject({ finalizeValidation: true });
+  });
+
+  it("bundled developer workflows run qlty before cli-review and retry developer with QLTY_REPORT", () => {
+    for (const workflowName of ["default", "feature", "bug", "task", "quick"]) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const phaseNames = config.phases.map((phase) => phase.name);
+      const qlty = config.phases.find((phase) => phase.name === "qlty");
+      expect(qlty, workflowName).toMatchObject({ action: "qlty", builtin: true, artifact: "{task.projectReportsDir}/QLTY_REPORT.md", retryWith: "developer", retryOnFail: 2 });
+      expect(phaseNames.indexOf("qlty"), workflowName).toBeGreaterThan(phaseNames.indexOf("developer"));
+      expect(phaseNames.indexOf("qlty"), workflowName).toBeLessThan(phaseNames.indexOf("cli-review"));
+      expect(qlty?.mail?.onFail, workflowName).toBe("developer");
+    }
   });
 
   it("bundled auto-merge workflows expose cli-review, PR review, and merge phases", () => {

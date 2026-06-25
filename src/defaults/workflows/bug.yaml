@@ -156,6 +156,21 @@ phases:
   # ── Phase 4: cli-review (builtin) ───────────────────────────────────────
   # Run CodeRabbit CLI before finalize so the developer remediation loop can
   # address findings before PR creation and merge gates.
+  - name: qlty
+    action: qlty
+    builtin: true
+    artifact: "{task.projectReportsDir}/QLTY_REPORT.md"
+    timeoutSecs: 300
+    contract:
+      policy:
+        terminalOnFailExhausted: true
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
   - name: cli-review
     action: cli-review
     builtin: true

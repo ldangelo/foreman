@@ -95,6 +95,21 @@ phases:
       onComplete: true
       onFail: developer
 
+  - name: qlty
+    action: qlty
+    builtin: true
+    artifact: "{task.projectReportsDir}/QLTY_REPORT.md"
+    timeoutSecs: 300
+    contract:
+      policy:
+        terminalOnFailExhausted: true
+    retryWith: developer
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
   - name: cli-review
     action: cli-review
     builtin: true
