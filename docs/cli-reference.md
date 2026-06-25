@@ -454,7 +454,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman logs`
 
-Show run logs and debugging summaries.
+Show run logs and debugging summaries. Compact/plain/raw event views read from the Elixir server and do not require local `~/.foreman/logs/<run>.log` files; summary and `--follow` still use local worker log files.
 
 ```bash
 foreman logs <task-or-run-id>          # Summary with phase/tool activity
@@ -471,7 +471,7 @@ foreman logs <run-id> --raw --tail 200 # Raw JSON tail
 | `--compact` | Fetch the compact event-backed view and strip `message_update` noise |
 | `--plain` | Alias for `--compact`; also used by `--view plain` for human-readable compact output |
 | `--view <compact|plain|raw>` | Select event-backed log view |
-| `--raw` | Print raw worker JSON log lines |
+| `--raw` | Print raw worker JSON log lines, falling back to the Elixir raw event view when the local file is absent |
 | `--follow` | Follow the raw worker log after the summary |
 
 ### `foreman doctor`

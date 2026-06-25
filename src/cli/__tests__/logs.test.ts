@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { extractPhaseEvents, extractRecentToolEvents, tailFileLines, logsCommand, isMessageUpdateEntry } from "../commands/logs.js";
+import { extractPhaseEvents, extractRecentToolEvents, tailFileLines, logsCommand, isMessageUpdateEntry, shouldRequireLocalRawLog } from "../commands/logs.js";
 
 describe("logs command helpers", () => {
   it("extracts relevant phase events from err logs", () => {
@@ -42,6 +42,15 @@ describe("logs command helpers", () => {
       { kind: "end", tool: "bash" },
       { kind: "start", tool: "read", detail: "src/cli/index.ts" },
     ]);
+  });
+
+  it("does not require local worker log files for event-backed Elixir views", () => {
+    expect(shouldRequireLocalRawLog({ compact: true })).toBe(false);
+    expect(shouldRequireLocalRawLog({ plain: true })).toBe(false);
+    expect(shouldRequireLocalRawLog({ raw: true })).toBe(false);
+    expect(shouldRequireLocalRawLog({ view: "raw" })).toBe(false);
+    expect(shouldRequireLocalRawLog({ compact: true, follow: true })).toBe(true);
+    expect(shouldRequireLocalRawLog({})).toBe(true);
   });
 });
 

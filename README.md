@@ -968,7 +968,7 @@ export FOREMAN_MAX_PIPELINE_REVIEW_LOOPS=0   # Per-run retry/review loop budget;
 | `.beads/` | Legacy beads_rust task data for one-time import (JSONL, git-tracked) |
 | `~/.foreman/daemon.sock` | ForemanDaemon Unix socket (tRPC over HTTP) — optional |
 | `~/.foreman/daemon.pid` | Daemon process ID — optional |
-| `~/.foreman/logs/` | Per-run agent logs + daemon stdout/stderr |
+| `~/.foreman/logs/` | Per-run agent logs + daemon stdout/stderr; `foreman logs --compact|--plain|--raw` can also read event-backed Elixir logs when local files are absent |
 | `DATABASE_URL` | PostgreSQL connection string — only required when running daemon |
 
 **Storage model:** Foreman stores application state in PostgreSQL through the daemon/tRPC layer or direct standalone access. Native PostgreSQL tasks are the only supported runtime task store; beads_rust data is import-only legacy input.

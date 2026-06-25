@@ -30,6 +30,11 @@ interface ResolvedRun {
   taskId?: string;
 }
 
+export function shouldRequireLocalRawLog(opts: Pick<LogsOpts, "compact" | "plain" | "raw" | "view" | "follow">): boolean {
+  const eventBacked = opts.compact || opts.plain || opts.raw || opts.view === "compact" || opts.view === "plain" || opts.view === "raw";
+  return !eventBacked || Boolean(opts.follow);
+}
+
 interface PhaseEvent {
   timestamp?: string;
   message: string;
@@ -188,23 +193,27 @@ export function isMessageUpdateEntry(entry: CompactLogEntry): boolean {
   return entry.type === "message_update" || entry.stream === "message_update";
 }
 
-export async function renderCompactView(runId: string, tailCount: number, view: "compact" | "plain" = "compact"): Promise<void> {
+export async function renderCompactView(runId: string, tailCount: number, view: "compact" | "plain" | "raw" = "compact"): Promise<void> {
   try {
     const manager = new ElixirServerManager();
-    const logs = await new ElixirServerClient(manager.url).getRunLogs(runId, view);
-    const entries = compactEntries(logs).filter((entry) => !isMessageUpdateEntry(entry)).slice(-tailCount);
+    const logs = await new ElixirServerClient(manager.url, manager.authToken).getRunLogs(runId, view);
+    const entries = compactEntries(logs).filter((entry) => view === "raw" || !isMessageUpdateEntry(entry)).slice(-tailCount);
     if (entries.length === 0) {
-      console.log(chalk.dim("(no compact log entries)"));
+      console.log(chalk.dim(view === "raw" ? "(no raw log entries)" : "(no compact log entries)"));
       return;
     }
     for (const entry of entries) {
+      if (view === "raw") {
+        console.log(typeof entry === "string" ? entry : JSON.stringify(entry));
+        continue;
+      }
       const timestamp = entry.timestamp ? `${chalk.dim(new Date(entry.timestamp).toLocaleTimeString())} ` : "";
       const stream = entry.stream ?? entry.type ?? "event";
       const message = entry.message ?? entry.body ?? JSON.stringify(entry);
       console.log(`${timestamp}${chalk.cyan(`[${stream}]`)} ${message}`);
     }
   } catch {
-    console.log(chalk.dim("(compact view unavailable — Elixir backend may not be running)"));
+    console.log(chalk.dim(`(${view} view unavailable — Elixir backend may not be running)`));
   }
 }
 
@@ -265,6 +274,51 @@ function progressFromRun(row: { progress?: RunProgress | string | null }): RunPr
     }
   }
   return row.progress;
+}
+
+function adaptElixirRun(row: Record<string, unknown>): Run {
+  return {
+    id: String(row.run_id ?? row.id),
+    project_id: String(row.project_id ?? ""),
+    seed_id: String(row.task_id ?? row.seed_id ?? row.bead_id ?? row.run_id ?? row.id),
+    agent_type: typeof row.agent_type === "string" ? row.agent_type : "elixir",
+    session_key: typeof row.session_key === "string" ? row.session_key : null,
+    worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : null,
+    status: (typeof row.status === "string" ? row.status : "pending") as Run["status"],
+    started_at: typeof row.started_at === "string" ? row.started_at : null,
+    completed_at: typeof row.completed_at === "string" ? row.completed_at : typeof row.finished_at === "string" ? row.finished_at : null,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date(0).toISOString(),
+    progress: typeof row.progress === "string" ? row.progress : row.progress ? JSON.stringify(row.progress) : null,
+    base_branch: typeof row.base_branch === "string" ? row.base_branch : null,
+    merge_strategy: (typeof row.merge_strategy === "string" ? row.merge_strategy : null) as Run["merge_strategy"],
+  };
+}
+
+async function resolveElixirRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
+  const manager = new ElixirServerManager();
+  const client = new ElixirServerClient(manager.url, manager.authToken);
+  const projects = await listRegisteredProjects();
+  const projectPath = await resolveProjectPathFromOptions(opts);
+  const project = projects.find((entry) => entry.path === projectPath || entry.name === opts.project || entry.id === opts.project);
+  const projectId = project?.id;
+  const runId = opts.run ?? id;
+
+  if (runId) {
+    const direct = await client.getRun(runId);
+    if (direct) {
+      const run = adaptElixirRun(direct);
+      return { run, progress: progressFromRun(run), taskId: run.seed_id };
+    }
+  }
+
+  const runs = (await client.listRuns(projectId)).map(adaptElixirRun);
+  if (!id) {
+    const latest = runs[0];
+    return latest ? { run: latest, progress: progressFromRun(latest), taskId: latest.seed_id } : null;
+  }
+
+  const match = runs.find((run) => run.id === id || run.id.startsWith(id) || run.seed_id === id || run.seed_id.startsWith(id));
+  return match ? { run: match, progress: progressFromRun(match), taskId: match.seed_id } : null;
 }
 
 async function resolveDaemonRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
@@ -331,6 +385,12 @@ async function resolveLocalRun(id: string | undefined, opts: LogsOpts): Promise<
 
 async function resolveRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
   try {
+    const elixir = await resolveElixirRun(id, opts);
+    if (elixir) return elixir;
+  } catch {
+    // Fall back to daemon/local stores when the Elixir server is unavailable.
+  }
+  try {
     const daemon = await resolveDaemonRun(id, opts);
     if (daemon) return daemon;
   } catch {
@@ -368,7 +428,7 @@ export const logsCommand = new Command("logs")
     }
 
     const rawPath = logPath(resolved.run.id, "log");
-    if (!existsSync(rawPath)) {
+    if (shouldRequireLocalRawLog(opts) && !existsSync(rawPath)) {
       console.error(chalk.red(`Error: Raw log not found: ${rawPath}`));
       process.exit(1);
     }
@@ -380,8 +440,12 @@ export const logsCommand = new Command("logs")
     if (compact) {
       await renderCompactView(resolved.run.id, tailCount, view === "plain" || opts.plain ? "plain" : "compact");
     } else if (raw) {
-      for (const line of tailFileLines(rawPath, tailCount)) {
-        if (line.trim()) console.log(line);
+      if (existsSync(rawPath)) {
+        for (const line of tailFileLines(rawPath, tailCount)) {
+          if (line.trim()) console.log(line);
+        }
+      } else {
+        await renderCompactView(resolved.run.id, tailCount, "raw");
       }
     } else {
       renderRunHeader(resolved);
