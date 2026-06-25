@@ -126,8 +126,9 @@ describe("project action loader", () => {
     writeFileSync(join(project, ".foreman", "actions", "default-function-identifier.js"), "function execute(ctx) { return ctx.internal.runBuiltin(); } export default execute;\n");
     writeFileSync(join(project, ".foreman", "actions", "re-export-imported-run.js"), "export { run } from '../action-lib/imported-run.ts';\n");
     writeFileSync(join(project, ".foreman", "actions", "re-export-imported-alias.js"), "export { execute as run } from '../action-lib/imported-run.ts';\n");
+    writeFileSync(join(project, ".foreman", "actions", "re-export-imported-value.js"), "export { value as run } from '../action-lib/imported-run.ts';\n");
     mkdirSync(join(project, ".foreman", "action-lib"), { recursive: true });
-    writeFileSync(join(project, ".foreman", "action-lib", "imported-run.ts"), "export const run = async (ctx: unknown) => ctx; export const execute = run;\n");
+    writeFileSync(join(project, ".foreman", "action-lib", "imported-run.ts"), "export const run = async (ctx: unknown) => ctx; export const execute = run; export const value = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "bad.js"), "export const nope = 1;\n");
     writeFileSync(join(project, ".foreman", "actions", "default-value.js"), "const run = 1; export default run;\n");
     writeFileSync(join(project, ".foreman", "actions", "run-value.js"), "export const run = 1;\n");
@@ -144,12 +145,12 @@ describe("project action loader", () => {
 
     expect(validateProjectActions(project)).toEqual({
       invalidNames: ["bad$name.js"],
-      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-import.js", "missing-run.js", "run-value.js", "string-export.js", "syntax-ts.ts", "syntax.js"],
+      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-import.js", "missing-run.js", "re-export-imported-value.js", "run-value.js", "string-export.js", "syntax-ts.ts", "syntax.js"],
       duplicateNames: ["dup"],
     });
     expect(validateActionsInDir(join(project, ".foreman", "actions"))).toEqual({
       invalidNames: ["bad$name.js"],
-      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-import.js", "missing-run.js", "run-value.js", "string-export.js", "syntax-ts.ts", "syntax.js"],
+      invalidExports: ["bad.js", "block-comment-export.js", "commented-export.js", "default-value.js", "missing-import.js", "missing-run.js", "re-export-imported-value.js", "run-value.js", "string-export.js", "syntax-ts.ts", "syntax.js"],
       duplicateNames: ["dup"],
     });
   });

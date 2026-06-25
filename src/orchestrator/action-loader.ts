@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -173,9 +173,9 @@ function stripJsNonCode(source: string): string {
   return output;
 }
 
-function hasValidActionSyntax(filePath: string): boolean {
+function bundledActionSource(filePath: string): string | undefined {
   try {
-    buildSync({
+    return buildSync({
       entryPoints: [filePath],
       bundle: true,
       write: false,
@@ -183,10 +183,9 @@ function hasValidActionSyntax(filePath: string): boolean {
       format: "esm",
       target: "node20",
       logLevel: "silent",
-    });
-    return true;
+    }).outputFiles[0]?.text;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -204,6 +203,18 @@ function hasValidActionExport(source: string): boolean {
   }
   for (const match of source.matchAll(/(?:const|let|var)\s+([a-zA-Z_$][\w$]*)\s*(?::[^=]+)?=\s*(async\s*)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[a-zA-Z_$][\w$]*\s*=>)/g)) {
     callableNames.add(match[1] ?? "");
+  }
+  let addedAlias = true;
+  while (addedAlias) {
+    addedAlias = false;
+    for (const match of source.matchAll(/(?:const|let|var)\s+([a-zA-Z_$][\w$]*)\s*=\s*([a-zA-Z_$][\w$]*)\b/g)) {
+      const alias = match[1] ?? "";
+      const target = match[2] ?? "";
+      if (callableNames.has(target) && !callableNames.has(alias)) {
+        callableNames.add(alias);
+        addedAlias = true;
+      }
+    }
   }
   for (const name of callableNames) {
     if (new RegExp(`export\\s+default\\s+${name}\\b`).test(source)) return true;
@@ -243,11 +254,12 @@ export function validateActionsInDir(dir: string): ActionValidationResult {
       continue;
     }
     const filePath = join(dir, file);
-    if (!hasValidActionSyntax(filePath)) {
+    const bundledSource = bundledActionSource(filePath);
+    if (!bundledSource) {
       invalidExports.push(file);
       continue;
     }
-    const source = stripJsNonCode(readFileSync(filePath, "utf8"));
+    const source = stripJsNonCode(bundledSource);
     if (!hasValidActionExport(source)) invalidExports.push(file);
   }
   return { invalidNames, invalidExports, duplicateNames };
