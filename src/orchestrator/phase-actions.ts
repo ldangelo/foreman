@@ -21,6 +21,9 @@ const BUILTIN_PHASE_ACTIONS = new Set([
 ]);
 
 export const DEFAULT_PHASE_ACTION_CAPABILITIES: Record<string, string[]> = {
+  "prepare-worktree": ["vcs"],
+  "setup-workspace": ["vcs", "exec"],
+  "write-task-context": ["task-store"],
   "cli-review": ["vcs", "exec"],
   finalize: ["vcs", "exec"],
   "create-pr": ["vcs", "mail", "task-store", "network"],

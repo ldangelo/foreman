@@ -15,7 +15,7 @@ import type { BvClient } from "../lib/bv.js";
 import { runWorkspaceHook } from "../lib/setup.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { workerAgentMd } from "./templates.js";
-import { getPhaseActionDescriptor, inferPhaseActionType } from "./phase-actions.js";
+import { DEFAULT_PHASE_ACTION_CAPABILITIES, getPhaseActionDescriptor, inferPhaseActionType } from "./phase-actions.js";
 import { runWorkspaceAction, type WorkspaceActionContext } from "./workspace-actions.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
@@ -928,7 +928,7 @@ export class Dispatcher {
         for (const phase of dispatcherPhases) {
           const actionType = inferPhaseActionType(phase);
           log(`[foreman] Workspace action ${actionType} for ${seed.id}`);
-          workspaceContext = await runWorkspaceAction(actionType, workspaceContext, phase.capabilities);
+          workspaceContext = await runWorkspaceAction(actionType, workspaceContext, phase.capabilities ?? DEFAULT_PHASE_ACTION_CAPABILITIES[actionType]);
         }
         if (!workspaceContext.worktreePath || !workspaceContext.branchName) {
           throw new Error(`Workspace actions did not produce worktree metadata for ${seed.id}`);

@@ -24,6 +24,7 @@ describe("phase actions", () => {
 
   it("declares default capabilities for privileged builtins", () => {
     expect(DEFAULT_PHASE_ACTION_CAPABILITIES["create-pr"]).toEqual(expect.arrayContaining(["vcs", "mail", "task-store", "network"]));
+    expect(DEFAULT_PHASE_ACTION_CAPABILITIES["prepare-worktree"]).toEqual(expect.arrayContaining(["vcs"]));
     expect(DEFAULT_PHASE_ACTION_CAPABILITIES.finalize).toEqual(expect.arrayContaining(["vcs", "exec"]));
   });
 
