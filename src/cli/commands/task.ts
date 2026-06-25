@@ -27,6 +27,9 @@ import chalk from "chalk";
 import type { TaskDependencyRow as DependencyRow, TaskNoteRow, TaskRow } from "../../lib/db/postgres-adapter.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
 import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 import type { PrState } from "../../lib/pr-state.js";
@@ -248,7 +251,9 @@ interface TaskProjectContext {
   projectId: string;
   projectName: string;
   projectPath: string;
-  client: TrpcClient;
+  backend: "node" | "elixir";
+  client?: TrpcClient;
+  elixir?: ElixirServerClient;
 }
 
 function normalizeTaskIdPrefix(raw: string | null | undefined): string {
@@ -327,20 +332,87 @@ async function resolveTaskProjectContext(
   });
   if (!record) {
     throw new Error(
-      `Project at '${projectPath}' is not registered with the daemon. Run 'foreman project list' to see registered projects.`,
+      `Project at '${projectPath}' is not registered with Foreman. Run 'foreman project list' to see registered projects.`,
     );
+  }
+
+  if (foremanBackendMode() === "elixir") {
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    if (!status.running) {
+      throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+    }
+    return {
+      projectId: record.id,
+      projectName: record.name,
+      projectPath,
+      backend: "elixir",
+      elixir: new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN),
+    };
   }
 
   return {
     projectId: record.id,
     projectName: record.name,
     projectPath,
+    backend: "node",
     client: createTrpcClient(),
   };
 }
 
-async function listAllTasks(client: TrpcClient, projectId: string): Promise<TaskRow[]> {
-  return await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+function taskRowFromElixir(row: ElixirTask): TaskRow {
+  const now = new Date().toISOString();
+  const id = row.task_id ?? row.id ?? "unknown";
+  return {
+    id,
+    project_id: row.project_id ?? "",
+    title: row.title ?? id,
+    description: row.description ?? null,
+    type: row.task_type ?? row.type ?? "task",
+    priority: typeof row.priority === "number" ? row.priority : 2,
+    status: row.status ?? "backlog",
+    external_id: row.external_id ?? null,
+    created_at: row.created_at ?? row.updated_at ?? now,
+    updated_at: row.updated_at ?? row.created_at ?? now,
+    approved_at: row.approved_at ?? null,
+    closed_at: row.closed_at ?? null,
+    run_id: row.run_id ?? null,
+  } as TaskRow;
+}
+
+async function listAllTasks(context: TaskProjectContext): Promise<TaskRow[]> {
+  if (context.backend === "elixir") {
+    const rows = await context.elixir!.listTasks();
+    return rows
+      .filter((task) => !task.project_id || task.project_id === context.projectId)
+      .map(taskRowFromElixir);
+  }
+  return await context.client!.tasks.list({ projectId: context.projectId, limit: 1000 }) as TaskRow[];
+}
+
+async function getTask(context: TaskProjectContext, taskId: string): Promise<TaskRow | null> {
+  if (context.backend === "elixir") {
+    const task = await context.elixir!.getTask(taskId);
+    if (!task || (task.project_id && task.project_id !== context.projectId)) return null;
+    return taskRowFromElixir(task);
+  }
+  return await context.client!.tasks.get({ projectId: context.projectId, taskId }) as TaskRow | null;
+}
+
+async function sendElixirTaskCommand(
+  context: TaskProjectContext,
+  commandType: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const response = await context.elixir!.sendCommand({
+    command_id: `cli-${commandType}-${Date.now()}-${randomBytes(4).toString("hex")}`,
+    command_type: commandType,
+    payload,
+    metadata: { correlation_id: `cli-${commandType}-${Date.now()}` },
+  });
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
 }
 
 function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
@@ -745,9 +817,10 @@ export async function performBeadsImport(
 ): Promise<TaskImportResult> {
   const jsonlPath = resolveBeadsImportPath(projectPath);
   const beads = parseBeadsJsonl(jsonlPath);
-  const { client, projectId, projectName } = await resolveTaskProjectContext({ projectPath });
+  const context = await resolveTaskProjectContext({ projectPath });
+  const { projectId, projectName } = context;
   const now = new Date().toISOString();
-  const existingRows = await listAllTasks(client, projectId);
+  const existingRows = await listAllTasks(context);
   const existingIds = new Set(existingRows.map((row) => row.id));
 
   const existingByExternalId = new Map<string, string>();
@@ -799,20 +872,33 @@ export async function performBeadsImport(
 
   if (!opts.dryRun) {
     for (const record of prepared) {
-      await client.tasks.create({
-        projectId,
-        id: record.nativeId,
-        title: record.bead.title,
-        description: record.bead.description ?? undefined,
-        type: record.type,
-        priority: record.priority,
-        status: record.status,
-        externalId: record.bead.id,
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-        approvedAt: record.approvedAt ?? undefined,
-        closedAt: record.closedAt ?? undefined,
-      });
+      if (context.backend === "elixir") {
+        await sendElixirTaskCommand(context, "task.create", {
+          task_id: record.nativeId,
+          project_id: projectId,
+          title: record.bead.title,
+          description: record.bead.description ?? undefined,
+          task_type: record.type,
+          priority: record.priority,
+          status: record.status,
+          external_id: record.bead.id,
+        });
+      } else {
+        await context.client!.tasks.create({
+          projectId,
+          id: record.nativeId,
+          title: record.bead.title,
+          description: record.bead.description ?? undefined,
+          type: record.type,
+          priority: record.priority,
+          status: record.status,
+          externalId: record.bead.id,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          approvedAt: record.approvedAt ?? undefined,
+          closedAt: record.closedAt ?? undefined,
+        });
+      }
     }
 
     for (const bead of beads) {
@@ -826,12 +912,20 @@ export async function performBeadsImport(
           : null;
 
         if (!blockerId) continue;
-        await client.tasks.addDependency({
-          projectId,
-          fromTaskId: blockerId,
-          toTaskId: fromTaskId,
-          type: dependencyType,
-        });
+        if (context.backend === "elixir") {
+          await sendElixirTaskCommand(context, "task.add_dependency", {
+            task_id: fromTaskId,
+            depends_on: blockerId,
+            type: dependencyType,
+          });
+        } else {
+          await context.client!.tasks.addDependency({
+            projectId,
+            fromTaskId: blockerId,
+            toTaskId: fromTaskId,
+            type: dependencyType,
+          });
+        }
       }
     }
   }
@@ -958,18 +1052,44 @@ const createCommand = new Command("create")
       }
 
       try {
-        const { client, projectId, projectName } = await resolveTaskProjectContext(opts);
-        const existingIds = new Set((await listAllTasks(client, projectId)).map((task) => task.id));
+        const context = await resolveTaskProjectContext(opts);
+        const { projectId, projectName } = context;
+        const existingIds = new Set((await listAllTasks(context)).map((task) => task.id));
         const taskId = allocateTaskId(projectName, existingIds);
-        const task = await client.tasks.create({
-          projectId,
-          id: taskId,
-          title,
-          description: opts.description,
-          type: typeInput,
-          priority,
-        });
-        const createdTask = task as TaskRow;
+        let createdTask: TaskRow;
+        if (context.backend === "elixir") {
+          await sendElixirTaskCommand(context, "task.create", {
+            task_id: taskId,
+            project_id: projectId,
+            title,
+            description: opts.description,
+            task_type: typeInput,
+            priority,
+            status: "backlog",
+            source: "cli",
+          });
+          createdTask = (await getTask(context, taskId)) ?? {
+            id: taskId,
+            project_id: projectId,
+            title,
+            description: opts.description ?? null,
+            type: typeInput,
+            priority,
+            status: "backlog",
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          } as TaskRow;
+        } else {
+          const task = await context.client!.tasks.create({
+            projectId,
+            id: taskId,
+            title,
+            description: opts.description,
+            type: typeInput,
+            priority,
+          });
+          createdTask = task as TaskRow;
+        }
 
         console.log(
           chalk.green(`✓ Task created`) + chalk.dim(` [${createdTask.id}]`),
@@ -1003,8 +1123,9 @@ const listCommand = new Command("list")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts: { status?: string; runStatus?: string; type?: string; all?: boolean; showPr?: boolean; showRun?: boolean; stuck?: boolean; project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId, projectPath } = await resolveTaskProjectContext(opts);
-      let rows = await listAllTasks(client, projectId);
+      const context = await resolveTaskProjectContext(opts);
+      const { projectId, projectPath } = context;
+      let rows = await listAllTasks(context);
 
       if (opts.status) {
         rows = rows.filter((row) => row.status === opts.status);
@@ -1073,7 +1194,8 @@ const listCommand = new Command("list")
         await Promise.all(
           rows.map(async (task) => {
             try {
-              const prState = await client.tasks.getPrState({ projectId, taskId: task.id }) as PrState;
+              if (context.backend !== "node") return;
+              const prState = await context.client!.tasks.getPrState({ projectId, taskId: task.id }) as PrState;
               prStates!.set(task.id, prState);
             } catch {
               // PR state fetch failed - leave as undefined
@@ -1132,10 +1254,11 @@ const showCommand = new Command("show")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { verbose?: boolean; project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId, projectName, projectPath } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const context = await resolveTaskProjectContext(opts);
+      const { projectId, projectName, projectPath } = context;
+      const rows = await listAllTasks(context);
       const resolvedId = resolveTaskId(rows, id);
-      const task = await client.tasks.get({ projectId, taskId: resolvedId }) as TaskRow | null;
+      const task = await getTask(context, resolvedId);
       if (!task) {
         console.error(chalk.red(`Error: Task '${id}' not found.`));
         process.exit(1);
@@ -1242,7 +1365,9 @@ const showCommand = new Command("show")
 
       // Show PR state
       try {
-        const prState = await client.tasks.getPrState({ projectId, taskId: task.id }) as PrState;
+        const prState = context.backend === "node"
+          ? await context.client!.tasks.getPrState({ projectId, taskId: task.id }) as PrState
+          : null;
         if (prState) {
           console.log(chalk.bold("\n  Pull Request:"));
           console.log(`    Status:     ${renderPrBadge(prState)}`);
@@ -1271,12 +1396,14 @@ const showCommand = new Command("show")
 
       // Show notes timeline
       try {
-        const notes = [...await client.tasks.listNotes({
-          projectId,
-          taskId: task.id,
-          limit: 25,
-          newestFirst: true,
-        }) as TaskNoteRow[]].reverse();
+        const notes = context.backend === "node"
+          ? [...await context.client!.tasks.listNotes({
+            projectId,
+            taskId: task.id,
+            limit: 25,
+            newestFirst: true,
+          }) as TaskNoteRow[]].reverse()
+          : [];
         console.log(chalk.bold("\n  Notes:"));
         if (notes.length === 0) {
           console.log(chalk.dim("    (none yet)"));
@@ -1296,16 +1423,20 @@ const showCommand = new Command("show")
       }
 
       // Show dependencies
-      const outgoing = await client.tasks.listDependencies({
-        projectId,
-        taskId: task.id,
-        direction: "outgoing",
-      }) as DependencyRow[];
-      const incoming = await client.tasks.listDependencies({
-        projectId,
-        taskId: task.id,
-        direction: "incoming",
-      }) as DependencyRow[];
+      const outgoing = context.backend === "node"
+        ? await context.client!.tasks.listDependencies({
+          projectId,
+          taskId: task.id,
+          direction: "outgoing",
+        }) as DependencyRow[]
+        : [];
+      const incoming = context.backend === "node"
+        ? await context.client!.tasks.listDependencies({
+          projectId,
+          taskId: task.id,
+          direction: "incoming",
+        }) as DependencyRow[]
+        : [];
 
       if (incoming.length > 0) {
         console.log(chalk.bold("\n  Blocked by:"));
@@ -1339,16 +1470,25 @@ const noteCommand = new Command("note")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { body: string; kind: string; author: string; project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const context = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(context);
       const resolvedId = resolveTaskId(rows, id);
-      await client.tasks.addNote({
-        projectId,
-        taskId: resolvedId,
-        author: opts.author,
-        kind: opts.kind as "progress" | "issue" | "blocker" | "review" | "qa" | "final" | "failure" | "manual" | "system",
-        body: opts.body,
-      });
+      if (context.backend === "elixir") {
+        await sendElixirTaskCommand(context, "task.annotate", {
+          task_id: resolvedId,
+          author: opts.author,
+          kind: opts.kind,
+          body: opts.body,
+        });
+      } else {
+        await context.client!.tasks.addNote({
+          projectId: context.projectId,
+          taskId: resolvedId,
+          author: opts.author,
+          kind: opts.kind as "progress" | "issue" | "blocker" | "review" | "qa" | "final" | "failure" | "manual" | "system",
+          body: opts.body,
+        });
+      }
       console.log(chalk.green(`✓ Note added to '${formatTaskIdDisplay(resolvedId)}'.`));
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
@@ -1365,10 +1505,16 @@ const approveCommand = new Command("approve")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const context = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(context);
       const resolvedId = resolveTaskId(rows, id);
-      const task = await client.tasks.approve({ projectId, taskId: resolvedId }) as TaskRow | null;
+      let task: TaskRow | null;
+      if (context.backend === "elixir") {
+        await sendElixirTaskCommand(context, "task.approve", { task_id: resolvedId });
+        task = await getTask(context, resolvedId);
+      } else {
+        task = await context.client!.tasks.approve({ projectId: context.projectId, taskId: resolvedId }) as TaskRow | null;
+      }
       if (task?.status === "ready") {
         console.log(
           chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' approved and ready for dispatch.`),
@@ -1445,8 +1591,8 @@ const updateCommand = new Command("update")
       }
 
       try {
-        const { client, projectId } = await resolveTaskProjectContext(opts);
-        const rows = await listAllTasks(client, projectId);
+        const context = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(context);
         const resolvedId = resolveTaskId(rows, id);
 
         if (updateOpts.status !== undefined && !updateOpts.force) {
@@ -1462,16 +1608,28 @@ const updateCommand = new Command("update")
           }
         }
 
-        const task = await client.tasks.update({
-          projectId,
-          taskId: resolvedId,
-          updates: {
+        let task: TaskRow | null;
+        if (context.backend === "elixir") {
+          await sendElixirTaskCommand(context, "task.update", {
+            task_id: resolvedId,
             title: updateOpts.title,
-            description: updateOpts.description ?? undefined,
+            description: updateOpts.description,
             priority: updateOpts.priority,
             status: updateOpts.status,
-          },
-        }) as TaskRow | null;
+          });
+          task = await getTask(context, resolvedId);
+        } else {
+          task = await context.client!.tasks.update({
+            projectId: context.projectId,
+            taskId: resolvedId,
+            updates: {
+              title: updateOpts.title,
+              description: updateOpts.description ?? undefined,
+              priority: updateOpts.priority,
+              status: updateOpts.status,
+            },
+          }) as TaskRow | null;
+        }
         if (!task) {
           throw new Error(`Task '${resolvedId}' not found.`);
         }
@@ -1500,10 +1658,14 @@ const closeCommand = new Command("close")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const context = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(context);
       const resolvedId = resolveTaskId(rows, id);
-      await client.tasks.close({ projectId, taskId: resolvedId });
+      if (context.backend === "elixir") {
+        await sendElixirTaskCommand(context, "task.close", { task_id: resolvedId });
+      } else {
+        await context.client!.tasks.close({ projectId: context.projectId, taskId: resolvedId });
+      }
 
       console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' closed.`));
     } catch (err) {
@@ -1569,16 +1731,24 @@ const depAddCommand = new Command("add")
       }
 
       try {
-        const { client, projectId } = await resolveTaskProjectContext(opts);
-        const rows = await listAllTasks(client, projectId);
+        const context = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(context);
         const resolvedFromId = resolveTaskId(rows, fromId);
         const resolvedToId = resolveTaskId(rows, toId);
-        await client.tasks.addDependency({
-          projectId,
-          fromTaskId: resolvedFromId,
-          toTaskId: resolvedToId,
-          type: opts.type as "blocks" | "parent-child",
-        });
+        if (context.backend === "elixir") {
+          await sendElixirTaskCommand(context, "task.add_dependency", {
+            task_id: resolvedToId,
+            depends_on: resolvedFromId,
+            type: opts.type,
+          });
+        } else {
+          await context.client!.tasks.addDependency({
+            projectId: context.projectId,
+            fromTaskId: resolvedFromId,
+            toTaskId: resolvedToId,
+            type: opts.type as "blocks" | "parent-child",
+          });
+        }
         const verb = opts.type === "blocks" ? "blocks" : "is parent of";
         console.log(
           chalk.green(
@@ -1605,17 +1775,22 @@ const depListCommand = new Command("list")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const context = await resolveTaskProjectContext(opts);
+      const rows = await listAllTasks(context);
       const resolvedId = resolveTaskId(rows, id);
 
-      const blockedBy = await client.tasks.listDependencies({
-        projectId,
+      if (context.backend === "elixir") {
+        console.log(chalk.dim(`Task '${formatTaskIdDisplay(resolvedId)}' dependency listing is not yet projected by the Elixir backend.`));
+        return;
+      }
+
+      const blockedBy = await context.client!.tasks.listDependencies({
+        projectId: context.projectId,
         taskId: resolvedId,
         direction: "incoming",
       }) as DependencyRow[];
-      const blocking = await client.tasks.listDependencies({
-        projectId,
+      const blocking = await context.client!.tasks.listDependencies({
+        projectId: context.projectId,
         taskId: resolvedId,
         direction: "outgoing",
       }) as DependencyRow[];
@@ -1659,12 +1834,15 @@ const depRemoveCommand = new Command("remove")
   .action(
     async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
       try {
-        const { client, projectId } = await resolveTaskProjectContext(opts);
-        const rows = await listAllTasks(client, projectId);
+        const context = await resolveTaskProjectContext(opts);
+        const rows = await listAllTasks(context);
         const resolvedFromId = resolveTaskId(rows, fromId);
         const resolvedToId = resolveTaskId(rows, toId);
-        await client.tasks.removeDependency({
-          projectId,
+        if (context.backend === "elixir") {
+          throw new Error("Elixir backend does not yet support removing task dependencies.");
+        }
+        await context.client!.tasks.removeDependency({
+          projectId: context.projectId,
           fromTaskId: resolvedFromId,
           toTaskId: resolvedToId,
           type: opts.type as "blocks" | "parent-child",

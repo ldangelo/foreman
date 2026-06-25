@@ -851,7 +851,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands; remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, and `foreman task create|list|show|approve|update|note|close|import` now route through Elixir task commands/projections; dependency add is command-backed, while dependency listing/removal still requires legacy mode until dependency projections land. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
 
 ---
 
