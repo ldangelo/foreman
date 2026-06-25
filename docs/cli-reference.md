@@ -57,14 +57,15 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 | `--force` | Overwrite existing prompt and workflow files |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`beads`, `jira`, or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
-### `foreman project add|list|edit|remove`
+### `foreman project add|list|edit|remove|sync`
 
-Clone/register, list, and update project settings through the active backend. In Elixir mode, `add` clones with `gh repo clone` into `~/.foreman/projects/<project-id>` and registers the project through the Elixir command API; `list`, `edit`, and `remove` use the Elixir projection/command API; `remove` archives the project.
+Clone/register, list, sync, and update project settings through the active backend. In Elixir mode, `add` clones with `gh repo clone` into `~/.foreman/projects/<project-id>` and registers the project through the Elixir command API; `list`, `edit`, `remove`, and `sync` use the Elixir projection/command API; `remove` archives the project.
 
 ```bash
 foreman project add owner/repo --name my-project
 foreman project list --status active
 foreman project edit <project-id> --default-branch dev
+foreman project sync <project-id>
 foreman project remove <project-id>
 ```
 
@@ -79,6 +80,7 @@ foreman project remove <project-id>
 | `foreman project edit --name <name>` | Project display name |
 | `foreman project edit --status <status>` | Project status: `active`, `paused`, or `archived` |
 | `foreman project edit --default-branch <branch>` | Default/base branch for new project worktrees |
+| `foreman project sync <project-id>` | Fetch the registered checkout and update `last_sync_at` in the active backend |
 | `foreman project remove --force` | Accepted for legacy compatibility; Elixir archives by project ID |
 
 ---
@@ -861,7 +863,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, and `foreman project add|list|edit|remove` route through Elixir project commands/projections. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, and `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections. Remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
 
 ---
 

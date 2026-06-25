@@ -37,6 +37,7 @@ export type ElixirProject = {
   config?: Record<string, unknown>;
   health?: Record<string, unknown>;
   updated_at?: string;
+  last_sync_at?: string;
 };
 
 export type ElixirTask = {

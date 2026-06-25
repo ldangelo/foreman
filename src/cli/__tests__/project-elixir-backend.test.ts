@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { listProjects, sendCommand, ensureRunning, checkAuth, getRepoMetadata, repoClone } = vi.hoisted(() => ({
+const { listProjects, sendCommand, ensureRunning, checkAuth, getRepoMetadata, repoClone, syncRegisteredProjectCheckout } = vi.hoisted(() => ({
   listProjects: vi.fn(),
   sendCommand: vi.fn(),
   ensureRunning: vi.fn(),
   checkAuth: vi.fn(),
   getRepoMetadata: vi.fn(),
   repoClone: vi.fn(),
+  syncRegisteredProjectCheckout: vi.fn(),
 }));
 
 vi.mock("../../lib/backend-mode.js", () => ({
@@ -40,6 +41,10 @@ vi.mock("../../lib/gh-cli.js", () => ({
   GhNotInstalledError: class GhNotInstalledError extends Error {},
 }));
 
+vi.mock("../../lib/registered-project-checkout.js", () => ({
+  syncRegisteredProjectCheckout,
+}));
+
 describe("foreman project Elixir backend parity", () => {
   let originalLog: typeof console.log;
   let originalError: typeof console.error;
@@ -53,6 +58,7 @@ describe("foreman project Elixir backend parity", () => {
     checkAuth.mockReset().mockResolvedValue(undefined);
     getRepoMetadata.mockReset().mockResolvedValue({ defaultBranch: "main", visibility: "public", fullName: "owner/repo" });
     repoClone.mockReset().mockResolvedValue(undefined);
+    syncRegisteredProjectCheckout.mockReset();
     originalLog = console.log;
     originalError = console.error;
     originalExit = process.exit;
@@ -122,6 +128,29 @@ describe("foreman project Elixir backend parity", () => {
     expect(sendCommand).toHaveBeenCalledWith(expect.objectContaining({
       command_type: "project.archive",
       payload: { project_id: "alpha" },
+    }));
+  });
+
+  it("syncs Elixir projects by refreshing the checkout and updating the projection timestamp", async () => {
+    listProjects.mockResolvedValue([
+      { project_id: "alpha", name: "Alpha", path: "/repo/alpha", status: "active", default_branch: "dev" },
+    ]);
+    sendCommand.mockResolvedValue({ ok: true, events: ["event-1"], projection_version: 1, correlation_id: "corr" });
+
+    const { projectCommand } = await import("../commands/project.js");
+    await projectCommand.parseAsync(["sync", "alpha"], { from: "user" });
+
+    expect(syncRegisteredProjectCheckout).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "alpha",
+      projectPath: "/repo/alpha",
+      defaultBranch: "dev",
+    }));
+    expect(sendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "project.update",
+      payload: expect.objectContaining({
+        project_id: "alpha",
+        last_sync_at: expect.any(String),
+      }),
     }));
   });
 });

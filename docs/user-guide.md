@@ -27,10 +27,11 @@ foreman init --name my-project
 foreman project add owner/repo --name my-project
 foreman project list
 foreman project edit <project-id> --default-branch dev
+foreman project sync <project-id>
 foreman status --project my-project
 ```
 
-The project default branch is the base for newly created task worktrees and finalization targets. In Elixir mode, `foreman project add` clones with GitHub CLI into `~/.foreman/projects/<project-id>` and registers through Elixir; `list`, `edit`, and `remove` read/write the Elixir project projection; `remove` archives the project.
+The project default branch is the base for newly created task worktrees and finalization targets. In Elixir mode, `foreman project add` clones with GitHub CLI into `~/.foreman/projects/<project-id>` and registers through Elixir; `list`, `edit`, `remove`, and `sync` read/write the Elixir project projection; `sync` fetches the registered checkout and updates `last_sync_at`; `remove` archives the project.
 
 ### Tasks
 
@@ -149,7 +150,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman status
 ```
 
-Delegation supports legacy-only command paths only when `FOREMAN_BACKEND=node` is set for explicit legacy operation. Under the Elixir backend, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections; `task create --from-text` creates Elixir-backed native tasks, and dependency add/list/remove are command/projection-backed.
+Delegation supports legacy-only command paths only when `FOREMAN_BACKEND=node` is set for explicit legacy operation. Under the Elixir backend, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections; `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, and `project add|list|edit|remove|sync` route through Elixir project commands/projections.
 
 ### 4. Create a Task
 

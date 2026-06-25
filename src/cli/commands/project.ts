@@ -5,8 +5,9 @@
  *   foreman project add <path> [--name <name>] [--force]
  *   foreman project list [--status <active|paused|archived>]
  *   foreman project remove <id> [--force]
+ *   foreman project sync <id>
  *
- * All commands connect to the daemon via TrpcClient (Unix socket).
+ * Commands route through the active backend.
  *
  * @module src/cli/commands/project
  */
@@ -15,6 +16,7 @@ import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { mkdir } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { syncRegisteredProjectCheckout } from "../../lib/registered-project-checkout.js";
 import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { encrypt } from "../../lib/encryption.js";
@@ -49,6 +51,7 @@ interface ProjectRow {
   addedAt?: string | null;
   default_branch?: string | null;
   github_url?: string | null;
+  last_sync_at?: string | null;
 }
 
 interface ProjectAddInput {
@@ -68,6 +71,7 @@ interface ProjectCommandClient {
   list(input?: { status?: "active" | "paused" | "archived"; search?: string }): Promise<ProjectRow[]>;
   update(id: string, updates: Record<string, unknown>): Promise<void>;
   remove(id: string, force?: boolean): Promise<void>;
+  sync(id: string): Promise<ProjectRow>;
 }
 
 function printProjectTable(projects: ProjectRow[], label?: string): void {
@@ -222,6 +226,7 @@ function rowFromElixirProject(project: ElixirProject): ProjectRow {
     status: project.status ?? "active",
     default_branch: project.default_branch ?? null,
     github_url: project.github_url ?? null,
+    last_sync_at: project.last_sync_at ?? null,
   };
 }
 
@@ -267,6 +272,23 @@ async function getProjectClient(): Promise<ProjectCommandClient> {
       async remove(id) {
         await sendElixirProjectCommand(client, "project.archive", { project_id: id });
       },
+      async sync(id) {
+        const project = (await client.listProjects()).map(rowFromElixirProject).find((row) => row.id === id);
+        if (!project?.path) throw new Error(`Project not found: '${id}'`);
+        syncRegisteredProjectCheckout({
+          projectId: id,
+          projectPath: project.path,
+          defaultBranch: project.default_branch,
+          warn: (message) => console.warn(chalk.yellow(message)),
+        });
+        const now = new Date().toISOString();
+        await sendElixirProjectCommand(client, "project.update", {
+          project_id: id,
+          last_sync_at: now,
+          health: { ok: true, last_sync_at: now },
+        });
+        return { ...project, last_sync_at: now };
+      },
     };
   }
 
@@ -281,6 +303,7 @@ async function getProjectClient(): Promise<ProjectCommandClient> {
     remove: async (id, force) => {
       await client.projects.remove({ id, force });
     },
+    sync: (id) => client.projects.sync({ id }) as Promise<ProjectRow>,
   };
 }
 
@@ -453,6 +476,26 @@ const removeCommand = new Command("remove")
       handleDaemonError(err);
     }
   });
+
+// ---------------------------------------------------------------------------
+// foreman project sync
+// ---------------------------------------------------------------------------
+
+const syncCommand = new Command("sync")
+  .description("Fetch the registered project checkout and update its sync timestamp")
+  .argument("<id>", "Project ID to sync")
+  .action(async (projectId: string) => {
+    try {
+      const client = await getProjectClient();
+      const project = await client.sync(projectId);
+      console.log(chalk.green(`✓ Project '${projectId}' synced.`));
+      if (project.last_sync_at) {
+        console.log(chalk.dim(`  Last sync: ${project.last_sync_at}`));
+      }
+    } catch (err) {
+      handleDaemonError(err);
+    }
+  });
 // ---------------------------------------------------------------------------
 // foreman project edit
 // ---------------------------------------------------------------------------
@@ -538,8 +581,9 @@ const editCommand = new Command("edit")
 // ---------------------------------------------------------------------------
 
 export const projectCommand = new Command("project")
-  .description("Manage projects via ForemanDaemon (list/add/remove/edit)")
+  .description("Manage projects via ForemanDaemon (list/add/remove/edit/sync)")
   .addCommand(addCommand)
   .addCommand(listCommand)
   .addCommand(removeCommand)
+  .addCommand(syncCommand)
   .addCommand(editCommand);

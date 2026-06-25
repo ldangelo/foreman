@@ -484,6 +484,7 @@ foreman init --name "my-project"
 foreman init --wizard
 foreman project add owner/repo --name my-project # Clone/register via active backend
 foreman project list                              # Elixir-backed project projection
+foreman project sync <project-id>                 # Fetch checkout + update last_sync_at
 foreman project edit <project-id> --default-branch dev  # Change base for new worktrees
 ```
 
@@ -588,7 +589,7 @@ foreman import --to-elixir --from-node --project foreman  # snapshot current Nod
 
 The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. While migration is incomplete, set `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` to delegate supported commands (`run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`) to the legacy TS CLI.
 
-Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; `foreman board`, `foreman project add|list|edit|remove`, and core `foreman task create|list|show|approve|update|note|close|import` read/write state through Elixir after importing project state. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; `foreman board`, `foreman project add|list|edit|remove|sync`, and core `foreman task create|list|show|approve|update|note|close|import` read/write state through Elixir after importing project state. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
 Parse a TRD and create a native task hierarchy.
