@@ -1,5 +1,5 @@
 /**
- * `foreman task` CLI commands — manage daemon-backed tasks in the Foreman task store.
+ * `foreman task` CLI commands — manage Foreman tasks through the active backend.
  *
  * Sub-commands:
  *   foreman task create --title <text> [--description <text>] [--type <type>]
@@ -28,7 +28,7 @@ import type { TaskDependencyRow as DependencyRow, TaskNoteRow, TaskRow } from ".
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
 import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
-import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerClient, type ElixirRun, type ElixirTask } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
@@ -59,64 +59,61 @@ interface RunActivityInfo {
 }
 
 /**
- * Fetch live run activity information for a task.
- * 
- * For registered projects (daemon-backed): uses tRPC to query the Postgres store
- * via the Foreman daemon's Unix socket. Falls back to Postgres for unregistered projects.
+ * Fetch live run activity information for a task through the active backend.
  */
 async function fetchRunActivity(
-  projectPath: string,
+  context: TaskProjectContext,
   runId: string | null,
-  projectId?: string,
 ): Promise<RunActivityInfo | null> {
   if (!runId) return null;
 
-  // Try daemon tRPC first (for registered projects)
-  if (projectId) {
-    try {
-      const client = createTrpcClient();
-      const [run, progressData] = await Promise.all([
-        client.runs.get({ runId }) as Promise<{ id: string; status: string; started_at?: string; finished_at?: string } | null>,
-        client.runs.getProgress({ runId }) as Promise<RunProgress | null>,
-      ]);
-
-      if (!run) return null;
-
-      const now = Date.now();
-      const lastActivityMs = progressData?.lastActivity
-        ? new Date(progressData.lastActivity).getTime()
-        : null;
-      const isStuck = run.status === "running" &&
-        lastActivityMs !== null &&
-        (now - lastActivityMs) > STUCK_THRESHOLD_MS;
-      const isStale = run.status === "running" &&
-        (progressData?.toolCalls ?? 0) > 0 &&
-        lastActivityMs !== null &&
-        (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2;
-
-      return {
-        runId: run.id,
-        status: run.status,
-        currentPhase: progressData?.currentPhase ?? null,
-        lastActivity: progressData?.lastActivity ?? null,
-        lastActivityElapsed: progressData?.lastActivity
-          ? elapsed(progressData.lastActivity)
-          : null,
-        isStuck,
-        isStale,
-        toolCalls: progressData?.toolCalls ?? 0,
-        costUsd: progressData?.costUsd ?? 0,
-        turns: progressData?.turns ?? 0,
-        startedAt: run.started_at ?? null,
-        completedAt: run.finished_at ?? null,
-      };
-    } catch {
-      // Daemon unavailable or run not found — fall through to Postgres
-    }
+  if (context.backend === "elixir") {
+    const run = await context.elixir!.getRun(runId);
+    if (!run || (run.project_id && run.project_id !== context.projectId)) return null;
+    return runActivityFromElixirRun(run);
   }
 
-  // Fallback: use Postgres store (for unregistered projects or daemon unavailability)
-  const store = ForemanStore.forProject(projectPath);
+  try {
+    const [run, progressData] = await Promise.all([
+      context.client!.runs.get({ runId }) as Promise<{ id: string; status: string; started_at?: string; finished_at?: string } | null>,
+      context.client!.runs.getProgress({ runId }) as Promise<RunProgress | null>,
+    ]);
+
+    if (!run) return null;
+
+    const now = Date.now();
+    const lastActivityMs = progressData?.lastActivity
+      ? new Date(progressData.lastActivity).getTime()
+      : null;
+    const isStuck = run.status === "running" &&
+      lastActivityMs !== null &&
+      (now - lastActivityMs) > STUCK_THRESHOLD_MS;
+    const isStale = run.status === "running" &&
+      (progressData?.toolCalls ?? 0) > 0 &&
+      lastActivityMs !== null &&
+      (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2;
+
+    return {
+      runId: run.id,
+      status: run.status,
+      currentPhase: progressData?.currentPhase ?? null,
+      lastActivity: progressData?.lastActivity ?? null,
+      lastActivityElapsed: progressData?.lastActivity
+        ? elapsed(progressData.lastActivity)
+        : null,
+      isStuck,
+      isStale,
+      toolCalls: progressData?.toolCalls ?? 0,
+      costUsd: progressData?.costUsd ?? 0,
+      turns: progressData?.turns ?? 0,
+      startedAt: run.started_at ?? null,
+      completedAt: run.finished_at ?? null,
+    };
+  } catch {
+    // Legacy daemon unavailable or run not found — fall through to local store.
+  }
+
+  const store = ForemanStore.forProject(context.projectPath);
   try {
     const run = store.getRun(runId);
     if (!run) return null;
@@ -157,6 +154,43 @@ async function fetchRunActivity(
   } finally {
     store.close();
   }
+}
+
+function stringRecordField(source: Record<string, unknown>, key: string): string | null {
+  const value = source[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberRecordField(source: Record<string, unknown>, key: string): number {
+  const value = source[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+export function runActivityFromElixirRun(run: ElixirRun): RunActivityInfo {
+  const now = Date.now();
+  const runId = stringRecordField(run, "run_id") ?? stringRecordField(run, "id") ?? "unknown";
+  const status = stringRecordField(run, "status") ?? "unknown";
+  const lastActivity = stringRecordField(run, "last_activity")
+    ?? stringRecordField(run, "last_activity_at")
+    ?? stringRecordField(run, "updated_at");
+  const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : null;
+  const toolCalls = numberRecordField(run, "tool_calls") || numberRecordField(run, "toolCalls");
+  const isRunning = status === "running" || status === "in_progress";
+
+  return {
+    runId,
+    status,
+    currentPhase: stringRecordField(run, "current_phase"),
+    lastActivity,
+    lastActivityElapsed: lastActivity ? elapsed(lastActivity) : null,
+    isStuck: run.stuck === true || (isRunning && lastActivityMs !== null && (now - lastActivityMs) > STUCK_THRESHOLD_MS),
+    isStale: isRunning && toolCalls > 0 && lastActivityMs !== null && (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2,
+    toolCalls,
+    costUsd: numberRecordField(run, "cost_usd") || numberRecordField(run, "cost"),
+    turns: numberRecordField(run, "turns"),
+    startedAt: stringRecordField(run, "started_at") ?? stringRecordField(run, "created_at"),
+    completedAt: stringRecordField(run, "completed_at") ?? stringRecordField(run, "finished_at"),
+  };
 }
 
 /**
@@ -1137,7 +1171,7 @@ const createCommand = new Command("create")
 // ── foreman task list ─────────────────────────────────────────────────────────
 
 const listCommand = new Command("list")
-  .description("List tasks from the daemon-backed task store")
+  .description("List tasks from the active Foreman task backend")
   .option("--status <status>", "Filter by task status (e.g. ready, backlog, in-progress)")
   .option("--run-status <status>", "Filter by run status (e.g. running, stuck, failed, completed)")
   .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
@@ -1150,7 +1184,7 @@ const listCommand = new Command("list")
   .action(async (opts: { status?: string; runStatus?: string; type?: string; all?: boolean; showPr?: boolean; showRun?: boolean; stuck?: boolean; project?: string; projectPath?: string }) => {
     try {
       const context = await resolveTaskProjectContext(opts);
-      const { projectId, projectPath } = context;
+      const { projectId } = context;
       let rows = await listAllTasks(context);
 
       if (opts.status) {
@@ -1172,7 +1206,7 @@ const listCommand = new Command("list")
       const needsRunActivity = opts.runStatus || opts.stuck || opts.showRun;
       if (needsRunActivity) {
         const fetches = rows.map(async (task) => {
-          const activity = task.run_id ? await fetchRunActivity(projectPath, task.run_id) : null;
+          const activity = task.run_id ? await fetchRunActivity(context, task.run_id) : null;
           runActivityMap.set(task.id, activity);
         });
         await Promise.all(fetches);
@@ -1281,7 +1315,7 @@ const showCommand = new Command("show")
   .action(async (id: string, opts: { verbose?: boolean; project?: string; projectPath?: string }) => {
     try {
       const context = await resolveTaskProjectContext(opts);
-      const { projectId, projectName, projectPath } = context;
+      const { projectId, projectName } = context;
       const rows = await listAllTasks(context);
       const resolvedId = resolveTaskId(rows, id);
       const task = await getTask(context, resolvedId);
@@ -1323,10 +1357,10 @@ const showCommand = new Command("show")
       }
 
       // ── Live Run Activity Section ─────────────────────────────────────────
-      // Fetch current run state from the Postgres store (mirrors dashboard data)
-      // Only shown for tasks with an active run_id to avoid unnecessary DB access
+      // Fetch current run state through the active backend (mirrors dashboard data).
+      // Only shown for tasks with an active run_id to avoid unnecessary backend access.
       if (task.run_id) {
-        const activity = await fetchRunActivity(projectPath, task.run_id);
+        const activity = await fetchRunActivity(context, task.run_id);
         if (activity) {
           console.log(chalk.bold("\n  Run Activity:"));
 
@@ -1703,7 +1737,7 @@ const closeCommand = new Command("close")
 // ── foreman task import ───────────────────────────────────────────────────────
 
 const importCommand = new Command("import")
-  .description("Import legacy beads JSONL data into the daemon-backed task store")
+  .description("Import legacy beads JSONL data into the active Foreman task backend")
   .requiredOption("--from-beads", "Import tasks from .beads/issues.jsonl or .beads/beads.jsonl")
   .option("--dry-run", "Preview the first 5 mappings without writing to the database")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -1898,7 +1932,7 @@ const depCommand = new Command("dep")
 // ── Parent command ────────────────────────────────────────────────────────────
 
 export const taskCommand = new Command("task")
-  .description("Manage daemon-backed tasks in Foreman")
+  .description("Manage Foreman tasks through the active backend")
   .addCommand(createCommand)
   .addCommand(listCommand)
   .addCommand(showCommand)

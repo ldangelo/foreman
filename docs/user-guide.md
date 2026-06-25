@@ -35,7 +35,7 @@ The project default branch is the base for newly created task worktrees and fina
 
 ### Tasks
 
-Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context.
+Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. In default Elixir mode, task commands use Elixir task/run projections, including `task list --show-run`, `--run-status`, `--stuck`, and `task show` run activity. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context.
 
 ```bash
 foreman task create --title "Fix flaky retry" --type bug --priority high

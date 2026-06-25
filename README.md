@@ -849,11 +849,11 @@ For release tagging and version bumps, use conventional commits and the release 
 
 ## Task Tracking
 
-Foreman supports one runtime task store: **native tasks** backed by PostgreSQL (via the daemon or direct standalone access).
+Foreman supports one runtime task store: **native tasks** backed by the active backend (Elixir server by default; Node/PostgreSQL only when `FOREMAN_BACKEND=node`).
 
 ### Native tasks
 
-Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures (when daemon is running) or directly via PostgreSQL.
+Tasks are created, tracked, and closed entirely within Foreman. In default Elixir mode, task commands use server commands/projections; in explicit Node mode they use the legacy tRPC/PostgreSQL path.
 
 ```bash
 # Native task lifecycle
@@ -868,7 +868,7 @@ foreman task dep list task-123                 # show dependencies
 foreman task dep remove task-tests task-feature # remove dependency
 ```
 
-All task operations route through `TrpcClient` → daemon's Postgres store when daemon is running; otherwise they use direct PostgreSQL access via ForemanStore. Native status `review` means the pipeline has finished and the branch/PR is waiting for review or merge; phase status `reviewer` is reserved for an actively running reviewer agent.
+In default Elixir mode, `task list --show-run`, `--run-status`, `--stuck`, and `task show` read run activity from Elixir run projections. Native status `review` means the pipeline has finished and the branch/PR is waiting for review or merge; phase status `reviewer` is reserved for an actively running reviewer agent.
 
 For projects with existing [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) data, import it once into native tasks:
 
