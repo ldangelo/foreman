@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import * as trpcClientModule from "../../lib/trpc-client.js";
 import * as projectTaskSupport from "../commands/project-task-support.js";
 import { debugCommand } from "../commands/debug.js";
@@ -160,6 +161,21 @@ describe("foreman debug/recover command context", () => {
     };
   }
 
+  function mockElixirRun() {
+    return {
+      run_id: "run-elixir",
+      project_id: "proj-1",
+      task_id: "seed-1",
+      status: "failed",
+      agent_type: "elixir",
+      worktree_path: null,
+      progress: { stage: "elixir" },
+      started_at: "2026-04-25T00:01:00.000Z",
+      completed_at: null,
+      created_at: "2026-04-25T00:00:00.000Z",
+    };
+  }
+
   function mockLocalRun() {
     return {
       id: "run-local",
@@ -199,6 +215,27 @@ describe("foreman debug/recover command context", () => {
     expect(ForemanStore.forProject).toHaveBeenCalledWith(canonicalPath);
     expect(mockCreateTrpcClient).toHaveBeenCalledTimes(1);
     expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "seed-1", limit: 50 });
+    expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
+  });
+
+  it("uses Elixir recover run, inbox, report, and logs without creating a tRPC client", async () => {
+    const canonicalPath = "/canonical/project";
+    vi.mocked(projectTaskSupport.resolveRepoRootProjectPath).mockResolvedValue(canonicalPath);
+    vi.mocked(projectTaskSupport.listRegisteredProjects).mockResolvedValue([{ id: "proj-1", name: "foreman", path: canonicalPath }]);
+    const listRuns = vi.spyOn(ElixirServerClient.prototype, "listRuns").mockResolvedValue([mockElixirRun()]);
+    const listInbox = vi.spyOn(ElixirServerClient.prototype, "listInbox").mockResolvedValue([
+      { message_id: "msg-1", run_id: "run-elixir", sender: "qa", recipient: "developer", subject: "retry", body: "fix it", unread: false },
+    ]);
+    const getRunReport = vi.spyOn(ElixirServerClient.prototype, "getRunReport").mockResolvedValue({ "QA_REPORT.md": "## Verdict: FAIL" });
+    const getRunLogs = vi.spyOn(ElixirServerClient.prototype, "getRunLogs").mockResolvedValue([{ message: "qa failed" }]);
+
+    await runCommand(recoverCommand, ["seed-1", "--raw", "--reason", "stale-blocked"]);
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(listRuns).toHaveBeenCalledWith("proj-1");
+    expect(listInbox).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-elixir", limit: 500 });
+    expect(getRunReport).toHaveBeenCalledWith("run-elixir");
+    expect(getRunLogs).toHaveBeenCalledWith("run-elixir", "raw");
     expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
   });
 

@@ -110,7 +110,7 @@ foreman server doctor        # auto-starts and validates DB/projections/workers/
 foreman server stop
 ```
 
-The doctor output includes operational metrics: phase duration timers, retry/failure/recovery counters, worker restart counts, and projection lag. If server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` before calling doctor/metrics endpoints. `foreman debug` reads Elixir run/inbox/report/log projections first, and run debug views surface the first inconsistent event transition when a status anomaly appears.
+The doctor output includes operational metrics: phase duration timers, retry/failure/recovery counters, worker restart counts, and projection lag. If server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` before calling doctor/metrics endpoints. `foreman debug` and `foreman recover` read Elixir run/inbox/report/log projections first, and run debug views surface the first inconsistent event transition when a status anomaly appears.
 
 Troubleshooting sequence for Elixir-backed state:
 1. Check whether the expected durable event exists (`RunStarted`, `PhaseCompleted`, `WorkerRestarted`, `AuthorizationChecked`, etc.).

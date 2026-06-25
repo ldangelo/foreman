@@ -452,6 +452,15 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 - Agent worker logs (`~/.foreman/logs/<runId>.log`)
 - Bead info from `br show`
 
+### `foreman recover`
+
+Autonomous recovery for failed/stuck tasks. In Elixir-backed projects, recovery context uses Elixir run, inbox, report, and raw log projections first, then falls back to legacy daemon/local stores.
+
+```bash
+foreman recover bd-abc1 --raw
+foreman recover bd-abc1 --reason finalize-conflict --prepare-clean-replay
+```
+
 ### `foreman logs`
 
 Show run logs and debugging summaries. Compact/plain/raw event views read from the Elixir server and do not require local `~/.foreman/logs/<run>.log` files; summary and `--follow` still use local worker log files.

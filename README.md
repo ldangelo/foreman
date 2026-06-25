@@ -388,6 +388,7 @@ foreman inbox                     # Latest run's messages
 foreman inbox --task task-abc      # Messages for a specific task
 foreman inbox --all --watch       # Live stream across all runs
 foreman debug <task-id>            # AI analysis including full mail timeline + trace artifacts
+foreman recover <task-id> --raw    # Recovery context; Elixir projections first
 ```
 
 ### File reservations
