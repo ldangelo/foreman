@@ -153,8 +153,8 @@ describe("retry command bootstrap", () => {
       project: "my-project",
       projectPath: "/worktrees/my-project",
     });
-    expect(mockForemanForProject).toHaveBeenCalledWith("/canonical/project");
-    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/canonical/project");
+    expect(mockForemanForProject).not.toHaveBeenCalled();
+    expect(mockEnsureCliPostgresPool).not.toHaveBeenCalled();
     expect(mockPostgresForProject).not.toHaveBeenCalled();
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     expect(mockCreateTaskClient).not.toHaveBeenCalled();
@@ -187,7 +187,20 @@ describe("retry command bootstrap", () => {
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
   });
 
-  it("keeps local/unregistered behavior unchanged", async () => {
+  it("fails closed for unregistered projects in default Elixir mode", async () => {
+    await runCommand(["bead-1", "--dry-run"]);
+
+    expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
+    expect(mockForemanForProject).not.toHaveBeenCalled();
+    expect(mockCreateTaskClient).not.toHaveBeenCalled();
+    expect(mockPostgresForProject).not.toHaveBeenCalled();
+    expect(mockEnsureCliPostgresPool).not.toHaveBeenCalled();
+    expect(mockDispatcherCtor).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("foreman retry requires an Elixir-registered project"));
+  });
+
+  it("keeps local/unregistered behavior unchanged in legacy node mode", async () => {
+    process.env.FOREMAN_BACKEND = "node";
     await runCommand(["bead-1", "--dry-run"]);
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});

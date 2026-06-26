@@ -14,7 +14,7 @@ import { ensureCliPostgresPool, listRegisteredProjects } from "./project-task-su
 import { findRegisteredProjectByFlagOrCwd } from "./project-context.js";
 
 export const sentinelCommand = new Command("sentinel")
-  .description("QA sentinel: continuous testing agent for main/master branch")
+  .description("Legacy QA sentinel for main/master branch (requires FOREMAN_BACKEND=node)")
   .hook("preAction", () => {
     if (foremanBackendMode() === "elixir") {
       console.error(chalk.red("foreman sentinel uses the legacy SentinelAgent and Postgres/local sentinel stores. Use Elixir scheduler/status/recover flows, or set FOREMAN_BACKEND=node for legacy sentinel commands."));
@@ -155,7 +155,7 @@ async function stopProjectSentinel(
 
 sentinelCommand
   .command("run-once")
-  .description("Run the sentinel test suite once and exit")
+  .description("Run the legacy sentinel test suite once (FOREMAN_BACKEND=node)")
   .option("--project <name-or-id>", "Project name or ID (defaults to current directory)")
   .option("--branch <branch>", "Branch to test", "main")
   .option("--test-command <cmd>", "Test command to execute", "npm test")
@@ -234,7 +234,7 @@ sentinelCommand
 
 sentinelCommand
   .command("start")
-  .description("Start continuous sentinel monitoring loop (runs in foreground)")
+  .description("Start legacy sentinel monitoring loop (FOREMAN_BACKEND=node)")
   .option("--project <name-or-id>", "Project name or ID (defaults to current directory)")
   .option("--branch <branch>", "Branch to monitor", "main")
   .option("--interval <minutes>", "Check interval in minutes", "30")
@@ -377,7 +377,7 @@ sentinelCommand
 
 sentinelCommand
   .command("status")
-  .description("Show recent sentinel run history")
+  .description("Show legacy sentinel run history (FOREMAN_BACKEND=node)")
   .option("--project <name-or-id>", "Project name or ID (defaults to current directory)")
   .option("--limit <n>", "Number of recent runs to show", "10")
   .option("--json", "Output as JSON")
@@ -482,7 +482,7 @@ sentinelCommand
 
 sentinelCommand
   .command("stop")
-  .description("Stop the continuous sentinel monitoring loop")
+  .description("Stop legacy sentinel monitoring loop (FOREMAN_BACKEND=node)")
   .option("--project <name-or-id>", "Project name or ID (defaults to current directory)")
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")
   .action(async (opts) => {
@@ -527,7 +527,7 @@ sentinelCommand
 
 sentinelCommand
   .command("list")
-  .description("List all registered projects with sentinel status")
+  .description("List legacy sentinel status by project (FOREMAN_BACKEND=node)" )
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {

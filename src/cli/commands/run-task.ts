@@ -1,11 +1,11 @@
 /**
- * `foreman run task` — Direct workflow execution for a specific task.
+ * `foreman run task` — Legacy direct workflow execution for a specific task.
  *
  * This command bypasses state-gating and executes the specified workflow
  * for a given task regardless of its current state (failed, closed,
  * in-progress, backlog, etc.).
  *
- * Usage: foreman run task <task-id> <workflow-path> [options]
+ * Usage: FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> [options]
  *
  * This separates scheduling/orchestration decisions from deterministic
  * workflow execution, making tasks directly runnable for debugging,
@@ -233,7 +233,7 @@ export async function runTaskAction(
     projectPath: optsProjectPath,
   } = opts;
 
-  if (foremanBackendMode() === "elixir" && !requestedRunId) {
+  if (foremanBackendMode() === "elixir") {
     console.error(chalk.red("foreman run task uses the legacy Node worker bridge directly. Let the Elixir scheduler launch workers, or set FOREMAN_BACKEND=node for direct legacy task execution."));
     return 1;
   }
@@ -592,7 +592,7 @@ export async function runTaskAction(
 // ── CLI Command Definition ────────────────────────────────────────────────
 
 export const runTaskCommand = new Command("task")
-  .description("Run a workflow directly for a specific task (bypasses state-gating)")
+  .description("Legacy direct workflow execution for a specific task (requires FOREMAN_BACKEND=node)")
   .argument("<task-id>", "Task ID to run the workflow for")
   .argument("<workflow-path>", "Workflow name or path to a workflow YAML file")
   .option("--model <model>", "Model to use (overrides workflow default)")

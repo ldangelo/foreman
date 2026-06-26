@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { basename, join, resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
 
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
@@ -18,6 +19,9 @@ import { installBundledActions } from "../../orchestrator/action-loader.js";
 import { DatabaseConfigError, DatabaseError } from "../../lib/db/pool-manager.js";
 import { ensureCliPostgresPool } from "./project-task-support.js";
 import { encrypt } from "../../lib/encryption.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -48,9 +52,9 @@ export interface InitBackendOpts {
 /**
  * Initialize the task-tracking backend for the given project directory.
  *
- * TRD-024: Native Postgres task store is the only supported backend.
- * Foreman no longer uses beads (br) for task tracking — it writes directly
- * to the native Postgres store. The .beads/ directory is initialized here for
+ * Foreman no longer uses beads (br) as its runtime task store. Default Elixir
+ * mode writes project/task state to the Elixir event store; explicit legacy
+ * Node mode writes to Postgres. The .beads/ directory is initialized here for
  * backwards compatibility (operators may still use br directly outside foreman).
  *
  * br init is only run when the user selected "beads" as their issue tracker.
@@ -62,7 +66,7 @@ export async function initBackend(opts: InitBackendOpts): Promise<void> {
   const { projectDir, issueTracker, execSync = execFileSync, checkExists = existsSync } = opts;
 
   // Initialize .beads/ for backwards compatibility only when beads is the issue tracker
-  // For jira/github, foreman writes directly to Postgres — no beads needed
+  // For jira/github, Foreman uses the active backend directly — no beads needed
   if (issueTracker !== "beads") {
     console.log(chalk.dim(`Skipping beads init (${issueTracker} tracker selected)`));
     return;
@@ -93,6 +97,42 @@ export async function initBackend(opts: InitBackendOpts): Promise<void> {
  * Register project and seed default sentinel config if not already present.
  * Exported for unit testing.
  */
+function elixirProjectId(projectName: string, projectDir: string): string {
+  const slug = projectName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "project";
+  const digest = createHash("sha1").update(projectDir).digest("hex").slice(0, 8);
+  return `${slug}-${digest}`;
+}
+
+async function initElixirProject(projectDir: string, projectName: string): Promise<void> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const projects = await client.listProjects();
+  const existing = projects.find((project) => project.path === projectDir || project.name === projectName);
+  if (existing) {
+    const id = String(existing.project_id ?? existing.id ?? existing.name ?? projectName);
+    console.log(chalk.dim(`Project already registered (${id})`));
+    return;
+  }
+
+  const projectId = elixirProjectId(projectName, projectDir);
+  const response = await client.sendCommand({
+    command_id: `cli-project.register-${Date.now()}-${randomBytes(4).toString("hex")}`,
+    command_type: "project.register",
+    payload: {
+      project_id: projectId,
+      name: projectName,
+      path: projectDir,
+      status: "active",
+      default_branch: "main",
+      config: {},
+    },
+    metadata: { correlation_id: `cli-project.register-${Date.now()}` },
+  });
+  if (!response.ok) throw new Error(response.error.message);
+  console.log(chalk.dim(`Registered in Elixir project registry: ${projectId}`));
+}
+
 export async function initProjectStore(
   projectDir: string,
   projectName: string,
@@ -337,31 +377,49 @@ export const initCommand = new Command("init")
       issueTracker = answers.issueTracker;
     }
 
-    // Initialize the task-tracking backend
-    // issueTracker comes from wizard answers (or defaults to "beads" if wizard skipped)
-    await initBackend({ projectDir, issueTracker });
+    const backendMode = foremanBackendMode();
 
-    let store: PostgresStore | null = null;
-    try {
-      // Register project and seed sentinel config
-      ensureCliPostgresPool(projectDir);
-      const registry = new ProjectRegistry({ pg: new PostgresAdapter() });
-      let project = (await registry.list()).find((record) => record.path === projectDir || record.name === projectName);
-      if (!project) {
-        project = await registry.add({ name: projectName, path: projectDir, status: "active" });
+    // Initialize optional legacy task-tracking artifacts only in explicit Node mode.
+    // Default Elixir mode uses event/projection tasks and must not create .beads implicitly.
+    if (backendMode === "node") {
+      await initBackend({ projectDir, issueTracker });
+    } else if (issueTracker === "beads") {
+      console.log(chalk.dim("Skipping beads init in default Elixir mode (set FOREMAN_BACKEND=node for legacy beads init)."));
+    } else {
+      await initBackend({ projectDir, issueTracker });
+    }
+
+    if (backendMode === "elixir") {
+      try {
+        await initElixirProject(projectDir, projectName);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(`Failed to register project in Elixir: ${message}`));
+        process.exit(1);
       }
-      store = PostgresStore.forProject(project.id);
-      await initProjectStore(projectDir, projectName, {
-        getProjectByPath: async (path: string) => (path === projectDir ? { id: project.id } : null),
-        registerProject: async () => ({ id: project.id }),
-        getSentinelConfig: async (projectId: string) => store!.getSentinelConfig(projectId),
-        upsertSentinelConfig: async (projectId: string, config) => store!.upsertSentinelConfig(projectId, config),
-      });
-    } catch (err) {
-      console.error(chalk.red(formatInitDatabaseError(err, projectDir)));
-      process.exit(1);
-    } finally {
-      store?.close();
+    } else {
+      let store: PostgresStore | null = null;
+      try {
+        // Register project and seed sentinel config
+        ensureCliPostgresPool(projectDir);
+        const registry = new ProjectRegistry({ pg: new PostgresAdapter() });
+        let project = (await registry.list()).find((record) => record.path === projectDir || record.name === projectName);
+        if (!project) {
+          project = await registry.add({ name: projectName, path: projectDir, status: "active" });
+        }
+        store = PostgresStore.forProject(project.id);
+        await initProjectStore(projectDir, projectName, {
+          getProjectByPath: async (path: string) => (path === projectDir ? { id: project.id } : null),
+          registerProject: async () => ({ id: project.id }),
+          getSentinelConfig: async (projectId: string) => store!.getSentinelConfig(projectId),
+          upsertSentinelConfig: async (projectId: string, config) => store!.upsertSentinelConfig(projectId, config),
+        });
+      } catch (err) {
+        console.error(chalk.red(formatInitDatabaseError(err, projectDir)));
+        process.exit(1);
+      } finally {
+        store?.close();
+      }
     }
 
     // Install bundled prompt templates to .foreman/prompts/

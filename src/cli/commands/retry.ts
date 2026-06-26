@@ -407,9 +407,19 @@ export const retryCommand = new Command("retry")
       return;
     }
 
-    const localStore = ForemanStore.forProject(projectPath);
-    const registered = await findRegisteredProjectByPath(projectPath, { normalizePaths: true });
-    const useElixir = Boolean(registered) && foremanBackendMode() === "elixir";
+    const backendMode = foremanBackendMode();
+    const registered = await findRegisteredProjectByPath(projectPath, {
+      normalizePaths: true,
+      initPool: backendMode !== "elixir",
+    });
+    if (!registered && backendMode === "elixir") {
+      console.error(chalk.red("foreman retry requires an Elixir-registered project in default Elixir mode. Run 'foreman project add' or set FOREMAN_BACKEND=node for legacy local retry."));
+      process.exit(1);
+      return;
+    }
+
+    const useElixir = Boolean(registered) && backendMode === "elixir";
+    const localStore = useElixir ? null : ForemanStore.forProject(projectPath);
     const elixirClient = useElixir
       ? (() => {
           const manager = new ElixirServerManager();
@@ -420,7 +430,7 @@ export const retryCommand = new Command("retry")
       ? (useElixir && elixirClient
           ? createElixirRetryStore(elixirClient, { id: registered.id, path: projectPath })
           : PostgresStore.forProject(registered.id))
-      : wrapLocalRunStore(localStore);
+      : wrapLocalRunStore(localStore!);
     const { taskClient, backendType } = registered
       ? (useElixir && elixirClient
           ? { taskClient: createElixirTaskClient(elixirClient, registered.id), backendType: "native" as const }
@@ -429,7 +439,7 @@ export const retryCommand = new Command("retry")
     const dispatcher = registered && !useElixir
       ? (() => {
           const pg = new PostgresAdapter();
-          return new Dispatcher(taskClient, localStore, projectPath, null, {
+          return new Dispatcher(taskClient, localStore!, projectPath, null, {
             externalProjectId: registered.id,
             getRecentFailureCount: async (_projectId, since) => {
               const failures = await pg.listTasks(registered.id, { status: ["failed", "stuck", "conflict"], limit: 1000 });
@@ -541,13 +551,13 @@ export const retryCommand = new Command("retry")
         dispatcher,
         backendType,
       );
-      localStore.close();
+      localStore?.close();
       closeStoreIfPossible(store);
       process.exit(exitCode);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Unexpected error: ${msg}`));
-      localStore.close();
+      localStore?.close();
       closeStoreIfPossible(store);
       process.exit(1);
     }

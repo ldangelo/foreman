@@ -54,7 +54,7 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
 /**
  * Result returned by createTaskClients.
  * Contains the task client to pass to Dispatcher.
- * The native Postgres task store is the only supported backend (TRD-024).
+ * Legacy run dispatcher path uses the Postgres task store and is gated behind FOREMAN_BACKEND=node.
  */
 export interface TaskClientResult {
   taskClient: ITaskClient;
@@ -552,7 +552,7 @@ export function validateWorkflowOverride(
 // ── Run Command ──────────────────────────────────────────────────────
 
 export const runCommand = new Command("run")
-  .description("Dispatch ready tasks to agents")
+  .description("Legacy Node dispatcher for ready tasks (requires FOREMAN_BACKEND=node; use foreman server start for Elixir)")
   .option("--max-agents <n>", "Maximum concurrent agents", "5")
   .option("--model <model>", "Force a specific model (overrides FOREMAN_DEFAULT_MODEL)")
   .option("--dry-run", "Show what would be dispatched without doing it")
@@ -1097,7 +1097,7 @@ export const runCommand = new Command("run")
               );
               console.log(
                 chalk.dim(
-                  "  • Re-run 'foreman run' once tasks become unblocked\n" +
+                  "  • Re-run 'FOREMAN_BACKEND=node foreman run' once legacy tasks become unblocked\n" +
                   "  • Use 'br ready' to see which tasks are ready\n" +
                   "  • Use 'foreman status' to check for stuck agents\n" +
                   "  • Set FOREMAN_EMPTY_POLL_CYCLES=0 to disable this limit"

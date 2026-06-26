@@ -23,19 +23,9 @@ brew install foreman
 
 ### Requirements
 
-After installation, you need two additional dependencies:
+After installation, configure your AI provider key. `beads_rust` (`br`) is optional and only needed for importing legacy bead data with `foreman task import --from-beads`; it is not required for default Elixir-backed task execution.
 
-#### 1. beads_rust (`br`) — Task tracking CLI
-
-```bash
-# Install via Cargo
-cargo install beads_rust
-
-# Or download a pre-built binary
-# https://github.com/Dicklesworthstone/beads_rust/releases
-```
-
-#### 2. Anthropic API key
+#### Anthropic API key
 
 ```bash
 # Add to ~/.zshrc or ~/.bash_profile
@@ -47,18 +37,18 @@ Get an API key at [console.anthropic.com](https://console.anthropic.com/).
 ### Quick Start
 
 ```bash
-# Verify setup
-foreman doctor
+# Verify Elixir server/projection health
+foreman server doctor
 
 # Initialize in your project
 cd ~/your-project
 foreman init --name my-project
 
-# Create tasks
-br create --title "Add user auth" --type feature --priority 1
+# Create Elixir-backed tasks
+foreman task create --title "Add user auth" --type feature
 
-# Dispatch AI agents
-foreman run
+# Start default Elixir scheduler/server
+foreman server start
 
 # Monitor progress
 foreman status

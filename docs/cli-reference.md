@@ -34,7 +34,7 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow |
 | removed `foreman mail send` | `foreman inbox send` |
 
-During Elixir migration, incomplete legacy command coverage can be delegated with `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` only when `FOREMAN_BACKEND=node` is set. Elixir is the default after cutover; it disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. Elixir-backed CLI reads such as status/debug/recover/logs/attach/Jira start the local server before using HTTP projections, then fall back to legacy stores only if that path is unavailable.
+During Elixir migration, incomplete legacy command coverage can be delegated with `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` only when `FOREMAN_BACKEND=node` is set. Elixir is the default after cutover; it disables legacy TS delegation and blocks legacy daemon/scheduler commands so the Node scheduler cannot run beside the Elixir scheduler. Elixir-backed CLI reads such as status/debug/recover/attach/Jira start the local server before using HTTP projections and fail closed rather than reading stale legacy daemon/local stores when projections are unavailable.
 
 ---
 
@@ -42,7 +42,7 @@ During Elixir migration, incomplete legacy command coverage can be delegated wit
 
 ### `foreman init`
 
-Initialize Foreman in a project. Creates `.foreman/` directory, installs default workflow configs, prompts, and registers the project in the Postgres store.
+Initialize Foreman in a project. Creates `.foreman/` directory, installs default workflow configs/prompts, and registers the project in the default Elixir project registry. With `FOREMAN_BACKEND=node`, registration uses the legacy Postgres store.
 
 ```bash
 foreman init                      # Initialize with auto-detected name
@@ -156,7 +156,7 @@ FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/task.ya
 
 ### `foreman status`
 
-Show project status: task counts, active agents, cost breakdown, and tool usage. In default Elixir mode, single-project status reads Elixir task/run projections first, then falls back to legacy daemon/local stores if the server is unavailable.
+Show project status: task counts, active agents, cost breakdown, and tool usage. In default Elixir mode, status reads Elixir task/run projections and fails closed if projections are unavailable; set `FOREMAN_BACKEND=node` for legacy daemon/local status.
 
 ```bash
 foreman status                    # Snapshot of current state
@@ -354,7 +354,7 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman runs`
 
-Operator traceability dashboard for active Foreman runs. In Elixir mode this reads Elixir run projections directly; legacy Node fallback requires `FOREMAN_RUNS_NODE_FALLBACK=true`. Lists pending/running runs with task ID, phase, elapsed time, last activity, and stuck/fatal indicators.
+Operator traceability dashboard for active Foreman runs. In default Elixir mode this reads Elixir run projections directly. Legacy Node/local run stores require `FOREMAN_BACKEND=node`. Lists pending/running runs with task ID, phase, elapsed time, last activity, and stuck/fatal indicators.
 
 ```bash
 foreman runs                              # List active runs
@@ -430,7 +430,7 @@ foreman board --limit 10
 
 ### `foreman debug`
 
-AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress) for a task and sends them to an AI model for deep-dive diagnostics. In Elixir-backed projects, run lookup, inbox, reports, and raw logs are read from the Elixir HTTP API before falling back to legacy daemon/local stores.
+AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress) for a task and sends them to an AI model for deep-dive diagnostics. In Elixir-backed projects, run lookup, inbox, reports, and raw logs are read from the Elixir HTTP API; missing/unavailable Elixir projections fail closed instead of reading legacy daemon/local stores.
 
 ```bash
 foreman debug bd-abc1             # Full AI analysis with Opus
@@ -449,12 +449,12 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 - Run summary (status, cost, turns, tool breakdown)
 - All Agent Mail messages (chronological)
 - Pipeline reports (EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md, etc.)
-- Agent worker logs (`~/.foreman/logs/<runId>.log`)
-- Bead info from `br show`
+- Elixir raw/event log projections
+- Elixir task/run metadata
 
 ### `foreman recover`
 
-Autonomous recovery for failed/stuck tasks. In Elixir-backed projects, recovery context uses Elixir run, inbox, report, and raw log projections first, then falls back to legacy daemon/local stores.
+Autonomous recovery for failed/stuck tasks. In Elixir-backed projects, recovery context uses Elixir run, inbox, report, and raw log projections and fails closed when those projections are unavailable; set `FOREMAN_BACKEND=node` for legacy recovery context.
 
 ```bash
 foreman recover bd-abc1 --raw
@@ -481,7 +481,7 @@ foreman logs <run-id> --raw --tail 200 # Raw JSON tail
 | `--plain` | Alias for `--compact`; also used by `--view plain` for human-readable compact output |
 | `--view <compact|plain|raw>` | Select event-backed log view |
 | `--raw` | Print raw worker JSON log lines, falling back to the Elixir raw event view when the local file is absent |
-| `--follow` | Follow the raw worker log after the summary |
+| `--follow` | Follow the raw worker log after the summary (legacy Node backend only; Elixir mode fails closed) |
 
 ### `foreman doctor`
 
@@ -564,7 +564,7 @@ foreman server stop               # Stop server started by Foreman
 
 `server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, circuit breaker hits, QA environment blocks, and projection lag. The `/api/v1/pipeline-metrics` endpoint also exposes `retry_details` (stuck/blocked by reason) and `blocked_by_reason` as top-level shortcuts. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token. Binding the Elixir HTTP server beyond loopback also requires this token. Worker starts strip forbidden host variables (`FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, `DATABASE_*`) and scope explicit project/run secrets to the run. Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events.
 
-Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to reconcile active runs with terminal worker-log markers, claim `ready` tasks within capacity, and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the default backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start` unless `FOREMAN_BACKEND=node` is set explicitly. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
+Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to reconcile active runs with terminal worker-log markers, claim `ready` tasks within capacity, and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the default backend; `foreman daemon start|stop|status|restart` fails fast and directs operators to `foreman server start` unless `FOREMAN_BACKEND=node` is set explicitly. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
 ### `foreman reset`
 
@@ -711,7 +711,7 @@ Initial tools include one-call smoke status, health, scheduler status/tick, proj
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator. In Elixir/default backend mode, inbox reads the shared Postgres run/message/event tables directly and does not require the Node daemon socket. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written.
+View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator. In Elixir/default backend mode, inbox reads Elixir inbox/run/event projections through the HTTP API and does not require the Node daemon socket. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written.
 
 ```bash
 foreman inbox                     # Show latest run's messages
@@ -891,10 +891,10 @@ While migration is incomplete, compatibility mode can delegate these commands to
 ```bash
 FOREMAN_LEGACY_COMPATIBILITY_MODE=1 \
 FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
-foreman run
+FOREMAN_BACKEND=node foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Legacy-only paths such as `foreman run`, `foreman reset`, `foreman stop`, `foreman merge`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, `foreman issue` Postgres sync commands, and metrics cost mode fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|stop|status|restart` cannot operate the Node daemon unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Legacy-only paths such as `foreman run`, `foreman reset`, `foreman stop`, `foreman merge`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, `foreman issue` Postgres sync commands, and metrics cost mode fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land.
 
 ---
 
@@ -902,22 +902,22 @@ Elixir is the default backend after cutover, so legacy delegation is disabled an
 
 ### `foreman attach`
 
-Attach to a running or completed agent session to inspect its state. In Elixir mode, `--list`, `--stream`, and `--worktree` read Elixir projections; default attach records an attach request and resumes an exposed Pi session when the worker heartbeat includes one.
+Attach to a running or completed agent session to inspect its state. In Elixir mode, `--list`, `--stream`, and `--worktree` read Elixir projections; default attach records an attach request and resumes an exposed Pi session when the worker heartbeat includes one. `--follow` and `--kill` are legacy local-file/process controls and require `FOREMAN_BACKEND=node`.
 
 ```bash
 foreman attach                    # Attach to latest session
 foreman attach bd-abc1            # Attach to a specific task by ID
 foreman attach --list             # List attachable sessions
-foreman attach --follow           # Tail the agent log file
+FOREMAN_BACKEND=node foreman attach --follow  # Tail legacy local log file
 foreman attach --stream           # Stream Agent Mail messages
 foreman attach --worktree         # Open a shell in the agent's worktree
-foreman attach --kill             # Kill the agent process
+FOREMAN_BACKEND=node foreman attach --kill    # Kill legacy agent process
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--list` | List attachable sessions |
-| `--follow` | Follow log file (like `tail -f`) |
+| `--follow` | Follow log file (legacy Node backend only; Elixir mode fails closed) |
 | `--stream` | Stream Agent Mail messages in real time |
 | `--worktree` | Open an interactive shell in the worktree |
 | `--kill` | Kill the agent process (legacy Node backend only; Elixir backend reports unsupported) |
@@ -928,11 +928,11 @@ foreman attach --kill             # Kill the agent process
 
 ### `foreman worktree`
 
-Manage git worktrees used by Foreman agents. `worktree clean` uses legacy run stores to decide safety and is blocked in default Elixir mode; set `FOREMAN_BACKEND=node` for legacy cleanup until Elixir-safe cleanup lands.
+Manage git worktrees used by Foreman agents. `worktree list` and `worktree clean` use legacy run stores for metadata/safety and are blocked in default Elixir mode; use `foreman runs|status|watch` for Elixir-backed run/worktree visibility, or set `FOREMAN_BACKEND=node` for legacy worktree commands until Elixir-safe cleanup lands.
 
 ```bash
-foreman worktree list             # Show all active worktrees
-foreman worktree list --json      # Machine-readable output
+FOREMAN_BACKEND=node foreman worktree list             # Show all active worktrees
+FOREMAN_BACKEND=node foreman worktree list --json      # Machine-readable output
 FOREMAN_BACKEND=node foreman worktree clean            # Remove orphaned worktrees
 FOREMAN_BACKEND=node foreman worktree clean --all      # Remove ALL worktrees including active
 FOREMAN_BACKEND=node foreman worktree clean --force    # Force-delete branches

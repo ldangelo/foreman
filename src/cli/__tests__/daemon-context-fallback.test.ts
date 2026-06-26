@@ -82,6 +82,7 @@ function makeLocalRun() {
 }
 
 describe("daemon context fallback", () => {
+  const originalBackend = process.env.FOREMAN_BACKEND;
   let tmpDir: string;
   let localStore: {
     getRunsForSeed: ReturnType<typeof vi.fn>;
@@ -91,6 +92,7 @@ describe("daemon context fallback", () => {
   };
 
   beforeEach(() => {
+    process.env.FOREMAN_BACKEND = "node";
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-daemon-fallback-"));
     mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
     vi.clearAllMocks();
@@ -113,6 +115,8 @@ describe("daemon context fallback", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env.FOREMAN_BACKEND;
+    else process.env.FOREMAN_BACKEND = originalBackend;
     vi.restoreAllMocks();
     rmSync(tmpDir, { recursive: true, force: true });
   });

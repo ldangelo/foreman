@@ -67,7 +67,7 @@ async function resolveDoctorProjectPath(): Promise<string> {
 }
 
 export const doctorCommand = new Command("doctor")
-  .description("Check foreman installation and project health, with optional auto-fix")
+  .description("Legacy Node/Postgres health checks (requires FOREMAN_BACKEND=node; use foreman server doctor for Elixir)")
   .option("--fix", "Auto-fix issues where possible")
   .option("--dry-run", "Show what --fix would do without making changes")
   .option("--json", "Output results as JSON")

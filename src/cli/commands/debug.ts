@@ -21,6 +21,7 @@ import { createTrpcClient } from "../../lib/trpc-client.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
 import { getHighspeedModel } from "../../lib/config.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 interface DaemonRunRow {
@@ -147,7 +148,8 @@ async function resolveElixirDebugContext(projectPath: string): Promise<ElixirDeb
     const client = new ElixirServerClient(status.url, manager.authToken);
     await client.listRuns(project.id);
     return { client, projectId: project.id, projectPath };
-  } catch {
+  } catch (err) {
+    if (foremanBackendMode() === "elixir") throw err;
     return null;
   }
 }
@@ -295,16 +297,20 @@ export const debugCommand = new Command("debug")
   .action(async (beadId: string, opts: { run?: string; model?: string; raw?: boolean }) => {
     const projectPath = await resolveRepoRootProjectPath({});
     const elixir = await resolveElixirDebugContext(projectPath);
-    const store = ForemanStore.forProject(projectPath);
 
-    // Find runs for this seed. Prefer Elixir when it has the target run; otherwise
-    // keep daemon/local fallback so mixed cutover projects remain debuggable.
+    // Find runs for this seed. Default Elixir mode fails closed when the run is
+    // missing from Elixir projections instead of reading stale daemon/local data.
     let selectedSource: "elixir" | "daemon" | "local" = "local";
     let runs = elixir ? await resolveElixirRuns(elixir, beadId) : [];
     let daemon: DaemonDebugContext | null = null;
+    let store: ForemanStore | null = null;
     if (runs.length > 0) {
       selectedSource = "elixir";
+    } else if (foremanBackendMode() === "elixir") {
+      console.error(chalk.red(`No Elixir runs found for seed ${beadId}; refusing legacy daemon/local debug fallback. Set FOREMAN_BACKEND=node for legacy debug.`));
+      process.exit(1);
     } else {
+      store = ForemanStore.forProject(projectPath);
       daemon = await resolveDaemonDebugContext(projectPath);
       runs = daemon ? await resolveDaemonRuns(daemon, beadId) : store.getRunsForSeed(beadId);
       selectedSource = daemon ? "daemon" : "local";
@@ -332,7 +338,7 @@ export const debugCommand = new Command("debug")
       ? JSON.parse(run.progress) as Record<string, unknown>
       : selectedSource === "daemon"
         ? null
-        : store.getRunProgress(run.id);
+        : store?.getRunProgress(run.id) ?? null;
     const runSummary = formatRunSummary(run, progress as Record<string, unknown> | null);
 
     // 2. Mail messages
@@ -340,13 +346,13 @@ export const debugCommand = new Command("debug")
       ? (await elixir.client.listInbox({ projectId: elixir.projectId, runId: run.id, limit: 500 })).map(adaptElixirMessage)
       : daemon
         ? (await daemon.client.mail.list({ projectId: daemon.projectId, runId: run.id }) as DaemonMailMessage[]).map(adaptDaemonMessage)
-        : store.getAllMessages(run.id);
+        : store?.getAllMessages(run.id) ?? [];
     const messagesText = formatMessages(allMessages);
 
     // 3. Reports from worktree
     const reports: Record<string, string> = selectedSource === "elixir" && elixir ? await collectElixirReport(elixir, run.id) : {};
     const worktreePath = run.worktree_path;
-    if (worktreePath && existsSync(worktreePath)) {
+    if (selectedSource !== "elixir" && worktreePath && existsSync(worktreePath)) {
       for (const file of REPORT_FILES) {
         const content = readFileOrNull(join(worktreePath, file));
         if (content) reports[file] = content;
@@ -354,17 +360,19 @@ export const debugCommand = new Command("debug")
     }
 
     // 4. Agent worker log
-    const logContent = selectedSource === "elixir" && elixir ? (await findElixirLog(elixir, run.id)) ?? findLogFile(run.id) : findLogFile(run.id);
+    const logContent = selectedSource === "elixir" && elixir ? await findElixirLog(elixir, run.id) : findLogFile(run.id);
 
-    // 5. Bead info from br
+    // 5. Bead info from br (legacy Node mode only)
     let beadInfo: string | null = null;
-    try {
-      const { execFileSync } = await import("node:child_process");
-      beadInfo = execFileSync("br", ["show", beadId], { encoding: "utf-8", cwd: projectPath });
-    } catch { /* non-fatal */ }
+    if (selectedSource !== "elixir") {
+      try {
+        const { execFileSync } = await import("node:child_process");
+        beadInfo = execFileSync("br", ["show", beadId], { encoding: "utf-8", cwd: projectPath });
+      } catch { /* non-fatal */ }
+    }
     if (beadInfo) reports["BEAD_INFO"] = beadInfo;
 
-    store.close();
+    store?.close();
 
     // Print artifact summary
     console.log(chalk.dim(`  Messages: ${allMessages.length}`));

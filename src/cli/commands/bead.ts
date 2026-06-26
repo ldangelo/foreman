@@ -9,6 +9,7 @@
 import { Command } from "commander";
 import { createTasksFromText, type CreateFromTextOptions } from "./create-from-text.js";
 import { printDeprecationNotice } from "./cli-output.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 
 // Re-export the shared helpers under their historical module path so existing
 // importers/tests of bead.js keep working.
@@ -39,6 +40,9 @@ export const beadCommand = new Command("bead")
       opts: CreateFromTextOptions,
     ) => {
       printDeprecationNotice("foreman bead", "foreman task create --from-text");
-      await createTasksFromText(description, opts);
+      await createTasksFromText(description, {
+        ...opts,
+        target: foremanBackendMode() === "elixir" ? "elixir" : "beads",
+      });
     },
   );

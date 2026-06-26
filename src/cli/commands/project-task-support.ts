@@ -18,6 +18,10 @@ export interface RegisteredProjectSummary {
   defaultBranch?: string;
 }
 
+function legacyProjectFallbackAllowed(): boolean {
+  return ["1", "true", "yes"].includes((process.env.FOREMAN_PROJECT_LEGACY_FALLBACK ?? "").toLowerCase());
+}
+
 export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
   if (foremanBackendMode() === "elixir") {
     try {
@@ -32,8 +36,11 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
         githubUrl: project.github_url,
         defaultBranch: project.default_branch,
       }));
-    } catch {
-      // Fall through to legacy registry sources when the Elixir read model is unavailable.
+    } catch (err) {
+      if (!legacyProjectFallbackAllowed()) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Elixir project registry unavailable; refusing legacy daemon/local fallback in default Elixir mode. Set FOREMAN_BACKEND=node for legacy project registry access, or FOREMAN_PROJECT_LEGACY_FALLBACK=true to opt into mixed-cutover fallback. Cause: ${message}`);
+      }
     }
   }
 
@@ -85,9 +92,16 @@ export async function resolveProjectPathFromOptions(
       if (match?.path) {
         return match.path;
       }
-    } catch {
-      // Fall back to local resolver when the daemon is unavailable or the project
-      // is not managed by the daemon-backed registry.
+      if (foremanBackendMode() === "elixir" && !legacyProjectFallbackAllowed()) {
+        throw new Error(`Project '${opts.project}' not found in Elixir project registry; refusing legacy local fallback. Set FOREMAN_BACKEND=node for legacy project resolution, or FOREMAN_PROJECT_LEGACY_FALLBACK=true to opt into mixed-cutover fallback.`);
+      }
+    } catch (err) {
+      if (foremanBackendMode() === "elixir" && !legacyProjectFallbackAllowed()) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Elixir project registry unavailable while resolving --project; refusing legacy local fallback. Set FOREMAN_BACKEND=node for legacy project resolution, or FOREMAN_PROJECT_LEGACY_FALLBACK=true to opt into mixed-cutover fallback. Cause: ${message}`);
+      }
+      // Fall back to local resolver when the legacy daemon is unavailable or the
+      // project is not managed by the daemon-backed registry.
     }
   }
 

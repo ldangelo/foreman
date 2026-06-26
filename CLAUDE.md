@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and merges results back. Built with TypeScript, [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) for in-process agent sessions, and [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for task tracking.
+Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and merges results back. Built with TypeScript, Elixir event/projection backend by default, and [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) for in-process agent sessions. Legacy [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) data is import/direct-use only unless explicitly running legacy Node mode.
 
 ## Quick Reference
 
@@ -15,7 +15,7 @@ npx tsc --noEmit       # type check only
 npx vitest run <file>  # run a single test file
 
 # CLI (after build or via tsx)
-foreman init           # Initialize project + beads
+foreman init           # Initialize project + Elixir project registry
 foreman project add owner/repo  # Clone/register project (Elixir-backed by default)
 foreman project list   # List registered projects (Elixir-backed by default)
 foreman project sync <project-id>  # Fetch checkout + update Elixir last_sync_at
@@ -52,28 +52,30 @@ foreman inbox --all --watch  # Live stream all mail across runs
 foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
 # In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-logs [run-id], /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
 
-# br (beads_rust) task tracking
-br ready               # Unblocked tasks
-br list --status=open  # All tasks
-br show <id>           # Task detail
+# Direct br (beads_rust) legacy/import-only task tracking
+br ready               # Direct br unblocked tasks (not Foreman default runtime)
+br list --status=open  # Direct br tasks
+foreman task show <id> # Elixir task detail
 br create --title "X" --type task --priority 2
 br update <id> --status=in_progress
-br close <id>          # Complete
+br close <id>          # Complete direct br task
 ```
 
 ## Architecture
 
 ```
-CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
-                      |              |
-                   PostgreSQL         Pi SDK (in-process)
-                   (state)        createAgentSession()
-                      |              |
-                   br (beads_rust)   Pipeline Executor
-                   (task graph)      (workflow YAML-driven)
-                                     |
-                                  Refinery + autoMerge
-                                  (merge queue → dev branch)
+CLI (commander) -> Elixir server/projections -> Agent Workers (detached processes)
+                      |                         |
+              events/read models            Pi SDK (in-process)
+                      |                  createAgentSession()
+                      |                         |
+              scheduler/inbox/runs      Pipeline Executor
+                                        (workflow YAML-driven)
+                                                |
+                                  finalize/merge/PR actions
+
+Legacy Node mode (`FOREMAN_BACKEND=node`) uses PostgreSQL, ForemanDaemon,
+Refinery, and optional direct beads_rust/import compatibility paths.
 ```
 
 TRD-2026-014 Elixir migration split:
@@ -98,7 +100,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
 - `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
 - `src/orchestrator/auto-merge.ts` — immediate post-pipeline merge trigger
-- `src/lib/store.ts` — PostgreSQL state (runs, progress, messages)
+- `src/lib/store.ts` — legacy Node-mode state (runs, progress, messages)
 - `src/lib/postgres-mail-client.ts` — Agent Mail (Postgres-backed)
 - `src/lib/workflow-loader.ts` — YAML workflow config parser
 - `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
@@ -214,16 +216,18 @@ phases:
 
 **Model shorthands:** `haiku` → `anthropic/claude-haiku-4-5`, `sonnet` → `anthropic/claude-sonnet-4-6`, `opus` → `anthropic/claude-opus-4-6`. Full model IDs also accepted (e.g. `openai/gpt-4o`).
 
-## br (beads_rust) Conventions
+## Direct br (beads_rust) Legacy Conventions
+
+Use only for explicit direct `.beads/` maintenance, one-time imports, or `FOREMAN_BACKEND=node` legacy work. Default Foreman task state is Elixir-backed.
 
 - Installed at `~/.local/bin/br`
 - Storage: `.beads/beads.jsonl` (git-tracked)
 - Types: `bug | feature | task | epic | chore | docs | question`
 - Priorities: `0` (critical) through `4` (backlog) — never use words like "high"/"medium"
 - `br dep add <issue> <depends-on>` to declare blocking dependencies
-- `br ready` shows issues with no open blockers
-- `br close <id1> <id2>` to close multiple issues at once
-- `br sync --flush-only` to export DB to JSONL before committing
+- `br ready` shows direct br issues with no open blockers
+- `br close <id1> <id2>` to close multiple direct br issues at once
+- `br sync --flush-only` only after direct `.beads/` changes
 
 ## Critical Constraints
 
@@ -234,7 +238,7 @@ phases:
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
 - **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
 - **Auto-reset on failure**: `markStuck()` resets bead to open when pipeline fails (rate limits); marks failed for permanent errors
-- **Agent Mail is PostgreSQL-backed**: Messages stored in Postgres (shared across all workers), not a separate mail database
+- **Agent Mail is Elixir-backed by default**: Messages are Elixir inbox/events; legacy Node mode stores mail in Postgres
 - **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, and `.beads/issues.jsonl` after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
 - **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, merge re-waits if GitHub surfaces late pending checks after `pr-wait`, and `gh pr merge` auth failures fall back to direct VCS merge while manual PR merge events reconcile linked runs/tasks to `merged`
@@ -244,7 +248,7 @@ phases:
 ```bash
 # AI-powered execution analysis
 foreman debug <bead-id>         # Full Opus analysis of pipeline run
-foreman debug <bead-id> --raw   # Dump all artifacts without AI (Elixir API first, legacy fallback)
+foreman debug <bead-id> --raw   # Dump artifacts; Elixir mode fails closed if projections missing
 foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs
@@ -255,8 +259,8 @@ FOREMAN_BACKEND=node foreman reset --bead X # Legacy reset a specific run
 foreman retry <seed>   # Re-run a specific pipeline phase
 
 # Agent logs (streamed during run)
-ls ~/.foreman/logs/    # One .log file per runId
-cat ~/.foreman/logs/<runId>.log
+foreman logs <runId> --compact # Elixir event-backed logs
+FOREMAN_BACKEND=node ls ~/.foreman/logs/ # Legacy local worker logs
 FOREMAN_BACKEND=node foreman purge logs # Legacy remove old log files
 FOREMAN_BACKEND=node foreman purge runs # Legacy remove stale failed run records
 
@@ -265,7 +269,8 @@ foreman inbox --all --watch  # Live stream all mail across all runs
 foreman inbox --bead X       # Mail for a specific bead
 
 # Worktree cleanup
-foreman worktree list   # See all active worktrees
+foreman runs            # See active Elixir runs/worktrees
+FOREMAN_BACKEND=node foreman worktree list   # Legacy list worktrees
 FOREMAN_BACKEND=node foreman worktree clean  # Legacy remove orphaned worktrees
 
 # Test failures
@@ -291,11 +296,11 @@ npx tsc --noEmit       # Type-check without building
 
 ---
 
-## Beads Workflow Integration
+## Legacy/Direct Beads Workflow Integration
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
+Foreman default issue tracking uses Elixir event/projection tasks (`foreman task ...`, `foreman board`, `foreman server ...`). [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) is legacy/direct-use only; `.beads/` data can be imported, but Foreman must not treat it as the default runtime store. Use this section only when explicitly doing direct `br` maintenance or legacy `FOREMAN_BACKEND=node` work.
 
-### Essential Commands
+### Direct `br` Commands (Legacy/Manual Only)
 
 ```bash
 # View ready issues (open, unblocked, not deferred)
@@ -317,13 +322,13 @@ br sync --flush-only  # Export DB to JSONL
 br sync --status      # Check sync status
 ```
 
-### Workflow Pattern
+### Direct `br` Workflow Pattern (Not Default Foreman Runtime)
 
-1. **Start**: Run `br ready` to find actionable work
+1. **Start**: Run `br ready` only for explicit direct-br work
 2. **Claim**: Use `br update <id> --status=in_progress`
 3. **Work**: Implement the task
 4. **Complete**: Use `br close <id>`
-5. **Sync**: Always run `br sync --flush-only` at session end
+5. **Sync**: Run `br sync --flush-only` before committing direct-br changes
 
 ### Key Concepts
 
@@ -334,12 +339,14 @@ br sync --status      # Check sync status
 
 ### Session Protocol
 
-**Before ending any session, run this checklist:**
+**Default Foreman/Elixir sessions:** do not run `br sync` unless you changed `.beads/` directly. Use Foreman Elixir views (`foreman task`, `foreman runs`, `foreman logs`, `foreman server doctor`) for runtime state.
+
+**Direct-br/legacy sessions only:**
 
 ```bash
 git status              # Check what changed
 git add <files>         # Stage code changes
-br sync --flush-only    # Export beads changes to JSONL
+br sync --flush-only    # Only if direct .beads/br changes were made
 git commit -m "..."     # Commit everything
 git push                # Push to remote
 ```
@@ -348,7 +355,7 @@ git push                # Push to remote
 
 Saving a session log is **required** — not optional. At the end of every agent session, write a `SESSION_LOG.md` in the worktree root documenting what was done.
 
-Agent worker logs are automatically written to `~/.foreman/logs/<runId>.log` and streamed in real time. The SESSION_LOG.md is a higher-level human-readable record.
+Elixir worker logs are exposed through `foreman logs` event/raw views. Legacy Node worker logs are written to `~/.foreman/logs/<runId>.log`. The SESSION_LOG.md is a higher-level human-readable record.
 
 **SESSION_LOG.md format:**
 
@@ -371,11 +378,10 @@ Agent worker logs are automatically written to `~/.foreman/logs/<runId>.log` and
 
 ### Best Practices
 
-- Check `br ready` at session start to find available work
-- Update status as you work (in_progress → closed)
-- Create new issues with `br create` when you discover tasks
+- Default work: use `foreman task list`, `foreman board`, `foreman runs`, and `foreman logs`
+- Direct-br legacy work only: check `br ready`, update status as you work, create issues with `br create`
 - Use descriptive titles and set appropriate priority/type
-- Always sync before ending session
+- Run `br sync --flush-only` only after direct `.beads/` changes
 
 <!-- end-br-agent-instructions -->
 

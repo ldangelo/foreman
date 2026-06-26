@@ -81,7 +81,7 @@ function wrapLocalMergeQueue(queue: MergeQueue, store: ForemanStore, projectPath
 }
 
 export const mergeCommand = new Command("merge")
-  .description("Merge completed agent work into target branch")
+  .description("Legacy Refinery merge queue (requires FOREMAN_BACKEND=node)")
   .option("--target-branch <branch>", "Branch to merge into (default: auto-detected)")
   .option("--no-tests", "Skip running tests after merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")

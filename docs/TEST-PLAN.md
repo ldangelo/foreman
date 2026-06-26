@@ -170,23 +170,23 @@ git init && echo "# Test Project" > README.md && git add -A && git commit -m "in
 
 # 1. Init
 foreman init --name "e2e-test"
-# Verify: .foreman/ exists, project in ~/.foreman/foreman.db
+# Verify: .foreman/ exists, project registered in Elixir projections
 
-# 2. Sling TRD (using sample TRD)
-foreman sling trd ~/Development/Fortium/foreman/docs/TRD/sling-trd.md --auto
-# Verify: task list shows imported/created tasks, epic + tasks created
+# 2. Legacy Sling TRD (using sample TRD)
+FOREMAN_BACKEND=node foreman sling trd ~/Development/Fortium/foreman/docs/TRD/sling-trd.md --auto
+# Verify: legacy task list shows imported/created tasks, epic + tasks created
 
 # 3. Status
 foreman status
 # Verify: Shows task counts, no active agents
 
-# 4. Run (dry-run first)
-foreman run --dry-run
-# Verify: Shows which tasks would be dispatched
+# 4. Legacy run (dry-run first)
+FOREMAN_BACKEND=node foreman run --dry-run
+# Verify: Shows which legacy tasks would be dispatched
 
-# 5. Run (single agent, Pi for speed)
-foreman run --max-agents 1 --runtime pi
-# Verify: Worktree created, agent process started, run in Postgres
+# 5. Legacy run (single agent, Pi for speed)
+FOREMAN_BACKEND=node foreman run --max-agents 1 --runtime pi
+# Verify: Worktree created, agent process started, run in legacy Postgres
 
 # 6. Monitor
 foreman monitor
@@ -221,13 +221,13 @@ foreman dashboard
 
 ```bash
 cd /tmp/foreman-e2e-test
-foreman plan "Build a simple todo API with CRUD endpoints"
+foreman plan prd "Build a simple todo API with CRUD endpoints"
+foreman plan trd docs/PRD.md
 # Verify:
-# - 4 planning tasks created (create-prd, refine-prd, create-trd, refine-trd)
-# - Each step executes sequentially
+# - Server-backed PRD/TRD planning runs through Elixir
 # - PRD.md and TRD.md created in docs/
-# - All steps tracked in Postgres
-# - foreman status shows completed planning tasks
+# - Planning state is tracked in Elixir projections
+# - foreman status shows current planning/task state
 ```
 
 ---

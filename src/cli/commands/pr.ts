@@ -10,7 +10,7 @@ import { Refinery } from "../../orchestrator/refinery.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 export const prCommand = new Command("pr")
-  .description("Create pull requests for completed agent work")
+  .description("Legacy Refinery PR creation (requires FOREMAN_BACKEND=node)")
   .option("--base-branch <branch>", "Base branch for PRs", "main")
   .option("--draft", "Create draft PRs")
   .action(async (opts) => {

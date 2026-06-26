@@ -21,7 +21,7 @@ Foreman ships with bundled workflows for common task types:
 ## Workflow Selection
 
 Workflows are resolved per task:
-1. `foreman run --workflow <name>` CLI override (applies to every task in that dispatch; fails fast if the workflow cannot be loaded)
+1. Legacy `FOREMAN_BACKEND=node foreman run --workflow <name>` CLI override (applies to every task in that dispatch; fails fast if the workflow cannot be loaded)
 2. First `workflow:<name>` label on the task (e.g. `workflow:smoke`)
 3. Workflow-declared `task_type` in YAML (for example, `task_type: bug` maps bug tasks to that workflow)
 4. `taskTypeWorkflowMap[task.type]` in project config (compatibility fallback)
@@ -31,19 +31,17 @@ Workflows are resolved per task:
 Startup/doctor validation fails if multiple workflows declare the same `task_type`, because type-based dispatch would be ambiguous.
 
 ```bash
-# Dispatch with default workflow
-br create --title="Add user auth" --type=feature
-foreman run
+# Create an Elixir-backed task; scheduler dispatches using default workflow
+foreman task create --title "Add user auth" --type feature
+foreman server start
 
-# Dispatch everything with the quick workflow (no explorer/reviewer phases)
-foreman run --workflow quick
-
-# Dispatch with smoke workflow
+# Select a workflow with a label
 foreman task create --title "Smoke test" --type task --label workflow:smoke
-foreman run
+foreman server start
 
-# Directly run a workflow for a task regardless of current task state
-foreman run task <task-id> task --project <name> --no-watch
+# Legacy manual dispatcher/direct worker paths require explicit Node backend
+FOREMAN_BACKEND=node foreman run --workflow quick
+FOREMAN_BACKEND=node foreman run task <task-id> task --project <name> --no-watch
 ```
 
 ---
@@ -358,7 +356,7 @@ Bundled workflows use a deterministic builtin `finalize` phase. It runs dependen
 
 ### Models
 
-The `models` map supports priority-based model selection. Keys are `"default"` (required) or `"P0"` through `"P4"` (optional overrides). The bead's priority determines which model is used.
+The `models` map supports priority-based model selection. Keys are `"default"` (required) or `"P0"` through `"P4"` (optional overrides). The task priority determines which model is used.
 
 **Model shorthands:**
 
@@ -849,7 +847,7 @@ phases:
       onComplete: true
 EOF
 
-# Assign a bead to the custom workflow
-br update <id> --set-labels "workflow:docs"
-foreman run
+# Assign an Elixir task to the custom workflow; scheduler dispatches it
+foreman task update <id> --label workflow:docs
+foreman server start
 ```

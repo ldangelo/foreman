@@ -816,7 +816,7 @@ export async function resetSeedToOpen(
 }
 
 export const resetCommand = new Command("reset")
-  .description("Reset failed/stuck runs: kill agents, remove worktrees, and reset tasks to a retryable status")
+  .description("Legacy reset for failed/stuck runs (requires FOREMAN_BACKEND=node; use retry/recover for Elixir)")
   .option("--task <id>", "Reset a specific task by ID (clears all runs for that task, including stale pending ones)")
   .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
@@ -1335,7 +1335,7 @@ export const resetCommand = new Command("reset")
         }
       }
 
-      console.log(chalk.dim("\nRe-run with: foreman run"));
+      console.log(chalk.dim("\nRe-run legacy dispatcher with: FOREMAN_BACKEND=node foreman run"));
 
       store.close();
     } catch (err: unknown) {

@@ -181,12 +181,16 @@ vi.mock("../../lib/feature-flags.js", () => ({
 
 // ── process.exit mock ────────────────────────────────────────────────────────
 let exitSpy: ReturnType<typeof vi.spyOn>;
+const originalBackend = process.env.FOREMAN_BACKEND;
 beforeEach(() => {
+  process.env.FOREMAN_BACKEND = "node";
   exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number | string | null | undefined) => {
     throw new Error(`process.exit(${code ?? ""}) called`);
   });
 });
 afterEach(() => {
+  if (originalBackend === undefined) delete process.env.FOREMAN_BACKEND;
+  else process.env.FOREMAN_BACKEND = originalBackend;
   exitSpy.mockRestore();
 });
 

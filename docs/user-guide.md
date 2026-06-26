@@ -6,8 +6,8 @@ This guide explains how to use Foreman day to day. For exact flags and command s
 
 Foreman runs AI engineering work through a managed pipeline:
 
-1. Tasks enter the native PostgreSQL-backed task store.
-2. `foreman run` dispatches ready tasks to isolated git worktrees.
+1. Tasks enter the Elixir-backed event/projection task store.
+2. The Elixir scheduler dispatches ready tasks to isolated git worktrees (`foreman server start`; legacy `FOREMAN_BACKEND=node foreman run` is explicit opt-in).
 3. Workflow phases run in order: exploration, implementation, verification, review, documentation, finalization, PR review, and merge where configured.
 4. Foreman records progress, phase reports, logs, mail, and merge status.
 5. Completed work is finalized and merged through the configured workflow.
@@ -104,7 +104,7 @@ foreman server doctor
 
 If commands report server or database issues, run `foreman server doctor` and check [Troubleshooting](./troubleshooting.md). Use `FOREMAN_BACKEND=node foreman doctor` only for legacy Node/Postgres diagnostics.
 
-Legacy Node daemon operation is explicit only: set `FOREMAN_BACKEND=node` before `foreman daemon start|restart` or other daemon-backed commands. Default Elixir mode blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
+Legacy Node daemon operation is explicit only: set `FOREMAN_BACKEND=node` before `foreman daemon start|stop|status|restart` or other daemon-backed commands. Default Elixir mode blocks daemon lifecycle/status commands so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
 
 ```bash
 foreman server stop
@@ -150,7 +150,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman status
 ```
 
-Delegation supports legacy-only command paths only when `FOREMAN_BACKEND=node` is set for explicit legacy operation. Under the Elixir backend, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections; `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `project add|list|edit|remove|sync` route through Elixir project commands/projections, and `jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Jira config and webhook toggles are recorded as Elixir integration events; use `FOREMAN_BACKEND=node` for the legacy daemon-managed Jira poller/webhook runtime.
+Delegation supports legacy-only command paths only when `FOREMAN_BACKEND=node` is set for explicit legacy operation. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. Under the Elixir backend, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections; `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `project add|list|edit|remove|sync` route through Elixir project commands/projections, and `jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Jira config and webhook toggles are recorded as Elixir integration events; use `FOREMAN_BACKEND=node` for the legacy daemon-managed Jira poller/webhook runtime.
 
 ### 4. Create a Task
 
@@ -215,7 +215,7 @@ foreman status
 foreman board
 foreman watch
 foreman runs
-foreman logs <run-id>                 # Elixir falls back to event view when local logs are absent
+foreman logs <run-id>                 # Elixir event-backed log view
 foreman logs <run-id> --compact       # Elixir event tail without message_update noise
 foreman attach <run-id>
 foreman metrics
@@ -325,11 +325,12 @@ FOREMAN_BACKEND=node foreman run task foreman-12345 task --dry-run
 FOREMAN_BACKEND=node foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
 ```
 
-**When to use `foreman run task` vs `foreman run --task`:**
+**When to use scheduler dispatch vs legacy direct run commands:**
 
 | Command | State gating | Workflow selection | Typical use |
 |---------|--------------|--------------------|-------------|
-| `foreman run --task <id>` | Yes (task must be `ready`) | `--workflow` flag | Normal dispatch |
+| `foreman server start` + `foreman task approve <id>` | Yes (task must be `ready`) | Task type/workflow config | Normal Elixir dispatch |
+| `FOREMAN_BACKEND=node foreman run --task <id>` | Yes (legacy task must be `ready`) | `--workflow` flag | Legacy Node dispatch |
 | `FOREMAN_BACKEND=node foreman run task <id> <workflow>` | No (any state) | Positional argument | Legacy debug, recovery, testing |
 
 ## Run Archiving and Filtering
@@ -337,7 +338,7 @@ FOREMAN_BACKEND=node foreman run task foreman-12345 task --model anthropic/claud
 Old failed runs can accumulate and obscure current state in `foreman runs`, `foreman status`, and operator views. Foreman archives and filters historical failed runs so they remain inspectable without cluttering active views.
 
 - Archived runs are hidden from default views but remain in storage for inspection.
-- `runs.archived` controls visibility in PostgreSQL-backed stores.
+- `runs.archived` controls visibility in legacy PostgreSQL-backed stores.
 - Recent-active run reads include pending/running runs plus failed runs from the last 30 days, excluding archived runs.
 - Use `foreman status --include-archived` when historical runs need inspection.
 - `FOREMAN_BACKEND=node foreman purge runs` archives legacy failed runs whose tasks are closed; permanent deletion is available via the explicit purge option.

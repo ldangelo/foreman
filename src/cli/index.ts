@@ -95,7 +95,7 @@ export const program = new Command();
 
 program
   .name("foreman")
-  .description("Multi-agent coding orchestrator with PostgreSQL-backed daemon")
+  .description("Multi-agent coding orchestrator with Elixir event/projection backend")
   .version(readPackageVersion());
 
 program.addCommand(initCommand);

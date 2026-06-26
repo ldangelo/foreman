@@ -66,7 +66,7 @@ Deprecated aliases are hidden from help and print replacements when used:
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `--skip-explore` / `--skip-review` | `--workflow quick` or a custom workflow |
 
-During incomplete migration, `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` delegate supported commands to the legacy TypeScript binary. Set `FOREMAN_MIGRATION_COMPLETE=true` to stop delegation.
+During incomplete migration, use `FOREMAN_BACKEND=node` for explicit legacy TypeScript/Node operation. `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` delegate supported commands only for explicit legacy cutover work; set `FOREMAN_MIGRATION_COMPLETE=true` to stop delegation.
 
 ---
 
@@ -79,8 +79,8 @@ During incomplete migration, `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_
 **Diagnosis:**
 ```bash
 foreman status                    # Check turns and lastActivity timestamp
-foreman attach <task-id> --follow # Tail the agent log
-foreman inbox --bead <task-id>    # Check for error mail (--bead is alias for <task-id>)
+foreman logs <task-id> --compact  # Inspect Elixir-backed run events/log summary
+foreman inbox --task <task-id>    # Check Elixir-backed mail/lifecycle events
 ```
 
 **Common causes and fixes:**
@@ -88,21 +88,21 @@ foreman inbox --bead <task-id>    # Check for error mail (--bead is alias for <t
 1. **Rate limited** — The AI provider or CodeRabbit CLI throttled requests. Foreman retries CodeRabbit CLI rate limits with short backoff and then marks the run retryable instead of looping back through developer/QA.
    ```bash
    # Wait for rate limit to reset, or stop and retry later
-   foreman stop <task-id>
-   foreman retry <task-id> --dispatch
+   foreman recover <task-id>
+   foreman retry <task-id>
    ```
 
 2. **Agent in a loop** — The agent is retrying a failing operation.
    ```bash
-   foreman attach <task-id> --follow  # Check what it's doing
-   foreman stop <task-id>             # Kill it
-   foreman reset --bead <task-id>     # Reset to open (--bead is alias)
+   foreman logs <task-id> --compact   # Check Elixir-backed progress
+   foreman recover <task-id>          # Recover stuck Elixir run
+   foreman retry <task-id>            # Retry failed phase
    ```
 
 3. **Pi SDK session hung** — The in-process agent session stopped responding.
    ```bash
-   foreman stop <task-id> --force     # Force kill
-   foreman reset --bead <task-id>
+   foreman recover <task-id>          # Recover or mark the Elixir run
+   foreman retry <task-id>            # Retry failed phase
    ```
 
 ### Agent crashes immediately on startup
@@ -161,48 +161,48 @@ cd ../.foreman-worktrees/<repo-name>/<task-id>
 git add -A
 git commit -m "Manual commit for <task-id>"
 git push -u origin foreman/<task-id>
-foreman merge --bead <task-id>    # --bead is backward-compatible alias
+FOREMAN_BACKEND=node foreman merge --bead <task-id>    # Legacy manual merge path
 ```
 
 ### Task won't dispatch because it's not in "ready" status
 
-**Symptoms:** `foreman run --task <id>` fails with "task is not ready" or similar message.
+**Symptoms:** `FOREMAN_BACKEND=node foreman run --task <id>` fails with "task is not ready" or similar legacy dispatch message.
 
 **Cause:** The task status doesn't allow normal dispatch. Common reasons:
 - Task was closed after a previous run
 - Task failed and was marked as `failed`
 - Task was manually set to a non-ready status
 
-**Fix:** Use `foreman run task` to bypass state gating:
+**Fix:** In default Elixir mode, use `foreman retry <task-id>` or approve/update the task so the Elixir scheduler can claim it. The direct worker bridge is legacy-only:
 
 ```bash
-# Run regardless of task status
-foreman run task <task-id> <workflow> --project my-project --no-watch
+# Legacy direct worker bridge; bypasses normal state gating
+FOREMAN_BACKEND=node foreman run task <task-id> <workflow> --project my-project --no-watch
 
-# Dry run to preview
-foreman run task <task-id> task --dry-run
+# Dry run to preview legacy execution
+FOREMAN_BACKEND=node foreman run task <task-id> task --dry-run
 
 # Common workflows: task, feature, epic, quick
-foreman run task <task-id> quick --project my-project --no-watch
+FOREMAN_BACKEND=node foreman run task <task-id> quick --project my-project --no-watch
 ```
 
-**Note:** Worktree and run locking still apply — if an active run exists for this task, you'll see a lock error. Use `foreman stop <task-id>` first.
+**Note:** Worktree and run locking still apply — if an active legacy run exists for this task, you'll see a lock error. Use `FOREMAN_BACKEND=node foreman stop <task-id>` first.
 
 ### Testing a new workflow on an existing task
 
 **Symptoms:** You want to test a custom workflow or different phase configuration on a task without changing its status.
 
-**Fix:** Use `foreman run task` with the workflow path:
+**Fix:** In default Elixir mode, label/update the task workflow and let the scheduler launch it. Use the legacy direct worker bridge only with explicit Node backend:
 
 ```bash
-# Test with a custom workflow
-foreman run task <task-id> ~/.foreman/workflows/custom.yaml --project my-project
+# Test with a custom workflow in legacy mode
+FOREMAN_BACKEND=node foreman run task <task-id> ~/.foreman/workflows/custom.yaml --project my-project
 
 # Test with quick workflow (no explorer/reviewer phases)
-foreman run task <task-id> quick --project my-project --no-watch
+FOREMAN_BACKEND=node foreman run task <task-id> quick --project my-project --no-watch
 
 # Debug with a specific model
-foreman run task <task-id> task --model anthropic/claude-opus-4-6 --project my-project
+FOREMAN_BACKEND=node foreman run task <task-id> task --model anthropic/claude-opus-4-6 --project my-project
 ```
 
 This is useful for:
@@ -254,7 +254,7 @@ git merge --abort                 # Clean up
 
    # Then merge
    cd ../..
-   foreman merge --bead <task-id>  # --bead is backward-compatible alias
+   FOREMAN_BACKEND=node foreman merge --bead <task-id>  # Legacy manual merge path
    ```
 
 3. **Test failures during merge** — The refinery runs tests and they fail.
@@ -280,7 +280,7 @@ grep "autoMerge\|no-completed-run" ~/.foreman/logs/<runId>.err
 
 **Fix:** This was fixed by reordering `store.updateRun(status: "completed")` before the autoMerge call. If on an older version:
 ```bash
-foreman merge                     # Trigger manual merge
+FOREMAN_BACKEND=node foreman merge # Legacy manual merge
 ```
 
 ### Infinite retry loop on sentinel tasks
@@ -301,8 +301,8 @@ grep "merge.*fail\|test.*fail" ~/.foreman/logs/<latest-runId>.err
 **Fix:**
 ```bash
 # Stop the loop
-foreman stop <task-id>
-br close <task-id> --force --reason "Stopping retry loop"
+foreman recover <task-id>
+foreman task close <task-id> --reason "Stopping retry loop"
 
 # Manually merge if the fix is good
 git merge foreman/<task-id> --no-edit
@@ -328,11 +328,12 @@ git status
 **Fix:**
 ```bash
 # Use Foreman commands instead of manual rm -rf
-foreman stop <task-id>
+foreman recover <task-id>                              # Elixir recovery
+FOREMAN_BACKEND=node foreman stop <task-id>            # Legacy stop if needed
 FOREMAN_BACKEND=node foreman worktree clean --dry-run  # Preview legacy cleanup
 FOREMAN_BACKEND=node foreman worktree clean            # Legacy remove/prune
 FOREMAN_BACKEND=node foreman reset --bead <task-id>    # Legacy reset cleanup
-foreman retry <task-id> --dispatch # Elixir retry/redispatch
+foreman retry <task-id>                                # Elixir retry/redispatch
 ```
 
 ### "index.lock: File exists" error
@@ -354,7 +355,8 @@ rm -f ../.foreman-worktrees/<repo-name>/<seedId>/.git/index.lock 2>/dev/null
 
 **Fix:**
 ```bash
-foreman worktree list             # See all worktrees
+foreman runs --all                # Elixir-backed run/worktree context
+FOREMAN_BACKEND=node foreman worktree list             # Legacy see all worktrees
 FOREMAN_BACKEND=node foreman worktree clean            # Legacy remove orphaned ones
 FOREMAN_BACKEND=node foreman worktree clean --all      # Legacy remove ALL (including active)
 FOREMAN_BACKEND=node foreman worktree clean --dry-run  # Preview first
@@ -370,7 +372,9 @@ FOREMAN_BACKEND=node foreman worktree clean --dry-run  # Preview first
 
 ---
 
-## Database Issues
+## Legacy Beads/Database Issues
+
+These entries apply only when maintaining direct `.beads/`/`br` data or explicit `FOREMAN_BACKEND=node` legacy state. Default Elixir runtime state uses Foreman task/events projections.
 
 ### "br" commands fail with merge conflict in issues.jsonl
 
@@ -441,14 +445,14 @@ br doctor                         # Verify
 **Diagnosis:**
 ```bash
 foreman status                    # Check cost and turns per phase
-foreman attach <task-id> --follow # Watch what the agent is doing
+foreman logs <task-id> --compact  # Inspect Elixir-backed progress
 ```
 
 **Common causes:**
 
 1. **Agent in fix-test-fix loop** — Developer keeps fixing, QA keeps failing.
    ```bash
-   foreman stop <task-id>
+   foreman recover <task-id>
    foreman debug <task-id>         # Analyze what went wrong
    ```
 
@@ -554,8 +558,8 @@ md5 package-lock.json             # Compare with cache dir names
 ```bash
 # Clear the cache and let it rebuild
 rm -rf .foreman/setup-cache/
-foreman reset --bead <task-id>   # --bead is backward-compatible alias
-foreman run --bead <task-id>     # Fresh dispatch (--bead is alias)
+foreman recover <task-id>        # Elixir-backed recovery
+foreman retry <task-id>          # Fresh Elixir retry
 ```
 
 ---

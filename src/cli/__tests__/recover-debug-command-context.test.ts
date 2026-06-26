@@ -100,6 +100,7 @@ describe("clean replay helpers", () => {
 });
 
 describe("foreman debug/recover command context", () => {
+  const originalBackend = process.env.FOREMAN_BACKEND;
   let tmpDir: string;
   let localStore: {
     getRunsForSeed: ReturnType<typeof vi.fn>;
@@ -109,6 +110,7 @@ describe("foreman debug/recover command context", () => {
   };
 
   beforeEach(() => {
+    process.env.FOREMAN_BACKEND = "node";
     tmpDir = mkdtempSync(join(tmpdir(), "foreman-debug-recover-test-"));
     mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
     vi.clearAllMocks();
@@ -146,6 +148,8 @@ describe("foreman debug/recover command context", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env.FOREMAN_BACKEND;
+    else process.env.FOREMAN_BACKEND = originalBackend;
     vi.restoreAllMocks();
     rmSync(tmpDir, { recursive: true, force: true });
   });

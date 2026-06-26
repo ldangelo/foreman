@@ -181,7 +181,14 @@ export async function fetchDaemonStatusSnapshot(projectPath: string): Promise<Da
   try {
     const elixir = await fetchElixirStatusSnapshot(projectPath);
     if (elixir) return elixir;
-  } catch {
+    if (foremanBackendMode() === "elixir") {
+      throw new Error(`Project '${projectPath}' not found in Elixir project projections`);
+    }
+  } catch (err) {
+    if (foremanBackendMode() === "elixir") {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Elixir status projection unavailable; refusing legacy daemon/local status fallback. Set FOREMAN_BACKEND=node for legacy status. Cause: ${message}`);
+    }
     // Fall back to the legacy daemon/DB projection while Elixir is unavailable.
   }
 
@@ -231,8 +238,10 @@ export async function fetchStatusCounts(projectPath: string): Promise<StatusCoun
     try {
       const snapshot = await fetchElixirStatusSnapshot(projectPath);
       if (snapshot) return snapshot.counts;
-    } catch {
-      // Fall back to daemon/project-local status when the Elixir read endpoint is unavailable.
+      throw new Error(`Project '${projectPath}' not found in Elixir project projections`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Elixir status projection unavailable; refusing legacy task-count fallback. Set FOREMAN_BACKEND=node for legacy status. Cause: ${message}`);
     }
   }
 
@@ -450,7 +459,7 @@ function sleepOrDetach(ms: number, detach: { wait: () => Promise<void> }): Promi
 }
 
 export const statusCommand = new Command("status")
-  .description("Show project status from the native Postgres task store")
+  .description("Show project status from the active backend (Elixir projections by default)")
   .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
   .option("--live", "Enable full dashboard TUI with event stream (implies --watch; see also 'foreman watch')")
   .option("--json", "Output status as JSON")
@@ -616,16 +625,18 @@ export const statusCommand = new Command("status")
           if (foremanBackendMode() === "elixir") {
             try {
               const elixirSnapshot = await fetchElixirStatusSnapshot(projectPath);
-              if (elixirSnapshot) {
-                process.stdout.write("\x1B[2J\x1B[H");
-                console.log(chalk.bold("Project Status") + chalk.dim(`  (Elixir live view every ${seconds}s — Ctrl+C to stop)\n`));
-                await renderStatus(projectPath);
-                console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
-                await sleepOrDetach(seconds * 1000, detach);
-                continue;
+              if (!elixirSnapshot) {
+                throw new Error(`Project '${projectPath}' not found in Elixir project projections`);
               }
-            } catch {
-              // Fall back to the legacy dashboard view when Elixir is unavailable.
+              process.stdout.write("\x1B[2J\x1B[H");
+              console.log(chalk.bold("Project Status") + chalk.dim(`  (Elixir live view every ${seconds}s — Ctrl+C to stop)\n`));
+              await renderStatus(projectPath);
+              console.log(chalk.dim(`\nLast updated: ${new Date().toLocaleTimeString()}`));
+              await sleepOrDetach(seconds * 1000, detach);
+              continue;
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              throw new Error(`Elixir live status projection unavailable; refusing legacy dashboard/local fallback. Set FOREMAN_BACKEND=node for legacy live status. Cause: ${message}`);
             }
           }
 

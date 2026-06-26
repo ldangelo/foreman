@@ -1351,9 +1351,15 @@ const showCommand = new Command("show")
       }
       if (task.run_id) {
         console.log(chalk.bold("\n  Logs:"));
-        console.log(`    Summary:    foreman logs ${task.id} --project ${projectName}`);
-        console.log(`    Follow:     foreman logs ${task.id} --project ${projectName} --follow`);
-        console.log(chalk.dim(`    Raw:        ~/.foreman/logs/${task.run_id}.log`));
+        if (context.backend === "elixir") {
+          console.log(`    Summary:    foreman logs ${task.id} --project ${projectName} --compact`);
+          console.log(`    Raw events: foreman logs ${task.id} --project ${projectName} --raw`);
+          console.log(chalk.dim("    Follow:     use foreman watch or foreman runs for live Elixir progress"));
+        } else {
+          console.log(`    Summary:    foreman logs ${task.id} --project ${projectName}`);
+          console.log(`    Follow:     foreman logs ${task.id} --project ${projectName} --follow`);
+          console.log(chalk.dim(`    Raw:        ~/.foreman/logs/${task.run_id}.log`));
+        }
       }
 
       // ── Live Run Activity Section ─────────────────────────────────────────
@@ -1372,8 +1378,13 @@ const showCommand = new Command("show")
           if (activity.isStuck) {
             console.log();
             console.log(chalk.red(`    ⚠ WARNING: This run appears STUCK.`) + chalk.dim(` No activity for > 15 minutes.`));
-            console.log(chalk.dim(`    Check logs: ~/.foreman/logs/${activity.runId}.log`));
-            console.log(chalk.dim(`    Stuck runs can be reset with: foreman task reset ${task.id}`));
+            if (context.backend === "elixir") {
+              console.log(chalk.dim(`    Inspect: foreman logs ${activity.runId} --compact`));
+              console.log(chalk.dim(`    Recover: foreman recover ${activity.runId} or foreman retry ${task.id}`));
+            } else {
+              console.log(chalk.dim(`    Check logs: ~/.foreman/logs/${activity.runId}.log`));
+              console.log(chalk.dim(`    Reset legacy run with: FOREMAN_BACKEND=node foreman reset --task ${task.id}`));
+            }
           }
 
           // Phase timeline for completed/failed runs
@@ -1408,8 +1419,13 @@ const showCommand = new Command("show")
           if (activity.status === "failed" || activity.status === "test-failed") {
             console.log();
             console.log(chalk.red(`    ✗ This run FAILED.`) + chalk.dim(` Check logs for details:`));
-            console.log(chalk.dim(`    ~/.foreman/logs/${activity.runId}.log`));
-            console.log(chalk.dim(`    To retry: foreman task retry ${task.id}`));
+            if (context.backend === "elixir") {
+              console.log(chalk.dim(`    foreman logs ${activity.runId} --compact`));
+              console.log(chalk.dim(`    To retry/recover: foreman retry ${task.id} or foreman recover ${activity.runId}`));
+            } else {
+              console.log(chalk.dim(`    ~/.foreman/logs/${activity.runId}.log`));
+              console.log(chalk.dim(`    To retry: FOREMAN_BACKEND=node foreman retry ${task.id}`));
+            }
           }
 
           // Success/completion summary

@@ -327,7 +327,7 @@ export const runsCommand = new Command("runs")
   }) => {
     await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
 
-    const useElixirRuns = foremanBackendMode() === "elixir" && process.env.FOREMAN_RUNS_NODE_FALLBACK !== "true";
+    const useElixirRuns = foremanBackendMode() === "elixir";
     const skipProjectResolution = useElixirRuns && opts.all && !opts.project && !opts.projectPath;
     const projectPath = skipProjectResolution
       ? process.cwd()
@@ -411,7 +411,7 @@ export const runsCommand = new Command("runs")
     console.log("");
 
     if (rows.length === 0) {
-      console.log(chalk.dim("  No active runs. Start a pipeline with `foreman run`."));
+      console.log(chalk.dim("  No active runs. Start the Elixir scheduler with `foreman server start`, then approve ready tasks. Use `FOREMAN_BACKEND=node foreman run` only for legacy dispatch."));
       return;
     }
 

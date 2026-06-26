@@ -1,6 +1,6 @@
 ---
 name: foreman
-description: "Multi-agent coding orchestrator. Use when: (1) user wants to plan and build features from a description, (2) user wants to run multiple AI coding agents on a codebase, (3) user asks about Foreman project status or agent progress, (4) user says 'foreman plan/sling/run/status/merge/monitor/dashboard/task'."
+description: "Multi-agent coding orchestrator. Use when: (1) user wants to plan and build features from a description, (2) user wants Elixir-scheduled AI coding agents on a codebase, (3) user asks about Foreman project status or agent progress, (4) user says 'foreman plan/task/server/runs/watch/status/retry/recover'. Legacy sling/run/merge need FOREMAN_BACKEND=node."
 metadata:
   openclaw:
     emoji: "👷"
@@ -10,14 +10,14 @@ metadata:
 
 # Foreman — Multi-Agent Coding Orchestrator
 
-Foreman decomposes development work into parallelizable tasks, dispatches them to AI coding agents (Claude Code, Pi, Codex), manages git isolation per agent, and merges results back — all monitored through a real-time web dashboard.
+Foreman decomposes development work into parallelizable Elixir-backed tasks, dispatches them to AI coding agents (Claude Code, Pi, Codex), manages git isolation per agent, and records run/status/inbox projections for real-time CLI/MCP monitoring.
 
 ## When to Use
 
 - User asks to build/implement something from a product description, PRD, or TRD
 - User wants to run multiple AI agents on a codebase in parallel
 - User asks about agent progress, stuck agents, or project status
-- User says anything like "foreman plan/sling/run/status/merge"
+- User says anything like "foreman plan/task/server/runs/watch/status/retry/recover"
 
 ## Prerequisites
 
@@ -36,14 +36,13 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts <command>
 ## Pipeline Overview
 
 ```
-foreman plan        →  Ensemble pipeline  →  Product description → PRD → TRD
-foreman sling trd   →  Structured parser  →  TRD → Seeds + Beads task hierarchy
-foreman run         →  Agent dispatcher   →  Spawn agents on ready tasks
-foreman task create →  Task management    →  Create, update, list tasks
-foreman monitor     →  Progress checker   →  Detect stuck/completed agents
-foreman merge       →  Refinery           →  Merge completed branches + test
-foreman status      →  Summary view       →  Task counts + agent status
-foreman dashboard   →  Web UI             →  Real-time monitoring on :3850
+foreman plan prd/trd → Elixir planning       → PRD/TRD artifacts
+foreman task create  → Elixir task mgmt      → Create/update/list tasks
+foreman server start → Elixir scheduler      → Dispatch ready tasks
+foreman runs/watch   → Elixir projections    → Run/activity monitoring
+foreman retry/recover→ Elixir recovery       → Rerun/recover failed work
+foreman status       → Summary view          → Task counts + agent status
+FOREMAN_BACKEND=node foreman run/merge/sling → Legacy Node-only paths
 ```
 
 ## Command Reference
@@ -55,75 +54,38 @@ cd <project-dir>
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts init --name "my-project"
 ```
 
-Registers the project in `~/.foreman/foreman.db`.
+Registers the project in the default Elixir project registry/projections.
 
-### 2. Plan (Ensemble PRD → TRD Pipeline)
-
-```bash
-# From a product description
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan "Build a user authentication system with OAuth2 support"
-
-# From a description file
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan docs/product-description.md
-
-# Skip to TRD from existing PRD
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan --from-prd docs/PRD.md "unused"
-
-# PRD only (no TRD)
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan --prd-only "Build a REST API"
-
-# Preview the pipeline steps
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan --dry-run "Build something"
-```
-
-Creates an **epic bead** with 4 child beads (sequential dependencies). Each step dispatches
-through the dispatcher with full tracking in Postgres:
-
-1. `/ensemble:create-prd` — Analyze description, define requirements
-2. `/ensemble:refine-prd` — Strengthen acceptance criteria, edge cases
-3. `/ensemble:create-trd` — Technical architecture, task breakdown, sprint planning
-4. `/ensemble:refine-trd` — Validate decisions, refine estimates
-
-The dispatch loop automatically waits for each step to complete before unblocking the next.
-All steps visible in the dashboard alongside coding agents.
-
-### 3. Sling TRD (TRD → Seeds + Beads)
+### 2. Plan (Elixir-backed PRD/TRD)
 
 ```bash
-# Sling a structured TRD into seeds + beads
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts sling trd docs/TRD.md
-
-# Preview without creating tasks
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts sling trd docs/TRD.md --dry-run
-
-# Skip confirmation
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts sling trd docs/TRD.md --auto
+# Generate planning artifacts through Elixir-backed planning commands
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan prd "Build a user authentication system with OAuth2 support"
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts plan trd docs/PRD.md
 ```
 
-Parses a structured TRD (with table sections, explicit metadata) and dual-writes to both
-seeds (`sd`) and beads_rust (`br`) with explicit dependencies.
+Default Elixir mode records planning/task state through Elixir events/projections. Legacy `foreman plan <description>` / `foreman sling trd` / `foreman run` dispatcher flows require `FOREMAN_BACKEND=node`.
 
-### 4. Run (Dispatch Agents)
+### 3. Create/approve tasks
 
 ```bash
-# Dispatch agents to all ready tasks
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts run
-
-# Limit concurrent agents
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts run --max-agents 3
-
-# Force a specific runtime
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts run --runtime pi
-
-# Preview without dispatching
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts run --dry-run
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task create \
+  --title "Implement user authentication" \
+  --description "Add OAuth2 login flow with Google and GitHub" \
+  --type task \
+  --priority 2
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task approve <task-id>
 ```
 
-For each ready task:
+### 4. Dispatch (Elixir scheduler)
 
-1. Creates a git worktree at `.foreman-worktrees/<bead-id>`
-2. Generates an AGENTS.md with task instructions
-3. Records the run in Postgres
+```bash
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts server start
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts runs
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts watch
+```
+
+For each claimed task, the Elixir scheduler creates a run projection, launches the Node/Pi worker bridge, and records worker lifecycle events.
 
 ### 5. Monitor
 
@@ -139,8 +101,8 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --agent explorer
 # Filter by run ID
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --run <run-id>
 
-# Filter by bead ID
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --bead bd-001
+# Filter by task ID
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --task foreman-001
 
 # Watch mode (live updates)
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts inbox --watch
@@ -175,18 +137,17 @@ Subjects: `phase-started`, `phase-complete`, `agent-error`, `blocker-detected`, 
 
 **Tip**: Set `FOREMAN_RUN_ID` env var to avoid passing `--run-id` on every call.
 
-### 8. Merge
+### 8. Merge / PR handling
+
+Default Elixir workflows handle PR/merge state through workflow phases and events. The manual Refinery merge command is legacy-only:
 
 ```bash
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge --target-branch develop
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge --no-tests
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge --test-command "npm run test:ci"
+FOREMAN_BACKEND=node npx tsx ~/Development/Fortium/foreman/src/cli/index.ts merge
 ```
 
 ### 9. Task Management
 
-Foreman ships a native task store backed by Postgres.
+Foreman ships an Elixir event/projection-backed task store.
 
 #### Create a task
 
@@ -196,15 +157,15 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task create \
   --title "Implement user authentication" \
   --description "Add OAuth2 login flow with Google and GitHub" \
   --type task \
-  --priority medium
+  --priority 2
 
 # Shortcuts for priority
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task create --title "Quick fix" --priority 1
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task create --title "Critical issue" --priority critical
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts task create --title "Critical issue" --priority 0
 ```
 
 Valid types: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question`
-Valid priorities: `0`/`critical`, `1`/`high`, `2`/`medium`, `3`/`low`, `4`/`backlog`
+Valid priorities: `0` (critical), `1` (high), `2` (medium), `3` (low), `4` (backlog)
 
 #### List tasks
 
@@ -281,19 +242,19 @@ Tasks with `external_id` already matching a bead ID are skipped as duplicates.
 
 | Aspect | Native tasks (`foreman task`) | Beads (`br`/`bd`) |
 |--------|------------------------------|-------------------|
-| Storage | Postgres (`~/.foreman/foreman.db`) | `.beads/beads.jsonl` |
-| Dispatch | ✅ Used by `foreman run` | ❌ |
-| Dashboard | ✅ Shown in UI | ❌ |
+| Storage | Elixir events/projections | `.beads/beads.jsonl` |
+| Dispatch | ✅ Used by Elixir scheduler (`foreman server start`) | ❌ |
+| Dashboard | ✅ Shown in board/status/runs/watch | ❌ |
 | CLI | `foreman task *` | `br`/`bd` |
 | Portability | Single DB per machine | Git-tracked JSONL |
 
-Both stores can coexist. Use `foreman task import --from-beads` to migrate bead tasks to the native store for dispatch.
+Both stores can coexist. Use `foreman task import --from-beads` to migrate bead tasks to the Elixir task store for dispatch.
 
-### 10. Dashboard
+### 10. Monitoring
 
 ```bash
-npx tsx ~/Development/Fortium/foreman/src/cli/index.ts dashboard
-# Opens http://localhost:3850
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts runs
+npx tsx ~/Development/Fortium/foreman/src/cli/index.ts watch
 ```
 
 ## Runtime Selection Guide
@@ -316,11 +277,11 @@ When orchestrating from the main OpenClaw session:
 
 ```
 1. User: "Build the auth module from this description"
-2. Jarvis: Run foreman plan with the description → generates PRD → TRD
-3. Jarvis: Run foreman sling trd on the TRD → creates seeds + beads
-4. Jarvis: Run foreman run (or manually spawn via sessions_spawn)
-5. Jarvis: Periodically run foreman monitor to check progress
-6. Jarvis: When tasks complete, run foreman merge
+2. Jarvis: Run foreman plan prd/trd with the description → generates PRD/TRD
+3. Jarvis: Create/approve Elixir tasks with foreman task/project commands
+4. Jarvis: Ensure foreman server start; Elixir scheduler dispatches ready tasks
+5. Jarvis: Periodically run foreman runs/watch/status to check progress
+6. Jarvis: Use foreman retry/recover for failed/stuck work
 7. Jarvis: Report results to user
 ```
 
@@ -329,6 +290,6 @@ When orchestrating from the main OpenClaw session:
 - Always run `foreman init` in the target project first
 - Max 5 concurrent agents by default (configurable)
 - Each agent gets its own git worktree — no conflicts
-- Agents must `bd close` their bead when done
-- TRDs from Ensemble contain structured task breakdowns ready for `foreman sling trd`
-- The dashboard at `:3850` shows all projects and agents in real-time
+- Agents report completion through Elixir run/task events
+- TRDs from planning should become Elixir tasks via `foreman task`/planning flows; legacy `foreman sling trd` requires `FOREMAN_BACKEND=node`
+- `foreman runs`, `foreman watch`, and `foreman status --live` show projects and agents in real time

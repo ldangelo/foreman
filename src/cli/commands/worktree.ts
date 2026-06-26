@@ -154,6 +154,11 @@ function closeWorktreeStores(
 }
 
 export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise<void> {
+  if (foremanBackendMode() === "elixir") {
+    console.error(chalk.red("foreman worktree list reads legacy run stores for worktree metadata. Use Elixir status/runs/watch views, or set FOREMAN_BACKEND=node for legacy worktree listing."));
+    process.exit(1);
+  }
+
   try {
     const { projectPath, registered } = await resolveProjectContext();
     const localStore = ForemanStore.forProject(projectPath);
@@ -254,19 +259,19 @@ export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promi
 }
 
 const listSubcommand = new Command("list")
-  .description("List all foreman worktrees")
+  .description("Legacy worktree listing from run stores (requires FOREMAN_BACKEND=node)")
   .option("--json", "Output as JSON")
   .action(worktreeListCommandAction);
 
 const cleanSubcommand = new Command("clean")
-  .description("Remove worktrees for completed/merged/failed runs")
+  .description("Legacy worktree cleanup from run stores (requires FOREMAN_BACKEND=node)")
   .option("--all", "Remove all foreman worktrees including active ones")
   .option("--force", "Force-delete branches even if not fully merged")
   .option("--dry-run", "Show what would be removed without making changes")
   .action(worktreeCleanCommandAction);
 
 export const worktreeCommand = new Command("worktree")
-  .description("Manage foreman worktrees")
+  .description("Manage legacy Foreman worktrees (list/clean require FOREMAN_BACKEND=node)")
   .addCommand(listSubcommand)
   .addCommand(cleanSubcommand);
 

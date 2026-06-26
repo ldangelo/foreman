@@ -115,7 +115,7 @@ export async function stopAction(
   }
 
   if (!dryRun) {
-    console.log(chalk.dim("\nRuns are marked 'stuck'. Resume with: foreman run"));
+    console.log(chalk.dim("\nLegacy runs are marked 'stuck'. Resume with: FOREMAN_BACKEND=node foreman run"));
   }
 
   return allErrors.length > 0 ? 1 : 0;
@@ -392,7 +392,7 @@ function formatElapsed(startedAt: string | null): string {
 // ── CLI Command ─────────────────────────────────────────────────────────
 
 export const stopCommand = new Command("stop")
-  .description("Gracefully stop running foreman agents without destroying infrastructure")
+  .description("Legacy stop for running agents (requires FOREMAN_BACKEND=node; use recover for Elixir)")
   .argument("[id]", "Run ID or bead ID to stop (omit to stop all active runs)")
   .option("--list", "List all active runs")
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")

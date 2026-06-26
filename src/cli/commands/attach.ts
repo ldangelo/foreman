@@ -99,7 +99,7 @@ async function resolveElixirAttachContext(projectPath: string): Promise<ElixirAt
   try {
     const projects = await listRegisteredProjects();
     const project = projects.find((record) => record.path === projectPath);
-    if (!project) return null;
+    if (!project) throw new Error(`Project '${projectPath}' not found in Elixir project registry; refusing legacy daemon/local attach fallback. Set FOREMAN_BACKEND=node for legacy attach.`);
     const manager = new ElixirServerManager();
     const status = await manager.ensureRunning();
     return {
@@ -107,7 +107,8 @@ async function resolveElixirAttachContext(projectPath: string): Promise<ElixirAt
       projectId: project.id,
       projectPath,
     };
-  } catch {
+  } catch (err) {
+    if (foremanBackendMode() === "elixir") throw err;
     return null;
   }
 }
@@ -894,7 +895,7 @@ export const attachCommand = new Command("attach")
     const projectPath = await resolveRepoRootProjectPath({});
     const elixir = await resolveElixirAttachContext(projectPath);
     const daemon = elixir ? null : await resolveDaemonAttachContext(projectPath);
-    const store = ForemanStore.forProject(projectPath);
+    let store: ForemanStore | null = null;
 
     if (opts.list) {
       try {
@@ -903,12 +904,19 @@ export const attachCommand = new Command("attach")
         } else if (daemon) {
           await listSessionsEnhancedDaemon(daemon);
         } else {
+          store = ForemanStore.forProject(projectPath);
           listSessionsEnhanced(store, projectPath);
         }
-      } catch {
+      } catch (err) {
+        if (foremanBackendMode() === "elixir") {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`Elixir attach session list unavailable; refusing legacy local fallback. Set FOREMAN_BACKEND=node for legacy attach. Cause: ${message}`);
+          process.exit(1);
+        }
+        store = store ?? ForemanStore.forProject(projectPath);
         listSessionsEnhanced(store, projectPath);
       }
-      store.close();
+      store?.close();
       return;
     }
 
@@ -918,14 +926,12 @@ export const attachCommand = new Command("attach")
       console.error("       foreman attach --follow <id>");
       console.error("       foreman attach --stream <id>");
       console.error("       foreman attach --kill <id>");
-      store.close();
       process.exit(1);
     }
 
     if (elixir && opts.kill) {
       console.error("Error: attach --kill is not supported by the Elixir backend yet.");
       console.error("Use FOREMAN_BACKEND=node for legacy daemon kill control, or stop the process directly.");
-      store.close();
       process.exit(1);
     }
 
@@ -933,19 +939,25 @@ export const attachCommand = new Command("attach")
       try {
         const elixirRun = await resolveElixirRun(elixir, id);
         if (elixirRun) {
+          if (opts.follow) {
+            console.error("Error: attach --follow tails local worker files and is legacy-only in default Elixir mode.");
+            console.error("Use attach --stream for Elixir inbox/event streaming, or set FOREMAN_BACKEND=node for legacy file follow.");
+            process.exit(1);
+          }
           const exitCode = opts.stream
             ? await handleStreamElixir(elixirRun, elixir, opts._signal, opts._pollIntervalMs)
             : opts.worktree
               ? await handleWorktree(elixirRun)
-              : opts.follow
-                ? await handleFollow(elixirRun, opts._signal)
-                : await handleDefaultAttachElixir(elixirRun, elixir);
-          store.close();
+              : await handleDefaultAttachElixir(elixirRun, elixir);
           process.exit(exitCode);
         }
-      } catch {
-        // Fall back to the local store path when Elixir lookup fails.
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`Elixir attach lookup unavailable; refusing legacy daemon/local fallback. Set FOREMAN_BACKEND=node for legacy attach. Cause: ${message}`);
+        process.exit(1);
       }
+      console.error(`Run or task '${id}' not found in Elixir projections; refusing legacy daemon/local attach fallback. Set FOREMAN_BACKEND=node for legacy attach.`);
+      process.exit(1);
     }
 
     if (daemon && !opts.kill) {
@@ -959,7 +971,6 @@ export const attachCommand = new Command("attach")
               : opts.follow
                 ? await handleFollow(daemonRun, opts._signal)
                 : await handleDefaultAttach(daemonRun);
-          store.close();
           process.exit(exitCode);
         }
       } catch {
@@ -967,6 +978,7 @@ export const attachCommand = new Command("attach")
       }
     }
 
+    store = store ?? ForemanStore.forProject(projectPath);
     const exitCode = await attachAction(id, opts, store, projectPath, opts.kill ? daemon : undefined);
     store.close();
     process.exit(exitCode);

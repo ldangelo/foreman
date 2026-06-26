@@ -1,5 +1,5 @@
 /**
- * `foreman project` CLI commands — manage projects via ForemanDaemon.
+ * `foreman project` CLI commands — manage projects via the active backend.
  *
  * Sub-commands:
  *   foreman project add <path> [--name <name>] [--force]
@@ -353,9 +353,10 @@ function handleDaemonError(err: unknown): never {
     combined.includes("EPERM") ||
     combined.includes("connect")
   ) {
+    const usingElixir = foremanBackendMode() === "elixir";
     console.error(
-      chalk.red("Error: Cannot connect to the Foreman daemon.") +
-        chalk.dim("\n  Make sure the daemon is running: foreman daemon start") +
+      chalk.red(usingElixir ? "Error: Cannot connect to the Foreman Elixir server." : "Error: Cannot connect to the Foreman daemon.") +
+        chalk.dim(usingElixir ? "\n  Make sure the server is running: foreman server start" : "\n  Make sure the daemon is running: foreman daemon start") +
         (message
           ? chalk.dim(`\n  Underlying error: ${message}`)
           : ""),
@@ -371,7 +372,7 @@ function handleDaemonError(err: unknown): never {
 // ---------------------------------------------------------------------------
 
 const addCommand = new Command("add")
-  .description("Clone a GitHub repository and register it as a project via ForemanDaemon")
+  .description("Clone a GitHub repository and register it via the active backend (Elixir by default)")
   .argument("<github-url>", "GitHub repository URL or owner/repo shorthand")
   .description(`Examples:
     foreman project add owner/repo
@@ -429,7 +430,7 @@ const addCommand = new Command("add")
 // ---------------------------------------------------------------------------
 
 const listCommand = new Command("list")
-  .description("List all projects via ForemanDaemon")
+  .description("List projects from the active backend (Elixir by default)")
   .option("--status <status>", "Filter by status: active, paused, archived")
   .option("--search <term>", "Search by name")
   .option("--json", "Output as JSON")
@@ -464,7 +465,7 @@ const listCommand = new Command("list")
 // ---------------------------------------------------------------------------
 
 const removeCommand = new Command("remove")
-  .description("Remove (archive) a project via ForemanDaemon")
+  .description("Remove/archive a project via the active backend (Elixir by default)")
   .argument("<id>", "Project ID to remove")
   .option("--force", "Force remove even if there are active agents")
   .action(async (projectId: string, opts) => {
@@ -581,7 +582,7 @@ const editCommand = new Command("edit")
 // ---------------------------------------------------------------------------
 
 export const projectCommand = new Command("project")
-  .description("Manage projects via ForemanDaemon (list/add/remove/edit/sync)")
+  .description("Manage projects via the active backend (Elixir by default; ForemanDaemon with FOREMAN_BACKEND=node)")
   .addCommand(addCommand)
   .addCommand(listCommand)
   .addCommand(removeCommand)

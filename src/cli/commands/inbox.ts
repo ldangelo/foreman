@@ -1,5 +1,5 @@
 /**
- * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.
+ * `foreman inbox` — View the Agent Mail inbox for agents in a pipeline run.
  *
  * Options:
  *   --agent <name>   Filter to a specific agent/role (default: show all)
@@ -1186,7 +1186,7 @@ const inboxSendCommand = new Command("send")
 export { formatMessage };
 
 export const inboxCommand = new Command("inbox")
-  .description("View the Postgres message inbox for agents in a pipeline run")
+  .description("View the Agent Mail inbox from the active backend (Elixir by default)")
   .addCommand(inboxSendCommand)
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
   .option("--run <id>", "Filter to a specific run ID (default: latest run)")

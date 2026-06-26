@@ -255,10 +255,10 @@ function handleGhError(err: unknown, action: string): void {
 // ---------------------------------------------------------------------------
 
 export const issueCommand = new Command("issue")
-  .description("GitHub Issues integration commands")
+  .description("Legacy Node/Postgres GitHub Issues integration commands (requires FOREMAN_BACKEND=node)")
   .addCommand(
     new Command("view")
-      .description("View a GitHub issue")
+      .description("View a GitHub issue via legacy Node/Postgres sync")
       .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
       .requiredOption("--issue <number>", "Issue number", (val) => parseInt(val, 10))
       .option("--project <name>", "Foreman project name")
@@ -292,7 +292,7 @@ export const issueCommand = new Command("issue")
 
 issueCommand.addCommand(
   new Command("list")
-    .description("List GitHub issues for a repository")
+    .description("List GitHub issues via legacy Node/Postgres sync")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--label <label>", "Filter by label")
     .option("--state <open|closed|all>", "Filter by state", "open")
@@ -350,7 +350,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("configure")
-    .description("Configure a GitHub repository for sync")
+    .description("Configure legacy Node/Postgres GitHub issue sync")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--auto-import", "Enable auto-import for new issues")
     .option("--disable-auto-import", "Disable auto-import for new issues")
@@ -424,7 +424,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("import")
-    .description("Import GitHub issue(s) as Foreman tasks")
+    .description("Import GitHub issue(s) through legacy Node/Postgres sync")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--issue <number>", "Import a single issue by number", (val) => parseInt(val, 10))
     .option("--label <label>", "Import all open issues with this label")
@@ -623,7 +623,7 @@ async function importIssueAsTask(
 
 issueCommand.addCommand(
   new Command("labels")
-    .description("List labels for a GitHub repository")
+    .description("List labels for legacy GitHub issue sync")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--project <name>", "Foreman project name")
     .option("--project-path <path>", "Foreman project path")
@@ -657,7 +657,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("milestones")
-    .description("List milestones for a GitHub repository")
+    .description("List milestones for legacy GitHub issue sync")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--state <open|closed|all>", "Filter by state", "open")
     .option("--project <name>", "Foreman project name")
@@ -696,7 +696,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("webhook")
-    .description("Manage GitHub webhooks for a repository")
+    .description("Manage legacy Node/Postgres GitHub webhooks")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--enable", "Enable webhook for issues and PR events")
     .option("--disable", "Disable webhook for the repository")
@@ -860,7 +860,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("status")
-    .description("Show sync status for a GitHub repository")
+    .description("Show legacy GitHub issue sync status")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--project <name>", "Foreman project name")
     .option("--project-path <path>", "Foreman project path")
@@ -918,7 +918,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("link")
-    .description("Link a GitHub pull request to an issue (or unlink)")
+    .description("Link a GitHub pull request to an issue via legacy Node/Postgres sync (or unlink)")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .requiredOption("--issue <number>", "Issue number to link", (val) => parseInt(val, 10))
     .requiredOption("--pr <number>", "Pull request number to link", (val) => parseInt(val, 10))

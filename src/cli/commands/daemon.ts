@@ -1,5 +1,5 @@
 /**
- * `foreman daemon` CLI commands — manage the ForemanDaemon lifecycle.
+ * `foreman daemon` CLI commands — manage the legacy ForemanDaemon lifecycle.
  *
  * Sub-commands:
  *   foreman daemon start     — Start the daemon in the background
@@ -51,7 +51,7 @@ function readDaemonLogExcerpt(path: string): string | null {
 // ── foreman daemon start ─────────────────────────────────────────────────────
 
 const startCommand = new Command("start")
-  .description("Start the ForemanDaemon in the background")
+  .description("Start the legacy ForemanDaemon in the background (FOREMAN_BACKEND=node)")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
@@ -109,10 +109,15 @@ const startCommand = new Command("start")
 // ── foreman daemon stop ──────────────────────────────────────────────────────
 
 const stopCommand = new Command("stop")
-  .description("Stop the running ForemanDaemon")
+  .description("Stop the legacy ForemanDaemon (FOREMAN_BACKEND=node)")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
+    if (!nodeDaemonAllowed()) {
+      console.error(chalk.red(`Error: ${nodeDaemonDisabledMessage()}`));
+      process.exit(1);
+    }
+
     const mgr = new DaemonManager({
       socketPath: opts.socketPath,
       pidPath: opts.pidPath,
@@ -142,11 +147,21 @@ const stopCommand = new Command("stop")
 // ── foreman daemon status ────────────────────────────────────────────────────
 
 const statusCommand = new Command("status")
-  .description("Show daemon status (running/stopped, PID, socket path)")
+  .description("Show legacy daemon status (requires FOREMAN_BACKEND=node)")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .option("--json", "Output status as JSON")
   .action(async (opts: { socketPath?: string; pidPath?: string; json?: boolean }) => {
+    if (!nodeDaemonAllowed()) {
+      const message = nodeDaemonDisabledMessage();
+      if (opts.json) {
+        console.log(JSON.stringify({ error: message }, null, 2));
+      } else {
+        console.error(chalk.red(`Error: ${message}`));
+      }
+      process.exit(1);
+    }
+
     const mgr = new DaemonManager({
       socketPath: opts.socketPath,
       pidPath: opts.pidPath,
@@ -175,7 +190,7 @@ const statusCommand = new Command("status")
 // ── foreman daemon restart ────────────────────────────────────────────────────
 
 const restartCommand = new Command("restart")
-  .description("Stop the daemon if running, then start it again")
+  .description("Restart the legacy daemon (requires FOREMAN_BACKEND=node)")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
@@ -218,7 +233,7 @@ const restartCommand = new Command("restart")
 
 export const daemonCommand = new Command("daemon")
   .description(
-    "Manage the ForemanDaemon process lifecycle (start/stop/status/restart)",
+    "Manage the legacy ForemanDaemon process lifecycle (requires FOREMAN_BACKEND=node)",
   )
   .addCommand(startCommand)
   .addCommand(stopCommand)

@@ -83,6 +83,8 @@ describe("foreman debug", () => {
   });
 
   it("uses daemon-backed runs and mail in raw mode", async () => {
+    const originalBackend = process.env.FOREMAN_BACKEND;
+    process.env.FOREMAN_BACKEND = "node";
     vi.spyOn(VcsBackendFactory, "create").mockResolvedValue({
       getRepoRoot: vi.fn().mockResolvedValue(tmpDir),
     } as unknown as Awaited<ReturnType<typeof VcsBackendFactory.create>>);
@@ -133,7 +135,12 @@ describe("foreman debug", () => {
       errors.push(String(value ?? ""));
     });
 
-    await debugCommand.parseAsync(["foreman-a01cf", "--raw"], { from: "user" });
+    try {
+      await debugCommand.parseAsync(["foreman-a01cf", "--raw"], { from: "user" });
+    } finally {
+      if (originalBackend === undefined) delete process.env.FOREMAN_BACKEND;
+      else process.env.FOREMAN_BACKEND = originalBackend;
+    }
 
     const output = logs.join("\n");
     expect(errors.join("\n")).not.toContain("No runs found");

@@ -64,6 +64,7 @@ describe("native task store counts (characterization)", () => {
   const projectPath = "/mock/project";
 
   beforeEach(() => {
+    vi.stubEnv("FOREMAN_BACKEND", "node");
     vi.clearAllMocks();
     mockBrList.mockResolvedValue([]);
     mockBrReady.mockResolvedValue([]);

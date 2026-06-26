@@ -69,6 +69,7 @@ import { getStatusBackend } from "../commands/status.js";
 
 describe("TRD-024: status.ts native task store is the only supported backend", () => {
   beforeEach(() => {
+    vi.stubEnv("FOREMAN_BACKEND", "node");
     vi.clearAllMocks();
     // Restore BeadsRustClient constructor implementation
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
@@ -105,6 +106,7 @@ describe("TRD-024: fetchStatusCounts uses native task store", () => {
   const PROJECT_PATH = "/mock/project";
 
   beforeEach(() => {
+    vi.stubEnv("FOREMAN_BACKEND", "node");
     vi.clearAllMocks();
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;

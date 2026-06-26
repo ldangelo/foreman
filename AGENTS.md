@@ -70,6 +70,11 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 READ ./CLAUDE.md
 
+Backend safety rules:
+
+- Default Elixir mode must not silently fall back to legacy daemon/Postgres/local stores for operator status, debug, recovery, attach, destructive, or cleanup paths. Route through Elixir projections or fail closed with explicit `FOREMAN_BACKEND=node` guidance.
+- Legacy daemon/local fallbacks require explicit opt-in (`FOREMAN_BACKEND=node`, or a narrowly documented mixed-cutover fallback env).
+
 Execution safety rules:
 
 - Before rerunning a task to validate a fix, ensure the fix is durably committed and available on the active branch being tested.

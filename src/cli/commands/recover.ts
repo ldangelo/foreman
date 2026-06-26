@@ -30,6 +30,7 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
 import { getHighspeedModel } from "../../lib/config.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
 interface DaemonRunRow {
@@ -154,7 +155,8 @@ async function resolveElixirRecoverContext(projectPath: string): Promise<ElixirR
     const client = new ElixirServerClient(status.url, manager.authToken);
     await client.listRuns(project.id);
     return { client, projectId: project.id };
-  } catch {
+  } catch (err) {
+    if (foremanBackendMode() === "elixir") throw err;
     return null;
   }
 }
@@ -543,15 +545,20 @@ export const recoverCommand = new Command("recover")
 
     const projectPath = await resolveRepoRootProjectPath({});
     const elixir = await resolveElixirRecoverContext(projectPath);
-    const store = ForemanStore.forProject(projectPath);
 
-    // Find runs for this seed. Prefer Elixir projections, then daemon/local fallback.
+    // Find runs for this seed. Default Elixir mode fails closed when the run is
+    // missing from Elixir projections instead of reading stale daemon/local data.
     let selectedSource: "elixir" | "daemon" | "local" = "local";
     let runs = elixir ? await resolveElixirRuns(elixir, beadId) : [];
     let daemon: DaemonRecoverContext | null = null;
+    let store: ForemanStore | null = null;
     if (runs.length > 0) {
       selectedSource = "elixir";
+    } else if (foremanBackendMode() === "elixir") {
+      console.error(chalk.red(`No Elixir runs found for seed ${beadId}; refusing legacy daemon/local recover fallback. Set FOREMAN_BACKEND=node for legacy recover.`));
+      process.exit(1);
     } else {
+      store = ForemanStore.forProject(projectPath);
       daemon = await resolveDaemonRecoverContext(projectPath);
       runs = daemon
         ? ((await daemon.client.runs.list({ projectId: daemon.projectId, beadId, limit: 50 }) as DaemonRunRow[]).map(adaptDaemonRun))
@@ -579,7 +586,7 @@ export const recoverCommand = new Command("recover")
       ? JSON.parse(run.progress) as Record<string, unknown>
       : selectedSource === "daemon"
         ? null
-        : store.getRunProgress(run.id);
+        : store?.getRunProgress(run.id) ?? null;
     const runSummary = formatRunSummary(run, progress as Record<string, unknown> | null);
 
     // 2. Mail messages
@@ -587,13 +594,13 @@ export const recoverCommand = new Command("recover")
       ? (await elixir.client.listInbox({ projectId: elixir.projectId, runId: run.id, limit: 500 })).map(adaptElixirMessage)
       : daemon
         ? (await daemon.client.mail.list({ projectId: daemon.projectId, runId: run.id }) as DaemonMailMessage[]).map(adaptDaemonMessage)
-        : store.getAllMessages(run.id);
+        : store?.getAllMessages(run.id) ?? [];
     const messagesText = formatMessages(allMessages);
 
-    // 3. Reports from Elixir projection and worktree fallback
+    // 3. Reports from Elixir projection or legacy worktree fallback.
     const reports: Record<string, string> = selectedSource === "elixir" && elixir ? await collectElixirReport(elixir, run.id) : {};
     const worktreePath = run.worktree_path;
-    if (worktreePath && existsSync(worktreePath)) {
+    if (selectedSource !== "elixir" && worktreePath && existsSync(worktreePath)) {
       for (const file of REPORT_FILES) {
         const content = readFileOrNull(join(worktreePath, file));
         if (content) reports[file] = content;
@@ -610,17 +617,19 @@ export const recoverCommand = new Command("recover")
     }
     console.log(chalk.bold(`\nRecovery: ${beadId} — reason: ${reason} — run ${run.id.slice(0, 8)} (${run.status})\n`));
 
-    // 4. Bead info from br
-    try {
-      const beadInfo = execFileSync("br", ["show", beadId], {
-        encoding: "utf-8",
-        cwd: projectPath,
-      });
-      if (beadInfo) reports["BEAD_INFO"] = beadInfo;
-    } catch { /* non-fatal */ }
+    // 4. Bead info from br (legacy Node mode only)
+    if (selectedSource !== "elixir") {
+      try {
+        const beadInfo = execFileSync("br", ["show", beadId], {
+          encoding: "utf-8",
+          cwd: projectPath,
+        });
+        if (beadInfo) reports["BEAD_INFO"] = beadInfo;
+      } catch { /* non-fatal */ }
+    }
 
     // 5. Agent worker log
-    const logContent = selectedSource === "elixir" && elixir ? (await findElixirLog(elixir, run.id)) ?? findLogFile(run.id) : findLogFile(run.id);
+    const logContent = selectedSource === "elixir" && elixir ? await findElixirLog(elixir, run.id) : findLogFile(run.id);
 
     // 6. Branch name (from bead id convention: foreman/<beadId>)
     const branchName = `foreman/${beadId}`;
@@ -632,8 +641,8 @@ export const recoverCommand = new Command("recover")
       testOutput = runCommandSafe(["npm", "test"], projectPath);
     }
 
-    // 8. Blocked beads
-    const blockedBeads = runCommandSafe(
+    // 8. Blocked beads (legacy Node mode only)
+    const blockedBeads = selectedSource === "elixir" ? "" : runCommandSafe(
       ["br", "list", "--status=blocked", "--limit", "0"],
       projectPath,
     );
@@ -654,14 +663,14 @@ export const recoverCommand = new Command("recover")
     let cleanReplayPushResult: CleanReplayPushResult | null = null;
     if (prepareCleanReplay || applyCleanReplay || validateCleanReplay || commitCleanReplay || pushCleanReplay) {
       if (reason !== "finalize-conflict") {
-        store.close();
+        store?.close();
         console.error(chalk.red("--prepare-clean-replay/--apply-clean-replay requires finalize-conflict recovery context"));
         process.exit(1);
       }
       cleanReplayWorkspace = await prepareCleanReplayWorkspace(projectPath, beadId);
       if (applyCleanReplay) {
         if (!worktreePath) {
-          store.close();
+          store?.close();
           console.error(chalk.red("Cannot apply clean replay without a source worktree path"));
           process.exit(1);
         }
@@ -673,7 +682,7 @@ export const recoverCommand = new Command("recover")
       }
       if (commitCleanReplay || pushCleanReplay) {
         if (!cleanReplayValidationResult?.success) {
-          store.close();
+          store?.close();
           console.error(chalk.red("--commit-clean-replay/--push-clean-replay requires successful clean replay validation"));
           process.exit(1);
         }
@@ -684,7 +693,7 @@ export const recoverCommand = new Command("recover")
       }
     }
 
-    store.close();
+    store?.close();
 
     // Print artifact summary
     console.log(chalk.dim(`  Messages:    ${allMessages.length}`));

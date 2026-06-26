@@ -6,34 +6,38 @@
 
 **What it does:** Foreman is a multi-agent coding orchestrator. It coordinates multiple AI coding agents to work in parallel on the same codebase using git worktrees for isolation, orchestrating a 5-phase pipeline (Explorer → Developer ↔ QA → Reviewer → Finalize) with automatic merging, inter-agent messaging, and progress tracking.
 
-Foreman decomposes development work into parallelizable tasks, dispatches them to AI coding agents in isolated git worktrees, and automatically merges results back — all tracked through a PostgreSQL-backed daemon for multi-project aggregation.
+Foreman decomposes development work into parallelizable tasks, dispatches them to AI coding agents in isolated git worktrees, and tracks execution through the default Elixir event/projection server; the legacy PostgreSQL-backed Node daemon remains available only with `FOREMAN_BACKEND=node`.
 
 ## Why Foreman?
 
 You already have AI coding agents. What you don't have is a way to run several of them simultaneously on the same codebase without them stepping on each other. Foreman solves this:
 
-- **Work decomposition** — PRD → TRD → native tasks (PostgreSQL-backed via daemon, PostgreSQL for standalone)
+- **Work decomposition** — PRD → TRD → Elixir-backed native tasks
 - **Git isolation** — each agent gets its own worktree (zero conflicts during development)
 - **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
 - **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
-- **Persistent daemon** — ForemanDaemon optionally runs in background to serve tRPC over Unix socket + HTTP, sharing a Postgres pool across all CLI invocations
-- **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations; PostgreSQL or Postgres-backed depending on daemon mode
-- **Native task storage** — PostgreSQL-backed tasks for daemon and standalone workflows
+- **Persistent server** — the Elixir server owns durable events, projections, scheduler state, and HTTP/MCP reads/writes
+- **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations through Elixir inbox projections
+- **Native task storage** — Elixir event-store tasks by default; legacy Node/Postgres stores require `FOREMAN_BACKEND=node`
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
 - **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
-- **Progress tracking** — every task, agent, and phase tracked in PostgreSQL
+- **Progress tracking** — every task, agent, and phase tracked in Elixir events/projections by default
 
-> **Note:** Foreman uses PostgreSQL when the daemon is running (for multi-project aggregation) and for standalone development. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
+> **Note:** Foreman uses the Elixir server for default shared state/scheduling. PostgreSQL is required only for explicit legacy Node daemon operation. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
 
 ## Architecture
 
 ```
 Foreman CLI / Dispatcher
   │
-  ├─ ForemanDaemon (optional persistent background process)
+  ├─ Elixir server (default event/projection backend)
+  │    ├─ HTTP command/read API + MCP surfaces
+  │    ├─ durable event log, projections, scheduler, inbox
+  │    └─ launches Node/Pi worker bridge for claimed tasks
+  │
+  ├─ ForemanDaemon (legacy optional process; FOREMAN_BACKEND=node)
   │    ├─ tRPC router over Unix socket + HTTP
-  │    │    Procedures: projects, tasks, runs, events, messages
-  │    ├─ Postgres pool (PoolManager singleton) — shared across CLI invocations
+  │    ├─ Postgres pool (PoolManager singleton)
   │    └─ Fastify web server (optional HTTP port)
   │
   ├─ per task: agent-worker.ts (detached child process)
@@ -86,7 +90,7 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 5. **Finalize** — git add/commit/push, native task merge/close update
 6. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
 
-TDD is now opt-in via `foreman run --workflow tdd`, a `workflow:tdd` label, or task type `tdd`. The `tdd` workflow inserts `test-red` and `test-review` between Explorer and Developer; Test Red is capped to small focused tests and Test Review retries it once. Default `default`/`feature`/`bug` workflows use the faster implementation-first path to produce working code in fewer cycles. QA retries Developer up to 3x; Finalize can retry Developer up to 6x. Retry budgets are charged to the failing/source phase, not to the Developer target, so Developer can run once initially plus source-phase retries. Before retrying any target phase, Foreman writes normalized input such as `DEVELOPER_TASK.md` or `QA_TASK.md` in the report dir with the source phase, source artifact, failure, retry attempt, and feedback content. Before QA, Foreman validates Developer's report/diff evidence, claimed files, required docs/tests (or explicit no-docs-needed self-check evidence), and runs `npx tsc --noEmit` when TS/JS changed; failures loop back to Developer before spending QA. Runtime preflight flags stale project/global prompt overrides that are missing required acceptance-contract markers. Phase reports are preserved as `REPORT.attempt-N.md` plus a `RETRY_ATTEMPTS.md` summary while the canonical report remains the latest attempt. If QA or Review still fails after its retry budget, the pipeline stops instead of proceeding to finalize with invalid/no changes. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. Task-worker merge phases merge only their own queued PR/branch; broader queue draining remains an operator/dispatcher action. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for prompt-backed phases rather than only Explorer/QA.
+TDD is opt-in via task type/label (`workflow:tdd` or task type `tdd`) in default Elixir scheduler mode; legacy Node dispatch can also use `FOREMAN_BACKEND=node foreman run --workflow tdd`. The `tdd` workflow inserts `test-red` and `test-review` between Explorer and Developer; Test Red is capped to small focused tests and Test Review retries it once. Default `default`/`feature`/`bug` workflows use the faster implementation-first path to produce working code in fewer cycles. QA retries Developer up to 3x; Finalize can retry Developer up to 6x. Retry budgets are charged to the failing/source phase, not to the Developer target, so Developer can run once initially plus source-phase retries. Before retrying any target phase, Foreman writes normalized input such as `DEVELOPER_TASK.md` or `QA_TASK.md` in the report dir with the source phase, source artifact, failure, retry attempt, and feedback content. Before QA, Foreman validates Developer's report/diff evidence, claimed files, required docs/tests (or explicit no-docs-needed self-check evidence), and runs `npx tsc --noEmit` when TS/JS changed; failures loop back to Developer before spending QA. Runtime preflight flags stale project/global prompt overrides that are missing required acceptance-contract markers. Phase reports are preserved as `REPORT.attempt-N.md` plus a `RETRY_ATTEMPTS.md` summary while the canonical report remains the latest attempt. If QA or Review still fails after its retry budget, the pipeline stops instead of proceeding to finalize with invalid/no changes. Documentation runs after final validation/finalization and before PR creation so fixes/features do not open PRs without an explicit documentation decision. Task-worker merge phases merge only their own queued PR/branch; broader queue draining remains an operator/dispatcher action. `maxTurns` remains an emergency fuse; phase overwatch/tool telemetry now provides targeted steering for prompt-backed phases rather than only Explorer/QA.
 
 ## Dispatch Flow
 
@@ -101,8 +105,8 @@ flowchart TD
         DA --> DB --> DC
     end
 
-    subgraph CLI["foreman run"]
-        A[User runs foreman run] --> B[Dispatcher.dispatch]
+    subgraph CLI["FOREMAN_BACKEND=node foreman run"]
+        A[User runs legacy foreman run] --> B[Dispatcher.dispatch]
         B --> C{daemon reachable?}
         C -- No --> DAEMON_ERR[Error: start daemon first]
         C -- Yes --> D[dependency-unblocked native ready tasks]
@@ -222,7 +226,7 @@ re-dispatch later]
 
 | Decision | Outcome |
 |---|---|
-| **Daemon check** | `foreman run` requires daemon reachable — prompts to start if not |
+| **Daemon check** | Legacy `FOREMAN_BACKEND=node foreman run` requires daemon reachable — prompts to start if not |
 | **Backoff check** | Task recently failed/stuck → exponential delay before retry |
 | **Dependency stacking** | Task depends on open task → worktree branches from that dependency's branch |
 | **Pi vs SDK** | `pi` binary on PATH → JSONL RPC protocol; otherwise Claude SDK `query()` |
@@ -351,7 +355,7 @@ foreman status --live
 
 ## Messaging
 
-Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are stored in **PostgreSQL** for standalone development or **PostgreSQL** (via ForemanDaemon) for multi-project aggregation.
+Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are stored as Elixir inbox/events by default; legacy Node mode stores messages in PostgreSQL via ForemanDaemon.
 
 ### How agents send messages
 
@@ -477,7 +481,7 @@ For the complete CLI reference with all options and examples, see **[CLI Referen
 For common problems and solutions, see **[Troubleshooting Guide](docs/troubleshooting.md)**.
 
 ### `foreman init`
-Initialize Foreman in a project directory. Registers the project and sets up `.foreman/`.
+Initialize Foreman in a project directory. Registers the project in the default Elixir project registry and sets up `.foreman/`.
 Use `--wizard` for interactive setup that writes `.foreman/config.yaml` with VCS, workflow, and issue-tracker settings.
 
 ```bash
@@ -489,7 +493,7 @@ foreman project sync <project-id>                 # Fetch checkout + update last
 foreman project edit <project-id> --default-branch dev  # Change base for new worktrees
 ```
 
-### `foreman run`
+### `foreman run` (legacy Node dispatcher)
 Legacy Node dispatcher for ready tasks. In default Elixir mode, use `foreman server start` and let the Elixir scheduler claim approved tasks; set `FOREMAN_BACKEND=node` only for explicit legacy dispatch.
 
 ```bash
@@ -505,11 +509,11 @@ FOREMAN_BACKEND=node foreman run --dry-run                    # Preview without 
 Each agent gets:
 - Its own git worktree (branch: `foreman/<task-id>`)
 - A `TASK.md` with task instructions, phase prompts, and task context
-- Native task status updates in PostgreSQL
+- Legacy native task status updates in PostgreSQL
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. Single-project status reads Elixir task/run projections first, then falls back to legacy stores if the server is unavailable. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events by default in Postgres-backed Elixir mode.
+Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. Default Elixir status reads Elixir task/run projections and fails closed if projections are unavailable; set `FOREMAN_BACKEND=node` for legacy status stores. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events by default in Elixir mode.
 
 ```bash
 foreman status
@@ -566,7 +570,7 @@ Auto-merge tiers (T1–T4):
 - **T4**: Create PR for human review (true code conflicts)
 
 ### `foreman plan`
-Run the PRD → TRD pipeline using Ensemble slash commands.
+Run PRD/TRD planning. Default Elixir mode uses server-backed `plan prd` / `plan trd`; the bare `foreman plan <description>` local pipeline is legacy-only with `FOREMAN_BACKEND=node`.
 
 ```bash
 FOREMAN_BACKEND=node foreman plan "Build a user auth system with OAuth2" # Legacy local pipeline
@@ -587,12 +591,12 @@ foreman import --to-elixir --file migration.json
 foreman import --to-elixir --from-node --project foreman  # snapshot current Node/Postgres project into Elixir
 ```
 
-The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. While migration is incomplete, set `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` to delegate supported commands (`run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`) to the legacy TS CLI.
+The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. During explicit legacy cutover work, set `FOREMAN_BACKEND=node` before using Node/TS delegation. `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` can delegate supported commands to a legacy TS CLI, but default Elixir mode should not silently delegate.
 
-Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as `foreman run`, `foreman reset`, `foreman stop`, `foreman merge`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, `foreman issue`, and metrics cost mode require `FOREMAN_BACKEND=node` until Elixir routes land. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the default backend after cutover. This disables legacy TS delegation and blocks `foreman daemon start|stop|status|restart` unless `FOREMAN_BACKEND=node` is set explicitly, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections and fail closed when projections are unavailable, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as `foreman run`, `foreman reset`, `foreman stop`, `foreman merge`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, `foreman issue`, and metrics cost mode require `FOREMAN_BACKEND=node` until Elixir routes land. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
-Parse a TRD and create a native task hierarchy.
+Legacy Node-only TRD import path. Default Elixir mode should use `foreman plan prd|trd` and `foreman task create` flows; `sling` requires `FOREMAN_BACKEND=node`.
 
 ```bash
 FOREMAN_BACKEND=node foreman sling trd docs/TRD.md           # Parse and create legacy tasks
@@ -604,7 +608,7 @@ FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --auto    # Skip confirmation
 Configure and inspect Jira integration. In default Elixir mode, configure/status/test/webhook toggles avoid the legacy daemon socket: config and webhook toggles are accepted as Elixir integration events, status reads those events, and `jira test` calls Jira directly. Use `FOREMAN_BACKEND=node` for the legacy daemon-managed Jira poller/webhook runtime.
 
 ### `foreman daemon`
-Manage the ForemanDaemon background process (Postgres-backed state).
+Manage the legacy ForemanDaemon background process (Postgres-backed state; requires `FOREMAN_BACKEND=node`).
 
 ```bash
 FOREMAN_BACKEND=node foreman daemon start          # Start daemon in background (validates Postgres)
@@ -613,7 +617,7 @@ FOREMAN_BACKEND=node foreman daemon status         # Show PID, socket path, heal
 FOREMAN_BACKEND=node foreman daemon restart        # Stop + start
 ```
 
-> The Elixir server is the default backend for `task`, `status`, `inbox`, and scheduler views after cutover; start it with `foreman server start`. The Node daemon is legacy-only and `foreman daemon start|restart` is blocked by default unless `FOREMAN_BACKEND=node` is set explicitly.
+> The Elixir server is the default backend for `task`, `status`, `inbox`, and scheduler views after cutover; start it with `foreman server start`. The Node daemon is legacy-only and `foreman daemon start|stop|status|restart` is blocked by default unless `FOREMAN_BACKEND=node` is set explicitly.
 
 ### `foreman server`
 Manage the experimental Elixir orchestration server.
@@ -642,7 +646,7 @@ FOREMAN_BACKEND=node foreman doctor --fix                    # Auto-fix recovera
 ```
 
 ### `foreman inbox`
-View inter-agent messages from pipeline runs. Routes through ForemanDaemon.
+View inter-agent messages from pipeline runs. Default mode reads/writes Elixir inbox projections; legacy Node daemon mail requires `FOREMAN_BACKEND=node`.
 
 ```bash
 foreman inbox                            # Latest run's messages
@@ -656,7 +660,7 @@ foreman inbox send --from qa --to developer --subject fix-needed  # Legacy Node 
 Manage git worktrees created for active tasks. Agent worktrees live under `~/.foreman/worktrees/<projectId>/...`; refinery merge integration worktrees live under `~/.foreman/integration/<projectId>/<targetBranch>` and are reset before each merge attempt.
 
 ```bash
-foreman worktree list                    # List active worktrees
+FOREMAN_BACKEND=node foreman worktree list                    # Legacy list active worktrees
 FOREMAN_BACKEND=node foreman worktree clean                   # Legacy orphan cleanup
 FOREMAN_BACKEND=node foreman worktree clean --all             # Remove all including active ones
 ```
@@ -700,7 +704,7 @@ FOREMAN_BACKEND=node foreman pr
 ```
 
 ### `foreman debug`
-AI-powered execution analysis using Opus to investigate pipeline runs. Elixir-backed projects read run, inbox, report, and raw log artifacts from the Elixir HTTP API before legacy fallback.
+AI-powered execution analysis using Opus to investigate pipeline runs. Elixir-backed projects read run, inbox, report, and raw log artifacts from the Elixir HTTP API and fail closed instead of reading legacy daemon/local stores when projections are unavailable.
 
 ```bash
 foreman debug task-abc                  # Full Opus analysis of a run
@@ -714,8 +718,8 @@ Attach to a running agent session for live interaction. In Elixir mode, listing/
 ```bash
 foreman attach <run-id>                 # Attach to a running session
 foreman attach --list                   # List available sessions
-foreman attach --follow <id>            # Follow log output
-foreman attach --kill <id>              # Kill a running agent (legacy Node backend)
+FOREMAN_BACKEND=node foreman attach --follow <id> # Legacy local log follow
+FOREMAN_BACKEND=node foreman attach --kill <id>   # Legacy kill control
 ```
 
 ## GitHub Integration
@@ -724,8 +728,8 @@ Foreman integrates with GitHub for bi-directional issue tracking, webhook-driven
 
 ### Features
 
-- **Bi-directional issue sync** — Push and pull GitHub issues as Foreman tasks via `foreman issue sync`
-- **Real-time webhooks** — Issue and pull request events stream to ForemanDaemon via `POST /webhook`
+- **Bi-directional issue sync** — Legacy Node-only push/pull GitHub issues as Foreman tasks via `FOREMAN_BACKEND=node foreman issue sync`
+- **Real-time webhooks** — Legacy Node-only issue and pull request events stream to ForemanDaemon via `POST /webhook`
 - **Auto-import rules** — Issues with `foreman` or `foreman:dispatch` label can be imported directly into Foreman
 - **Priority mapping** — `foreman:priority:0-4` labels map GitHub issues onto Foreman task priorities
 - **PR visibility** — Pull request events and merge outcomes are recorded alongside task and run state
@@ -751,32 +755,32 @@ GitHub labels drive Foreman behavior:
 
 ```bash
 # View and manage GitHub configuration
-foreman issue configure                          # Configure repo sync + credentials
-foreman issue labels <repo>                     # List available labels
-foreman issue milestones <repo>                 # List milestones
+FOREMAN_BACKEND=node foreman issue configure    # Configure legacy repo sync + credentials
+FOREMAN_BACKEND=node foreman issue labels <repo>      # List available labels
+FOREMAN_BACKEND=node foreman issue milestones <repo>  # List milestones
 
 # Sync issues
-foreman issue import <repo>                     # Import all open issues
-foreman issue import <repo> --milestone "v1.0" # Filter by milestone
-foreman issue import <repo> --labels "bug,enhancement"
-foreman issue import <repo> --dry-run           # Preview without creating
-foreman issue sync <repo>                       # Bi-directional sync
-foreman issue sync <repo> --create              # Create missing issues on GitHub
+FOREMAN_BACKEND=node foreman issue import <repo>                     # Import all open issues
+FOREMAN_BACKEND=node foreman issue import <repo> --milestone "v1.0" # Filter by milestone
+FOREMAN_BACKEND=node foreman issue import <repo> --labels "bug,enhancement"
+FOREMAN_BACKEND=node foreman issue import <repo> --dry-run           # Preview without creating
+FOREMAN_BACKEND=node foreman issue sync <repo>                       # Bi-directional sync
+FOREMAN_BACKEND=node foreman issue sync <repo> --create              # Create missing issues on GitHub
 
 # Webhook management
-foreman issue webhook --enable <repo>           # Enable webhook + generate secret
-foreman issue webhook --disable <repo>          # Disable webhook
-foreman issue webhook --status <repo>           # Show webhook status
+FOREMAN_BACKEND=node foreman issue webhook --enable <repo>   # Enable legacy webhook + generate secret
+FOREMAN_BACKEND=node foreman issue webhook --disable <repo>  # Disable webhook
+FOREMAN_BACKEND=node foreman issue webhook --status <repo>   # Show webhook status
 
 # Status and linking
-foreman issue status <repo>                     # Show linked issue status
-foreman issue link <repo>#<number>              # Link task to GitHub issue
-foreman issue view <repo>#<number>              # View single issue details
+FOREMAN_BACKEND=node foreman issue status <repo>        # Show linked issue status
+FOREMAN_BACKEND=node foreman issue link <repo>#<number> # Link task to GitHub issue
+FOREMAN_BACKEND=node foreman issue view <repo>#<number> # View single issue details
 ```
 
 ### Webhooks
 
-Foreman includes a built-in webhook handler (`src/daemon/webhook-handler.ts`) that receives GitHub events and routes them through ForemanDaemon.
+Legacy Node mode includes a webhook handler (`src/daemon/webhook-handler.ts`) that receives GitHub events and routes them through ForemanDaemon; use `FOREMAN_BACKEND=node` for these flows.
 
 Webhooks use **HMAC-SHA256** signature verification. The daemon rejects payloads with invalid signatures:
 
@@ -784,7 +788,7 @@ Webhooks use **HMAC-SHA256** signature verification. The daemon rejects payloads
 export FOREMAN_WEBHOOK_SECRET=<your-secret>     # Set in daemon environment
 ```
 
-The webhook secret is auto-generated when enabling via `foreman issue webhook --enable` and stored in the `github_repos` table.
+The webhook secret is auto-generated when enabling via `FOREMAN_BACKEND=node foreman issue webhook --enable` and stored in the legacy `github_repos` table.
 
 #### Webhook event handling
 
@@ -876,7 +880,7 @@ For projects with existing [beads_rust](https://github.com/Dicklesworthstone/bea
 foreman task import --from-beads
 ```
 
-`FOREMAN_TASK_STORE=native` is accepted for backward compatibility but has no operational effect — the native Postgres task store is always used.
+`FOREMAN_TASK_STORE=native` is accepted for backward compatibility but has no operational effect — the active backend is selected by `FOREMAN_BACKEND` (Elixir by default).
 
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
 
@@ -975,7 +979,7 @@ export FOREMAN_MAX_PIPELINE_REVIEW_LOOPS=0   # Per-run retry/review loop budget;
 | `~/.foreman/logs/` | Per-run agent logs + daemon stdout/stderr; `foreman logs --compact|--plain|--raw` can also read event-backed Elixir logs when local files are absent |
 | `DATABASE_URL` | PostgreSQL connection string — only required when running daemon |
 
-**Storage model:** Foreman stores application state in PostgreSQL through the daemon/tRPC layer or direct standalone access. Native PostgreSQL tasks are the only supported runtime task store; beads_rust data is import-only legacy input.
+**Storage model:** Foreman stores application state in Elixir events/projections by default. PostgreSQL is used by the legacy daemon/tRPC layer only when `FOREMAN_BACKEND=node`; beads_rust data is import-only legacy input.
 
 ## Project Structure
 
@@ -989,7 +993,7 @@ foreman/
 │   │       ├── merge.ts            # Manual merge trigger
 │   │       ├── daemon.ts           # Daemon lifecycle management
 │   │       └── doctor.ts           # Health checks
-│   ├── daemon/                     # ForemanDaemon (optional background process)
+│   ├── daemon/                     # Legacy ForemanDaemon (FOREMAN_BACKEND=node)
 │   │   ├── index.ts                # Entry point: PoolManager, Fastify, socket
 │   │   ├── router.ts               # tRPC procedures (projects, tasks, runs, mail)
 │   │   └── webhook-handler.ts      # GitHub webhook receiver
@@ -1007,7 +1011,7 @@ foreman/
 │       ├── db/
 │       │   ├── pool-manager.ts     # Postgres pool singleton (daemon only)
 │       │   └── postgres-adapter.ts # Postgres DB operations (daemon only)
-│       ├── store.ts                # Project-level PostgreSQL store (default)
+│       ├── store.ts                # Legacy project-level store (FOREMAN_BACKEND=node)
 │       ├── postgres-store.ts       # Postgres-backed store (daemon mode)
 │       ├── beads-rust.ts           # Compatibility br CLI wrapper
 │       └── git.ts                  # Git worktree management
@@ -1025,7 +1029,7 @@ foreman/
 
 Foreman can be distributed as a standalone executable for all 5 platforms — no Node.js required. Binaries are compiled via [pkg](https://github.com/yao-pkg/pkg) which embeds the CJS bundle + Node.js runtime.
 
-> **Note:** Standalone binaries bundle the daemon. Make sure PostgreSQL is available on the target system.
+> **Note:** Standalone binaries bundle the legacy daemon. PostgreSQL is required only for explicit `FOREMAN_BACKEND=node` operation.
 
 ### Quick Build
 
@@ -1142,7 +1146,7 @@ npm run bundle         # esbuild single-file bundle
 - ESM only — all imports use `.js` extensions
 - TDD — RED-GREEN-REFACTOR cycle
 - Test coverage — unit ≥ 80%, integration ≥ 70%
-- `br sync --flush-only` before every git commit
+- Run `br sync --flush-only` only after direct `.beads/`/`br` changes or explicit `FOREMAN_BACKEND=node` legacy work
 
 ## License
 

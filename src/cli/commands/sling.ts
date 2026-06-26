@@ -415,7 +415,7 @@ function createProgressSpinner() {
 // ── CLI Commands ─────────────────────────────────────────────────────────
 
 const trdSubcommand = new Command("trd")
-  .description("Convert a TRD into native task hierarchies")
+  .description("Legacy TRD-to-task import (requires FOREMAN_BACKEND=node; use plan prd/trd for Elixir)")
   .argument("<trd-file>", "Path to TRD markdown file")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path for advanced/scripted usage")
@@ -456,7 +456,7 @@ const trdSubcommand = new Command("trd")
   });
 
 const prdSubcommand = new Command("prd")
-  .description("Generate a TRD from a PRD and preview or import the parsed task plan")
+  .description("Legacy PRD-to-TRD/task import (requires FOREMAN_BACKEND=node; use plan prd/trd for Elixir)")
   .argument("<prd-file>", "Path to PRD markdown file")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path for advanced/scripted usage")
@@ -537,6 +537,6 @@ const prdSubcommand = new Command("prd")
   });
 
 export const slingCommand = new Command("sling")
-  .description("Convert structured documents into task hierarchies")
+  .description("Legacy document-to-task import (requires FOREMAN_BACKEND=node)")
   .addCommand(prdSubcommand)
   .addCommand(trdSubcommand);

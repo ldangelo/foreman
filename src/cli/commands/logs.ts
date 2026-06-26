@@ -391,7 +391,14 @@ async function resolveRun(id: string | undefined, opts: LogsOpts): Promise<Resol
   try {
     const elixir = await resolveElixirRun(id, opts);
     if (elixir) return elixir;
-  } catch {
+    if (foremanBackendMode() === "elixir") {
+      throw new Error(`Run or task '${opts.run ?? id ?? "latest"}' not found in Elixir projections`);
+    }
+  } catch (err) {
+    if (foremanBackendMode() === "elixir") {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Elixir logs projection unavailable; refusing legacy daemon/local logs fallback. Set FOREMAN_BACKEND=node for legacy logs. Cause: ${message}`);
+    }
     // Fall back to daemon/local stores when the Elixir server is unavailable.
   }
   try {
@@ -436,6 +443,10 @@ export const logsCommand = new Command("logs")
     const compact = opts.compact || opts.plain || view === "compact" || view === "plain";
     const raw = opts.raw || view === "raw";
     const useElixirFallback = foremanBackendMode() === "elixir" && !opts.follow && !compact && !raw;
+    if (foremanBackendMode() === "elixir" && opts.follow) {
+      console.error(chalk.red("Error: logs --follow tails local worker files and is legacy-only in default Elixir mode. Use --stream/--compact/--raw event views, or set FOREMAN_BACKEND=node for legacy file follow."));
+      process.exit(1);
+    }
     if (shouldRequireLocalRawLog(opts) && !existsSync(rawPath) && !useElixirFallback) {
       console.error(chalk.red(`Error: Raw log not found: ${rawPath}`));
       process.exit(1);
@@ -444,7 +455,9 @@ export const logsCommand = new Command("logs")
     if (compact) {
       await renderCompactView(resolved.run.id, tailCount, view === "plain" || opts.plain ? "plain" : "compact");
     } else if (raw) {
-      if (existsSync(rawPath)) {
+      if (foremanBackendMode() === "elixir") {
+        await renderCompactView(resolved.run.id, tailCount, "raw");
+      } else if (existsSync(rawPath)) {
         for (const line of tailFileLines(rawPath, tailCount)) {
           if (line.trim()) console.log(line);
         }
