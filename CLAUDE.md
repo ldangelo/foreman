@@ -29,6 +29,7 @@ FOREMAN_BACKEND=node foreman reset          # Legacy cleanup failed/stuck runs
 FOREMAN_BACKEND=node foreman reset --detect-stuck  # Legacy detect + reset stuck runs
 FOREMAN_BACKEND=node foreman reset --task X --preserve-worktree  # Legacy reset, keep worktree/branch
 foreman retry <seed>   # Re-run a failed pipeline phase
+foreman stop --list       # List active Elixir runs
 FOREMAN_BACKEND=node foreman stop           # Legacy stop via process metadata
 foreman server doctor  # Elixir health checks (server/projections/workers)
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)

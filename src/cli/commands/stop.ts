@@ -9,6 +9,8 @@ import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
 import { printDryRunNotice } from "./cli-output.js";
+import { ElixirServerClient, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -243,8 +245,57 @@ export async function listActiveRuns(store: StopStore, projectPath: string): Pro
   console.log();
 }
 
+function elixirStringField(run: ElixirRun, field: string): string | null {
+  const value = run[field];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function isElixirActiveRun(run: ElixirRun): boolean {
+  const status = elixirStringField(run, "status");
+  return status === "pending" || status === "running" || status === "in_progress";
+}
+
+export async function listElixirActiveRuns(runs: ElixirRun[]): Promise<void> {
+  const activeRuns = runs.filter(isElixirActiveRun);
+  if (activeRuns.length === 0) {
+    console.log("No active runs found.");
+    return;
+  }
+
+  console.log("Active runs:\n");
+  console.log(
+    "  " +
+    "TASK".padEnd(22) +
+    "STATUS".padEnd(12) +
+    "RUN".padEnd(24) +
+    "ELAPSED".padEnd(12) +
+    "PID",
+  );
+  console.log("  " + "─".repeat(84));
+
+  for (const run of activeRuns) {
+    const runId = run.run_id ?? run.id ?? "unknown";
+    const taskId = run.task_id ?? elixirStringField(run, "seed_id") ?? "unknown";
+    const status = run.status ?? "unknown";
+    const pid = typeof run.worker_pid === "number" ? String(run.worker_pid) : "(none)";
+    const startedAt = elixirStringField(run, "started_at") ?? elixirStringField(run, "created_at");
+    const elapsed = formatElapsed(startedAt);
+
+    console.log(
+      "  " +
+      taskId.padEnd(22) +
+      status.padEnd(12) +
+      runId.padEnd(24) +
+      elapsed.padEnd(12) +
+      pid,
+    );
+  }
+  console.log();
+}
+
 export async function stopCommandAction(id: string | undefined, opts: StopOpts): Promise<number> {
-  if (foremanBackendMode() === "elixir") {
+  const backendMode = foremanBackendMode();
+  if (backendMode === "elixir" && !opts.list) {
     console.error(chalk.red("foreman stop uses legacy run stores and process metadata. Use Elixir-backed attach/recover/status flows, or set FOREMAN_BACKEND=node for legacy stop cleanup."));
     return 1;
   }
@@ -258,7 +309,24 @@ export async function stopCommandAction(id: string | undefined, opts: StopOpts):
     isGitRepo = false;
   }
 
-  const registered = await findRegisteredProjectByPath(projectPath);
+  const registered = await findRegisteredProjectByPath(projectPath, { initPool: backendMode !== "elixir" });
+
+  if (backendMode === "elixir") {
+    if (!registered) {
+      console.error(chalk.red(`Project at '${projectPath}' is not registered in Elixir. Run 'foreman project add' first.`));
+      return 1;
+    }
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    if (!status.running) {
+      console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start'."));
+      return 1;
+    }
+    const client = new ElixirServerClient(status.url, manager.authToken);
+    await listElixirActiveRuns(await client.listRuns(registered.id));
+    return 0;
+  }
+
   const localStore = ForemanStore.forProject(projectPath);
   const store: StopStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(localStore);
 
@@ -392,9 +460,9 @@ function formatElapsed(startedAt: string | null): string {
 // ── CLI Command ─────────────────────────────────────────────────────────
 
 export const stopCommand = new Command("stop")
-  .description("Legacy stop for running agents (requires FOREMAN_BACKEND=node; use recover for Elixir)")
+  .description("List active Elixir runs or stop legacy running agents (stop requires FOREMAN_BACKEND=node)")
   .argument("[id]", "Run ID or bead ID to stop (omit to stop all active runs)")
-  .option("--list", "List all active runs")
+  .option("--list", "List active runs (Elixir projections by default)" )
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")
   .option("--dry-run", "Show what would be stopped without doing it")
   .action(async (id: string | undefined, opts: StopOpts) => {
