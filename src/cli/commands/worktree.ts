@@ -9,6 +9,8 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { Workspace } from "../../lib/vcs/types.js";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { resolveProjectContext } from "./project-context.js";
+import { ElixirServerClient, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -143,6 +145,55 @@ export interface WorktreeCleanOpts {
   dryRun?: boolean;
 }
 
+function stringField(record: Record<string, unknown>, field: string): string | null {
+  const value = record[field];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function runSortTime(run: ElixirRun): number {
+  const timestamp = stringField(run, "started_at") ?? stringField(run, "created_at") ?? stringField(run, "updated_at");
+  return timestamp ? new Date(timestamp).getTime() : 0;
+}
+
+function elixirRunMatchesSeed(run: ElixirRun, seedId: string): boolean {
+  const candidates = [
+    run.run_id,
+    run.id,
+    run.task_id,
+    stringField(run, "seed_id"),
+  ];
+  return candidates.some((candidate) => candidate === seedId);
+}
+
+/**
+ * List foreman/* worktrees with metadata from Elixir run projections.
+ * Matching is best-effort across run_id/id/task_id because Elixir worktree
+ * branches may be keyed by run id while legacy branches used task/seed ids.
+ */
+export async function listForemanWorktreesFromElixirRuns(
+  projectPath: string,
+  runs: ElixirRun[],
+): Promise<WorktreeInfo[]> {
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const worktrees = await vcs.listWorkspaces(projectPath);
+  const foremanWorktrees = worktrees.filter((wt) => wt.branch.startsWith("foreman/"));
+  const sortedRuns = [...runs].sort((a, b) => runSortTime(b) - runSortTime(a));
+
+  return foremanWorktrees.map((wt) => {
+    const seedId = seedIdFromBranch(wt.branch);
+    const latestRun = sortedRuns.find((run) => elixirRunMatchesSeed(run, seedId));
+    return {
+      path: wt.path,
+      branch: wt.branch,
+      head: wt.head,
+      seedId,
+      runStatus: (latestRun?.status as Run["status"] | undefined) ?? null,
+      runId: latestRun?.run_id ?? latestRun?.id ?? null,
+      createdAt: latestRun ? (stringField(latestRun, "started_at") ?? stringField(latestRun, "created_at")) : null,
+    };
+  });
+}
+
 function closeWorktreeStores(
   localStore: ForemanStore,
   store: Pick<ForemanStore, "close"> | Pick<PostgresStore, "close">,
@@ -154,27 +205,41 @@ function closeWorktreeStores(
 }
 
 export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise<void> {
-  if (foremanBackendMode() === "elixir") {
-    console.error(chalk.red("foreman worktree list reads legacy run stores for worktree metadata. Use Elixir status/runs/watch views, or set FOREMAN_BACKEND=node for legacy worktree listing."));
-    process.exit(1);
-  }
-
   try {
-    const { projectPath, registered } = await resolveProjectContext();
-    const localStore = ForemanStore.forProject(projectPath);
-    const store = registered ? PostgresStore.forProject(registered.id) : localStore;
+    let worktrees: WorktreeInfo[];
+    let closeStores: (() => void) | null = null;
 
-    const worktrees = await listForemanWorktrees(projectPath, store);
+    if (foremanBackendMode() === "elixir") {
+      const { projectPath, registered } = await resolveProjectContext({}, { initPool: false });
+      if (!registered) {
+        console.error(chalk.red(`Project at '${projectPath}' is not registered in Elixir. Run 'foreman project add' first.`));
+        process.exit(1);
+        return;
+      }
+      const manager = new ElixirServerManager();
+      const status = await manager.ensureRunning();
+      if (!status.running) {
+        throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+      }
+      const client = new ElixirServerClient(status.url, manager.authToken);
+      worktrees = await listForemanWorktreesFromElixirRuns(projectPath, await client.listRuns(registered.id));
+    } else {
+      const { projectPath, registered } = await resolveProjectContext();
+      const localStore = ForemanStore.forProject(projectPath);
+      const store = registered ? PostgresStore.forProject(registered.id) : localStore;
+      closeStores = () => closeWorktreeStores(localStore, store);
+      worktrees = await listForemanWorktrees(projectPath, store);
+    }
 
     if (opts.json) {
       console.log(JSON.stringify(worktrees, null, 2));
-      closeWorktreeStores(localStore, store);
+      closeStores?.();
       return;
     }
 
     if (worktrees.length === 0) {
       console.log(chalk.yellow("No foreman worktrees found."));
-      closeWorktreeStores(localStore, store);
+      closeStores?.();
       return;
     }
 
@@ -193,7 +258,7 @@ export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise
       );
     }
 
-    closeWorktreeStores(localStore, store);
+    closeStores?.();
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(chalk.red(`Error: ${message}`));
@@ -259,7 +324,7 @@ export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promi
 }
 
 const listSubcommand = new Command("list")
-  .description("Legacy worktree listing from run stores (requires FOREMAN_BACKEND=node)")
+  .description("List Foreman worktrees (Elixir projections by default; legacy stores with FOREMAN_BACKEND=node)")
   .option("--json", "Output as JSON")
   .action(worktreeListCommandAction);
 
@@ -271,7 +336,7 @@ const cleanSubcommand = new Command("clean")
   .action(worktreeCleanCommandAction);
 
 export const worktreeCommand = new Command("worktree")
-  .description("Manage legacy Foreman worktrees (list/clean require FOREMAN_BACKEND=node)")
+  .description("Manage Foreman worktrees (list supports Elixir; clean requires FOREMAN_BACKEND=node)")
   .addCommand(listSubcommand)
   .addCommand(cleanSubcommand);
 

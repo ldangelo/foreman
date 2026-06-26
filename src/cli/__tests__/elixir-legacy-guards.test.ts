@@ -30,7 +30,6 @@ describe("default Elixir legacy command guards", () => {
     { args: ["run", "task", "foreman-12345", "task"], message: "foreman run task uses the legacy Node worker bridge directly" },
     { args: ["run", "task", "foreman-12345", "task", "--run-id", "run-123"], message: "foreman run task uses the legacy Node worker bridge directly" },
     { args: ["sentinel", "status"], message: "foreman sentinel uses the legacy SentinelAgent" },
-    { args: ["worktree", "list"], message: "foreman worktree list reads legacy run stores" },
     { args: ["worktree", "clean", "--dry-run"], message: "foreman worktree clean uses legacy run stores" },
     { args: ["purge", "logs", "--dry-run"], message: "foreman purge logs uses legacy run stores" },
     { args: ["purge", "runs", "--dry-run"], message: "foreman purge runs mutates legacy run stores" },

@@ -270,7 +270,7 @@ foreman inbox --bead X       # Mail for a specific bead
 
 # Worktree cleanup
 foreman runs            # See active Elixir runs/worktrees
-FOREMAN_BACKEND=node foreman worktree list   # Legacy list worktrees
+foreman worktree list                       # Elixir-backed worktree/run visibility
 FOREMAN_BACKEND=node foreman worktree clean  # Legacy remove orphaned worktrees
 
 # Test failures

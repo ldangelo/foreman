@@ -19,6 +19,13 @@ const { mockListWorkspaces, mockRemoveWorkspace, mockDeleteBranch, mockCreateVcs
   return { mockListWorkspaces, mockRemoveWorkspace, mockDeleteBranch, mockCreateVcsBackend };
 });
 
+const { mockEnsureElixirRunning, mockListElixirRuns, mockElixirClientCtor } = vi.hoisted(() => {
+  const mockEnsureElixirRunning = vi.fn(async () => ({ running: true, url: "http://127.0.0.1:4777" }));
+  const mockListElixirRuns = vi.fn(async () => []);
+  const mockElixirClientCtor = vi.fn();
+  return { mockEnsureElixirRunning, mockListElixirRuns, mockElixirClientCtor };
+});
+
 vi.mock("../commands/project-task-support.js", () => ({
   resolveRepoRootProjectPath: vi.fn(),
   listRegisteredProjects: vi.fn(),
@@ -28,6 +35,22 @@ vi.mock("../commands/project-task-support.js", () => ({
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
     create: mockCreateVcsBackend,
+  },
+}));
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: class MockElixirServerManager {
+    authToken = "token";
+    ensureRunning = mockEnsureElixirRunning;
+  },
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: class MockElixirServerClient {
+    constructor(url: string, token?: string) {
+      mockElixirClientCtor(url, token);
+    }
+    listRuns = mockListElixirRuns;
   },
 }));
 
@@ -54,6 +77,7 @@ vi.mock("../../lib/postgres-store.js", () => {
 import { ForemanStore } from "../../lib/store.js";
 import {
   listForemanWorktrees,
+  listForemanWorktreesFromElixirRuns,
   cleanWorktrees,
   worktreeListCommandAction,
   worktreeCleanCommandAction,
@@ -146,6 +170,39 @@ describe("listForemanWorktrees()", () => {
 
     expect(result[0].seedId).toBe("orphan-seed");
     expect(result[0].runStatus).toBeNull();
+  });
+});
+
+// ── listForemanWorktreesFromElixirRuns() tests ───────────────────────────────
+
+describe("listForemanWorktreesFromElixirRuns()", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("joins foreman worktrees to Elixir runs by run id or task id", async () => {
+    mockListWorkspaces.mockResolvedValue([
+      makeWorktree({ branch: "foreman/run-123", path: "/tmp/project/.foreman-worktrees/run-123" }),
+      makeWorktree({ branch: "foreman/task-456", path: "/tmp/project/.foreman-worktrees/task-456" }),
+      makeWorktree({ branch: "feature/unrelated", path: "/tmp/project/.foreman-worktrees/other" }),
+    ] as never);
+
+    const result = await listForemanWorktreesFromElixirRuns("/tmp/project", [
+      { run_id: "run-123", task_id: "task-a", status: "running", started_at: "2026-01-01T00:00:00.000Z" },
+      { run_id: "run-999", task_id: "task-456", status: "completed", started_at: "2026-01-02T00:00:00.000Z" },
+    ]);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({ seedId: "run-123", runId: "run-123", runStatus: "running" });
+    expect(result[1]).toMatchObject({ seedId: "task-456", runId: "run-999", runStatus: "completed" });
+  });
+
+  it("leaves Elixir worktree metadata empty when no projection matches", async () => {
+    mockListWorkspaces.mockResolvedValue([makeWorktree({ branch: "foreman/orphan" })] as never);
+
+    const result = await listForemanWorktreesFromElixirRuns("/tmp/project", []);
+
+    expect(result[0]).toMatchObject({ seedId: "orphan", runId: null, runStatus: null, createdAt: null });
   });
 });
 
@@ -529,6 +586,41 @@ describe("worktree command targeting", () => {
     } finally {
       localStoreSpy.mockRestore();
       postgresStoreSpy.mockRestore();
+    }
+  });
+
+  it("lists worktrees from Elixir projections without opening legacy stores", async () => {
+    delete process.env["FOREMAN_BACKEND"];
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStoreSpy = vi.spyOn(ForemanStore, "forProject");
+    const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject");
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockListWorkspaces.mockResolvedValue([
+      makeWorktree({ branch: "foreman/run-123", path: "/tmp/project/.foreman-worktrees/run-123" }),
+    ] as never);
+    mockListElixirRuns.mockResolvedValue([
+      { run_id: "run-123", task_id: "task-1", project_id: "proj-1", status: "running", started_at: "2026-01-01T00:00:00.000Z" },
+    ] as never);
+
+    try {
+      projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+      projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([
+        { id: "proj-1", name: "test-project", path: "/tmp/project" },
+      ]);
+
+      await worktreeListCommandAction({ json: true });
+
+      expect(projectTaskSupportMock.ensureCliPostgresPool).not.toHaveBeenCalled();
+      expect(localStoreSpy).not.toHaveBeenCalled();
+      expect(postgresStoreSpy).not.toHaveBeenCalled();
+      expect(mockElixirClientCtor).toHaveBeenCalledWith("http://127.0.0.1:4777", "token");
+      expect(mockListElixirRuns).toHaveBeenCalledWith("proj-1");
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('"runId": "run-123"'));
+    } finally {
+      consoleLogSpy.mockRestore();
+      localStoreSpy.mockRestore();
+      postgresStoreSpy.mockRestore();
+      process.env["FOREMAN_BACKEND"] = "node";
     }
   });
 

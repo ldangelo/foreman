@@ -660,7 +660,8 @@ foreman inbox send --from qa --to developer --subject fix-needed  # Legacy Node 
 Manage git worktrees created for active tasks. Agent worktrees live under `~/.foreman/worktrees/<projectId>/...`; refinery merge integration worktrees live under `~/.foreman/integration/<projectId>/<targetBranch>` and are reset before each merge attempt.
 
 ```bash
-FOREMAN_BACKEND=node foreman worktree list                    # Legacy list active worktrees
+foreman worktree list                                         # Elixir-backed worktree/run visibility
+foreman worktree list --json                                  # Machine-readable output
 FOREMAN_BACKEND=node foreman worktree clean                   # Legacy orphan cleanup
 FOREMAN_BACKEND=node foreman worktree clean --all             # Remove all including active ones
 ```
