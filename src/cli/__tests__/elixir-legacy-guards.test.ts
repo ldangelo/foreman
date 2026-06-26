@@ -33,7 +33,7 @@ describe("default Elixir legacy command guards", () => {
     { args: ["worktree", "clean", "--dry-run"], message: "foreman worktree clean uses legacy run stores" },
     { args: ["purge", "logs", "--dry-run"], message: "foreman purge logs uses legacy run stores" },
     { args: ["purge", "runs", "--dry-run"], message: "foreman purge runs mutates legacy run stores" },
-    { args: ["doctor"], message: "foreman doctor runs legacy Node/Postgres/daemon checks" },
+    { args: ["doctor", "--fix"], message: "foreman doctor --fix/--clean-logs run legacy Node/Postgres maintenance" },
     { args: ["daemon", "stop"], message: "FOREMAN_BACKEND=elixir; the Node daemon scheduler is disabled" },
     { args: ["daemon", "status"], message: "FOREMAN_BACKEND=elixir; the Node daemon scheduler is disabled" },
   ])("fails fast before project/VCS resolution for $args", async ({ args, message }) => {

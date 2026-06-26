@@ -485,14 +485,15 @@ foreman logs <run-id> --raw --tail 200 # Raw JSON tail
 
 ### `foreman doctor`
 
-Legacy Node/Postgres health checks for Foreman installation. Default Elixir mode blocks this path; use `foreman server doctor` for Elixir server/projection/worker health, or set `FOREMAN_BACKEND=node` for legacy checks.
+Health checks for Foreman installation. In default Elixir mode, `foreman doctor` runs the Elixir server/projection/worker health check (same backend as `foreman server doctor`). Legacy Node/Postgres maintenance flags require `FOREMAN_BACKEND=node`.
 
 ```bash
-foreman server doctor             # Elixir health checks
-FOREMAN_BACKEND=node foreman doctor                    # Run legacy health checks
-FOREMAN_BACKEND=node foreman doctor --fix              # Auto-fix legacy issues
-FOREMAN_BACKEND=node foreman doctor --dry-run          # Preview fixes without applying
-FOREMAN_BACKEND=node foreman doctor --json             # Machine-readable output
+foreman doctor                                    # Elixir health checks
+foreman doctor --json                             # Machine-readable Elixir health
+foreman server doctor                             # Explicit Elixir server health checks
+FOREMAN_BACKEND=node foreman doctor               # Run legacy health checks
+FOREMAN_BACKEND=node foreman doctor --fix         # Auto-fix legacy issues
+FOREMAN_BACKEND=node foreman doctor --dry-run     # Preview legacy fixes without applying
 ```
 
 | Option | Description |

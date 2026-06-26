@@ -31,14 +31,14 @@ FOREMAN_BACKEND=node foreman reset --task X --preserve-worktree  # Legacy reset,
 foreman retry <seed>   # Re-run a failed pipeline phase
 foreman stop --list       # List active Elixir runs
 FOREMAN_BACKEND=node foreman stop           # Legacy stop via process metadata
-foreman server doctor  # Elixir health checks (server/projections/workers)
+foreman doctor         # Elixir health checks (server/projections/workers)
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
 FOREMAN_BACKEND=node foreman sling trd X # Legacy TRD -> task hierarchy
 FOREMAN_BACKEND=node foreman plan X      # Legacy PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman jira status  # Jira integration status (Elixir event-backed by default)
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
-foreman server doctor # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
+foreman doctor        # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 # Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces declared acceptance-contract coverage, records PASS→FAIL override/retry reasons, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
 FOREMAN_BACKEND=node foreman merge          # Legacy Refinery merge queue
 FOREMAN_BACKEND=node foreman pr             # Legacy Refinery PR creation
@@ -253,7 +253,7 @@ foreman debug <bead-id> --raw   # Dump artifacts; Elixir mode fails closed if pr
 foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs
-foreman server doctor  # Check Elixir server/projections/workers
+foreman doctor         # Check Elixir server/projections/workers
 foreman status         # See all active/failed agents
 FOREMAN_BACKEND=node foreman reset          # Legacy reset failed/stuck runs
 FOREMAN_BACKEND=node foreman reset --bead X # Legacy reset a specific run
@@ -340,7 +340,7 @@ br sync --status      # Check sync status
 
 ### Session Protocol
 
-**Default Foreman/Elixir sessions:** do not run `br sync` unless you changed `.beads/` directly. Use Foreman Elixir views (`foreman task`, `foreman runs`, `foreman logs`, `foreman server doctor`) for runtime state.
+**Default Foreman/Elixir sessions:** do not run `br sync` unless you changed `.beads/` directly. Use Foreman Elixir views (`foreman task`, `foreman runs`, `foreman logs`, `foreman doctor`) for runtime state.
 
 **Direct-br/legacy sessions only:**
 

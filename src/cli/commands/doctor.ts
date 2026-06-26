@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import { destroyPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
@@ -66,8 +67,37 @@ async function resolveDoctorProjectPath(): Promise<string> {
   return resolveRepoRootProjectPath({});
 }
 
+export async function runElixirDoctor(opts: { jsonOutput?: boolean; fix?: boolean; dryRun?: boolean; cleanLogs?: boolean }): Promise<number> {
+  const jsonOutput = opts.jsonOutput ?? false;
+  if (opts.fix || opts.cleanLogs) {
+    const message = "foreman doctor --fix/--clean-logs run legacy Node/Postgres maintenance. Use 'foreman server doctor' for Elixir health, or set FOREMAN_BACKEND=node for legacy maintenance.";
+    if (jsonOutput) console.log(JSON.stringify({ checks: [], summary: { pass: 0, warn: 0, fail: 1, fixed: 0, skip: 0 }, error: message }, null, 2));
+    else console.error(chalk.red(message));
+    return 1;
+  }
+
+  if (!jsonOutput) {
+    console.log(chalk.bold("\nforeman doctor (Elixir)\n"));
+    if (opts.dryRun) console.log(chalk.dim("(dry-run has no effect for Elixir health checks)\n"));
+  }
+
+  const manager = new ElixirServerManager();
+  await manager.ensureRunning();
+  const doctor = await manager.doctor();
+  if (jsonOutput) {
+    console.log(JSON.stringify(doctor.ok ? doctor.body : { ok: false, error: doctor.error, body: doctor.body }, null, 2));
+  } else if (doctor.ok) {
+    console.log(chalk.green("Elixir server doctor: PASS"));
+    console.log(JSON.stringify(doctor.body, null, 2));
+  } else {
+    console.error(chalk.red("Elixir server doctor: FAIL"));
+    console.error(chalk.dim(doctor.error ?? JSON.stringify(doctor.body)));
+  }
+  return doctor.ok ? 0 : 1;
+}
+
 export const doctorCommand = new Command("doctor")
-  .description("Legacy Node/Postgres health checks (requires FOREMAN_BACKEND=node; use foreman server doctor for Elixir)")
+  .description("Check Foreman health (Elixir by default; legacy Node/Postgres maintenance with FOREMAN_BACKEND=node)")
   .option("--fix", "Auto-fix issues where possible")
   .option("--dry-run", "Show what --fix would do without making changes")
   .option("--json", "Output results as JSON")
@@ -85,10 +115,7 @@ export const doctorCommand = new Command("doctor")
     const logDays = (opts.logDays as number | undefined) ?? 7;
 
     if (foremanBackendMode() === "elixir") {
-      const message = "foreman doctor runs legacy Node/Postgres/daemon checks. Use 'foreman server doctor' for Elixir health, or set FOREMAN_BACKEND=node for legacy doctor.";
-      if (jsonOutput) console.log(JSON.stringify({ checks: [], summary: { pass: 0, warn: 0, fail: 1, fixed: 0, skip: 0 }, error: message }, null, 2));
-      else console.error(chalk.red(message));
-      process.exit(1);
+      process.exit(await runElixirDoctor({ jsonOutput, fix, dryRun, cleanLogs }));
     }
 
     if (!jsonOutput) {

@@ -637,10 +637,12 @@ Security controls for the Elixir server:
 - Destructive command-router actions such as `task.close`, `task.block`, and `task.update` append `AuthorizationChecked` and `AuditRecorded` events after the command executes.
 
 ### `foreman doctor`
-Legacy Node/Postgres health checks: Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth. Default Elixir mode blocks this path; use `foreman server doctor` for Elixir health, or set `FOREMAN_BACKEND=node` for legacy checks.
+Default Elixir health checks for server/projections/workers. Legacy Node/Postgres maintenance checks (Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth) require `FOREMAN_BACKEND=node`.
 
 ```bash
-foreman server doctor                   # Elixir health checks
+foreman doctor                          # Elixir health checks
+foreman doctor --json                   # Machine-readable Elixir health
+foreman server doctor                   # Explicit Elixir server health checks
 FOREMAN_BACKEND=node foreman doctor
 FOREMAN_BACKEND=node foreman doctor --fix                    # Auto-fix recoverable legacy issues
 ```
