@@ -221,7 +221,7 @@ FOREMAN_BACKEND=node foreman metrics --agent claude-sonnet-4-6       # Filter co
 FOREMAN_BACKEND=node foreman metrics --task-type feature     # Filter cost metrics to a specific task type
 foreman metrics --project my-project    # Metrics for a registered project
 foreman metrics --project-path /abs/path # Metrics for a project at an absolute path
-foreman metrics --costs --json --since 2026-06-01 --phase developer --task-type bug  # Combine cost filters
+FOREMAN_BACKEND=node foreman metrics --costs --json --since 2026-06-01 --phase developer --task-type bug  # Combine cost filters
 ```
 
 | Option | Default | Description |
