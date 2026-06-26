@@ -26,6 +26,7 @@ FOREMAN_BACKEND=node foreman run --bead X # Legacy dispatch specific task
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard (Elixir projections by default; 'dashboard' is a deprecated alias)
 FOREMAN_BACKEND=node foreman sentinel # Legacy background health daemon
+foreman reset --dry-run # Elixir-backed reset/recovery preview
 FOREMAN_BACKEND=node foreman reset          # Legacy cleanup failed/stuck runs
 FOREMAN_BACKEND=node foreman reset --detect-stuck  # Legacy detect + reset stuck runs
 FOREMAN_BACKEND=node foreman reset --task X --preserve-worktree  # Legacy reset, keep worktree/branch
@@ -258,6 +259,7 @@ foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 # Stuck or failed runs
 foreman doctor         # Check Elixir server/projections/workers
 foreman status         # See all active/failed agents
+foreman reset --dry-run # Elixir-backed reset/recovery preview
 FOREMAN_BACKEND=node foreman reset          # Legacy reset failed/stuck runs
 FOREMAN_BACKEND=node foreman reset --bead X # Legacy reset a specific run
 foreman retry <seed>   # Re-run a specific pipeline phase
