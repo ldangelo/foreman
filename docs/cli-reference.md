@@ -91,7 +91,7 @@ foreman project remove <project-id>
 
 Legacy Node dispatcher for ready tasks. In default Elixir mode, use `foreman server start` and let the Elixir scheduler claim approved tasks; this command fails fast unless `FOREMAN_BACKEND=node` is set.
 
-Default workflows are YAML-defined phase/action sequences, including dispatcher workspace actions before agent launch. Workflow YAML resolves from explicit path, project `.foreman/workflows` (`.yaml|.yml`), global `~/.foreman/workflows` (`.yaml|.yml`), then bundled defaults; project-relative explicit paths must stay inside the project root. Use `foreman workflows list|show|validate|install|create` to inspect, validate, install, or create project/global workflow YAML. Editable action modules in `.foreman/actions/*.js|*.mjs|*.ts` or `~/.foreman/actions/*.js|*.mjs|*.ts` are bundled and loaded at runtime when present (project wins), so JS/MJS actions may import TS helper files kept outside the actions directory (every direct `.js`/`.mjs`/`.ts` file there is treated as an action); `foreman init`, `foreman doctor --fix`, and `foreman actions install [--global]` install bundled stubs. `foreman actions list` shows resolution, `foreman actions show <action>` prints one resolved path, `foreman actions validate` checks project/global action module names, JS/TS syntax/import resolution, function exports, duplicate `.js`/`.mjs`/`.ts` variants, and unresolved workflow action references, `foreman actions create <action> [--global]` creates a new stub (action names may contain letters, numbers, `.`, `_`, and `-`, with at least one letter/number; known builtin/workspace actions wrap `ctx.internal.runBuiltin()` by default), and `foreman doctor` validates the same action issues. The bundled `qlty` action runs `qlty check` (qlty CLI from https://qlty.sh/ must be on `PATH`), writes `QLTY_REPORT.md`, and bundled developer workflows retry Developer when it fails. Before retrying a target phase or forwarding an artifact to a phase, Foreman writes a normalized `{TARGET_PHASE}_TASK.md` input file in the run report directory (for example `DEVELOPER_TASK.md`) with the source phase/artifact, failure, retry attempt, and feedback content. The bundled fast path has Explorer (when present) hand off directly to Developer, then QA/review/finalize/documentation. TDD red/review phases are opt-in via `foreman run --workflow tdd`, a `workflow:tdd` label, or task type `tdd`. In the TDD workflow, `test-red` writes at most a few focused failing tests and `test-review` verifies those tests cover the acceptance contract and fail for the expected missing behavior, with one Red retry. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer, Developer, and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests (or an explicit no-docs-needed self-check), and TypeScript compilation when TS/JS files changed. Runtime preflight also fails on stale project/global prompt overrides that are missing required acceptance-contract markers. Verdict phases with `contract.policy.acceptanceCoverage` must carry and address the Explorer acceptance criteria; missing coverage overrides PASS to FAIL and is recorded as phase failure/retry events. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
+Default workflows are YAML-defined phase/action sequences, including dispatcher workspace actions before agent launch. Workflow YAML resolves from explicit path, project `.foreman/workflows` (`.yaml|.yml`), global `~/.foreman/workflows` (`.yaml|.yml`), then bundled defaults; project-relative explicit paths must stay inside the project root. Use `foreman workflows list|show|validate|install|create` to inspect, validate, install, or create project/global workflow YAML. Editable action modules in `.foreman/actions/*.js|*.mjs|*.ts` or `~/.foreman/actions/*.js|*.mjs|*.ts` are bundled and loaded at runtime when present (project wins), so JS/MJS actions may import TS helper files kept outside the actions directory (every direct `.js`/`.mjs`/`.ts` file there is treated as an action); `foreman init`, `FOREMAN_BACKEND=node foreman doctor --fix`, and `foreman actions install [--global]` install bundled stubs. `foreman actions list` shows resolution, `foreman actions show <action>` prints one resolved path, `foreman actions validate` checks project/global action module names, JS/TS syntax/import resolution, function exports, duplicate `.js`/`.mjs`/`.ts` variants, and unresolved workflow action references, `foreman actions create <action> [--global]` creates a new stub (action names may contain letters, numbers, `.`, `_`, and `-`, with at least one letter/number; known builtin/workspace actions wrap `ctx.internal.runBuiltin()` by default), and legacy `FOREMAN_BACKEND=node foreman doctor` validates the same action issues. The bundled `qlty` action runs `qlty check` (qlty CLI from https://qlty.sh/ must be on `PATH`), writes `QLTY_REPORT.md`, and bundled developer workflows retry Developer when it fails. Before retrying a target phase or forwarding an artifact to a phase, Foreman writes a normalized `{TARGET_PHASE}_TASK.md` input file in the run report directory (for example `DEVELOPER_TASK.md`) with the source phase/artifact, failure, retry attempt, and feedback content. The bundled fast path has Explorer (when present) hand off directly to Developer, then QA/review/finalize/documentation. TDD red/review phases are opt-in via `foreman run --workflow tdd`, a `workflow:tdd` label, or task type `tdd`. In the TDD workflow, `test-red` writes at most a few focused failing tests and `test-review` verifies those tests cover the acceptance contract and fail for the expected missing behavior, with one Red retry. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer, Developer, and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests (or an explicit no-docs-needed self-check), and TypeScript compilation when TS/JS files changed. Runtime preflight also fails on stale project/global prompt overrides that are missing required acceptance-contract markers. Verdict phases with `contract.policy.acceptanceCoverage` must carry and address the Explorer acceptance criteria; missing coverage overrides PASS to FAIL and is recorded as phase failure/retry events. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
 
 ```bash
 FOREMAN_BACKEND=node foreman run                       # Dispatch all ready tasks (up to max-agents)
@@ -485,13 +485,14 @@ foreman logs <run-id> --raw --tail 200 # Raw JSON tail
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, workflow configs, and duplicate workflow YAML `task_type` declarations.
+Legacy Node/Postgres health checks for Foreman installation. Default Elixir mode blocks this path; use `foreman server doctor` for Elixir server/projection/worker health, or set `FOREMAN_BACKEND=node` for legacy checks.
 
 ```bash
-foreman doctor                    # Run all health checks
-foreman doctor --fix              # Auto-fix issues
-foreman doctor --dry-run          # Preview fixes without applying
-foreman doctor --json             # Machine-readable output
+foreman server doctor             # Elixir health checks
+FOREMAN_BACKEND=node foreman doctor                    # Run legacy health checks
+FOREMAN_BACKEND=node foreman doctor --fix              # Auto-fix legacy issues
+FOREMAN_BACKEND=node foreman doctor --dry-run          # Preview fixes without applying
+FOREMAN_BACKEND=node foreman doctor --json             # Machine-readable output
 ```
 
 | Option | Description |
@@ -927,15 +928,15 @@ foreman attach --kill             # Kill the agent process
 
 ### `foreman worktree`
 
-Manage git worktrees used by Foreman agents.
+Manage git worktrees used by Foreman agents. `worktree clean` uses legacy run stores to decide safety and is blocked in default Elixir mode; set `FOREMAN_BACKEND=node` for legacy cleanup until Elixir-safe cleanup lands.
 
 ```bash
 foreman worktree list             # Show all active worktrees
 foreman worktree list --json      # Machine-readable output
-foreman worktree clean            # Remove orphaned worktrees
-foreman worktree clean --all      # Remove ALL worktrees including active
-foreman worktree clean --force    # Force-delete branches
-foreman worktree clean --dry-run  # Preview removal
+FOREMAN_BACKEND=node foreman worktree clean            # Remove orphaned worktrees
+FOREMAN_BACKEND=node foreman worktree clean --all      # Remove ALL worktrees including active
+FOREMAN_BACKEND=node foreman worktree clean --force    # Force-delete branches
+FOREMAN_BACKEND=node foreman worktree clean --dry-run  # Preview removal
 ```
 
 **`worktree list` options:**
@@ -958,17 +959,17 @@ foreman worktree clean --dry-run  # Preview removal
 
 ### `foreman purge`
 
-Purge old agent logs and stale run records. The old `foreman purge-logs` and `foreman purge-zombie-runs` spellings remain as hidden deprecated aliases.
+Legacy cleanup for old agent logs and stale run records. Default Elixir mode blocks purge paths because they use legacy run stores to decide deletion safety; set `FOREMAN_BACKEND=node` for legacy cleanup until Elixir-safe purge commands land. The old `foreman purge-logs` and `foreman purge-zombie-runs` spellings remain as hidden deprecated aliases.
 
 #### `foreman purge logs`
 
 Remove old agent log files from `~/.foreman/logs/` based on a retention policy.
 
 ```bash
-foreman purge logs                # Delete logs older than 7 days
-foreman purge logs --days 30      # Custom retention window
-foreman purge logs --dry-run      # Preview
-foreman purge logs --all          # Delete all terminal-status logs regardless of age
+FOREMAN_BACKEND=node foreman purge logs                # Delete logs older than 7 days
+FOREMAN_BACKEND=node foreman purge logs --days 30      # Custom retention window
+FOREMAN_BACKEND=node foreman purge logs --dry-run      # Preview
+FOREMAN_BACKEND=node foreman purge logs --all          # Delete all terminal-status logs regardless of age
 ```
 
 | Option | Default | Description |
@@ -982,8 +983,8 @@ foreman purge logs --all          # Delete all terminal-status logs regardless o
 Remove failed run records for tasks that are already closed or no longer exist. Reduces database clutter.
 
 ```bash
-foreman purge runs                # Clean up stale records
-foreman purge runs --dry-run      # Preview
+FOREMAN_BACKEND=node foreman purge runs                # Clean up stale records
+FOREMAN_BACKEND=node foreman purge runs --dry-run      # Preview
 ```
 
 | Option | Description |

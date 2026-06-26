@@ -30,7 +30,7 @@ FOREMAN_BACKEND=node foreman reset --detect-stuck  # Legacy detect + reset stuck
 FOREMAN_BACKEND=node foreman reset --task X --preserve-worktree  # Legacy reset, keep worktree/branch
 foreman retry <seed>   # Re-run a failed pipeline phase
 FOREMAN_BACKEND=node foreman stop           # Legacy stop via process metadata
-foreman doctor         # Health checks (br, Pi, DB integrity)
+foreman server doctor  # Elixir health checks (server/projections/workers)
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
 FOREMAN_BACKEND=node foreman sling trd X # Legacy TRD -> task hierarchy
 FOREMAN_BACKEND=node foreman plan X      # Legacy PRD -> TRD pipeline
@@ -44,8 +44,8 @@ FOREMAN_BACKEND=node foreman pr             # Legacy Refinery PR creation
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
 foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead'); task create/list/show/update/approve/close/dep route through Elixir by default
-foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
-foreman purge runs     # Remove stale failed run records
+FOREMAN_BACKEND=node foreman purge logs # Legacy remove old agent logs
+FOREMAN_BACKEND=node foreman purge runs # Legacy remove stale failed run records
 foreman inbox          # Agent mail + selected-run lifecycle events
 foreman inbox send     # Send Agent Mail/operator messages (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
@@ -156,7 +156,7 @@ Example `.foreman/config.yaml`:
 vcs:
   backend: jujutsu        # 'git' | 'jujutsu' | 'auto' (default: 'auto')
   jujutsu:
-    minVersion: "0.21.0"  # validated by 'foreman doctor'
+    minVersion: "0.21.0"  # legacy-validated by 'FOREMAN_BACKEND=node foreman doctor'
 ```
 
 ### Documentation
@@ -248,7 +248,7 @@ foreman debug <bead-id> --raw   # Dump all artifacts without AI (Elixir API firs
 foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs
-foreman doctor         # Check br binary, Pi binary, DB integrity
+foreman server doctor  # Check Elixir server/projections/workers
 foreman status         # See all active/failed agents
 FOREMAN_BACKEND=node foreman reset          # Legacy reset failed/stuck runs
 FOREMAN_BACKEND=node foreman reset --bead X # Legacy reset a specific run
@@ -257,8 +257,8 @@ foreman retry <seed>   # Re-run a specific pipeline phase
 # Agent logs (streamed during run)
 ls ~/.foreman/logs/    # One .log file per runId
 cat ~/.foreman/logs/<runId>.log
-foreman purge logs     # Remove old log files (retention policy)
-foreman purge runs     # Remove stale failed run records
+FOREMAN_BACKEND=node foreman purge logs # Legacy remove old log files
+FOREMAN_BACKEND=node foreman purge runs # Legacy remove stale failed run records
 
 # Mail inspection
 foreman inbox --all --watch  # Live stream all mail across all runs
@@ -266,7 +266,7 @@ foreman inbox --bead X       # Mail for a specific bead
 
 # Worktree cleanup
 foreman worktree list   # See all active worktrees
-foreman worktree clean  # Remove orphaned worktrees
+FOREMAN_BACKEND=node foreman worktree clean  # Legacy remove orphaned worktrees
 
 # Test failures
 npm test               # Run all tests

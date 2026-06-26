@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Workspace } from "../../lib/vcs/types.js";
 import type { Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
@@ -468,8 +468,16 @@ describe("cleanWorktrees()", () => {
 // ── worktree command targeting tests ──────────────────────────────────────────
 
 describe("worktree command targeting", () => {
+  const originalBackend = process.env["FOREMAN_BACKEND"];
+
   beforeEach(() => {
+    process.env["FOREMAN_BACKEND"] = "node";
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalBackend === undefined) delete process.env["FOREMAN_BACKEND"];
+    else process.env["FOREMAN_BACKEND"] = originalBackend;
   });
 
   it("resolves registered worktree list to the canonical project path from a non-canonical cwd", async () => {

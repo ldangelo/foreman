@@ -29,6 +29,10 @@ describe("default Elixir legacy command guards", () => {
     { args: ["pr"], message: "foreman pr uses the legacy Refinery PR path" },
     { args: ["run", "task", "foreman-12345", "task"], message: "foreman run task uses the legacy Node worker bridge directly" },
     { args: ["sentinel", "status"], message: "foreman sentinel uses the legacy SentinelAgent" },
+    { args: ["worktree", "clean", "--dry-run"], message: "foreman worktree clean uses legacy run stores" },
+    { args: ["purge", "logs", "--dry-run"], message: "foreman purge logs uses legacy run stores" },
+    { args: ["purge", "runs", "--dry-run"], message: "foreman purge runs mutates legacy run stores" },
+    { args: ["doctor"], message: "foreman doctor runs legacy Node/Postgres/daemon checks" },
   ])("fails fast before project/VCS resolution for $args", async ({ args, message }) => {
     const result = await runTsxModule(CLI, args, {
       cwd: makeTempDir(),

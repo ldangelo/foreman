@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import { destroyPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
@@ -82,6 +83,13 @@ export const doctorCommand = new Command("doctor")
     const jsonOutput = (opts.json as boolean | undefined) ?? false;
     const cleanLogs = (opts.cleanLogs as boolean | undefined) ?? false;
     const logDays = (opts.logDays as number | undefined) ?? 7;
+
+    if (foremanBackendMode() === "elixir") {
+      const message = "foreman doctor runs legacy Node/Postgres/daemon checks. Use 'foreman server doctor' for Elixir health, or set FOREMAN_BACKEND=node for legacy doctor.";
+      if (jsonOutput) console.log(JSON.stringify({ checks: [], summary: { pass: 0, warn: 0, fail: 1, fixed: 0, skip: 0 }, error: message }, null, 2));
+      else console.error(chalk.red(message));
+      process.exit(1);
+    }
 
     if (!jsonOutput) {
       console.log(chalk.bold("\nforeman doctor\n"));

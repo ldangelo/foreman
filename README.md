@@ -74,7 +74,7 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 - `FOREMAN_BACKEND=node foreman daemon start` — validates Postgres, starts Fastify + Unix socket listener
 - `FOREMAN_BACKEND=node foreman daemon stop` — clean shutdown (release pool, close socket)
 - `FOREMAN_BACKEND=node foreman daemon status` — PID, socket path, health endpoint
-- Auto-restart on unexpected exit (detected via `foreman doctor`)
+- Auto-restart on unexpected exit (legacy detection via `FOREMAN_BACKEND=node foreman doctor`)
 
 > **Note:** Default Elixir mode uses the Elixir server for shared state/scheduling. The legacy daemon uses PostgreSQL via `DATABASE_URL`, owns the shared Postgres pool, and exposes a tRPC layer for explicit `FOREMAN_BACKEND=node` operation.
 
@@ -318,7 +318,7 @@ irm https://raw.githubusercontent.com/ldangelo/foreman/main/install.ps1 | iex
 
 ```bash
 foreman --version
-foreman doctor              # Check installation and dependencies
+foreman server doctor       # Check Elixir server/projection/worker health
 ```
 
 ## Quick Start
@@ -633,11 +633,12 @@ Security controls for the Elixir server:
 - Destructive command-router actions such as `task.close`, `task.block`, and `task.update` append `AuthorizationChecked` and `AuditRecorded` events after the command executes.
 
 ### `foreman doctor`
-Check environment health: Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth.
+Legacy Node/Postgres health checks: Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth. Default Elixir mode blocks this path; use `foreman server doctor` for Elixir health, or set `FOREMAN_BACKEND=node` for legacy checks.
 
 ```bash
-foreman doctor
-foreman doctor --fix                    # Auto-fix recoverable issues
+foreman server doctor                   # Elixir health checks
+FOREMAN_BACKEND=node foreman doctor
+FOREMAN_BACKEND=node foreman doctor --fix                    # Auto-fix recoverable legacy issues
 ```
 
 ### `foreman inbox`
@@ -656,8 +657,8 @@ Manage git worktrees created for active tasks. Agent worktrees live under `~/.fo
 
 ```bash
 foreman worktree list                    # List active worktrees
-foreman worktree clean                   # Remove orphaned worktrees
-foreman worktree clean --all             # Remove all including active ones
+FOREMAN_BACKEND=node foreman worktree clean                   # Legacy orphan cleanup
+FOREMAN_BACKEND=node foreman worktree clean --all             # Remove all including active ones
 ```
 
 ### `foreman sentinel`

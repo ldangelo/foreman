@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
@@ -275,6 +276,11 @@ export async function purgeLogsAction(
 }
 
 export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void> {
+  if (foremanBackendMode() === "elixir") {
+    console.error(chalk.red("foreman purge logs uses legacy run stores to decide whether logs are orphaned or safe to delete. Set FOREMAN_BACKEND=node for legacy log cleanup until Elixir-safe purge lands."));
+    process.exit(1);
+  }
+
   let context: PurgeLogsCommandContext;
   try {
     context = await resolvePurgeLogsCommandContext();

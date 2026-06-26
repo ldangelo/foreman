@@ -10,7 +10,7 @@ Before diving into specific issues, run these commands to understand the current
 
 ```bash
 foreman status                    # Overview: tasks, agents, costs
-foreman doctor                    # Health checks (br, DB, prompts)
+foreman server doctor             # Elixir health checks (server/projections/workers)
 foreman inbox --all --watch       # Live mail stream across all runs
 foreman debug <task-id>           # AI-powered deep-dive on a specific task
 foreman debug <task-id> --raw     # Raw artifacts without AI analysis
@@ -329,10 +329,10 @@ git status
 ```bash
 # Use Foreman commands instead of manual rm -rf
 foreman stop <task-id>
-foreman worktree clean --dry-run  # Preview what will be removed
-foreman worktree clean            # Remove the worktree and prune stale refs
-foreman reset --bead <task-id>    # --bead is backward-compatible alias
-foreman run --bead <task-id>      # Fresh dispatch (--bead is alias)
+FOREMAN_BACKEND=node foreman worktree clean --dry-run  # Preview legacy cleanup
+FOREMAN_BACKEND=node foreman worktree clean            # Legacy remove/prune
+FOREMAN_BACKEND=node foreman reset --bead <task-id>    # Legacy reset cleanup
+foreman retry <task-id> --dispatch # Elixir retry/redispatch
 ```
 
 ### "index.lock: File exists" error
@@ -344,7 +344,7 @@ foreman run --bead <task-id>      # Fresh dispatch (--bead is alias)
 **Fix:**
 ```bash
 rm -f .git/index.lock
-# Also check worktrees (emergency only — prefer foreman worktree clean):
+# Also check worktrees (emergency only — prefer FOREMAN_BACKEND=node foreman worktree clean):
 rm -f ../.foreman-worktrees/<repo-name>/<seedId>/.git/index.lock 2>/dev/null
 ```
 
@@ -355,9 +355,9 @@ rm -f ../.foreman-worktrees/<repo-name>/<seedId>/.git/index.lock 2>/dev/null
 **Fix:**
 ```bash
 foreman worktree list             # See all worktrees
-foreman worktree clean            # Remove orphaned ones
-foreman worktree clean --all      # Remove ALL (including active)
-foreman worktree clean --dry-run  # Preview first
+FOREMAN_BACKEND=node foreman worktree clean            # Legacy remove orphaned ones
+FOREMAN_BACKEND=node foreman worktree clean --all      # Legacy remove ALL (including active)
+FOREMAN_BACKEND=node foreman worktree clean --dry-run  # Preview first
 ```
 
 ### Daemon logs "skipped checkout sync" for a registered project
@@ -416,7 +416,7 @@ br show <task-id>
 br close <task-id> --force --reason "Already merged to dev"
 
 # Or run doctor to reconcile
-foreman doctor --fix
+FOREMAN_BACKEND=node foreman doctor --fix
 ```
 
 ### DB and JSONL counts differ
@@ -563,8 +563,8 @@ foreman run --bead <task-id>     # Fresh dispatch (--bead is alias)
 ## Getting Help
 
 ```bash
-foreman doctor                    # Automated health checks
-foreman doctor --fix              # Auto-fix common issues
+foreman server doctor             # Elixir health checks
+FOREMAN_BACKEND=node foreman doctor --fix              # Auto-fix common issues
 foreman debug <task-id>           # AI analysis of what went wrong
 foreman debug <task-id> --raw     # All artifacts without AI cost
 

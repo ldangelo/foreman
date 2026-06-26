@@ -127,7 +127,7 @@ This creates:
    brew tap oftheangels/tap
    brew install foreman
    foreman --version
-   foreman doctor
+   foreman server doctor
    ```
 
 ---

@@ -99,10 +99,10 @@ Foreman uses the Elixir server for shared project state and scheduling by defaul
 foreman server status
 foreman server start
 foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
-foreman doctor
+foreman server doctor
 ```
 
-If commands report server or database issues, run `foreman server doctor` / `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
+If commands report server or database issues, run `foreman server doctor` and check [Troubleshooting](./troubleshooting.md). Use `FOREMAN_BACKEND=node foreman doctor` only for legacy Node/Postgres diagnostics.
 
 Legacy Node daemon operation is explicit only: set `FOREMAN_BACKEND=node` before `foreman daemon start|restart` or other daemon-backed commands. Default Elixir mode blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
 
@@ -340,7 +340,7 @@ Old failed runs can accumulate and obscure current state in `foreman runs`, `for
 - `runs.archived` controls visibility in PostgreSQL-backed stores.
 - Recent-active run reads include pending/running runs plus failed runs from the last 30 days, excluding archived runs.
 - Use `foreman status --include-archived` when historical runs need inspection.
-- `foreman purge runs` archives failed runs whose tasks are closed; permanent deletion is available via the explicit purge option.
+- `FOREMAN_BACKEND=node foreman purge runs` archives legacy failed runs whose tasks are closed; permanent deletion is available via the explicit purge option.
 
 ## Documentation Expectations
 

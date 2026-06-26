@@ -11,7 +11,7 @@ This guide covers:
 - Conflict handling differences
 - How the Finalize phase changes
 - Migration path from git
-- Health checks with `foreman doctor`
+- Health checks with legacy `FOREMAN_BACKEND=node foreman doctor`
 - Known limitations
 
 ---
@@ -51,7 +51,7 @@ jj git init --git-repo .    # Wraps the existing .git/ dir
 ls -la | grep -E "\.jj|\.git"
 # Should show both .jj and .git
 
-foreman doctor
+FOREMAN_BACKEND=node foreman doctor
 # ✓ colocated repo detected (.jj/ + .git/ present)
 ```
 
@@ -202,14 +202,14 @@ Reviewers can use `{{vcsBackendName}}` to tailor feedback (e.g., noting that a d
 
 4. **Run doctor** to verify:
    ```bash
-   foreman doctor
+   FOREMAN_BACKEND=node foreman doctor
    # ✓ jj 0.24.0 >= 0.21.0 (required)
    # ✓ colocated repo detected (.jj/ + .git/ present)
    ```
 
 5. **Clean up any existing worktrees** (they were created as git worktrees):
    ```bash
-   foreman worktree clean
+   FOREMAN_BACKEND=node foreman worktree clean
    ```
 
 6. **Test with a smoke workflow**:
@@ -221,9 +221,9 @@ Reviewers can use `{{vcsBackendName}}` to tailor feedback (e.g., noting that a d
 
 ---
 
-## `foreman doctor` Checks for Jujutsu
+## Legacy `FOREMAN_BACKEND=node foreman doctor` Checks for Jujutsu
 
-When a jujutsu backend is configured (or auto-detected), `foreman doctor` runs these additional checks:
+When a jujutsu backend is configured (or auto-detected), legacy `FOREMAN_BACKEND=node foreman doctor` runs these additional checks:
 
 | Check | Pass | Fail |
 |-------|------|------|
@@ -235,7 +235,7 @@ When a jujutsu backend is configured (or auto-detected), `foreman doctor` runs t
 To run only VCS checks:
 
 ```bash
-foreman doctor --check vcs
+FOREMAN_BACKEND=node foreman doctor --check vcs
 ```
 
 ---

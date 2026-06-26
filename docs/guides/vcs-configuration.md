@@ -70,7 +70,7 @@ vcs:
 
   # Jujutsu-specific options
   jujutsu:
-    minVersion: "0.21.0"    # Minimum jj version; validated by 'foreman doctor'
+    minVersion: "0.21.0"    # Minimum jj version; validated by legacy 'FOREMAN_BACKEND=node foreman doctor'
 ```
 
 ### Config File Locations
@@ -165,7 +165,7 @@ Set `useTown: false` if you don't use git-town and want to skip that lookup.
 
 ### `vcs.jujutsu.minVersion`
 
-Specifies the minimum acceptable jj CLI version. Validated by `foreman doctor`.
+Specifies the minimum acceptable jj CLI version. Validated by legacy `FOREMAN_BACKEND=node foreman doctor`.
 
 ```yaml
 vcs:
@@ -174,7 +174,7 @@ vcs:
     minVersion: "0.21.0"
 ```
 
-If the installed jj version is older than `minVersion`, `foreman doctor` reports a warning:
+If the installed jj version is older than `minVersion`, legacy `FOREMAN_BACKEND=node foreman doctor` reports a warning:
 
 ```
 ⚠ jj version 0.18.0 is below minimum required 0.21.0
@@ -210,7 +210,7 @@ vcs:
 Verify setup:
 
 ```bash
-foreman doctor
+FOREMAN_BACKEND=node foreman doctor
 # ✓ jj 0.24.0 >= 0.21.0 (required)
 # ✓ colocated repo detected (.jj/ + .git/ present)
 ```
@@ -306,8 +306,8 @@ brew install jj
 # Verify
 jj --version
 
-# Run doctor
-foreman doctor
+# Run legacy doctor
+FOREMAN_BACKEND=node foreman doctor
 ```
 
 ### Non-colocated jj repo (Foreman limitation)
@@ -343,8 +343,8 @@ cat ~/.foreman/config.yaml
 # 3. Check what's in project root
 ls -la | grep -E "\.git|\.jj"
 
-# 4. Run doctor
-foreman doctor
+# 4. Run legacy doctor
+FOREMAN_BACKEND=node foreman doctor
 ```
 
 ---
@@ -352,8 +352,8 @@ foreman doctor
 ## Verifying Configuration
 
 ```bash
-# Run health checks (checks VCS config, binary availability, colocated mode)
-foreman doctor
+# Run legacy VCS health checks (checks VCS config, binary availability, colocated mode)
+FOREMAN_BACKEND=node foreman doctor
 
 # Check which backend is active for a dispatched run
 foreman status

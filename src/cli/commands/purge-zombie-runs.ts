@@ -1,5 +1,6 @@
 import chalk from "chalk";
 
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore, type Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
@@ -153,6 +154,11 @@ export async function purgeZombieRunsAction(
 }
 
 export async function purgeZombieRunsCommandAction(opts: PurgeZombieRunsOpts): Promise<number> {
+  if (foremanBackendMode() === "elixir") {
+    console.error(chalk.red("foreman purge runs mutates legacy run stores. Set FOREMAN_BACKEND=node for legacy run cleanup until Elixir run archive/purge commands land."));
+    return 1;
+  }
+
   let projectPath: string;
   try {
     projectPath = await resolveRepoRootProjectPath({});

@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import type { Run } from "../../lib/store.js";
@@ -196,6 +197,11 @@ export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise
 }
 
 export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promise<void> {
+  if (foremanBackendMode() === "elixir") {
+    console.error(chalk.red("foreman worktree clean uses legacy run stores to decide which worktrees are safe to remove. Use Elixir run/status views first, or set FOREMAN_BACKEND=node for legacy worktree cleanup."));
+    process.exit(1);
+  }
+
   try {
     const { projectPath, registered } = await resolveProjectContext();
     const localStore = ForemanStore.forProject(projectPath);
