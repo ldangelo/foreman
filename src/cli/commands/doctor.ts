@@ -13,7 +13,7 @@ import { ensureCliPostgresPool, resolveRepoRootProjectPath } from "./project-tas
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { wrapLocalRunStore } from "./local-store-adapter.js";
 import { parseNonNegativeIntOption } from "./cli-output.js";
-import { purgeLogsAction } from "./purge-logs.js";
+import { purgeLogsAction, purgeLogsElixirDryRun } from "./purge-logs.js";
 import type { CheckResult, CheckStatus } from "../../orchestrator/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -67,10 +67,14 @@ async function resolveDoctorProjectPath(): Promise<string> {
   return resolveRepoRootProjectPath({});
 }
 
-export async function runElixirDoctor(opts: { jsonOutput?: boolean; fix?: boolean; dryRun?: boolean; cleanLogs?: boolean }): Promise<number> {
+export async function runElixirDoctor(opts: { jsonOutput?: boolean; fix?: boolean; dryRun?: boolean; cleanLogs?: boolean; logDays?: number }): Promise<number> {
   const jsonOutput = opts.jsonOutput ?? false;
+  if (opts.cleanLogs && opts.dryRun && !opts.fix) {
+    if (!jsonOutput) console.log(chalk.bold("\nforeman doctor --clean-logs --dry-run (Elixir)\n"));
+    return purgeLogsElixirDryRun({ dryRun: true, days: opts.logDays });
+  }
   if (opts.fix || opts.cleanLogs) {
-    const message = "foreman doctor --fix/--clean-logs run legacy Node/Postgres maintenance. Use 'foreman server doctor' for Elixir health, or set FOREMAN_BACKEND=node for legacy maintenance.";
+    const message = "foreman doctor --fix/--clean-logs run legacy Node/Postgres maintenance. Use 'foreman server doctor' for Elixir health, use --clean-logs --dry-run for an Elixir log cleanup preview, or set FOREMAN_BACKEND=node for legacy maintenance.";
     if (jsonOutput) console.log(JSON.stringify({ checks: [], summary: { pass: 0, warn: 0, fail: 1, fixed: 0, skip: 0 }, error: message }, null, 2));
     else console.error(chalk.red(message));
     return 1;
@@ -115,7 +119,7 @@ export const doctorCommand = new Command("doctor")
     const logDays = (opts.logDays as number | undefined) ?? 7;
 
     if (foremanBackendMode() === "elixir") {
-      process.exit(await runElixirDoctor({ jsonOutput, fix, dryRun, cleanLogs }));
+      process.exit(await runElixirDoctor({ jsonOutput, fix, dryRun, cleanLogs, logDays }));
     }
 
     if (!jsonOutput) {

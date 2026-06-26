@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { mockEnsureRunning, mockDoctor } = vi.hoisted(() => ({
+const { mockEnsureRunning, mockDoctor, mockPurgeLogsElixirDryRun } = vi.hoisted(() => ({
   mockEnsureRunning: vi.fn(async () => ({ running: true, url: "http://127.0.0.1:4766" })),
   mockDoctor: vi.fn(async () => ({ ok: true, body: { ok: true, checks: [] } })),
+  mockPurgeLogsElixirDryRun: vi.fn(async () => 0),
 }));
 
 vi.mock("../../../lib/elixir-server-manager.js", () => ({
@@ -10,6 +11,11 @@ vi.mock("../../../lib/elixir-server-manager.js", () => ({
     ensureRunning = mockEnsureRunning;
     doctor = mockDoctor;
   },
+}));
+
+vi.mock("../purge-logs.js", () => ({
+  purgeLogsAction: vi.fn(),
+  purgeLogsElixirDryRun: mockPurgeLogsElixirDryRun,
 }));
 
 import { runElixirDoctor } from "../doctor.js";
@@ -40,6 +46,15 @@ describe("Elixir doctor command", () => {
     expect(mockEnsureRunning).not.toHaveBeenCalled();
     expect(mockDoctor).not.toHaveBeenCalled();
     expect(errorSpy.mock.calls.map((call) => call.join("\n")).join("\n")).toContain("legacy Node/Postgres maintenance");
+  });
+
+  it("delegates clean-log dry-run to Elixir purge preview", async () => {
+    const exitCode = await runElixirDoctor({ cleanLogs: true, dryRun: true, logDays: 30 });
+
+    expect(exitCode).toBe(0);
+    expect(mockPurgeLogsElixirDryRun).toHaveBeenCalledWith({ dryRun: true, days: 30 });
+    expect(mockEnsureRunning).not.toHaveBeenCalled();
+    expect(mockDoctor).not.toHaveBeenCalled();
   });
 
   it("returns failure when Elixir server doctor fails", async () => {

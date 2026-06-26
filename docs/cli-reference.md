@@ -487,11 +487,12 @@ foreman logs <run-id> --raw --tail 200 # Raw JSON tail
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. In default Elixir mode, `foreman doctor` runs the Elixir server/projection/worker health check (same backend as `foreman server doctor`). Legacy Node/Postgres maintenance flags require `FOREMAN_BACKEND=node`.
+Health checks for Foreman installation. In default Elixir mode, `foreman doctor` runs the Elixir server/projection/worker health check (same backend as `foreman server doctor`), and `foreman doctor --clean-logs --dry-run` delegates to the Elixir log-cleanup preview without deleting files. Legacy Node/Postgres maintenance flags require `FOREMAN_BACKEND=node`.
 
 ```bash
 foreman doctor                                    # Elixir health checks
 foreman doctor --json                             # Machine-readable Elixir health
+foreman doctor --clean-logs --dry-run             # Elixir-backed log cleanup preview
 foreman server doctor                             # Explicit Elixir server health checks
 FOREMAN_BACKEND=node foreman doctor               # Run legacy health checks
 FOREMAN_BACKEND=node foreman doctor --fix         # Auto-fix legacy issues
@@ -501,7 +502,7 @@ FOREMAN_BACKEND=node foreman doctor --dry-run     # Preview legacy fixes without
 | Option | Description |
 |--------|-------------|
 | `--fix` | Auto-fix issues (install missing prompts, migrate stores, etc.) |
-| `--dry-run` | Preview what --fix would do |
+| `--dry-run` | Preview what --fix would do; with `--clean-logs` in Elixir mode, preview log cleanup without deleting files |
 | `--json` | Output as JSON |
 
 ### `foreman actions`

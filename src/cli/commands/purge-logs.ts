@@ -297,6 +297,29 @@ function elixirRunToPurgeRun(run: ElixirRun): Run | null {
   };
 }
 
+export async function purgeLogsElixirDryRun(opts: PurgeLogsOpts): Promise<number> {
+  const manager = new ElixirServerManager();
+  const status = manager.status();
+  if (!status.running || !(await manager.health()).ok) {
+    console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start' before purge preview."));
+    return 1;
+  }
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const runMap = new Map<string, Run>();
+  for (const run of await client.listRuns()) {
+    const mapped = elixirRunToPurgeRun(run);
+    if (mapped) runMap.set(mapped.id, mapped);
+  }
+  try {
+    const result = await purgeLogsAction({ days: opts.days ?? 7, dryRun: true, all: opts.all }, { getRun: async (id) => runMap.get(id) ?? null });
+    return result.errors > 0 ? 1 : 0;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(msg));
+    return 1;
+  }
+}
+
 export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void> {
   if (foremanBackendMode() === "elixir") {
     if (!opts.dryRun) {
@@ -304,26 +327,7 @@ export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void>
       process.exit(1);
     }
 
-    const manager = new ElixirServerManager();
-    const status = manager.status();
-    if (!status.running || !(await manager.health()).ok) {
-      console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start' before purge preview."));
-      process.exit(1);
-    }
-    const client = new ElixirServerClient(status.url, manager.authToken);
-    const runMap = new Map<string, Run>();
-    for (const run of await client.listRuns()) {
-      const mapped = elixirRunToPurgeRun(run);
-      if (mapped) runMap.set(mapped.id, mapped);
-    }
-    try {
-      const result = await purgeLogsAction({ days: opts.days ?? 7, dryRun: true, all: opts.all }, { getRun: async (id) => runMap.get(id) ?? null });
-      process.exit(result.errors > 0 ? 1 : 0);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(msg));
-      process.exit(1);
-    }
+    process.exit(await purgeLogsElixirDryRun(opts));
   }
 
   let context: PurgeLogsCommandContext;

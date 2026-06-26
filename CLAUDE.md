@@ -35,6 +35,7 @@ foreman stop --list       # List active Elixir runs
 foreman stop --dry-run    # Preview active Elixir runs matched for stop
 FOREMAN_BACKEND=node foreman stop           # Legacy stop via process metadata
 foreman doctor         # Elixir health checks (server/projections/workers)
+foreman doctor --clean-logs --dry-run # Elixir-backed log cleanup preview
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
 FOREMAN_BACKEND=node foreman sling trd X # Legacy TRD -> task hierarchy
 FOREMAN_BACKEND=node foreman plan X      # Legacy PRD -> TRD pipeline
@@ -259,6 +260,7 @@ foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs
 foreman doctor         # Check Elixir server/projections/workers
+foreman doctor --clean-logs --dry-run # Elixir-backed log cleanup preview
 foreman status         # See all active/failed agents
 foreman reset --dry-run # Elixir-backed reset/recovery preview
 FOREMAN_BACKEND=node foreman reset          # Legacy reset failed/stuck runs
