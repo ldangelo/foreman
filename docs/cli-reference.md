@@ -648,16 +648,19 @@ FOREMAN_BACKEND=node foreman stop --dry-run            # Preview
 
 ### `foreman merge`
 
-Legacy Node Refinery merge queue. In default Elixir mode, merge/PR state is handled by the Elixir scheduler/finalize workflow; set `FOREMAN_BACKEND=node` for explicit legacy merge operations.
+Legacy Node Refinery merge queue. In default Elixir mode, merge/PR state is handled by the Elixir scheduler/finalize workflow; `--list`, `--dry-run`, and `--stats` provide projection-backed read-only visibility, while actual merge operations require `FOREMAN_BACKEND=node`.
 
 ```bash
 FOREMAN_BACKEND=node foreman merge                     # Process merge queue
 FOREMAN_BACKEND=node foreman merge --task bd-abc1      # Merge a specific task by ID
-FOREMAN_BACKEND=node foreman merge --list              # List tasks ready to merge
-FOREMAN_BACKEND=node foreman merge --dry-run           # Preview merge operations
+foreman merge --list                                   # Elixir projection-backed merge candidates
+foreman merge --dry-run                                # Elixir read-only merge readiness preview
+foreman merge --stats                                  # Elixir merge readiness summary
+FOREMAN_BACKEND=node foreman merge --list              # List legacy merge queue entries
+FOREMAN_BACKEND=node foreman merge --dry-run           # Preview legacy merge operations
 FOREMAN_BACKEND=node foreman merge --target-branch dev # Merge into dev instead of main
 FOREMAN_BACKEND=node foreman merge --no-tests          # Skip test validation
-FOREMAN_BACKEND=node foreman merge --stats             # Show merge cost statistics
+FOREMAN_BACKEND=node foreman merge --stats             # Show legacy merge cost statistics
 FOREMAN_BACKEND=node foreman merge --stats weekly      # Weekly cost breakdown
 ```
 

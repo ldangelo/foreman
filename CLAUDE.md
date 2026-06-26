@@ -46,6 +46,8 @@ foreman import --to-elixir --file migration.json  # Import legacy state into Eli
 foreman metrics --compact # Elixir pipeline counters as key=value
 foreman doctor        # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 # Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces declared acceptance-contract coverage, records PASS→FAIL override/retry reasons, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
+foreman merge --list   # Elixir projection-backed merge candidates
+foreman merge --dry-run # Elixir read-only merge readiness preview
 FOREMAN_BACKEND=node foreman merge          # Legacy Refinery merge queue
 FOREMAN_BACKEND=node foreman pr             # Legacy Refinery PR creation
 foreman attach         # Attach to a running agent session

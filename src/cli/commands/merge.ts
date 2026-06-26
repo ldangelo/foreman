@@ -2,6 +2,8 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient } from "../../lib/task-client.js";
@@ -68,6 +70,79 @@ interface MergeQueueLike {
   reEnqueue(id: number): Promise<boolean>;
 }
 
+function elixirMergeCandidate(run: ElixirRun): boolean {
+  return ["completed", "succeeded", "passed"].includes(run.status ?? "") && Boolean(run.task_id);
+}
+
+export async function renderElixirMergeView(opts: { list?: boolean; dryRun?: boolean; stats?: string | boolean; json?: boolean; task?: string; bead?: string }): Promise<void> {
+  const projectPath = await resolveRepoRootProjectPath({});
+  const registered = await findRegisteredProjectByPath(projectPath, { initPool: false });
+  if (!registered) {
+    const message = `Project at '${projectPath}' is not registered in Elixir. Run 'foreman project add' first.`;
+    if (opts.json) console.error(JSON.stringify({ error: message }));
+    else console.error(chalk.red(message));
+    process.exitCode = 1;
+    return;
+  }
+
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  if (!status.running) {
+    const message = "Elixir server is not running. Start it with 'foreman server start'.";
+    if (opts.json) console.error(JSON.stringify({ error: message }));
+    else console.error(chalk.red(message));
+    process.exitCode = 1;
+    return;
+  }
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const taskFilter = (opts.task ?? opts.bead) as string | undefined;
+  const runs = (await client.listRuns(registered.id)).filter((run) => !taskFilter || run.task_id === taskFilter || run.run_id === taskFilter || run.id === taskFilter);
+  const candidates = runs.filter(elixirMergeCandidate);
+
+  if (opts.stats !== undefined) {
+    const stats = {
+      projectId: registered.id,
+      totalRuns: runs.length,
+      mergeCandidates: candidates.length,
+      byStatus: runs.reduce<Record<string, number>>((acc, run) => {
+        const key = run.status ?? "unknown";
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {}),
+      note: "Elixir merge cost/queue mutation remains workflow-owned; this is a projection-backed readiness summary.",
+    };
+    if (opts.json) console.log(JSON.stringify(stats, null, 2));
+    else {
+      console.log(chalk.bold("Elixir merge readiness summary:\n"));
+      console.log(`  Total runs:        ${stats.totalRuns}`);
+      console.log(`  Ready candidates:  ${stats.mergeCandidates}`);
+      for (const [statusName, count] of Object.entries(stats.byStatus)) console.log(`  ${statusName.padEnd(18)} ${count}`);
+      console.log(chalk.dim("\nLegacy merge cost stats require FOREMAN_BACKEND=node."));
+    }
+    return;
+  }
+
+  if (opts.json) {
+    console.log(JSON.stringify({ entries: candidates.map((run) => ({ run_id: run.run_id ?? run.id, seed_id: run.task_id, branch_name: typeof run.branch_name === "string" ? run.branch_name : typeof run.worktree_path === "string" ? run.worktree_path : null, status: "pending", source_status: run.status })) }, null, 2));
+    return;
+  }
+
+  if (opts.dryRun) console.log(chalk.bold("Elixir merge dry-run preview (read-only):\n"));
+  else console.log(chalk.bold(`Elixir merge candidates (${candidates.length}):\n`));
+
+  if (candidates.length === 0) {
+    console.log(chalk.yellow("No completed Elixir runs found as merge candidates."));
+    return;
+  }
+  for (const run of candidates) {
+    const runId = run.run_id ?? run.id ?? "unknown";
+    const branch = typeof run.branch_name === "string" ? run.branch_name : typeof run.worktree_path === "string" ? run.worktree_path : "(branch unknown)";
+    const verb = opts.dryRun ? "would inspect" : "candidate";
+    console.log(`  ${chalk.cyan(verb)} ${run.task_id ?? "unknown"} ${chalk.dim(`[${runId}] ${branch}`)}`);
+  }
+  if (opts.dryRun) console.log(chalk.dim("\nNo git state was modified. Actual merge remains workflow/legacy-owned."));
+}
+
 function wrapLocalMergeQueue(queue: MergeQueue, store: ForemanStore, projectPath: string): MergeQueueLike {
   return {
     reconcile: async () => queue.reconcile(store.getDb(), projectPath),
@@ -97,7 +172,11 @@ export const mergeCommand = new Command("merge")
   .action(async (opts) => {
     try {
       if (foremanBackendMode() === "elixir") {
-        const message = "foreman merge uses the legacy Refinery and merge queue. Let the Elixir scheduler/finalize workflow handle merge/PR state, or set FOREMAN_BACKEND=node for legacy merge operations.";
+        if (opts.list || opts.dryRun || opts.stats !== undefined) {
+          await renderElixirMergeView(opts);
+          return;
+        }
+        const message = "foreman merge uses the legacy Refinery and merge queue. Use --list/--dry-run/--stats for Elixir projection-backed visibility, let the Elixir scheduler/finalize workflow handle merge/PR state, or set FOREMAN_BACKEND=node for legacy merge operations.";
         if (opts.json) console.error(JSON.stringify({ error: message }));
         else console.error(chalk.red(message));
         process.exitCode = 1;
