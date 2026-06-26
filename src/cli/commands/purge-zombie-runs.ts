@@ -1,6 +1,8 @@
 import chalk from "chalk";
 
 import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirRun, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore, type Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
@@ -153,9 +155,47 @@ export async function purgeZombieRunsAction(
   return result;
 }
 
+function elixirRunStatus(run: ElixirRun): string {
+  return typeof run.status === "string" ? run.status : "unknown";
+}
+
+function elixirTaskClosed(task: ElixirTask | undefined): boolean {
+  return task === undefined || task.status === "closed" || task.status === "completed";
+}
+
+export async function purgeZombieRunsElixirDryRun(opts: PurgeZombieRunsOpts): Promise<number> {
+  const manager = new ElixirServerManager();
+  const status = manager.status();
+  if (!status.running || !(await manager.health()).ok) {
+    console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start' before purge preview."));
+    return 1;
+  }
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const [runs, tasks] = await Promise.all([client.listRuns(), client.listTasks()]);
+  const taskById = new Map<string, ElixirTask>();
+  for (const task of tasks) {
+    const id = task.task_id ?? task.id;
+    if (id) taskById.set(id, task);
+  }
+  const candidates = runs.filter((run) => elixirRunStatus(run) === "failed" && elixirTaskClosed(run.task_id ? taskById.get(run.task_id) : undefined));
+
+  printDryRunNotice(true);
+  if (candidates.length === 0) {
+    console.log(chalk.green("No failed Elixir runs with closed/gone tasks found — nothing to purge."));
+    return 0;
+  }
+  console.log(chalk.bold(`Checking ${runs.length} Elixir run(s) for stale failed records…\n`));
+  for (const run of candidates) {
+    console.log(chalk.cyan(`  would ${opts.purge ? "purge" : "archive"}  run ${run.run_id ?? run.id ?? "unknown"} — task ${run.task_id ?? "unknown"} is closed/gone`));
+  }
+  printPurgeSummary({ dryRun: true, subject: "Elixir run(s)", verb: opts.purge ? "purged" : "archived", count: candidates.length, skipped: runs.length - candidates.length, errors: 0 });
+  return 0;
+}
+
 export async function purgeZombieRunsCommandAction(opts: PurgeZombieRunsOpts): Promise<number> {
   if (foremanBackendMode() === "elixir") {
-    console.error(chalk.red("foreman purge runs mutates legacy run stores. Set FOREMAN_BACKEND=node for legacy run cleanup until Elixir run archive/purge commands land."));
+    if (opts.dryRun) return purgeZombieRunsElixirDryRun(opts);
+    console.error(chalk.red("foreman purge runs mutates legacy run stores. Use --dry-run for an Elixir projection-backed preview, or set FOREMAN_BACKEND=node for legacy run cleanup until Elixir run archive/purge commands land."));
     return 1;
   }
 

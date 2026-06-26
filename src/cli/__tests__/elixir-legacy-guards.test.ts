@@ -32,7 +32,7 @@ describe("default Elixir legacy command guards", () => {
     { args: ["sentinel", "status"], message: "foreman sentinel uses the legacy SentinelAgent" },
     { args: ["worktree", "clean"], message: "foreman worktree clean removes worktrees using legacy run-store safety decisions" },
     { args: ["purge", "logs"], message: "foreman purge logs deletes local log files using legacy run-store safety decisions" },
-    { args: ["purge", "runs", "--dry-run"], message: "foreman purge runs mutates legacy run stores" },
+    { args: ["purge", "runs"], message: "foreman purge runs mutates legacy run stores" },
     { args: ["doctor", "--fix"], message: "foreman doctor --fix/--clean-logs run legacy Node/Postgres maintenance" },
     { args: ["daemon", "stop"], message: "FOREMAN_BACKEND=elixir; the Node daemon scheduler is disabled" },
     { args: ["daemon", "status"], message: "FOREMAN_BACKEND=elixir; the Node daemon scheduler is disabled" },

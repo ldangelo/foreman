@@ -985,11 +985,13 @@ FOREMAN_BACKEND=node foreman purge logs --all          # Delete all terminal-sta
 
 #### `foreman purge runs`
 
-Remove failed run records for tasks that are already closed or no longer exist. Reduces database clutter.
+Remove failed run records for tasks that are already closed or no longer exist. In default Elixir mode, only `--dry-run` is supported as a projection-backed archive/purge preview; actual mutation remains legacy-only.
 
 ```bash
+foreman purge runs --dry-run                           # Elixir-backed stale run preview
+foreman purge runs --dry-run --purge                   # Preview permanent purge candidates
 FOREMAN_BACKEND=node foreman purge runs                # Clean up stale records
-FOREMAN_BACKEND=node foreman purge runs --dry-run      # Preview
+FOREMAN_BACKEND=node foreman purge runs --dry-run      # Preview legacy cleanup
 ```
 
 | Option | Description |
