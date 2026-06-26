@@ -117,6 +117,28 @@ describe("stop command", () => {
     expect(logSpy.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("task-1");
   });
 
+  it("previews Elixir stops without opening legacy stores", async () => {
+    delete process.env.FOREMAN_BACKEND;
+    mockResolveRepoRootProjectPath.mockResolvedValue("/repo");
+    mockFindRegisteredProjectByPath.mockResolvedValue({ id: "project-1", name: "test", path: "/repo" });
+    mockListElixirRuns.mockResolvedValue([
+      { run_id: "run-1", task_id: "task-1", project_id: "project-1", status: "running" },
+      { run_id: "run-2", task_id: "task-2", project_id: "project-1", status: "completed" },
+    ] as never);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const exitCode = await stopCommandAction(undefined, { dryRun: true });
+
+    expect(exitCode).toBe(0);
+    expect(mockFindRegisteredProjectByPath).toHaveBeenCalledWith("/repo", { initPool: false });
+    expect(mockForemanForProject).not.toHaveBeenCalled();
+    expect(mockPostgresForProject).not.toHaveBeenCalled();
+    const output = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(output).toContain("Would stop 1 active Elixir run");
+    expect(output).toContain("task-1");
+    expect(output).not.toContain("task-2");
+  });
+
   it("still guards Elixir stop mutations", async () => {
     delete process.env.FOREMAN_BACKEND;
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);

@@ -255,6 +255,20 @@ function isElixirActiveRun(run: ElixirRun): boolean {
   return status === "pending" || status === "running" || status === "in_progress";
 }
 
+export async function previewElixirStop(runs: ElixirRun[], id?: string): Promise<void> {
+  const activeRuns = runs.filter(isElixirActiveRun).filter((run) => !id || run.run_id === id || run.id === id || run.task_id === id);
+  printDryRunNotice(true);
+  if (activeRuns.length === 0) {
+    console.log("No matching active runs found.");
+    return;
+  }
+  console.log(chalk.bold(`Would stop ${activeRuns.length} active Elixir run(s):\n`));
+  for (const run of activeRuns) {
+    console.log(`  ${chalk.cyan(run.task_id ?? "unknown")} ${chalk.dim(`[${run.run_id ?? run.id ?? "unknown"}]`)} status=${run.status ?? "unknown"}`);
+  }
+  console.log(chalk.dim("\nUse `foreman recover <run>` for Elixir-safe recovery, or set FOREMAN_BACKEND=node for legacy process stop."));
+}
+
 export async function listElixirActiveRuns(runs: ElixirRun[]): Promise<void> {
   const activeRuns = runs.filter(isElixirActiveRun);
   if (activeRuns.length === 0) {
@@ -295,8 +309,8 @@ export async function listElixirActiveRuns(runs: ElixirRun[]): Promise<void> {
 
 export async function stopCommandAction(id: string | undefined, opts: StopOpts): Promise<number> {
   const backendMode = foremanBackendMode();
-  if (backendMode === "elixir" && !opts.list) {
-    console.error(chalk.red("foreman stop uses legacy run stores and process metadata. Use Elixir-backed attach/recover/status flows, or set FOREMAN_BACKEND=node for legacy stop cleanup."));
+  if (backendMode === "elixir" && !opts.list && !opts.dryRun) {
+    console.error(chalk.red("foreman stop uses legacy run stores and process metadata. Use --list/--dry-run for Elixir projection-backed visibility, use Elixir-backed attach/recover/status flows, or set FOREMAN_BACKEND=node for legacy stop cleanup."));
     return 1;
   }
 
@@ -323,7 +337,12 @@ export async function stopCommandAction(id: string | undefined, opts: StopOpts):
       return 1;
     }
     const client = new ElixirServerClient(status.url, manager.authToken);
-    await listElixirActiveRuns(await client.listRuns(registered.id));
+    const runs = await client.listRuns(registered.id);
+    if (opts.dryRun) {
+      await previewElixirStop(runs, id);
+    } else {
+      await listElixirActiveRuns(runs);
+    }
     return 0;
   }
 

@@ -619,10 +619,12 @@ foreman retry bd-abc1 --dry-run   # Preview
 
 ### `foreman stop`
 
-List active runs or use the legacy Node stop path. In default Elixir mode, `foreman stop --list` reads Elixir run projections for operator visibility. Mutating stop paths still use legacy run stores/process metadata and require `FOREMAN_BACKEND=node`; use Elixir-backed attach/recover/status flows by default.
+List active runs or use the legacy Node stop path. In default Elixir mode, `foreman stop --list` reads Elixir run projections and `foreman stop --dry-run` previews active runs that would be stopped. Mutating stop paths still use legacy run stores/process metadata and require `FOREMAN_BACKEND=node`; use Elixir-backed attach/recover/status flows by default.
 
 ```bash
 foreman stop --list                                    # List active Elixir runs
+foreman stop --dry-run                                 # Preview active Elixir runs matched for stop
+foreman stop <run-or-task> --dry-run                   # Preview one Elixir run/task stop match
 FOREMAN_BACKEND=node foreman stop                      # Stop all running legacy agents
 FOREMAN_BACKEND=node foreman stop bd-abc1              # Stop a specific legacy task's agent
 FOREMAN_BACKEND=node foreman stop --list               # List active legacy runs
