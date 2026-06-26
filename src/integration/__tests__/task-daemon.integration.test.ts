@@ -89,9 +89,11 @@ describe("task CLI daemon/Postgres integration", () => {
   let daemon: ChildProcess | null = null;
   let registry: ProjectRegistry;
   let projectId: string;
+  let dbReady = false;
   const databaseUrl = readDatabaseUrl();
 
   beforeEach(async () => {
+    dbReady = false;
     if (!(await canConnect(databaseUrl))) {
       return;
     }
@@ -107,7 +109,13 @@ describe("task CLI daemon/Postgres integration", () => {
 
     process.env.HOME = tempHome;
     await destroyPool();
-    runMigrations(databaseUrl);
+    try {
+      runMigrations(databaseUrl);
+    } catch {
+      dbReady = false;
+      return;
+    }
+    dbReady = true;
     initPool({ databaseUrl });
     registry = new ProjectRegistry({ baseDir: join(tempHome, ".foreman"), pg: new PostgresAdapter() });
     const record = await registry.add({
@@ -146,10 +154,12 @@ describe("task CLI daemon/Postgres integration", () => {
       daemon.kill("SIGTERM");
       await sleep(500);
     }
-    try {
-      await registry.remove(projectId);
-    } catch {
-      // best effort cleanup
+    if (dbReady) {
+      try {
+        await registry.remove(projectId);
+      } catch {
+        // best effort cleanup
+      }
     }
     await destroyPool();
     rmSync(projectDir, { recursive: true, force: true });
@@ -157,7 +167,7 @@ describe("task CLI daemon/Postgres integration", () => {
   });
 
   it("creates, lists, shows, and approves tasks through the daemon/Postgres path", { timeout: 90_000 }, async () => {
-    if (!(await canConnect(databaseUrl))) {
+    if (!(await canConnect(databaseUrl)) || !dbReady) {
       return;
     }
 

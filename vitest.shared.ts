@@ -21,6 +21,10 @@ const baseTestConfig: NonNullable<UserConfig["test"]> = {
     // Tests that need to verify preflight behavior set FOREMAN_RUNTIME_MODE=normal
     // in their beforeEach and restore it in afterEach.
     FOREMAN_RUNTIME_MODE: "test",
+    // Most legacy command tests predate Elixir as the runtime default and exercise
+    // Node/Postgres/local-store paths. Default test lanes to node; Elixir parity
+    // tests explicitly unset or override FOREMAN_BACKEND to verify cutover guards.
+    FOREMAN_BACKEND: "node",
   },
 };
 

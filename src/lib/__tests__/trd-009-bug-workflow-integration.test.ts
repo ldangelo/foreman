@@ -116,7 +116,7 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   describe('phase ordering and finalize', () => {
     it('phases are in order: fix → developer remediation (retryOnly) → qa → cli-review → finalize → documentation → PR review → merge', () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      expect(names).toEqual(['prepare-worktree', 'setup-workspace', 'write-task-context', 'fix', 'developer', 'qa', 'cli-review', 'finalize', 'documentation', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
+      expect(names).toEqual(['prepare-worktree', 'setup-workspace', 'write-task-context', 'fix', 'developer', 'qa', 'qlty', 'cli-review', 'finalize', 'documentation', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
       expect(bugWorkflow.phases.find((p) => p.name === 'developer')?.retryOnly).toBe(true);
     });
 
