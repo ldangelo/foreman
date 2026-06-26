@@ -7,6 +7,8 @@ import chalk from "chalk";
 
 import { BvClient } from "../../lib/bv.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirRun, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
@@ -551,6 +553,76 @@ export function validateWorkflowOverride(
 
 // ── Run Command ──────────────────────────────────────────────────────
 
+function elixirField(record: Record<string, unknown>, field: string): string | null {
+  const value = record[field];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function isElixirActiveRun(run: ElixirRun, taskById: Map<string, ElixirTask>): boolean {
+  const status = elixirField(run, "status");
+  const taskId = run.task_id;
+  const taskStatus = taskId ? taskById.get(taskId)?.status : undefined;
+  return status === "in_progress" && (taskStatus === "in_progress" || taskStatus === "in-progress");
+}
+
+export async function runElixirDryRun(opts: { project?: string; projectPath?: string; task?: string; bead?: string; maxAgents?: string; workflow?: string }): Promise<number> {
+  await requireProjectOrAllInMultiMode(opts.project, false);
+  const projectPath = await resolveRepoRootProjectPath({ project: opts.project, projectPath: opts.projectPath });
+  const manager = new ElixirServerManager();
+  const status = manager.status();
+  if (!status.running || !(await manager.health()).ok) {
+    console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start' before dry-run preview."));
+    return 1;
+  }
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const projects = await client.listProjects();
+  const registered = opts.project
+    ? projects.find((project) => project.id === opts.project || project.project_id === opts.project || project.name === opts.project || project.path === projectPath)
+    : projects.find((project) => project.path === projectPath);
+  const projectId = registered?.project_id ?? registered?.id;
+  if (!registered || !projectId) {
+    console.error(chalk.red(`Project at '${projectPath}' is not registered in Elixir. Run 'foreman project add' first.`));
+    return 1;
+  }
+
+  const taskFilter = opts.bead ?? opts.task;
+  const [allTasks, dispatchableTasks, runs, skips] = await Promise.all([
+    client.listTasks(),
+    client.listDispatchableTasks(),
+    client.listRuns(projectId),
+    client.listSchedulerSkips(projectId),
+  ]);
+  const taskById = new Map<string, ElixirTask>();
+  for (const task of allTasks) {
+    const id = task.task_id ?? task.id;
+    if (id) taskById.set(id, task);
+  }
+  const runnable = dispatchableTasks
+    .filter((task) => (task.project_id ?? projectId) === projectId)
+    .filter((task) => !taskFilter || task.task_id === taskFilter || task.id === taskFilter);
+  const activeRuns = runs.filter((run) => isElixirActiveRun(run, taskById));
+  const capacity = Math.max(0, Number.parseInt(opts.maxAgents ?? "5", 10) - activeRuns.length);
+  const wouldConsider = runnable.slice(0, Math.max(0, capacity));
+
+  console.log(chalk.bold("Elixir scheduler dry-run\n"));
+  console.log(`  Project: ${registered.name ?? projectId} (${projectId})`);
+  console.log(`  Active runs: ${activeRuns.length}`);
+  console.log(`  Runnable tasks: ${runnable.length}`);
+  console.log(`  Available capacity: ${capacity}`);
+  if (opts.workflow) console.log(`  Workflow override: ${opts.workflow} (legacy dispatcher only; Elixir scheduler uses task/workflow routing)`);
+  if (skips.length > 0) console.log(`  Scheduler skips: ${skips.length}`);
+  if (wouldConsider.length > 0) {
+    console.log("\n  Tasks the scheduler can consider:");
+    for (const task of wouldConsider) {
+      console.log(`    ${task.task_id ?? task.id ?? "unknown"} ${task.status ?? "unknown"} ${task.title ?? ""}`.trimEnd());
+    }
+  } else {
+    console.log("\n  No runnable tasks would be dispatched by the Elixir scheduler now.");
+  }
+  console.log(chalk.dim("\nUse `foreman server start` to run the Elixir scheduler. Set FOREMAN_BACKEND=node for legacy dispatch."));
+  return 0;
+}
+
 export const runCommand = new Command("run")
   .description("Legacy Node dispatcher for ready tasks (requires FOREMAN_BACKEND=node; use foreman server start for Elixir)")
   .option("--max-agents <n>", "Maximum concurrent agents", "5")
@@ -597,6 +669,17 @@ export const runCommand = new Command("run")
     const assumeYes = opts.yes === true;
 
     if (foremanBackendMode() === "elixir") {
+      if (dryRun) {
+        process.exitCode = await runElixirDryRun({
+          project: opts.project as string | undefined,
+          projectPath: opts.projectPath as string | undefined,
+          task: opts.task as string | undefined,
+          bead: opts.bead as string | undefined,
+          maxAgents: opts.maxAgents as string | undefined,
+          workflow: workflowOverride,
+        });
+        return;
+      }
       console.error(chalk.red("foreman run uses the legacy Node dispatcher. In Elixir mode, start/use the Elixir scheduler with 'foreman server start' (or MCP /foreman-tick), or set FOREMAN_BACKEND=node for the legacy dispatcher."));
       process.exitCode = 1;
       return;

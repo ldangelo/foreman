@@ -141,6 +141,11 @@ export class ElixirServerClient {
     return body.tasks;
   }
 
+  async listDispatchableTasks(): Promise<ElixirTask[]> {
+    const body = await this.getJson<{ ok: true; tasks: ElixirTask[] }>("/api/v1/tasks/dispatchable");
+    return body.tasks;
+  }
+
   async getTask(taskId: string): Promise<ElixirTask | null> {
     const response = await fetch(new URL(`/api/v1/tasks/${encodeURIComponent(taskId)}`, this.baseUrl), {
       method: "GET",

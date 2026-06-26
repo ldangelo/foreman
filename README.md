@@ -497,13 +497,14 @@ foreman project edit <project-id> --default-branch dev  # Change base for new wo
 Legacy Node dispatcher for ready tasks. In default Elixir mode, use `foreman server start` and let the Elixir scheduler claim approved tasks; set `FOREMAN_BACKEND=node` only for explicit legacy dispatch.
 
 ```bash
-FOREMAN_BACKEND=node foreman run                              # Dispatch to all ready tasks
+foreman run --dry-run                                         # Elixir scheduler preview
+FOREMAN_BACKEND=node foreman run                              # Dispatch to all ready legacy tasks
 FOREMAN_BACKEND=node foreman run --project my-project         # Dispatch without cd into a registered project
 FOREMAN_BACKEND=node foreman run --task task-abc              # Dispatch one specific task
 FOREMAN_BACKEND=node foreman run --max-agents 3               # Limit concurrent agents
 FOREMAN_BACKEND=node foreman run --yes                        # Auto-confirm run prompts for non-interactive use
 FOREMAN_BACKEND=node foreman run --model claude-opus-4-6      # Override model for all agents
-FOREMAN_BACKEND=node foreman run --dry-run                    # Preview without dispatching
+FOREMAN_BACKEND=node foreman run --dry-run                    # Preview legacy dispatch
 ```
 
 Each agent gets:

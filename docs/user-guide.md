@@ -193,9 +193,10 @@ foreman task approve <task-id>
 
 ```bash
 foreman server start              # Elixir scheduler claims approved tasks
+foreman run --dry-run             # Preview scheduler candidates from a running Elixir server
 ```
 
-Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers stay queued until the blocker closes. In default Elixir mode the server scheduler owns dispatch. The legacy Node dispatcher is still available for explicit legacy operation only:
+Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers stay queued until the blocker closes. In default Elixir mode, `foreman run --dry-run` is read-only and requires an already-running Elixir server; the server scheduler owns actual dispatch. The legacy Node dispatcher is still available for explicit legacy operation only:
 
 ```bash
 FOREMAN_BACKEND=node foreman run --project my-project

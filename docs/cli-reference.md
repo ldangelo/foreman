@@ -89,15 +89,17 @@ foreman project remove <project-id>
 
 ### `foreman run`
 
-Legacy Node dispatcher for ready tasks. In default Elixir mode, use `foreman server start` and let the Elixir scheduler claim approved tasks; this command fails fast unless `FOREMAN_BACKEND=node` is set.
+Legacy Node dispatcher for ready tasks. In default Elixir mode, `foreman run --dry-run` prints a read-only scheduler preview from Elixir projections; real dispatch is owned by `foreman server start`, and mutating `foreman run` paths fail fast unless `FOREMAN_BACKEND=node` is set.
 
 Default workflows are YAML-defined phase/action sequences, including dispatcher workspace actions before agent launch. Workflow YAML resolves from explicit path, project `.foreman/workflows` (`.yaml|.yml`), global `~/.foreman/workflows` (`.yaml|.yml`), then bundled defaults; project-relative explicit paths must stay inside the project root. Use `foreman workflows list|show|validate|install|create` to inspect, validate, install, or create project/global workflow YAML. Editable action modules in `.foreman/actions/*.js|*.mjs|*.ts` or `~/.foreman/actions/*.js|*.mjs|*.ts` are bundled and loaded at runtime when present (project wins), so JS/MJS actions may import TS helper files kept outside the actions directory (every direct `.js`/`.mjs`/`.ts` file there is treated as an action); `foreman init`, `FOREMAN_BACKEND=node foreman doctor --fix`, and `foreman actions install [--global]` install bundled stubs. `foreman actions list` shows resolution, `foreman actions show <action>` prints one resolved path, `foreman actions validate` checks project/global action module names, JS/TS syntax/import resolution, function exports, duplicate `.js`/`.mjs`/`.ts` variants, and unresolved workflow action references, `foreman actions create <action> [--global]` creates a new stub (action names may contain letters, numbers, `.`, `_`, and `-`, with at least one letter/number; known builtin/workspace actions wrap `ctx.internal.runBuiltin()` by default), and legacy `FOREMAN_BACKEND=node foreman doctor` validates the same action issues. The bundled `qlty` action runs `qlty check` (qlty CLI from https://qlty.sh/ must be on `PATH`), writes `QLTY_REPORT.md`, and bundled developer workflows retry Developer when it fails. Before retrying a target phase or forwarding an artifact to a phase, Foreman writes a normalized `{TARGET_PHASE}_TASK.md` input file in the run report directory (for example `DEVELOPER_TASK.md`) with the source phase/artifact, failure, retry attempt, and feedback content. The bundled fast path has Explorer (when present) hand off directly to Developer, then QA/review/finalize/documentation. TDD red/review phases are opt-in via `foreman run --workflow tdd`, a `workflow:tdd` label, or task type `tdd`. In the TDD workflow, `test-red` writes at most a few focused failing tests and `test-review` verifies those tests cover the acceptance contract and fail for the expected missing behavior, with one Red retry. Direct task runs write `TASK.md` into the worktree before spawning agents. Explorer, Developer, and QA phases are handoff-driven and use phase overwatch/tool telemetry to block broad repo discovery, Developer test execution, full-suite QA runs, and runaway work before the `maxTurns` emergency fuse. Before QA, Foreman gates Developer completion on report self-check evidence, acceptance-contract coverage from `EXPLORER_REPORT.md`, actual git diff, claimed file existence, required docs/tests (or an explicit no-docs-needed self-check), and TypeScript compilation when TS/JS files changed. Runtime preflight also fails on stale project/global prompt overrides that are missing required acceptance-contract markers. Verdict phases with `contract.policy.acceptanceCoverage` must carry and address the Explorer acceptance criteria; missing coverage overrides PASS to FAIL and is recorded as phase failure/retry events. Phase reports are preserved as attempt-numbered copies (`REPORT.attempt-N.md`) with `RETRY_ATTEMPTS.md` listing them.
 
 ```bash
-FOREMAN_BACKEND=node foreman run                       # Dispatch all ready tasks (up to max-agents)
-FOREMAN_BACKEND=node foreman run --project my-project   # Dispatch against a registered project without cd
-FOREMAN_BACKEND=node foreman run --task bd-abc1        # Dispatch a specific task by ID
-FOREMAN_BACKEND=node foreman run --dry-run             # Preview what would be dispatched
+foreman run --dry-run                                  # Elixir scheduler preview from projections
+foreman run --dry-run --task task-abc                  # Preview a specific Elixir task
+FOREMAN_BACKEND=node foreman run                       # Dispatch all ready legacy tasks (up to max-agents)
+FOREMAN_BACKEND=node foreman run --project my-project  # Dispatch against a registered legacy project without cd
+FOREMAN_BACKEND=node foreman run --task bd-abc1        # Dispatch a specific legacy task by ID
+FOREMAN_BACKEND=node foreman run --dry-run             # Preview legacy dispatch
 FOREMAN_BACKEND=node foreman run --max-agents 3        # Limit concurrent agents to 3
 FOREMAN_BACKEND=node foreman run --resume              # Resume stuck/rate-limited runs
 FOREMAN_BACKEND=node foreman run --resume-failed       # Also resume permanently failed runs
@@ -115,7 +117,7 @@ FOREMAN_BACKEND=node foreman run --model anthropic/claude-opus-4-6  # Force a sp
 | `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--max-agents <n>` | `5` | Maximum concurrent agents |
 | `--model <model>` | — | Force a specific model for all phases |
-| `--dry-run` | — | Show what would be dispatched without doing it |
+| `--dry-run` | — | In Elixir mode, preview scheduler candidates from projections; in Node mode, show what legacy dispatch would run |
 | `--no-watch` | — | Exit immediately after dispatching |
 | `--yes` | — | Answer yes to run confirmation prompts, including non-default target branch confirmation |
 | `--resume` | — | Resume stuck/rate-limited runs from previous dispatch |
