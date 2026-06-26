@@ -963,16 +963,17 @@ FOREMAN_BACKEND=node foreman worktree clean --force    # Force-delete branches
 
 ### `foreman purge`
 
-Legacy cleanup for old agent logs and stale run records. Default Elixir mode blocks purge paths because they use legacy run stores to decide deletion safety; set `FOREMAN_BACKEND=node` for legacy cleanup until Elixir-safe purge commands land. The old `foreman purge-logs` and `foreman purge-zombie-runs` spellings remain as hidden deprecated aliases.
+Cleanup for old agent logs and stale run records. In default Elixir mode, `purge logs --dry-run` previews local log cleanup candidates using Elixir run projections without deleting files. Destructive purge paths and run-record cleanup still require `FOREMAN_BACKEND=node` because they use legacy run stores to decide deletion safety. The old `foreman purge-logs` and `foreman purge-zombie-runs` spellings remain as hidden deprecated aliases.
 
 #### `foreman purge logs`
 
 Remove old agent log files from `~/.foreman/logs/` based on a retention policy.
 
 ```bash
+foreman purge logs --dry-run                           # Elixir-backed local log cleanup preview
+foreman purge logs --dry-run --days 30                 # Custom retention preview
 FOREMAN_BACKEND=node foreman purge logs                # Delete logs older than 7 days
 FOREMAN_BACKEND=node foreman purge logs --days 30      # Custom retention window
-FOREMAN_BACKEND=node foreman purge logs --dry-run      # Preview
 FOREMAN_BACKEND=node foreman purge logs --all          # Delete all terminal-status logs regardless of age
 ```
 

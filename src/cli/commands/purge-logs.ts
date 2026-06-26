@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { foremanBackendMode } from "../../lib/backend-mode.js";
-import { ForemanStore } from "../../lib/store.js";
+import { ElixirServerClient, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { ForemanStore, type Run } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { resolveProjectContext } from "./project-context.js";
@@ -28,7 +30,7 @@ export interface PurgeLogsResult {
 }
 
 interface PurgeStore {
-  getRun(id: string): Promise<import("../../lib/store.js").Run | null>;
+  getRun(id: string): Promise<Run | null>;
 }
 
 type RegisteredProject = RegisteredProjectSummary;
@@ -69,6 +71,7 @@ const TERMINAL_STATUSES = new Set([
   "test-failed",
   "pr-created",
   "reset",
+  "blocked",
 ]);
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -275,10 +278,52 @@ export async function purgeLogsAction(
   return result;
 }
 
+function elixirRunToPurgeRun(run: ElixirRun): Run | null {
+  const id = run.run_id ?? run.id;
+  if (!id) return null;
+  const now = new Date().toISOString();
+  return {
+    id,
+    project_id: run.project_id ?? "elixir",
+    seed_id: run.task_id ?? id,
+    agent_type: typeof run.agent_type === "string" ? run.agent_type : "elixir",
+    session_key: null,
+    worktree_path: typeof run.worktree_path === "string" ? run.worktree_path : null,
+    status: (run.status as Run["status"] | undefined) ?? "running",
+    started_at: typeof run.started_at === "string" ? run.started_at : now,
+    completed_at: typeof run.completed_at === "string" ? run.completed_at : null,
+    created_at: typeof run.created_at === "string" ? run.created_at : now,
+    progress: null,
+  };
+}
+
 export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void> {
   if (foremanBackendMode() === "elixir") {
-    console.error(chalk.red("foreman purge logs uses legacy run stores to decide whether logs are orphaned or safe to delete. Set FOREMAN_BACKEND=node for legacy log cleanup until Elixir-safe purge lands."));
-    process.exit(1);
+    if (!opts.dryRun) {
+      console.error(chalk.red("foreman purge logs deletes local log files using legacy run-store safety decisions. Use --dry-run for an Elixir projection-backed preview, or set FOREMAN_BACKEND=node for legacy log cleanup."));
+      process.exit(1);
+    }
+
+    const manager = new ElixirServerManager();
+    const status = manager.status();
+    if (!status.running || !(await manager.health()).ok) {
+      console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start' before purge preview."));
+      process.exit(1);
+    }
+    const client = new ElixirServerClient(status.url, manager.authToken);
+    const runMap = new Map<string, Run>();
+    for (const run of await client.listRuns()) {
+      const mapped = elixirRunToPurgeRun(run);
+      if (mapped) runMap.set(mapped.id, mapped);
+    }
+    try {
+      const result = await purgeLogsAction({ days: opts.days ?? 7, dryRun: true, all: opts.all }, { getRun: async (id) => runMap.get(id) ?? null });
+      process.exit(result.errors > 0 ? 1 : 0);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(msg));
+      process.exit(1);
+    }
   }
 
   let context: PurgeLogsCommandContext;

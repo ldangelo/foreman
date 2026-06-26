@@ -46,6 +46,7 @@ FOREMAN_BACKEND=node foreman pr             # Legacy Refinery PR creation
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
 foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead'); task create/list/show/update/approve/close/dep route through Elixir by default
+foreman purge logs --dry-run # Elixir-backed log cleanup preview
 FOREMAN_BACKEND=node foreman purge logs # Legacy remove old agent logs
 FOREMAN_BACKEND=node foreman purge runs # Legacy remove stale failed run records
 foreman inbox          # Agent mail + selected-run lifecycle events
@@ -263,6 +264,7 @@ foreman retry <seed>   # Re-run a specific pipeline phase
 # Agent logs (streamed during run)
 foreman logs <runId> --compact # Elixir event-backed logs
 FOREMAN_BACKEND=node ls ~/.foreman/logs/ # Legacy local worker logs
+foreman purge logs --dry-run # Elixir-backed log cleanup preview
 FOREMAN_BACKEND=node foreman purge logs # Legacy remove old log files
 FOREMAN_BACKEND=node foreman purge runs # Legacy remove stale failed run records
 
