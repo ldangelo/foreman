@@ -664,6 +664,7 @@ Manage git worktrees created for active tasks. Agent worktrees live under `~/.fo
 ```bash
 foreman worktree list                                         # Elixir-backed worktree/run visibility
 foreman worktree list --json                                  # Machine-readable output
+foreman worktree clean --dry-run                              # Elixir-backed cleanup preview
 FOREMAN_BACKEND=node foreman worktree clean                   # Legacy orphan cleanup
 FOREMAN_BACKEND=node foreman worktree clean --all             # Remove all including active ones
 ```

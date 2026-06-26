@@ -930,15 +930,15 @@ FOREMAN_BACKEND=node foreman attach --kill    # Kill legacy agent process
 
 ### `foreman worktree`
 
-Manage git worktrees used by Foreman agents. In default Elixir mode, `worktree list` joins VCS worktrees with Elixir run projections for read-only visibility. `worktree clean` still uses legacy run stores for safety decisions and requires `FOREMAN_BACKEND=node` until Elixir-safe cleanup lands.
+Manage git worktrees used by Foreman agents. In default Elixir mode, `worktree list` joins VCS worktrees with Elixir run projections for read-only visibility, and `worktree clean --dry-run` previews cleanup candidates without deleting anything. Actual removal still uses legacy run stores for safety decisions and requires `FOREMAN_BACKEND=node` until Elixir-safe cleanup lands.
 
 ```bash
 foreman worktree list                                  # Show Foreman worktrees with Elixir run metadata
 foreman worktree list --json                           # Machine-readable Elixir-backed output
+foreman worktree clean --dry-run                       # Elixir-backed cleanup preview only
 FOREMAN_BACKEND=node foreman worktree clean            # Remove orphaned worktrees
 FOREMAN_BACKEND=node foreman worktree clean --all      # Remove ALL worktrees including active
 FOREMAN_BACKEND=node foreman worktree clean --force    # Force-delete branches
-FOREMAN_BACKEND=node foreman worktree clean --dry-run  # Preview removal
 ```
 
 **`worktree list` options:**

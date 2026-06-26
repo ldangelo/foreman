@@ -624,6 +624,44 @@ describe("worktree command targeting", () => {
     }
   });
 
+  it("previews Elixir worktree clean --dry-run without legacy stores or removals", async () => {
+    delete process.env["FOREMAN_BACKEND"];
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStoreSpy = vi.spyOn(ForemanStore, "forProject");
+    const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject");
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockListWorkspaces.mockResolvedValue([
+      makeWorktree({ branch: "foreman/run-done", path: "/tmp/project/.foreman-worktrees/run-done" }),
+      makeWorktree({ branch: "foreman/run-active", path: "/tmp/project/.foreman-worktrees/run-active" }),
+    ] as never);
+    mockListElixirRuns.mockResolvedValue([
+      { run_id: "run-done", task_id: "task-1", project_id: "proj-1", status: "completed", started_at: "2026-01-01T00:00:00.000Z" },
+      { run_id: "run-active", task_id: "task-2", project_id: "proj-1", status: "running", started_at: "2026-01-02T00:00:00.000Z" },
+    ] as never);
+
+    try {
+      projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+      projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([
+        { id: "proj-1", name: "test-project", path: "/tmp/project" },
+      ]);
+
+      await worktreeCleanCommandAction({ dryRun: true });
+
+      expect(projectTaskSupportMock.ensureCliPostgresPool).not.toHaveBeenCalled();
+      expect(localStoreSpy).not.toHaveBeenCalled();
+      expect(postgresStoreSpy).not.toHaveBeenCalled();
+      expect(mockRemoveWorkspace).not.toHaveBeenCalled();
+      expect(mockDeleteBranch).not.toHaveBeenCalled();
+      expect(mockListElixirRuns).toHaveBeenCalledWith("proj-1");
+      expect(consoleLogSpy.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("Would remove 1 worktree");
+    } finally {
+      consoleLogSpy.mockRestore();
+      localStoreSpy.mockRestore();
+      postgresStoreSpy.mockRestore();
+      process.env["FOREMAN_BACKEND"] = "node";
+    }
+  });
+
   it("keeps local unregistered worktree list behavior unchanged", async () => {
     const projectTaskSupportMock = vi.mocked(projectTaskSupport);
     const localStore = new ForemanStore();
