@@ -15,8 +15,8 @@ import { findRegisteredProjectByFlagOrCwd } from "./project-context.js";
 
 export const sentinelCommand = new Command("sentinel")
   .description("Legacy QA sentinel for main/master branch (requires FOREMAN_BACKEND=node)")
-  .hook("preAction", () => {
-    if (foremanBackendMode() === "elixir") {
+  .hook("preAction", (_command, actionCommand) => {
+    if (foremanBackendMode() === "elixir" && !["status", "list"].includes(actionCommand.name())) {
       console.error(chalk.red("foreman sentinel uses the legacy SentinelAgent and Postgres/local sentinel stores. Use Elixir scheduler/status/recover flows, or set FOREMAN_BACKEND=node for legacy sentinel commands."));
       process.exit(1);
     }
@@ -67,6 +67,72 @@ export function wrapPostgresSentinelStore(store: PostgresStore, projectId: strin
     getSentinelConfig: async (_projectId: string) => store.getSentinelConfig(projectId),
     getSentinelRuns: async (_projectId: string, limit?: number) => store.getSentinelRuns(projectId, limit),
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Elixir read-only sentinel views
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function renderElixirSentinelStatus(opts: { project?: string; json?: boolean }): Promise<void> {
+  const registered = await resolveProject({ project: opts.project });
+  if (!registered) {
+    const projectHint = opts.project
+      ? `No project found matching '${opts.project}'`
+      : "Not in a foreman project directory. Run `foreman project add` or use --project.";
+    console.error(chalk.red(`Error: ${projectHint}`));
+    process.exit(1);
+  }
+
+  const payload = {
+    project: registered,
+    sentinel: {
+      mode: "legacy-only",
+      running: false,
+      message: "Legacy SentinelAgent is disabled in default Elixir mode. Use Elixir scheduler/status/watch/recover flows.",
+    },
+  };
+
+  if (opts.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  console.log(chalk.bold(`Sentinel status: ${chalk.dim("legacy-only")}`));
+  console.log(chalk.dim(`  Project:  ${registered.name} (${registered.id})`));
+  console.log(chalk.dim("  Elixir:   use `foreman status`, `foreman watch`, `foreman runs`, and `foreman recover`"));
+  console.log(chalk.dim("  Legacy:   set FOREMAN_BACKEND=node for SentinelAgent history/config"));
+}
+
+async function renderElixirSentinelList(opts: { json?: boolean }): Promise<void> {
+  const projects = await listRegisteredProjects();
+  const statuses = projects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    path: project.path,
+    sentinel: {
+      mode: "legacy-only",
+      running: false,
+      message: "Legacy SentinelAgent is disabled in default Elixir mode.",
+    },
+  }));
+
+  if (opts.json) {
+    console.log(JSON.stringify(statuses, null, 2));
+    return;
+  }
+
+  if (statuses.length === 0) {
+    console.log(chalk.dim("No projects registered. Run `foreman project add` first."));
+    return;
+  }
+
+  console.log(chalk.bold(`\n  Sentinel compatibility status (${statuses.length})\n`));
+  for (const status of statuses) {
+    console.log(`  ${chalk.bold(status.name)}  ${chalk.dim("legacy-only")}`);
+    console.log(chalk.dim(`    ${status.id}  ·  ${status.path}`));
+    console.log(chalk.dim("    Use Elixir scheduler/status/watch/recover flows by default."));
+    console.log();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -377,12 +443,17 @@ sentinelCommand
 
 sentinelCommand
   .command("status")
-  .description("Show legacy sentinel run history (FOREMAN_BACKEND=node)")
+  .description("Show sentinel compatibility status (Elixir read-only; legacy history with FOREMAN_BACKEND=node)")
   .option("--project <name-or-id>", "Project name or ID (defaults to current directory)")
   .option("--limit <n>", "Number of recent runs to show", "10")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        await renderElixirSentinelStatus({ project: opts.project, json: opts.json });
+        return;
+      }
+
       const registered = await resolveProject({ project: opts.project });
       if (!registered) {
         const projectHint = opts.project
@@ -527,10 +598,15 @@ sentinelCommand
 
 sentinelCommand
   .command("list")
-  .description("List legacy sentinel status by project (FOREMAN_BACKEND=node)" )
+  .description("List sentinel compatibility status by project (Elixir read-only; legacy details with FOREMAN_BACKEND=node)" )
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        await renderElixirSentinelList({ json: opts.json });
+        return;
+      }
+
       const projects = await listRegisteredProjects();
 
       if (projects.length === 0) {

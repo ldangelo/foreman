@@ -102,6 +102,8 @@ vi.mock("../commands/project-task-support.js", () => ({
 
 import { sentinelCommand } from "../commands/sentinel.js";
 
+const originalBackend = process.env.FOREMAN_BACKEND;
+
 async function invokeSentinel(subcommand: string): Promise<void> {
   await sentinelCommand.parseAsync([subcommand], { from: "user" });
 }
@@ -113,12 +115,16 @@ describe("sentinel command store context", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(process, "exit").mockImplementation((() => {}) as () => never);
 
+    process.env.FOREMAN_BACKEND = "node";
+
     // Default: no registered projects
     mockListRegisteredProjects.mockResolvedValue([]);
     mockResolveRepoRootProjectPath.mockResolvedValue("/mock/project");
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env.FOREMAN_BACKEND;
+    else process.env.FOREMAN_BACKEND = originalBackend;
     vi.restoreAllMocks();
   });
 
@@ -275,4 +281,19 @@ describe("sentinel command store context", () => {
     expect(mockListRegisteredProjects).toHaveBeenCalled();
     expect(mockEnsureCliPostgresPool).toHaveBeenCalled();
   });
+it("lists sentinel compatibility in Elixir mode without legacy stores", async () => {
+  delete process.env.FOREMAN_BACKEND;
+  mockListRegisteredProjects.mockResolvedValue([
+    { id: "proj-1", path: "/repo", name: "demo" },
+  ]);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+  await sentinelCommand.parseAsync(["list", "--json"], { from: "user" });
+
+  expect(MockForemanStore.forProject).not.toHaveBeenCalled();
+  expect(mockPostgresStoreForProject).not.toHaveBeenCalled();
+  const output = String(logSpy.mock.calls[0][0]);
+  expect(JSON.parse(output)[0].sentinel.mode).toBe("legacy-only");
+});
+
 });

@@ -300,7 +300,7 @@ foreman watch --no-events         # Hide the pipeline events panel
 
 ### `foreman sentinel`
 
-Legacy continuous QA testing agent that monitors a branch for test failures and auto-creates follow-up fix tasks. Default Elixir mode blocks sentinel commands; use Elixir scheduler/status/recover flows by default, or set `FOREMAN_BACKEND=node` for legacy sentinel.
+Legacy continuous QA testing agent that monitors a branch for test failures and auto-creates follow-up fix tasks. Default Elixir mode allows read-only `sentinel status`/`sentinel list` compatibility views and blocks mutating/agent commands; use Elixir scheduler/status/recover flows by default, or set `FOREMAN_BACKEND=node` for legacy sentinel.
 
 ```bash
 # Run once
@@ -313,6 +313,8 @@ FOREMAN_BACKEND=node foreman sentinel start
 FOREMAN_BACKEND=node foreman sentinel start --interval 15 --failure-threshold 3
 
 # Check sentinel status
+foreman sentinel status                     # Elixir compatibility status
+foreman sentinel list --json                # Elixir project compatibility list
 FOREMAN_BACKEND=node foreman sentinel status
 FOREMAN_BACKEND=node foreman sentinel status --json --limit 20
 
