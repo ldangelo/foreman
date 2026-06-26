@@ -42,6 +42,7 @@ FOREMAN_BACKEND=node foreman plan X      # Legacy PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman jira status  # Jira integration status (Elixir event-backed by default)
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
+foreman metrics --compact # Elixir pipeline counters as key=value
 foreman doctor        # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 # Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces declared acceptance-contract coverage, records PASS→FAIL override/retry reasons, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
 FOREMAN_BACKEND=node foreman merge          # Legacy Refinery merge queue

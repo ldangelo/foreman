@@ -348,6 +348,26 @@ export function renderBlockedByReason(
   }
 }
 
+export function renderPipelineMetricsCompact(pm: PipelineMetricsResponse["pipeline_metrics"]): void {
+  const phaseCount = Object.keys(pm.phases ?? {}).length;
+  const stuckCount = (pm.stuck_by_reason ?? []).reduce((sum, item) => sum + item.count, 0);
+  const blockedCount = (pm.retry_details?.blocked_by_reason ?? []).reduce((sum, item) => sum + item.count, 0);
+  const parts = [
+    `phases=${phaseCount}`,
+    `started=${pm.counters?.phases_started ?? 0}`,
+    `completed=${pm.counters?.phases_completed ?? 0}`,
+    `failures=${pm.counters?.failures ?? 0}`,
+    `retries=${pm.counters?.retries ?? 0}`,
+    `recoveries=${pm.counters?.recoveries ?? 0}`,
+    `stuck=${stuckCount}`,
+    `blocked=${blockedCount}`,
+    `circuit_breakers=${pm.counters?.circuit_breaker_hits ?? 0}`,
+    `qa_environment_blocked=${pm.counters?.qa_environment_blocked ?? 0}`,
+  ];
+  if (pm.emitted_at) parts.push(`emitted_at=${pm.emitted_at}`);
+  console.log(parts.join(" "));
+}
+
 async function renderPipelineMetrics(opts: MetricsCommandOptions): Promise<void> {
   const manager = new ElixirServerManager();
   const status = manager.status();
@@ -382,6 +402,10 @@ async function renderPipelineMetrics(opts: MetricsCommandOptions): Promise<void>
   }
 
   const pm = body.pipeline_metrics;
+  if (opts.compact) {
+    renderPipelineMetricsCompact(pm);
+    return;
+  }
   const updated = pm.emitted_at
     ? new Date(pm.emitted_at).toLocaleString()
     : "—";
@@ -429,7 +453,7 @@ async function renderPipelineMetrics(opts: MetricsCommandOptions): Promise<void>
 export const metricsCommand = new Command("metrics")
   .description("Show Foreman pipeline metrics, or task-store cost/token metrics with --costs/filters")
   .option("--json", "Output JSON")
-  .option("--compact", "Output task-store cost metrics as a single-line key=value string (for scripts)")
+  .option("--compact", "Output Elixir pipeline counters as key=value; with FOREMAN_BACKEND=node, output task-store cost metrics")
   .option("--costs", "Show task-store cost/token metrics instead of pipeline metrics")
   .option("--since <iso-timestamp>", "Show cost metrics since this ISO timestamp (e.g., 2026-06-01T00:00:00Z)")
   .option("--phase <phase-name>", "Filter cost metrics to a specific phase (explorer, developer, qa, reviewer, finalize)")
@@ -439,11 +463,14 @@ export const metricsCommand = new Command("metrics")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts: MetricsCommandOptions) => {
     try {
-      const costMode = Boolean(opts.costs || opts.compact || opts.since || opts.phase || opts.agent || opts.taskType);
-      if (costMode) {
-        if (foremanBackendMode() === "elixir") {
-          throw new Error("metrics cost filters (--costs/--compact/--since/--phase/--agent/--task-type) read the legacy task store. Set FOREMAN_BACKEND=node for legacy cost metrics; default 'foreman metrics' uses Elixir pipeline metrics.");
+      const backendMode = foremanBackendMode();
+      const legacyCostFilterMode = Boolean(opts.costs || opts.since || opts.phase || opts.agent || opts.taskType);
+      if (backendMode === "elixir") {
+        if (legacyCostFilterMode) {
+          throw new Error("metrics cost filters (--costs/--since/--phase/--agent/--task-type) read the legacy task store. Set FOREMAN_BACKEND=node for legacy cost metrics; default 'foreman metrics' uses Elixir pipeline metrics; --compact is supported for Elixir pipeline metrics.");
         }
+        await renderPipelineMetrics(opts);
+      } else if (legacyCostFilterMode || opts.compact) {
         await renderTaskStoreMetrics(opts);
       } else {
         await renderPipelineMetrics(opts);

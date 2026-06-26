@@ -288,3 +288,41 @@ describe("full PipelineMetricsResponse with all new fields", () => {
     expect(response.pipeline_metrics.counters.circuit_breaker_hits).toBe(2);
   });
 });
+
+// ── Elixir compact pipeline metrics ─────────────────────────────────────────────
+
+describe("renderPipelineMetricsCompact", () => {
+  it("renders Elixir pipeline metrics as key=value output", async () => {
+    const { renderPipelineMetricsCompact } = await import("../metrics.js");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    renderPipelineMetricsCompact({
+      phases: { qa: { pass_rate: 0.5, fail_count: 1, timed_out_count: 0, retry_count: 2, avg_turns: 3, avg_cost: 0.1, total_runs: 2, phases_started: 2, phases_completed: 1 } },
+      top_failure_reasons: [],
+      stuck_by_reason: [{ reason: "timeout", phase: "qa", count: 2 }],
+      recent_bottlenecks: [],
+      emitted_at: "2026-06-26T00:00:00Z",
+      retry_details: {
+        stuck_by_reason: [],
+        blocked_by_reason: [{ reason: "needs_operator", phase: "qa", count: 1 }],
+        qa_environment_blocked: 1,
+      },
+      counters: {
+        phases_started: 2,
+        phases_completed: 1,
+        retries: 2,
+        failures: 1,
+        recoveries: 0,
+        worker_restarts: 0,
+        circuit_breaker_hits: 3,
+        qa_environment_blocked: 1,
+      },
+    });
+
+    const output = String(logSpy.mock.calls[0][0]);
+    expect(output).toContain("phases=1");
+    expect(output).toContain("failures=1");
+    expect(output).toContain("stuck=2");
+    expect(output).toContain("blocked=1");
+    expect(output).toContain("circuit_breakers=3");
+  });
+});
