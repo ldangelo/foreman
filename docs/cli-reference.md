@@ -579,12 +579,14 @@ Elixir backend roles: the **Node CLI** parses commands/renders projections, the 
 
 ### `foreman reset`
 
-Legacy Node reset for failed/stuck runs. In default Elixir mode, `foreman reset --dry-run` gives a read-only projection preview and points operators to `retry`/`recover`; mutating reset still requires `FOREMAN_BACKEND=node` because it changes legacy run/task/merge-queue stores.
+Reset failed/stuck runs. In default Elixir mode, `foreman reset` records `run.reset` events and requeues matching tasks through Elixir task projections; `--dry-run` gives a read-only projection preview. Set `FOREMAN_BACKEND=node` for the legacy run/task/merge-queue cleanup path.
 
 ```bash
+foreman reset                                          # Elixir-backed reset/requeue for failed/stuck runs
+foreman reset --task task-abc                          # Reset one Elixir task/run
 foreman reset --dry-run                                # Elixir-backed reset/recovery preview
 foreman reset --dry-run --task task-abc                # Preview one Elixir task/run
-FOREMAN_BACKEND=node foreman reset                     # Reset all failed/stuck runs
+FOREMAN_BACKEND=node foreman reset                     # Reset all failed/stuck legacy runs
 FOREMAN_BACKEND=node foreman reset --project my-project # Reset runs in a registered project without cd
 FOREMAN_BACKEND=node foreman reset --task bd-abc1      # Reset a specific task by ID
 FOREMAN_BACKEND=node foreman reset --all               # Reset ALL active runs (nuclear option)

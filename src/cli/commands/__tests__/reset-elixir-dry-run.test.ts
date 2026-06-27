@@ -5,16 +5,20 @@ const {
   mockResolveProjectContext,
   mockStatus,
   mockHealth,
+  mockEnsureRunning,
   mockListRuns,
   mockListTasks,
+  mockSendCommand,
   mockElixirClientCtor,
 } = vi.hoisted(() => ({
   mockRequireProjectOrAll: vi.fn(async () => undefined),
   mockResolveProjectContext: vi.fn(async () => ({ projectPath: "/repo", registered: { id: "proj-1", name: "test", path: "/repo" } })),
   mockStatus: vi.fn(() => ({ running: true, url: "http://127.0.0.1:4777", pidPath: "/tmp/pid" })),
   mockHealth: vi.fn(async () => ({ ok: true })),
+  mockEnsureRunning: vi.fn(async () => ({ running: true, url: "http://127.0.0.1:4777", pidPath: "/tmp/pid" })),
   mockListRuns: vi.fn(async () => []),
   mockListTasks: vi.fn(async () => []),
+  mockSendCommand: vi.fn(async () => ({ ok: true, events: ["event-1"], projection_version: 1, correlation_id: "c1" })),
   mockElixirClientCtor: vi.fn(),
 }));
 
@@ -31,6 +35,7 @@ vi.mock("../../../lib/elixir-server-manager.js", () => ({
     authToken = "token";
     status = mockStatus;
     health = mockHealth;
+    ensureRunning = mockEnsureRunning;
   },
 }));
 
@@ -41,10 +46,11 @@ vi.mock("../../../lib/elixir-server-client.js", () => ({
     }
     listRuns = mockListRuns;
     listTasks = mockListTasks;
+    sendCommand = mockSendCommand;
   },
 }));
 
-import { resetElixirDryRun } from "../reset.js";
+import { resetElixirDryRun, resetElixirRuns } from "../reset.js";
 
 describe("Elixir reset dry-run", () => {
   afterEach(() => {
@@ -72,5 +78,24 @@ describe("Elixir reset dry-run", () => {
     const output = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).toContain("would inspect  run run-1");
     expect(output).not.toContain("would inspect  run run-2");
+  });
+
+  it("records reset events and requeues failed tasks", async () => {
+    mockListRuns.mockResolvedValue([{ run_id: "run-1", task_id: "task-1", status: "failed" }] as never);
+    mockListTasks.mockResolvedValue([{ task_id: "task-1", status: "failed" }] as never);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const exitCode = await resetElixirRuns({});
+
+    expect(exitCode).toBe(0);
+    expect(mockEnsureRunning).toHaveBeenCalledOnce();
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "run.reset",
+      payload: expect.objectContaining({ run_id: "run-1", reason: "foreman reset" }),
+    }));
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.update",
+      payload: expect.objectContaining({ task_id: "task-1", status: "ready" }),
+    }));
   });
 });

@@ -861,12 +861,71 @@ export async function resetElixirDryRun(opts: { project?: string; projectPath?: 
     const task = run.task_id ? taskById.get(run.task_id) : undefined;
     console.log(chalk.cyan(`  would inspect  run ${run.run_id ?? run.id ?? "unknown"} task ${run.task_id ?? "unknown"} [run=${run.status ?? "unknown"}, task=${task?.status ?? "unknown"}]`));
   }
-  console.log(chalk.dim("\nUse `foreman retry <task>` or `foreman recover <run>` for Elixir-safe recovery. Set FOREMAN_BACKEND=node for legacy reset mutation."));
+  console.log(chalk.dim("\nUse `foreman reset` to record reset events and requeue matching tasks, or `foreman retry <task>` / `foreman recover <run>` for focused recovery."));
   return 0;
 }
 
+export async function resetElixirRuns(opts: { project?: string; projectPath?: string; taskId?: string; all?: boolean; preserveWorktree?: boolean; detectStuck?: boolean }): Promise<number> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, manager.authToken);
+
+  await requireProjectOrAllInMultiMode(opts.project, opts.all ?? false);
+  const { projectPath, registered } = await resolveProjectContext({ project: opts.project, projectPath: opts.projectPath }, {
+    initPool: false,
+    matchProjectFlagByIdOrName: true,
+  });
+  if (!registered) {
+    console.error(chalk.red(`Project at '${projectPath}' is not registered in Elixir. Run 'foreman project add' first.`));
+    return 1;
+  }
+
+  const [runs, tasks] = await Promise.all([client.listRuns(registered.id), client.listTasks()]);
+  const taskById = new Map<string, ElixirTask>();
+  for (const task of tasks) {
+    const id = task.task_id ?? task.id;
+    if (id) taskById.set(id, task);
+  }
+  const candidates = runs.filter((run) => elixirResetCandidate(run, run.task_id ? taskById.get(run.task_id) : undefined, opts));
+  if (candidates.length === 0) {
+    console.log(chalk.green("No Elixir runs match reset criteria."));
+    return 0;
+  }
+
+  console.log(chalk.bold(`Resetting ${candidates.length} Elixir run(s):\n`));
+  let errors = 0;
+  for (const run of candidates) {
+    const runId = run.run_id ?? run.id;
+    const taskId = run.task_id;
+    console.log(chalk.cyan(`  reset run ${runId ?? "unknown"} task ${taskId ?? "unknown"} [run=${run.status ?? "unknown"}]`));
+    if (runId) {
+      const reset = await client.sendCommand({
+        command_id: `run-reset-${runId}-${Date.now()}`,
+        command_type: "run.reset",
+        payload: { run_id: runId, reason: "foreman reset", actor: "operator" },
+      });
+      if (!reset.ok) {
+        errors += 1;
+        console.log(chalk.red(`    error ${reset.error.message}`));
+      }
+    }
+    if (taskId) {
+      const task = await client.sendCommand({
+        command_id: `task-reset-${taskId}-${Date.now()}`,
+        command_type: "task.update",
+        payload: { task_id: taskId, status: "ready" },
+      });
+      if (!task.ok) {
+        errors += 1;
+        console.log(chalk.red(`    error ${task.error.message}`));
+      }
+    }
+  }
+  return errors > 0 ? 1 : 0;
+}
+
 export const resetCommand = new Command("reset")
-  .description("Legacy reset for failed/stuck runs (requires FOREMAN_BACKEND=node; use retry/recover for Elixir)")
+  .description("Reset failed/stuck runs through Elixir by default; legacy cleanup with FOREMAN_BACKEND=node")
   .option("--task <id>", "Reset a specific task by ID (clears all runs for that task, including stale pending ones)")
   .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--all", "Reset ALL active runs, not just failed/stuck ones")
@@ -890,19 +949,15 @@ export const resetCommand = new Command("reset")
     const timeoutMinutes = parseInt(opts.timeout as string, 10);
 
     if (foremanBackendMode() === "elixir") {
-      if (dryRun) {
-        process.exitCode = await resetElixirDryRun({
-          project: opts.project as string | undefined,
-          projectPath: opts.projectPath as string | undefined,
-          taskId: beadFilter,
-          all,
-          preserveWorktree,
-          detectStuck,
-        });
-        return;
-      }
-      console.error(chalk.red("foreman reset mutates legacy run/task/merge-queue stores. Use --dry-run for an Elixir projection-backed preview, use Elixir-backed retry/recover/task commands for recovery, or set FOREMAN_BACKEND=node for legacy reset cleanup."));
-      process.exitCode = 1;
+      const elixirOpts = {
+        project: opts.project as string | undefined,
+        projectPath: opts.projectPath as string | undefined,
+        taskId: beadFilter,
+        all,
+        preserveWorktree,
+        detectStuck,
+      };
+      process.exitCode = dryRun ? await resetElixirDryRun(elixirOpts) : await resetElixirRuns(elixirOpts);
       return;
     }
 

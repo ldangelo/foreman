@@ -232,15 +232,17 @@ describe("Elixir native critical-path e2e", () => {
     expectSuccess(await cli(["logs", runId, "--raw", "--tail", "20"], projectDir, env), "logs --raw");
   });
 
-  it("routes stop through Elixir run events", async () => {
+  it("routes stop and reset through Elixir run events", async () => {
     const stop = await cli(["stop", "--force"], projectDir, env);
     expectSuccess(stop, "stop");
     expect(stop.stdout).toContain("Elixir");
+    const reset = await cli(["reset"], projectDir, env);
+    expectSuccess(reset, "reset");
+    expect(reset.stdout).toContain("Resetting");
   });
 
   it("fails closed for legacy-only mutating commands", async () => {
     for (const [args, expected] of [
-      [["reset"], "FOREMAN_BACKEND=node"],
       [["worktree", "clean"], "FOREMAN_BACKEND=node"],
       [["purge", "logs"], "FOREMAN_BACKEND=node"],
       [["purge", "runs"], "FOREMAN_BACKEND=node"],

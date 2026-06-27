@@ -28,6 +28,7 @@ foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard (Elixir projections by default; 'dashboard' is a deprecated alias)
 foreman sentinel status # Elixir compatibility view; use status/watch/runs/recover instead
 FOREMAN_BACKEND=node foreman sentinel # Legacy background health daemon
+foreman reset         # Elixir-backed reset/requeue for failed/stuck runs
 foreman reset --dry-run # Elixir-backed reset/recovery preview
 FOREMAN_BACKEND=node foreman reset          # Legacy cleanup failed/stuck runs
 FOREMAN_BACKEND=node foreman reset --detect-stuck  # Legacy detect + reset stuck runs
@@ -271,6 +272,7 @@ foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 foreman doctor         # Check Elixir server/projections/workers
 foreman doctor --clean-logs --dry-run # Elixir-backed log cleanup preview
 foreman status         # See all active/failed agents
+foreman reset         # Elixir-backed reset/requeue for failed/stuck runs
 foreman reset --dry-run # Elixir-backed reset/recovery preview
 FOREMAN_BACKEND=node foreman reset          # Legacy reset failed/stuck runs
 FOREMAN_BACKEND=node foreman reset --bead X # Legacy reset a specific run
