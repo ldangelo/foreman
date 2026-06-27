@@ -297,11 +297,11 @@ function elixirRunToPurgeRun(run: ElixirRun): Run | null {
   };
 }
 
-export async function purgeLogsElixirDryRun(opts: PurgeLogsOpts): Promise<number> {
+export async function purgeLogsElixir(opts: PurgeLogsOpts): Promise<number> {
   const manager = new ElixirServerManager();
-  const status = manager.status();
+  const status = opts.dryRun ? manager.status() : await manager.ensureRunning();
   if (!status.running || !(await manager.health()).ok) {
-    console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start' before purge preview."));
+    console.error(chalk.red(`Elixir server is not running. Start it with 'foreman server start' before purge ${opts.dryRun ? "preview" : "cleanup"}.`));
     return 1;
   }
   const client = new ElixirServerClient(status.url, manager.authToken);
@@ -311,7 +311,7 @@ export async function purgeLogsElixirDryRun(opts: PurgeLogsOpts): Promise<number
     if (mapped) runMap.set(mapped.id, mapped);
   }
   try {
-    const result = await purgeLogsAction({ days: opts.days ?? 7, dryRun: true, all: opts.all }, { getRun: async (id) => runMap.get(id) ?? null });
+    const result = await purgeLogsAction({ days: opts.days ?? 7, dryRun: opts.dryRun, all: opts.all }, { getRun: async (id) => runMap.get(id) ?? null });
     return result.errors > 0 ? 1 : 0;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -320,14 +320,11 @@ export async function purgeLogsElixirDryRun(opts: PurgeLogsOpts): Promise<number
   }
 }
 
+export const purgeLogsElixirDryRun = purgeLogsElixir;
+
 export async function purgeLogsCommandAction(opts: PurgeLogsOpts): Promise<void> {
   if (foremanBackendMode() === "elixir") {
-    if (!opts.dryRun) {
-      console.error(chalk.red("foreman purge logs deletes local log files using legacy run-store safety decisions. Use --dry-run for an Elixir projection-backed preview, or set FOREMAN_BACKEND=node for legacy log cleanup."));
-      process.exit(1);
-    }
-
-    process.exit(await purgeLogsElixirDryRun(opts));
+    process.exit(await purgeLogsElixir(opts));
   }
 
   let context: PurgeLogsCommandContext;

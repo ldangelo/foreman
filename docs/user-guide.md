@@ -349,7 +349,7 @@ Old failed runs can accumulate and obscure current state in `foreman runs`, `for
 - `runs.archived` controls visibility in legacy PostgreSQL-backed stores.
 - Recent-active run reads include pending/running runs plus failed runs from the last 30 days, excluding archived runs.
 - Use `foreman status --include-archived` when historical runs need inspection.
-- `foreman purge logs --dry-run` previews Elixir-backed local log cleanup candidates without deleting files; actual log deletion remains legacy-only; `foreman purge runs --dry-run` previews Elixir stale run candidates, while `FOREMAN_BACKEND=node foreman purge runs` remains the legacy mutation path. `FOREMAN_BACKEND=node foreman purge runs` archives legacy failed runs whose tasks are closed; permanent deletion is available via the explicit purge option.
+- `foreman purge logs --dry-run` previews Elixir-backed local log cleanup candidates without deleting files; `foreman purge logs` deletes matching terminal/orphaned log files using Elixir run projections for safety. `foreman purge runs --dry-run` previews Elixir stale run candidates, while `FOREMAN_BACKEND=node foreman purge runs` remains the legacy mutation path. `FOREMAN_BACKEND=node foreman purge runs` archives legacy failed runs whose tasks are closed; permanent deletion is available via the explicit purge option.
 
 ## Documentation Expectations
 
