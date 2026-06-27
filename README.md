@@ -1148,6 +1148,7 @@ npm link
 # Development commands
 npm run build          # TypeScript compile (atomic — safe while foreman is running)
 npm test               # run the full PR-required Vitest lanes
+npm run test:e2e:elixir # isolated Elixir critical-path E2E smoke
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # Type check only
 npm run bundle         # esbuild single-file bundle

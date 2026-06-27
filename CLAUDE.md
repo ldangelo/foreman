@@ -38,6 +38,7 @@ FOREMAN_BACKEND=node foreman stop           # Legacy stop via process metadata
 foreman doctor         # Human Elixir health summary (server/projections/workers)
 foreman doctor --json|--raw # Raw Elixir health response
 foreman doctor --clean-logs --dry-run # Elixir-backed log cleanup preview
+npm run test:e2e:elixir # Isolated Elixir critical-path E2E
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
 FOREMAN_BACKEND=node foreman sling trd X # Legacy TRD -> task hierarchy
 FOREMAN_BACKEND=node foreman plan X      # Legacy PRD -> TRD pipeline

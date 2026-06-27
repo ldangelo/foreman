@@ -18,7 +18,15 @@ Pure logic, mocked dependencies. Fast, reliable.
 Requires filesystem + git. No Dolt/legacy beads/Claude.
 
 ### Layer 3: E2E Tests (full stack)
-Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
+Legacy smoke/full-run lanes exercise the Node dispatcher with deterministic workers. The Elixir critical-path lane runs with isolated `HOME`, event log, server port, project directory, and fake worker binary so it can be reused in CI without real model/API calls.
+
+```bash
+npm run test:e2e:elixir     # Elixir server/task/scheduler/operator critical path
+npm run test:e2e            # smoke + full-run + Elixir critical path
+npm run test:ci             # unit + integration + all E2E lanes
+```
+
+The Elixir E2E covers server health, human/JSON doctor, metrics, project registration, task create/approve/list/show, scheduler claim, runs/status/logs/read-only cleanup previews, and default fail-closed guards for legacy mutating commands.
 
 ---
 

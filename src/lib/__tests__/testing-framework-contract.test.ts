@@ -45,9 +45,10 @@ describe("testing framework package scripts", () => {
     expect(scripts["test:integration"]).toBe("vitest run -c vitest.integration.config.ts");
     expect(scripts["test:e2e:smoke"]).toBe("vitest run -c vitest.e2e.smoke.config.ts");
     expect(scripts["test:e2e:full-run"]).toBe("vitest run -c vitest.e2e.full-run.config.ts");
+    expect(scripts["test:e2e:elixir"]).toBe("vitest run -c vitest.e2e.elixir.config.ts");
     expect(scripts["test:system"]).toBe("vitest run -c vitest.system.config.ts");
     expect(scripts["test:ci"]).toBe(
-      "npm run test:unit && npm run test:integration && npm run test:e2e:smoke && npm run test:e2e:full-run",
+      "npm run test:unit && npm run test:integration && npm run test:e2e:smoke && npm run test:e2e:full-run && npm run test:e2e:elixir",
     );
     expect(scripts["test:all"]).toBe(
       "npm run test:ci && npm run test:e2e:full-run && npm run test:system",
@@ -66,9 +67,12 @@ describe("testing framework package scripts", () => {
     expect(scripts["test:report:e2e:full-run"]).toContain(
       ".foreman/test-reports/e2e-full-run.json",
     );
+    expect(scripts["test:report:e2e:elixir"]).toContain(
+      ".foreman/test-reports/e2e-elixir.json",
+    );
     expect(scripts["test:report:system"]).toContain(".foreman/test-reports/system.json");
     expect(scripts["test:report:ci"]).toBe(
-      "mkdir -p .foreman/test-reports && npm run test:report:unit && npm run test:report:integration && npm run test:report:e2e:smoke && npm run test:report:e2e:full-run",
+      "mkdir -p .foreman/test-reports && npm run test:report:unit && npm run test:report:integration && npm run test:report:e2e:smoke && npm run test:report:e2e:full-run && npm run test:report:e2e:elixir",
     );
   });
 });
