@@ -493,10 +493,11 @@ foreman project sync <project-id>                 # Fetch checkout + update last
 foreman project edit <project-id> --default-branch dev  # Change base for new worktrees
 ```
 
-### `foreman run` (legacy Node dispatcher)
-Legacy Node dispatcher for ready tasks. In default Elixir mode, use `foreman server start` and let the Elixir scheduler claim approved tasks; set `FOREMAN_BACKEND=node` only for explicit legacy dispatch.
+### `foreman run`
+Ticks the Elixir scheduler for ready tasks by default. Use `foreman server start` for the continuous scheduler loop; set `FOREMAN_BACKEND=node` only for explicit legacy dispatch.
 
 ```bash
+foreman run                                                   # Elixir scheduler tick + claimed-run summary
 foreman run --dry-run                                         # Elixir scheduler preview
 FOREMAN_BACKEND=node foreman run                              # Dispatch to all ready legacy tasks
 FOREMAN_BACKEND=node foreman run --project my-project         # Dispatch without cd into a registered project

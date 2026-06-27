@@ -197,17 +197,11 @@ describe("Elixir native critical-path e2e", () => {
     expectSuccess(await cli(["task", "show", taskId], projectDir, env), "task show");
   });
 
-  it("claims approved work through the scheduler", async () => {
+  it("claims approved work through foreman run", async () => {
     expect(taskId).toBeTruthy();
-    const tickResponse = await fetch(new URL("/api/v1/scheduler/tick", manager.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
-    expect(tickResponse.status).toBe(202);
-    const tickBody = await tickResponse.json() as { scheduler?: { claimed?: Array<{ run_id?: string }> } };
-    const claimed = tickBody.scheduler?.claimed?.length ?? 0;
-    const active = (tickBody.scheduler as { active_run_details?: unknown[] } | undefined)?.active_run_details?.length ?? 0;
-    expect(claimed + active, JSON.stringify(tickBody)).toBeGreaterThanOrEqual(1);
+    const run = await cli(["run", "--no-watch"], projectDir, env);
+    expectSuccess(run, "run");
+    expect(run.stdout).toContain("Elixir scheduler tick");
 
     const runs = await waitFor(() => client.listRuns(PROJECT_ID), (rows) => rows.length > 0, 20_000);
     expect(runs.length).toBeGreaterThan(0);
@@ -231,7 +225,6 @@ describe("Elixir native critical-path e2e", () => {
 
   it("fails closed for legacy-only mutating commands", async () => {
     for (const [args, expected] of [
-      [["run"], "FOREMAN_BACKEND=node"],
       [["stop"], "FOREMAN_BACKEND=node"],
       [["reset"], "FOREMAN_BACKEND=node"],
       [["worktree", "clean"], "FOREMAN_BACKEND=node"],

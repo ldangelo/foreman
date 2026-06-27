@@ -20,6 +20,7 @@ foreman project add owner/repo  # Clone/register project (Elixir-backed by defau
 foreman project list   # List registered projects (Elixir-backed by default)
 foreman project sync <project-id>  # Fetch checkout + update Elixir last_sync_at
 foreman server start   # Start Elixir scheduler; claims approved ready tasks
+foreman run            # Tick Elixir scheduler once and report claimed runs
 foreman run --dry-run # Elixir scheduler preview
 FOREMAN_BACKEND=node foreman run          # Legacy Node dispatcher
 FOREMAN_BACKEND=node foreman run --bead X # Legacy dispatch specific task

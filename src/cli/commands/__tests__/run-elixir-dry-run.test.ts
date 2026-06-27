@@ -6,11 +6,13 @@ const {
   mockListRegisteredProjects,
   mockStatus,
   mockHealth,
+  mockEnsureRunning,
   mockListProjects,
   mockListTasks,
   mockListDispatchableTasks,
   mockListRuns,
   mockListSchedulerSkips,
+  mockSchedulerTick,
   mockElixirClientCtor,
 } = vi.hoisted(() => ({
   mockResolveRepoRootProjectPath: vi.fn(async () => "/repo"),
@@ -18,11 +20,13 @@ const {
   mockListRegisteredProjects: vi.fn(async () => [{ id: "proj-1", name: "test", path: "/repo" }]),
   mockStatus: vi.fn(() => ({ running: true, url: "http://127.0.0.1:4777", pidPath: "/tmp/pid" })),
   mockHealth: vi.fn(async () => ({ ok: true })),
+  mockEnsureRunning: vi.fn(async () => ({ running: true, url: "http://127.0.0.1:4777", pidPath: "/tmp/pid" })),
   mockListProjects: vi.fn(async () => [{ id: "proj-1", name: "test", path: "/repo" }]),
   mockListTasks: vi.fn(async () => []),
   mockListDispatchableTasks: vi.fn(async () => []),
   mockListRuns: vi.fn(async () => []),
   mockListSchedulerSkips: vi.fn(async () => []),
+  mockSchedulerTick: vi.fn(async () => ({ claimed: [], active_run_details: [], skipped: [] })),
   mockElixirClientCtor: vi.fn(),
 }));
 
@@ -31,6 +35,7 @@ vi.mock("../../../lib/elixir-server-manager.js", () => ({
     authToken = "token";
     status = mockStatus;
     health = mockHealth;
+    ensureRunning = mockEnsureRunning;
   },
 }));
 
@@ -44,6 +49,7 @@ vi.mock("../../../lib/elixir-server-client.js", () => ({
     listDispatchableTasks = mockListDispatchableTasks;
     listRuns = mockListRuns;
     listSchedulerSkips = mockListSchedulerSkips;
+    schedulerTick = mockSchedulerTick;
   },
 }));
 
@@ -54,7 +60,7 @@ vi.mock("../project-task-support.js", () => ({
   ensureCliPostgresPool: vi.fn(),
 }));
 
-import { runElixirDryRun } from "../run.js";
+import { runElixirDispatch, runElixirDryRun } from "../run.js";
 
 describe("Elixir run dry-run", () => {
   afterEach(() => {
@@ -110,5 +116,24 @@ describe("Elixir run dry-run", () => {
     expect(output).toContain("Runnable tasks: 1");
     expect(output).toContain("task-2 ready Two");
     expect(output).not.toContain("task-1 ready One");
+  });
+
+  it("ticks the Elixir scheduler for foreman run", async () => {
+    mockSchedulerTick.mockResolvedValue({
+      claimed: [{ task_id: "task-1", run_id: "run-1" }],
+      active_run_details: [],
+      skipped: [],
+    } as never);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const exitCode = await runElixirDispatch({ watch: false });
+
+    expect(exitCode).toBe(0);
+    expect(mockEnsureRunning).toHaveBeenCalledOnce();
+    expect(mockSchedulerTick).toHaveBeenCalledOnce();
+    const output = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(output).toContain("Elixir scheduler tick");
+    expect(output).toContain("Claimed runs: 1");
+    expect(output).toContain("claimed task-1 -> run-1");
   });
 });

@@ -22,7 +22,6 @@ describe("default Elixir legacy command guards", () => {
   });
 
   it.each([
-    { args: ["run"], message: "foreman run uses the legacy Node dispatcher" },
     { args: ["reset"], message: "foreman reset mutates legacy run/task/merge-queue stores" },
 
     { args: ["merge"], message: "foreman merge uses the legacy Refinery and merge queue" },
