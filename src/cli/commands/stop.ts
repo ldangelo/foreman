@@ -255,8 +255,12 @@ function isElixirActiveRun(run: ElixirRun): boolean {
   return status === "pending" || status === "running" || status === "in_progress";
 }
 
+function matchingElixirActiveRuns(runs: ElixirRun[], id?: string): ElixirRun[] {
+  return runs.filter(isElixirActiveRun).filter((run) => !id || run.run_id === id || run.id === id || run.task_id === id);
+}
+
 export async function previewElixirStop(runs: ElixirRun[], id?: string): Promise<void> {
-  const activeRuns = runs.filter(isElixirActiveRun).filter((run) => !id || run.run_id === id || run.id === id || run.task_id === id);
+  const activeRuns = matchingElixirActiveRuns(runs, id);
   printDryRunNotice(true);
   if (activeRuns.length === 0) {
     console.log("No matching active runs found.");
@@ -266,7 +270,54 @@ export async function previewElixirStop(runs: ElixirRun[], id?: string): Promise
   for (const run of activeRuns) {
     console.log(`  ${chalk.cyan(run.task_id ?? "unknown")} ${chalk.dim(`[${run.run_id ?? run.id ?? "unknown"}]`)} status=${run.status ?? "unknown"}`);
   }
-  console.log(chalk.dim("\nUse `foreman recover <run>` for Elixir-safe recovery, or set FOREMAN_BACKEND=node for legacy process stop."));
+  console.log(chalk.dim("\nUse `foreman recover <run>` for Elixir-safe recovery."));
+}
+
+async function stopElixirRuns(client: ElixirServerClient, runs: ElixirRun[], id?: string, force = false): Promise<number> {
+  const activeRuns = matchingElixirActiveRuns(runs, id);
+  if (activeRuns.length === 0) {
+    console.log("No matching active Elixir runs found.");
+    return 0;
+  }
+
+  console.log(chalk.bold(`Stopping ${activeRuns.length} active Elixir run(s):\n`));
+  let errors = 0;
+  const signal = force ? "SIGKILL" : "SIGTERM";
+  for (const run of activeRuns) {
+    const runId = run.run_id ?? run.id;
+    console.log(`  ${chalk.cyan(run.task_id ?? "unknown")} ${chalk.dim(`[${runId ?? "unknown"}]`)} status=${run.status ?? "unknown"}`);
+    const pid = typeof run.worker_pid === "number" ? run.worker_pid : undefined;
+    if (pid && isAlive(pid)) {
+      try {
+        process.kill(pid, signal);
+        console.log(`    ${chalk.yellow("send")} ${signal} to pid ${pid}`);
+      } catch (error) {
+        errors += 1;
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(`    ${chalk.red("error")} sending ${signal} to pid ${pid}: ${message}`);
+      }
+    }
+    if (runId) {
+      const response = await client.sendCommand({
+        command_id: `run-stop-${runId}-${Date.now()}`,
+        command_type: "run.fail",
+        payload: {
+          run_id: runId,
+          reason: "foreman stop",
+          failure_reason: "Stopped by operator",
+          fatal: false,
+          actor: "operator",
+        },
+      });
+      if (!response.ok) {
+        errors += 1;
+        console.log(`    ${chalk.red("error")} ${response.error.message}`);
+      } else {
+        console.log(`    ${chalk.yellow("mark")} run stopped`);
+      }
+    }
+  }
+  return errors > 0 ? 1 : 0;
 }
 
 export async function listElixirActiveRuns(runs: ElixirRun[]): Promise<void> {
@@ -309,10 +360,6 @@ export async function listElixirActiveRuns(runs: ElixirRun[]): Promise<void> {
 
 export async function stopCommandAction(id: string | undefined, opts: StopOpts): Promise<number> {
   const backendMode = foremanBackendMode();
-  if (backendMode === "elixir" && !opts.list && !opts.dryRun) {
-    console.error(chalk.red("foreman stop uses legacy run stores and process metadata. Use --list/--dry-run for Elixir projection-backed visibility, use Elixir-backed attach/recover/status flows, or set FOREMAN_BACKEND=node for legacy stop cleanup."));
-    return 1;
-  }
 
   let projectPath: string;
   let isGitRepo = true;
@@ -340,10 +387,13 @@ export async function stopCommandAction(id: string | undefined, opts: StopOpts):
     const runs = await client.listRuns(registered.id);
     if (opts.dryRun) {
       await previewElixirStop(runs, id);
-    } else {
-      await listElixirActiveRuns(runs);
+      return 0;
     }
-    return 0;
+    if (opts.list) {
+      await listElixirActiveRuns(runs);
+      return 0;
+    }
+    return stopElixirRuns(client, runs, id, opts.force);
   }
 
   const localStore = ForemanStore.forProject(projectPath);

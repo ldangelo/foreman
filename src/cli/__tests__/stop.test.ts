@@ -6,6 +6,7 @@ const {
   mockFindRegisteredProjectByPath,
   mockEnsureElixirRunning,
   mockListElixirRuns,
+  mockSendElixirCommand,
   mockElixirClientCtor,
   mockForemanForProject,
   mockPostgresForProject,
@@ -14,6 +15,7 @@ const {
   mockFindRegisteredProjectByPath: vi.fn(),
   mockEnsureElixirRunning: vi.fn(async () => ({ running: true, url: "http://127.0.0.1:4777" })),
   mockListElixirRuns: vi.fn(async () => []),
+  mockSendElixirCommand: vi.fn(async () => ({ ok: true, events: ["event-1"], projection_version: 1, correlation_id: "c1" })),
   mockElixirClientCtor: vi.fn(),
   mockForemanForProject: vi.fn(),
   mockPostgresForProject: vi.fn(),
@@ -40,6 +42,7 @@ vi.mock("../../lib/elixir-server-client.js", () => ({
       mockElixirClientCtor(url, token);
     }
     listRuns = mockListElixirRuns;
+    sendCommand = mockSendElixirCommand;
   },
 }));
 
@@ -139,16 +142,26 @@ describe("stop command", () => {
     expect(output).not.toContain("task-2");
   });
 
-  it("still guards Elixir stop mutations", async () => {
+  it("stops Elixir runs without opening legacy stores", async () => {
     delete process.env.FOREMAN_BACKEND;
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockResolveRepoRootProjectPath.mockResolvedValue("/repo");
+    mockFindRegisteredProjectByPath.mockResolvedValue({ id: "project-1", name: "test", path: "/repo" });
+    mockListElixirRuns.mockResolvedValue([
+      { run_id: "run-1", task_id: "task-1", project_id: "project-1", status: "running" },
+      { run_id: "run-2", task_id: "task-2", project_id: "project-1", status: "completed" },
+    ] as never);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const exitCode = await stopCommandAction("task-1", {});
 
-    expect(exitCode).toBe(1);
-    expect(errorSpy.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("foreman stop uses legacy run stores");
-    expect(mockResolveRepoRootProjectPath).not.toHaveBeenCalled();
+    expect(exitCode).toBe(0);
     expect(mockForemanForProject).not.toHaveBeenCalled();
+    expect(mockPostgresForProject).not.toHaveBeenCalled();
+    expect(mockSendElixirCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "run.fail",
+      payload: expect.objectContaining({ run_id: "run-1", reason: "foreman stop" }),
+    }));
+    expect(logSpy.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("run stopped");
   });
 
   it("resolves UUID run IDs before falling back to seed lookup", async () => {
