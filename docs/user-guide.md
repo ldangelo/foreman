@@ -67,7 +67,7 @@ Bundled workflows write these reports under the runtime report directory (`~/.fo
 
 Each dispatched task runs in its own git worktree. This isolates agent edits from your main checkout and from other agents. Avoid manually editing active worktrees unless you are intentionally intervening.
 
-Use `foreman worktree list` for read-only worktree visibility in default Elixir mode; it joins local VCS worktrees with Elixir run projections and supports `--json`. Use `foreman worktree clean --dry-run` for an Elixir-backed cleanup preview. Actual worktree removal remains legacy-only because safe deletion still depends on legacy run-store decisions: use `FOREMAN_BACKEND=node foreman worktree clean --dry-run` before any legacy cleanup.
+Use `foreman worktree list` for worktree visibility in default Elixir mode; it joins local VCS worktrees with Elixir run projections and supports `--json`. Use `foreman worktree clean --dry-run` for an Elixir-backed cleanup preview, or `foreman worktree clean` to remove cleanable Foreman worktrees using Elixir projection status and record cleanup events. Set `FOREMAN_BACKEND=node` only for legacy store-based cleanup.
 
 ### Elixir Backend Roles
 

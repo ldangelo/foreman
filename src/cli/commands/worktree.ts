@@ -96,7 +96,7 @@ export async function listForemanWorktrees(
 export async function cleanWorktrees(
   projectPath: string,
   worktrees: WorktreeInfo[],
-  opts: { all: boolean; force: boolean; dryRun?: boolean },
+  opts: { all: boolean; force: boolean; dryRun?: boolean; onRemoved?: (worktree: WorktreeInfo) => Promise<void> },
 ): Promise<CleanResult> {
   let removed = 0;
   const errors: string[] = [];
@@ -123,6 +123,7 @@ export async function cleanWorktrees(
       await vcs.deleteBranch(projectPath, wt.branch, {
         force: opts.force,
       });
+      await opts.onRemoved?.(wt);
       removed++;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -268,15 +269,12 @@ export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise
 
 export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promise<void> {
   const dryRun = opts.dryRun ?? false;
-  if (foremanBackendMode() === "elixir" && !dryRun) {
-    console.error(chalk.red("foreman worktree clean removes worktrees using legacy run-store safety decisions. Use --dry-run for an Elixir projection-backed preview, or set FOREMAN_BACKEND=node for legacy worktree cleanup."));
-    process.exit(1);
-  }
 
   try {
     let projectPath: string;
     let worktrees: WorktreeInfo[];
     let closeStores: (() => void) | null = null;
+    let client: ElixirServerClient | null = null;
 
     if (foremanBackendMode() === "elixir") {
       const context = await resolveProjectContext({}, { initPool: false });
@@ -291,7 +289,7 @@ export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promi
       if (!status.running) {
         throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
       }
-      const client = new ElixirServerClient(status.url, manager.authToken);
+      client = new ElixirServerClient(status.url, manager.authToken);
       worktrees = await listForemanWorktreesFromElixirRuns(projectPath, await client.listRuns(context.registered.id));
     } else {
       const { projectPath: resolvedProjectPath, registered } = await resolveProjectContext();
@@ -318,6 +316,16 @@ export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promi
       all: Boolean(opts.all),
       force: Boolean(opts.force),
       dryRun,
+      onRemoved: client
+        ? async (wt) => {
+            if (!wt.runId) return;
+            await client.sendCommand({
+              command_id: `worktree-clean-${wt.runId}-${Date.now()}`,
+              command_type: "worktree.clean",
+              payload: { run_id: wt.runId, worktree_path: wt.path, backend: "git" },
+            });
+          }
+        : undefined,
     });
 
     if (dryRun && result.wouldRemove && result.wouldRemove.length > 0) {
@@ -351,14 +359,14 @@ const listSubcommand = new Command("list")
   .action(worktreeListCommandAction);
 
 const cleanSubcommand = new Command("clean")
-  .description("Preview Elixir worktree cleanup with --dry-run; removal requires FOREMAN_BACKEND=node")
+  .description("Clean Foreman worktrees using Elixir projections by default; legacy stores with FOREMAN_BACKEND=node")
   .option("--all", "Remove all foreman worktrees including active ones")
   .option("--force", "Force-delete branches even if not fully merged")
   .option("--dry-run", "Show what would be removed without making changes")
   .action(worktreeCleanCommandAction);
 
 export const worktreeCommand = new Command("worktree")
-  .description("Manage Foreman worktrees (list and clean --dry-run support Elixir; removal requires FOREMAN_BACKEND=node)")
+  .description("Manage Foreman worktrees (Elixir projections by default; legacy stores with FOREMAN_BACKEND=node)")
   .addCommand(listSubcommand)
   .addCommand(cleanSubcommand);
 

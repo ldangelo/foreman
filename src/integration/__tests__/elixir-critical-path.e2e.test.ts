@@ -243,7 +243,6 @@ describe("Elixir native critical-path e2e", () => {
 
   it("fails closed for legacy-only mutating commands", async () => {
     for (const [args, expected] of [
-      [["worktree", "clean"], "FOREMAN_BACKEND=node"],
       [["purge", "logs"], "FOREMAN_BACKEND=node"],
       [["purge", "runs"], "FOREMAN_BACKEND=node"],
       [["doctor", "--fix"], "FOREMAN_BACKEND=node"],

@@ -231,6 +231,21 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event("worktree.clean", payload) do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id),
+         {:ok, worktree_path} <- required_binary(Map.get(payload, :worktree_path), :worktree_path) do
+      {:ok, "WorktreeCleaned",
+       %{
+         operation_id: Map.get(payload, :operation_id, "cleanup-#{run_id}"),
+         run_id: run_id,
+         backend: Map.get(payload, :backend, "git"),
+         worktree_path: worktree_path,
+         effects: [%{action: "remove_worktree", path: worktree_path}],
+         adapter: Map.get(payload, :adapter, %{})
+       }, "run:#{run_id}"}
+    end
+  end
+
   defp domain_event("phase.start", payload), do: phase_event("PhaseStarted", payload)
   defp domain_event("phase.complete", payload), do: phase_event("PhaseCompleted", payload)
   defp domain_event("phase.fail", payload), do: phase_event("PhaseFailed", payload)
