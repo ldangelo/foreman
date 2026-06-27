@@ -33,8 +33,6 @@ describe("default Elixir legacy command guards", () => {
     { args: ["purge", "logs"], message: "foreman purge logs deletes local log files using legacy run-store safety decisions" },
     { args: ["purge", "runs"], message: "foreman purge runs mutates legacy run stores" },
     { args: ["doctor", "--fix"], message: "foreman doctor --fix/--clean-logs run legacy Node/Postgres maintenance" },
-    { args: ["daemon", "stop"], message: "FOREMAN_BACKEND=elixir; the Node daemon scheduler is disabled" },
-    { args: ["daemon", "status"], message: "FOREMAN_BACKEND=elixir; the Node daemon scheduler is disabled" },
   ])("fails fast before project/VCS resolution for $args", async ({ args, message }) => {
     const result = await runTsxModule(CLI, args, {
       cwd: makeTempDir(),

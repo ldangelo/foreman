@@ -175,6 +175,9 @@ describe("Elixir native critical-path e2e", () => {
 
   it("reports server status and Elixir health", async () => {
     expectSuccess(await cli(["server", "status", "--port", String(serverPort)], projectDir, env), "server status");
+    const daemonStatus = await cli(["daemon", "status", "--json"], projectDir, env);
+    expectSuccess(daemonStatus, "daemon status");
+    expect(daemonStatus.stdout).toContain('"running"');
     expect((await manager.health()).ok).toBe(true);
   });
 
@@ -242,7 +245,6 @@ describe("Elixir native critical-path e2e", () => {
       [["purge", "logs"], "FOREMAN_BACKEND=node"],
       [["purge", "runs"], "FOREMAN_BACKEND=node"],
       [["doctor", "--fix"], "FOREMAN_BACKEND=node"],
-      [["daemon", "status"], "FOREMAN_BACKEND=node"],
       [["merge"], "FOREMAN_BACKEND=node"],
     ] as Array<[string[], string]>) {
       const result = await cli(args, projectDir, env);

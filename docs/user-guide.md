@@ -106,7 +106,7 @@ foreman server doctor        # explicit Elixir server doctor
 
 If commands report server or database issues, run `foreman doctor` (or `foreman server doctor`) and check [Troubleshooting](./troubleshooting.md). The default `foreman doctor` output is a human summary; use `foreman doctor --json` or `foreman doctor --raw` for the raw server response. Use `foreman doctor --clean-logs --dry-run` for an Elixir-backed log cleanup preview. Use `FOREMAN_BACKEND=node foreman doctor` only for legacy Node/Postgres diagnostics and maintenance flags such as `--fix`.
 
-Legacy Node daemon operation is explicit only: set `FOREMAN_BACKEND=node` before `foreman daemon start|stop|status|restart` or other daemon-backed commands. Default Elixir mode blocks daemon lifecycle/status commands so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
+Legacy Node daemon operation is explicit only: set `FOREMAN_BACKEND=node` before daemon-backed commands. In default Elixir mode, `foreman daemon start|stop|status|restart` is a compatibility alias for the Elixir server lifecycle; prefer `foreman server start|stop|status|restart` in new scripts. The Elixir scheduler ticks every 5 seconds, reconciles active runs whose worker logs contain terminal completion/failure markers, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
 
 ```bash
 foreman server stop

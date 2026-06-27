@@ -19,7 +19,8 @@ import {
   DaemonNotRunningError,
   type DaemonStatus,
 } from "../../lib/daemon-manager.js";
-import { nodeDaemonAllowed, nodeDaemonDisabledMessage } from "../../lib/backend-mode.js";
+import { foremanBackendMode, nodeDaemonAllowed, nodeDaemonDisabledMessage } from "../../lib/backend-mode.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -48,13 +49,39 @@ function readDaemonLogExcerpt(path: string): string | null {
   return content.split("\n").slice(-5).join("\n");
 }
 
+function elixirManager(opts: { pidPath?: string }): ElixirServerManager {
+  return new ElixirServerManager({ pidPath: opts.pidPath });
+}
+
+function formatElixirStatus(status: ReturnType<ElixirServerManager["status"]>, json?: boolean): void {
+  if (json) {
+    console.log(JSON.stringify({ running: status.running, pid: status.pid, url: status.url, pidPath: status.pidPath }, null, 2));
+    return;
+  }
+  const badge = status.running ? chalk.green("● running") : chalk.dim("○ stopped");
+  console.log(chalk.bold(`\n  Elixir server status: ${badge}\n`));
+  console.log(`  ${padLabel("PID:")} ${status.pid ? chalk.cyan(String(status.pid)) : chalk.dim("—")}`);
+  console.log(`  ${padLabel("URL:")} ${chalk.dim(status.url)}`);
+  console.log(`  ${padLabel("PID file:")} ${chalk.dim(status.pidPath)}`);
+  console.log(chalk.dim("\n  `foreman daemon` is an Elixir server compatibility alias; use `foreman server` directly."));
+  console.log();
+}
+
 // ── foreman daemon start ─────────────────────────────────────────────────────
 
 const startCommand = new Command("start")
-  .description("Start the legacy ForemanDaemon in the background (FOREMAN_BACKEND=node)")
+  .description("Start the Elixir server by default; legacy ForemanDaemon with FOREMAN_BACKEND=node")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
+    if (foremanBackendMode() === "elixir") {
+      const mgr = elixirManager(opts);
+      mgr.start();
+      console.log(chalk.green("✓ Elixir server started."));
+      console.log(chalk.dim(`  URL: ${mgr.url}`));
+      console.log(chalk.dim("  `foreman daemon start` is a compatibility alias; prefer `foreman server start`."));
+      return;
+    }
     if (!nodeDaemonAllowed()) {
       console.error(chalk.red(`Error: ${nodeDaemonDisabledMessage()}`));
       process.exit(1);
@@ -109,10 +136,17 @@ const startCommand = new Command("start")
 // ── foreman daemon stop ──────────────────────────────────────────────────────
 
 const stopCommand = new Command("stop")
-  .description("Stop the legacy ForemanDaemon (FOREMAN_BACKEND=node)")
+  .description("Stop the Elixir server by default; legacy ForemanDaemon with FOREMAN_BACKEND=node")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
+    if (foremanBackendMode() === "elixir") {
+      const mgr = elixirManager(opts);
+      mgr.stop();
+      console.log(chalk.green("✓ Elixir server stopped."));
+      console.log(chalk.dim("  `foreman daemon stop` is a compatibility alias; prefer `foreman server stop`."));
+      return;
+    }
     if (!nodeDaemonAllowed()) {
       console.error(chalk.red(`Error: ${nodeDaemonDisabledMessage()}`));
       process.exit(1);
@@ -147,11 +181,15 @@ const stopCommand = new Command("stop")
 // ── foreman daemon status ────────────────────────────────────────────────────
 
 const statusCommand = new Command("status")
-  .description("Show legacy daemon status (requires FOREMAN_BACKEND=node)")
+  .description("Show Elixir server status by default; legacy daemon status with FOREMAN_BACKEND=node")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .option("--json", "Output status as JSON")
   .action(async (opts: { socketPath?: string; pidPath?: string; json?: boolean }) => {
+    if (foremanBackendMode() === "elixir") {
+      formatElixirStatus(elixirManager(opts).status(), opts.json);
+      return;
+    }
     if (!nodeDaemonAllowed()) {
       const message = nodeDaemonDisabledMessage();
       if (opts.json) {
@@ -190,10 +228,19 @@ const statusCommand = new Command("status")
 // ── foreman daemon restart ────────────────────────────────────────────────────
 
 const restartCommand = new Command("restart")
-  .description("Restart the legacy daemon (requires FOREMAN_BACKEND=node)")
+  .description("Restart the Elixir server by default; legacy daemon with FOREMAN_BACKEND=node")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
+    if (foremanBackendMode() === "elixir") {
+      const mgr = elixirManager(opts);
+      mgr.stop();
+      mgr.start();
+      console.log(chalk.green("✓ Elixir server restarted."));
+      console.log(chalk.dim(`  URL: ${mgr.url}`));
+      console.log(chalk.dim("  `foreman daemon restart` is a compatibility alias; prefer `foreman server restart`."));
+      return;
+    }
     if (!nodeDaemonAllowed()) {
       console.error(chalk.red(`Error: ${nodeDaemonDisabledMessage()}`));
       process.exit(1);
@@ -233,7 +280,7 @@ const restartCommand = new Command("restart")
 
 export const daemonCommand = new Command("daemon")
   .description(
-    "Manage the legacy ForemanDaemon process lifecycle (requires FOREMAN_BACKEND=node)",
+    "Compatibility alias for Elixir server lifecycle; legacy ForemanDaemon with FOREMAN_BACKEND=node",
   )
   .addCommand(startCommand)
   .addCommand(stopCommand)
