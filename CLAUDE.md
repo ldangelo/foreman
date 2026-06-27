@@ -35,7 +35,8 @@ foreman retry <seed>   # Re-run a failed pipeline phase
 foreman stop --list       # List active Elixir runs
 foreman stop --dry-run    # Preview active Elixir runs matched for stop
 FOREMAN_BACKEND=node foreman stop           # Legacy stop via process metadata
-foreman doctor         # Elixir health checks (server/projections/workers)
+foreman doctor         # Human Elixir health summary (server/projections/workers)
+foreman doctor --json|--raw # Raw Elixir health response
 foreman doctor --clean-logs --dry-run # Elixir-backed log cleanup preview
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
 FOREMAN_BACKEND=node foreman sling trd X # Legacy TRD -> task hierarchy

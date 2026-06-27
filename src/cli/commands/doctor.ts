@@ -61,16 +61,53 @@ function printSection(title: string, results: CheckResult[], jsonOutput: boolean
   }
 }
 
+function renderElixirDoctorBody(body: unknown): void {
+  const report = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  const checks = report.checks && typeof report.checks === "object"
+    ? report.checks as Record<string, Record<string, unknown>>
+    : {};
+  const entries = Object.entries(checks);
+  const ok = report.ok === true;
+
+  console.log(ok ? chalk.green("Elixir server doctor: PASS") : chalk.red("Elixir server doctor: FAIL"));
+  if (entries.length > 0) {
+    console.log(chalk.bold("Health checks:"));
+    for (const [name, check] of entries) {
+      const checkOk = check?.ok === true;
+      const marker = checkOk ? chalk.green("✓") : chalk.red("✗");
+      const status = checkOk ? chalk.green("pass") : chalk.red("fail");
+      const message = typeof check?.message === "string" ? ` ${chalk.dim(check.message)}` : "";
+      console.log(`  ${marker} ${name.padEnd(18)} ${status}${message}`);
+    }
+  }
+
+  const metrics = report.metrics && typeof report.metrics === "object" ? report.metrics as Record<string, unknown> : undefined;
+  const projectionLag = typeof metrics?.projection_lag === "number" ? metrics.projection_lag : undefined;
+  if (projectionLag !== undefined) {
+    console.log(chalk.bold("Metrics:"));
+    console.log(`  projection lag: ${projectionLag}`);
+  }
+
+  const passed = entries.filter(([, check]) => check?.ok === true).length;
+  const failed = entries.length - passed;
+  const parts: string[] = [];
+  if (passed > 0) parts.push(chalk.green(`${passed} passed`));
+  if (failed > 0) parts.push(chalk.red(`${failed} failed`));
+  if (parts.length > 0) console.log(chalk.bold("Summary: ") + parts.join(chalk.dim(", ")));
+  if (entries.length === 0) console.log(chalk.dim("No detailed checks returned. Use --raw for the server response."));
+}
+
 // ── Command ──────────────────────────────────────────────────────────────
 
 async function resolveDoctorProjectPath(): Promise<string> {
   return resolveRepoRootProjectPath({});
 }
 
-export async function runElixirDoctor(opts: { jsonOutput?: boolean; fix?: boolean; dryRun?: boolean; cleanLogs?: boolean; logDays?: number }): Promise<number> {
+export async function runElixirDoctor(opts: { jsonOutput?: boolean; rawOutput?: boolean; fix?: boolean; dryRun?: boolean; cleanLogs?: boolean; logDays?: number }): Promise<number> {
   const jsonOutput = opts.jsonOutput ?? false;
+  const rawOutput = opts.rawOutput ?? false;
   if (opts.cleanLogs && opts.dryRun && !opts.fix) {
-    if (!jsonOutput) console.log(chalk.bold("\nforeman doctor --clean-logs --dry-run (Elixir)\n"));
+    if (!jsonOutput && !rawOutput) console.log(chalk.bold("\nforeman doctor --clean-logs --dry-run (Elixir)\n"));
     return purgeLogsElixirDryRun({ dryRun: true, days: opts.logDays });
   }
   if (opts.fix || opts.cleanLogs) {
@@ -80,7 +117,7 @@ export async function runElixirDoctor(opts: { jsonOutput?: boolean; fix?: boolea
     return 1;
   }
 
-  if (!jsonOutput) {
+  if (!jsonOutput && !rawOutput) {
     console.log(chalk.bold("\nforeman doctor (Elixir)\n"));
     if (opts.dryRun) console.log(chalk.dim("(dry-run has no effect for Elixir health checks)\n"));
   }
@@ -88,11 +125,10 @@ export async function runElixirDoctor(opts: { jsonOutput?: boolean; fix?: boolea
   const manager = new ElixirServerManager();
   await manager.ensureRunning();
   const doctor = await manager.doctor();
-  if (jsonOutput) {
+  if (jsonOutput || rawOutput) {
     console.log(JSON.stringify(doctor.ok ? doctor.body : { ok: false, error: doctor.error, body: doctor.body }, null, 2));
   } else if (doctor.ok) {
-    console.log(chalk.green("Elixir server doctor: PASS"));
-    console.log(JSON.stringify(doctor.body, null, 2));
+    renderElixirDoctorBody(doctor.body);
   } else {
     console.error(chalk.red("Elixir server doctor: FAIL"));
     console.error(chalk.dim(doctor.error ?? JSON.stringify(doctor.body)));
@@ -105,6 +141,7 @@ export const doctorCommand = new Command("doctor")
   .option("--fix", "Auto-fix issues where possible")
   .option("--dry-run", "Show what --fix would do without making changes")
   .option("--json", "Output results as JSON")
+  .option("--raw", "Output the raw Elixir server doctor response")
   .option("--clean-logs", "Remove old agent log files after health checks (default: keep last 7 days)")
   .option(
     "--log-days <n>",
@@ -115,11 +152,12 @@ export const doctorCommand = new Command("doctor")
     const fix = (opts.fix as boolean | undefined) ?? false;
     const dryRun = (opts.dryRun as boolean | undefined) ?? false;
     const jsonOutput = (opts.json as boolean | undefined) ?? false;
+    const rawOutput = (opts.raw as boolean | undefined) ?? false;
     const cleanLogs = (opts.cleanLogs as boolean | undefined) ?? false;
     const logDays = (opts.logDays as number | undefined) ?? 7;
 
     if (foremanBackendMode() === "elixir") {
-      process.exit(await runElixirDoctor({ jsonOutput, fix, dryRun, cleanLogs, logDays }));
+      process.exit(await runElixirDoctor({ jsonOutput, rawOutput, fix, dryRun, cleanLogs, logDays }));
     }
 
     if (!jsonOutput) {
