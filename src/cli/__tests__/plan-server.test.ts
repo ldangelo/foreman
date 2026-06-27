@@ -39,7 +39,10 @@ vi.mock("../../lib/elixir-server-client.js", () => ({
 import { planCommand } from "../commands/plan.js";
 
 describe("foreman plan server subcommands", () => {
+  const originalBackend = process.env.FOREMAN_BACKEND;
+
   beforeEach(() => {
+    delete process.env.FOREMAN_BACKEND;
     vi.clearAllMocks();
     process.exitCode = undefined;
     mockResolveRepoRootProjectPath.mockResolvedValue("/repo");
@@ -52,6 +55,8 @@ describe("foreman plan server subcommands", () => {
   });
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env.FOREMAN_BACKEND;
+    else process.env.FOREMAN_BACKEND = originalBackend;
     vi.restoreAllMocks();
   });
 
@@ -83,6 +88,37 @@ describe("foreman plan server subcommands", () => {
         run_id: "run-prd",
       }),
       metadata: { correlation_id: "cmd-prd", source: "foreman-cli-plan" },
+    }));
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it("dispatches bare foreman plan through Elixir PRD and TRD planning", async () => {
+    await planCommand.parseAsync([
+      "Build a planning system",
+      "--project",
+      "foreman",
+      "--output-dir",
+      "docs/plans",
+    ], { from: "user" });
+
+    expect(mockSendCommand).toHaveBeenCalledTimes(2);
+    expect(mockSendCommand).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      command_type: "plan.prd",
+      payload: expect.objectContaining({
+        kind: "prd",
+        project_id: "proj-1",
+        description: "Build a planning system",
+        output_dir: "/repo/docs/plans",
+      }),
+    }));
+    expect(mockSendCommand).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      command_type: "plan.trd",
+      payload: expect.objectContaining({
+        kind: "trd",
+        project_id: "proj-1",
+        description: "/repo/docs/plans/PRD.md",
+        output_dir: "/repo/docs/plans",
+      }),
     }));
     expect(process.exitCode).toBeUndefined();
   });

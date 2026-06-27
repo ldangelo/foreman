@@ -575,18 +575,19 @@ Auto-merge tiers (T1–T4):
 - **T4**: Create PR for human review (true code conflicts)
 
 ### `foreman plan`
-Run PRD/TRD planning. Default Elixir mode uses server-backed `plan prd` / `plan trd`; the bare `foreman plan <description>` local pipeline is legacy-only with `FOREMAN_BACKEND=node`.
+Run PRD/TRD planning. Default Elixir mode uses server-backed planning for both bare `foreman plan <description>` and explicit `plan prd` / `plan trd`; set `FOREMAN_BACKEND=node` only for the legacy local pipeline.
 
 ```bash
-FOREMAN_BACKEND=node foreman plan "Build a user auth system with OAuth2" # Legacy local pipeline
-FOREMAN_BACKEND=node foreman plan docs/description.md              # From file
-FOREMAN_BACKEND=node foreman plan --from-prd docs/PRD.md "unused"  # Skip to TRD
-FOREMAN_BACKEND=node foreman plan --prd-only "Build a REST API"    # Stop after PRD
+foreman plan "Build a user auth system with OAuth2"                # Elixir PRD + TRD planning
+foreman plan docs/description.md                                   # Elixir planning from file
+foreman plan --from-prd docs/PRD.md "unused"                       # Elixir TRD planning from PRD
+foreman plan --prd-only "Build a REST API"                         # Elixir PRD only
+FOREMAN_BACKEND=node foreman plan "Build a user auth system"       # Legacy local pipeline
 foreman plan prd "Build a REST API"           # Server-backed PRD planning
 foreman plan trd docs/PRD.md                   # Server-backed TRD planning
 ```
 
-`plan prd` and `plan trd` send `plan.prd` / `plan.trd` commands to the local Elixir orchestration server and auto-start it by default.
+Bare `plan`, `plan prd`, and `plan trd` send `plan.prd` / `plan.trd` commands to the local Elixir orchestration server and auto-start it by default.
 
 ### Migration and coexistence
 Import a legacy TypeScript-era migration payload into the Elixir event store:
@@ -598,7 +599,7 @@ foreman import --to-elixir --from-node --project foreman  # snapshot current Nod
 
 The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. During explicit legacy cutover work, set `FOREMAN_BACKEND=node` before using Node/TS delegation. `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` can delegate supported commands to a legacy TS CLI, but default Elixir mode should not silently delegate.
 
-Elixir is the default backend after cutover. This disables legacy TS delegation and blocks `foreman daemon start|stop|status|restart` unless `FOREMAN_BACKEND=node` is set explicitly, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections and fail closed when projections are unavailable, `foreman stop` records operator stops through Elixir run events, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as `foreman reset` without `--dry-run`, mutating `foreman merge` without `--list/--dry-run/--stats`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, `foreman issue`, and metrics cost filters require `FOREMAN_BACKEND=node` until Elixir routes land; default Elixir `foreman metrics --compact` is available for pipeline counter scripts. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the default backend after cutover. This disables legacy TS delegation and blocks `foreman daemon start|stop|status|restart` unless `FOREMAN_BACKEND=node` is set explicitly, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections and fail closed when projections are unavailable, `foreman stop` records operator stops through Elixir run events, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as `foreman reset` without `--dry-run`, mutating `foreman merge` without `--list/--dry-run/--stats`, `foreman pr`, `foreman sling`, `foreman issue`, and metrics cost filters require `FOREMAN_BACKEND=node` until Elixir routes land; default Elixir `foreman metrics --compact` is available for pipeline counter scripts. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
 Legacy Node-only TRD import path. Default Elixir mode should use `foreman plan prd|trd` and `foreman task create` flows; `sling` requires `FOREMAN_BACKEND=node`.

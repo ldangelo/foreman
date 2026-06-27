@@ -788,20 +788,21 @@ foreman inbox send \
 
 ### `foreman plan`
 
-Run the Ensemble PRD → TRD pipeline. The default `foreman plan <description>` pipeline is a legacy Node dispatcher path and requires `FOREMAN_BACKEND=node`; use `foreman plan prd` / `foreman plan trd` for Elixir-backed planning.
+Run the Ensemble PRD → TRD pipeline. In default Elixir mode, bare `foreman plan <description>` submits server-backed `plan.prd` and `plan.trd` commands; use `foreman plan prd` / `foreman plan trd` to run one stage. Set `FOREMAN_BACKEND=node` only for the legacy local planning dispatcher.
 
 ```bash
-FOREMAN_BACKEND=node foreman plan "Add user authentication with OAuth"
-FOREMAN_BACKEND=node foreman plan docs/PRD.md          # From a file
-FOREMAN_BACKEND=node foreman plan "..." --prd-only     # Stop after PRD generation
-FOREMAN_BACKEND=node foreman plan --from-prd docs/PRD.md  # Start from existing PRD
-FOREMAN_BACKEND=node foreman plan "..." --output-dir docs/auth  # Custom output directory
-FOREMAN_BACKEND=node foreman plan "..." --dry-run      # Preview steps
+foreman plan "Add user authentication with OAuth"      # Elixir PRD + TRD planning
+foreman plan docs/description.md                       # From a file
+foreman plan "..." --prd-only                          # Stop after PRD generation
+foreman plan --from-prd docs/PRD.md "unused"           # Start from existing PRD
+foreman plan "..." --output-dir docs/auth              # Custom output directory
+foreman plan "..." --dry-run                           # Preview server planning commands
+FOREMAN_BACKEND=node foreman plan "..."                # Legacy local planner
 foreman plan prd "Add user authentication"   # Server-backed PRD planning
 foreman plan trd docs/PRD.md                  # Server-backed TRD planning
 ```
 
-`foreman plan prd` and `foreman plan trd` submit `plan.prd` / `plan.trd` commands to the local Elixir orchestration server. They auto-start the server by default; use `--no-auto-start` to require an already-running server.
+Bare `foreman plan`, `foreman plan prd`, and `foreman plan trd` submit `plan.prd` / `plan.trd` commands to the local Elixir orchestration server. Explicit subcommands auto-start the server by default; use `--no-auto-start` to require an already-running server.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -915,7 +916,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 FOREMAN_BACKEND=node foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|stop|status|restart` cannot operate the Node daemon unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. Elixir cutover parity: `foreman run` ticks the Elixir scheduler, `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Legacy-only paths such as `foreman reset`, `foreman stop`, `foreman merge`, `foreman pr`, `foreman sling`, default `foreman plan <description>`, `foreman issue` Postgres sync commands, and metrics cost mode fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|stop|status|restart` cannot operate the Node daemon unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. Elixir cutover parity: `foreman run` ticks the Elixir scheduler, `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree` reads Elixir run/inbox projections and default attach records an Elixir attach request before resuming exposed Pi sessions, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Legacy-only paths such as `foreman reset`, `foreman merge`, `foreman pr`, `foreman sling`, `foreman issue` Postgres sync commands, and metrics cost mode fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land.
 
 ---
 

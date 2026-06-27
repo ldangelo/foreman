@@ -252,8 +252,7 @@ export const planCommand = new Command("plan")
       },
     ) => {
       if (foremanBackendMode() === "elixir") {
-        console.error(chalk.red("foreman plan <description> still uses the legacy Node planning dispatcher. Use 'foreman plan prd' or 'foreman plan trd' for Elixir-backed planning, or set FOREMAN_BACKEND=node for the legacy pipeline."));
-        process.exitCode = 1;
+        await runDefaultServerPlanningPipeline(description, opts);
         return;
       }
       const projectPath = await resolveRepoRootProjectPath(opts.project ? { project: opts.project } : {});
@@ -489,6 +488,55 @@ planCommand
   });
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+async function runDefaultServerPlanningPipeline(
+  description: string,
+  opts: {
+    prdOnly?: boolean;
+    fromPrd?: string;
+    outputDir: string;
+    runtime: string;
+    project?: string;
+    dryRun?: boolean;
+  },
+): Promise<void> {
+  const provider = opts.runtime === "codex" ? "codex" : "pi_sdk";
+  if (opts.dryRun) {
+    console.log(chalk.bold.cyan("\nElixir Planning Pipeline\n"));
+    console.log(chalk.dim(`Runtime: ${opts.runtime} | Output: ${opts.outputDir}\n`));
+    if (opts.fromPrd) {
+      console.log("  1. plan.trd");
+    } else {
+      console.log("  1. plan.prd");
+      if (!opts.prdOnly) console.log("  2. plan.trd");
+    }
+    return;
+  }
+
+  if (opts.fromPrd) {
+    await runServerPlanningCommand("trd", opts.fromPrd, {
+      project: opts.project,
+      outputDir: opts.outputDir,
+      provider,
+    });
+    return;
+  }
+
+  await runServerPlanningCommand("prd", description, {
+    project: opts.project,
+    outputDir: opts.outputDir,
+    provider,
+  });
+  if (process.exitCode === 1 || opts.prdOnly) return;
+
+  const projectPath = await resolveRepoRootProjectPath(opts.project ? { project: opts.project } : {});
+  const outputDir = isAbsolute(opts.outputDir) ? opts.outputDir : resolve(projectPath, opts.outputDir);
+  await runServerPlanningCommand("trd", join(outputDir, "PRD.md"), {
+    project: opts.project,
+    outputDir: opts.outputDir,
+    provider,
+  });
+}
 
 function mergedServerPlanOptions(opts: ServerPlanOptions, command: Command): ServerPlanOptions {
   const parentOpts = command.parent?.opts<{ project?: string; outputDir?: string }>() ?? {};

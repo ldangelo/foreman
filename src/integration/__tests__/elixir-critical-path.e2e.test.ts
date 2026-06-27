@@ -186,6 +186,12 @@ describe("Elixir native critical-path e2e", () => {
     expectSuccess(await cli(["metrics", "--compact"], projectDir, env), "metrics --compact");
   });
 
+  it("runs bare planning through Elixir", async () => {
+    const plan = await cli(["plan", "Sketch an Elixir parity test", "--prd-only", "--output-dir", "docs/plans"], projectDir, env);
+    expectSuccess(plan, "plan");
+    expect(plan.stdout).toContain("Planning PRD command accepted");
+  });
+
   it("creates, approves, lists, and shows a native task", async () => {
     const create = await cli(["task", "create", "--title", "Elixir E2E task", "--type", "feature", "--priority", "2"], projectDir, env);
     expectSuccess(create, "task create");
