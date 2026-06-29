@@ -1,11 +1,15 @@
 /**
- * `foreman run task` — Legacy direct workflow execution for a specific task.
+ * `foreman run task` — Direct workflow execution for a specific task.
  *
- * This command bypasses state-gating and executes the specified workflow
+ * Default Elixir mode requests scheduler dispatch through events/projections;
+ * legacy Node mode executes the specified workflow directly.
+ *
+ * Legacy Node mode bypasses state-gating and executes the specified workflow
  * for a given task regardless of its current state (failed, closed,
- * in-progress, backlog, etc.).
+ * in-progress, backlog, etc.). Elixir mode re-enters scheduler gating after
+ * marking the task ready with the selected workflow.
  *
- * Usage: FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> [options]
+ * Usage: foreman run task <task-id> <workflow-path> [options]
  *
  * This separates scheduling/orchestration decisions from deterministic
  * workflow execution, making tasks directly runnable for debugging,
@@ -171,6 +175,90 @@ function dateishToIso(value: unknown): string {
   return value instanceof Date ? value.toISOString() : String(value);
 }
 
+async function runTaskViaElixirScheduler(
+  taskId: string,
+  workflowPath: string,
+  opts: { dryRun: boolean; watch: boolean; project?: string; projectPath?: string },
+): Promise<number> {
+  const resolvedProjectPath = await resolveRepoRootProjectPath({ project: opts.project, projectPath: opts.projectPath });
+  const registered = await resolveRegisteredProject(resolvedProjectPath);
+  if (!registered) {
+    console.error(chalk.red("No Elixir project registered for this path. Run 'foreman project add' first."));
+    return 1;
+  }
+
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  if (!status.running) {
+    console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start'."));
+    return 1;
+  }
+
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const task = await client.getTask(taskId);
+  if (!task) {
+    console.error(chalk.red(`Task '${taskId}' not found`));
+    return 1;
+  }
+  if (task.project_id && task.project_id !== registered.id) {
+    console.error(chalk.red(`Task '${taskId}' belongs to project '${task.project_id}', not '${registered.id}'`));
+    return 1;
+  }
+
+  let workflowConfig: WorkflowConfig;
+  try {
+    workflowConfig = loadWorkflowConfig(workflowPath, resolvedProjectPath);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(`Failed to load workflow: ${msg}`));
+    return 1;
+  }
+
+  const schedulerWorkflow = workflowPath.includes("/") || workflowPath.endsWith(".yaml") || workflowPath.endsWith(".yml")
+    ? workflowPath
+    : workflowConfig.name;
+
+  console.log(chalk.bold(`Dispatching task through Elixir scheduler: ${chalk.cyan(taskId)}`));
+  console.log(`  Title:   ${chalk.green(task.title ?? taskId)}`);
+  console.log(`  Status:  ${chalk.yellow(task.status ?? "unknown")}`);
+  console.log(`  Workflow: ${chalk.magenta(schedulerWorkflow)} (${workflowConfig.phases.length} phases)`);
+  if (opts.dryRun) {
+    console.log(chalk.dim("  (dry-run: task would be marked ready and scheduler ticked; no events written)"));
+    return 0;
+  }
+
+  const response = await client.sendCommand({
+    command_id: `run-task-${taskId}-${Date.now()}`,
+    command_type: "task.update",
+    payload: {
+      task_id: taskId,
+      project_id: registered.id,
+      status: "ready",
+      workflow: schedulerWorkflow,
+      actor: "operator",
+      reason: "foreman run task",
+    },
+  });
+  if (!response.ok) {
+    console.error(chalk.red(`Failed to queue task: ${response.error.message}`));
+    return 1;
+  }
+
+  const tick = await client.schedulerTick();
+  const claimed = tick.claimed ?? [];
+  const match = claimed.find((run) => run.task_id === taskId);
+  if (match) {
+    console.log(chalk.green(`Elixir scheduler claimed ${taskId} as run ${match.run_id ?? "unknown"}`));
+    if (opts.watch) console.log(chalk.dim("Use `foreman runs` or `foreman watch` to follow progress."));
+    return 0;
+  }
+
+  const skip = (tick.skipped ?? []).find((entry) => entry.task_id === taskId);
+  if (skip) console.error(chalk.red(`Elixir scheduler did not claim ${taskId}: ${skip.reason ?? "skipped"}`));
+  else console.error(chalk.red(`Elixir scheduler did not claim ${taskId}.`));
+  return 1;
+}
+
 /**
  * Resolve the registered project for a given path.
  */
@@ -234,8 +322,12 @@ export async function runTaskAction(
   } = opts;
 
   if (foremanBackendMode() === "elixir") {
-    console.error(chalk.red("foreman run task uses the legacy Node worker bridge directly. Let the Elixir scheduler launch workers, or set FOREMAN_BACKEND=node for direct legacy task execution."));
-    return 1;
+    return runTaskViaElixirScheduler(taskId, workflowPath, {
+      dryRun,
+      watch,
+      project,
+      projectPath: optsProjectPath,
+    });
   }
 
   // ── Deprecated flag warning ───────────────────────────────────────────
@@ -592,7 +684,7 @@ export async function runTaskAction(
 // ── CLI Command Definition ────────────────────────────────────────────────
 
 export const runTaskCommand = new Command("task")
-  .description("Legacy direct workflow execution for a specific task (requires FOREMAN_BACKEND=node)")
+  .description("Run a specific task through a workflow")
   .argument("<task-id>", "Task ID to run the workflow for")
   .argument("<workflow-path>", "Workflow name or path to a workflow YAML file")
   .option("--model <model>", "Model to use (overrides workflow default)")

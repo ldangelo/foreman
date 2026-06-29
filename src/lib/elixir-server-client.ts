@@ -58,6 +58,7 @@ export type ElixirTask = {
   annotations?: Array<{ body: string; author?: string; created_at?: string }>;
   dependencies?: string[];
   run_id?: string | null;
+  workflow?: string;
 };
 
 export type ElixirRun = Record<string, unknown> & {

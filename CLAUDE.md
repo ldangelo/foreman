@@ -24,6 +24,7 @@ foreman run            # Tick Elixir scheduler once and report claimed runs
 foreman run --dry-run # Elixir scheduler preview
 FOREMAN_BACKEND=node foreman run          # Legacy Node dispatcher
 FOREMAN_BACKEND=node foreman run --bead X # Legacy dispatch specific task
+foreman run task X default # Elixir event-backed manual scheduler dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard (Elixir projections by default; 'dashboard' is a deprecated alias)
 foreman sentinel status # Elixir compatibility view; use status/watch/runs/recover instead
@@ -50,6 +51,7 @@ FOREMAN_BACKEND=node foreman plan X      # Legacy local PRD -> TRD pipeline
 foreman jira status  # Jira integration status (Elixir event-backed by default)
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
 foreman metrics --compact # Elixir pipeline counters as key=value
+foreman metrics --costs --phase developer # Elixir-derived phase costs
 foreman doctor        # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 # Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces declared acceptance-contract coverage, records PASS→FAIL override/retry reasons, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
 foreman merge --list   # Elixir projection-backed merge candidates

@@ -23,8 +23,6 @@ describe("default Elixir legacy command guards", () => {
 
   it.each([
     { args: ["merge"], message: "foreman merge uses the legacy Refinery and merge queue" },
-    { args: ["run", "task", "foreman-12345", "task"], message: "foreman run task uses the legacy Node worker bridge directly" },
-    { args: ["run", "task", "foreman-12345", "task", "--run-id", "run-123"], message: "foreman run task uses the legacy Node worker bridge directly" },
     { args: ["sentinel", "run-once"], message: "foreman sentinel uses the legacy SentinelAgent" },
     { args: ["doctor", "--fix"], message: "foreman doctor --fix/--clean-logs run legacy Node/Postgres maintenance" },
   ])("fails fast before project/VCS resolution for $args", async ({ args, message }) => {

@@ -153,6 +153,59 @@ function filterMetricsByAgent(metrics: Metrics, agent: string): Metrics {
   return { ...filtered, agentCostBreakdown: agentCost !== undefined ? { [agent]: agentCost } : {} };
 }
 
+function costMetricsFromPipeline(pm: PipelineMetricsResponse["pipeline_metrics"], opts: CostMetricsOptions): Metrics {
+  const phaseEntries = Object.entries(pm.phases ?? {}).filter(([phase]) => !opts.phase || phase === opts.phase);
+  const costByPhase = Object.fromEntries(
+    phaseEntries.map(([phase, metrics]) => [phase, (metrics.avg_cost || 0) * (metrics.total_runs || metrics.phases_completed || 0)]),
+  );
+  const totalCost = Object.values(costByPhase).reduce((sum, cost) => sum + cost, 0);
+  return {
+    totalCost,
+    totalTokens: 0,
+    tasksByStatus: {},
+    costByRuntime: [],
+    costByPhase,
+    agentCostBreakdown: opts.agent ? {} : undefined,
+  };
+}
+
+async function loadElixirPipelineMetrics(opts: MetricsCommandOptions): Promise<PipelineMetricsResponse> {
+  const manager = new ElixirServerManager();
+  const status = manager.status();
+
+  if (!status.running) {
+    throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+  }
+
+  const result = await manager.pipelineMetrics();
+  if (!result.ok) {
+    throw new Error(result.error ?? "Failed to fetch pipeline metrics");
+  }
+  return result.body as PipelineMetricsResponse;
+}
+
+async function renderElixirCostMetrics(opts: MetricsCommandOptions): Promise<void> {
+  const body = await loadElixirPipelineMetrics(opts);
+  const metrics = costMetricsFromPipeline(body.pipeline_metrics, opts);
+  const renderOpts: CostMetricsOptions = {
+    since: opts.since,
+    phase: opts.phase,
+    agent: opts.agent,
+    taskType: opts.taskType,
+  };
+
+  if (opts.json) {
+    console.log(JSON.stringify({ source: "elixir_pipeline_metrics", timestamp: body.pipeline_metrics.emitted_at, ...metrics }, null, 2));
+  } else if (opts.compact) {
+    renderCostMetricsCompact(metrics, renderOpts);
+  } else {
+    renderCostMetrics(metrics, renderOpts);
+    if (opts.since || opts.agent || opts.taskType) {
+      console.log(chalk.dim("  Note: Elixir cost projections currently aggregate by phase; since/agent/task-type filters are shown for context."));
+    }
+  }
+}
+
 async function renderTaskStoreMetrics(opts: MetricsCommandOptions): Promise<void> {
   const projectPath = await resolveRepoRootProjectPath(opts);
   const store = ForemanStore.forProject(projectPath);
@@ -369,32 +422,7 @@ export function renderPipelineMetricsCompact(pm: PipelineMetricsResponse["pipeli
 }
 
 async function renderPipelineMetrics(opts: MetricsCommandOptions): Promise<void> {
-  const manager = new ElixirServerManager();
-  const status = manager.status();
-
-  if (!status.running) {
-    const msg = "Elixir server is not running. Start it with 'foreman server start'.";
-    if (opts.json) {
-      console.log(JSON.stringify({ error: msg }));
-    } else {
-      console.error(chalk.red(msg));
-    }
-    process.exit(1);
-  }
-
-  const result = await manager.pipelineMetrics();
-
-  if (!result.ok) {
-    const msg = result.error ?? "Failed to fetch pipeline metrics";
-    if (opts.json) {
-      console.log(JSON.stringify({ error: msg }));
-    } else {
-      console.error(chalk.red(msg));
-    }
-    process.exit(1);
-  }
-
-  const body = result.body as PipelineMetricsResponse;
+  const body = await loadElixirPipelineMetrics(opts);
 
   if (opts.json) {
     console.log(JSON.stringify(body, null, 2));
@@ -467,7 +495,8 @@ export const metricsCommand = new Command("metrics")
       const legacyCostFilterMode = Boolean(opts.costs || opts.since || opts.phase || opts.agent || opts.taskType);
       if (backendMode === "elixir") {
         if (legacyCostFilterMode) {
-          throw new Error("metrics cost filters (--costs/--since/--phase/--agent/--task-type) read the legacy task store. Set FOREMAN_BACKEND=node for legacy cost metrics; default 'foreman metrics' uses Elixir pipeline metrics; --compact is supported for Elixir pipeline metrics.");
+          await renderElixirCostMetrics(opts);
+          return;
         }
         await renderPipelineMetrics(opts);
       } else if (legacyCostFilterMode || opts.compact) {

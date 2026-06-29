@@ -39,9 +39,11 @@ foreman server start
 foreman task create --title "Smoke test" --type task --label workflow:smoke
 foreman server start
 
-# Legacy manual dispatcher/direct worker paths require explicit Node backend
+# Manual workflow dispatch in default Elixir mode
+foreman run task <task-id> task --project <name> --no-watch
+
+# Legacy Node dispatcher still requires explicit Node backend
 FOREMAN_BACKEND=node foreman run --workflow quick
-FOREMAN_BACKEND=node foreman run task <task-id> task --project <name> --no-watch
 ```
 
 ---

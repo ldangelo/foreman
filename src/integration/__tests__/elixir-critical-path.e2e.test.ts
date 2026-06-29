@@ -187,6 +187,7 @@ describe("Elixir native critical-path e2e", () => {
     expectSuccess(doctorJson, "doctor --json");
     expect(doctorJson.stdout).toContain('"ok"');
     expectSuccess(await cli(["metrics", "--compact"], projectDir, env), "metrics --compact");
+    expectSuccess(await cli(["metrics", "--costs", "--compact", "--phase", "developer"], projectDir, env), "metrics --costs --compact");
   });
 
   it("runs bare planning through Elixir", async () => {
@@ -260,6 +261,25 @@ describe("Elixir native critical-path e2e", () => {
     const reset = await cli(["reset"], projectDir, env);
     expectSuccess(reset, "reset");
     expect(reset.stdout).toContain("Resetting");
+  });
+
+  it("dispatches foreman run task through Elixir scheduler", async () => {
+    const create = await cli(["task", "create", "--title", "Elixir direct run task", "--type", "feature", "--priority", "2"], projectDir, env);
+    expectSuccess(create, "task create for direct run");
+    const directTaskId = create.stdout.match(/\[([^\]]+)\]/)?.[1] ?? "";
+    expect(directTaskId, create.stdout).toBeTruthy();
+
+    let runTask = await cli(["run", "task", directTaskId, "default", "--no-watch"], projectDir, env);
+    if (runTask.exitCode !== 0 && runTask.stderr.includes("global_capacity_exhausted")) {
+      expectSuccess(await cli(["stop", "--force"], projectDir, env), "stop before run task retry");
+      runTask = await cli(["run", "task", directTaskId, "default", "--no-watch"], projectDir, env);
+    }
+    expectSuccess(runTask, "run task");
+    expect(runTask.stdout).toContain("Elixir scheduler claimed");
+
+    const task = await client.getTask(directTaskId);
+    expect(task?.status).toBe("in_progress");
+    expect(task?.workflow).toBe("default");
   });
 
   it("fails closed for legacy-only mutating commands", async () => {

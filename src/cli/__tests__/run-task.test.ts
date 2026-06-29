@@ -20,6 +20,10 @@ const {
   mockWatchRunsInk,
   mockListRegisteredProjects,
   mockResolveRepoRootProjectPath,
+  mockElixirEnsureRunning,
+  mockElixirGetTask,
+  mockElixirSendCommand,
+  mockElixirSchedulerTick,
 } = vi.hoisted(() => {
   const taskClient = {
     show: vi.fn(),
@@ -63,6 +67,10 @@ const {
   const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
   const mockListRegisteredProjects = vi.fn().mockResolvedValue([]);
   const mockResolveRepoRootProjectPath = vi.fn().mockResolvedValue("/test/project");
+  const mockElixirEnsureRunning = vi.fn().mockResolvedValue({ running: true, url: "http://127.0.0.1:4766" });
+  const mockElixirGetTask = vi.fn();
+  const mockElixirSendCommand = vi.fn();
+  const mockElixirSchedulerTick = vi.fn();
 
   return {
     mockCreateTaskClient,
@@ -74,6 +82,10 @@ const {
     mockWatchRunsInk,
     mockListRegisteredProjects,
     mockResolveRepoRootProjectPath,
+    mockElixirEnsureRunning,
+    mockElixirGetTask,
+    mockElixirSendCommand,
+    mockElixirSchedulerTick,
   };
 });
 
@@ -143,6 +155,22 @@ vi.mock("../commands/project-task-support.js", () => ({
   listRegisteredProjects: mockListRegisteredProjects,
 }));
 
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn(function (this: Record<string, unknown>) {
+    this.authToken = "test-token";
+    this.ensureRunning = mockElixirEnsureRunning;
+    this.health = vi.fn().mockResolvedValue({ ok: false });
+  }),
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn(function (this: Record<string, unknown>) {
+    this.getTask = mockElixirGetTask;
+    this.sendCommand = mockElixirSendCommand;
+    this.schedulerTick = mockElixirSchedulerTick;
+  }),
+}));
+
 import { runTaskCommand, runTaskAction } from "../commands/run-task.js";
 
 const task = {
@@ -187,6 +215,10 @@ phases:
       },
       backendType: "native" as const,
     }));
+    mockElixirEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766" });
+    mockElixirGetTask.mockResolvedValue({ task_id: "task-123", project_id: "proj-elixir", title: "Elixir task", status: "open" });
+    mockElixirSendCommand.mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr-1" });
+    mockElixirSchedulerTick.mockResolvedValue({ claimed: [{ task_id: "task-123", run_id: "run-elixir" }], skipped: [] });
   });
 
   afterEach(() => {
@@ -208,6 +240,49 @@ phases:
       program.addCommand(runTaskCommand.copyInheritedSettings(program));
 
       expect(() => program.parse(["node", "test", "task"])).toThrow();
+    });
+  });
+
+  describe("Elixir scheduler dispatch", () => {
+    it("queues the task through Elixir events and ticks the scheduler", async () => {
+      process.env["FOREMAN_BACKEND"] = "elixir";
+      mockListRegisteredProjects.mockResolvedValue([{ id: "proj-elixir", name: "Elixir", path: testProjectPath }]);
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockCreateTaskClient).not.toHaveBeenCalled();
+      expect(mockElixirSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+        command_type: "task.update",
+        payload: expect.objectContaining({
+          task_id: "task-123",
+          project_id: "proj-elixir",
+          status: "ready",
+          workflow: "default",
+          reason: "foreman run task",
+        }),
+      }));
+      expect(mockElixirSchedulerTick).toHaveBeenCalled();
+      expect(mockSpawnWorkerProcess).not.toHaveBeenCalled();
+    });
+
+    it("dry-runs Elixir dispatch without writing events", async () => {
+      process.env["FOREMAN_BACKEND"] = "elixir";
+      mockListRegisteredProjects.mockResolvedValue([{ id: "proj-elixir", name: "Elixir", path: testProjectPath }]);
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+        dryRun: true,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockElixirSendCommand).not.toHaveBeenCalled();
+      expect(mockElixirSchedulerTick).not.toHaveBeenCalled();
+      expect(mockCreateTaskClient).not.toHaveBeenCalled();
     });
   });
 

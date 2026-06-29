@@ -511,6 +511,7 @@ defmodule ForemanServer.CommandRouter do
       :type,
       :transition_id,
       :url,
+      :workflow,
       :workflows,
       :adapter,
       :compatibility_mode,

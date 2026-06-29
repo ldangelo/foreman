@@ -599,7 +599,7 @@ foreman import --to-elixir --from-node --project foreman  # snapshot current Nod
 
 The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. During explicit legacy cutover work, set `FOREMAN_BACKEND=node` before using Node/TS delegation. `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` can delegate supported commands to a legacy TS CLI, but default Elixir mode should not silently delegate.
 
-Elixir is the default backend after cutover. This disables legacy TS delegation; `foreman daemon start|stop|status|restart` is an Elixir server compatibility alias unless `FOREMAN_BACKEND=node` is set explicitly for the legacy Node daemon, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections and fail closed when projections are unavailable, `foreman stop`, `foreman attach --kill`, and `foreman purge runs` record operator cleanup through Elixir run events, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as mutating `foreman merge` without `--list/--dry-run/--stats`, PR creation via `FOREMAN_BACKEND=node foreman pr`, `foreman sling`, `foreman issue`, and metrics cost filters require `FOREMAN_BACKEND=node` until Elixir routes land; default Elixir `foreman pr` shows projection-backed PR candidates and `foreman metrics --compact` is available for pipeline counter scripts. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the default backend after cutover. This disables legacy TS delegation; `foreman daemon start|stop|status|restart` is an Elixir server compatibility alias unless `FOREMAN_BACKEND=node` is set explicitly for the legacy Node daemon, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections and fail closed when projections are unavailable, `foreman stop`, `foreman attach --kill`, `foreman purge runs`, and `foreman metrics --costs` use Elixir projections/events, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as mutating `foreman merge` without `--list/--dry-run/--stats`, PR creation via `FOREMAN_BACKEND=node foreman pr`, `foreman sling`, and `foreman issue` require `FOREMAN_BACKEND=node` until Elixir routes land; default Elixir `foreman pr` shows projection-backed PR candidates and `foreman metrics --compact` is available for pipeline counter scripts. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
 Legacy Node-only TRD import path. Default Elixir mode should use `foreman plan prd|trd` and `foreman task create` flows; `sling` requires `FOREMAN_BACKEND=node`.
@@ -941,16 +941,16 @@ phases:
     retryOnFail: 3
 ```
 
-Legacy direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks. Default Elixir mode blocks this path; let the Elixir scheduler launch workers, or set `FOREMAN_BACKEND=node` for direct legacy execution:
+Direct task execution is available for recovery/debug flows with explicit workflow selection. Default Elixir mode writes a `task.update` event (`status=ready`, selected `workflow`) and ticks the scheduler; set `FOREMAN_BACKEND=node` only for direct legacy worker execution:
 
 ```bash
-FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> --project <name> --no-watch
+foreman run task <task-id> <workflow-path> --project <name> --no-watch
 ```
 
 **Key behaviors:**
 
-- **Bypasses state gating** — runs regardless of task status (ready, backlog, closed, failed, etc.)
-- **Preserves safety mechanisms** — worktree and run locking still apply
+- **Elixir event-backed dispatch** — marks the task ready with the chosen workflow, then ticks scheduler projections
+- **Preserves scheduler safety** — capacity/dependency checks and worker launch stay in Elixir
 - **Explicit workflow** — specify the workflow as a positional argument (e.g., `task`, `quick`, `~/.foreman/workflows/custom.yaml`)
 
 **When to use:**
@@ -962,14 +962,14 @@ FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> --project <name>
 **Example:**
 
 ```bash
-# Run a closed task with the task workflow
-FOREMAN_BACKEND=node foreman run task foreman-12345 task --project my-project --no-watch
+# Request scheduler dispatch with the task workflow
+foreman run task foreman-12345 task --project my-project --no-watch
 
 # Run with a custom workflow path
-FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml --target-branch main
+foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml
 
 # Dry run to preview
-FOREMAN_BACKEND=node foreman run task foreman-12345 task --dry-run
+foreman run task foreman-12345 task --dry-run
 ```
 
 The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.

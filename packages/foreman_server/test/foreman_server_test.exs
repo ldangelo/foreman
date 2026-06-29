@@ -202,6 +202,15 @@ defmodule ForemanServerTest do
 
     assert {:ok, %{projection: projection}} =
              ForemanServer.handle_command(%{
+               command_id: "cmd-task-workflow",
+               command_type: "task.update",
+               payload: %{task_id: "task-1", status: "ready", workflow: "default"}
+             })
+
+    assert projection.tasks["task-1"].workflow == "default"
+
+    assert {:ok, %{projection: projection}} =
+             ForemanServer.handle_command(%{
                command_id: "cmd-task-note",
                command_type: "task.annotate",
                payload: %{task_id: "task-1", body: "ready for dispatch", author: "test"}

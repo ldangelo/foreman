@@ -173,35 +173,35 @@ FOREMAN_BACKEND=node foreman merge --bead <task-id>    # Legacy manual merge pat
 - Task failed and was marked as `failed`
 - Task was manually set to a non-ready status
 
-**Fix:** In default Elixir mode, use `foreman retry <task-id>` or approve/update the task so the Elixir scheduler can claim it. The direct worker bridge is legacy-only:
+**Fix:** In default Elixir mode, use `foreman retry <task-id>` or approve/update the task so the Elixir scheduler can claim it. For a manual workflow selection, `foreman run task` writes a ready/workflow event and ticks the scheduler:
 
 ```bash
-# Legacy direct worker bridge; bypasses normal state gating
-FOREMAN_BACKEND=node foreman run task <task-id> <workflow> --project my-project --no-watch
+# Elixir scheduler-backed manual dispatch
+foreman run task <task-id> <workflow> --project my-project --no-watch
 
-# Dry run to preview legacy execution
-FOREMAN_BACKEND=node foreman run task <task-id> task --dry-run
+# Dry run to preview without writing events
+foreman run task <task-id> task --dry-run
 
 # Common workflows: task, feature, epic, quick
-FOREMAN_BACKEND=node foreman run task <task-id> quick --project my-project --no-watch
+foreman run task <task-id> quick --project my-project --no-watch
 ```
 
-**Note:** Worktree and run locking still apply — if an active legacy run exists for this task, you'll see a lock error. Use `FOREMAN_BACKEND=node foreman stop <task-id>` first.
+**Note:** Scheduler capacity/dependency checks still apply. If you need the legacy state-gate bypass, explicitly set `FOREMAN_BACKEND=node`.
 
 ### Testing a new workflow on an existing task
 
 **Symptoms:** You want to test a custom workflow or different phase configuration on a task without changing its status.
 
-**Fix:** In default Elixir mode, label/update the task workflow and let the scheduler launch it. Use the legacy direct worker bridge only with explicit Node backend:
+**Fix:** In default Elixir mode, label/update the task workflow and let the scheduler launch it, or request scheduler-backed manual dispatch:
 
 ```bash
-# Test with a custom workflow in legacy mode
-FOREMAN_BACKEND=node foreman run task <task-id> ~/.foreman/workflows/custom.yaml --project my-project
+# Test with a custom workflow through Elixir scheduler dispatch
+foreman run task <task-id> ~/.foreman/workflows/custom.yaml --project my-project
 
 # Test with quick workflow (no explorer/reviewer phases)
-FOREMAN_BACKEND=node foreman run task <task-id> quick --project my-project --no-watch
+foreman run task <task-id> quick --project my-project --no-watch
 
-# Debug with a specific model
+# Legacy direct worker bridge with a specific model
 FOREMAN_BACKEND=node foreman run task <task-id> task --model anthropic/claude-opus-4-6 --project my-project
 ```
 

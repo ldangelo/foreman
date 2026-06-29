@@ -231,10 +231,12 @@ defmodule ForemanServer.Scheduler do
     workflow = workflow_name(task)
 
     with {:ok, project_path} <- task_project_path(task) do
+      explicit_workflow = Path.expand(workflow, project_path)
       project_workflow = Path.join([project_path, ".foreman", "workflows", "#{workflow}.yaml"])
       bundled_workflow = Path.expand("../../src/defaults/workflows/#{workflow}.yaml", File.cwd!())
 
       cond do
+        File.exists?(explicit_workflow) -> {:ok, explicit_workflow}
         File.exists?(project_workflow) -> {:ok, project_workflow}
         File.exists?(bundled_workflow) -> {:ok, bundled_workflow}
         true -> {:error, :workflow_not_found}

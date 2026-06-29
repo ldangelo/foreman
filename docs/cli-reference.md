@@ -136,18 +136,19 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 
 ### `foreman run task`
 
-Legacy direct task execution through the Node worker bridge, bypassing scheduler state gates. In default Elixir mode, let the Elixir scheduler launch workers; this command fails fast unless `FOREMAN_BACKEND=node` is set (the hidden `--run-id` path is reserved for the Elixir scheduler bridge).
+Run a specific task with an explicit workflow. In default Elixir mode, Foreman writes a `task.update` event (`status=ready`, selected `workflow`) and ticks the Elixir scheduler; the scheduler owns worker launch. Set `FOREMAN_BACKEND=node` only for the legacy direct worker bridge.
 
 ```bash
+foreman run task foreman-12345 task --project foreman --no-watch
+foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --dry-run
 FOREMAN_BACKEND=node foreman run task foreman-12345 task --project foreman --no-watch
-FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--model <model>` | workflow default | Override the model used by spawned worker phases |
-| `--dry-run` | — | Resolve task, workflow, and worktree without creating a run |
-| `--no-watch` | — | Spawn the worker and return immediately |
+| `--dry-run` | — | Resolve task/workflow and preview the scheduler request without writing Elixir events; legacy Node also avoids creating a run |
+| `--no-watch` | — | Return after scheduler claim/worker spawn instead of showing follow-up guidance |
 | `--target-branch <branch>` | detected default | Override base/target branch for finalization and merge |
 | `--project <name>` | current project | Registered project name |
 | `--project-path <absolute-path>` | current project | Absolute project path for advanced/scripted use |
@@ -208,33 +209,29 @@ Active Agents
 
 ### `foreman metrics`
 
-Show per-phase pipeline metrics from the Elixir server by default. In default Elixir mode, `--compact` emits pipeline counters as single-line `key=value` output. Cost mode (`--costs` or filters such as `--since`, `--phase`, `--agent`, `--task-type`) reads the legacy task store and requires `FOREMAN_BACKEND=node` until Elixir cost projections land.
+Show per-phase pipeline metrics from the Elixir server by default. In default Elixir mode, `--compact` emits pipeline counters as single-line `key=value` output and `--costs` derives cost totals from Elixir phase projections. Legacy Node cost metrics remain available only with `FOREMAN_BACKEND=node`.
 
 ```bash
 foreman metrics                         # Human-readable pipeline metrics dashboard
 foreman metrics --json                  # Raw pipeline metrics JSON from the server
 foreman metrics --compact               # Pipeline counters as single-line key=value output
-FOREMAN_BACKEND=node foreman metrics --costs                 # Human-readable cost/token metrics summary
-FOREMAN_BACKEND=node foreman metrics --costs --json          # Cost/token JSON with timestamp/projectId
-FOREMAN_BACKEND=node foreman metrics --compact               # Cost/token single-line key=value format for scripts
-FOREMAN_BACKEND=node foreman metrics --since 2026-06-01      # Filter cost metrics since this date
-FOREMAN_BACKEND=node foreman metrics --phase explorer        # Filter cost metrics to a specific phase
-FOREMAN_BACKEND=node foreman metrics --agent claude-sonnet-4-6       # Filter cost metrics by agent model
-FOREMAN_BACKEND=node foreman metrics --task-type feature     # Filter cost metrics to a specific task type
+foreman metrics --costs                 # Elixir-derived phase cost summary
+foreman metrics --costs --compact --phase developer # Single-line Elixir phase cost summary
+FOREMAN_BACKEND=node foreman metrics --costs                 # Legacy task-store cost/token metrics summary
+FOREMAN_BACKEND=node foreman metrics --costs --json          # Legacy cost/token JSON with timestamp/projectId
 foreman metrics --project my-project    # Metrics for a registered project
 foreman metrics --project-path /abs/path # Metrics for a project at an absolute path
-FOREMAN_BACKEND=node foreman metrics --costs --json --since 2026-06-01 --phase developer --task-type bug  # Combine cost filters
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--json` | — | Output JSON: pipeline JSON by default, cost/token JSON in cost mode |
-| `--compact` | — | Output Elixir pipeline counters as single-line `key=value`; with `FOREMAN_BACKEND=node`, output legacy cost/token metrics as `key=value` |
-| `--costs` | — | Show task-store cost/token metrics instead of pipeline metrics |
-| `--since <iso-timestamp>` | — | Include cost metrics since this ISO timestamp; implies cost mode |
-| `--phase <phase-name>` | — | Filter cost metrics to a specific phase (explorer, developer, qa, reviewer, finalize); implies cost mode |
-| `--agent <type>` | — | Filter cost metrics to a specific agent model (e.g., claude-sonnet-4-6); implies cost mode |
-| `--task-type <type>` | — | Filter cost metrics to tasks of a specific type (feature, bug, chore, task); implies cost mode |
+| `--json` | — | Output JSON: pipeline JSON by default, Elixir-derived cost JSON in cost mode |
+| `--compact` | — | Output Elixir pipeline or cost counters as single-line `key=value`; with `FOREMAN_BACKEND=node`, output legacy cost/token metrics as `key=value` |
+| `--costs` | — | Show Elixir-derived phase cost metrics instead of the full pipeline dashboard |
+| `--since <iso-timestamp>` | — | Include filter context for cost output; legacy Node mode applies it to task-store metrics |
+| `--phase <phase-name>` | — | Filter Elixir cost output to a specific phase (explorer, developer, qa, reviewer, finalize); legacy Node mode applies it to task-store metrics |
+| `--agent <type>` | — | Include agent filter context; legacy Node mode applies it to task-store metrics |
+| `--task-type <type>` | — | Include task-type filter context; legacy Node mode applies it to task-store metrics |
 | `--project <name-or-path>` | — | Show metrics for a registered project name |
 | `--project-path <absolute-path>` | — | Show metrics for a project at an absolute path (advanced/script usage) |
 
