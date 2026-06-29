@@ -680,15 +680,15 @@ FOREMAN_BACKEND=node foreman worktree clean --all             # Remove all inclu
 ```
 
 ### `foreman sentinel`
-Legacy QA sentinel for continuous testing on the main branch. Default Elixir mode provides read-only `sentinel status`/`sentinel list` compatibility views and blocks mutating/agent paths; use Elixir scheduler/status/recover flows by default, or set `FOREMAN_BACKEND=node` for legacy sentinel commands.
+Scheduler-backed sentinel compatibility for continuous health checks. Default Elixir mode maps sentinel controls to the Elixir scheduler/server: `run-once` performs one scheduler tick, `start` ensures the scheduler server is running, and `stop` explains that there is no separate sentinel process.
 
 ```bash
-FOREMAN_BACKEND=node foreman sentinel run-once               # Run tests once and exit
-FOREMAN_BACKEND=node foreman sentinel start                  # Background daemon mode
-FOREMAN_BACKEND=node foreman sentinel stop                   # Stop background sentinel
-foreman sentinel status                                      # Elixir compatibility status
-foreman sentinel list --json                                 # Elixir project compatibility list
-FOREMAN_BACKEND=node foreman sentinel status                 # Show legacy sentinel status
+foreman sentinel run-once --json                            # Run one Elixir scheduler-backed check
+foreman sentinel start                                      # Ensure scheduler server is running
+foreman sentinel stop                                       # No-op; use server stop if needed
+foreman sentinel status                                     # Elixir scheduler sentinel status
+foreman sentinel list --json                                # Elixir project sentinel list
+FOREMAN_BACKEND=node foreman sentinel status                # Show legacy sentinel status
 ```
 
 ### `foreman reset`

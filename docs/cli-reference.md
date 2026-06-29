@@ -299,26 +299,17 @@ foreman watch --no-events         # Hide the pipeline events panel
 
 ### `foreman sentinel`
 
-Legacy continuous QA testing agent that monitors a branch for test failures and auto-creates follow-up fix tasks. Default Elixir mode allows read-only `sentinel status`/`sentinel list` compatibility views and blocks mutating/agent commands; use Elixir scheduler/status/recover flows by default, or set `FOREMAN_BACKEND=node` for legacy sentinel.
+Scheduler sentinel compatibility commands. Default Elixir mode maps sentinel controls to the Elixir scheduler/server: `run-once` performs one scheduler tick, `start` ensures the server is running, `stop` reports that there is no separate sentinel process, and status/list render scheduler-backed sentinel state. `FOREMAN_BACKEND=node` keeps the legacy sentinel history/config commands available.
 
 ```bash
-# Run once
-FOREMAN_BACKEND=node foreman sentinel run-once
-FOREMAN_BACKEND=node foreman sentinel run-once --branch dev --test-command "npm test"
-FOREMAN_BACKEND=node foreman sentinel run-once --dry-run
+foreman sentinel run-once
+foreman sentinel run-once --json
+foreman sentinel start
+foreman sentinel stop
+foreman sentinel status
+foreman sentinel list --json
 
-# Start background daemon
-FOREMAN_BACKEND=node foreman sentinel start
-FOREMAN_BACKEND=node foreman sentinel start --interval 15 --failure-threshold 3
-
-# Check sentinel status
-foreman sentinel status                     # Elixir compatibility status
-foreman sentinel list --json                # Elixir project compatibility list
-FOREMAN_BACKEND=node foreman sentinel status
 FOREMAN_BACKEND=node foreman sentinel status --json --limit 20
-
-# Stop background daemon
-FOREMAN_BACKEND=node foreman sentinel stop
 FOREMAN_BACKEND=node foreman sentinel stop --force
 ```
 

@@ -27,8 +27,8 @@ FOREMAN_BACKEND=node foreman run --bead X # Legacy dispatch specific task
 foreman run task X default # Elixir event-backed manual scheduler dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard (Elixir projections by default; 'dashboard' is a deprecated alias)
-foreman sentinel status # Elixir compatibility view; use status/watch/runs/recover instead
-FOREMAN_BACKEND=node foreman sentinel # Legacy background health daemon
+foreman sentinel run-once # Elixir scheduler-backed sentinel tick
+foreman sentinel status # Elixir scheduler sentinel status
 foreman reset         # Elixir-backed reset/requeue for failed/stuck runs
 foreman reset --dry-run # Elixir-backed reset/recovery preview
 FOREMAN_BACKEND=node foreman reset          # Legacy cleanup failed/stuck runs

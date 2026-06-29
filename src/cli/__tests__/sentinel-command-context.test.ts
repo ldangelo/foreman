@@ -293,7 +293,7 @@ it("lists sentinel compatibility in Elixir mode without legacy stores", async ()
   expect(MockForemanStore.forProject).not.toHaveBeenCalled();
   expect(mockPostgresStoreForProject).not.toHaveBeenCalled();
   const output = String(logSpy.mock.calls[0][0]);
-  expect(JSON.parse(output)[0].sentinel.mode).toBe("legacy-only");
+  expect(JSON.parse(output)[0].sentinel.mode).toBe("elixir-scheduler");
 });
 
 });

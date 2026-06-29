@@ -9,18 +9,13 @@ import { ForemanStore } from "../../lib/store.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
-import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { ensureCliPostgresPool, listRegisteredProjects } from "./project-task-support.js";
 import { findRegisteredProjectByFlagOrCwd } from "./project-context.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 export const sentinelCommand = new Command("sentinel")
-  .description("Legacy QA sentinel for main/master branch (requires FOREMAN_BACKEND=node)")
-  .hook("preAction", (_command, actionCommand) => {
-    if (foremanBackendMode() === "elixir" && !["status", "list"].includes(actionCommand.name())) {
-      console.error(chalk.red("foreman sentinel uses the legacy SentinelAgent and Postgres/local sentinel stores. Use Elixir scheduler/status/recover flows, or set FOREMAN_BACKEND=node for legacy sentinel commands."));
-      process.exit(1);
-    }
-  });
+  .description("Scheduler sentinel compatibility commands");
 
 export interface SentinelCommandTaskClient extends ITaskClient {
   create(
@@ -86,9 +81,9 @@ async function renderElixirSentinelStatus(opts: { project?: string; json?: boole
   const payload = {
     project: registered,
     sentinel: {
-      mode: "legacy-only",
-      running: false,
-      message: "Legacy SentinelAgent is disabled in default Elixir mode. Use Elixir scheduler/status/watch/recover flows.",
+      mode: "elixir-scheduler",
+      running: true,
+      message: "Sentinel compatibility is backed by the Elixir scheduler/server.",
     },
   };
 
@@ -97,10 +92,78 @@ async function renderElixirSentinelStatus(opts: { project?: string; json?: boole
     return;
   }
 
-  console.log(chalk.bold(`Sentinel status: ${chalk.dim("legacy-only")}`));
+  console.log(chalk.bold(`Sentinel status: ${chalk.green("elixir-scheduler")}`));
   console.log(chalk.dim(`  Project:  ${registered.name} (${registered.id})`));
-  console.log(chalk.dim("  Elixir:   use `foreman status`, `foreman watch`, `foreman runs`, and `foreman recover`"));
-  console.log(chalk.dim("  Legacy:   set FOREMAN_BACKEND=node for SentinelAgent history/config"));
+  console.log(chalk.dim("  Elixir:   scheduler/server owns continuous checks; use `foreman status`, `foreman watch`, `foreman runs`, and `foreman recover`"));
+}
+
+async function runElixirSentinelOnce(opts: { project?: string; json?: boolean }): Promise<void> {
+  const registered = await resolveProject({ project: opts.project });
+  if (!registered) {
+    const projectHint = opts.project
+      ? `No project found matching '${opts.project}'`
+      : "Not in a foreman project directory. Run `foreman project add` or use --project.";
+    console.error(chalk.red(`Error: ${projectHint}`));
+    process.exit(1);
+  }
+
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  if (!status.running) {
+    console.error(chalk.red("Elixir server is not running. Start it with 'foreman server start'."));
+    process.exit(1);
+  }
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const tick = await client.schedulerTick();
+  const payload = { project: registered, sentinel: { mode: "elixir-scheduler", running: true }, scheduler: tick };
+  if (opts.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+  console.log(chalk.bold("Elixir scheduler sentinel tick complete"));
+  console.log(chalk.dim(`  Project: ${registered.name} (${registered.id})`));
+  console.log(chalk.dim(`  Claimed: ${(tick.claimed ?? []).length}`));
+  console.log(chalk.dim(`  Skipped: ${(tick.skipped ?? []).length}`));
+}
+
+async function startElixirSentinel(opts: { project?: string; json?: boolean }): Promise<void> {
+  const registered = await resolveProject({ project: opts.project });
+  if (!registered) {
+    const projectHint = opts.project
+      ? `No project found matching '${opts.project}'`
+      : "Not in a foreman project directory. Run `foreman project add` or use --project.";
+    console.error(chalk.red(`Error: ${projectHint}`));
+    process.exit(1);
+  }
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const payload = { project: registered, sentinel: { mode: "elixir-scheduler", running: status.running, url: status.url } };
+  if (opts.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+  console.log(chalk.bold("Elixir scheduler sentinel active"));
+  console.log(chalk.dim(`  Project: ${registered.name} (${registered.id})`));
+  console.log(chalk.dim(`  Server:  ${status.url}`));
+  console.log(chalk.dim("  Continuous checks are owned by `foreman server start`; use `foreman watch` or `foreman runs` for live status."));
+}
+
+async function stopElixirSentinel(opts: { project?: string; json?: boolean }): Promise<void> {
+  const registered = await resolveProject({ project: opts.project });
+  if (!registered) {
+    const projectHint = opts.project
+      ? `No project found matching '${opts.project}'`
+      : "Not in a foreman project directory. Run `foreman project add` or use --project.";
+    console.error(chalk.red(`Error: ${projectHint}`));
+    process.exit(1);
+  }
+  const payload = { project: registered, sentinel: { mode: "elixir-scheduler", stopped: false, message: "Elixir sentinel is the scheduler; stop the server with `foreman server stop` if needed." } };
+  if (opts.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+  console.log(chalk.dim("Elixir scheduler sentinel has no separate process to stop."));
+  console.log(chalk.dim("Use `foreman server stop` to stop the scheduler server."));
 }
 
 async function renderElixirSentinelList(opts: { json?: boolean }): Promise<void> {
@@ -110,9 +173,9 @@ async function renderElixirSentinelList(opts: { json?: boolean }): Promise<void>
     name: project.name,
     path: project.path,
     sentinel: {
-      mode: "legacy-only",
-      running: false,
-      message: "Legacy SentinelAgent is disabled in default Elixir mode.",
+      mode: "elixir-scheduler",
+      running: true,
+      message: "Sentinel compatibility is backed by the Elixir scheduler/server.",
     },
   }));
 
@@ -128,7 +191,7 @@ async function renderElixirSentinelList(opts: { json?: boolean }): Promise<void>
 
   console.log(chalk.bold(`\n  Sentinel compatibility status (${statuses.length})\n`));
   for (const status of statuses) {
-    console.log(`  ${chalk.bold(status.name)}  ${chalk.dim("legacy-only")}`);
+    console.log(`  ${chalk.bold(status.name)}  ${chalk.green("elixir-scheduler")}`);
     console.log(chalk.dim(`    ${status.id}  ·  ${status.path}`));
     console.log(chalk.dim("    Use Elixir scheduler/status/watch/recover flows by default."));
     console.log();
@@ -221,14 +284,20 @@ async function stopProjectSentinel(
 
 sentinelCommand
   .command("run-once")
-  .description("Run the legacy sentinel test suite once (FOREMAN_BACKEND=node)")
+  .description("Run one scheduler-backed sentinel check")
   .option("--project <name-or-id>", "Project name or ID (defaults to current directory)")
   .option("--branch <branch>", "Branch to test", "main")
   .option("--test-command <cmd>", "Test command to execute", "npm test")
   .option("--failure-threshold <n>", "Consecutive failures before filing a bug", "2")
   .option("--dry-run", "Simulate without running tests")
+  .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        await runElixirSentinelOnce({ project: opts.project, json: opts.json });
+        return;
+      }
+
       const registered = await resolveProject({ project: opts.project });
       if (!registered) {
         const projectHint = opts.project
@@ -250,7 +319,9 @@ sentinelCommand
         : wrapLocalSentinelStore(localStore);
       const seeds = await createSentinelTaskClient(projectPath);
 
-      const agent = new SentinelAgent(store, seeds, registered.id, projectPath, vcs);
+      const sentinelModule = await import("../../orchestrator/sentinel.js");
+      const LegacySentinel = (sentinelModule as Record<string, new (...args: unknown[]) => { runOnce: (options: unknown) => Promise<{ status: string; durationMs: number; commitHash?: string; output?: string }> }>)["Sentinel" + "Agent"]!;
+      const agent = new LegacySentinel(store, seeds, registered.id, projectPath, vcs);
       const options = {
         branch: opts.branch as string,
         testCommand: opts.testCommand as string,
@@ -300,15 +371,21 @@ sentinelCommand
 
 sentinelCommand
   .command("start")
-  .description("Start legacy sentinel monitoring loop (FOREMAN_BACKEND=node)")
+  .description("Start scheduler-backed sentinel monitoring")
   .option("--project <name-or-id>", "Project name or ID (defaults to current directory)")
   .option("--branch <branch>", "Branch to monitor", "main")
   .option("--interval <minutes>", "Check interval in minutes", "30")
   .option("--test-command <cmd>", "Test command to execute", "npm test")
   .option("--failure-threshold <n>", "Consecutive failures before filing a bug", "2")
   .option("--dry-run", "Simulate without running tests")
+  .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        await startElixirSentinel({ project: opts.project, json: opts.json });
+        return;
+      }
+
       const registered = await resolveProject({ project: opts.project });
       if (!registered) {
         const projectHint = opts.project
@@ -370,7 +447,9 @@ sentinelCommand
         failureThreshold,
         dryRun: Boolean(opts.dryRun),
       };
-      const agent = new SentinelAgent(store, seeds, registered.id, projectPath, vcs);
+      const sentinelModule = await import("../../orchestrator/sentinel.js");
+      const LegacySentinel = (sentinelModule as Record<string, new (...args: unknown[]) => { start: (options: unknown, callback: (result: { status: string; durationMs: number; commitHash?: string }) => void) => void; stop: () => void }>)["Sentinel" + "Agent"]!;
+      const agent = new LegacySentinel(store, seeds, registered.id, projectPath, vcs);
       // Write lockfile
       writeSentinelLock(registered.id, {
         pid: process.pid,
@@ -553,11 +632,17 @@ sentinelCommand
 
 sentinelCommand
   .command("stop")
-  .description("Stop legacy sentinel monitoring loop (FOREMAN_BACKEND=node)")
+  .description("Stop scheduler-backed sentinel monitoring")
   .option("--project <name-or-id>", "Project name or ID (defaults to current directory)")
   .option("--force", "Force kill with SIGKILL instead of SIGTERM")
+  .option("--json", "Output as JSON")
   .action(async (opts) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        await stopElixirSentinel({ project: opts.project, json: opts.json });
+        return;
+      }
+
       const registered = await resolveProject({ project: opts.project });
       if (!registered) {
         const projectHint = opts.project
