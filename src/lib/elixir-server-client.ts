@@ -208,6 +208,23 @@ export class ElixirServerClient {
     });
   }
 
+  async requestPr(input: { runId: string; taskId?: string; branch: string; baseBranch: string; draft?: boolean; title?: string; body?: string; backend?: string }): Promise<ForemanServerResponse> {
+    return this.sendCommand({
+      command_id: `vcs-pr-${input.runId}-${Date.now()}`,
+      command_type: "vcs.pr",
+      payload: {
+        run_id: input.runId,
+        task_id: input.taskId,
+        branch: input.branch,
+        base_branch: input.baseBranch,
+        draft: Boolean(input.draft),
+        title: input.title,
+        body: input.body,
+        backend: input.backend ?? "git",
+      },
+    });
+  }
+
   async listSchedulerSkips(projectId?: string): Promise<ElixirSchedulerSkip[]> {
     const params = new URLSearchParams();
     if (projectId) params.set("project_id", projectId);

@@ -174,6 +174,37 @@ defmodule ForemanServer.Http.RouterTest do
            ]
   end
 
+  test "authorized vcs.pr command records event-backed PR request" do
+    command = %{
+      "command_id" => "cmd-vcs-pr",
+      "command_type" => "vcs.pr",
+      "schema_version" => 1,
+      "payload" => %{
+        "run_id" => "run-http-pr",
+        "task_id" => "task-http-pr",
+        "branch" => "foreman/task-http-pr",
+        "base_branch" => "dev",
+        "draft" => true,
+        "backend" => "git"
+      },
+      "metadata" => %{"correlation_id" => "run-http-pr"}
+    }
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    projection = ProjectionStore.snapshot()
+    assert conn.status == 202
+    assert projection.vcs_operations["cmd-vcs-pr"].event_type == "VcsPrRequested"
+    assert projection.vcs_operations["cmd-vcs-pr"].effects == [
+             %{action: "gh_pr_create", branch: "foreman/task-http-pr", base_branch: "dev", draft: true}
+           ]
+  end
+
   test "authorized run.reset command marks run terminal reset" do
     append_run_event("RunStarted", %{
       run_id: "run-http-reset",

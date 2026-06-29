@@ -83,6 +83,30 @@ defmodule ForemanServer.VcsAdapter do
     end
   end
 
+  @spec create_pr(map()) :: worktree_result()
+  def create_pr(input) when is_map(input) do
+    input = atomize_keys(input)
+
+    with {:ok, backend} <- backend(Map.get(input, :backend, :git)),
+         {:ok, run_id} <- required_binary(Map.get(input, :run_id), :run_id),
+         {:ok, branch} <- required_binary(Map.get(input, :branch), :branch),
+         {:ok, base_branch} <- required_binary(Map.get(input, :base_branch, "main"), :base_branch) do
+      append("VcsPrRequested", %{
+        operation_id: Map.get(input, :operation_id, "pr-#{run_id}"),
+        run_id: run_id,
+        task_id: Map.get(input, :task_id),
+        backend: Atom.to_string(backend),
+        branch: branch,
+        base_branch: base_branch,
+        draft: Map.get(input, :draft, false),
+        title: Map.get(input, :title),
+        body: Map.get(input, :body),
+        effects: [%{action: pr_action(backend), branch: branch, base_branch: base_branch, draft: Map.get(input, :draft, false)}],
+        adapter: adapter_details(backend)
+      })
+    end
+  end
+
   @spec adapters() :: [map()]
   def adapters do
     [adapter_details(:git), adapter_details(:jujutsu)]
@@ -143,6 +167,8 @@ defmodule ForemanServer.VcsAdapter do
   defp rebase_action(:jujutsu), do: "jj_rebase"
   defp merge_action(:git), do: "git_merge"
   defp merge_action(:jujutsu), do: "jj_bookmark_merge"
+  defp pr_action(:git), do: "gh_pr_create"
+  defp pr_action(:jujutsu), do: "jj_git_pr_create"
 
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
   defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}

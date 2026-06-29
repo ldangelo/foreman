@@ -59,8 +59,8 @@ foreman merge --task X --target-branch dev # Request one Elixir VCS merge operat
 foreman merge --list   # Elixir projection-backed merge candidates
 foreman merge --dry-run # Elixir merge request preview (no git changes)
 FOREMAN_BACKEND=node foreman merge          # Legacy Refinery merge queue
-foreman pr --json    # Elixir projection-backed PR candidates
-FOREMAN_BACKEND=node foreman pr             # Legacy Refinery PR creation
+foreman pr --json    # Request PRs through Elixir VCS events
+foreman pr --list --json # Elixir projection-backed PR candidates
 foreman attach         # Attach to a running agent session
 foreman attach --kill <id> # Stop via Elixir run.fail event (+ SIGTERM projected worker PID)
 foreman worktree       # Git worktree management

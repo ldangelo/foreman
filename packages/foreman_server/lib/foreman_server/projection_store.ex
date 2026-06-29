@@ -796,6 +796,21 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_domain_event(
          projection,
          %{
+           type: "VcsPrRequested",
+           payload: payload
+         },
+         _mode
+       ) do
+    put_in(
+      projection,
+      [:vcs_operations, payload.operation_id],
+      Map.put(payload, :event_type, "VcsPrRequested")
+    )
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
            type: "PrGateObserved",
            payload: %{pr_id: pr_id} = payload
          },

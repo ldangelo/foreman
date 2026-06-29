@@ -119,6 +119,17 @@ defmodule ForemanServer.CommandRouter do
     VcsAdapter.merge_branch(payload)
   end
 
+  def handle(%{command_id: command_id, command_type: "vcs.pr"} = command)
+      when is_binary(command_id) do
+    payload =
+      command
+      |> Map.get(:payload, %{})
+      |> normalize_payload()
+      |> Map.put_new(:operation_id, command_id)
+
+    VcsAdapter.create_pr(payload)
+  end
+
   def handle(%{command_id: command_id, command_type: command_type} = command)
       when is_binary(command_id) and is_binary(command_type) do
     payload =
@@ -461,6 +472,7 @@ defmodule ForemanServer.CommandRouter do
       :author,
       :body,
       :branch,
+      :base_branch,
       :command_id,
       :config,
       :correlation_id,
@@ -471,6 +483,7 @@ defmodule ForemanServer.CommandRouter do
       :dependencies,
       :description,
       :depends_on,
+      :draft,
       :event_id,
       :event_type,
       :external_id,

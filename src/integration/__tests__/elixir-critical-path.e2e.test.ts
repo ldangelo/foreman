@@ -229,6 +229,8 @@ describe("Elixir native critical-path e2e", () => {
     expect(doctorJson.stdout).toContain('"ok"');
     expectSuccess(await cli(["metrics", "--compact"], projectDir, env), "metrics --compact");
     expectSuccess(await cli(["metrics", "--costs", "--compact", "--phase", "developer"], projectDir, env), "metrics --costs --compact");
+    expectSuccess(await cli(["pr", "--list", "--json"], projectDir, env), "pr --list --json");
+    expectSuccess(await cli(["pr", "--json"], projectDir, env), "pr --json");
     expectSuccess(await cli(["sentinel", "run-once", "--json"], projectDir, env), "sentinel run-once");
     expectSuccess(await cli(["sentinel", "start", "--json"], projectDir, env), "sentinel start");
     expectSuccess(await cli(["sentinel", "stop", "--json"], projectDir, env), "sentinel stop");

@@ -679,21 +679,22 @@ FOREMAN_BACKEND=node foreman merge --stats weekly      # Weekly cost breakdown
 
 ### `foreman pr`
 
-Elixir mode shows projection-backed PR candidates from completed runs; PR creation remains owned by the Elixir scheduler/finalize workflow. Set `FOREMAN_BACKEND=node` for explicit legacy Refinery PR creation.
+Default Elixir mode requests PR creation through Elixir VCS events for completed run projections. Use `--list` for a read-only candidate view. Set `FOREMAN_BACKEND=node` only for explicit legacy Refinery PR creation.
 
 ```bash
-foreman pr                                             # Show Elixir PR candidates
-foreman pr --json                                      # JSON candidate view
-FOREMAN_BACKEND=node foreman pr                        # Create PRs for all completed tasks
-FOREMAN_BACKEND=node foreman pr --draft                # Create as draft PRs
-FOREMAN_BACKEND=node foreman pr --base-branch dev      # PR against dev instead of main
+foreman pr                                             # Request PRs for completed Elixir runs
+foreman pr --draft --base-branch dev                  # Request draft PRs against dev
+foreman pr --json                                      # JSON PR request summary
+foreman pr --list --json                              # JSON candidate view
+FOREMAN_BACKEND=node foreman pr                        # Legacy Refinery PR creation
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--base-branch <branch>` | `main` | Base branch for PRs |
-| `--draft` | — | Draft flag for legacy PR creation; echoed in Elixir candidate JSON |
-| `--json` | — | Output Elixir PR candidates as JSON |
+| `--base-branch <branch>` | `main` | Base branch for Elixir PR requests or legacy PR creation |
+| `--draft` | — | Draft flag for Elixir PR requests or legacy PR creation |
+| `--list` | — | Show Elixir PR candidates without writing PR request events |
+| `--json` | — | Output Elixir PR requests/candidates as JSON |
 
 ---
 
@@ -911,7 +912,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 FOREMAN_BACKEND=node foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|stop|status|restart` maps to the Elixir server unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. Elixir cutover parity: `foreman run` ticks the Elixir scheduler, `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree|--kill` reads Elixir run/inbox projections, default attach records an Elixir attach request before resuming exposed Pi sessions, and `attach --kill` records an Elixir `run.fail` event after signaling a projected worker PID when present, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Remaining legacy-only paths such as `foreman issue` config/sync/webhook/status Postgres commands and PR creation via `FOREMAN_BACKEND=node foreman pr` fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land; default `foreman merge` now records Elixir VCS merge request events. `foreman issue import` now ingests GitHub issues through Elixir external-trigger events, and `foreman sling trd` imports through Elixir task events by default.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|stop|status|restart` maps to the Elixir server unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. Elixir cutover parity: `foreman run` ticks the Elixir scheduler, `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree|--kill` reads Elixir run/inbox projections, default attach records an Elixir attach request before resuming exposed Pi sessions, and `attach --kill` records an Elixir `run.fail` event after signaling a projected worker PID when present, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Remaining legacy-only paths such as `foreman issue` config/sync/webhook/status Postgres commands fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land; default `foreman merge` records Elixir VCS merge request events and default `foreman pr` records Elixir VCS PR request events. `foreman issue import` now ingests GitHub issues through Elixir external-trigger events, and `foreman sling trd` imports through Elixir task events by default.
 
 ---
 

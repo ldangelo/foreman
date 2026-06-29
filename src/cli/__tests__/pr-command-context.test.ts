@@ -45,6 +45,13 @@ vi.mock("../commands/project-task-support.js", () => ({
   resolveRepoRootProjectPath: mockResolveRepoRootProjectPath,
 }));
 
+vi.mock("../commands/project-context.js", () => ({
+  findRegisteredProjectByPath: vi.fn(async (path: string) => {
+    const projects = await mockListRegisteredProjects();
+    return projects.find((project: { path?: string }) => project.path === path);
+  }),
+}));
+
 import { prCommand } from "../commands/pr.js";
 
 async function runCommand(args: string[] = []): Promise<void> {

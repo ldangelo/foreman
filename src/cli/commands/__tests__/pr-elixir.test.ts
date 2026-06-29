@@ -1,0 +1,79 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { mockResolveRepoRootProjectPath, mockFindRegisteredProjectByPath, mockEnsureRunning, mockListRuns, mockRequestPr, mockElixirClientCtor } = vi.hoisted(() => ({
+  mockResolveRepoRootProjectPath: vi.fn(async () => "/repo"),
+  mockFindRegisteredProjectByPath: vi.fn(async () => ({ id: "proj-1", name: "demo", path: "/repo" })),
+  mockEnsureRunning: vi.fn(async () => ({ running: true, url: "http://127.0.0.1:4777" })),
+  mockListRuns: vi.fn(async () => []),
+  mockRequestPr: vi.fn(async () => ({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr" })),
+  mockElixirClientCtor: vi.fn(),
+}));
+
+vi.mock("../project-task-support.js", () => ({
+  resolveRepoRootProjectPath: mockResolveRepoRootProjectPath,
+}));
+
+vi.mock("../project-context.js", () => ({
+  findRegisteredProjectByPath: mockFindRegisteredProjectByPath,
+}));
+
+vi.mock("../../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: class MockElixirServerManager {
+    authToken = "token";
+    ensureRunning = mockEnsureRunning;
+  },
+}));
+
+vi.mock("../../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: class MockElixirServerClient {
+    constructor(url: string, token?: string) {
+      mockElixirClientCtor(url, token);
+    }
+    listRuns = mockListRuns;
+    requestPr = mockRequestPr;
+  },
+}));
+
+vi.mock("../../../lib/store.js", () => ({ ForemanStore: { forProject: vi.fn(() => { throw new Error("legacy store"); }) } }));
+vi.mock("../../../lib/postgres-store.js", () => ({ PostgresStore: vi.fn(() => { throw new Error("postgres store"); }) }));
+vi.mock("../../../orchestrator/refinery.js", () => ({ Refinery: vi.fn(() => { throw new Error("legacy refinery"); }) }));
+
+import { renderElixirPrView, requestElixirPr } from "../pr.js";
+
+describe("Elixir PR operations", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.restoreAllMocks();
+  });
+
+  it("lists completed Elixir runs as PR candidates without legacy stores", async () => {
+    mockListRuns.mockResolvedValue([
+      { run_id: "run-1", task_id: "task-1", status: "completed", branch_name: "foreman/task-1" },
+      { run_id: "run-2", task_id: "task-2", status: "running", branch_name: "foreman/task-2" },
+    ] as never);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await renderElixirPrView({ list: true, json: true });
+
+    expect(mockFindRegisteredProjectByPath).toHaveBeenCalledWith("/repo", { initPool: false });
+    expect(mockElixirClientCtor).toHaveBeenCalledWith("http://127.0.0.1:4777", "token");
+    expect(mockListRuns).toHaveBeenCalledWith("proj-1");
+    const body = JSON.parse(String(logSpy.mock.calls[0][0]));
+    expect(body.entries).toEqual([{ run_id: "run-1", seed_id: "task-1", branch_name: "foreman/task-1", status: "completed", base_branch: "main", draft: false }]);
+  });
+
+  it("requests Elixir VCS PR operations without opening legacy stores", async () => {
+    mockListRuns.mockResolvedValue([
+      { run_id: "run-1", task_id: "task-1", status: "completed", branch_name: "foreman/task-1" },
+      { run_id: "run-2", task_id: "task-2", status: "running", branch_name: "foreman/task-2" },
+    ] as never);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await requestElixirPr({ baseBranch: "dev", draft: true, json: true });
+
+    expect(mockListRuns).toHaveBeenCalledWith("proj-1");
+    expect(mockRequestPr).toHaveBeenCalledWith({ runId: "run-1", taskId: "task-1", branch: "foreman/task-1", baseBranch: "dev", draft: true });
+    const body = JSON.parse(String(logSpy.mock.calls[0][0]));
+    expect(body.requested).toEqual([{ run_id: "run-1", seed_id: "task-1", branch_name: "foreman/task-1", base_branch: "dev", draft: true }]);
+  });
+});
