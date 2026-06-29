@@ -9,7 +9,8 @@ defmodule ForemanServer.CommandRouter do
     PlanningFlow,
     ProjectionStore,
     Scheduler,
-    Security
+    Security,
+    VcsAdapter
   }
 
   @external_trigger_types ["ExternalTriggerCommand", "external.trigger"]
@@ -105,6 +106,17 @@ defmodule ForemanServer.CommandRouter do
     |> Map.get(:payload, %{})
     |> normalize_payload()
     |> Inbox.mark_read()
+  end
+
+  def handle(%{command_id: command_id, command_type: "vcs.merge"} = command)
+      when is_binary(command_id) do
+    payload =
+      command
+      |> Map.get(:payload, %{})
+      |> normalize_payload()
+      |> Map.put_new(:operation_id, command_id)
+
+    VcsAdapter.merge_branch(payload)
   end
 
   def handle(%{command_id: command_id, command_type: command_type} = command)
@@ -448,6 +460,7 @@ defmodule ForemanServer.CommandRouter do
     [
       :author,
       :body,
+      :branch,
       :command_id,
       :config,
       :correlation_id,
@@ -478,6 +491,7 @@ defmodule ForemanServer.CommandRouter do
       :name,
       :actor,
       :occurred_at,
+      :operation_id,
       :output_dir,
       :path,
       :payload,
@@ -503,6 +517,7 @@ defmodule ForemanServer.CommandRouter do
       :task_id,
       :task_type,
       :subject,
+      :target,
       :threshold,
       :title,
       :trace_event_id,
@@ -518,7 +533,8 @@ defmodule ForemanServer.CommandRouter do
       :compatibility_mode,
       :from_prd,
       :provider,
-      :worker_supports_receiving
+      :worker_supports_receiving,
+      :backend
     ]
   end
 end

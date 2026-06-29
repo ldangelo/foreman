@@ -74,7 +74,7 @@ function elixirMergeCandidate(run: ElixirRun): boolean {
   return ["completed", "succeeded", "passed"].includes(run.status ?? "") && Boolean(run.task_id);
 }
 
-export async function renderElixirMergeView(opts: { list?: boolean; dryRun?: boolean; stats?: string | boolean; json?: boolean; task?: string; bead?: string }): Promise<void> {
+export async function renderElixirMergeView(opts: { list?: boolean; dryRun?: boolean; stats?: string | boolean; json?: boolean; task?: string; bead?: string; targetBranch?: string }): Promise<void> {
   const projectPath = await resolveRepoRootProjectPath({});
   const registered = await findRegisteredProjectByPath(projectPath, { initPool: false });
   if (!registered) {
@@ -136,11 +136,65 @@ export async function renderElixirMergeView(opts: { list?: boolean; dryRun?: boo
   }
   for (const run of candidates) {
     const runId = run.run_id ?? run.id ?? "unknown";
-    const branch = typeof run.branch_name === "string" ? run.branch_name : typeof run.worktree_path === "string" ? run.worktree_path : "(branch unknown)";
-    const verb = opts.dryRun ? "would inspect" : "candidate";
+    const branch = typeof run.branch_name === "string" ? run.branch_name : typeof run.worktree_path === "string" ? run.worktree_path : `foreman/${run.task_id ?? runId}`;
+    const verb = opts.dryRun ? "would request merge" : "candidate";
     console.log(`  ${chalk.cyan(verb)} ${run.task_id ?? "unknown"} ${chalk.dim(`[${runId}] ${branch}`)}`);
   }
-  if (opts.dryRun) console.log(chalk.dim("\nNo git state was modified. Actual merge remains workflow/legacy-owned."));
+  if (opts.dryRun) console.log(chalk.dim("\nNo git state was modified."));
+}
+
+export async function requestElixirMerge(opts: { targetBranch?: string; task?: string; bead?: string; json?: boolean }): Promise<void> {
+  const projectPath = await resolveRepoRootProjectPath({});
+  const registered = await findRegisteredProjectByPath(projectPath, { initPool: false });
+  if (!registered) {
+    const message = `Project at '${projectPath}' is not registered in Elixir. Run 'foreman project add' first.`;
+    if (opts.json) console.error(JSON.stringify({ error: message }));
+    else console.error(chalk.red(message));
+    process.exitCode = 1;
+    return;
+  }
+
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  if (!status.running) {
+    const message = "Elixir server is not running. Start it with 'foreman server start'.";
+    if (opts.json) console.error(JSON.stringify({ error: message }));
+    else console.error(chalk.red(message));
+    process.exitCode = 1;
+    return;
+  }
+
+  const client = new ElixirServerClient(status.url, manager.authToken);
+  const taskFilter = (opts.task ?? opts.bead) as string | undefined;
+  const runs = (await client.listRuns(registered.id)).filter((run) => !taskFilter || run.task_id === taskFilter || run.run_id === taskFilter || run.id === taskFilter);
+  const candidates = runs.filter(elixirMergeCandidate);
+  const target = opts.targetBranch ?? "main";
+  const requested = [] as Array<{ run_id: string; seed_id: string | undefined; branch_name: string; target_branch: string }>;
+
+  for (const run of candidates) {
+    const runId = String(run.run_id ?? run.id ?? "");
+    if (!runId) continue;
+    const branch = typeof run.branch_name === "string" ? run.branch_name : typeof run.worktree_path === "string" ? run.worktree_path : `foreman/${run.task_id ?? runId}`;
+    const response = await client.requestMerge({ runId, branch, target });
+    if (!response.ok) throw new Error(response.error.message);
+    requested.push({ run_id: runId, seed_id: run.task_id, branch_name: branch, target_branch: target });
+    if (taskFilter) break;
+  }
+
+  if (opts.json) {
+    console.log(JSON.stringify({ requested }, null, 2));
+    return;
+  }
+
+  if (requested.length === 0) {
+    console.log(chalk.yellow(taskFilter ? `No completed Elixir run found for task ${taskFilter}.` : "No completed Elixir runs found as merge candidates."));
+    return;
+  }
+
+  console.log(chalk.green.bold(`Requested ${requested.length} Elixir merge operation(s):\n`));
+  for (const request of requested) {
+    console.log(`  ${chalk.cyan(request.seed_id ?? request.run_id)} ${chalk.dim(`${request.branch_name} -> ${request.target_branch}`)}`);
+  }
 }
 
 function wrapLocalMergeQueue(queue: MergeQueue, store: ForemanStore, projectPath: string): MergeQueueLike {
@@ -156,7 +210,7 @@ function wrapLocalMergeQueue(queue: MergeQueue, store: ForemanStore, projectPath
 }
 
 export const mergeCommand = new Command("merge")
-  .description("Legacy Refinery merge queue (requires FOREMAN_BACKEND=node)")
+  .description("Request Elixir merge operations by default; legacy Refinery merge queue with FOREMAN_BACKEND=node")
   .option("--target-branch <branch>", "Branch to merge into (default: auto-detected)")
   .option("--no-tests", "Skip running tests after merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
@@ -176,10 +230,7 @@ export const mergeCommand = new Command("merge")
           await renderElixirMergeView(opts);
           return;
         }
-        const message = "foreman merge uses the legacy Refinery and merge queue. Use --list/--dry-run/--stats for Elixir projection-backed visibility, let the Elixir scheduler/finalize workflow handle merge/PR state, or set FOREMAN_BACKEND=node for legacy merge operations.";
-        if (opts.json) console.error(JSON.stringify({ error: message }));
-        else console.error(chalk.red(message));
-        process.exitCode = 1;
+        await requestElixirMerge(opts);
         return;
       }
 

@@ -367,7 +367,6 @@ describe("Elixir native critical-path e2e", () => {
   it("fails closed for legacy-only mutating commands", async () => {
     for (const [args, expected] of [
       [["doctor", "--fix"], "FOREMAN_BACKEND=node"],
-      [["merge"], "FOREMAN_BACKEND=node"],
     ] as Array<[string[], string]>) {
       const result = await cli(args, projectDir, env);
       expectFailure(result, args.join(" "));

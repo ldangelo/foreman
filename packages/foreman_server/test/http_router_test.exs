@@ -145,6 +145,35 @@ defmodule ForemanServer.Http.RouterTest do
     assert message["task_id"] == "task-http-inbox"
   end
 
+  test "authorized vcs.merge command records event-backed merge request" do
+    command = %{
+      "command_id" => "cmd-vcs-merge",
+      "command_type" => "vcs.merge",
+      "schema_version" => 1,
+      "payload" => %{
+        "run_id" => "run-http-merge",
+        "branch" => "foreman/task-http-merge",
+        "target" => "dev",
+        "backend" => "git"
+      },
+      "metadata" => %{"correlation_id" => "run-http-merge"}
+    }
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    projection = ProjectionStore.snapshot()
+    assert conn.status == 202
+    assert projection.vcs_operations["cmd-vcs-merge"].event_type == "VcsMergeRequested"
+    assert projection.vcs_operations["cmd-vcs-merge"].effects == [
+             %{action: "git_merge", branch: "foreman/task-http-merge", target: "dev"}
+           ]
+  end
+
   test "authorized run.reset command marks run terminal reset" do
     append_run_event("RunStarted", %{
       run_id: "run-http-reset",

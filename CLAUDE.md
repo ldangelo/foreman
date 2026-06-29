@@ -54,8 +54,10 @@ foreman metrics --compact # Elixir pipeline counters as key=value
 foreman metrics --costs --phase developer # Elixir-derived phase costs
 foreman doctor        # Elixir default backend; scheduler ticks every 5s, reconciles terminal worker logs, and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 # Workflow runtime: prompt-backed phase overwatch tracks tools, validates reports, enforces declared acceptance-contract coverage, records PASS→FAIL override/retry reasons, blocks drift, steers runaway phases, and treats maxTurns as emergency fuse
+foreman merge          # Request Elixir event-backed VCS merge operations for completed runs
+foreman merge --task X --target-branch dev # Request one Elixir VCS merge operation
 foreman merge --list   # Elixir projection-backed merge candidates
-foreman merge --dry-run # Elixir read-only merge readiness preview
+foreman merge --dry-run # Elixir merge request preview (no git changes)
 FOREMAN_BACKEND=node foreman merge          # Legacy Refinery merge queue
 foreman pr --json    # Elixir projection-backed PR candidates
 FOREMAN_BACKEND=node foreman pr             # Legacy Refinery PR creation
@@ -315,7 +317,7 @@ npx tsc --noEmit       # Type-check without building
 **Common failure modes:**
 
 - Agent stuck in Developer phase → `foreman retry <seed>`; legacy cleanup uses `FOREMAN_BACKEND=node foreman reset --bead <bead>`
-- Branch not merged after completion → inspect Elixir finalize/merge reports; legacy manual merge uses `FOREMAN_BACKEND=node foreman merge`
+- Branch not merged after completion → inspect Elixir finalize/merge reports; `foreman merge --task <id>` records an Elixir VCS merge request; legacy manual Refinery merge uses `FOREMAN_BACKEND=node foreman merge`
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Worker merge phases use target-only autoMerge: one task run should merge only its own queued PR/branch, not drain unrelated queue entries.
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)

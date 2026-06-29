@@ -195,6 +195,19 @@ export class ElixirServerClient {
     });
   }
 
+  async requestMerge(input: { runId: string; branch: string; target: string; backend?: string }): Promise<ForemanServerResponse> {
+    return this.sendCommand({
+      command_id: `vcs-merge-${input.runId}-${Date.now()}`,
+      command_type: "vcs.merge",
+      payload: {
+        run_id: input.runId,
+        branch: input.branch,
+        target: input.target,
+        backend: input.backend ?? "git",
+      },
+    });
+  }
+
   async listSchedulerSkips(projectId?: string): Promise<ElixirSchedulerSkip[]> {
     const params = new URLSearchParams();
     if (projectId) params.set("project_id", projectId);
