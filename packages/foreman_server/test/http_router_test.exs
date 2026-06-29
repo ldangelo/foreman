@@ -571,6 +571,44 @@ defmodule ForemanServer.Http.RouterTest do
     })
   end
 
+  test "github commands project to events and filter by project" do
+    command = %{
+      "command_id" => "cmd-github-config",
+      "command_type" => "github.configure",
+      "payload" => %{
+        "project_id" => "proj-gh",
+        "owner" => "fortium",
+        "repo" => "foreman",
+        "default_labels" => ["github:bug"],
+        "auto_import" => true,
+        "sync_strategy" => "manual"
+      }
+    }
+
+    conn =
+      :post
+      |> conn("/api/v1/commands", Jason.encode!(command))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 202
+    repo = ProjectionStore.snapshot().github_repos["proj-gh:fortium/foreman"]
+    assert repo.default_labels == ["github:bug"]
+    assert repo.auto_import == true
+
+    events_conn =
+      :get
+      |> conn("/api/v1/events?project_id=proj-gh")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert events_conn.status == 200
+    [event] = Jason.decode!(events_conn.resp_body)["events"]
+    assert event["type"] == "GithubRepoConfigured"
+    assert event["project_id"] == "proj-gh"
+  end
+
   defp append_event(stream_id, event_type, payload) do
     ForemanServer.EventStore.append(%{
       stream_id: stream_id,

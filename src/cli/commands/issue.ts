@@ -38,16 +38,22 @@ const COL_NUMBER = 6;
 const COL_STATE = 10;
 const COL_TITLE = 60;
 
+type GithubRepoConfig = {
+  project_id: string;
+  owner: string;
+  repo: string;
+  default_labels: string[];
+  auto_import: boolean;
+  webhook_secret?: string | null;
+  webhook_enabled: boolean;
+  sync_strategy: string;
+  last_sync_at?: string | null;
+};
+
 async function resolveProject(opts: {
   project?: string;
   projectPath?: string;
 }): Promise<{ projectId: string; projectPath: string }> {
-  if (foremanBackendMode() === "elixir") {
-    const message = "foreman issue config/sync/webhook/status commands write legacy Postgres GitHub issue state. Use 'foreman issue import' for Elixir-backed imports, or set FOREMAN_BACKEND=node for legacy issue sync.";
-    console.error(chalk.red(message));
-    process.exit(1);
-  }
-
   const projectPath = await resolveProjectPathFromOptions(opts);
   ensureCliPostgresPool(projectPath);
   const adapter = new PostgresAdapter();
@@ -260,6 +266,62 @@ export function mergeGithubRepoConfigInput(
   };
 }
 
+
+async function createElixirClient(): Promise<ElixirServerClient> {
+  const manager = new ElixirServerManager();
+  const server = await manager.ensureRunning();
+  return new ElixirServerClient(server.url, manager.authToken);
+}
+
+function toRepoConfig(projectId: string, owner: string, repo: string, payload?: Record<string, unknown> | null): GithubRepoConfig {
+  return {
+    project_id: projectId,
+    owner,
+    repo,
+    default_labels: Array.isArray(payload?.default_labels) ? payload.default_labels.map(String) : [],
+    auto_import: Boolean(payload?.auto_import),
+    webhook_secret: typeof payload?.webhook_secret === "string" ? payload.webhook_secret : null,
+    webhook_enabled: Boolean(payload?.webhook_enabled),
+    sync_strategy: typeof payload?.sync_strategy === "string" ? payload.sync_strategy : "github-wins",
+    last_sync_at: typeof payload?.last_sync_at === "string" ? payload.last_sync_at : null,
+  };
+}
+
+function normalizeEventPayload(event: Record<string, unknown>): Record<string, unknown> {
+  const payload = event.payload;
+  return payload && typeof payload === "object" ? payload as Record<string, unknown> : event;
+}
+
+async function getElixirGithubRepoConfig(client: ElixirServerClient, projectId: string, owner: string, repo: string): Promise<GithubRepoConfig | null> {
+  const events = await client.listEvents({ projectId, limit: 500 });
+  let config: GithubRepoConfig | null = null;
+  for (const event of events.reverse()) {
+    const type = String(event.type ?? event.event_type ?? "");
+    const payload = normalizeEventPayload(event);
+    if (payload.project_id !== projectId || payload.owner !== owner || payload.repo !== repo) continue;
+    if (type === "GithubRepoConfigured") config = toRepoConfig(projectId, owner, repo, payload);
+    if (type === "GithubWebhookUpdated") {
+      config ??= toRepoConfig(projectId, owner, repo, payload);
+      config.webhook_enabled = Boolean(payload.webhook_enabled);
+      config.webhook_secret = typeof payload.webhook_secret === "string" ? payload.webhook_secret : null;
+    }
+    if (type === "GithubSyncRequested") {
+      config ??= toRepoConfig(projectId, owner, repo, payload);
+      config.last_sync_at = String(payload.requested_at ?? payload.updated_at ?? "");
+    }
+  }
+  return config;
+}
+
+async function sendElixirGithubCommand(client: ElixirServerClient, commandType: string, payload: Record<string, unknown>): Promise<void> {
+  const response = await client.sendCommand({
+    command_id: `${commandType}-${payload.project_id}-${payload.owner}-${payload.repo}-${Date.now()}`,
+    command_type: commandType,
+    payload,
+  });
+  if (!response.ok) throw new Error(response.error.message);
+}
+
 function handleGhError(err: unknown, action: string): void {
   if (err instanceof GhNotFoundError) {
     console.error(chalk.red(`Error: GitHub resource not found (404)`));
@@ -284,10 +346,10 @@ function handleGhError(err: unknown, action: string): void {
 // ---------------------------------------------------------------------------
 
 export const issueCommand = new Command("issue")
-  .description("GitHub Issues integration commands (import uses Elixir by default; legacy config/sync requires FOREMAN_BACKEND=node)")
+  .description("GitHub Issues integration commands (Elixir-backed by default; legacy sync with FOREMAN_BACKEND=node)")
   .addCommand(
     new Command("view")
-      .description("View a GitHub issue via legacy Node/Postgres sync")
+      .description("View a GitHub issue")
       .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
       .requiredOption("--issue <number>", "Issue number", (val) => parseInt(val, 10))
       .option("--project <name>", "Foreman project name")
@@ -321,7 +383,7 @@ export const issueCommand = new Command("issue")
 
 issueCommand.addCommand(
   new Command("list")
-    .description("List GitHub issues via legacy Node/Postgres sync")
+    .description("List GitHub issues")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--label <label>", "Filter by label")
     .option("--state <open|closed|all>", "Filter by state", "open")
@@ -379,7 +441,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("configure")
-    .description("Configure legacy Node/Postgres GitHub issue sync")
+    .description("Configure Elixir-backed GitHub issue sync")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--auto-import", "Enable auto-import for new issues")
     .option("--disable-auto-import", "Disable auto-import for new issues")
@@ -401,13 +463,17 @@ issueCommand.addCommand(
           projectPath?: string;
         },
       ) => {
-        const { projectId } = await resolveProject(opts);
+        const { projectId } = foremanBackendMode() === "elixir" ? await resolveElixirProject(opts) : await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
-        const adapter = new PostgresAdapter();
         const gh = new GhCli();
-        const existing = await adapter.getGithubRepo(projectId, owner, repo);
+        const elixirMode = foremanBackendMode() === "elixir";
+        const adapter = elixirMode ? undefined : new PostgresAdapter();
+        const client = elixirMode ? await createElixirClient() : undefined;
+        const existing = adapter
+          ? await adapter.getGithubRepo(projectId, owner, repo)
+          : await getElixirGithubRepoConfig(client!, projectId, owner, repo);
 
-        const input = buildGithubRepoConfigInput(projectId, owner, repo, opts, existing);
+        const input = buildGithubRepoConfigInput(projectId, owner, repo, opts, existing as GithubRepoRow | null);
 
         try {
           let labelResult:
@@ -418,7 +484,23 @@ issueCommand.addCommand(
             labelResult = await ensureRequiredGithubLabels(gh, owner, repo);
           }
 
-          const row = await adapter.upsertGithubRepo(input);
+          const row = adapter
+            ? await adapter.upsertGithubRepo(input)
+            : (await sendElixirGithubCommand(client!, "github.configure", {
+              project_id: projectId,
+              owner,
+              repo,
+              default_labels: input.defaultLabels,
+              auto_import: input.autoImport,
+              webhook_secret: input.webhookSecret,
+              webhook_enabled: input.webhookEnabled,
+              sync_strategy: input.syncStrategy,
+              last_sync_at: input.lastSyncAt,
+            }), {
+              sync_strategy: input.syncStrategy ?? "github-wins",
+              auto_import: input.autoImport ?? false,
+              default_labels: input.defaultLabels ?? [],
+            });
           console.log(
             chalk.green(`\n  Configured ${owner}/${repo} for project ${projectId}\n`),
           );
@@ -728,12 +810,42 @@ async function importIssueAsTask(
 }
 
 // ---------------------------------------------------------------------------
+// foreman issue sync
+// ---------------------------------------------------------------------------
+
+issueCommand.addCommand(
+  new Command("sync")
+    .description("Request Elixir-backed GitHub issue sync")
+    .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
+    .option("--project <name>", "Foreman project name")
+    .option("--project-path <path>", "Foreman project path")
+    .action(async (opts: { repo: string; project?: string; projectPath?: string }) => {
+      const { projectId } = foremanBackendMode() === "elixir" ? await resolveElixirProject(opts) : await resolveProject(opts);
+      const { owner, repo } = parseRepoKey(opts.repo);
+
+      if (foremanBackendMode() === "elixir") {
+        const client = await createElixirClient();
+        await sendElixirGithubCommand(client, "github.sync", {
+          project_id: projectId,
+          owner,
+          repo,
+          requested_at: new Date().toISOString(),
+        });
+        console.log(chalk.green(`\n  Requested GitHub issue sync for ${owner}/${repo}\n`));
+        return;
+      }
+
+      console.log(chalk.yellow("  Legacy GitHub sync worker is available only through the Node daemon."));
+    }),
+);
+
+// ---------------------------------------------------------------------------
 // foreman issue labels
 // ---------------------------------------------------------------------------
 
 issueCommand.addCommand(
   new Command("labels")
-    .description("List labels for legacy GitHub issue sync")
+    .description("List GitHub labels")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--project <name>", "Foreman project name")
     .option("--project-path <path>", "Foreman project path")
@@ -767,7 +879,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("milestones")
-    .description("List milestones for legacy GitHub issue sync")
+    .description("List GitHub milestones")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--state <open|closed|all>", "Filter by state", "open")
     .option("--project <name>", "Foreman project name")
@@ -806,7 +918,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("webhook")
-    .description("Manage legacy Node/Postgres GitHub webhooks")
+    .description("Manage Elixir-backed GitHub webhooks")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--enable", "Enable webhook for issues and PR events")
     .option("--disable", "Disable webhook for the repository")
@@ -829,10 +941,12 @@ issueCommand.addCommand(
           process.exit(1);
         }
 
-        const { projectId } = await resolveProject(opts);
+        const { projectId } = foremanBackendMode() === "elixir" ? await resolveElixirProject(opts) : await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
-        const adapter = new PostgresAdapter();
+        const elixirMode = foremanBackendMode() === "elixir";
+        const adapter = elixirMode ? undefined : new PostgresAdapter();
+        const client = elixirMode ? await createElixirClient() : undefined;
 
         const webhookUrl =
           opts.url ?? `http://localhost:3847/webhook`;
@@ -850,14 +964,27 @@ issueCommand.addCommand(
             }
 
             // Update repo config
-            const repoConfig = await adapter.getGithubRepo(projectId, owner, repo);
+            const repoConfig = adapter
+              ? await adapter.getGithubRepo(projectId, owner, repo)
+              : await getElixirGithubRepoConfig(client!, projectId, owner, repo);
             if (repoConfig) {
-              await adapter.upsertGithubRepo(
-                mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig, {
-                  webhookSecret: null,
-                  webhookEnabled: false,
-                }),
-              );
+              if (adapter) {
+                await adapter.upsertGithubRepo(
+                  mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig as GithubRepoRow, {
+                    webhookSecret: null,
+                    webhookEnabled: false,
+                  }),
+                );
+              } else {
+                await sendElixirGithubCommand(client!, "github.webhook", {
+                  project_id: projectId,
+                  owner,
+                  repo,
+                  webhook_secret: null,
+                  webhook_enabled: false,
+                  url: webhookUrl,
+                });
+              }
             }
 
             console.log(
@@ -870,7 +997,9 @@ issueCommand.addCommand(
 
           if (opts.enable) {
             // Generate or use existing secret
-            const repoConfig = await adapter.getGithubRepo(projectId, owner, repo);
+            const repoConfig = adapter
+              ? await adapter.getGithubRepo(projectId, owner, repo)
+              : await getElixirGithubRepoConfig(client!, projectId, owner, repo);
             const secret = repoConfig?.webhook_secret ?? null;
 
             if (!secret) {
@@ -886,13 +1015,24 @@ issueCommand.addCommand(
                 newSecret,
               );
 
-              // Store secret in database
-              await adapter.upsertGithubRepo(
-                mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig, {
-                  webhookSecret: newSecret,
-                  webhookEnabled: true,
-                }),
-              );
+              // Store secret in active backend
+              if (adapter) {
+                await adapter.upsertGithubRepo(
+                  mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig as GithubRepoRow | null, {
+                    webhookSecret: newSecret,
+                    webhookEnabled: true,
+                  }),
+                );
+              } else {
+                await sendElixirGithubCommand(client!, "github.webhook", {
+                  project_id: projectId,
+                  owner,
+                  repo,
+                  webhook_secret: newSecret,
+                  webhook_enabled: true,
+                  url: webhookUrl,
+                });
+              }
 
               console.log(
                 chalk.green(`\n  Enabled webhook for ${owner}/${repo}\n`),
@@ -926,12 +1066,23 @@ issueCommand.addCommand(
               secret,
             );
 
-            await adapter.upsertGithubRepo(
-              mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig, {
-                webhookSecret: secret,
-                webhookEnabled: true,
-              }),
-            );
+            if (adapter) {
+              await adapter.upsertGithubRepo(
+                mergeGithubRepoConfigInput(projectId, owner, repo, repoConfig as GithubRepoRow | null, {
+                  webhookSecret: secret,
+                  webhookEnabled: true,
+                }),
+              );
+            } else {
+              await sendElixirGithubCommand(client!, "github.webhook", {
+                project_id: projectId,
+                owner,
+                repo,
+                webhook_secret: secret,
+                webhook_enabled: true,
+                url: webhookUrl,
+              });
+            }
 
             console.log(
               chalk.green(`\n  Enabled webhook for ${owner}/${repo}\n`),
@@ -970,7 +1121,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("status")
-    .description("Show legacy GitHub issue sync status")
+    .description("Show Elixir-backed GitHub issue sync status")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--project <name>", "Foreman project name")
     .option("--project-path <path>", "Foreman project path")
@@ -980,12 +1131,16 @@ issueCommand.addCommand(
         project?: string;
         projectPath?: string;
       }) => {
-        const { projectId } = await resolveProject(opts);
+        const { projectId } = foremanBackendMode() === "elixir" ? await resolveElixirProject(opts) : await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
-        const adapter = new PostgresAdapter();
+        const elixirMode = foremanBackendMode() === "elixir";
+        const adapter = elixirMode ? undefined : new PostgresAdapter();
+        const client = elixirMode ? await createElixirClient() : undefined;
 
         try {
-          const repoConfig = await adapter.getGithubRepo(projectId, owner, repo);
+          const repoConfig = adapter
+            ? await adapter.getGithubRepo(projectId, owner, repo)
+            : await getElixirGithubRepoConfig(client!, projectId, owner, repo);
           if (!repoConfig) {
             console.log(
               chalk.yellow(
@@ -995,7 +1150,22 @@ issueCommand.addCommand(
             return;
           }
 
-          const syncEvents = await adapter.listGithubSyncEvents(projectId, undefined, 10);
+          const syncEvents = adapter
+            ? await adapter.listGithubSyncEvents(projectId, undefined, 10)
+            : (await client!.listEvents({ projectId, limit: 50 }))
+              .filter((event) => {
+                const payload = normalizeEventPayload(event);
+                return payload.owner === owner && payload.repo === repo && String(event.type ?? event.event_type ?? "").startsWith("Github");
+              })
+              .slice(0, 10)
+              .map((event) => {
+                const payload = normalizeEventPayload(event);
+                return {
+                  direction: "from_github",
+                  event_type: String(event.type ?? event.event_type ?? "github.event"),
+                  processed_at: String(payload.updated_at ?? payload.requested_at ?? ""),
+                };
+              });
 
           console.log(chalk.bold(`\n  GitHub sync status: ${owner}/${repo}\n`));
           console.log(`  ${chalk.dim("Sync strategy:")} ${chalk.cyan(repoConfig.sync_strategy)}`);
@@ -1028,7 +1198,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("link")
-    .description("Link a GitHub pull request to an issue via legacy Node/Postgres sync (or unlink)")
+    .description("Link a GitHub pull request to an issue through Elixir events (or unlink)")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .requiredOption("--issue <number>", "Issue number to link", (val) => parseInt(val, 10))
     .requiredOption("--pr <number>", "Pull request number to link", (val) => parseInt(val, 10))
@@ -1044,17 +1214,35 @@ issueCommand.addCommand(
         project?: string;
         projectPath?: string;
       }) => {
+        const { projectId } = foremanBackendMode() === "elixir" ? await resolveElixirProject(opts) : await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
+        const client = foremanBackendMode() === "elixir" ? await createElixirClient() : undefined;
 
         try {
           if (opts.unlink) {
             await gh.unlinkIssueFromPullRequest(owner, repo, opts.issue, String(opts.pr));
+            if (client) await sendElixirGithubCommand(client, "github.link", {
+              project_id: projectId,
+              owner,
+              repo,
+              issue: opts.issue,
+              pr: opts.pr,
+              linked: false,
+            });
             console.log(
               chalk.green(`\n  Unlinked PR #${opts.pr} from issue #${opts.issue} on ${owner}/${repo}\n`),
             );
           } else {
             await gh.linkIssueToPullRequest(owner, repo, opts.issue, opts.pr);
+            if (client) await sendElixirGithubCommand(client, "github.link", {
+              project_id: projectId,
+              owner,
+              repo,
+              issue: opts.issue,
+              pr: opts.pr,
+              linked: true,
+            });
             console.log(
               chalk.green(`\n  Linked PR #${opts.pr} to issue #${opts.issue} on ${owner}/${repo}\n`),
             );

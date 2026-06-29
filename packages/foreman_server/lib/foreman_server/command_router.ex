@@ -266,6 +266,49 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event("github.configure", payload) do
+    with {:ok, project_id} <- required_binary(Map.get(payload, :project_id), :project_id),
+         {:ok, owner} <- required_binary(Map.get(payload, :owner), :owner),
+         {:ok, repo} <- required_binary(Map.get(payload, :repo), :repo) do
+      {:ok, "GithubRepoConfigured", Map.merge(%{
+        project_id: project_id,
+        owner: owner,
+        repo: repo,
+        default_labels: [],
+        auto_import: false,
+        webhook_enabled: false,
+        sync_strategy: "github-wins"
+      }, payload), "github:#{project_id}:#{owner}/#{repo}"}
+    end
+  end
+
+  defp domain_event("github.webhook", payload) do
+    with {:ok, project_id} <- required_binary(Map.get(payload, :project_id), :project_id),
+         {:ok, owner} <- required_binary(Map.get(payload, :owner), :owner),
+         {:ok, repo} <- required_binary(Map.get(payload, :repo), :repo) do
+      {:ok, "GithubWebhookUpdated", Map.merge(%{project_id: project_id, owner: owner, repo: repo}, payload),
+       "github:#{project_id}:#{owner}/#{repo}"}
+    end
+  end
+
+  defp domain_event("github.sync", payload) do
+    with {:ok, project_id} <- required_binary(Map.get(payload, :project_id), :project_id),
+         {:ok, owner} <- required_binary(Map.get(payload, :owner), :owner),
+         {:ok, repo} <- required_binary(Map.get(payload, :repo), :repo) do
+      {:ok, "GithubSyncRequested", Map.merge(%{project_id: project_id, owner: owner, repo: repo, requested_at: DateTime.utc_now()}, payload),
+       "github:#{project_id}:#{owner}/#{repo}"}
+    end
+  end
+
+  defp domain_event("github.link", payload) do
+    with {:ok, project_id} <- required_binary(Map.get(payload, :project_id), :project_id),
+         {:ok, owner} <- required_binary(Map.get(payload, :owner), :owner),
+         {:ok, repo} <- required_binary(Map.get(payload, :repo), :repo) do
+      {:ok, "GithubIssueLinked", Map.merge(%{project_id: project_id, owner: owner, repo: repo}, payload),
+       "github:#{project_id}:#{owner}/#{repo}"}
+    end
+  end
+
   defp domain_event("worktree.clean", payload) do
     with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id),
          {:ok, worktree_path} <- required_binary(Map.get(payload, :worktree_path), :worktree_path) do
@@ -491,6 +534,16 @@ defmodule ForemanServer.CommandRouter do
       :fingerprint,
       :health,
       :github_url,
+      :owner,
+      :webhook_secret,
+      :webhook_enabled,
+      :sync_strategy,
+      :default_labels,
+      :auto_import,
+      :last_sync_at,
+      :issue,
+      :pr,
+      :linked,
       :id,
       :labels,
       :inbox_messages,

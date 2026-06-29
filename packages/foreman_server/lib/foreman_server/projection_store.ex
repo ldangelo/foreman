@@ -133,6 +133,8 @@ defmodule ForemanServer.ProjectionStore do
       inbox_updates: [],
       integration_commands: %{},
       integration_dedupe: %{},
+      github_repos: %{},
+      github_sync_events: [],
       logs_by_run: %{},
       attach_requests: %{},
       interactive_recovery: %{},
@@ -209,6 +211,78 @@ defmodule ForemanServer.ProjectionStore do
     updates = Map.drop(payload, [:project_id, :id])
 
     put_in(projection, [:projects, project_id], Map.merge(existing, updates))
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "GithubRepoConfigured",
+           payload: %{project_id: project_id, owner: owner, repo: repo} = payload
+         },
+         _mode
+       ) do
+    key = "#{project_id}:#{owner}/#{repo}"
+
+    config = %{
+      project_id: project_id,
+      owner: owner,
+      repo: repo,
+      default_labels: Map.get(payload, :default_labels, []),
+      auto_import: Map.get(payload, :auto_import, false),
+      webhook_secret: Map.get(payload, :webhook_secret),
+      webhook_enabled: Map.get(payload, :webhook_enabled, false),
+      sync_strategy: Map.get(payload, :sync_strategy, "github-wins"),
+      last_sync_at: Map.get(payload, :last_sync_at),
+      updated_at: Map.get(payload, :updated_at)
+    }
+
+    put_in(projection, [:github_repos, key], config)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "GithubWebhookUpdated",
+           payload: %{project_id: project_id, owner: owner, repo: repo} = payload
+         },
+         _mode
+       ) do
+    key = "#{project_id}:#{owner}/#{repo}"
+    existing = get_in(projection, [:github_repos, key]) || %{project_id: project_id, owner: owner, repo: repo}
+
+    put_in(projection, [:github_repos, key], Map.merge(existing, %{
+      webhook_secret: Map.get(payload, :webhook_secret),
+      webhook_enabled: Map.get(payload, :webhook_enabled, false),
+      updated_at: Map.get(payload, :updated_at)
+    }))
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "GithubSyncRequested",
+           payload: %{project_id: project_id, owner: owner, repo: repo} = payload
+         },
+         _mode
+       ) do
+    key = "#{project_id}:#{owner}/#{repo}"
+    existing = get_in(projection, [:github_repos, key]) || %{project_id: project_id, owner: owner, repo: repo}
+    sync_event = Map.put(payload, :event_type, "GithubSyncRequested")
+
+    projection
+    |> put_in([:github_repos, key], Map.merge(existing, %{last_sync_at: Map.get(payload, :requested_at), updated_at: Map.get(payload, :updated_at)}))
+    |> update_in([:github_sync_events], &[sync_event | &1])
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "GithubIssueLinked",
+           payload: payload
+         },
+         _mode
+       ) do
+    update_in(projection, [:github_sync_events], &[Map.put(payload, :event_type, "GithubIssueLinked") | &1])
   end
 
   defp apply_domain_event(

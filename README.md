@@ -601,7 +601,7 @@ foreman import --to-elixir --from-node --project foreman  # snapshot current Nod
 
 The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. During explicit legacy cutover work, set `FOREMAN_BACKEND=node` before using Node/TS delegation. `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` can delegate supported commands to a legacy TS CLI, but default Elixir mode should not silently delegate.
 
-Elixir is the default backend after cutover. This disables legacy TS delegation; `foreman daemon start|stop|status|restart` is an Elixir server compatibility alias unless `FOREMAN_BACKEND=node` is set explicitly for the legacy Node daemon, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections and fail closed when projections are unavailable, `foreman stop`, `foreman attach --kill`, `foreman purge runs`, and `foreman metrics --costs` use Elixir projections/events, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as the Refinery queue via `FOREMAN_BACKEND=node foreman merge` and legacy `foreman issue` config/sync/webhook/status paths require `FOREMAN_BACKEND=node` until Elixir routes land; default Elixir `foreman merge` records VCS merge request events, default Elixir `foreman pr` records VCS PR request events for completed run projections, `foreman issue import` ingests GitHub issues through Elixir external-trigger events, `foreman sling trd` imports TRD tasks through Elixir task commands, and `foreman metrics --compact` is available for pipeline counter scripts. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the default backend after cutover. This disables legacy TS delegation; `foreman daemon start|stop|status|restart` is an Elixir server compatibility alias unless `FOREMAN_BACKEND=node` is set explicitly for the legacy Node daemon, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; Elixir-backed reads such as status/debug/recover/logs/attach/Jira/runs start the local server before reading HTTP projections and fail closed when projections are unavailable, `foreman stop`, `foreman attach --kill`, `foreman purge runs`, and `foreman metrics --costs` use Elixir projections/events, and `foreman board`, `foreman project add|list|edit|remove|sync`, core `foreman task create|list|show|approve|update|note|close|import`, and `foreman jira configure|status|test|enable-webhook|disable-webhook` avoid legacy daemon socket access. Legacy dispatcher/destructive/manual queue paths such as the Refinery queue via `FOREMAN_BACKEND=node foreman merge` require `FOREMAN_BACKEND=node`; default Elixir `foreman merge` records VCS merge request events, default Elixir `foreman pr` records VCS PR request events for completed run projections, `foreman issue configure|sync|webhook|status|link|import` use Elixir commands/events by default, `foreman sling trd` imports TRD tasks through Elixir task commands, and `foreman metrics --compact` is available for pipeline counter scripts. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
 Import structured TRD task hierarchies into the active backend. Default Elixir mode writes `task.create`, `task.update`, `task.close`, and dependency commands to the Elixir server; `FOREMAN_BACKEND=node` keeps the legacy daemon writer available.
@@ -746,12 +746,12 @@ FOREMAN_BACKEND=node foreman attach --kill <id>   # Legacy kill control
 
 ## GitHub Integration
 
-Foreman integrates with GitHub for issue import, legacy bi-directional issue tracking, webhook-driven automation, pull request workflows, and release automation. `foreman issue import` uses Elixir external-trigger ingestion by default and records GitHub issues as native tasks. Other `foreman issue` Postgres sync/config/webhook/status commands are legacy Node-backend paths; set `FOREMAN_BACKEND=node` for them.
+Foreman integrates with GitHub for issue import, Elixir-backed sync configuration/status/webhook events, pull request issue links, and release automation. `foreman issue import` uses Elixir external-trigger ingestion by default and records GitHub issues as native tasks. `foreman issue configure|sync|webhook|status|link` record Elixir events/projections by default; set `FOREMAN_BACKEND=node` only for legacy Node sync workers.
 
 ### Features
 
 - **Issue import** — `foreman issue import --repo owner/repo --issue N` creates native Elixir tasks through external-trigger events
-- **Bi-directional issue sync** — Legacy Node-only push/pull GitHub issues as Foreman tasks via `FOREMAN_BACKEND=node foreman issue sync`
+- **Bi-directional issue sync** — `foreman issue sync --repo owner/repo` records an Elixir sync request; legacy Node workers remain opt-in with `FOREMAN_BACKEND=node`
 - **Real-time webhooks** — Legacy Node-only issue and pull request events stream to ForemanDaemon via `POST /webhook`
 - **Auto-import rules** — Issues with `foreman` or `foreman:dispatch` label can be imported directly into Foreman
 - **Priority mapping** — `foreman:priority:0-4` labels map GitHub issues onto Foreman task priorities
@@ -778,26 +778,24 @@ GitHub labels drive Foreman behavior:
 
 ```bash
 # View and manage GitHub configuration
-FOREMAN_BACKEND=node foreman issue configure    # Configure legacy repo sync + credentials
-FOREMAN_BACKEND=node foreman issue labels <repo>      # List available labels
-FOREMAN_BACKEND=node foreman issue milestones <repo>  # List milestones
+foreman issue configure --repo owner/repo       # Configure Elixir repo sync settings
+foreman issue labels --repo owner/repo          # List available labels
+foreman issue milestones --repo owner/repo      # List milestones
 
 # Sync issues
 foreman issue import --repo owner/repo --issue 142                  # Import one issue via Elixir
 foreman issue import --repo owner/repo --label bug                  # Bulk import via Elixir
 foreman issue import --repo owner/repo --dry-run                    # Preview without creating
-FOREMAN_BACKEND=node foreman issue sync <repo>                       # Bi-directional sync
-FOREMAN_BACKEND=node foreman issue sync <repo> --create              # Create missing issues on GitHub
+foreman issue sync --repo owner/repo                                # Request Elixir-backed sync
 
 # Webhook management
-FOREMAN_BACKEND=node foreman issue webhook --enable <repo>   # Enable legacy webhook + generate secret
-FOREMAN_BACKEND=node foreman issue webhook --disable <repo>  # Disable webhook
-FOREMAN_BACKEND=node foreman issue webhook --status <repo>   # Show webhook status
+foreman issue webhook --repo owner/repo --enable    # Enable webhook + record Elixir event
+foreman issue webhook --repo owner/repo --disable   # Disable webhook + record Elixir event
 
 # Status and linking
-FOREMAN_BACKEND=node foreman issue status <repo>        # Show linked issue status
-FOREMAN_BACKEND=node foreman issue link <repo>#<number> # Link task to GitHub issue
-FOREMAN_BACKEND=node foreman issue view <repo>#<number> # View single issue details
+foreman issue status --repo owner/repo           # Show Elixir-backed sync status
+foreman issue link --repo owner/repo --issue N --pr M # Link PR to issue + record Elixir event
+foreman issue view --repo owner/repo --issue N   # View single issue details
 ```
 
 ### Webhooks
@@ -810,7 +808,7 @@ Webhooks use **HMAC-SHA256** signature verification. The daemon rejects payloads
 export FOREMAN_WEBHOOK_SECRET=<your-secret>     # Set in daemon environment
 ```
 
-The webhook secret is auto-generated when enabling via `FOREMAN_BACKEND=node foreman issue webhook --enable` and stored in the legacy `github_repos` table.
+The webhook secret is auto-generated when enabling via `foreman issue webhook --enable` and recorded in Elixir GitHub webhook events/projections.
 
 #### Webhook event handling
 

@@ -252,7 +252,7 @@ defmodule ForemanServer.Http.Router do
           event
           |> Map.put(:run_id, event_run_id)
           |> Map.put(:task_id, event_task_id)
-          |> Map.put(:project_id, get_in(snapshot, [:tasks, event_task_id, :project_id]))
+          |> Map.put(:project_id, get_in(event, [:payload, :project_id]) || get_in(snapshot, [:tasks, event_task_id, :project_id]))
         end)
         |> Enum.filter(fn event -> is_nil(run_id) or Map.get(event, :run_id) == run_id end)
         |> Enum.filter(fn event ->

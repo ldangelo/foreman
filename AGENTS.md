@@ -75,6 +75,7 @@ Backend safety rules:
 - Default Elixir mode must not silently fall back to legacy daemon/Postgres/local stores for operator status, debug, recovery, attach, destructive, or cleanup paths. Route through Elixir projections or fail closed with explicit `FOREMAN_BACKEND=node` guidance.
 - Legacy daemon/local fallbacks require explicit opt-in (`FOREMAN_BACKEND=node`, or a narrowly documented mixed-cutover fallback env).
 - Default `foreman merge` and `foreman pr` must route VCS requests through Elixir events/projections; legacy Refinery behavior is `FOREMAN_BACKEND=node` only.
+- Default `foreman issue configure|sync|webhook|status|link|import` must route through Elixir events/projections/server APIs; legacy GitHub sync workers are `FOREMAN_BACKEND=node` only.
 
 Execution safety rules:
 
