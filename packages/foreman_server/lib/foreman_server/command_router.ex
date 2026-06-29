@@ -466,6 +466,7 @@ defmodule ForemanServer.CommandRouter do
       :health,
       :github_url,
       :id,
+      :labels,
       :inbox_messages,
       :input,
       :kind,

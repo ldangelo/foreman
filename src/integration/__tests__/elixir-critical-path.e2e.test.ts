@@ -30,7 +30,46 @@ function writeFakeWorkerBin(dir: string): string {
   return worker;
 }
 
-function buildEnv(home: string, projectDir: string, eventLog: string, port: number, workerBin: string): NodeJS.ProcessEnv {
+function writeFakeGhBin(dir: string): string {
+  const binDir = join(dir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const gh = join(binDir, "gh");
+  writeFileSync(gh, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] !== "api") process.exit(1);
+const endpoint = args[1] || "";
+const issue = {
+  id: 7001,
+  number: 7001,
+  title: "Elixir imported GitHub issue",
+  body: "Imported through fake gh for Elixir e2e",
+  state: "open",
+  user: { login: "octocat", id: 1 },
+  labels: [{ id: 2, name: "bug", color: "b60205" }],
+  assignees: [],
+  milestone: { id: 3, title: "v1", number: 1 },
+  created_at: "2026-06-29T00:00:00Z",
+  updated_at: "2026-06-29T01:00:00Z",
+  closed_at: null,
+  url: "https://api.github.com/repos/owner/repo/issues/7001",
+  html_url: "https://github.com/owner/repo/issues/7001"
+};
+if (endpoint === "/repos/owner/repo/issues/7001") {
+  console.log(JSON.stringify(issue));
+  process.exit(0);
+}
+if (endpoint.startsWith("/repos/owner/repo/issues")) {
+  console.log(JSON.stringify([issue]));
+  process.exit(0);
+}
+console.error("unexpected fake gh endpoint " + endpoint);
+process.exit(1);
+`, "utf8");
+  chmodSync(gh, 0o755);
+  return binDir;
+}
+
+function buildEnv(home: string, projectDir: string, eventLog: string, port: number, workerBin: string, ghBinDir: string): NodeJS.ProcessEnv {
   const realHome = process.env.HOME;
   return {
     ...process.env,
@@ -44,6 +83,7 @@ function buildEnv(home: string, projectDir: string, eventLog: string, port: numb
     FOREMAN_SERVER_EVENT_LOG: eventLog,
     FOREMAN_WORKER_BIN: workerBin,
     FOREMAN_REGISTRY_BASE_DIR: join(home, ".foreman"),
+    PATH: `${ghBinDir}:${process.env.PATH ?? ""}`,
     NO_COLOR: "1",
     GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS: "true",
@@ -103,7 +143,8 @@ describe("Elixir native critical-path e2e", () => {
     serverPort = port;
     const eventLog = join(tempRoot, "events.term.log");
     const workerBin = writeFakeWorkerBin(tempRoot);
-    env = buildEnv(home, projectDir, eventLog, port, workerBin);
+    const ghBinDir = writeFakeGhBin(tempRoot);
+    env = buildEnv(home, projectDir, eventLog, port, workerBin, ghBinDir);
     Object.assign(process.env, env);
 
     const pidPath = join(projectDir, ".foreman", "elixir-server.pid");
@@ -231,6 +272,18 @@ describe("Elixir native critical-path e2e", () => {
     const tasks = await client.listTasks();
     expect(tasks.some((task) => task.external_id === "trd:TRD-E2E-SLING")).toBe(true);
     expect(tasks.some((task) => task.external_id === "trd:E2E-T001")).toBe(true);
+  });
+
+  it("imports a GitHub issue through Elixir integration ingestion", async () => {
+    const imported = await cli(["issue", "import", "--repo", "owner/repo", "--issue", "7001", "--project", PROJECT_ID], projectDir, env);
+    expectSuccess(imported, "issue import");
+    expect(imported.stdout).toContain("Imported #7001 as task");
+
+    const tasks = await client.listTasks();
+    const task = tasks.find((row) => row.external_id === "github:owner/repo#7001");
+    expect(task?.title).toBe("Elixir imported GitHub issue");
+    expect(task?.source).toBe("github");
+    expect(task?.labels).toEqual(expect.arrayContaining(["github:bug"]));
   });
 
   it("claims approved work through foreman run", async () => {

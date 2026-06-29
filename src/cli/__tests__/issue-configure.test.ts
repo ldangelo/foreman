@@ -4,6 +4,7 @@ import {
   mergeGithubRepoConfigInput,
   REQUIRED_FOREMAN_GITHUB_LABELS,
   ensureRequiredGithubLabels,
+  buildGithubIssueTriggerPayload,
 } from "../commands/issue.js";
 
 describe("issue configure label setup", () => {
@@ -71,6 +72,48 @@ describe("issue configure label setup", () => {
       syncStrategy: "manual",
       defaultLabels: ["github:docs"],
       lastSyncAt: "2026-04-29T00:00:00.000Z",
+    });
+  });
+
+  it("builds Elixir external trigger payloads for GitHub issue imports", () => {
+    const payload = buildGithubIssueTriggerPayload(
+      "proj-1",
+      {
+        id: 142,
+        number: 7,
+        title: "Fix parity",
+        body: "Body",
+        state: "open",
+        user: { login: "alice", id: 1 },
+        labels: [{ id: 2, name: "bug", color: "b60205" }],
+        assignees: [],
+        milestone: { id: 3, title: "v1", number: 1 },
+        created_at: "2026-06-29T00:00:00Z",
+        updated_at: "2026-06-29T01:00:00Z",
+        closed_at: null,
+        url: "https://api.github.com/repos/o/r/issues/7",
+        html_url: "https://github.com/o/r/issues/7",
+      },
+      "o",
+      "r",
+      { defaultLabels: ["github:docs"], sync: true },
+    );
+
+    expect(payload).toMatchObject({
+      source: "github",
+      project_id: "proj-1",
+      repo: "o/r",
+      external_id: "github:o/r#7",
+      external_link: "https://github.com/o/r/issues/7",
+      event_type: "IssueImported",
+      idempotency_key: "github:o/r#7",
+      title: "Fix parity",
+    });
+    expect(payload.payload).toMatchObject({
+      description: "Body",
+      labels: ["github:bug", "github:docs"],
+      milestone: "v1",
+      sync_enabled: true,
     });
   });
 

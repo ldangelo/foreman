@@ -76,7 +76,12 @@ defmodule ForemanServer.IntegrationIngestionTest do
                "project_id" => "foreman",
                "event_type" => "labeled",
                "external_link" => "https://github.com/fortium/foreman/issues/17",
-               "payload" => %{"label" => "ready"}
+               "payload" => %{
+                 "label" => "ready",
+                 "description" => "GitHub issue body",
+                 "labels" => ["github:bug", "github:ready"],
+                 "priority" => 1
+               }
              })
 
     snapshot = ProjectionStore.snapshot()
@@ -90,6 +95,9 @@ defmodule ForemanServer.IntegrationIngestionTest do
              "https://github.com/fortium/foreman/issues/17"
 
     assert snapshot.tasks[github_task].source == "github"
+    assert snapshot.tasks[github_task].description == "GitHub issue body"
+    assert snapshot.tasks[github_task].labels == ["github:bug", "github:ready"]
+    assert snapshot.tasks[github_task].priority == 1
   end
 
   test "top-level external trigger command routes through integration ingestion" do

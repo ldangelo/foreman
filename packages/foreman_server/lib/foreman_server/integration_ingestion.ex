@@ -134,6 +134,8 @@ defmodule ForemanServer.IntegrationIngestion do
       task_id: stable_task_id(attrs),
       project_id: attrs.project_id,
       title: attrs.title,
+      description: Map.get(attrs.payload, "description") || Map.get(attrs.payload, :description) || Map.get(attrs.payload, "body") || Map.get(attrs.payload, :body),
+      priority: Map.get(attrs.payload, "priority") || Map.get(attrs.payload, :priority),
       status: "open",
       task_type: attrs.task_type,
       source: attrs.source,
@@ -141,7 +143,8 @@ defmodule ForemanServer.IntegrationIngestion do
       external_link: attrs.external_link,
       dedupe_key: attrs.dedupe_key,
       integration_event_type: attrs.event_type,
-      dependencies: []
+      dependencies: [],
+      labels: Map.get(attrs.payload, "labels") || Map.get(attrs.payload, :labels) || []
     }
   end
 

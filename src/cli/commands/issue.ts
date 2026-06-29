@@ -14,7 +14,9 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
-import { ensureCliPostgresPool, resolveProjectPathFromOptions } from "./project-task-support.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { ensureCliPostgresPool, listRegisteredProjects, resolveProjectPathFromOptions } from "./project-task-support.js";
 import {
   GhCli,
   GhRateLimitError,
@@ -41,7 +43,7 @@ async function resolveProject(opts: {
   projectPath?: string;
 }): Promise<{ projectId: string; projectPath: string }> {
   if (foremanBackendMode() === "elixir") {
-    const message = "foreman issue writes legacy Postgres GitHub issue state. Use 'foreman jira' or Elixir-backed task/integration commands, or set FOREMAN_BACKEND=node for legacy issue sync.";
+    const message = "foreman issue config/sync/webhook/status commands write legacy Postgres GitHub issue state. Use 'foreman issue import' for Elixir-backed imports, or set FOREMAN_BACKEND=node for legacy issue sync.";
     console.error(chalk.red(message));
     process.exit(1);
   }
@@ -55,6 +57,33 @@ async function resolveProject(opts: {
     throw new Error(`Project not found for path '${projectPath}'. Run 'foreman init' first.`);
   }
   return { projectId: project.id, projectPath };
+}
+
+async function resolveIssueImportProject(opts: {
+  project?: string;
+  projectPath?: string;
+}): Promise<{ projectId: string; projectPath: string }> {
+  if (foremanBackendMode() === "elixir") return resolveElixirProject(opts);
+  return resolveProject(opts);
+}
+
+async function resolveElixirProject(opts: {
+  project?: string;
+  projectPath?: string;
+}): Promise<{ projectId: string; projectPath: string }> {
+  const projects = await listRegisteredProjects();
+  if (opts.project) {
+    const match = projects.find((project) => project.id === opts.project || project.name === opts.project);
+    if (match) return { projectId: match.id, projectPath: match.path };
+    throw new Error(`Project '${opts.project}' not found in Elixir project registry.`);
+  }
+
+  const projectPath = await resolveProjectPathFromOptions(opts);
+  const match = projects.find((project) => project.path === projectPath);
+  if (!match) {
+    throw new Error(`Project not found for path '${projectPath}' in Elixir project registry. Run 'foreman project add' or 'foreman init' first.`);
+  }
+  return { projectId: match.id, projectPath };
 }
 
 function formatIssueRow(issue: GitHubIssue): string {
@@ -255,7 +284,7 @@ function handleGhError(err: unknown, action: string): void {
 // ---------------------------------------------------------------------------
 
 export const issueCommand = new Command("issue")
-  .description("Legacy Node/Postgres GitHub Issues integration commands (requires FOREMAN_BACKEND=node)")
+  .description("GitHub Issues integration commands (import uses Elixir by default; legacy config/sync requires FOREMAN_BACKEND=node)")
   .addCommand(
     new Command("view")
       .description("View a GitHub issue via legacy Node/Postgres sync")
@@ -424,7 +453,7 @@ issueCommand.addCommand(
 
 issueCommand.addCommand(
   new Command("import")
-    .description("Import GitHub issue(s) through legacy Node/Postgres sync")
+    .description("Import GitHub issue(s) through Elixir integration ingestion by default")
     .requiredOption("--repo <owner/repo>", "Repository (owner/repo)")
     .option("--issue <number>", "Import a single issue by number", (val) => parseInt(val, 10))
     .option("--label <label>", "Import all open issues with this label")
@@ -450,27 +479,35 @@ issueCommand.addCommand(
           projectPath?: string;
         },
       ) => {
-        const { projectId } = await resolveProject(opts);
+        const { projectId } = await resolveIssueImportProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
-        const adapter = new PostgresAdapter();
+        const elixirMode = foremanBackendMode() === "elixir";
+        const manager = elixirMode ? new ElixirServerManager() : undefined;
+        const elixirClient = manager ? new ElixirServerClient((await manager.ensureRunning()).url, manager.authToken) : undefined;
+        const adapter = elixirMode ? undefined : new PostgresAdapter();
 
-        // Upsert the repo config if it doesn't exist yet
-        let repoConfig = await adapter.getGithubRepo(projectId, owner, repo);
-        if (!repoConfig) {
-          repoConfig = await adapter.upsertGithubRepo({ projectId, owner, repo });
-        }
+        // Upsert the repo config if it doesn't exist yet in legacy Node mode.
+        const repoConfig = adapter
+          ? ((await adapter.getGithubRepo(projectId, owner, repo)) ?? (await adapter.upsertGithubRepo({ projectId, owner, repo })))
+          : { id: `${owner}/${repo}`, default_labels: [] };
 
         try {
           // Determine which issues to import
           if (opts.issue) {
             // Single issue import
             const issue = await gh.getIssue(owner, repo, opts.issue);
-            const imported = await importIssueAsTask(adapter, gh, projectId, issue, owner, repo, {
-              dryRun: opts.dryRun ?? false,
-              sync: opts.sync ?? false,
-              repoConfig,
-            });
+            const imported = elixirClient
+              ? await importIssueAsElixirTask(elixirClient, projectId, issue, owner, repo, {
+                dryRun: opts.dryRun ?? false,
+                sync: opts.sync ?? false,
+                repoConfig,
+              })
+              : await importIssueAsTask(adapter!, gh, projectId, issue, owner, repo, {
+                dryRun: opts.dryRun ?? false,
+                sync: opts.sync ?? false,
+                repoConfig,
+              });
             if (!opts.dryRun) {
               console.log(chalk.green(`  ✓ Imported #${issue.number} as task ${imported.taskId}`));
             }
@@ -512,11 +549,17 @@ issueCommand.addCommand(
             let skipped = 0;
             for (const issue of issues) {
               try {
-                const result = await importIssueAsTask(adapter, gh, projectId, issue, owner, repo, {
-                  dryRun: false,
-                  sync: opts.sync ?? false,
-                  repoConfig,
-                });
+                const result = elixirClient
+                  ? await importIssueAsElixirTask(elixirClient, projectId, issue, owner, repo, {
+                    dryRun: false,
+                    sync: opts.sync ?? false,
+                    repoConfig,
+                  })
+                  : await importIssueAsTask(adapter!, gh, projectId, issue, owner, repo, {
+                    dryRun: false,
+                    sync: opts.sync ?? false,
+                    repoConfig,
+                  });
                 if (result.created) {
                   imported++;
                 } else {
@@ -552,6 +595,73 @@ interface ImportOptions {
 interface ImportResult {
   taskId: string;
   created: boolean;
+}
+
+export function buildGithubIssueTriggerPayload(
+  projectId: string,
+  issue: GitHubIssue,
+  owner: string,
+  repo: string,
+  opts: { defaultLabels?: string[]; sync?: boolean } = {},
+): Record<string, unknown> {
+  const labels = issue.labels.map((label) => `github:${label.name}`);
+  for (const label of opts.defaultLabels ?? []) {
+    if (!labels.includes(label)) labels.push(label);
+  }
+
+  const externalId = `github:${owner}/${repo}#${issue.number}`;
+  return {
+    source: "github",
+    project_id: projectId,
+    repo: `${owner}/${repo}`,
+    external_id: externalId,
+    external_link: issue.html_url,
+    event_type: "IssueImported",
+    event_id: String(issue.id),
+    idempotency_key: externalId,
+    title: issue.title,
+    occurred_at: issue.updated_at,
+    payload: {
+      number: issue.number,
+      state: issue.state,
+      body: issue.body ?? undefined,
+      description: issue.body ?? undefined,
+      labels,
+      milestone: issue.milestone?.title,
+      sync_enabled: opts.sync ?? false,
+      author: issue.user.login,
+    },
+  };
+}
+
+async function importIssueAsElixirTask(
+  client: ElixirServerClient,
+  projectId: string,
+  issue: GitHubIssue,
+  owner: string,
+  repo: string,
+  opts: ImportOptions,
+): Promise<ImportResult> {
+  const externalId = `github:${owner}/${repo}#${issue.number}`;
+  const existing = (await client.listTasks()).find((task) => task.external_id === externalId);
+  if (existing?.task_id || existing?.id) {
+    return { taskId: String(existing.task_id ?? existing.id), created: false };
+  }
+
+  if (opts.dryRun) {
+    return { taskId: "(dry-run)", created: true };
+  }
+
+  const response = await client.sendExternalTrigger(
+    buildGithubIssueTriggerPayload(projectId, issue, owner, repo, {
+      defaultLabels: opts.repoConfig.default_labels,
+      sync: opts.sync,
+    }),
+  );
+  if (!response.ok) throw new Error(response.error.message);
+
+  const imported = (await client.listTasks()).find((task) => task.external_id === externalId);
+  return { taskId: String(imported?.task_id ?? imported?.id ?? externalId), created: true };
 }
 
 async function importIssueAsTask(

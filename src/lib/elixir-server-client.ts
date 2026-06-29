@@ -59,6 +59,8 @@ export type ElixirTask = {
   dependencies?: string[];
   run_id?: string | null;
   workflow?: string;
+  source?: string;
+  labels?: string[];
 };
 
 export type ElixirRun = Record<string, unknown> & {
@@ -209,6 +211,18 @@ export class ElixirServerClient {
     const body = await response.json() as { ok: true; scheduler: ElixirSchedulerTickResult } | ForemanServerError;
     if (response.ok && body.ok) return body.scheduler;
     throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
+  }
+
+  async sendExternalTrigger(input: Record<string, unknown>): Promise<ForemanServerResponse> {
+    return this.sendCommand({
+      command_id: String(input.idempotency_key ?? input.dedupe_key ?? input.event_id ?? `external-trigger-${Date.now()}`),
+      command_type: "external.trigger",
+      payload: input,
+      metadata: {
+        source: "node-cli-boundary",
+        correlation_id: String(input.idempotency_key ?? input.dedupe_key ?? input.event_id ?? `external-trigger-${Date.now()}`),
+      },
+    });
   }
 
   async sendInboxMessage(input: { runId: string; from: string; to: string; subject: string; body: string }): Promise<ForemanServerResponse> {

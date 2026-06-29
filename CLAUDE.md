@@ -63,6 +63,7 @@ foreman attach         # Attach to a running agent session
 foreman attach --kill <id> # Stop via Elixir run.fail event (+ SIGTERM projected worker PID)
 foreman worktree       # Git worktree management
 foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead'); task create/list/show/update/approve/close/dep route through Elixir by default
+foreman issue import --repo owner/repo --issue 142 # Import GitHub issue via Elixir external-trigger ingestion
 foreman purge logs --dry-run # Elixir-backed log cleanup preview
 foreman purge runs --dry-run # Elixir-backed stale run archive/purge preview
 foreman purge runs # Elixir-backed archive of stale failed runs
