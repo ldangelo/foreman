@@ -44,6 +44,10 @@ foreman task show <task-id>
 foreman task list
 ```
 
+### GitHub Issues
+
+`foreman issue` uses GitHub CLI for GitHub API calls and the Elixir server for Foreman state by default. `issue configure`, `sync`, `webhook`, `status`, `link`, and `import` write/read Elixir events and projections; `issue view`, `list`, `labels`, and `milestones` are read-only GitHub views that validate `--project` against the Elixir registry when provided. Configured default labels are applied to Elixir issue imports. Set `FOREMAN_BACKEND=node` only for legacy Node/Postgres sync workers.
+
 ### Workflows
 
 A workflow is a YAML phase sequence. Each phase names a reusable `action` (`prompt-agent`, `command-agent`, `bash`, `qlty`, `finalize`, PR gate actions, or `merge`) so Foreman's engine stays generic while YAML defines the steps. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation.

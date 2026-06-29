@@ -746,7 +746,7 @@ FOREMAN_BACKEND=node foreman attach --kill <id>   # Legacy kill control
 
 ## GitHub Integration
 
-Foreman integrates with GitHub for issue import, Elixir-backed sync configuration/status/webhook events, pull request issue links, and release automation. `foreman issue import` uses Elixir external-trigger ingestion by default and records GitHub issues as native tasks. `foreman issue configure|sync|webhook|status|link` record Elixir events/projections by default; set `FOREMAN_BACKEND=node` only for legacy Node sync workers.
+Foreman integrates with GitHub for issue import, Elixir-backed sync configuration/status/webhook events, pull request issue links, and release automation. `foreman issue import` uses Elixir external-trigger ingestion by default, records GitHub issues as native tasks, and applies default labels from Elixir repo config. `foreman issue configure|sync|webhook|status|link` record Elixir events/projections by default; read-only `view|list|labels|milestones` use GitHub CLI while validating `--project` through Elixir when supplied. Set `FOREMAN_BACKEND=node` only for legacy Node sync workers.
 
 ### Features
 

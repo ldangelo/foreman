@@ -58,8 +58,29 @@ if (endpoint === "/repos/owner/repo/issues/7001") {
   console.log(JSON.stringify(issue));
   process.exit(0);
 }
+if (endpoint.startsWith("/repos/owner/repo/issues") && endpoint.includes("/links")) {
+  console.log(JSON.stringify({ ok: true }));
+  process.exit(0);
+}
 if (endpoint.startsWith("/repos/owner/repo/issues")) {
   console.log(JSON.stringify([issue]));
+  process.exit(0);
+}
+if (endpoint.startsWith("/repos/owner/repo/labels")) {
+  console.log(JSON.stringify([{ id: 2, name: "bug", color: "b60205", description: "Bug" }]));
+  process.exit(0);
+}
+if (endpoint.startsWith("/repos/owner/repo/milestones")) {
+  console.log(JSON.stringify([{ id: 3, title: "v1", number: 1, state: "open", open_issues: 1, closed_issues: 0 }]));
+  process.exit(0);
+}
+if (endpoint === "/repos/owner/repo/hooks") {
+  if (args.includes("POST")) console.log(JSON.stringify({ id: 99, url: "http://localhost:3847/webhook" }));
+  else console.log(JSON.stringify([{ id: 99, url: "http://localhost:3847/webhook", active: true }]));
+  process.exit(0);
+}
+if (endpoint.startsWith("/repos/owner/repo/hooks/")) {
+  console.log(JSON.stringify({ ok: true }));
   process.exit(0);
 }
 console.error("unexpected fake gh endpoint " + endpoint);
@@ -279,16 +300,50 @@ describe("Elixir native critical-path e2e", () => {
     expect(tasks.some((task) => task.external_id === "trd:E2E-T001")).toBe(true);
   });
 
-  it("imports a GitHub issue through Elixir integration ingestion", async () => {
-    const imported = await cli(["issue", "import", "--repo", "owner/repo", "--issue", "7001", "--project", PROJECT_ID], projectDir, env);
+  it("routes GitHub issue commands through Elixir events and projections", async () => {
+    const configured = await cli(["issue", "configure", "--repo", "owner/repo", "--label", "github:docs", "--project", PROJECT_ID], projectDir, env);
+    expectSuccess(configured, "issue configure");
+    expect(configured.stdout).toContain("Configured owner/repo");
+
+    expectSuccess(await cli(["issue", "view", "--repo", "owner/repo", "--issue", "7001", "--project", PROJECT_ID], projectDir, env), "issue view");
+    expectSuccess(await cli(["issue", "list", "--repo", "owner/repo", "--project", PROJECT_ID], projectDir, env), "issue list");
+    expectSuccess(await cli(["issue", "labels", "--repo", "owner/repo", "--project", PROJECT_ID], projectDir, env), "issue labels");
+    expectSuccess(await cli(["issue", "milestones", "--repo", "owner/repo", "--project", PROJECT_ID], projectDir, env), "issue milestones");
+
+    const imported = await cli(["issue", "import", "--repo", "owner/repo", "--issue", "7001", "--sync", "--project", PROJECT_ID], projectDir, env);
     expectSuccess(imported, "issue import");
     expect(imported.stdout).toContain("Imported #7001 as task");
+
+    const sync = await cli(["issue", "sync", "--repo", "owner/repo", "--project", PROJECT_ID], projectDir, env);
+    expectSuccess(sync, "issue sync");
+    expect(sync.stdout).toContain("Requested GitHub issue sync");
+
+    const webhook = await cli(["issue", "webhook", "--repo", "owner/repo", "--enable", "--project", PROJECT_ID], projectDir, env);
+    expectSuccess(webhook, "issue webhook --enable");
+    expect(webhook.stdout).toContain("Enabled webhook");
+
+    const status = await cli(["issue", "status", "--repo", "owner/repo", "--project", PROJECT_ID], projectDir, env);
+    expectSuccess(status, "issue status");
+    expect(status.stdout).toContain("GitHub sync status: owner/repo");
+    expect(status.stdout).toContain("Webhook:");
+
+    const link = await cli(["issue", "link", "--repo", "owner/repo", "--issue", "7001", "--pr", "99", "--project", PROJECT_ID], projectDir, env);
+    expectSuccess(link, "issue link");
+    expect(link.stdout).toContain("Linked PR #99");
 
     const tasks = await client.listTasks();
     const task = tasks.find((row) => row.external_id === "github:owner/repo#7001");
     expect(task?.title).toBe("Elixir imported GitHub issue");
     expect(task?.source).toBe("github");
-    expect(task?.labels).toEqual(expect.arrayContaining(["github:bug"]));
+    expect(task?.labels).toEqual(expect.arrayContaining(["github:bug", "github:docs"]));
+
+    const events = await client.listEvents({ projectId: PROJECT_ID, limit: 100 });
+    expect(events.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "GithubRepoConfigured",
+      "GithubSyncRequested",
+      "GithubWebhookUpdated",
+      "GithubIssueLinked",
+    ]));
   });
 
   it("claims approved work through foreman run", async () => {

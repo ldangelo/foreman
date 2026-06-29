@@ -16,7 +16,6 @@ import chalk from "chalk";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
-import { ensureCliPostgresPool, listRegisteredProjects, resolveProjectPathFromOptions } from "./project-task-support.js";
 import {
   GhCli,
   GhRateLimitError,
@@ -24,10 +23,10 @@ import {
   type GitHubLabelDefinition,
   type GitHubIssue,
 } from "../../lib/gh-cli.js";
-import {
+import type {
   PostgresAdapter,
-  type GithubRepoRow,
-  type UpsertGithubRepoInput,
+  GithubRepoRow,
+  UpsertGithubRepoInput,
 } from "../../lib/db/postgres-adapter.js";
 
 // ---------------------------------------------------------------------------
@@ -50,19 +49,44 @@ type GithubRepoConfig = {
   last_sync_at?: string | null;
 };
 
+async function resolveProjectPathFromOptions(opts: { project?: string; projectPath?: string }): Promise<string> {
+  const support = await import("./project-task-support.js");
+  return support.resolveProjectPathFromOptions(opts);
+}
+
+async function listRegisteredProjects() {
+  const support = await import("./project-task-support.js");
+  return support.listRegisteredProjects();
+}
+
+async function createLegacyPostgresAdapter(projectPath?: string): Promise<PostgresAdapter> {
+  const support = await import("./project-task-support.js");
+  if (projectPath) support.ensureCliPostgresPool(projectPath);
+  const db = await import("../../lib/db/postgres-adapter.js");
+  return new db.PostgresAdapter();
+}
+
 async function resolveProject(opts: {
   project?: string;
   projectPath?: string;
 }): Promise<{ projectId: string; projectPath: string }> {
   const projectPath = await resolveProjectPathFromOptions(opts);
-  ensureCliPostgresPool(projectPath);
-  const adapter = new PostgresAdapter();
+  const adapter = await createLegacyPostgresAdapter(projectPath);
   const projects = await adapter.listProjects();
   const project = projects.find((p) => p.path === projectPath);
   if (!project) {
     throw new Error(`Project not found for path '${projectPath}'. Run 'foreman init' first.`);
   }
   return { projectId: project.id, projectPath };
+}
+
+async function validateIssueReadContext(opts: { project?: string; projectPath?: string }): Promise<void> {
+  if (!opts.project && !opts.projectPath) return;
+  if (foremanBackendMode() === "elixir") {
+    await resolveElixirProject(opts);
+    return;
+  }
+  await resolveProjectPathFromOptions(opts);
 }
 
 async function resolveIssueImportProject(opts: {
@@ -363,7 +387,7 @@ export const issueCommand = new Command("issue")
             projectPath?: string;
           },
         ) => {
-          await resolveProjectPathFromOptions(opts);
+          await validateIssueReadContext(opts);
           const { owner, repo } = parseRepoKey(opts.repo);
           const gh = new GhCli();
 
@@ -401,7 +425,7 @@ issueCommand.addCommand(
           projectPath?: string;
         },
       ) => {
-        await resolveProjectPathFromOptions(opts);
+        await validateIssueReadContext(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
         const limit = parseInt(opts.limit ?? "50", 10);
@@ -467,7 +491,7 @@ issueCommand.addCommand(
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
         const elixirMode = foremanBackendMode() === "elixir";
-        const adapter = elixirMode ? undefined : new PostgresAdapter();
+        const adapter = elixirMode ? undefined : await createLegacyPostgresAdapter();
         const client = elixirMode ? await createElixirClient() : undefined;
         const existing = adapter
           ? await adapter.getGithubRepo(projectId, owner, repo)
@@ -567,12 +591,12 @@ issueCommand.addCommand(
         const elixirMode = foremanBackendMode() === "elixir";
         const manager = elixirMode ? new ElixirServerManager() : undefined;
         const elixirClient = manager ? new ElixirServerClient((await manager.ensureRunning()).url, manager.authToken) : undefined;
-        const adapter = elixirMode ? undefined : new PostgresAdapter();
+        const adapter = elixirMode ? undefined : await createLegacyPostgresAdapter();
 
         // Upsert the repo config if it doesn't exist yet in legacy Node mode.
         const repoConfig = adapter
           ? ((await adapter.getGithubRepo(projectId, owner, repo)) ?? (await adapter.upsertGithubRepo({ projectId, owner, repo })))
-          : { id: `${owner}/${repo}`, default_labels: [] };
+          : ((await getElixirGithubRepoConfig(elixirClient!, projectId, owner, repo)) ?? { id: `${owner}/${repo}`, default_labels: [] });
 
         try {
           // Determine which issues to import
@@ -671,7 +695,7 @@ issueCommand.addCommand(
 interface ImportOptions {
   dryRun: boolean;
   sync: boolean;
-  repoConfig: { id: string; default_labels: string[] };
+  repoConfig: { default_labels: string[] };
 }
 
 interface ImportResult {
@@ -851,7 +875,7 @@ issueCommand.addCommand(
     .option("--project-path <path>", "Foreman project path")
     .action(
       async (opts: { repo: string; project?: string; projectPath?: string }) => {
-        await resolveProjectPathFromOptions(opts);
+        await validateIssueReadContext(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
 
@@ -886,7 +910,7 @@ issueCommand.addCommand(
     .option("--project-path <path>", "Foreman project path")
     .action(
       async (opts: { repo: string; state?: string; project?: string; projectPath?: string }) => {
-        await resolveProjectPathFromOptions(opts);
+        await validateIssueReadContext(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
 
@@ -945,7 +969,7 @@ issueCommand.addCommand(
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
         const elixirMode = foremanBackendMode() === "elixir";
-        const adapter = elixirMode ? undefined : new PostgresAdapter();
+        const adapter = elixirMode ? undefined : await createLegacyPostgresAdapter();
         const client = elixirMode ? await createElixirClient() : undefined;
 
         const webhookUrl =
@@ -1134,7 +1158,7 @@ issueCommand.addCommand(
         const { projectId } = foremanBackendMode() === "elixir" ? await resolveElixirProject(opts) : await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const elixirMode = foremanBackendMode() === "elixir";
-        const adapter = elixirMode ? undefined : new PostgresAdapter();
+        const adapter = elixirMode ? undefined : await createLegacyPostgresAdapter();
         const client = elixirMode ? await createElixirClient() : undefined;
 
         try {
