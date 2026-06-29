@@ -13,6 +13,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { randomBytes } from "node:crypto";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
@@ -344,6 +345,10 @@ async function sendElixirGithubCommand(client: ElixirServerClient, commandType: 
     payload,
   });
   if (!response.ok) throw new Error(response.error.message);
+}
+
+function generateIssueWebhookSecret(): string {
+  return randomBytes(32).toString("hex");
 }
 
 function handleGhError(err: unknown, action: string): void {
@@ -1027,10 +1032,7 @@ issueCommand.addCommand(
             const secret = repoConfig?.webhook_secret ?? null;
 
             if (!secret) {
-              const { generateWebhookSecret } = await import(
-                "../../daemon/webhook-handler.js"
-              );
-              const newSecret = generateWebhookSecret();
+              const newSecret = generateIssueWebhookSecret();
 
               const webhook = await gh.createWebhook(
                 owner,
