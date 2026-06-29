@@ -26,7 +26,7 @@ npm run test:e2e            # smoke + full-run + Elixir critical path
 npm run test:ci             # unit + integration + all E2E lanes
 ```
 
-The Elixir E2E covers server health, human/JSON doctor, metrics, project registration, task create/approve/list/show, scheduler claim, runs/status/logs/read-only cleanup previews, and default fail-closed guards for legacy mutating commands.
+The Elixir E2E covers server health, human/JSON doctor, metrics, project registration, task create/approve/list/show, sling TRD import, scheduler claim, runs/status/logs/read-only cleanup previews, and default fail-closed guards for legacy mutating commands.
 
 ---
 
@@ -181,7 +181,7 @@ foreman init --name "e2e-test"
 # Verify: .foreman/ exists, project registered in Elixir projections
 
 # 2. Legacy Sling TRD (using sample TRD)
-FOREMAN_BACKEND=node foreman sling trd ~/Development/Fortium/foreman/docs/TRD/sling-trd.md --auto
+foreman sling trd ~/Development/Fortium/foreman/docs/TRD/sling-trd.md --auto
 # Verify: legacy task list shows imported/created tasks, epic + tasks created
 
 # 3. Status

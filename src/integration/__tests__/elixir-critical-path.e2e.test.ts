@@ -207,6 +207,32 @@ describe("Elixir native critical-path e2e", () => {
     expectSuccess(await cli(["task", "show", taskId], projectDir, env), "task show");
   });
 
+  it("imports TRD tasks through sling into Elixir", async () => {
+    const trdDir = join(projectDir, "docs", "TRD");
+    mkdirSync(trdDir, { recursive: true });
+    writeFileSync(join(trdDir, "e2e-sling.md"), `# TRD: E2E Sling Import
+
+**Document ID:** TRD-E2E-SLING
+
+## 2. Master Task List
+
+### 2.1 Sprint 1: Import
+
+#### Story 1.1: Create one task
+
+| ID | Task | Est. | Deps | Files | Status |
+|----|------|------|------|-------|--------|
+| E2E-T001 | Verify Elixir sling import | 1h | -- | \`README.md\` | [ ] |
+`, "utf8");
+
+    const sling = await cli(["sling", "trd", "docs/TRD/e2e-sling.md", "--auto"], projectDir, env);
+    expectSuccess(sling, "sling trd");
+    expect(sling.stdout).toContain("Summary: native:");
+    const tasks = await client.listTasks();
+    expect(tasks.some((task) => task.external_id === "trd:TRD-E2E-SLING")).toBe(true);
+    expect(tasks.some((task) => task.external_id === "trd:E2E-T001")).toBe(true);
+  });
+
   it("claims approved work through foreman run", async () => {
     expect(taskId).toBeTruthy();
     const run = await cli(["run", "--no-watch"], projectDir, env);

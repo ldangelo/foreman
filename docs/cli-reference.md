@@ -818,16 +818,16 @@ Server-backed `plan prd` / `plan trd` options: `--project <path>`, `--output-dir
 
 ### `foreman sling trd`
 
-Convert a Technical Requirements Document into a legacy native task hierarchy with dependencies. This path still writes through the Node daemon/task store and requires `FOREMAN_BACKEND=node`.
+Convert a Technical Requirements Document into a native task hierarchy with dependencies. Default Elixir mode writes task/dependency events through the Elixir server; `FOREMAN_BACKEND=node` uses the legacy daemon writer.
 
 ```bash
-FOREMAN_BACKEND=node foreman sling trd docs/TRD.md    # Create native tasks from TRD
-FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --dry-run  # Preview
-FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --json     # Output parsed structure
-FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --auto     # Skip confirmation prompts
-FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --skip-completed   # Skip [x] items
-FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
-FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_rust only
+foreman sling trd docs/TRD.md    # Create Elixir-backed native tasks from TRD
+foreman sling trd docs/TRD.md --dry-run  # Preview
+foreman sling trd docs/TRD.md --json     # Output parsed structure
+foreman sling trd docs/TRD.md --auto     # Skip confirmation prompts
+foreman sling trd docs/TRD.md --skip-completed   # Skip [x] items
+foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
+FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --auto # Legacy daemon import
 ```
 
 | Option | Description |
@@ -835,7 +835,7 @@ FOREMAN_BACKEND=node foreman sling trd docs/TRD.md --br-only  # Compatibility pa
 | `--dry-run` | Preview without creating tasks |
 | `--auto` | Skip confirmation prompts |
 | `--json` | Output parsed structure as JSON |
-| `--br-only` | Compatibility path: write to beads_rust only |
+| `--br-only` | Legacy compatibility no-op; accepted for old scripts |
 | `--skip-completed` | Skip `[x]` completed tasks |
 | `--close-completed` | Create and immediately close `[x]` tasks |
 | `--no-parallel` | Disable parallel sprint detection |
@@ -918,7 +918,7 @@ FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 FOREMAN_BACKEND=node foreman run
 ```
 
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|stop|status|restart` maps to the Elixir server unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. Elixir cutover parity: `foreman run` ticks the Elixir scheduler, `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree|--kill` reads Elixir run/inbox projections, default attach records an Elixir attach request before resuming exposed Pi sessions, and `attach --kill` records an Elixir `run.fail` event after signaling a projected worker PID when present, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Legacy-only paths such as `foreman sling`, `foreman issue` Postgres sync commands, mutating `foreman merge` without `--list/--dry-run/--stats`, PR creation via `FOREMAN_BACKEND=node foreman pr`, and metrics cost mode fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land.
+Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|stop|status|restart` maps to the Elixir server unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. `FOREMAN_PROJECT_LEGACY_FALLBACK=true` is a narrow mixed-cutover escape hatch for project registry fallback when Elixir projections are unavailable or incomplete; prefer fixing/rebuilding Elixir projections instead. Elixir cutover parity: `foreman run` ticks the Elixir scheduler, `foreman board` uses Elixir task projections and task commands, `foreman watch`, `foreman runs`, and `status --live` render Elixir projections, `foreman inbox` reads Elixir inbox projections and `inbox send` writes Elixir operator messages, `foreman attach --list|--stream|--worktree|--kill` reads Elixir run/inbox projections, default attach records an Elixir attach request before resuming exposed Pi sessions, and `attach --kill` records an Elixir `run.fail` event after signaling a projected worker PID when present, `foreman task create|list|show|approve|update|note|close|import` route through Elixir task commands/projections, `task list --show-run|--run-status|--stuck` and `task show` read Elixir run projections for run activity, `task create --from-text` creates Elixir-backed native tasks, dependency add/list/remove are command/projection-backed, `foreman project add|list|edit|remove|sync` route through Elixir project commands/projections, and `foreman jira` avoids legacy daemon socket access for configure/status/test/webhook toggles. Remaining legacy-only paths such as `foreman issue` Postgres sync commands, mutating `foreman merge` without `--list/--dry-run/--stats`, and PR creation via `FOREMAN_BACKEND=node foreman pr` fail fast in Elixir mode with an explicit `FOREMAN_BACKEND=node` hint until their Elixir routes land. `foreman sling trd` now imports through Elixir task events by default.
 
 ---
 

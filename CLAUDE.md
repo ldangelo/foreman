@@ -44,7 +44,7 @@ foreman doctor --json|--raw # Raw Elixir health response
 foreman doctor --clean-logs --dry-run # Elixir-backed log cleanup preview
 npm run test:e2e:elixir # Isolated Elixir critical-path E2E
 foreman debug <id>     # AI-powered execution analysis (Opus; Elixir artifacts first)
-FOREMAN_BACKEND=node foreman sling trd X # Legacy TRD -> task hierarchy
+foreman sling trd X # Import TRD tasks through Elixir by default
 foreman plan X       # Elixir server-backed PRD -> TRD planning
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 FOREMAN_BACKEND=node foreman plan X      # Legacy local PRD -> TRD pipeline

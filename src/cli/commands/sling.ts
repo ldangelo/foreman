@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { parseTrd } from "../../orchestrator/trd-parser.js";
@@ -10,6 +11,8 @@ import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import type { TaskRow } from "../../lib/task-store.js";
+import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
 
@@ -66,6 +69,96 @@ async function resolveSlingProjectPath(opts: SlingTargetingOptions): Promise<str
   }
 
   return resolveRepoRootProjectPath({ project: opts.project });
+}
+
+function taskIdPrefix(projectId: string): string {
+  return projectId
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "task";
+}
+
+function elixirTaskToTaskRow(task: ElixirTask): TaskRow {
+  return {
+    id: task.task_id ?? task.id ?? "unknown",
+    project_id: task.project_id ?? "",
+    title: task.title ?? task.task_id ?? task.id ?? "Untitled task",
+    description: task.description ?? null,
+    type: task.task_type ?? task.type ?? "task",
+    priority: task.priority ?? 2,
+    status: task.status ?? "backlog",
+    external_id: task.external_id ?? null,
+    created_at: task.created_at ?? new Date().toISOString(),
+    updated_at: task.updated_at ?? new Date().toISOString(),
+    approved_at: task.approved_at ?? null,
+    closed_at: task.closed_at ?? null,
+    labels: [],
+    run_id: null,
+    branch: null,
+  } as TaskRow;
+}
+
+async function sendElixirSlingCommand(client: ElixirServerClient, commandType: string, payload: Record<string, unknown>): Promise<void> {
+  const response = await client.sendCommand({
+    command_id: `sling-${commandType}-${Date.now()}-${randomBytes(3).toString("hex")}`,
+    command_type: commandType,
+    payload,
+  });
+  if (!response.ok) throw new Error(response.error.message);
+}
+
+function createElixirSlingWriter(client: ElixirServerClient, projectId: string) {
+  const prefix = taskIdPrefix(projectId);
+  return {
+    async getByExternalId(externalId: string) {
+      const tasks = await client.listTasks();
+      const found = tasks.find((task) => task.project_id === projectId && task.external_id === externalId);
+      return found ? elixirTaskToTaskRow(found) : null;
+    },
+    async create(opts: { title: string; description?: string | null; type?: string; priority?: number; externalId?: string }) {
+      const existing = new Set((await client.listTasks()).map((task) => task.task_id ?? task.id).filter(Boolean) as string[]);
+      let id = "";
+      for (;;) {
+        const candidate = `${prefix}-${randomBytes(3).toString("hex").slice(0, 5)}`;
+        if (!existing.has(candidate)) {
+          id = candidate;
+          break;
+        }
+      }
+      await sendElixirSlingCommand(client, "task.create", {
+        task_id: id,
+        project_id: projectId,
+        title: opts.title,
+        description: opts.description ?? undefined,
+        task_type: opts.type ?? "task",
+        priority: opts.priority ?? 2,
+        status: "backlog",
+        external_id: opts.externalId,
+        source: "sling",
+      });
+      const created = await client.getTask(id);
+      return elixirTaskToTaskRow(created ?? { task_id: id, project_id: projectId, title: opts.title, description: opts.description ?? null, task_type: opts.type, priority: opts.priority, status: "backlog", external_id: opts.externalId });
+    },
+    async update(id: string, opts: { title?: string; description?: string | null; priority?: number; force?: boolean }) {
+      void opts.force;
+      await sendElixirSlingCommand(client, "task.update", {
+        task_id: id,
+        project_id: projectId,
+        title: opts.title,
+        description: opts.description ?? undefined,
+        priority: opts.priority,
+      });
+      const updated = await client.getTask(id);
+      return elixirTaskToTaskRow(updated ?? { task_id: id, project_id: projectId, title: opts.title, description: opts.description ?? null, priority: opts.priority });
+    },
+    async close(id: string, _reason?: string) {
+      await sendElixirSlingCommand(client, "task.close", { task_id: id, project_id: projectId });
+    },
+    async addDependency(fromId: string, toId: string, _type: "blocks" | "parent-child" = "blocks") {
+      await sendElixirSlingCommand(client, "task.add_dependency", { task_id: fromId, project_id: projectId, depends_on: toId });
+    },
+  };
 }
 
 function createDaemonSlingWriter(client: ReturnType<typeof createTrpcClient>, projectId: string) {
@@ -239,16 +332,21 @@ async function handleTrdImport(
     noQuality: opts.quality === false,
   };
 
-  if (foremanBackendMode() === "elixir") {
-    throw new Error("foreman sling still writes legacy daemon tasks. Set FOREMAN_BACKEND=node for sling, or use Elixir-backed plan prd/trd and task create flows.");
-  }
-
   const projects = await listRegisteredProjects();
   const project = projects.find((record) => record.path === projectPath);
   if (!project) {
-    throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+    throw new Error(`Project at '${projectPath}' is not registered with ${foremanBackendMode() === "elixir" ? "Elixir" : "the daemon"}.`);
   }
-  const taskWriter = createDaemonSlingWriter(createTrpcClient(), project.id);
+
+  let taskWriter: ReturnType<typeof createElixirSlingWriter> | ReturnType<typeof createDaemonSlingWriter>;
+  if (foremanBackendMode() === "elixir") {
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    if (!status.running) throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+    taskWriter = createElixirSlingWriter(new ElixirServerClient(status.url, manager.authToken), project.id);
+  } else {
+    taskWriter = createDaemonSlingWriter(createTrpcClient(), project.id);
+  }
   const spinner = createProgressSpinner();
   const result = await execute(
     plan,
@@ -415,7 +513,7 @@ function createProgressSpinner() {
 // ── CLI Commands ─────────────────────────────────────────────────────────
 
 const trdSubcommand = new Command("trd")
-  .description("Legacy TRD-to-task import (requires FOREMAN_BACKEND=node; use plan prd/trd for Elixir)")
+  .description("Import TRD tasks into the active backend")
   .argument("<trd-file>", "Path to TRD markdown file")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path for advanced/scripted usage")
@@ -431,12 +529,6 @@ const trdSubcommand = new Command("trd")
   .option("--no-risks", "Skip risk register parsing")
   .option("--no-quality", "Skip quality requirements parsing")
   .action(async (trdFile: string, opts: SlingCliOptions) => {
-    if (foremanBackendMode() === "elixir") {
-      console.error(chalk.red("foreman sling still writes legacy daemon tasks. Set FOREMAN_BACKEND=node for sling, or use Elixir-backed plan prd/trd and task create flows."));
-      process.exitCode = 1;
-      return;
-    }
-
     const projectPath = await resolveSlingProjectPath({
       project: typeof opts.project === "string" ? opts.project : undefined,
       projectPath: typeof opts.projectPath === "string" ? opts.projectPath : undefined,
@@ -456,7 +548,7 @@ const trdSubcommand = new Command("trd")
   });
 
 const prdSubcommand = new Command("prd")
-  .description("Legacy PRD-to-TRD/task import (requires FOREMAN_BACKEND=node; use plan prd/trd for Elixir)")
+  .description("Generate a TRD from a PRD and import tasks into the active backend")
   .argument("<prd-file>", "Path to PRD markdown file")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path for advanced/scripted usage")
@@ -472,12 +564,6 @@ const prdSubcommand = new Command("prd")
   .option("--no-risks", "Skip risk register parsing")
   .option("--no-quality", "Skip quality requirements parsing")
   .action(async (prdFile: string, opts: SlingCliOptions) => {
-    if (foremanBackendMode() === "elixir") {
-      console.error(chalk.red("foreman sling still writes legacy daemon tasks. Set FOREMAN_BACKEND=node for sling, or use Elixir-backed plan prd/trd and task create flows."));
-      process.exitCode = 1;
-      return;
-    }
-
     const projectPath = await resolveSlingProjectPath({
       project: typeof opts.project === "string" ? opts.project : undefined,
       projectPath: typeof opts.projectPath === "string" ? opts.projectPath : undefined,
@@ -537,6 +623,6 @@ const prdSubcommand = new Command("prd")
   });
 
 export const slingCommand = new Command("sling")
-  .description("Legacy document-to-task import (requires FOREMAN_BACKEND=node)")
+  .description("Document-to-task import")
   .addCommand(prdSubcommand)
   .addCommand(trdSubcommand);
