@@ -46,7 +46,7 @@ const purgeLogsSubcommand = withPurgeLogsOptions(
 
 const purgeRunsSubcommand = withPurgeRunsOptions(
   new Command("runs").description(
-    "Remove failed run records whose beads are already closed or no longer exist",
+    "Archive or remove failed run records whose tasks are already closed or no longer exist",
   ),
 ).action(async (opts: PurgeZombieRunsOpts) => {
   process.exit(await purgeZombieRunsCommandAction(opts));
@@ -70,7 +70,7 @@ export const purgeLogsCommand = withPurgeLogsOptions(
 
 export const purgeZombieRunsCommand = withPurgeRunsOptions(
   new Command("purge-zombie-runs").description(
-    "Remove zombie run records (deprecated: use 'foreman purge runs')",
+    "Archive or remove zombie run records (deprecated: use 'foreman purge runs')",
   ),
 ).action(async (opts: PurgeZombieRunsOpts) => {
   printDeprecationNotice("foreman purge-zombie-runs", "foreman purge runs");

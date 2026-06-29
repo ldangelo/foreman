@@ -176,6 +176,22 @@ export class ElixirServerClient {
     return runs.find((run) => run.run_id === runId || run.id === runId) ?? null;
   }
 
+  async archiveRun(runId: string, reason = "purge stale failed run"): Promise<ForemanServerResponse> {
+    return this.sendCommand({
+      command_id: `run-archive-${runId}-${Date.now()}`,
+      command_type: "run.archive",
+      payload: { run_id: runId, reason },
+    });
+  }
+
+  async purgeRun(runId: string, reason = "purge stale failed run"): Promise<ForemanServerResponse> {
+    return this.sendCommand({
+      command_id: `run-purge-${runId}-${Date.now()}`,
+      command_type: "run.purge",
+      payload: { run_id: runId, reason },
+    });
+  }
+
   async listSchedulerSkips(projectId?: string): Promise<ElixirSchedulerSkip[]> {
     const params = new URLSearchParams();
     if (projectId) params.set("project_id", projectId);

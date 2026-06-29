@@ -224,15 +224,36 @@ describe("Elixir native critical-path e2e", () => {
     expectSuccess(await cli(["status"], projectDir, env), "status");
     expectSuccess(await cli(["worktree", "list"], projectDir, env), "worktree list");
     expectSuccess(await cli(["worktree", "clean", "--dry-run"], projectDir, env), "worktree clean --dry-run");
+    expectSuccess(await cli(["pr", "--json"], projectDir, env), "pr --json");
     expectSuccess(await cli(["stop", "--list"], projectDir, env), "stop --list");
     expectSuccess(await cli(["stop", "--dry-run"], projectDir, env), "stop --dry-run");
     expectSuccess(await cli(["reset", "--dry-run"], projectDir, env), "reset --dry-run");
     expectSuccess(await cli(["purge", "logs", "--dry-run"], projectDir, env), "purge logs --dry-run");
+    const stale = await client.sendCommand({
+      command_id: "e2e-stale-run-fail",
+      command_type: "run.fail",
+      payload: { run_id: "e2e-stale-run", reason: "e2e stale run" },
+    });
+    expect(stale.ok, JSON.stringify(stale)).toBe(true);
     expectSuccess(await cli(["purge", "runs", "--dry-run"], projectDir, env), "purge runs --dry-run");
+    expectSuccess(await cli(["purge", "runs"], projectDir, env), "purge runs");
+    const staleRun = (await client.listRuns()).find((run) => run.run_id === "e2e-stale-run");
+    expect(staleRun?.status).toBe("archived");
     expectSuccess(await cli(["logs", runId, "--raw", "--tail", "20"], projectDir, env), "logs --raw");
   });
 
-  it("routes stop and reset through Elixir run events", async () => {
+  it("routes attach kill, stop, and reset through Elixir run events", async () => {
+    const attachKill = await cli(["attach", runId, "--kill"], projectDir, env);
+    expectSuccess(attachKill, "attach --kill");
+    expect(attachKill.stdout).toContain("Elixir run stopped");
+
+    const create = await cli(["task", "create", "--title", "Elixir stop task", "--type", "feature", "--priority", "2"], projectDir, env);
+    expectSuccess(create, "task create for stop");
+    const stopTaskId = create.stdout.match(/\[([^\]]+)\]/)?.[1] ?? "";
+    expect(stopTaskId, create.stdout).toBeTruthy();
+    expectSuccess(await cli(["task", "approve", stopTaskId], projectDir, env), "task approve for stop");
+    expectSuccess(await cli(["run", "--no-watch"], projectDir, env), "run for stop");
+
     const stop = await cli(["stop", "--force"], projectDir, env);
     expectSuccess(stop, "stop");
     expect(stop.stdout).toContain("Elixir");
@@ -243,7 +264,6 @@ describe("Elixir native critical-path e2e", () => {
 
   it("fails closed for legacy-only mutating commands", async () => {
     for (const [args, expected] of [
-      [["purge", "runs"], "FOREMAN_BACKEND=node"],
       [["doctor", "--fix"], "FOREMAN_BACKEND=node"],
       [["merge"], "FOREMAN_BACKEND=node"],
     ] as Array<[string[], string]>) {

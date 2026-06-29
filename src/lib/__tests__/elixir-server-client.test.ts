@@ -60,6 +60,25 @@ describe("ElixirServerClient", () => {
     }));
   });
 
+  it("sends run archive and purge commands", async () => {
+    const fetchMock = vi.fn(async (_url: URL, _init: RequestInit) =>
+      new Response(
+        JSON.stringify({ ok: true, events: ["event-1"], projection_version: 1, correlation_id: "corr-1" }),
+        { status: 202, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ElixirServerClient("http://127.0.0.1:4000", "secret");
+    await expect(client.archiveRun("run-1", "stale")).resolves.toMatchObject({ ok: true });
+    await expect(client.purgeRun("run-2", "stale")).resolves.toMatchObject({ ok: true });
+
+    const archiveBody = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    const purgeBody = JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string);
+    expect(archiveBody).toMatchObject({ command_type: "run.archive", payload: { run_id: "run-1", reason: "stale" } });
+    expect(purgeBody).toMatchObject({ command_type: "run.purge", payload: { run_id: "run-2", reason: "stale" } });
+  });
+
   it("reads run attach requests from the Elixir server", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(

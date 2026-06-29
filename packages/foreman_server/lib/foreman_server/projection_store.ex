@@ -3,7 +3,7 @@ defmodule ForemanServer.ProjectionStore do
 
   use GenServer
 
-  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged", "reset"])
+  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged", "reset", "archived", "purged"])
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -458,6 +458,36 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:fatal, false)
     end)
     |> apply_activity_and_notify(activity_payload, mode)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "RunArchived", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    projection
+    |> update_run_status(run_id, "archived")
+    |> update_run(run_id, fn run ->
+      run
+      |> Map.put(:current_phase, nil)
+      |> Map.put(:archived_at, Map.get(payload, :occurred_at, DateTime.utc_now()))
+      |> maybe_put(:archive_reason, Map.get(payload, :reason))
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "RunPurged", payload: %{run_id: run_id}},
+         _mode
+       ) do
+    projection
+    |> update_in([:runs], &Map.delete(&1 || %{}, run_id))
+    |> update_in([:worktrees], &Map.delete(&1 || %{}, run_id))
+    |> update_in([:logs_by_run], &Map.delete(&1 || %{}, run_id))
+    |> update_in([:inbox_by_run], &Map.delete(&1 || %{}, run_id))
+    |> update_in([:inbox_messages], fn messages ->
+      Map.reject(messages || %{}, fn {_id, message} -> Map.get(message, :run_id) == run_id end)
+    end)
   end
 
   defp apply_domain_event(

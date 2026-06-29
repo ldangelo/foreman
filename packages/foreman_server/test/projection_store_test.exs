@@ -148,6 +148,21 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert task.run_id == "run-1"
   end
 
+  test "run archive and purge events update run projections" do
+    append!("run:archived", "RunStarted", %{run_id: "archived", task_id: "task-1"})
+    append!("run:archived", "RunFailed", %{run_id: "archived"})
+    append!("run:archived", "RunArchived", %{run_id: "archived", reason: "stale"})
+
+    assert ProjectionStore.snapshot().runs["archived"].status == "archived"
+    assert ProjectionStore.snapshot().runs["archived"].archive_reason == "stale"
+
+    append!("run:purged", "RunStarted", %{run_id: "purged", task_id: "task-2"})
+    append!("run:purged", "RunFailed", %{run_id: "purged"})
+    append!("run:purged", "RunPurged", %{run_id: "purged"})
+
+    refute Map.has_key?(ProjectionStore.snapshot().runs, "purged")
+  end
+
   test "run projection exposes status counts without log inference" do
     append!("run:active", "RunStarted", %{run_id: "active", task_id: "task-1"})
     append!("run:active", "PhaseStarted", %{run_id: "active", phase_id: "developer"})

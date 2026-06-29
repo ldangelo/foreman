@@ -34,7 +34,7 @@ interface DaemonAttachContext {
   projectPath: string;
 }
 
-interface ElixirAttachContext {
+export interface ElixirAttachContext {
   client: ElixirServerClient;
   projectId: string;
   projectPath: string;
@@ -133,15 +133,26 @@ function adaptDaemonMessage(row: DaemonMailMessage): Message {
   };
 }
 
+function adaptElixirWorkerPid(row: ElixirRun): number | null {
+  if (typeof row.worker_pid === "number" && Number.isInteger(row.worker_pid)) return row.worker_pid;
+  if (typeof row.worker_pid === "string" && /^\d+$/.test(row.worker_pid)) return Number(row.worker_pid);
+  return null;
+}
+
 function adaptElixirRun(row: ElixirRun, projectPath: string): Run {
   const runId = String(row.run_id ?? row.id ?? "");
   const taskId = typeof row.task_id === "string" ? row.task_id : runId;
+  const workerPid = adaptElixirWorkerPid(row);
   return {
     id: runId,
     project_id: typeof row.project_id === "string" ? row.project_id : "",
     seed_id: taskId,
     agent_type: typeof row.agent_type === "string" ? row.agent_type : "elixir",
-    session_key: typeof row.session_key === "string" ? row.session_key : null,
+    session_key: typeof row.session_key === "string"
+      ? row.session_key
+      : workerPid
+        ? `pid-${workerPid}`
+        : null,
     worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : getWorkspacePath(projectPath, taskId),
     status: normalizeRunStatus(row.status),
     started_at: typeof row.started_at === "string" ? row.started_at : null,
@@ -791,6 +802,40 @@ async function handleKill(run: Run, store: ForemanStore): Promise<number> {
   return 0;
 }
 
+export async function handleKillElixir(run: Run, context: ElixirAttachContext): Promise<number> {
+  const pid = getWorkerPid(run);
+  if (pid) {
+    try {
+      process.kill(pid, "SIGTERM");
+      console.log(`Sent SIGTERM to pid ${pid}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to kill pid ${pid}: ${msg}`);
+    }
+  } else {
+    console.log("No pid found for this run; recording Elixir stop event only.");
+  }
+
+  const response = await context.client.sendCommand({
+    command_id: `attach-kill-${run.id}-${Date.now()}`,
+    command_type: "run.fail",
+    payload: {
+      run_id: run.id,
+      reason: "foreman attach --kill",
+      failure_reason: "Killed by operator attach command",
+      fatal: false,
+      actor: "operator",
+    },
+  });
+  if (!response.ok) {
+    console.error(response.error.message);
+    return 1;
+  }
+
+  console.log("Elixir run stopped");
+  return 0;
+}
+
 async function handleKillDaemon(
   run: Run,
   context: DaemonAttachContext,
@@ -929,12 +974,6 @@ export const attachCommand = new Command("attach")
       process.exit(1);
     }
 
-    if (elixir && opts.kill) {
-      console.error("Error: attach --kill is not supported by the Elixir backend yet.");
-      console.error("Use FOREMAN_BACKEND=node for legacy daemon kill control, or stop the process directly.");
-      process.exit(1);
-    }
-
     if (elixir) {
       try {
         const elixirRun = await resolveElixirRun(elixir, id);
@@ -944,11 +983,13 @@ export const attachCommand = new Command("attach")
             console.error("Use attach --stream for Elixir inbox/event streaming, or set FOREMAN_BACKEND=node for legacy file follow.");
             process.exit(1);
           }
-          const exitCode = opts.stream
-            ? await handleStreamElixir(elixirRun, elixir, opts._signal, opts._pollIntervalMs)
-            : opts.worktree
-              ? await handleWorktree(elixirRun)
-              : await handleDefaultAttachElixir(elixirRun, elixir);
+          const exitCode = opts.kill
+            ? await handleKillElixir(elixirRun, elixir)
+            : opts.stream
+              ? await handleStreamElixir(elixirRun, elixir, opts._signal, opts._pollIntervalMs)
+              : opts.worktree
+                ? await handleWorktree(elixirRun)
+                : await handleDefaultAttachElixir(elixirRun, elixir);
           process.exit(exitCode);
         }
       } catch (err) {

@@ -155,6 +155,31 @@ defmodule ForemanServerTest do
     assert projection.projects["alpha"].status == "archived"
   end
 
+  test "run archive and purge commands update projection state" do
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:ok,
+            %{event: %ForemanServer.Event{event_type: "RunArchived"}, projection: projection}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-run-archive",
+               command_type: "run.archive",
+               payload: %{run_id: "run-archived", reason: "stale"}
+             })
+
+    assert projection.runs["run-archived"].status == "archived"
+    assert projection.runs["run-archived"].archive_reason == "stale"
+
+    assert {:ok,
+            %{event: %ForemanServer.Event{event_type: "RunPurged"}, projection: projection}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-run-purge",
+               command_type: "run.purge",
+               payload: %{run_id: "run-archived"}
+             })
+
+    refute Map.has_key?(projection.runs, "run-archived")
+  end
+
   test "task lifecycle commands update event and projection state atomically" do
     assert :ok = Application.start(:foreman_server)
 

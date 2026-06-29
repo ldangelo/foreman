@@ -231,6 +231,18 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event("run.archive", payload) do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
+      {:ok, "RunArchived", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
+    end
+  end
+
+  defp domain_event("run.purge", payload) do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
+      {:ok, "RunPurged", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
+    end
+  end
+
   defp domain_event("worktree.clean", payload) do
     with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id),
          {:ok, worktree_path} <- required_binary(Map.get(payload, :worktree_path), :worktree_path) do
@@ -479,6 +491,7 @@ defmodule ForemanServer.CommandRouter do
       :retry_history,
       :artifact_paths,
       :report_paths,
+      :reason,
       :repo,
       :run_id,
       :runs,

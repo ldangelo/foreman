@@ -55,12 +55,16 @@ foreman doctor        # Elixir default backend; scheduler ticks every 5s, reconc
 foreman merge --list   # Elixir projection-backed merge candidates
 foreman merge --dry-run # Elixir read-only merge readiness preview
 FOREMAN_BACKEND=node foreman merge          # Legacy Refinery merge queue
+foreman pr --json    # Elixir projection-backed PR candidates
 FOREMAN_BACKEND=node foreman pr             # Legacy Refinery PR creation
 foreman attach         # Attach to a running agent session
+foreman attach --kill <id> # Stop via Elixir run.fail event (+ SIGTERM projected worker PID)
 foreman worktree       # Git worktree management
 foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead'); task create/list/show/update/approve/close/dep route through Elixir by default
 foreman purge logs --dry-run # Elixir-backed log cleanup preview
-foreman purge runs --dry-run # Elixir-backed stale run preview
+foreman purge runs --dry-run # Elixir-backed stale run archive/purge preview
+foreman purge runs # Elixir-backed archive of stale failed runs
+foreman purge runs --purge # Elixir-backed permanent projection purge of stale failed runs
 FOREMAN_BACKEND=node foreman purge logs # Legacy remove old agent logs
 FOREMAN_BACKEND=node foreman purge runs # Legacy remove stale failed run records
 foreman inbox          # Agent mail + selected-run lifecycle events
@@ -282,7 +286,9 @@ foreman retry <seed>   # Re-run a specific pipeline phase
 foreman logs <runId> --compact # Elixir event-backed logs
 FOREMAN_BACKEND=node ls ~/.foreman/logs/ # Legacy local worker logs
 foreman purge logs --dry-run # Elixir-backed log cleanup preview
-foreman purge runs --dry-run # Elixir-backed stale run preview
+foreman purge runs --dry-run # Elixir-backed stale run archive/purge preview
+foreman purge runs # Elixir-backed archive of stale failed runs
+foreman purge runs --purge # Elixir-backed permanent projection purge of stale failed runs
 FOREMAN_BACKEND=node foreman purge logs # Legacy remove old log files
 FOREMAN_BACKEND=node foreman purge runs # Legacy remove stale failed run records
 
@@ -292,6 +298,7 @@ foreman inbox --bead X       # Mail for a specific bead
 
 # Worktree cleanup
 foreman runs            # See active Elixir runs/worktrees
+foreman attach --kill <run>                 # Elixir-backed operator stop event
 foreman worktree list                       # Elixir-backed worktree/run visibility
 foreman worktree clean --dry-run            # Elixir-backed cleanup preview
 FOREMAN_BACKEND=node foreman worktree clean  # Legacy remove orphaned worktrees
