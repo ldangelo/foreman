@@ -127,7 +127,7 @@ describe("task import/status helpers", () => {
     expect(formatTaskIdDisplay("short-id")).toBe("short-id");
     expect(formatTaskIdDisplay("task-1234567890abcdef")).toBe("task-123…");
 
-    expect(isBackwardStatusTransition("review", "developer")).toBe(true);
+    expect(isBackwardStatusTransition("finalize", "developer")).toBe(true);
     expect(isBackwardStatusTransition("backlog", "ready")).toBe(false);
 
     expect(colorPriority("p0", 0)).toContain("p0");
