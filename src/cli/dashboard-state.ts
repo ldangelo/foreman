@@ -94,7 +94,12 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
     const projects = await listRegisteredProjects();
     const current = await resolveDashboardProjectRecord(projects, projectPath, projectId);
     const visible = current ? [current] : [];
-    if (visible.length === 0) return null;
+    if (visible.length === 0) {
+      if (foremanBackendMode() === "elixir") {
+        throw new Error(`Project at '${projectPath}' is not registered in Elixir projections.`);
+      }
+      return null;
+    }
 
     const projectRows: Project[] = [];
     const activeRuns = new Map<string, Run[]>();

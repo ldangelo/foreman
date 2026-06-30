@@ -146,7 +146,12 @@ export async function fetchDaemonStatusSnapshot(projectPath: string): Promise<Da
   try {
     const projects = await listRegisteredProjects();
     const project = resolveRegisteredProject(projects, projectPath);
-    if (!project) return null;
+    if (!project) {
+      if (foremanBackendMode() === "elixir") {
+        throw new Error(`Project at '${projectPath}' is not registered in Elixir projections.`);
+      }
+      return null;
+    }
 
     if (foremanBackendMode() === "elixir") {
       const manager = new ElixirServerManager();
