@@ -1469,6 +1469,9 @@ export const boardApi = {
   createTaskAsync,
   applyStatusChangeAsync,
   loadTaskNotesAsync: loadBoardTaskNotes,
+  closeTaskAsync,
+  editTaskInEditor,
+  saveEditedTaskAsync,
   copyToClipboard,
 };
 
@@ -1641,7 +1644,7 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
-        const err = await closeTaskAsync(projectPath, task.id);
+        const err = await boardApi.closeTaskAsync(projectPath, task.id);
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1687,12 +1690,12 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
         if (!task) break;
 
         const fullSchema = key === KEY_E;
-        const updated = editTaskInEditor(task, fullSchema, (msg) => {
+        const updated = boardApi.editTaskInEditor(task, fullSchema, (msg) => {
           result.errorMessage = msg;
         });
 
         if (updated && updated.id === task.id) {
-          const saveErr = await saveEditedTaskAsync(projectPath, task.id, updated);
+          const saveErr = await boardApi.saveEditedTaskAsync(projectPath, task.id, updated);
           if (saveErr) {
             result.errorMessage = saveErr;
           } else {

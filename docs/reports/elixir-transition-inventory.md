@@ -68,11 +68,12 @@ Use `npm run test:coverage:transition` for the Elixir-transition coverage gate. 
 
 Current transition gate expectations:
 
-- Node frontend transition bridge line coverage >= 70%.
-- Node frontend transition bridge branch coverage >= 70%.
+- Node frontend/operator CLI scope line coverage >= 70%.
+- Node frontend/operator CLI scope branch coverage >= 70%.
 - Elixir backend line coverage from `mix test --cover` >= 70%.
+- Elixir backend branch-site coverage >= 70%, reported from the same Mix cover HTML hit data over Elixir decision constructs (`if`/`unless`/`case`/`cond`/`with`).
 
-Legacy Node backend-only daemon/orchestrator/store paths are outside this transition coverage target when they are not default operator-facing workflows.
+Legacy Node backend-only daemon/orchestrator/store internals are outside this transition coverage target when they are not default operator-facing workflows.
 
 ## Exit condition for this inventory task
 

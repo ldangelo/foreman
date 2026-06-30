@@ -56,6 +56,9 @@ describe("board key handler", () => {
   const originalApply = boardApi.applyStatusChangeAsync;
   const originalLoadNotes = boardApi.loadTaskNotesAsync;
   const originalCopy = boardApi.copyToClipboard;
+  const originalCloseTaskAsync = boardApi.closeTaskAsync;
+  const originalEditTaskInEditor = boardApi.editTaskInEditor;
+  const originalSaveEditedTaskAsync = boardApi.saveEditedTaskAsync;
   const originalCreateTaskInEditor = boardApi.createTaskInEditor;
   const originalCreateTaskAsync = boardApi.createTaskAsync;
 
@@ -63,6 +66,9 @@ describe("board key handler", () => {
     boardApi.applyStatusChangeAsync = vi.fn().mockResolvedValue(null);
     boardApi.loadTaskNotesAsync = vi.fn().mockResolvedValue([]);
     boardApi.copyToClipboard = vi.fn().mockReturnValue(null);
+    boardApi.closeTaskAsync = vi.fn().mockResolvedValue(null);
+    boardApi.editTaskInEditor = vi.fn().mockReturnValue(null);
+    boardApi.saveEditedTaskAsync = vi.fn().mockResolvedValue(null);
     boardApi.createTaskInEditor = vi.fn().mockReturnValue(null);
     boardApi.createTaskAsync = vi.fn().mockResolvedValue({ taskId: "task-new" });
   });
@@ -71,6 +77,9 @@ describe("board key handler", () => {
     boardApi.applyStatusChangeAsync = originalApply;
     boardApi.loadTaskNotesAsync = originalLoadNotes;
     boardApi.copyToClipboard = originalCopy;
+    boardApi.closeTaskAsync = originalCloseTaskAsync;
+    boardApi.editTaskInEditor = originalEditTaskInEditor;
+    boardApi.saveEditedTaskAsync = originalSaveEditedTaskAsync;
     boardApi.createTaskInEditor = originalCreateTaskInEditor;
     boardApi.createTaskAsync = originalCreateTaskAsync;
     vi.restoreAllMocks();
@@ -181,12 +190,67 @@ describe("board key handler", () => {
     expect(result.errorMessage).toBe("copy failed");
   });
 
+  it("closes tasks immediately and surfaces close failures", async () => {
+    const state = createState({ backlog: [createTask("task-1")] });
+    const handleKey = createKeyHandler("/tmp/project");
+
+    let result = await handleKey("c", state, "/tmp/project");
+    expect(result.flashTaskId).toBe("task-1");
+    expect(result.needsRefresh).toBe(true);
+
+    vi.mocked(boardApi.applyStatusChangeAsync).mockClear();
+    vi.mocked(boardApi.closeTaskAsync).mockResolvedValueOnce("close failed");
+    result = await handleKey("c", state, "/tmp/project");
+    expect(result.errorMessage).toBe("close failed");
+  });
+
   it("supports close-reason prompting", async () => {
     const state = createState({ backlog: [createTask("task-1")] });
     const handleKey = createKeyHandler("/tmp/project");
 
     const result = await handleKey("C", state, "/tmp/project");
     expect(result.promptForCloseReason).toBe(true);
+  });
+
+  it("creates tasks from the editor and reports create failures", async () => {
+    const newTask = createTask("task-new");
+    vi.mocked(boardApi.createTaskInEditor).mockReturnValue(newTask);
+    const handleKey = createKeyHandler("/tmp/project");
+
+    let result = await handleKey("n", createState({}), "/tmp/project");
+    expect(boardApi.createTaskAsync).toHaveBeenCalledWith("/tmp/project", newTask);
+    expect(result.flashTaskId).toBe("task-new");
+    expect(result.needsRefresh).toBe(true);
+
+    vi.mocked(boardApi.createTaskAsync).mockResolvedValueOnce("create failed");
+    result = await handleKey("n", createState({}), "/tmp/project");
+    expect(result.errorMessage).toBe("create failed");
+  });
+
+  it("edits tasks and reports save failures", async () => {
+    const task = createTask("task-1");
+    vi.mocked(boardApi.editTaskInEditor).mockReturnValue(task);
+    vi.mocked(boardApi.saveEditedTaskAsync).mockResolvedValueOnce(null);
+    const handleKey = createKeyHandler("/tmp/project");
+
+    let result = await handleKey("e", createState({ backlog: [task] }), "/tmp/project");
+    expect(boardApi.saveEditedTaskAsync).toHaveBeenCalledWith("/tmp/project", "task-1", task);
+    expect(result.flashTaskId).toBe("task-1");
+
+    vi.mocked(boardApi.saveEditedTaskAsync).mockResolvedValueOnce("save failed");
+    result = await handleKey("E", createState({ backlog: [task] }), "/tmp/project");
+    expect(result.errorMessage).toBe("save failed");
+  });
+
+  it("ignores mutation keys when no task is highlighted", async () => {
+    const empty = createState({});
+    const handleKey = createKeyHandler("/tmp/project");
+
+    for (const key of ["s", "S", "c", "C", "e", "E", "y", "R", "\r"]) {
+      const result = await handleKey(key, empty, "/tmp/project");
+      expect(result.errorMessage).toBeNull();
+      expect(result.flashTaskId).toBeNull();
+    }
   });
 
   it("toggles sort mode, refresh, and quit flags", async () => {

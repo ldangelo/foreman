@@ -1114,7 +1114,7 @@ npm link
 # Development commands
 npm run build          # TypeScript compile (atomic — safe while foreman is running)
 npm test               # run the full PR-required Vitest lanes
-npm run test:coverage:transition  # Elixir-transition coverage gate (Node frontend bridge + Elixir backend)
+npm run test:coverage:transition  # Elixir-transition coverage gate (Node operator/frontend + Elixir line/branch-site coverage)
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # Type check only
 npm run bundle         # esbuild single-file bundle
