@@ -15,15 +15,10 @@ export function foremanBackendMode(env: Env = process.env): ForemanBackendMode {
   return "elixir";
 }
 
-export function nodeDaemonAllowed(env: Env = process.env): boolean {
-  return foremanBackendMode(env) === "node" && !migrationComplete(env);
+export function nodeDaemonAllowed(_env: Env = process.env): boolean {
+  return false;
 }
 
-export function nodeDaemonDisabledMessage(env: Env = process.env): string {
-  const mode = foremanBackendMode(env);
-  const complete = migrationComplete(env);
-  const reason = complete
-    ? "FOREMAN_MIGRATION_COMPLETE is set"
-    : `FOREMAN_BACKEND=${mode}`;
-  return `${reason}; the Node daemon scheduler is disabled. Use 'foreman server start' for the Elixir backend, or set FOREMAN_BACKEND=node only for explicit legacy operation.`;
+export function nodeDaemonDisabledMessage(_env: Env = process.env): string {
+  return "The Node daemon scheduler was removed after the Elixir backend cutover. Use 'foreman server start' for the Elixir backend.";
 }

@@ -587,7 +587,7 @@ export const runTaskCommand = new Command("task")
     if (foremanBackendMode() === "elixir" && process.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.VITEST !== "true" && !opts.runId) {
       console.error(
         chalk.red(
-          "Error: foreman run task uses the legacy Node direct worker path and is only available with FOREMAN_BACKEND=node. Elixir scheduler worker launches use the internal --run-id bridge.",
+          "Error: foreman run task operator use was removed after the Elixir backend cutover. Elixir scheduler worker launches use the internal --run-id bridge.",
         ),
       );
       process.exit(1);

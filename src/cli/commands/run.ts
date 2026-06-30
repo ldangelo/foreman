@@ -614,15 +614,15 @@ export const runCommand = new Command("run")
 
     if (foremanBackendMode() === "elixir" && runtimeMode !== "test" && process.env.VITEST !== "true") {
       if (beadFilter) {
-        console.error(chalk.red("Error: foreman run --task/--bead uses the legacy Node direct-dispatch path and is only available with FOREMAN_BACKEND=node."));
+        console.error(chalk.red("Error: foreman run --task/--bead was removed after the Elixir backend cutover. Use normal 'foreman run' to tick the scheduler, or 'foreman retry <task-id>' for retry flows."));
         process.exit(1);
       }
       if (resume || resumeFailed) {
-        console.error(chalk.red("Error: foreman run --resume uses the legacy Node recovery path and is only available with FOREMAN_BACKEND=node. Use 'foreman retry' for Elixir-backed retry operations."));
+        console.error(chalk.red("Error: foreman run --resume/--resume-failed was removed after the Elixir backend cutover. Use 'foreman retry' for Elixir-backed retry operations."));
         process.exit(1);
       }
       if (pipeline === false || workflowOverride || staggerMs !== undefined || telemetry || opts.autoDispatch === false || model || opts.maxAgents !== undefined) {
-        console.error(chalk.red("Error: these foreman run dispatch-shaping options are legacy Node-only and require FOREMAN_BACKEND=node. The Elixir scheduler owns default dispatch policy."));
+        console.error(chalk.red("Error: these foreman run dispatch-shaping options were removed after the Elixir backend cutover. The Elixir scheduler owns default dispatch policy."));
         process.exit(1);
       }
       const manager = new ElixirServerManager();
