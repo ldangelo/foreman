@@ -144,6 +144,20 @@ describe("board mutation helpers", () => {
     await expect(closeTaskAsync(projectDir, "task-1")).resolves.toBe("close failed");
   });
 
+  it("closes tasks through Elixir task.close", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const projectDir = makeProjectDir();
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockSendCommand.mockResolvedValue({ ok: true });
+
+    const { closeTaskAsync } = await import("../commands/board.js");
+    await expect(closeTaskAsync(projectDir, "task-1")).resolves.toBeNull();
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.close",
+      payload: { project_id: "proj-1", task_id: "task-1" },
+    }));
+  });
+
   it("saves edited tasks through Elixir task.update", async () => {
     process.env.FOREMAN_BACKEND = "elixir";
     const projectDir = makeProjectDir();
@@ -175,6 +189,33 @@ describe("board mutation helpers", () => {
         priority: 1,
         status: "needs_attention",
       },
+    }));
+  });
+
+  it("saves edited tasks through Elixir with null descriptions omitted", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const projectDir = makeProjectDir();
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockSendCommand.mockResolvedValue({ ok: true });
+
+    const { saveEditedTaskAsync } = await import("../commands/board.js");
+    await expect(saveEditedTaskAsync(projectDir, "task-1", {
+      id: "task-1",
+      title: "Updated title",
+      description: null,
+      type: "task",
+      priority: 1,
+      status: "needs_attention",
+      external_id: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+      approved_at: null,
+      closed_at: null,
+    })).resolves.toBeNull();
+
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.update",
+      payload: expect.objectContaining({ description: undefined }),
     }));
   });
 
@@ -272,6 +313,36 @@ describe("board mutation helpers", () => {
         project_id: "proj-1",
         title: "Generated id task",
       }),
+    }));
+  });
+
+  it("creates tasks through Elixir with explicit id and optional fields", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const projectDir = makeProjectDir();
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockSendCommand.mockResolvedValue({ ok: true });
+
+    const { createTaskAsync } = await import("../commands/board.js");
+    await expect(createTaskAsync(projectDir, {
+      id: "task-custom",
+      title: "Explicit Elixir task",
+      description: null,
+      type: "bug",
+      priority: 0,
+      status: "ready",
+    })).resolves.toEqual({ taskId: "task-custom" });
+
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.create",
+      payload: {
+        project_id: "proj-1",
+        task_id: "task-custom",
+        title: "Explicit Elixir task",
+        description: undefined,
+        task_type: "bug",
+        priority: 0,
+        status: "ready",
+      },
     }));
   });
 

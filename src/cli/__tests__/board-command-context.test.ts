@@ -251,6 +251,51 @@ describe("foreman board command context", () => {
 
     await expect(loadBoardTaskNotes(projectDir, "task-1")).resolves.toEqual([]);
   });
+
+  it("maps Elixir board task fallback fields without a tRPC client", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockListTasks.mockResolvedValue([
+      { id: "fallback-id", project_id: "proj-1", task_type: "bug", priority: "high", annotations: [{ body: "note" }] },
+      { project_id: "proj-1" },
+      { task_id: "other-project", project_id: "proj-2", title: "Filtered" },
+    ]);
+
+    const tasks = await loadBoardTasks(projectDir);
+    const backlogTasks = tasks.get("backlog") ?? [];
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(backlogTasks.map((task) => task.id)).toEqual(["fallback-id", "unknown"]);
+    expect(backlogTasks[0]).toMatchObject({ title: "fallback-id", type: "bug", priority: 2, status: "backlog" });
+    expect(backlogTasks[0]?.notes?.[0]).toMatchObject({ author: "unknown", body: "note" });
+    expect(backlogTasks[1]).toMatchObject({ title: "unknown", type: "task", priority: 2, status: "backlog" });
+  });
+
+  it("loads only the last ten Elixir annotations with fallback metadata", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockGetTask.mockResolvedValue({
+      task_id: "task-1",
+      project_id: "proj-1",
+      annotations: Array.from({ length: 12 }, (_, index) => ({ body: `note-${index}`, ...(index === 11 ? {} : { author: `user-${index}`, created_at: `2026-01-${String(index + 1).padStart(2, "0")}T00:00:00.000Z` }) })),
+    });
+
+    const notes = await loadBoardTaskNotes(projectDir, "task-1");
+
+    expect(notes).toHaveLength(10);
+    expect(notes[0]).toMatchObject({ id: "task-1-annotation-0", body: "note-2" });
+    expect(notes[9]).toMatchObject({ id: "task-1-annotation-9", author: "unknown", body: "note-11" });
+  });
 });
 
 describe("loadBoardTasks status routing", () => {

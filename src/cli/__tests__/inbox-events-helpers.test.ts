@@ -29,6 +29,7 @@ vi.mock("../../lib/db/postgres-adapter.js", () => ({
 import {
   fetchDaemonEvents,
   fetchPostgresEvents,
+  formatEventSummary,
   resolvePostgresInboxProject,
 } from "../commands/inbox.js";
 
@@ -78,6 +79,47 @@ describe("inbox event helpers", () => {
     expect(byRun[0]).toMatchObject({ eventType: "fail", details: { seedId: "task-1" } });
     expect(byProject[0]).toMatchObject({ eventType: "dispatch", details: { bead_id: "task-2" } });
     expect(empty).toEqual([]);
+  });
+
+  it.each([
+    ["phase-start", {}, "phase-start"],
+    ["phase-start", { phase: "developer" }, "Start: developer"],
+    ["phase-complete", { phase: "qa" }, "Complete: qa"],
+    ["dispatch", {}, "Dispatch"],
+    ["complete", {}, "Complete"],
+    ["fail", {}, "Failed"],
+    ["merge", {}, "Merged"],
+    ["pr-created", {}, "PR created"],
+    ["merge-queue-fallback", { bead_id: "bd-1" }, "merge-queue-fallback: bd-1"],
+    ["merge-cleanup-fallback", {}, "merge-cleanup-fallback"],
+    ["conflict", { bead_id: "bd-2" }, "conflict: bd-2"],
+    ["test-fail", {}, "test-fail"],
+    ["stuck", {}, "Stuck"],
+    ["custom", { seedId: "seed-1" }, "custom: seed-1"],
+    ["custom", {}, "custom"],
+    ["anything", null, "anything"],
+  ])("formatEventSummary covers %s fallback branches", (eventType, details, expected) => {
+    expect(formatEventSummary(eventType, details as Record<string, unknown> | null)).toBe(expected);
+  });
+
+  it("fetchDaemonEvents maps Elixir fallback event fields", async () => {
+    const daemon = {
+      backend: "elixir",
+      projectId: "proj-1",
+      client: {
+        listEvents: vi.fn().mockResolvedValue([
+          { run_id: null, type: "custom", payload: null, created_at: "2026-01-01T00:00:00.000Z" },
+          { run_id: "run-1", payload: "not-json", occurred_at: "2026-01-01T00:01:00.000Z" },
+        ]),
+      },
+    } as any;
+
+    const events = await fetchDaemonEvents(daemon, { all: true, limit: 10 });
+
+    expect(events).toEqual([
+      expect.objectContaining({ id: "run-1-event", runId: "run-1", eventType: "event", details: null, createdAt: "2026-01-01T00:01:00.000Z" }),
+      expect.objectContaining({ id: "run-custom", runId: null, eventType: "custom", details: null, createdAt: "2026-01-01T00:00:00.000Z" }),
+    ]);
   });
 
   it("fetchDaemonEvents supports Elixir all/run filtering and node all/run filtering", async () => {

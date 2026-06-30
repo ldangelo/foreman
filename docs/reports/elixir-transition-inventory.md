@@ -94,7 +94,8 @@ The earlier operator failures around `status --watch`, `board`, and missing `pro
 
 5. **Coverage and verification**
    - Add/adjust tests per migrated command path.
-   - Establish the repo-wide coverage workflow and close any remaining gap to 90% line/branch coverage.
+   - Use `npm run test:coverage:transition` for the Elixir-transition coverage gate: Node frontend transition bridge line/branch coverage must be at least 70%, and Elixir backend line coverage from `mix test --cover` must be at least 70%.
+   - Legacy Node backend-only daemon/orchestrator/store paths are outside this transition coverage target when they are not default operator-facing workflows.
 
 ## Exit condition for this inventory task
 

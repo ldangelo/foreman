@@ -572,4 +572,86 @@ describe("foreman task command Elixir context", () => {
     const rendered = errSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("Task 'task-404' not found");
   });
+
+  it("renders Elixir list --all with closed tasks", async () => {
+    mockListTasks.mockResolvedValue([
+      { task_id: "task-closed", project_id: "proj-1", title: "Closed", status: "closed", priority: 2, task_type: "task" },
+      { task_id: "task-merged", project_id: "proj-1", title: "Merged", status: "merged", priority: 2, task_type: "task" },
+      { task_id: "task-open", project_id: "proj-1", title: "Open", status: "backlog", priority: 2, task_type: "task" },
+    ]);
+    const taskCommand = await freshTaskCommand();
+
+    await taskCommand.parseAsync(["list", "--all", "--project-path", "/canonical/project"], { from: "user" });
+
+    const rendered = logSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("All Tasks (3)");
+    expect(rendered).toContain("task-closed");
+    expect(rendered).toContain("task-merged");
+  });
+
+  it.each([
+    [["list", "--status", "ready", "--project-path", "/canonical/project"], "No tasks with status 'ready'."],
+    [["list", "--type", "bug", "--project-path", "/canonical/project"], "No tasks with type 'bug'."],
+    [["list", "--project-path", "/canonical/project"], "No tasks found. Use 'foreman task create' to add tasks."],
+  ])("renders Elixir list empty state for %j", async (args, expected) => {
+    mockListTasks.mockResolvedValue([]);
+    const taskCommand = await freshTaskCommand();
+
+    await taskCommand.parseAsync(args as string[], { from: "user" });
+
+    const rendered = logSpy.mock.calls.map((call: unknown[]) => String(call[0] ?? "")).join("\n");
+    expect(rendered).toContain(expected);
+  });
+
+  it("renders Elixir list --show-run when some tasks have no run", async () => {
+    mockListTasks.mockResolvedValue([
+      { task_id: "task-run", project_id: "proj-1", title: "With run", status: "backlog", priority: 2, task_type: "task", run_id: "run-1" },
+      { task_id: "task-no-run", project_id: "proj-1", title: "No run", status: "ready", priority: 2, task_type: "task" },
+    ]);
+    mockListRuns.mockResolvedValue([{ run_id: "run-1", task_id: "task-run", status: "completed" }]);
+    const taskCommand = await freshTaskCommand();
+
+    await taskCommand.parseAsync(["list", "--show-run", "--project-path", "/canonical/project"], { from: "user" });
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(mockListRuns).toHaveBeenCalledWith({ projectId: "proj-1" });
+    const rendered = logSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("task-run");
+    expect(rendered).toContain("task-no-run");
+  });
+
+  it("prints Elixir command errors from task command responses", async () => {
+    mockSendCommand.mockResolvedValue({ ok: false, error: { message: "boom" } });
+    const taskCommand = await freshTaskCommand();
+
+    await expect(taskCommand.parseAsync(["approve", "task-1", "--project-path", "/canonical/project"], { from: "user" })).rejects.toThrow("process.exit(1)");
+
+    const rendered = errSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("boom");
+  });
+
+  it("renders Elixir show optional fields with no run or annotations", async () => {
+    mockGetTask.mockResolvedValue({
+      task_id: "task-1",
+      project_id: "proj-1",
+      title: "One",
+      description: "Details",
+      external_id: "EXT-1",
+      status: "closed",
+      priority: 2,
+      task_type: "bug",
+      approved_at: "2026-06-01T00:00:00.000Z",
+      closed_at: "2026-06-02T00:00:00.000Z",
+    });
+    const taskCommand = await freshTaskCommand();
+
+    await taskCommand.parseAsync(["show", "task-1", "--project-path", "/canonical/project"], { from: "user" });
+
+    const rendered = logSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Details");
+    expect(rendered).toContain("EXT-1");
+    expect(rendered).toContain("Approved:");
+    expect(rendered).toContain("Closed:");
+    expect(rendered).toContain("(none yet)");
+  });
 });
