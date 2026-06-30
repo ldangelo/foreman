@@ -3,12 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { resolveProjectPath } from "../../lib/project-path.js";
-import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerClient, type ElixirProject } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
-import { createTrpcClient } from "../../lib/trpc-client.js";
 import { initPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
 
 export interface RegisteredProjectSummary {
@@ -34,46 +32,13 @@ function summaryFromElixirProject(project: ElixirProject): RegisteredProjectSumm
 }
 
 export async function listRegisteredProjects(opts: { includeArchived?: boolean } = {}): Promise<RegisteredProjectSummary[]> {
-  if (foremanBackendMode() === "elixir") {
-    const manager = new ElixirServerManager();
-    const status = await manager.ensureRunning();
-    const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
-    const projects = await client.listProjects();
-    return projects
-      .map(summaryFromElixirProject)
-      .filter((project) => opts.includeArchived || (project.status ?? "active") !== "archived");
-  }
-
-  try {
-    const client = createTrpcClient();
-    const projects = await client.projects.list() as Array<{
-      id: string;
-      name: string;
-      path: string;
-      githubUrl?: string;
-      defaultBranch?: string;
-      status?: string;
-    }>;
-    return projects.map((project) => ({
-      id: project.id,
-      name: project.name,
-      path: project.path,
-      githubUrl: project.githubUrl,
-      defaultBranch: project.defaultBranch,
-      status: project.status,
-    }));
-  } catch {
-    const registry = new ProjectRegistry();
-    const records = await registry.list();
-    return records.map((record) => ({
-      id: record.id,
-      name: record.name,
-      path: record.path,
-      githubUrl: record.githubUrl,
-      defaultBranch: record.defaultBranch,
-      status: record.status,
-    }));
-  }
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const projects = await client.listProjects();
+  return projects
+    .map(summaryFromElixirProject)
+    .filter((project) => opts.includeArchived || (project.status ?? "active") !== "archived");
 }
 
 function defaultElixirProjectId(projectPath: string, name: string): string {
