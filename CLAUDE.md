@@ -10,6 +10,7 @@ Foreman is an AI-powered engineering orchestrator that decomposes work into task
 # Development
 npm run build          # tsc compile
 npm test               # vitest run
+npm run test:coverage:transition  # Elixir-transition coverage gate
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # type check only
 npx vitest run <file>  # run a single test file
