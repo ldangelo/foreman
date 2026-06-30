@@ -34,7 +34,7 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow |
 | removed `foreman mail send` | `foreman inbox send` |
 
-During Elixir migration, incomplete legacy command coverage can be delegated with `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` only when `FOREMAN_BACKEND=node` is set. Elixir is the default after cutover; it disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler.
+Legacy TS delegation can be enabled with `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` only when `FOREMAN_BACKEND=node` is set. Elixir is the default after cutover; it disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler.
 
 ---
 

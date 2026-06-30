@@ -61,8 +61,8 @@ interface RunActivityInfo {
 /**
  * Fetch live run activity information for a task.
  * 
- * For registered projects (daemon-backed): uses tRPC to query the Postgres store
- * via the Foreman daemon's Unix socket. Falls back to Postgres for unregistered projects.
+ * In Elixir mode, uses Elixir run projections only and never falls back to the legacy Node backend.
+ * In explicit Node mode, uses tRPC/Postgres compatibility paths.
  */
 async function fetchRunActivity(
   projectPath: string,
@@ -72,18 +72,13 @@ async function fetchRunActivity(
   if (!runId) return null;
 
   if (projectId && foremanBackendMode() === "elixir") {
-    try {
-      const client = await createElixirTaskCommandClient();
-      const runs = await client.listRuns({ projectId });
-      const run = runs.find((candidate) => (candidate.run_id ?? candidate.id) === runId);
-      if (!run) return null;
-      return elixirRunToActivity(run);
-    } catch {
-      // Elixir read unavailable — fall through to Postgres
-    }
+    const client = await createElixirTaskCommandClient();
+    const runs = await client.listRuns({ projectId });
+    const run = runs.find((candidate) => (candidate.run_id ?? candidate.id) === runId);
+    return run ? elixirRunToActivity(run) : null;
   }
 
-  // Try daemon tRPC first (for registered projects)
+  // Try daemon tRPC first in explicit Node mode (for registered projects)
   if (projectId) {
     try {
       const client = createTrpcClient();
@@ -979,6 +974,15 @@ const createCommand = new Command("create")
     }) => {
       // ── Natural-language path (--from-text), shared with 'foreman bead' ──
       if (opts.fromText !== undefined) {
+        if (foremanBackendMode() !== "node") {
+          console.error(
+            chalk.red(
+              "Error: task create --from-text uses the legacy Node/beads task generator and is only available with FOREMAN_BACKEND=node.",
+            ),
+          );
+          process.exit(1);
+        }
+
         const incompatible: string[] = [];
         if (opts.title !== undefined) incompatible.push("--title");
         if (opts.description !== undefined) incompatible.push("--description");

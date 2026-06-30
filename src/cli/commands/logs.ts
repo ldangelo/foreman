@@ -360,16 +360,15 @@ async function resolveLocalRun(id: string | undefined, opts: LogsOpts): Promise<
 }
 
 async function resolveRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
+  if (foremanBackendMode() === "elixir") {
+    return resolveElixirRun(id, opts);
+  }
+
   try {
-    if (foremanBackendMode() === "elixir") {
-      const elixir = await resolveElixirRun(id, opts);
-      if (elixir) return elixir;
-    } else {
-      const daemon = await resolveDaemonRun(id, opts);
-      if (daemon) return daemon;
-    }
+    const daemon = await resolveDaemonRun(id, opts);
+    if (daemon) return daemon;
   } catch {
-    // Fall back to local store when backend resolution is unavailable.
+    // Fall back to local store only in explicit Node mode when daemon resolution is unavailable.
   }
   return resolveLocalRun(id, opts);
 }

@@ -125,19 +125,15 @@ async function resolveDaemonRecoverContext(projectPath: string): Promise<DaemonR
 }
 
 async function resolveElixirRecoverContext(projectPath: string): Promise<ElixirRecoverContext | null> {
-  try {
-    const projects = await listRegisteredProjects();
-    const project = projects.find((record) => record.path === projectPath);
-    if (!project) return null;
-    const manager = new ElixirServerManager();
-    const status = await manager.ensureRunning();
-    return {
-      client: new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN),
-      projectId: project.id,
-    };
-  } catch {
-    return null;
-  }
+  const projects = await listRegisteredProjects();
+  const project = projects.find((record) => record.path === projectPath);
+  if (!project) return null;
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return {
+    client: new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN),
+    projectId: project.id,
+  };
 }
 
 function adaptElixirRun(row: ElixirRun): Run {
@@ -526,8 +522,9 @@ export const recoverCommand = new Command("recover")
     }
 
     const projectPath = await resolveRepoRootProjectPath({});
-    const elixir = foremanBackendMode() === "elixir" ? await resolveElixirRecoverContext(projectPath) : null;
-    const daemon = elixir ? null : await resolveDaemonRecoverContext(projectPath);
+    const isElixir = foremanBackendMode() === "elixir";
+    const elixir = isElixir ? await resolveElixirRecoverContext(projectPath) : null;
+    const daemon = isElixir ? null : await resolveDaemonRecoverContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 
     // Find runs for this seed

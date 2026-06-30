@@ -118,20 +118,16 @@ async function resolveDaemonDebugContext(projectPath: string): Promise<DaemonDeb
 }
 
 async function resolveElixirDebugContext(projectPath: string): Promise<ElixirDebugContext | null> {
-  try {
-    const projects = await listRegisteredProjects();
-    const project = projects.find((record) => record.path === projectPath);
-    if (!project) return null;
-    const manager = new ElixirServerManager();
-    const status = await manager.ensureRunning();
-    return {
-      client: new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN),
-      projectId: project.id,
-      projectPath,
-    };
-  } catch {
-    return null;
-  }
+  const projects = await listRegisteredProjects();
+  const project = projects.find((record) => record.path === projectPath);
+  if (!project) return null;
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return {
+    client: new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN),
+    projectId: project.id,
+    projectPath,
+  };
 }
 
 async function resolveDaemonRuns(context: DaemonDebugContext, beadId: string): Promise<Run[]> {
@@ -285,8 +281,9 @@ export const debugCommand = new Command("debug")
   .option("--raw", "Print collected artifacts without AI analysis")
   .action(async (beadId: string, opts: { run?: string; model?: string; raw?: boolean }) => {
     const projectPath = await resolveRepoRootProjectPath({});
-    const elixir = foremanBackendMode() === "elixir" ? await resolveElixirDebugContext(projectPath) : null;
-    const daemon = elixir ? null : await resolveDaemonDebugContext(projectPath);
+    const isElixir = foremanBackendMode() === "elixir";
+    const elixir = isElixir ? await resolveElixirDebugContext(projectPath) : null;
+    const daemon = isElixir ? null : await resolveDaemonDebugContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 
     // Find runs for this seed

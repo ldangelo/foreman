@@ -93,6 +93,20 @@ describe("foreman task command Elixir context", () => {
     errSpy.mockRestore();
   });
 
+  it("gates legacy --from-text task generation outside explicit Node mode", async () => {
+    const taskCommand = await freshTaskCommand();
+
+    await expect(taskCommand.parseAsync([
+      "create",
+      "--from-text", "make a task",
+      "--project-path", "/canonical/project",
+    ], { from: "user" })).rejects.toThrow("process.exit(1)");
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    const rendered = errSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("only available with FOREMAN_BACKEND=node");
+  });
+
   it("routes task create through Elixir commands without creating a tRPC client", async () => {
     mockGetTask.mockResolvedValue({
       task_id: "proj-abcde",
@@ -601,6 +615,20 @@ describe("foreman task command Elixir context", () => {
 
     const rendered = logSpy.mock.calls.map((call: unknown[]) => String(call[0] ?? "")).join("\n");
     expect(rendered).toContain(expected);
+  });
+
+  it("fails closed instead of falling back when Elixir run activity reads fail", async () => {
+    mockListTasks.mockResolvedValue([
+      { task_id: "task-run", project_id: "proj-1", title: "With run", status: "backlog", priority: 2, task_type: "task", run_id: "run-1" },
+    ]);
+    mockListRuns.mockRejectedValue(new Error("elixir down"));
+    const taskCommand = await freshTaskCommand();
+
+    await expect(taskCommand.parseAsync(["list", "--show-run", "--project-path", "/canonical/project"], { from: "user" })).rejects.toThrow("process.exit(1)");
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    const rendered = errSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("elixir down");
   });
 
   it("renders Elixir list --show-run when some tasks have no run", async () => {

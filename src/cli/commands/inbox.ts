@@ -893,19 +893,15 @@ export async function fetchPostgresMessages(
 }
 
 export async function resolveDaemonInboxContext(projectPath: string, projectSelector?: string): Promise<InboxClientContext | null> {
-  try {
-    const projects = await listRegisteredProjects();
-    const project = projectSelector
-      ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
-      : projects.find((record) => resolve(record.path) === resolve(projectPath));
-    if (!project) return null;
-    if (foremanBackendMode() === "elixir") {
-      return { backend: "elixir", client: await createElixirInboxClient(), projectId: project.id };
-    }
-    return { backend: "node", client: createTrpcClient(), projectId: project.id };
-  } catch {
-    return null;
+  const projects = await listRegisteredProjects();
+  const project = projectSelector
+    ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
+    : projects.find((record) => resolve(record.path) === resolve(projectPath));
+  if (!project) return null;
+  if (foremanBackendMode() === "elixir") {
+    return { backend: "elixir", client: await createElixirInboxClient(), projectId: project.id };
   }
+  return { backend: "node", client: createTrpcClient(), projectId: project.id };
 }
 
 export async function resolveDaemonRunId(
