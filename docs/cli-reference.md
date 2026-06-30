@@ -63,40 +63,40 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 ### `foreman run`
 
-Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, skips ready tasks whose dependency blockers are not closed, monitors agents, and auto-merges completed work. The daemon uses the same dependency-filtered ready queue and logs both dispatched task IDs and skipped-task reasons each dispatch cycle.
+Dispatch ready tasks to AI agents. In default Elixir mode this sends a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches. Set `FOREMAN_BACKEND=node` only for explicit legacy operation with the old Node/Postgres dispatcher loop.
 
 Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
 ```bash
 foreman run                       # Dispatch all ready tasks (up to max-agents)
 foreman run --project my-project   # Dispatch against a registered project without cd
-foreman run --task bd-abc1        # Dispatch a specific task by ID
-foreman run --dry-run             # Preview what would be dispatched
-foreman run --max-agents 3        # Limit concurrent agents to 3
-foreman run --resume              # Resume stuck/rate-limited runs
-foreman run --resume-failed       # Also resume permanently failed runs
-foreman run --no-watch            # Dispatch once and exit (don't monitor)
-foreman run --yes                 # Auto-confirm run prompts for non-interactive use
-foreman run --no-pipeline         # Single agent mode (no explorer/qa/reviewer)
-foreman run --workflow quick      # Run all dispatched tasks with the quick workflow
-foreman run --model anthropic/claude-opus-4-6  # Force a specific model
+FOREMAN_BACKEND=node foreman run --task bd-abc1        # Legacy direct dispatch by task ID
+foreman run --dry-run             # Check Elixir server availability without ticking
+FOREMAN_BACKEND=node foreman run --max-agents 3        # Legacy Node dispatcher capacity
+FOREMAN_BACKEND=node foreman run --resume              # Legacy Node recovery path
+FOREMAN_BACKEND=node foreman run --resume-failed       # Legacy Node failed-run recovery
+foreman run --no-watch            # Tick once and exit; monitor with watch/status
+foreman run --yes                 # Auto-confirm prompts in legacy Node mode
+FOREMAN_BACKEND=node foreman run --no-pipeline         # Legacy single-agent mode
+FOREMAN_BACKEND=node foreman run --workflow quick      # Legacy Node workflow override
+FOREMAN_BACKEND=node foreman run --model anthropic/claude-opus-4-6  # Legacy model override
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--task <id>` | — | Dispatch only this specific task ID (must be ready) |
-| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
-| `--max-agents <n>` | `5` | Maximum concurrent agents |
-| `--model <model>` | — | Force a specific model for all phases |
+| `--task <id>` | — | Legacy Node direct dispatch only; requires `FOREMAN_BACKEND=node` |
+| `--bead <id>` | — | Alias for `--task` (legacy Node compatibility) |
+| `--max-agents <n>` | `5` | Legacy Node dispatcher capacity; Elixir scheduler owns capacity in default mode |
+| `--model <model>` | — | Legacy Node model override |
 | `--dry-run` | — | Show what would be dispatched without doing it |
 | `--no-watch` | — | Exit immediately after dispatching |
 | `--yes` | — | Answer yes to run confirmation prompts, including non-default target branch confirmation |
-| `--resume` | — | Resume stuck/rate-limited runs from previous dispatch |
-| `--resume-failed` | — | Also resume failed runs (not just stuck) |
-| `--no-pipeline` | — | Skip the pipeline — run as single worker agent |
-| `--workflow <name>` | — | Run all dispatched tasks with this workflow (overrides `workflow:<name>` labels and task-type mapping; fails fast with the list of available workflows if it cannot be loaded) |
-| `--no-auto-dispatch` | — | Disable auto-dispatch when capacity is available |
-| `--telemetry` | — | Enable OpenTelemetry tracing (requires OTEL_* env vars) |
+| `--resume` | — | Legacy Node recovery path; requires `FOREMAN_BACKEND=node` |
+| `--resume-failed` | — | Legacy Node recovery path; requires `FOREMAN_BACKEND=node` |
+| `--no-pipeline` | — | Legacy Node single-worker mode; requires `FOREMAN_BACKEND=node` |
+| `--workflow <name>` | — | Legacy Node workflow override; requires `FOREMAN_BACKEND=node` |
+| `--no-auto-dispatch` | — | Legacy Node auto-dispatch toggle |
+| `--telemetry` | — | Legacy Node worker tracing (requires OTEL_* env vars) |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
 > **Deprecated:** `--skip-explore` and `--skip-review` are still parsed for backwards compatibility but have **no effect** on the pipeline (phase shape is defined entirely by the workflow YAML). They are hidden from `--help` and print a deprecation warning. Use `--workflow quick` (a bundled workflow without explorer/reviewer phases) or a custom workflow instead.
@@ -105,11 +105,11 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 
 ### `foreman run task`
 
-Run a specific task through an explicit workflow, bypassing scheduler state gates. This is intended for debugging, recovery, and manual reruns where the task may be `failed`, `closed`, `in-progress`, or otherwise not `ready`. Worktree/run locking still applies. When the Elixir scheduler launches the legacy Node worker bridge and the task only exists in Elixir projections, Foreman mirrors that task into the Postgres worker store before execution so prompts receive title/type/priority/description metadata.
+Run a specific task through an explicit workflow, bypassing scheduler state gates. This direct worker path is legacy/debug compatibility and requires `FOREMAN_BACKEND=node` for operator use. The hidden `--run-id` bridge is reserved for Elixir scheduler-launched Node/Pi workers; when that bridge sees an Elixir-only task, Foreman mirrors task metadata into the Postgres worker store before execution so prompts receive title/type/priority/description metadata.
 
 ```bash
-foreman run task foreman-12345 task --project foreman --no-watch
-foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --project foreman --no-watch
+FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
 ```
 
 | Option | Default | Description |

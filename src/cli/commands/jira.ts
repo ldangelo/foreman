@@ -6,6 +6,7 @@ import chalk from "chalk";
 import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { encrypt } from "../../lib/encryption.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,16 @@ interface JiraConfigureOptions {
   webhookEnabled: boolean | undefined;
   webhookSecretEnv: string | undefined;
   pollInterval: number | undefined;
+}
+
+function requireNodeJiraLegacy(): void {
+  if (foremanBackendMode() === "node") return;
+  console.error(
+    chalk.red(
+      "Error: foreman jira uses the legacy Node/tRPC Jira integration and is only available with FOREMAN_BACKEND=node. Use 'FOREMAN_BACKEND=node foreman jira ...' for explicit legacy operation.",
+    ),
+  );
+  process.exit(1);
 }
 
 function parseIssueTypeWorkflow(options: string[]): Record<string, string> {
@@ -71,6 +82,7 @@ const configureCommand = new Command("configure")
   .option("--webhook-secret-env <name>", "Environment variable name containing webhook secret")
   .option("--poll-interval <seconds>", "Poll interval in seconds (default: 60, min: 30)", (val) => parseInt(val, 10))
   .action(async (opts: JiraConfigureOptions) => {
+    requireNodeJiraLegacy();
     const client = createTrpcClient();
 
     // Parse issue type workflow mapping
@@ -126,6 +138,7 @@ const statusCommand = new Command("status")
   .description("Show Jira monitor status")
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
+    requireNodeJiraLegacy();
     const client = createTrpcClient();
 
     try {
@@ -173,6 +186,7 @@ const testCommand = new Command("test")
   .requiredOption("--api-token <token>", "Jira API token (will be encrypted)")
   .option("--json", "Output as JSON")
   .action(async (opts: { apiUrl: string; email: string; apiToken: string; json?: boolean }) => {
+    requireNodeJiraLegacy();
     const client = createTrpcClient();
     console.log(chalk.dim("Testing Jira connection..."));
     try {
@@ -216,6 +230,7 @@ const enableWebhookCommand = new Command("enable-webhook")
   .description("Enable Jira webhook for real-time triggers")
   .option("--secret-env <name>", "Env var name for webhook secret (default: FOREMAN_JIRA_WEBHOOK_SECRET)", "FOREMAN_JIRA_WEBHOOK_SECRET")
   .action(async (opts: { secretEnv: string }) => {
+    requireNodeJiraLegacy();
     const client = createTrpcClient();
     console.log(chalk.dim("Registering Jira webhook..."));
     // Generate a random webhook secret
@@ -245,6 +260,7 @@ const enableWebhookCommand = new Command("enable-webhook")
 const disableWebhookCommand = new Command("disable-webhook")
   .description("Disable Jira webhook")
   .action(async () => {
+    requireNodeJiraLegacy();
     const client = createTrpcClient();
     console.log(chalk.dim("Disabling Jira webhook..."));
     try {

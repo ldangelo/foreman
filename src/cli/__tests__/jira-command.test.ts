@@ -45,6 +45,7 @@ describe("jira command wrappers", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.FOREMAN_BACKEND = "node";
     mockEncrypt.mockResolvedValue("encrypted-token");
     mockConfigure.mockResolvedValue(undefined);
     mockGetStatus.mockResolvedValue({ configured: true, projects: 2, lastPoll: "2026-01-02T00:00:00.000Z", webhookEnabled: true });
@@ -59,6 +60,7 @@ describe("jira command wrappers", () => {
   });
 
   afterEach(() => {
+    delete process.env.FOREMAN_BACKEND;
     vi.restoreAllMocks();
   });
 
@@ -192,5 +194,16 @@ describe("jira command wrappers", () => {
 
     expect(mockDisableWebhook).toHaveBeenCalledWith({});
     expect(logSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n")).toContain("Webhook disabled");
+  });
+
+  it("requires explicit Node backend for legacy Jira operations", async () => {
+    delete process.env.FOREMAN_BACKEND;
+    const jiraCommand = await freshJiraCommand();
+
+    await expect(jiraCommand.parseAsync(["status"], { from: "user" })).rejects.toThrow("process.exit(1)");
+
+    const rendered = errSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("FOREMAN_BACKEND=node");
+    expect(mockGetStatus).not.toHaveBeenCalled();
   });
 });

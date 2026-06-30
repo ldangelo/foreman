@@ -47,6 +47,9 @@ import { runTaskCommand, skipFlagsDeprecationWarning } from "./run-task.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RunLookup } from "../../orchestrator/refinery-agent.js";
 import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -607,6 +610,34 @@ export const runCommand = new Command("run")
       } else {
         console.warn(chalk.yellow(`[foreman] Warning: invalid --stagger value "${opts.stagger}", ignoring (use formats like "30s", "1m")`));
       }
+    }
+
+    if (foremanBackendMode() === "elixir" && runtimeMode !== "test" && process.env.VITEST !== "true") {
+      if (beadFilter) {
+        console.error(chalk.red("Error: foreman run --task/--bead uses the legacy Node direct-dispatch path and is only available with FOREMAN_BACKEND=node."));
+        process.exit(1);
+      }
+      if (resume || resumeFailed) {
+        console.error(chalk.red("Error: foreman run --resume uses the legacy Node recovery path and is only available with FOREMAN_BACKEND=node. Use 'foreman retry' for Elixir-backed retry operations."));
+        process.exit(1);
+      }
+      if (pipeline === false || workflowOverride || staggerMs !== undefined || telemetry) {
+        console.error(chalk.red("Error: these foreman run dispatch-shaping options are legacy Node-only and require FOREMAN_BACKEND=node. The Elixir scheduler owns default dispatch policy."));
+        process.exit(1);
+      }
+      const manager = new ElixirServerManager();
+      const status = await manager.ensureRunning();
+      const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+      if (dryRun) {
+        console.log(chalk.dim("Elixir scheduler dry run: server is available; no scheduler tick sent."));
+      } else {
+        await client.schedulerTick();
+        console.log(chalk.green("✓ Elixir scheduler tick dispatched"));
+      }
+      if (watch) {
+        console.log(chalk.dim("Use 'foreman watch' or 'foreman status --watch' to monitor Elixir-backed runs."));
+      }
+      return;
     }
 
     // Start notification server so workers can POST status updates immediately

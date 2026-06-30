@@ -193,12 +193,12 @@ Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers
 Useful variants:
 
 ```bash
-foreman run --bead <task-id>      # Dispatch one task
-foreman run --max-agents 2        # Limit concurrency
-foreman run --dry-run             # Preview dispatch
-foreman run --no-watch            # Dispatch and exit
-foreman run --yes                 # Auto-confirm run prompts for scripts/non-interactive use
-foreman run --workflow quick      # Use the quick workflow (no explorer/reviewer phases)
+FOREMAN_BACKEND=node foreman run --bead <task-id>      # Legacy direct task dispatch
+FOREMAN_BACKEND=node foreman run --max-agents 2        # Legacy Node dispatcher capacity
+foreman run --dry-run             # Check Elixir server availability without ticking
+foreman run --no-watch            # Tick once and exit
+FOREMAN_BACKEND=node foreman run --yes                 # Legacy auto-confirm prompts
+FOREMAN_BACKEND=node foreman run --workflow quick      # Legacy Node workflow override
 ```
 
 Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
@@ -279,10 +279,10 @@ Transient failures include provider rate limits, provider overloads (`529 overlo
 
 ### Direct Task Execution with `foreman run task`
 
-For debugging, recovery, and manual reruns where the task may be in any state (failed, closed, in-progress, backlog, etc.), use `foreman run task`:
+For debugging, recovery, and manual reruns in explicit legacy Node mode where the task may be in any state (failed, closed, in-progress, backlog, etc.), use `foreman run task`:
 
 ```bash
-foreman run task <task-id> <workflow-path> [options]
+FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> [options]
 ```
 
 **Key behaviors:**
@@ -300,24 +300,24 @@ foreman run task <task-id> <workflow-path> [options]
 
 ```bash
 # Run a closed task with the default task workflow
-foreman run task foreman-12345 task --project my-project --no-watch
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --project my-project --no-watch
 
 # Run with a custom workflow path
-foreman run task foreman-12345 ~/.foreman/workflows/custom.yaml --target-branch main
+FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/custom.yaml --target-branch main
 
 # Dry run to preview without executing
-foreman run task foreman-12345 task --dry-run
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --dry-run
 
 # Run with a specific model override
-foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
 ```
 
 **When to use `foreman run task` vs `foreman run --task`:**
 
 | Command | State gating | Workflow selection | Typical use |
 |---------|--------------|--------------------|-------------|
-| `foreman run --task <id>` | Yes (task must be `ready`) | `--workflow` flag | Normal dispatch |
-| `foreman run task <id> <workflow>` | No (any state) | Positional argument | Debug, recovery, testing |
+| `FOREMAN_BACKEND=node foreman run --task <id>` | Yes (task must be `ready`) | `--workflow` flag | Legacy direct dispatch |
+| `FOREMAN_BACKEND=node foreman run task <id> <workflow>` | No (any state) | Positional argument | Legacy debug, recovery, testing |
 
 ## Documentation Expectations
 

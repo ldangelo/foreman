@@ -17,8 +17,8 @@ npx vitest run <file>  # run a single test file
 
 # CLI (after build or via tsx)
 foreman init           # Initialize project + beads
-foreman run            # Dispatch ready tasks to agents
-foreman run --bead X   # Dispatch specific task
+foreman run            # Tick Elixir scheduler for ready-task dispatch
+FOREMAN_BACKEND=node foreman run --bead X   # Legacy direct task dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon

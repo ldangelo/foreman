@@ -478,17 +478,17 @@ foreman init --wizard
 ```
 
 ### `foreman run`
-Dispatch AI coding agents to ready tasks. Enters a watch loop that auto-merges completed branches.
+Dispatch AI coding agents to ready tasks. In default Elixir mode this sends a scheduler tick to the Elixir orchestration server; use `foreman watch` or `foreman status --watch` to monitor. Set `FOREMAN_BACKEND=node` only for explicit legacy Node dispatcher operation.
 
 ```bash
-foreman run                              # Dispatch to all ready tasks
-foreman run --project my-project         # Dispatch without cd into a registered project
-foreman run --task task-abc              # Dispatch one specific task
-foreman run --max-agents 3               # Limit concurrent agents
-foreman run --yes                        # Auto-confirm run prompts for non-interactive use
-foreman run --model claude-opus-4-6      # Override model for all agents
-foreman run --no-tests                   # Skip test suite in merge step
-foreman run --dry-run                    # Preview without dispatching
+foreman run                              # Tick Elixir scheduler for ready tasks
+foreman run --project my-project         # Tick against a registered project context
+FOREMAN_BACKEND=node foreman run --task task-abc              # Legacy direct task dispatch
+FOREMAN_BACKEND=node foreman run --max-agents 3               # Legacy Node dispatcher capacity
+FOREMAN_BACKEND=node foreman run --yes                        # Legacy auto-confirm prompts
+FOREMAN_BACKEND=node foreman run --model claude-opus-4-6      # Legacy model override
+FOREMAN_BACKEND=node foreman run --no-tests                   # Legacy skip test suite in merge step
+foreman run --dry-run                    # Check Elixir server availability without ticking
 ```
 
 Each agent gets:
@@ -902,10 +902,10 @@ phases:
     retryOnFail: 2
 ```
 
-Direct task execution is available for recovery/debug flows and bypasses scheduler state gates while preserving run/worktree locks:
+Direct task execution is available for recovery/debug flows in explicit legacy Node mode and bypasses scheduler state gates while preserving run/worktree locks:
 
 ```bash
-foreman run task <task-id> <workflow-path> --project <name> --no-watch
+FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> --project <name> --no-watch
 ```
 
 **Key behaviors:**
@@ -924,13 +924,13 @@ foreman run task <task-id> <workflow-path> --project <name> --no-watch
 
 ```bash
 # Run a closed task with the task workflow
-foreman run task foreman-12345 task --project my-project --no-watch
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --project my-project --no-watch
 
 # Run with a custom workflow path
-foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml --target-branch main
+FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml --target-branch main
 
 # Dry run to preview
-foreman run task foreman-12345 task --dry-run
+FOREMAN_BACKEND=node foreman run task foreman-12345 task --dry-run
 ```
 
 The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.

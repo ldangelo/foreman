@@ -21,7 +21,9 @@ This inventory is intentionally narrower than historical parity work: it focuses
 | `foreman attach --follow` | Elixir | `src/cli/commands/attach.ts` routes Elixir mode through `ElixirServerClient`; parity tests exist in `src/cli/__tests__/attach.test.ts`. | No known default-path transition blocker. |
 | `foreman reset` | Elixir | `src/cli/commands/reset.ts` implements Elixir reset cleanup/preserve-worktree parity; tests in `src/cli/commands/__tests__/reset-elixir-dry-run.test.ts`. | No known default-path transition blocker. |
 | `foreman doctor --fix` / `--clean-logs` | Elixir | `src/cli/commands/doctor.ts` and `src/cli/commands/__tests__/doctor-elixir.test.ts`. | No known default-path transition blocker. |
-| Jira config / webhook projection state | Elixir | `packages/foreman_server/lib/foreman_server/command_router.ex`, `projection_store.ex`, tests in `packages/foreman_server/test/foreman_server_test.exs`. | No known default-path transition blocker. |
+| Jira config / webhook CLI operations | Guarded legacy | `src/cli/commands/jira.ts` requires explicit `FOREMAN_BACKEND=node` before using the legacy tRPC Jira integration for configure/status/test/webhook commands. | Elixir stores imported Jira projection/config events, but the operator CLI Jira management commands are intentionally legacy-gated until an Elixir command/API path lands. |
+| `foreman run` default dispatch | Elixir | `src/cli/commands/run.ts` routes default Elixir mode to the Elixir server scheduler tick and rejects Node-only dispatch-shaping/direct-task options unless `FOREMAN_BACKEND=node` is set. | Explicit Node mode retains the legacy Node dispatcher/orchestrator path. |
+| `foreman run task` direct worker execution | Guarded legacy | `src/cli/commands/run-task.ts` rejects interactive/default use in Elixir mode unless `FOREMAN_BACKEND=node` is set; the hidden `--run-id` bridge remains for Elixir scheduler-launched Node/Pi workers. | Direct manual worker execution remains a legacy/debug compatibility path. |
 | `foreman board` task rendering / updates | Elixir | `src/cli/commands/board.ts` uses Elixir task APIs/commands for the default registered-project path, and project lookup in Elixir mode resolves through Elixir-backed `listRegisteredProjects()` from `src/cli/commands/project-task-support.ts`. Focused board context/mutation tests cover Elixir field-default mapping and writes. | Explicit Node mode retains tRPC compatibility. |
 | `foreman status` / `status --watch` | Elixir | `src/cli/commands/status.ts` computes default registered-project status snapshots/counts from Elixir task/run projections; watch uses Elixir-backed reads/mutations. Focused tests cover Elixir-mode status snapshots/counts and watch behavior. | Explicit Node mode retains legacy compatibility. |
 | `foreman watch` dashboard state | Elixir | `src/cli/commands/watch/WatchState.ts` and `src/cli/dashboard-state.ts` use Elixir APIs/commands for default read and mutation paths (board summary, task counts, inbox/event polling, dashboard snapshots, `approve`, and `retry`). | Explicit Node mode retains legacy compatibility. |
@@ -50,7 +52,7 @@ Files currently importing `createTrpcClient()` under `src/cli/commands/`:
 - `board.ts`
 - `debug.ts`
 - `inbox.ts`
-- `jira.ts`
+- `jira.ts` (guarded legacy only)
 - `logs.ts`
 - `plan.ts`
 - `project-task-support.ts`
