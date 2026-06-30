@@ -189,6 +189,50 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_domain_event(
          projection,
          %{
+           type: "ProjectUpdated",
+           payload: %{project_id: project_id} = payload
+         },
+         _mode
+       ) do
+    update_in(projection, [:projects, project_id], fn
+      nil -> nil
+      project ->
+        config =
+          project
+          |> Map.get(:config, %{})
+          |> Map.merge(Map.get(payload, :config, %{}))
+          |> maybe_put(:name, Map.get(payload, :name))
+
+        project
+        |> maybe_put(:status, Map.get(payload, :status))
+        |> maybe_put(:default_branch, Map.get(payload, :default_branch))
+        |> maybe_put(:health, Map.get(payload, :health))
+        |> Map.put(:config, config)
+        |> Map.put(:updated_at, Map.get(payload, :updated_at))
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "ProjectArchived",
+           payload: %{project_id: project_id} = payload
+         },
+         _mode
+       ) do
+    update_in(projection, [:projects, project_id], fn
+      nil -> nil
+      project ->
+        project
+        |> Map.put(:status, "archived")
+        |> Map.put(:archived_at, Map.get(payload, :updated_at))
+        |> Map.put(:updated_at, Map.get(payload, :updated_at))
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
            type: "TaskCreated",
            payload: %{task_id: task_id} = payload
          },

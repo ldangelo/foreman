@@ -135,6 +135,30 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event("project.update", payload) do
+    project_id = Map.get(payload, :project_id) || Map.get(payload, :id)
+
+    with {:ok, project_id} <- required_binary(project_id, :project_id),
+         :ok <- require_existing_project(project_id) do
+      {:ok, "ProjectUpdated", Map.put(payload, :project_id, project_id), "project:#{project_id}"}
+    end
+  end
+
+  defp domain_event("project.archive", payload) do
+    project_id = Map.get(payload, :project_id) || Map.get(payload, :id)
+
+    with {:ok, project_id} <- required_binary(project_id, :project_id),
+         :ok <- require_existing_project(project_id) do
+      {:ok, "ProjectArchived",
+       %{
+         project_id: project_id,
+         status: "archived",
+         force: Map.get(payload, :force, false),
+         reason: Map.get(payload, :reason)
+       }, "project:#{project_id}"}
+    end
+  end
+
   defp domain_event("task.create", payload) do
     task_id = Map.get(payload, :task_id) || Map.get(payload, :id)
 
@@ -194,6 +218,14 @@ defmodule ForemanServer.CommandRouter do
   end
 
   defp domain_event(command_type, command), do: command_accepted(command_type, command)
+
+  defp require_existing_project(project_id) do
+    if ProjectionStore.project(project_id) do
+      :ok
+    else
+      {:error, {:not_found, :project, project_id}}
+    end
+  end
 
   defp command_accepted(command_type, command) do
     {:ok, "CommandAccepted",
@@ -370,6 +402,7 @@ defmodule ForemanServer.CommandRouter do
       :integration_event_type,
       :metadata,
       :migration_id,
+      :name,
       :actor,
       :occurred_at,
       :output_dir,

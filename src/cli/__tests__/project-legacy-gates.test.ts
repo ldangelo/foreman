@@ -1,14 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockForemanBackendMode, mockAdd, mockRemove, mockUpdate } = vi.hoisted(() => ({
+const { mockForemanBackendMode, mockAdd, mockArchiveProjectInElixir, mockRemove, mockUpdate, mockUpdateProjectInElixir } = vi.hoisted(() => ({
   mockForemanBackendMode: vi.fn(),
   mockAdd: vi.fn(),
+  mockArchiveProjectInElixir: vi.fn(),
   mockRemove: vi.fn(),
   mockUpdate: vi.fn(),
+  mockUpdateProjectInElixir: vi.fn(),
 }));
 
 vi.mock("../../lib/backend-mode.js", () => ({
   foremanBackendMode: mockForemanBackendMode,
+}));
+
+vi.mock("../commands/project-task-support.js", () => ({
+  archiveProjectInElixir: mockArchiveProjectInElixir,
+  listRegisteredProjects: vi.fn(),
+  registerProjectInElixir: vi.fn(),
+  updateProjectInElixir: mockUpdateProjectInElixir,
 }));
 
 vi.mock("../../lib/trpc-client.js", () => ({
@@ -38,24 +47,33 @@ describe("foreman project legacy gates", () => {
     vi.restoreAllMocks();
   });
 
-  it("gates project add in Elixir mode", async () => {
+  it("removes project add in Elixir mode without Node fallback guidance", async () => {
     const { projectCommand } = await import("../commands/project.js");
     await expect(projectCommand.parseAsync(["add", "owner/repo"], { from: "user" })).rejects.toThrow("process.exit(1)");
     expect(mockAdd).not.toHaveBeenCalled();
     const rendered = vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("legacy Node-backed only");
-    expect(rendered).toContain("FOREMAN_BACKEND=node");
+    expect(rendered).toContain("removed after the Elixir backend cutover");
+    expect(rendered).toContain("project register");
+    expect(rendered).not.toContain("FOREMAN_BACKEND=node");
   });
 
-  it("gates project remove in Elixir mode", async () => {
+  it("archives projects through Elixir in Elixir mode", async () => {
+    mockArchiveProjectInElixir.mockResolvedValue(undefined);
     const { projectCommand } = await import("../commands/project.js");
-    await expect(projectCommand.parseAsync(["remove", "proj-1"], { from: "user" })).rejects.toThrow("process.exit(1)");
+    await projectCommand.parseAsync(["remove", "proj-1"], { from: "user" });
+    expect(mockArchiveProjectInElixir).toHaveBeenCalledWith("proj-1", { force: false });
     expect(mockRemove).not.toHaveBeenCalled();
   });
 
-  it("gates project edit in Elixir mode", async () => {
+  it("edits project metadata through Elixir in Elixir mode", async () => {
+    mockUpdateProjectInElixir.mockResolvedValue(undefined);
     const { projectCommand } = await import("../commands/project.js");
-    await expect(projectCommand.parseAsync(["edit", "proj-1", "--name", "new-name"], { from: "user" })).rejects.toThrow("process.exit(1)");
+    await projectCommand.parseAsync(["edit", "proj-1", "--name", "new-name"], { from: "user" });
+    expect(mockUpdateProjectInElixir).toHaveBeenCalledWith("proj-1", {
+      name: "new-name",
+      status: undefined,
+      defaultBranch: undefined,
+    });
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 });

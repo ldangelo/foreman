@@ -16,7 +16,7 @@ import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { encrypt } from "../../lib/encryption.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
-import { listRegisteredProjects, registerProjectInElixir } from "./project-task-support.js";
+import { archiveProjectInElixir, listRegisteredProjects, registerProjectInElixir, updateProjectInElixir } from "./project-task-support.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,13 +80,9 @@ function getClient() {
   return createTrpcClient();
 }
 
-function requireNodeProjectCommand(subcommand: string): void {
-  if (foremanBackendMode() !== "elixir") return;
-  console.error(
-    chalk.red(
-      `Error: 'foreman project ${subcommand}' is legacy Node-backed only. Set FOREMAN_BACKEND=node for explicit legacy operation.`,
-    ),
-  );
+function rejectRemovedProjectAdd(): never {
+  console.error(chalk.red("Error: 'foreman project add' was removed after the Elixir backend cutover."));
+  console.error(chalk.dim("  Clone the repository locally, then run: foreman project register <path>"));
   process.exit(1);
 }
 
@@ -154,7 +150,7 @@ function handleDaemonError(err: unknown): never {
 // ---------------------------------------------------------------------------
 
 const addCommand = new Command("add")
-  .description("Clone a GitHub repository and register it as a project via ForemanDaemon")
+  .description("Removed: clone locally, then register the repository with Elixir")
   .argument("<github-url>", "GitHub repository URL or owner/repo shorthand")
   .description(`Examples:
     foreman project add owner/repo
@@ -174,7 +170,10 @@ const addCommand = new Command("add")
   .option("--jira-webhook-enabled", "Enable webhook-based triggers")
   .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
   .action(async (githubUrl: string, opts) => {
-    requireNodeProjectCommand("add");
+    if (foremanBackendMode() === "elixir") {
+      rejectRemovedProjectAdd();
+    }
+
     const client = getClient();
     try {
       const result = (await client.projects.add({
@@ -257,7 +256,7 @@ const listCommand = new Command("list")
   .action(async (opts) => {
     try {
       const projects = foremanBackendMode() === "elixir"
-        ? (await listRegisteredProjects()).filter((project) => {
+        ? (await listRegisteredProjects({ includeArchived: Boolean(opts.status) })).filter((project) => {
             if (opts.status && project.status && project.status !== opts.status) return false;
             if (opts.status && !project.status && opts.status !== "active") return false;
             if (opts.search && !project.name.toLowerCase().includes(String(opts.search).toLowerCase())) return false;
@@ -299,19 +298,21 @@ const listCommand = new Command("list")
 // ---------------------------------------------------------------------------
 
 const removeCommand = new Command("remove")
-  .description("Remove (archive) a project via ForemanDaemon")
+  .description("Archive a project through Elixir projections")
   .argument("<id>", "Project ID to remove")
   .option("--force", "Force remove even if there are active agents")
   .action(async (projectId: string, opts) => {
-    requireNodeProjectCommand("remove");
-    const client = getClient();
-
     try {
-      await client.projects.remove({
-        id: projectId,
-        force: opts.force,
-      });
-      console.log(chalk.green(`✓ Project '${projectId}' removed.`));
+      if (foremanBackendMode() === "elixir") {
+        await archiveProjectInElixir(projectId, { force: Boolean(opts.force) });
+      } else {
+        const client = getClient();
+        await client.projects.remove({
+          id: projectId,
+          force: opts.force,
+        });
+      }
+      console.log(chalk.green(`✓ Project '${projectId}' archived.`));
     } catch (err) {
       handleDaemonError(err);
     }
@@ -364,6 +365,7 @@ const editCommand = new Command("edit")
   .argument("<id>", "Project ID to edit")
   .option("--name <name>", "Project display name")
   .option("--status <status>", "Project status: active, paused, archived")
+  .option("--default-branch <branch>", "Default branch name")
   .option("--jira-url <url>", "Jira Cloud API URL (e.g., https://your-domain.atlassian.net)")
   .option("--jira-email <email>", "Jira account email")
   .option("--jira-token <token>", "Jira API token (will be encrypted)")
@@ -375,23 +377,37 @@ const editCommand = new Command("edit")
   .option("--jira-webhook-enabled", "Enable webhook-based triggers")
   .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
   .action(async (projectId: string, opts) => {
-    requireNodeProjectCommand("edit");
-    const client = getClient();
     try {
       // Build Jira config updates if any Jira options provided
       const jiraUpdates = await buildJiraUpdates(opts);
       const updates: Record<string, unknown> = {};
       if (opts.name) updates.name = opts.name;
       if (opts.status) updates.status = opts.status;
+      if (opts.defaultBranch) updates.defaultBranch = opts.defaultBranch;
       if (jiraUpdates) updates.jira = jiraUpdates;
       if (Object.keys(updates).length === 0) {
         console.log(chalk.yellow("No updates provided. Use --help to see available options."));
         return;
       }
-      await client.projects.update({
-        id: projectId,
-        updates,
-      });
+
+      if (foremanBackendMode() === "elixir") {
+        if (jiraUpdates) {
+          console.error(chalk.red("Error: Jira project settings are not part of the Elixir project edit surface."));
+          console.error(chalk.dim("  Jira transition ingestion remains available through the Elixir ExternalTriggerCommand API."));
+          process.exit(1);
+        }
+        await updateProjectInElixir(projectId, {
+          name: opts.name,
+          status: opts.status,
+          defaultBranch: opts.defaultBranch,
+        });
+      } else {
+        const client = getClient();
+        await client.projects.update({
+          id: projectId,
+          updates,
+        });
+      }
       console.log(chalk.green(`✓ Project '${projectId}' updated.`));
     } catch (err) {
       handleDaemonError(err);
@@ -403,7 +419,7 @@ const editCommand = new Command("edit")
 // ---------------------------------------------------------------------------
 
 export const projectCommand = new Command("project")
-  .description("Manage projects (Elixir register/list plus legacy-gated daemon add/remove/edit)")
+  .description("Manage Elixir-registered projects")
   .addCommand(addCommand)
   .addCommand(registerCommand)
   .addCommand(listCommand)

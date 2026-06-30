@@ -33,13 +33,15 @@ function summaryFromElixirProject(project: ElixirProject): RegisteredProjectSumm
   };
 }
 
-export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
+export async function listRegisteredProjects(opts: { includeArchived?: boolean } = {}): Promise<RegisteredProjectSummary[]> {
   if (foremanBackendMode() === "elixir") {
     const manager = new ElixirServerManager();
     const status = await manager.ensureRunning();
     const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
     const projects = await client.listProjects();
-    return projects.map(summaryFromElixirProject);
+    return projects
+      .map(summaryFromElixirProject)
+      .filter((project) => opts.includeArchived || (project.status ?? "active") !== "archived");
   }
 
   try {
@@ -125,6 +127,47 @@ export async function registerProjectInElixir(
     defaultBranch,
     status: projectStatus,
   };
+}
+
+export async function archiveProjectInElixir(projectId: string, opts: { force?: boolean } = {}): Promise<void> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const response = await client.sendCommand({
+    command_id: `project-archive-${projectId}-${randomUUID()}`,
+    command_type: "project.archive",
+    payload: {
+      project_id: projectId,
+      force: Boolean(opts.force),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
+}
+
+export async function updateProjectInElixir(
+  projectId: string,
+  updates: { name?: string; status?: string; defaultBranch?: string },
+): Promise<void> {
+  const payload: Record<string, unknown> = { project_id: projectId };
+  if (updates.name) payload.name = updates.name;
+  if (updates.status) payload.status = updates.status;
+  if (updates.defaultBranch) payload.default_branch = updates.defaultBranch;
+
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const response = await client.sendCommand({
+    command_id: `project-update-${projectId}-${randomUUID()}`,
+    command_type: "project.update",
+    payload,
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
 }
 
 export function ensureCliPostgresPool(projectPath: string): void {

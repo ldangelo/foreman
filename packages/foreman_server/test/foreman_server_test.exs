@@ -117,6 +117,75 @@ defmodule ForemanServerTest do
            }
   end
 
+  test "project update and archive commands mutate project projection" do
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:ok, %{event: %ForemanServer.Event{event_type: "ProjectRegistered"}}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project-register",
+               command_type: "project.register",
+               payload: %{
+                 project_id: "alpha",
+                 path: "/repo/alpha",
+                 status: "active",
+                 default_branch: "main",
+                 config: %{name: "Alpha"}
+               }
+             })
+
+    assert {:ok,
+            %{
+              event: %ForemanServer.Event{event_type: "ProjectUpdated"},
+              projection: projection
+            }} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project-update",
+               command_type: "project.update",
+               payload: %{
+                 project_id: "alpha",
+                 name: "Renamed",
+                 status: "paused",
+                 default_branch: "dev"
+               }
+             })
+
+    assert projection.projects["alpha"].status == "paused"
+    assert projection.projects["alpha"].default_branch == "dev"
+    assert projection.projects["alpha"].config.name == "Renamed"
+
+    assert {:ok,
+            %{
+              event: %ForemanServer.Event{event_type: "ProjectArchived"},
+              projection: projection
+            }} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project-archive",
+               command_type: "project.archive",
+               payload: %{project_id: "alpha", force: true}
+             })
+
+    assert projection.projects["alpha"].status == "archived"
+    assert projection.projects["alpha"].archived_at
+  end
+
+  test "project update/archive fail closed for unknown project" do
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:error, {:not_found, :project, "missing"}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project-update-missing",
+               command_type: "project.update",
+               payload: %{project_id: "missing", name: "Missing"}
+             })
+
+    assert {:error, {:not_found, :project, "missing"}} =
+             ForemanServer.handle_command(%{
+               command_id: "cmd-project-archive-missing",
+               command_type: "project.archive",
+               payload: %{project_id: "missing"}
+             })
+  end
+
   test "task lifecycle commands update event and projection state atomically" do
     assert :ok = Application.start(:foreman_server)
 
