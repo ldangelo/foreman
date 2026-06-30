@@ -174,7 +174,7 @@ async function fetchRunActivity(
 /**
  * Render a human-readable status line for a run's activity state.
  */
-function renderRunStatusLine(activity: RunActivityInfo): string {
+export function renderRunStatusLine(activity: RunActivityInfo): string {
   const parts: string[] = [];
 
   // Status with color coding
@@ -269,7 +269,7 @@ interface TaskProjectContext extends TaskProjectRegistration {
   client: TrpcClient;
 }
 
-function normalizeTaskIdPrefix(raw: string | null | undefined): string {
+export function normalizeTaskIdPrefix(raw: string | null | undefined): string {
   const normalized = (raw ?? "")
     .trim()
     .toLowerCase()
@@ -278,7 +278,7 @@ function normalizeTaskIdPrefix(raw: string | null | undefined): string {
   return normalized.length > 0 ? normalized : "task";
 }
 
-function allocateTaskId(projectKey: string, existingIds: Set<string>): string {
+export function allocateTaskId(projectKey: string, existingIds: Set<string>): string {
   const prefix = normalizeTaskIdPrefix(projectKey);
   for (let attempt = 0; attempt < 64; attempt += 1) {
     const candidate = `${prefix}-${randomBytes(3).toString("hex").slice(0, COMPACT_TASK_ID_SUFFIX_HEX_LENGTH)}`;
@@ -314,7 +314,7 @@ function parsePriority(input: string): number {
   }
 }
 
-function priorityLabel(priority: number): string {
+export function priorityLabel(priority: number): string {
   switch (priority) {
     case 0:
       return "critical";
@@ -331,7 +331,7 @@ function priorityLabel(priority: number): string {
   }
 }
 
-function formatTaskIdDisplay(taskId: string): string {
+export function formatTaskIdDisplay(taskId: string): string {
   return taskId.length <= 16 ? taskId : `${taskId.slice(0, 8)}…`;
 }
 
@@ -451,7 +451,7 @@ async function sendElixirTaskCommand(
   }
 }
 
-function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
+export function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
   const exact = rows.find((row) => row.id === taskIdOrPrefix);
   if (exact) {
     return exact.id;
@@ -466,7 +466,7 @@ function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
   return matches[0].id;
 }
 
-function isBackwardStatusTransition(fromStatus: string, toStatus: string): boolean {
+export function isBackwardStatusTransition(fromStatus: string, toStatus: string): boolean {
   const fromOrder = TASK_STATUS_ORDER[fromStatus] ?? 0;
   const toOrder = TASK_STATUS_ORDER[toStatus] ?? 0;
   return toOrder >= 0 && fromOrder > toOrder;
@@ -484,7 +484,7 @@ function renderColumn(
   return style(pad(value, width));
 }
 
-function colorPriority(text: string, priority: number): string {
+export function colorPriority(text: string, priority: number): string {
   switch (priority) {
     case 0:
       return chalk.red(text);
@@ -499,7 +499,7 @@ function colorPriority(text: string, priority: number): string {
   }
 }
 
-function statusChalk(status: string): string {
+export function statusChalk(status: string): string {
   switch (status) {
     case "ready":
       return chalk.green(status);
@@ -528,7 +528,7 @@ function statusChalk(status: string): string {
 /**
  * Render a PR state badge for display in task list.
  */
-function renderPrBadge(prState: PrState | undefined): string {
+export function renderPrBadge(prState: PrState | undefined): string {
   if (!prState) return chalk.dim("—");
   switch (prState.status) {
     case "none":
@@ -599,7 +599,7 @@ function printTaskTable(rows: TaskRow[], prStates?: Map<string, PrState>): void 
 /**
  * Render a run status badge for the task table.
  */
-function renderRunStatusBadge(activity: RunActivityInfo | null): string {
+export function renderRunStatusBadge(activity: RunActivityInfo | null): string {
   if (!activity) return chalk.dim("—");
 
   if (activity.isStuck) {
@@ -748,7 +748,7 @@ const IMPORTABLE_BEAD_STATUS_TO_TASK_STATUS: Record<ImportedBeadStatus, string> 
   closed: "merged",
 };
 
-function resolveBeadsImportPath(projectPath: string): string {
+export function resolveBeadsImportPath(projectPath: string): string {
   const candidates = [
     join(projectPath, ".beads", "issues.jsonl"),
     join(projectPath, ".beads", "beads.jsonl"),
@@ -765,7 +765,7 @@ function resolveBeadsImportPath(projectPath: string): string {
   );
 }
 
-function parseBeadsJsonl(jsonlPath: string): ImportedBeadRecord[] {
+export function parseBeadsJsonl(jsonlPath: string): ImportedBeadRecord[] {
   const raw = readFileSync(jsonlPath, "utf8");
   const lines = raw
     .split(/\r?\n/u)
@@ -783,7 +783,7 @@ function parseBeadsJsonl(jsonlPath: string): ImportedBeadRecord[] {
   });
 }
 
-function normalizeImportedBeadPriority(
+export function normalizeImportedBeadPriority(
   bead: ImportedBeadRecord,
 ): number {
   if (typeof bead.priority === "number") {
@@ -802,7 +802,7 @@ function normalizeImportedBeadPriority(
   return 2;
 }
 
-function normalizeImportedBeadType(bead: ImportedBeadRecord): string {
+export function normalizeImportedBeadType(bead: ImportedBeadRecord): string {
   const type = bead.type ?? bead.issue_type;
   if (typeof type === "string" && type.trim().length > 0) {
     return type;
@@ -810,12 +810,12 @@ function normalizeImportedBeadType(bead: ImportedBeadRecord): string {
   return "task";
 }
 
-function mapImportedBeadStatus(status: string | undefined): string | null {
+export function mapImportedBeadStatus(status: string | undefined): string | null {
   if (!status) return null;
   return IMPORTABLE_BEAD_STATUS_TO_TASK_STATUS[status as ImportedBeadStatus] ?? null;
 }
 
-function summarizeImportPreview(records: PreparedImportRecord[]): void {
+export function summarizeImportPreview(records: PreparedImportRecord[]): void {
   if (records.length === 0) {
     console.log(chalk.dim("No importable beads found in the JSONL export."));
     return;
