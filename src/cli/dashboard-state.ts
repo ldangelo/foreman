@@ -252,7 +252,10 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
       successRates,
       needsHumanTasks: sortNeedsHumanTasks(needsHumanTasks),
     };
-  } catch {
+  } catch (err) {
+    if (foremanBackendMode() === "elixir") {
+      throw err;
+    }
     return null;
   }
 }

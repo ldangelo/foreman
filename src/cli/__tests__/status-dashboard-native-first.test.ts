@@ -65,6 +65,7 @@ describe("native task store counts (characterization)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("FOREMAN_BACKEND", "node");
     mockBrList.mockResolvedValue([]);
     mockBrReady.mockResolvedValue([]);
     mockHasNativeTasks.mockReturnValue(false);

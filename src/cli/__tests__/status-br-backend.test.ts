@@ -106,6 +106,7 @@ describe("TRD-024: fetchStatusCounts uses native task store", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("FOREMAN_BACKEND", "node");
     MockBeadsRustClient.mockImplementation(function MockBeadsRustClientImpl(this: Record<string, unknown>) {
       this.list = mockBrList;
       this.ready = mockBrReady;

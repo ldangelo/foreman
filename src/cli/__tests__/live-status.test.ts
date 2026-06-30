@@ -250,6 +250,7 @@ const ZERO_COUNTS: StatusCounts = {
 describe("daemon-backed status helpers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.FOREMAN_BACKEND = "node";
 
     mockListRegisteredProjects.mockResolvedValue([
       { id: "proj-1", name: "test-project", path: "/mock/project/./" },
@@ -283,6 +284,10 @@ describe("daemon-backed status helpers", () => {
     mockBrReady.mockResolvedValue([]);
     mockHasNativeTasks.mockReturnValue(false);
     mockListTasksByStatus.mockReturnValue([]);
+  });
+
+  afterEach(() => {
+    delete process.env.FOREMAN_BACKEND;
   });
 
   it("fetchDaemonStatusSnapshot() matches registered projects by normalized path", async () => {
@@ -458,6 +463,15 @@ describe("daemon-backed status helpers", () => {
 // ── Tests: renderLiveStatusHeader() ─────────────────────────────────────────
 
 describe("status --all aggregation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.FOREMAN_BACKEND = "node";
+  });
+
+  afterEach(() => {
+    delete process.env.FOREMAN_BACKEND;
+  });
+
   it("warns when --all has no registered projects", async () => {
     mockListRegisteredProjects.mockResolvedValue([]);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -496,6 +510,32 @@ describe("status --all aggregation", () => {
     expect(rendered).toContain("Stuck (24h):  1");
     expect(rendered).toContain("Active Agents: 1");
     expect(rendered).toContain("Projects: one, two");
+  });
+
+  it("aggregates --all through Elixir projections in default mode without tRPC", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "one", path: "/mock/project-1" },
+      { id: "proj-2", name: "two", path: "/mock/project-2" },
+    ]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockElixirListTasks.mockResolvedValue([
+      { task_id: "task-1", project_id: "proj-1", status: "ready" },
+      { task_id: "task-2", project_id: "proj-2", status: "closed" },
+      { task_id: "task-3", project_id: "proj-2", status: "stuck" },
+    ]);
+    mockElixirListRuns.mockResolvedValue([
+      { run_id: "run-1", project_id: "proj-1", status: "running" },
+    ]);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await statusCommand.parseAsync(["node", "foreman", "--all"], { from: "node" });
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(rendered).toContain("Tasks (All Projects)");
+    expect(rendered).toContain("3");
+    expect(rendered).toContain("Active Agents: 1");
   });
 });
 
