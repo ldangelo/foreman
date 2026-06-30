@@ -86,19 +86,33 @@ Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs befo
 
 ## Dispatch Flow
 
-The following diagram shows the full lifecycle of a task from `foreman run` to merged branch (daemon is optional — shown if running):
+Default `foreman run` is Elixir-backed after cutover: the Node CLI validates options, ensures the Elixir server is running, sends a scheduler tick, and operators monitor progress through Elixir-backed projections (`foreman watch`, `foreman status --watch`, inbox/events/debug views). Elixir owns ready-task claiming, capacity, run/phase actors, recovery state, and worker launches; the Node/Pi worker process remains an execution bridge launched by Elixir.
 
 ```mermaid
 flowchart TD
-    subgraph DAEMON["foreman daemon start"]
+    A[User runs foreman run] --> B[Node CLI validates Elixir-compatible options]
+    B --> C[Ensure Elixir server running]
+    C --> D[POST /api/v1/scheduler/tick]
+    D --> E[Elixir Scheduler claims ready tasks within capacity]
+    E --> F[Elixir Run/Phase actors launch Node/Pi worker bridge]
+    F --> G[Worker streams events, heartbeats, logs, artifacts]
+    G --> H[Elixir event store + projections update]
+    H --> I[Operators monitor via foreman watch/status/inbox/debug]
+```
+
+The historical Node dispatcher flow below is retained only for explicit legacy operation with `FOREMAN_BACKEND=node`:
+
+```mermaid
+flowchart TD
+    subgraph DAEMON["FOREMAN_BACKEND=node foreman daemon start"]
         DA[Initialize PoolManager → Postgres]
         DB[Start Fastify + Unix socket: ~/.foreman/daemon.sock]
         DC[Health check endpoint responds]
         DA --> DB --> DC
     end
 
-    subgraph CLI["foreman run"]
-        A[User runs foreman run] --> B[Dispatcher.dispatch]
+    subgraph CLI["FOREMAN_BACKEND=node foreman run"]
+        A[User runs FOREMAN_BACKEND=node foreman run] --> B[Dispatcher.dispatch]
         B --> C{daemon reachable?}
         C -- No --> DAEMON_ERR[Error: start daemon first]
         C -- Yes --> D[dependency-unblocked native ready tasks]
@@ -215,11 +229,11 @@ flowchart TD
 
 | Decision | Outcome |
 |---|---|
-| **Daemon check** | `foreman run` requires daemon reachable — prompts to start if not |
+| **Daemon check** | Legacy `FOREMAN_BACKEND=node foreman run` requires daemon reachable — prompts to start if not |
 | **Backoff check** | Task recently failed/stuck → exponential delay before retry |
 | **Dependency stacking** | Task depends on open task → worktree branches from that dependency's branch |
 | **Pi vs SDK** | `pi` binary on PATH → JSONL RPC protocol; otherwise Claude SDK `query()` |
-| **Pipeline vs single** | `--pipeline` flag → 4-phase orchestration; otherwise single agent |
+| **Pipeline vs single** | Legacy Node dispatcher option; default Elixir scheduler owns dispatch policy |
 | **Dev↔QA retry** | Max 2 retries; QA feedback injected into next developer prompt |
 | **Reviewer FAIL** | CRITICAL/WARNING issues → run marked failed, task reset to open |
 | **Merge tiers T1-T4** | T1/T2 = TypeScript auto-merge; T3/T4 = AI-assisted conflict resolution |

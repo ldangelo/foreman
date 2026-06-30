@@ -555,7 +555,7 @@ export function validateWorkflowOverride(
 
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
-  .option("--max-agents <n>", "Maximum concurrent agents", "5")
+  .option("--max-agents <n>", "Maximum concurrent agents")
   .option("--model <model>", "Force a specific model (overrides FOREMAN_DEFAULT_MODEL)")
   .option("--dry-run", "Show what would be dispatched without doing it")
   .option("--no-watch", "Exit immediately after dispatching (don't monitor agents)")
@@ -575,7 +575,7 @@ export const runCommand = new Command("run")
   .option("--runtime-mode <mode>", "Runtime mode: normal|test (test uses deterministic phase-runner seams)")
   .option("--yes", "Answer yes to run confirmation prompts (for non-interactive dispatch)")
   .action(async (opts) => {
-    const maxAgents = parseInt(opts.maxAgents, 10);
+    const maxAgents = parseInt(opts.maxAgents ?? "5", 10);
     const model = opts.model as ModelSelection | undefined;
     const dryRun = opts.dryRun as boolean | undefined;
     const resume = opts.resume as boolean | undefined;
@@ -621,7 +621,7 @@ export const runCommand = new Command("run")
         console.error(chalk.red("Error: foreman run --resume uses the legacy Node recovery path and is only available with FOREMAN_BACKEND=node. Use 'foreman retry' for Elixir-backed retry operations."));
         process.exit(1);
       }
-      if (pipeline === false || workflowOverride || staggerMs !== undefined || telemetry) {
+      if (pipeline === false || workflowOverride || staggerMs !== undefined || telemetry || opts.autoDispatch === false || model || opts.maxAgents !== undefined) {
         console.error(chalk.red("Error: these foreman run dispatch-shaping options are legacy Node-only and require FOREMAN_BACKEND=node. The Elixir scheduler owns default dispatch policy."));
         process.exit(1);
       }
