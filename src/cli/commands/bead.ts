@@ -7,8 +7,10 @@
  * before delegating; all of its original flags keep working.
  */
 import { Command } from "commander";
+import chalk from "chalk";
 import { createTasksFromText, type CreateFromTextOptions } from "./create-from-text.js";
 import { printDeprecationNotice } from "./cli-output.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 
 // Re-export the shared helpers under their historical module path so existing
 // importers/tests of bead.js keep working.
@@ -38,6 +40,14 @@ export const beadCommand = new Command("bead")
       description: string,
       opts: CreateFromTextOptions,
     ) => {
+      if (foremanBackendMode() !== "node") {
+        console.error(
+          chalk.red(
+            "Error: foreman bead uses the legacy Node/beads task generator and is only available with FOREMAN_BACKEND=node. Use 'FOREMAN_BACKEND=node foreman bead ...' for explicit legacy operation.",
+          ),
+        );
+        process.exit(1);
+      }
       printDeprecationNotice("foreman bead", "foreman task create --from-text");
       await createTasksFromText(description, opts);
     },

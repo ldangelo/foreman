@@ -9,6 +9,7 @@ const nodeSummaryPath = join(coverageDir, "coverage-summary.json");
 const transitionSummaryPath = join(coverageDir, "transition-scope-summary.json");
 
 const nodeFrontendScope = [
+  "src/cli/commands/bead.ts",
   "src/cli/commands/board.ts",
   "src/cli/commands/cli-output.ts",
   "src/cli/commands/create-from-text.ts",

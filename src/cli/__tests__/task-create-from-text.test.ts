@@ -156,16 +156,21 @@ describe("foreman task create --from-text", () => {
 });
 
 describe("foreman bead (deprecated)", () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateTasksFromText.mockResolvedValue(undefined);
     mockForemanBackendMode.mockReturnValue("node");
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code ?? ""})`);
+    }) as never);
     errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
   afterEach(() => {
+    exitSpy.mockRestore();
     errSpy.mockRestore();
   });
 
@@ -193,6 +198,19 @@ describe("foreman bead (deprecated)", () => {
         dryRun: true,
       }),
     );
+  });
+
+  it("rejects default Elixir mode and requires explicit Node legacy mode", async () => {
+    mockForemanBackendMode.mockReturnValue("elixir");
+    const beadCommand = await freshBeadCommand();
+
+    await expect(
+      beadCommand.parseAsync(["Fix the login timeout bug", "--no-llm"], { from: "user" }),
+    ).rejects.toThrow("process.exit(1)");
+
+    const messages = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(messages.some((line: string) => line.includes("FOREMAN_BACKEND=node"))).toBe(true);
+    expect(mockCreateTasksFromText).not.toHaveBeenCalled();
   });
 
   it("keeps all existing bead flags registered", async () => {
