@@ -70,8 +70,8 @@ Use `npm run test:coverage:transition` for the Elixir-transition coverage gate. 
 
 Current transition gate expectations:
 
-- Node frontend/operator CLI scope line coverage >= 70%.
-- Node frontend/operator CLI scope branch coverage >= 70%.
+- Node frontend/operator CLI plus Elixir-launched Node/Pi worker-bridge scope line coverage >= 70%.
+- Node frontend/operator CLI plus Elixir-launched Node/Pi worker-bridge scope branch coverage >= 70%.
 - Elixir backend line coverage from `mix test --cover` >= 70%.
 - Elixir backend branch-site coverage >= 70%, reported from the same Mix cover HTML hit data over Elixir decision constructs (`if`/`unless`/`case`/`cond`/`with`).
 
