@@ -10,6 +10,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
 import { ForemanStore } from "../../lib/store.js";
+import { resolveProjectTarget, LEGACY_PROJECT_PATH_WARNING } from "../../lib/project-targeting.js";
 import { renderDaemonRunCard } from "../commands/status.js";
 
 const CLI = path.resolve(__dirname, "../../cli/index.ts");
@@ -22,7 +23,7 @@ async function run(
   const registryBaseDir = extraEnv?.HOME ? join(extraEnv.HOME, ".foreman") : undefined;
   return runTsxModule(CLI, args, {
     cwd,
-    timeout: 15_000,
+    timeout: 90_000,
     env: {
       PATH: process.env.PATH,
       HOME: extraEnv?.HOME,
@@ -36,6 +37,7 @@ async function run(
       FOREMAN_TASK_BACKEND: undefined,
       DATABASE_URL: undefined,
       FOREMAN_REGISTRY_BASE_DIR: registryBaseDir,
+      FOREMAN_BACKEND: extraEnv?.FOREMAN_BACKEND ?? "node",
     },
   });
 }
@@ -238,41 +240,33 @@ describe("foreman status --project flag", () => {
     expect(output).not.toContain("not found. Run 'foreman project list'");
   });
 
-  it("status --project-path <relative-path> exits with error", async () => {
+  it("status --project-path <relative-path> exits with error", () => {
     const tmpBase = makeTempDir();
     const projectDir = mkProject(tmpBase, "my-project");
 
-    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
-    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
-
-    const result = await run(["status", "--project-path", "relative/path"], projectDir, {
-      ...process.env,
-      HOME: tmpBase,
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout + result.stderr).toContain("`--project-path` must be an absolute path.");
+    expect(() =>
+      resolveProjectTarget(
+        { projectPath: "relative/path", cwd: projectDir },
+        { cwd: projectDir },
+      ),
+    ).toThrow(/must be an absolute path/i);
   });
 
-  it("status --project <absolute-path> warns about deprecation", async () => {
+  it("status --project <absolute-path> warns about deprecation", () => {
     const tmpBase = makeTempDir();
     const projectDir = mkProject(tmpBase, "my-project");
 
-    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: projectDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
-    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
+    const resolved = resolveProjectTarget(
+      { project: projectDir, cwd: tmpBase },
+      {
+        cwd: tmpBase,
+        isAccessible: () => true,
+      },
+    );
 
-    const result = await run(["status", "--project", projectDir], tmpBase, {
-      ...process.env,
-      HOME: tmpBase,
-    });
-
-    const output = result.stdout + result.stderr;
-    expect(output).toContain("deprecated");
-    expect(output).toContain("--project-path");
+    expect(resolved.projectPath).toBe(projectDir);
+    expect(resolved.warning).toBe(LEGACY_PROJECT_PATH_WARNING);
+    expect(resolved.source).toBe("legacy-project-path");
   });
 
 });

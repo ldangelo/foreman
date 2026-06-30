@@ -3,6 +3,9 @@ import chalk from "chalk";
 
 import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-factory.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
@@ -55,6 +58,104 @@ function createDaemonTaskClient(client: ReturnType<typeof createTrpcClient>, pro
     async list() { return []; },
     async close() { throw new Error("not implemented"); },
   } as ITaskClient;
+}
+
+async function createElixirRetryClient(): Promise<ElixirServerClient> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+}
+
+function elixirTaskStatus(task: Record<string, unknown>): string {
+  const status = task.status;
+  return typeof status === "string" ? status : "backlog";
+}
+
+async function retryElixirTask(
+  beadId: string,
+  opts: RetryOpts,
+  projectPath: string,
+  projectId: string,
+): Promise<number> {
+  const dryRun = opts.dryRun ?? false;
+  printDryRunNotice(dryRun);
+
+  const client = await createElixirRetryClient();
+  const task = await client.getTask(beadId);
+  if (!task || (task.project_id && task.project_id !== projectId)) {
+    console.error(chalk.red(`Bead "${beadId}" not found: Task '${beadId}' not found`));
+    return 1;
+  }
+
+  const beadStatus = elixirTaskStatus(task as unknown as Record<string, unknown>);
+  console.log(
+    chalk.bold(`Retrying bead: ${chalk.cyan(beadId)}`) +
+      (typeof task.title === "string" ? chalk.dim(` (${task.title})`) : ""),
+  );
+  console.log(`  Status: ${chalk.yellow(beadStatus)}`);
+
+  const runs = (await client.listRuns({ projectId }))
+    .filter((run) => run.task_id === beadId)
+    .sort((a, b) => String(b.run_id ?? "").localeCompare(String(a.run_id ?? "")));
+  const latestRun = runs[0] ?? null;
+
+  if (latestRun) {
+    console.log(`  Latest run: ${chalk.dim(String(latestRun.run_id ?? "(unknown)"))} status=${latestRun.status ?? "unknown"}`);
+  } else {
+    console.log(`  Latest run: ${chalk.dim("(none)")}`);
+  }
+
+  const beadResetTarget = getSeedRetryTargetStatus(beadStatus, { command: "retry", backendType: "native" });
+  const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== beadStatus;
+  const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === beadStatus;
+
+  if (!dryRun) {
+    if (beadNeedsReset) {
+      console.log(`  ${chalk.yellow("reset")} bead status: ${beadStatus} → ${beadResetTarget}`);
+      await client.sendCommand({
+        command_id: `retry-task-${beadId}-${Date.now()}`,
+        command_type: "task.update",
+        payload: { project_id: projectId, task_id: beadId, status: beadResetTarget },
+        metadata: { source: "foreman-retry" },
+      }).then((response) => {
+        if (!response.ok) throw new Error(response.error.message);
+      });
+    } else if (beadIsAlreadyRetryable) {
+      console.log(`  ${chalk.dim("ok")} bead status is already "${beadStatus}"`);
+    } else {
+      console.log(`  ${chalk.dim("skip")} bead status is terminal: ${beadStatus}`);
+    }
+  } else {
+    if (beadNeedsReset) {
+      console.log(chalk.dim(`  Would reset bead status: ${beadStatus} → ${beadResetTarget}`));
+    } else if (beadResetTarget == null) {
+      console.log(chalk.dim(`  Would leave bead status unchanged: ${beadStatus} is terminal`));
+    }
+  }
+
+  if (opts.dispatch) {
+    console.log();
+    console.log(chalk.bold("Dispatching…"));
+    if (dryRun) {
+      console.log(chalk.dim(`  Would request scheduler dispatch for ${beadId}`));
+    } else {
+      const result = await client.schedulerTick();
+      console.log(`  ${chalk.green("queued")} scheduler tick accepted`);
+      void result;
+    }
+  }
+
+  console.log();
+  if (dryRun) {
+    console.log(chalk.yellow("Dry run complete — no changes were made."));
+  } else {
+    console.log(
+      chalk.green("Done.") +
+        (opts.dispatch ? "" : chalk.dim(" Use --dispatch to immediately queue a new run.")),
+    );
+  }
+
+  return 0;
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -310,6 +411,32 @@ export const retryCommand = new Command("retry")
 
     const localStore = ForemanStore.forProject(projectPath);
     const registered = await findRegisteredProjectByPath(projectPath, { normalizePaths: true });
+
+    if (foremanBackendMode() === "elixir") {
+      if (!registered) {
+        console.error(
+          chalk.red(
+            `Project at '${projectPath}' is not registered in Elixir projections. Run 'foreman project register ${projectPath}'.`,
+          ),
+        );
+        localStore.close();
+        process.exit(1);
+        return;
+      }
+
+      try {
+        const exitCode = await retryElixirTask(beadId, opts, projectPath, registered.id);
+        localStore.close();
+        process.exit(exitCode);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(`Unexpected error: ${msg}`));
+        localStore.close();
+        process.exit(1);
+      }
+      return;
+    }
+
     const store: RetryStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(localStore);
     const { taskClient, backendType } = registered
       ? { taskClient: createDaemonTaskClient(createTrpcClient(), registered.id), backendType: "native" as const }

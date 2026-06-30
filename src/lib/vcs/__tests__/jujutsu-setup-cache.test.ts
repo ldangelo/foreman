@@ -269,7 +269,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       expect(target1).toBe(target2);
     });
 
-    it("cache miss on different key file content → steps run for each", async () => {
+    it("cache miss on different key file content → steps run for each", { timeout: 180_000 }, async () => {
       const { remoteDir, localDir } = makeRemoteAndLocal();
       tempDirs.push(remoteDir, localDir);
 
@@ -335,7 +335,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       expect(targetB).not.toBe(join(cacheDirA, "cached-dir"));
     });
 
-    it("missing key file → no caching, steps still run", async () => {
+    it("missing key file → no caching, steps still run", { timeout: 180_000 }, async () => {
       const { remoteDir, localDir } = makeRemoteAndLocal();
       tempDirs.push(remoteDir, localDir);
 

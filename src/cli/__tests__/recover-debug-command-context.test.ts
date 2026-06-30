@@ -7,6 +7,9 @@ import * as trpcClientModule from "../../lib/trpc-client.js";
 import * as projectTaskSupport from "../commands/project-task-support.js";
 import { debugCommand } from "../commands/debug.js";
 import { applyCleanReplayChanges, parseChangedFiles, recoverCommand, validateCleanReplayWorkspace } from "../commands/recover.js";
+import * as backendModeModule from "../../lib/backend-mode.js";
+import * as elixirServerManagerModule from "../../lib/elixir-server-manager.js";
+import * as elixirServerClientModule from "../../lib/elixir-server-client.js";
 
 const mockExecFileSync = vi.hoisted(() => vi.fn(() => "mock-output\n"));
 const mockExecFile = vi.hoisted(() => vi.fn());
@@ -131,6 +134,7 @@ describe("foreman debug/recover command context", () => {
       close: vi.fn(),
     };
     vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore as unknown as ForemanStore);
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("node");
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
@@ -219,6 +223,34 @@ describe("foreman debug/recover command context", () => {
     expect(ForemanStore.forProject).toHaveBeenCalledWith(canonicalPath);
     expect(mockCreateTrpcClient).toHaveBeenCalledTimes(1);
     expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "seed-1", limit: 50 });
+    expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
+  });
+
+  it("uses Elixir registered recover/debug context without creating tRPC in default Elixir mode", async () => {
+    const canonicalPath = "/canonical/project";
+    const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
+    const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
+    const listRuns = vi.fn().mockResolvedValue([
+      { run_id: "run-elixir", project_id: "proj-1", task_id: "seed-1", status: "running", created_at: "2026-04-25T00:00:00.000Z" },
+    ]);
+    const listInbox = vi.fn().mockResolvedValue([]);
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("elixir");
+    vi.spyOn(elixirServerManagerModule, "ElixirServerManager").mockImplementation(function MockManager() {
+      return { ensureRunning: vi.fn().mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 }) } as unknown as elixirServerManagerModule.ElixirServerManager;
+    });
+    vi.spyOn(elixirServerClientModule, "ElixirServerClient").mockImplementation(function MockClient() {
+      return { listRuns, listInbox } as unknown as elixirServerClientModule.ElixirServerClient;
+    });
+
+    resolveRepoRootProjectPathMock.mockResolvedValue(canonicalPath);
+    listRegisteredProjectsMock.mockResolvedValue([{ id: "proj-1", name: "foreman", path: canonicalPath }]);
+
+    await runCommand(recoverCommand, ["seed-1", "--raw", "--reason", "stale-blocked"]);
+    await runCommand(debugCommand, ["seed-1", "--raw"]);
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(listRuns).toHaveBeenCalledWith({ projectId: "proj-1" });
+    expect(listInbox).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-elixir", limit: 100 });
     expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
   });
 

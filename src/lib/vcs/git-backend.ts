@@ -54,7 +54,7 @@ export class GitBackend implements VcsBackend {
       const { stdout } = await execFileAsync("git", args, {
         cwd,
         maxBuffer: 10 * 1024 * 1024,
-        timeout: 60_000,
+        timeout: 120_000,
         env: {
           ...process.env,
           GIT_EDITOR: "true",

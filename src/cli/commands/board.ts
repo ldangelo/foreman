@@ -95,7 +95,7 @@ function storeStatusToBoardStatus(status: string): BoardStatus | null {
  * Convert a user-entered status (underscore or hyphen variants) to a store-valid status.
  * Handles in_progress → in-progress and needs_attention → blocked conversions.
  */
-function normalizeStatusForStore(status: string): string {
+export function normalizeStatusForStore(status: string): string {
   const boardStatus = storeStatusToBoardStatus(status);
   if (boardStatus) {
     return boardStatusToStoreStatus(boardStatus);
@@ -237,7 +237,9 @@ async function resolveBoardContext(projectPath: string): Promise<BoardContext> {
   const resolvedProjectPath = resolve(projectPath);
   const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
   if (!project) {
-    throw new Error(`Project at '${projectPath}' is not registered.`);
+    throw new Error(
+      `Project at '${projectPath}' is not registered in Elixir projections. Run 'foreman project register ${resolvedProjectPath}'.`,
+    );
   }
 
   if (foremanBackendMode() === "elixir") {
@@ -467,7 +469,7 @@ const HIDE_CURSOR = "\x1b[?25l";
 const SHOW_CURSOR = "\x1b[?25h";
 
 /** Get the terminal width. */
-function getTerminalWidth(): number {
+export function getTerminalWidth(): number {
   return process.stdout.columns || 80;
 }
 
@@ -490,7 +492,7 @@ const MAX_VISIBLE_PER_COL = 5;
 const COLUMN_GAP = 1;
 const h = createElement;
 
-function getVisibleStatuses(
+export function getVisibleStatuses(
   terminalWidth: number,
   selectedColIndex: number,
 ): readonly BoardStatus[] {

@@ -234,6 +234,9 @@ describe("foreman reset — native backend", () => {
     mockCreateTaskClient.mockResolvedValue({ taskClient: nativeTaskClient, backendType: "native" });
     mockListRegisteredProjects.mockResolvedValue([]);
     localStore.getProjectByPath.mockReturnValue({ id: "proj-native", path: "/mock/project" });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    process.exitCode = undefined;
   });
 
   afterEach(() => {
@@ -251,6 +254,37 @@ describe("foreman reset — native backend", () => {
     expect(nativeTaskClient.show).toHaveBeenCalledWith("task-actual");
     expect(nativeTaskClient.show).not.toHaveBeenCalledWith("task-trap");
     expect(mergeQueue.list).toHaveBeenCalled();
+  });
+
+  it("reports when there are no active runs to reset", async () => {
+    localStore.getRunsByStatus.mockResolvedValue([]);
+
+    await runReset(["--project-path", "/mock/project"]);
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("No active runs to reset.");
+    expect(rendered).toContain("Summary:");
+    expect(nativeTaskClient.resetToReady).not.toHaveBeenCalled();
+  });
+
+  it("prints the dry-run notice without mutating native runs", async () => {
+    await runReset(["--project-path", "/mock/project", "--dry-run"]);
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("dry run");
+    expect(rendered).toContain("Summary:");
+    expect(localStore.updateRun).not.toHaveBeenCalled();
+    expect(mockDeleteWorkerConfigFile).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when no project is registered for the resolved path", async () => {
+    localStore.getProjectByPath.mockReturnValue(null as any);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as never);
+
+    await runReset(["--project-path", "/mock/project"]);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("No project registered for this path");
   });
 
 });

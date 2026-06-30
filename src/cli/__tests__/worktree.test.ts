@@ -470,6 +470,8 @@ describe("cleanWorktrees()", () => {
 describe("worktree command targeting", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
   it("resolves registered worktree list to the canonical project path from a non-canonical cwd", async () => {
@@ -544,6 +546,56 @@ describe("worktree command targeting", () => {
       localStoreSpy.mockRestore();
       postgresStoreSpy.mockRestore();
     }
+  });
+
+  it("prints JSON for worktree list output", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStore = new ForemanStore() as any;
+    vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+    projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree({ branch: "foreman/seed-abc" })] as never);
+    localStore.getRunsForSeed.mockReturnValue([makeRun({ seed_id: "seed-abc" })]);
+
+    await worktreeListCommandAction({ json: true });
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain('"seedId": "seed-abc"');
+  });
+
+  it("prints friendly messages for empty list and empty clean results", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStore = new ForemanStore() as any;
+    vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+    projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([]);
+    mockListWorkspaces.mockResolvedValue([] as never);
+
+    await worktreeListCommandAction({});
+    await worktreeCleanCommandAction({});
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("No foreman worktrees found.");
+    expect(rendered).toContain("No foreman worktrees to clean.");
+  });
+
+  it("prints dry-run clean summaries including wouldRemove and errors", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStore = new ForemanStore() as any;
+    vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+    projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([]);
+    mockListWorkspaces.mockResolvedValue([
+      makeWorktree({ path: "/tmp/project/.foreman-worktrees/seed-done", branch: "foreman/seed-done" }),
+    ] as never);
+    localStore.getRunsForSeed.mockReturnValue([makeRun({ seed_id: "seed-done", status: "completed", worktree_path: "/tmp/project/.foreman-worktrees/seed-done" })]);
+
+    await worktreeCleanCommandAction({ dryRun: true });
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("dry-run mode");
+    expect(rendered).toContain("Worktrees that would be removed:");
+    expect(rendered).toContain("Would remove 1 worktree(s).");
   });
 
   it("keeps outside-a-repo worktree clean behavior unchanged", async () => {

@@ -3,12 +3,13 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
-const { mockListRegisteredProjects, mockCreateTrpcClient, mockEnsureRunning, mockListTasks } = vi.hoisted(() => {
+const { mockListRegisteredProjects, mockCreateTrpcClient, mockEnsureRunning, mockListTasks, mockGetTask } = vi.hoisted(() => {
   const mockListRegisteredProjects = vi.fn();
   const mockCreateTrpcClient = vi.fn();
   const mockEnsureRunning = vi.fn();
   const mockListTasks = vi.fn();
-  return { mockListRegisteredProjects, mockCreateTrpcClient, mockEnsureRunning, mockListTasks };
+  const mockGetTask = vi.fn();
+  return { mockListRegisteredProjects, mockCreateTrpcClient, mockEnsureRunning, mockListTasks, mockGetTask };
 });
 
 vi.mock("../commands/project-task-support.js", () => ({
@@ -27,11 +28,11 @@ vi.mock("../../lib/elixir-server-manager.js", () => ({
 
 vi.mock("../../lib/elixir-server-client.js", () => ({
   ElixirServerClient: vi.fn().mockImplementation(function MockElixirServerClient() {
-    return { listTasks: mockListTasks };
+    return { listTasks: mockListTasks, getTask: mockGetTask };
   }),
 }));
 
-import { applyBoardTaskUpdate, loadBoardTasks, pollBoardInboxTaskUpdates, type BoardTask } from "../commands/board.js";
+import { applyBoardTaskUpdate, loadBoardTask, loadBoardTaskNotes, loadBoardTasks, pollBoardInboxTaskUpdates, refreshBoardTasksById, type BoardTask } from "../commands/board.js";
 
 describe("foreman board command context", () => {
   const tempDirs: string[] = [];
@@ -48,6 +49,7 @@ describe("foreman board command context", () => {
     mockCreateTrpcClient.mockReset();
     mockEnsureRunning.mockReset();
     mockListTasks.mockReset();
+    mockGetTask.mockReset();
     process.env.FOREMAN_BACKEND = "node";
   });
 
@@ -90,7 +92,7 @@ describe("foreman board command context", () => {
     });
 
     await expect(loadBoardTasks(resolve(projectDir))).rejects.toThrow(
-      `Project at '${resolve(projectDir)}' is not registered.`,
+      `Project at '${resolve(projectDir)}' is not registered in Elixir projections. Run 'foreman project register ${resolve(projectDir)}'.`,
     );
 
     expect(mockListRegisteredProjects).toHaveBeenCalledOnce();
@@ -114,6 +116,140 @@ describe("foreman board command context", () => {
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     expect(mockListTasks).toHaveBeenCalledOnce();
     expect(tasks.get("ready")?.map((task) => task.id)).toEqual(["task-1"]);
+  });
+
+  it("fails closed when the Elixir board server is not running", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: false, url: "http://127.0.0.1:4766", pid: 1 });
+
+    await expect(loadBoardTasks(projectDir)).rejects.toThrow("Elixir server is not running. Start it with 'foreman server start'.");
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+  });
+
+  it("loads a single board task through node tRPC", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    const get = vi.fn().mockResolvedValue({ id: "task-1", title: "Node task", status: "ready", type: "task", priority: 2, description: null, external_id: null, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z", approved_at: null, closed_at: null, run_id: null });
+    mockCreateTrpcClient.mockReturnValue({ tasks: { list: vi.fn(), get, listNotes: vi.fn() } });
+
+    const task = await loadBoardTask(projectDir, "task-1");
+
+    expect(get).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-1" });
+    expect(task?.id).toBe("task-1");
+    expect(task?.title).toBe("Node task");
+  });
+
+  it("loads a single board task through Elixir getTask and enforces project match", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockGetTask.mockResolvedValue({ task_id: "task-1", project_id: "proj-1", title: "Elixir task", status: "ready" });
+
+    const task = await loadBoardTask(projectDir, "task-1");
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(mockGetTask).toHaveBeenCalledWith("task-1");
+    expect(task?.id).toBe("task-1");
+  });
+
+  it("returns null for an Elixir task from a different project", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockGetTask.mockResolvedValue({ task_id: "task-1", project_id: "proj-2", title: "Other project task", status: "ready" });
+
+    await expect(loadBoardTask(projectDir, "task-1")).resolves.toBeNull();
+  });
+
+  it("loads board task notes through node tRPC and restores oldest-first order", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    const listNotes = vi.fn().mockResolvedValue([
+      { id: "note-2", created_at: "2026-01-02T00:00:00.000Z", phase: "qa", kind: "progress", author: "foreman", body: "second" },
+      { id: "note-1", created_at: "2026-01-01T00:00:00.000Z", phase: "developer", kind: "progress", author: "foreman", body: "first" },
+    ]);
+    mockCreateTrpcClient.mockReturnValue({ tasks: { list: vi.fn(), get: vi.fn(), listNotes } });
+
+    const notes = await loadBoardTaskNotes(projectDir, "task-1");
+
+    expect(listNotes).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-1", limit: 10, newestFirst: true });
+    expect(notes.map((note) => note.id)).toEqual(["note-1", "note-2"]);
+  });
+
+  it("loads board task notes from Elixir annotations", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockGetTask.mockResolvedValue({
+      task_id: "task-1",
+      project_id: "proj-1",
+      annotations: [
+        { created_at: "2026-01-01T00:00:00.000Z", author: "alice", body: "first" },
+        { created_at: "2026-01-02T00:00:00.000Z", author: "bob", body: "second" },
+      ],
+    });
+
+    const notes = await loadBoardTaskNotes(projectDir, "task-1");
+
+    expect(notes).toEqual([
+      { id: "task-1-annotation-0", created_at: "2026-01-01T00:00:00.000Z", phase: null, kind: "note", author: "alice", body: "first" },
+      { id: "task-1-annotation-1", created_at: "2026-01-02T00:00:00.000Z", phase: null, kind: "note", author: "bob", body: "second" },
+    ]);
+  });
+
+  it("returns Elixir annotations even when the task row reports a different project", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockGetTask.mockResolvedValue({
+      task_id: "task-1",
+      project_id: "proj-2",
+      annotations: [{ created_at: "2026-01-03T00:00:00.000Z", author: "eve", body: "cross-project annotation" }],
+    });
+
+    await expect(loadBoardTaskNotes(projectDir, "task-1")).resolves.toEqual([
+      { id: "task-1-annotation-0", created_at: "2026-01-03T00:00:00.000Z", phase: null, kind: "note", author: "eve", body: "cross-project annotation" },
+    ]);
+  });
+
+  it("returns an empty note list when the Elixir task is missing", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "registered-project", path: projectDir }]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockGetTask.mockResolvedValue(null);
+
+    await expect(loadBoardTaskNotes(projectDir, "task-1")).resolves.toEqual([]);
   });
 });
 
@@ -298,6 +434,22 @@ describe("board inbox-driven task updates", () => {
     expect(result).toEqual({ taskIds: [], newestId: "msg-1" });
   });
 
+  it("returns a null newest cursor for an empty node inbox", async () => {
+    const { projectDir } = setupProject();
+    const runGet = vi.fn();
+    mockCreateTrpcClient.mockReturnValue({
+      mail: {
+        listGlobal: vi.fn().mockResolvedValue([]),
+      },
+      runs: { get: runGet },
+    });
+
+    const result = await pollBoardInboxTaskUpdates(projectDir, null);
+
+    expect(result).toEqual({ taskIds: [], newestId: null });
+    expect(runGet).not.toHaveBeenCalled();
+  });
+
   it("processes first messages after an empty inbox has already been seeded", async () => {
     const { projectDir } = setupProject();
     const runGet = vi.fn().mockResolvedValueOnce({ id: "run-1", seed_id: "task-1" });
@@ -338,6 +490,62 @@ describe("board inbox-driven task updates", () => {
     expect(runGet).toHaveBeenCalledWith({ runId: "run-3" });
   });
 
+  it("deduplicates task ids and ignores runs without seed or bead ids", async () => {
+    const { projectDir } = setupProject();
+    const runGet = vi.fn()
+      .mockResolvedValueOnce({ id: "run-2", seed_id: "task-2" })
+      .mockResolvedValueOnce({ id: "run-3", bead_id: "task-2" })
+      .mockResolvedValueOnce({ id: "run-4" });
+    mockCreateTrpcClient.mockReturnValue({
+      mail: {
+        listGlobal: vi.fn().mockResolvedValue([
+          { id: "msg-1", run_id: "run-1", created_at: "2026-01-01T00:00:00Z" },
+          { id: "msg-2", run_id: "run-2", created_at: "2026-01-01T00:00:01Z" },
+          { id: "msg-3", run_id: "run-3", created_at: "2026-01-01T00:00:02Z" },
+          { id: "msg-4", run_id: "run-4", created_at: "2026-01-01T00:00:03Z" },
+        ]),
+      },
+      runs: { get: runGet },
+    });
+
+    const result = await pollBoardInboxTaskUpdates(projectDir, "msg-1");
+
+    expect(result).toEqual({ taskIds: ["task-2"], newestId: "msg-4" });
+  });
+
+  it("processes all rows when the last-seen cursor is missing and skips rows without run ids", async () => {
+    const { projectDir } = setupProject();
+    const runGet = vi.fn()
+      .mockResolvedValueOnce({ id: "run-1", seed_id: "task-1" })
+      .mockResolvedValueOnce({ id: "run-3", bead_id: "task-3" });
+    mockCreateTrpcClient.mockReturnValue({
+      mail: {
+        listGlobal: vi.fn().mockResolvedValue([
+          { id: "msg-1", run_id: "run-1", created_at: "2026-01-01T00:00:00Z" },
+          { id: "msg-2", run_id: "", created_at: "2026-01-01T00:00:01Z" },
+          { id: "msg-3", run_id: "run-3", created_at: "2026-01-01T00:00:02Z" },
+        ]),
+      },
+      runs: { get: runGet },
+    });
+
+    const result = await pollBoardInboxTaskUpdates(projectDir, "missing-msg");
+
+    expect(result).toEqual({ taskIds: ["task-1", "task-3"], newestId: "msg-3" });
+    expect(runGet).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns an Elixir no-op result for inbox polling", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const { projectDir } = setupProject();
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+
+    const result = await pollBoardInboxTaskUpdates(projectDir, "msg-9");
+
+    expect(result).toEqual({ taskIds: [], newestId: "msg-9" });
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+  });
+
   it("updates only the changed task in the board map", () => {
     const backlogTask: BoardTask = {
       id: "task-1",
@@ -364,5 +572,94 @@ describe("board inbox-driven task updates", () => {
 
     expect(updated.get("backlog")).toEqual([]);
     expect(updated.get("needs_attention")?.map((task) => task.id)).toEqual(["task-1"]);
+  });
+
+  it("re-sorts the destination column when applying a board task update", () => {
+    const readyOld: BoardTask = {
+      id: "task-old",
+      title: "Old",
+      description: null,
+      type: "task",
+      priority: 3,
+      status: "ready",
+      external_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      approved_at: null,
+      closed_at: null,
+    };
+    const readyHigh: BoardTask = {
+      id: "task-high",
+      title: "High",
+      description: null,
+      type: "task",
+      priority: 0,
+      status: "ready",
+      external_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-02T00:00:00Z",
+      approved_at: null,
+      closed_at: null,
+    };
+    const backlogTask: BoardTask = {
+      id: "task-backlog",
+      title: "Backlog",
+      description: null,
+      type: "task",
+      priority: 2,
+      status: "backlog",
+      external_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-03T00:00:00Z",
+      approved_at: null,
+      closed_at: null,
+    };
+    const map = new Map([
+      ["backlog", [backlogTask]],
+      ["ready", [readyOld, readyHigh]],
+      ["in_progress", []],
+      ["needs_attention", []],
+      ["closed", []],
+    ] as Array<["backlog" | "ready" | "in_progress" | "needs_attention" | "closed", BoardTask[]]>);
+
+    const updated = applyBoardTaskUpdate(map, { ...backlogTask, status: "ready", priority: 1 }, "task-backlog", "priority");
+
+    expect(updated.get("backlog")).toEqual([]);
+    expect(updated.get("ready")?.map((task) => task.id)).toEqual(["task-high", "task-backlog", "task-old"]);
+  });
+
+  it("removes a task from the board when a refresh resolves to null", async () => {
+    const { projectDir } = setupProject();
+    mockCreateTrpcClient.mockReturnValue({
+      tasks: {
+        list: vi.fn(),
+        get: vi.fn().mockResolvedValue(null),
+      },
+    });
+
+    const backlogTask: BoardTask = {
+      id: "task-1",
+      title: "Task",
+      description: null,
+      type: "bug",
+      priority: 2,
+      status: "backlog",
+      external_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      approved_at: null,
+      closed_at: null,
+    };
+    const map = new Map([
+      ["backlog", [backlogTask]],
+      ["ready", []],
+      ["in_progress", []],
+      ["needs_attention", []],
+      ["closed", []],
+    ] as Array<["backlog" | "ready" | "in_progress" | "needs_attention" | "closed", BoardTask[]]>);
+
+    const updated = await refreshBoardTasksById(projectDir, map, ["task-1"], "updated");
+
+    expect(updated.get("backlog")).toEqual([]);
   });
 });

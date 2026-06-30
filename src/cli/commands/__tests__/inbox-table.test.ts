@@ -6,10 +6,18 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  adaptDaemonMessage,
+  adaptDaemonRun,
+  adaptPostgresEvent,
+  extractBodyFields,
+  formatEventSummary,
   formatMessageTable,
+  formatPipelineEvent,
   parseMessageBody,
   renderMessageTable,
+  selectRecentMessages,
   truncate,
+  wrapText,
   type TableRow,
 } from "../inbox.js";
 
@@ -73,12 +81,209 @@ describe("truncate", () => {
     expect(truncate("hello world this is long", 10)).toBe("hello wor…");
   });
 
+  it("prefers a nearby word boundary when truncating", () => {
+    expect(truncate("hello world again", 12)).toBe("hello world…");
+  });
+
+  it("returns empty string for non-positive maxLen", () => {
+    expect(truncate("hello", 0)).toBe("");
+  });
+
+  it("returns a single ellipsis for tiny widths", () => {
+    expect(truncate("hello", 1)).toBe("…");
+    expect(truncate("hello", 3)).toBe("…");
+  });
+
   it("handles exact-length strings", () => {
     expect(truncate("exactly10c", 10)).toBe("exactly10c");
   });
 
   it("handles empty string", () => {
     expect(truncate("", 10)).toBe("");
+  });
+});
+
+describe("wrapText", () => {
+  it("preserves short lines unchanged", () => {
+    expect(wrapText("short line", 20)).toBe("short line");
+  });
+
+  it("wraps long lines on word boundaries", () => {
+    expect(wrapText("alpha beta gamma delta", 10)).toBe("alpha\nbeta\ngamma\ndelta");
+  });
+
+  it("forces breaks when no spaces exist", () => {
+    expect(wrapText("abcdefghijkl", 5)).toBe("abcde\nfghij\nkl");
+  });
+});
+
+describe("extractBodyFields", () => {
+  it("prefers argsPreview when present", () => {
+    const result = extractBodyFields(JSON.stringify({ kind: "tool", tool: "bash", argsPreview: "npm test", message: "ignored" }));
+    expect(result).toEqual({ kind: "tool", tool: "bash", args: "npm test" });
+  });
+
+  it("falls back through message then body", () => {
+    expect(extractBodyFields(JSON.stringify({ kind: "note", tool: "read", message: "hello" }))).toEqual({ kind: "note", tool: "read", args: "hello" });
+    expect(extractBodyFields(JSON.stringify({ kind: "note", tool: "read", body: "raw body" }))).toEqual({ kind: "note", tool: "read", args: "raw body" });
+  });
+});
+
+describe("selectRecentMessages", () => {
+  it("returns the last N messages in order", () => {
+    const messages = [
+      { id: "m1" },
+      { id: "m2" },
+      { id: "m3" },
+    ] as Array<any>;
+
+    expect(selectRecentMessages(messages, 2).map((msg) => msg.id)).toEqual(["m2", "m3"]);
+  });
+
+  it("returns all messages when limit exceeds length", () => {
+    const messages = [{ id: "m1" }, { id: "m2" }] as Array<any>;
+    expect(selectRecentMessages(messages, 10).map((msg) => msg.id)).toEqual(["m1", "m2"]);
+  });
+});
+
+describe("daemon adapters", () => {
+  it("adapts daemon messages and preserves read/deleted fields", () => {
+    const msg = adaptDaemonMessage({
+      id: "msg-1",
+      run_id: "run-1",
+      sender_agent_type: "developer",
+      recipient_agent_type: "foreman",
+      subject: "phase-complete",
+      body: "{}",
+      read: 1,
+      created_at: "2026-01-01T00:00:00.000Z",
+      deleted_at: "2026-01-02T00:00:00.000Z",
+    });
+
+    expect(msg).toEqual({
+      id: "msg-1",
+      run_id: "run-1",
+      sender_agent_type: "developer",
+      recipient_agent_type: "foreman",
+      subject: "phase-complete",
+      body: "{}",
+      read: 1,
+      created_at: "2026-01-01T00:00:00.000Z",
+      deleted_at: "2026-01-02T00:00:00.000Z",
+    });
+  });
+
+  it("adapts daemon runs across success/failure/cancelled fallback statuses", () => {
+    const successRun = adaptDaemonRun({
+      id: "run-1",
+      bead_id: "task-1",
+      status: "success",
+      branch: "foreman/task-1",
+      queued_at: "2026-01-01T00:00:00.000Z",
+      started_at: "2026-01-01T00:01:00.000Z",
+      finished_at: "2026-01-01T00:02:00.000Z",
+      created_at: "2026-01-01T00:00:00.000Z",
+    });
+    const cancelledRun = adaptDaemonRun({
+      id: "run-2",
+      bead_id: "task-2",
+      status: "cancelled",
+      branch: "foreman/task-2",
+      queued_at: "2026-01-01T00:00:00.000Z",
+      started_at: null,
+      finished_at: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+    });
+    const unknownRun = adaptDaemonRun({
+      id: "run-3",
+      bead_id: "task-3",
+      status: "mystery",
+      branch: "foreman/task-3",
+      queued_at: "2026-01-01T00:00:00.000Z",
+      started_at: null,
+      finished_at: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(successRun.status).toBe("success");
+    expect(successRun.agent_type).toBe("daemon");
+    expect(successRun.worktree_path).toBeNull();
+    expect(cancelledRun.status).toBe("cancelled");
+    expect(cancelledRun.session_key).toBeNull();
+    expect(unknownRun.status).toBe("mystery");
+  });
+});
+
+describe("pipeline event formatting", () => {
+  it("formats phase and dispatch event summaries from structured details", () => {
+    expect(formatEventSummary("phase-start", { phase: "developer" })).toBe("Start: developer");
+    expect(formatEventSummary("phase-complete", { phase: "qa" })).toBe("Complete: qa");
+    expect(formatEventSummary("dispatch", { bead_id: "task-1" })).toBe("Dispatch: task-1");
+  });
+
+  it("falls back through known event detail keys and raw event type", () => {
+    expect(formatEventSummary("pr-created", { pr_number: 42 })).toBe("PR #42 created");
+    expect(formatEventSummary("stuck", { seedId: "task-9" })).toBe("Stuck: task-9");
+    expect(formatEventSummary("merge-queue-fallback", { bead_id: "task-8" })).toBe("merge-queue-fallback: task-8");
+    expect(formatEventSummary("merge-cleanup-fallback", { bead_id: "task-7" })).toBe("merge-cleanup-fallback: task-7");
+    expect(formatEventSummary("unknown-event", { bead_id: "task-2" })).toBe("unknown-event: task-2");
+    expect(formatEventSummary("unknown-event", { seedId: "task-3" })).toBe("unknown-event: task-3");
+    expect(formatEventSummary("unknown-event", null)).toBe("unknown-event");
+  });
+
+  it("formats full pipeline event lines with timestamps and icons", () => {
+    const line = formatPipelineEvent({
+      id: "evt-1",
+      runId: "run-1",
+      eventType: "merge",
+      details: { bead_id: "task-3" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(line).toContain("merge");
+    expect(line).toContain("Merged: task-3");
+    expect(line).toMatch(/^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\]/);
+  });
+
+  it("uses the default bullet icon for unknown pipeline event types", () => {
+    const line = formatPipelineEvent({
+      id: "evt-unknown",
+      runId: "run-1",
+      eventType: "unknown-event",
+      details: { seedId: "task-3" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(line).toContain("] · unknown-event — unknown-event: task-3");
+  });
+
+  it("adapts Postgres events from both JSON strings and object payloads", () => {
+    const fromString = adaptPostgresEvent({
+      id: "evt-2",
+      run_id: "run-2",
+      event_type: "fail",
+      payload: JSON.stringify({ seedId: "task-7" }),
+      created_at: "2026-01-01T00:00:00.000Z",
+    });
+    const fromObject = adaptPostgresEvent({
+      id: "evt-3",
+      run_id: null,
+      event_type: "phase-complete",
+      payload: { phase: "reviewer" },
+      created_at: new Date("2026-01-01T00:01:00.000Z"),
+    });
+    const fromScalar = adaptPostgresEvent({
+      id: "evt-4",
+      run_id: "run-4",
+      event_type: "dispatch",
+      payload: 7,
+      created_at: "2026-01-01T00:02:00.000Z",
+    });
+
+    expect(fromString).toMatchObject({ runId: "run-2", eventType: "fail", details: { seedId: "task-7" } });
+    expect(fromObject).toMatchObject({ runId: null, eventType: "phase-complete", details: { phase: "reviewer" } });
+    expect(fromObject.createdAt).toBe("2026-01-01T00:01:00.000Z");
+    expect(fromScalar).toMatchObject({ runId: "run-4", eventType: "dispatch", details: null });
   });
 });
 

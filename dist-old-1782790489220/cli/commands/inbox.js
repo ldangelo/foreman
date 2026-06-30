@@ -1,0 +1,1391 @@
+/**
+ * `foreman inbox` — View the Postgres message inbox for agents in a pipeline run.
+ *
+ * Options:
+ *   --agent <name>   Filter to a specific agent/role (default: show all)
+ *   --run <id>       Filter to a specific run ID (default: latest run)
+ *   --watch          Poll every 2s for new messages, show only new ones
+ *   --unread         Show only unread messages
+ *   --limit <n>      Max messages to show (default: 50)
+ *   --ack            Mark shown messages as read
+ */
+import { Command } from "commander";
+import chalk from "chalk";
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { ForemanStore } from "../../lib/store.js";
+import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, ensureCliPostgresPool } from "./project-task-support.js";
+async function createElixirInboxClient() {
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    return new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+}
+// ── Pipeline event formatting ──────────────────────────────────────────────
+const PIPELINE_EVENT_ICONS = {
+    "phase-start": "▶",
+    "phase-complete": "✓",
+    "dispatch": "→",
+    "claim": "◈",
+    "complete": "✓",
+    "fail": "✗",
+    "merge": "⚡",
+    "pr-created": "⎇",
+    "merge-queue-enqueue": "⏳",
+    "merge-queue-dequeue": "▶",
+    "merge-queue-resolve": "✓",
+    "merge-queue-fallback": "⚠",
+    "merge-cleanup-fallback": "⚠",
+    "conflict": "⚠",
+    "test-fail": "✗",
+    "stuck": "⚠",
+};
+export function formatPipelineEvent(event) {
+    const ts = formatTimestamp(event.createdAt);
+    const icon = PIPELINE_EVENT_ICONS[event.eventType] ?? "·";
+    const summary = formatEventSummary(event.eventType, event.details);
+    return `[${ts}] ${icon} ${event.eventType} — ${summary}`;
+}
+export function formatEventSummary(eventType, details) {
+    if (!details)
+        return eventType;
+    switch (eventType) {
+        case "phase-start":
+        case "phase-complete":
+            return details.phase ? `${eventType === "phase-start" ? "Start" : "Complete"}: ${details.phase}` : eventType;
+        case "dispatch":
+            return details.bead_id ? `Dispatch: ${details.bead_id}` : "Dispatch";
+        case "complete":
+            return details.seedId ? `Complete: ${details.seedId}` : "Complete";
+        case "fail":
+            return details.seedId ? `Failed: ${details.seedId}` : "Failed";
+        case "merge":
+            return details.bead_id ? `Merged: ${details.bead_id}` : "Merged";
+        case "pr-created":
+            return details.pr_number ? `PR #${details.pr_number} created` : "PR created";
+        case "merge-queue-enqueue":
+        case "merge-queue-dequeue":
+        case "merge-queue-resolve":
+        case "merge-queue-fallback":
+        case "merge-cleanup-fallback":
+            return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
+        case "conflict":
+        case "test-fail":
+            return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
+        case "stuck":
+            return details.seedId ? `Stuck: ${details.seedId}` : "Stuck";
+        default:
+            return details.bead_id ? `${eventType}: ${details.bead_id}` :
+                details.seedId ? `${eventType}: ${details.seedId}` : eventType;
+    }
+}
+export function adaptPostgresEvent(row) {
+    const payload = typeof row.payload === "string"
+        ? JSON.parse(row.payload)
+        : row.payload;
+    return {
+        id: row.id,
+        runId: row.run_id,
+        eventType: row.event_type,
+        details: payload && typeof payload === "object" ? payload : null,
+        createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    };
+}
+async function fetchPostgresEvents(adapter, projectId, options) {
+    const rows = options.runId
+        ? await adapter.listPipelineEventsForRun(options.runId, options.limit)
+        : options.all
+            ? await adapter.listProjectPipelineEvents(projectId, options.limit)
+            : [];
+    return rows.map(adaptPostgresEvent);
+}
+async function fetchDaemonEvents(daemon, options) {
+    if (daemon.backend === "elixir") {
+        const rows = await daemon.client.listEvents({
+            projectId: daemon.projectId,
+            runId: options.all ? undefined : options.runId,
+            limit: 1000,
+        });
+        return rows
+            .map((row) => ({
+            id: String(row.event_id ?? `${row.run_id ?? "run"}-${row.event_type ?? row.type ?? "event"}`),
+            runId: row.run_id ? String(row.run_id) : null,
+            eventType: String(row.event_type ?? row.type ?? "event"),
+            details: row.payload && typeof row.payload === "object" ? row.payload : null,
+            createdAt: String(row.occurred_at ?? row.created_at ?? new Date().toISOString()),
+        }))
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+            .slice(0, options.limit);
+    }
+    if (options.all) {
+        const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 });
+        const eventLists = await Promise.all(runs.map((run) => daemon.client.runs.listEvents({ runId: run.id })));
+        return eventLists
+            .flat()
+            .map((row) => ({
+            id: row.id,
+            runId: row.run_id,
+            eventType: row.event_type,
+            details: row.details ? JSON.parse(row.details) : null,
+            createdAt: row.created_at,
+        }))
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+            .slice(0, options.limit);
+    }
+    if (!options.runId)
+        return [];
+    const rows = await daemon.client.runs.listEvents({ runId: options.runId });
+    return rows
+        .map((row) => ({
+        id: row.id,
+        runId: row.run_id,
+        eventType: row.event_type,
+        details: row.details ? JSON.parse(row.details) : null,
+        createdAt: row.created_at,
+    }))
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, options.limit);
+}
+// ── Formatting helpers ────────────────────────────────────────────────────────
+/**
+ * Get the terminal width for output wrapping.
+ * Falls back to 80 columns when stdout is not a TTY.
+ */
+export function getTerminalWidth() {
+    return process.stdout.columns || 80;
+}
+/**
+ * Wrap text to fit within a maximum width, breaking at word boundaries.
+ * Preserves existing newlines and indents continuation lines.
+ */
+export function wrapText(text, maxWidth) {
+    const lines = text.split("\n");
+    return lines
+        .map((line) => {
+        if (line.length <= maxWidth)
+            return line;
+        // Word wrap: break at maxWidth, then continue at indent
+        let result = "";
+        let remaining = line;
+        while (remaining.length > maxWidth) {
+            // Find last space before maxWidth
+            const slice = remaining.slice(0, maxWidth);
+            const lastSpace = slice.lastIndexOf(" ");
+            if (lastSpace > 0) {
+                result += slice.slice(0, lastSpace) + "\n";
+                remaining = remaining.slice(lastSpace + 1);
+            }
+            else {
+                // No space found, force break
+                result += slice + "\n";
+                remaining = remaining.slice(maxWidth);
+            }
+        }
+        return result + remaining;
+    })
+        .join("\n");
+}
+function formatTimestamp(isoStr) {
+    try {
+        const d = new Date(isoStr);
+        const pad = (n) => String(n).padStart(2, "0");
+        return (`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+            `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`);
+    }
+    catch {
+        return isoStr;
+    }
+}
+function formatMessage(msg, fullPayload = false) {
+    const ts = formatTimestamp(msg.created_at);
+    const readMark = msg.read === 1 ? " [read]" : "";
+    const header = `[${ts}] ${msg.sender_agent_type} → ${msg.recipient_agent_type}  |  ${msg.subject}${readMark}`;
+    if (fullPayload) {
+        // Show full body — try to pretty-print JSON, otherwise show raw
+        let bodyDisplay;
+        try {
+            const parsed = JSON.parse(msg.body);
+            bodyDisplay = JSON.stringify(parsed, null, 2);
+        }
+        catch {
+            bodyDisplay = msg.body;
+        }
+        // Wrap at terminal width to prevent line clipping on long JSON payloads
+        const terminalWidth = getTerminalWidth();
+        const wrappedBody = wrapText(bodyDisplay, terminalWidth - 2); // -2 for indentation
+        return `${header}\n${wrappedBody.split("\n").map((l) => `  ${l}`).join("\n")}`;
+    }
+    // Default: try to parse JSON and show key fields for readability
+    let preview;
+    try {
+        const parsed = JSON.parse(msg.body);
+        const parts = [];
+        if (typeof parsed["phase"] === "string")
+            parts.push(`phase=${parsed["phase"]}`);
+        if (typeof parsed["status"] === "string")
+            parts.push(`status=${parsed["status"]}`);
+        if (typeof parsed["error"] === "string")
+            parts.push(`error=${parsed["error"]}`);
+        if (typeof parsed["currentPhase"] === "string")
+            parts.push(`currentPhase=${parsed["currentPhase"]}`);
+        if (typeof parsed["seedId"] === "string")
+            parts.push(`seedId=${parsed["seedId"]}`);
+        if (typeof parsed["runId"] === "string")
+            parts.push(`runId=${parsed["runId"]}`);
+        if (typeof parsed["message"] === "string")
+            parts.push(`message=${parsed["message"]}`);
+        if (typeof parsed["kind"] === "string")
+            parts.push(`kind=${parsed["kind"]}`);
+        if (typeof parsed["tool"] === "string")
+            parts.push(`tool=${parsed["tool"]}`);
+        if (typeof parsed["argsPreview"] === "string")
+            parts.push(`args=${parsed["argsPreview"]}`);
+        if (typeof parsed["traceFile"] === "string")
+            parts.push(`trace=${parsed["traceFile"]}`);
+        if (typeof parsed["commandHonored"] === "boolean")
+            parts.push(`commandHonored=${parsed["commandHonored"] ? "yes" : "no"}`);
+        if (typeof parsed["verdict"] === "string")
+            parts.push(`verdict=${parsed["verdict"]}`);
+        if (parts.length > 0) {
+            preview = parts.join(", ");
+        }
+        else {
+            // No recognized fields — fall back to truncated raw body
+            preview = msg.body.slice(0, 200).replace(/\n/g, " ");
+            if (msg.body.length > 200)
+                preview += "...";
+        }
+    }
+    catch {
+        // Not JSON — truncate with ellipsis
+        preview = msg.body.slice(0, 200).replace(/\n/g, " ");
+        if (msg.body.length > 200)
+            preview += "...";
+    }
+    return `${header}\n  ${preview}`;
+}
+/**
+ * Parse the message body JSON, extracting structured fields when present.
+ * Gracefully degrades on non-JSON or missing fields.
+ */
+export function parseMessageBody(body) {
+    if (!body)
+        return {};
+    try {
+        const parsed = JSON.parse(body);
+        return {
+            phase: typeof parsed["phase"] === "string" ? parsed["phase"] : undefined,
+            status: typeof parsed["status"] === "string" ? parsed["status"] : undefined,
+            error: typeof parsed["error"] === "string" ? parsed["error"] : undefined,
+            currentPhase: typeof parsed["currentPhase"] === "string" ? parsed["currentPhase"] : undefined,
+            seedId: typeof parsed["seedId"] === "string" ? parsed["seedId"] : undefined,
+            runId: typeof parsed["runId"] === "string" ? parsed["runId"] : undefined,
+            message: typeof parsed["message"] === "string" ? parsed["message"] : undefined,
+            kind: typeof parsed["kind"] === "string" ? parsed["kind"] : undefined,
+            tool: typeof parsed["tool"] === "string" ? parsed["tool"] : undefined,
+            argsPreview: typeof parsed["argsPreview"] === "string" ? parsed["argsPreview"] : undefined,
+            traceFile: typeof parsed["traceFile"] === "string" ? parsed["traceFile"] : undefined,
+            commandHonored: typeof parsed["commandHonored"] === "boolean" ? parsed["commandHonored"] : undefined,
+            verdict: typeof parsed["verdict"] === "string" ? parsed["verdict"] : undefined,
+            body: typeof parsed["body"] === "string" ? parsed["body"] : undefined,
+        };
+    }
+    catch {
+        return {};
+    }
+}
+/**
+ * Truncate a string to maxLen characters, appending "…" if truncated.
+ */
+export function truncate(str, maxLen) {
+    if (maxLen <= 0)
+        return "";
+    if (str.length <= maxLen)
+        return str;
+    if (maxLen === 1)
+        return "…";
+    if (maxLen <= 3)
+        return "…";
+    const slice = str.slice(0, maxLen);
+    const lastSpace = slice.lastIndexOf(" ");
+    if (lastSpace >= maxLen - 4) {
+        return str.slice(0, lastSpace) + "…";
+    }
+    return str.slice(0, maxLen - 1) + "…";
+}
+// ── Table formatting ───────────────────────────────────────────────────────────
+const DEFAULT_ARGS_WIDTH = 40;
+/**
+ * Format a message as a table row.
+ * @param msg The message to format
+ * @param argsMaxLen Maximum length for the args column (default: 40)
+ */
+export function formatMessageTable(msg, argsMaxLen = DEFAULT_ARGS_WIDTH) {
+    const parsed = parseMessageBody(msg.body);
+    return {
+        date: formatTimestamp(msg.created_at),
+        ticket: parsed.seedId ?? msg.run_id,
+        sender: msg.sender_agent_type,
+        receiver: msg.recipient_agent_type,
+        kind: parsed.kind,
+        tool: parsed.tool,
+        args: parsed.argsPreview ? truncate(parsed.argsPreview, argsMaxLen) : undefined,
+        runId: msg.run_id,
+        isRead: msg.read === 1,
+    };
+}
+// ── ASCII table renderer ───────────────────────────────────────────────────────
+/**
+ * Column widths for the inbox table.
+ * Compact sortable datetime | ticket | sender | receiver | kind | tool | args
+ */
+const COL_WIDTHS = {
+    date: 19, // "2026-04-30 14:23:45"
+    ticket: 20,
+    sender: 12,
+    receiver: 12,
+    kind: 14,
+    tool: 14,
+};
+const ARGS_DEFAULT = 40;
+/**
+ * Render an array of table rows as a formatted ASCII table.
+ * @param rows TableRow[] to render
+ * @param argsWidth override for the args column width (default 40)
+ */
+export function renderMessageTable(rows, argsWidth = ARGS_DEFAULT) {
+    if (rows.length === 0)
+        return "";
+    const sizes = {
+        date: COL_WIDTHS.date,
+        ticket: Math.max(...rows.map((r) => r.ticket.length), COL_WIDTHS.ticket),
+        sender: Math.max(...rows.map((r) => r.sender.length), COL_WIDTHS.sender),
+        receiver: Math.max(...rows.map((r) => r.receiver.length), COL_WIDTHS.receiver),
+        kind: Math.max(...rows.map((r) => r.kind?.length ?? 4), COL_WIDTHS.kind),
+        tool: Math.max(...rows.map((r) => r.tool?.length ?? 4), COL_WIDTHS.tool),
+        args: argsWidth,
+    };
+    const totalWidth = sizes.date + sizes.ticket + sizes.sender + sizes.receiver +
+        sizes.kind + sizes.tool + sizes.args + 8;
+    const hr = "─".repeat(totalWidth);
+    const header = [
+        pad("DATE", sizes.date),
+        pad("TICKET", sizes.ticket),
+        pad("SENDER", sizes.sender),
+        pad("RECEIVER", sizes.receiver),
+        pad("KIND", sizes.kind),
+        pad("TOOL", sizes.tool),
+        pad("ARGS", sizes.args),
+    ].join(" │ ");
+    const padCell = (val, width) => pad(val ?? "-", width);
+    const tableLines = rows.map((row) => [
+        pad(row.date, sizes.date),
+        pad(row.ticket, sizes.ticket),
+        pad(row.sender, sizes.sender),
+        pad(row.receiver, sizes.receiver),
+        padCell(row.kind, sizes.kind),
+        padCell(row.tool, sizes.tool),
+        padCell(row.args, sizes.args),
+    ].join(" │ "));
+    return [hr, header, hr, ...tableLines, hr].join("\n");
+}
+function pad(val, width) {
+    if (val.length > width)
+        return val.slice(0, width - 1) + "…";
+    return val.padEnd(width, " ");
+}
+// ── TableFormatter (tabular message view) ────────────────────────────────────
+/**
+ * Extract structured fields from a JSON message body for the newer table view.
+ * Returns nulls for missing fields and falls back through
+ * argsPreview → message → body for ARGS.
+ */
+export function extractBodyFields(body) {
+    const parsed = parseMessageBody(body);
+    return {
+        kind: parsed.kind ?? null,
+        tool: parsed.tool ?? null,
+        args: parsed.argsPreview ?? parsed.message ?? parsed.body ?? null,
+    };
+}
+/**
+ * Formats inbox messages as a space-aligned table with columns:
+ * DATETIME | TICKET | SENDER | RECEIVER | KIND | TOOL | ARGS
+ */
+export class TableFormatter {
+    terminalWidth;
+    constructor({ terminalWidth }) {
+        this.terminalWidth = terminalWidth;
+    }
+    formatDatetime(isoStr) {
+        return formatTimestamp(isoStr);
+    }
+    middleCutTicket(id) {
+        const MAX = 20;
+        if (id.length <= MAX)
+            return id;
+        const prefix = id.slice(0, 7);
+        const suffix = id.slice(id.length - (MAX - 7 - 1));
+        return `${prefix}…${suffix}`;
+    }
+    formatRow(msg) {
+        const { kind, tool, args } = extractBodyFields(msg.body);
+        const dash = "—";
+        const argsMax = 30;
+        return {
+            columns: {
+                datetime: this.formatDatetime(msg.created_at),
+                ticket: this.middleCutTicket(msg.run_id),
+                sender: msg.sender_agent_type,
+                receiver: msg.recipient_agent_type,
+                kind: kind ?? dash,
+                tool: tool ?? dash,
+                args: truncate(args ?? dash, argsMax),
+            },
+            raw: msg,
+        };
+    }
+    calcWidths(messages) {
+        const rows = messages.map((m) => this.formatRow(m));
+        const base = { datetime: 19, ticket: 8, sender: 8, receiver: 8, kind: 4, tool: 4, args: 4 };
+        const computed = {
+            datetime: Math.max(base.datetime, ...rows.map((r) => r.columns.datetime.length)),
+            ticket: Math.max(base.ticket, ...rows.map((r) => r.columns.ticket.length)),
+            sender: Math.max(base.sender, ...rows.map((r) => r.columns.sender.length)),
+            receiver: Math.max(base.receiver, ...rows.map((r) => r.columns.receiver.length)),
+            kind: Math.max(base.kind, ...rows.map((r) => r.columns.kind.length)),
+            tool: Math.max(base.tool, ...rows.map((r) => r.columns.tool.length)),
+            args: Math.max(base.args, ...rows.map((r) => r.columns.args.length)),
+        };
+        computed.ticket = Math.min(computed.ticket, 20);
+        computed.datetime = 19;
+        computed.sender = Math.min(Math.max(computed.sender, 8), 15);
+        computed.receiver = Math.min(Math.max(computed.receiver, 8), 15);
+        computed.kind = Math.min(computed.kind, 12);
+        computed.tool = Math.min(computed.tool, 12);
+        const fixed = computed.datetime +
+            computed.ticket +
+            computed.sender +
+            computed.receiver +
+            computed.kind +
+            computed.tool +
+            6;
+        const available = this.terminalWidth - fixed;
+        computed.args = Math.max(computed.args, Math.min(available, 80));
+        return computed;
+    }
+    formatHeader() {
+        return "DATETIME          TICKET       SENDER     RECEIVER   KIND       TOOL       ARGS";
+    }
+    formatSeparator(widths) {
+        const { datetime, ticket, sender, receiver, kind, tool, args } = widths;
+        return (`${"─".repeat(datetime)} ` +
+            `${"─".repeat(ticket)} ` +
+            `${"─".repeat(sender)} ` +
+            `${"─".repeat(receiver)} ` +
+            `${"─".repeat(kind)} ` +
+            `${"─".repeat(tool)} ` +
+            `${"─".repeat(args)}`);
+    }
+    formatRowLine(row, widths) {
+        const { datetime, ticket, sender, receiver, kind, tool, args } = widths;
+        return (row.columns.datetime.padEnd(datetime) +
+            " " +
+            row.columns.ticket.padEnd(ticket) +
+            " " +
+            row.columns.sender.padEnd(sender) +
+            " " +
+            row.columns.receiver.padEnd(receiver) +
+            " " +
+            row.columns.kind.padEnd(kind) +
+            " " +
+            row.columns.tool.padEnd(tool) +
+            " " +
+            row.columns.args.padEnd(args));
+    }
+    formatTable(messages) {
+        if (messages.length === 0) {
+            return this.formatHeader() + "\n";
+        }
+        const rows = messages.map((m) => this.formatRow(m));
+        const widths = this.calcWidths(messages);
+        return [
+            this.formatHeader(),
+            this.formatSeparator(widths),
+            ...rows.map((r) => this.formatRowLine(r, widths)),
+        ].join("\n") + "\n";
+    }
+}
+// ── Run status formatting ─────────────────────────────────────────────────────
+function formatRunStatus(run) {
+    const ts = formatTimestamp(new Date().toISOString());
+    let statusStr;
+    if (run.status === "completed") {
+        statusStr = chalk.green("COMPLETED");
+    }
+    else if (run.status === "failed") {
+        statusStr = chalk.red("FAILED");
+    }
+    else if (run.status === "running") {
+        statusStr = chalk.blue("RUNNING");
+    }
+    else {
+        statusStr = chalk.yellow(run.status.toUpperCase());
+    }
+    return `[${ts}] ${chalk.bold("●")} ${run.seed_id} ${statusStr} (run ${run.id})`;
+}
+function adaptDaemonMessage(row) {
+    return {
+        id: row.id,
+        run_id: row.run_id,
+        sender_agent_type: row.sender_agent_type,
+        recipient_agent_type: row.recipient_agent_type,
+        subject: row.subject,
+        body: row.body,
+        read: row.read,
+        created_at: row.created_at,
+        deleted_at: row.deleted_at,
+    };
+}
+function phaseFromSender(sender) {
+    const match = sender.match(/^(explorer|developer|qa|reviewer|finalize|refinery)(?:-|$)/);
+    return match?.[1];
+}
+function messagePhase(msg) {
+    return parseMessageBody(msg.body).phase ?? phaseFromSender(msg.sender_agent_type);
+}
+function messageSeed(msg) {
+    return parseMessageBody(msg.body).seedId ?? msg.run_id;
+}
+function messageActivity(msg) {
+    const parsed = parseMessageBody(msg.body);
+    const parts = [];
+    if (parsed.phase ?? phaseFromSender(msg.sender_agent_type))
+        parts.push(`phase=${parsed.phase ?? phaseFromSender(msg.sender_agent_type)}`);
+    if (parsed.kind)
+        parts.push(`kind=${parsed.kind}`);
+    if (parsed.status)
+        parts.push(`status=${parsed.status}`);
+    if (parsed.verdict)
+        parts.push(`verdict=${parsed.verdict}`);
+    if (parsed.tool)
+        parts.push(`tool=${parsed.tool}`);
+    if (parsed.commandHonored !== undefined)
+        parts.push(`honored=${parsed.commandHonored ? "yes" : "no"}`);
+    if (parsed.error)
+        parts.push(`error=${parsed.error}`);
+    if (parsed.message && !parsed.error)
+        parts.push(parsed.message);
+    return parts.length > 0 ? parts.join(" ") : msg.subject;
+}
+function messageArgs(msg) {
+    const parsed = parseMessageBody(msg.body);
+    return parsed.argsPreview ?? parsed.body ?? parsed.message ?? null;
+}
+function renderRunProgressSummary(messages, runs) {
+    if (messages.length === 0 && runs.length === 0)
+        return "";
+    const byRun = new Map();
+    for (const msg of messages) {
+        const list = byRun.get(msg.run_id) ?? [];
+        list.push(msg);
+        byRun.set(msg.run_id, list);
+    }
+    const runById = new Map(runs.map((run) => [run.id, run]));
+    const activeRunIds = runs
+        .filter((run) => run.status === "pending" || run.status === "running")
+        .map((run) => run.id);
+    const runIds = new Set([...messages.map((msg) => msg.run_id), ...activeRunIds]);
+    const lines = [chalk.bold("Run Summary")];
+    for (const runId of runIds) {
+        const list = (byRun.get(runId) ?? []).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        const run = runById.get(runId);
+        const latest = list[list.length - 1];
+        const latestError = [...list].reverse().find((msg) => msg.subject === "agent-error" || parseMessageBody(msg.body).error);
+        const phase = latest ? messagePhase(latest) : undefined;
+        const parsedLatest = latest ? parseMessageBody(latest.body) : {};
+        const seed = run?.seed_id ?? (latest ? messageSeed(latest) : runId);
+        const status = run?.status ?? "unknown";
+        const stage = phase
+            ? `${phase}${parsedLatest.kind ? `:${parsedLatest.kind}` : ""}`
+            : "unknown";
+        const lastAt = latest ? formatTimestamp(latest.created_at) : "—";
+        const error = latestError ? parseMessageBody(latestError.body).error : undefined;
+        lines.push(`- ${seed}  run=${runId.slice(0, 8)}…  status=${status}  stage=${stage}  last=${lastAt}`);
+        if (error)
+            lines.push(`  ${chalk.red("error:")} ${wrapText(error, Math.max(40, getTerminalWidth() - 10)).replace(/\n/g, "\n  ")}`);
+    }
+    return lines.join("\n");
+}
+function renderRecentActivity(messages) {
+    if (messages.length === 0)
+        return "";
+    const width = Math.max(40, getTerminalWidth() - 4);
+    const lines = [chalk.bold("Recent Activity")];
+    for (const msg of messages) {
+        const phase = messagePhase(msg) ?? "—";
+        const activity = messageActivity(msg);
+        lines.push(`[${formatTimestamp(msg.created_at)}] ${messageSeed(msg)} ${phase} ${msg.sender_agent_type} → ${msg.recipient_agent_type}`);
+        lines.push(`  ${activity}`);
+        const args = messageArgs(msg);
+        if (args && args !== activity) {
+            lines.push(`  args: ${wrapText(args, width).replace(/\n/g, "\n        ")}`);
+        }
+    }
+    return lines.join("\n");
+}
+function adaptDaemonRun(row) {
+    return {
+        id: row.id,
+        project_id: "",
+        seed_id: row.bead_id,
+        agent_type: "daemon",
+        session_key: null,
+        worktree_path: null,
+        status: row.status,
+        started_at: row.started_at,
+        completed_at: row.finished_at,
+        created_at: row.created_at,
+        progress: null,
+        base_branch: null,
+    };
+}
+function adaptPostgresRun(row) {
+    return {
+        id: row.id,
+        project_id: row.project_id,
+        seed_id: row.seed_id,
+        agent_type: row.agent_type,
+        session_key: row.session_key,
+        worktree_path: row.worktree_path,
+        status: row.status,
+        started_at: row.started_at,
+        completed_at: row.completed_at,
+        created_at: row.created_at,
+        progress: row.progress,
+        base_branch: row.base_branch,
+    };
+}
+function adaptPostgresMessage(row) {
+    return {
+        id: row.id,
+        run_id: row.run_id,
+        sender_agent_type: row.sender_agent_type,
+        recipient_agent_type: row.recipient_agent_type,
+        subject: row.subject,
+        body: row.body,
+        read: row.read,
+        created_at: row.created_at,
+        deleted_at: row.deleted_at,
+    };
+}
+async function resolvePostgresInboxProject(projectPath, projectSelector) {
+    ensureCliPostgresPool(projectPath);
+    const projects = await listRegisteredProjects();
+    const project = projectSelector
+        ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
+        : projects.find((record) => resolve(record.path) === resolve(projectPath));
+    if (!project)
+        return null;
+    return { adapter: new PostgresAdapter(), projectId: project.id };
+}
+async function resolvePostgresRunId(adapter, projectId, options) {
+    if (options.run)
+        return options.run;
+    const runs = await adapter.listRuns(projectId, { limit: 100 });
+    const taskFilter = options.task ?? options.bead;
+    if (taskFilter)
+        return runs.find((run) => run.seed_id === taskFilter)?.id ?? null;
+    return runs[0]?.id ?? null;
+}
+async function fetchPostgresMessages(adapter, projectId, options) {
+    if (options.all) {
+        let rows = await adapter.getAllMessagesGlobal(projectId, options.limit);
+        if (options.agent)
+            rows = rows.filter((row) => row.recipient_agent_type === options.agent);
+        if (options.unread)
+            rows = rows.filter((row) => row.read === 0);
+        return rows.map(adaptPostgresMessage);
+    }
+    if (!options.runId)
+        return [];
+    if (options.agent) {
+        const rows = await adapter.getMessages(projectId, options.runId, options.agent, options.unread ?? false);
+        return selectRecentMessages(rows.map(adaptPostgresMessage), options.limit);
+    }
+    let rows = await adapter.getAllMessages(options.runId);
+    if (options.unread)
+        rows = rows.filter((row) => row.read === 0);
+    return selectRecentMessages(rows.map(adaptPostgresMessage), options.limit);
+}
+export async function resolveDaemonInboxContext(projectPath, projectSelector) {
+    try {
+        const projects = await listRegisteredProjects();
+        const project = projectSelector
+            ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
+            : projects.find((record) => resolve(record.path) === resolve(projectPath));
+        if (!project)
+            return null;
+        if (foremanBackendMode() === "elixir") {
+            return { backend: "elixir", client: await createElixirInboxClient(), projectId: project.id };
+        }
+        return { backend: "node", client: createTrpcClient(), projectId: project.id };
+    }
+    catch {
+        return null;
+    }
+}
+async function resolveDaemonRunId(daemon, options) {
+    if (options.run)
+        return options.run;
+    if (daemon.backend === "elixir") {
+        const runs = await daemon.client.listRuns();
+        const filtered = runs.filter((run) => run.project_id === daemon.projectId);
+        const taskFilter = options.task ?? options.bead;
+        if (taskFilter) {
+            const match = filtered.find((run) => String(run.task_id ?? "") === taskFilter);
+            return match?.run_id ? String(match.run_id) : match?.id ? String(match.id) : null;
+        }
+        const first = filtered[0];
+        return first?.run_id ? String(first.run_id) : first?.id ? String(first.id) : null;
+    }
+    const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 });
+    const taskFilter = options.task ?? options.bead;
+    if (taskFilter) {
+        const match = runs.find((run) => run.bead_id === taskFilter);
+        return match?.id ?? null;
+    }
+    return runs[0]?.id ?? null;
+}
+export function selectRecentMessages(messages, limit) {
+    return messages.slice(Math.max(0, messages.length - limit));
+}
+async function fetchDaemonMessages(daemon, options) {
+    if (daemon.backend === "elixir") {
+        const rows = await daemon.client.listInbox({
+            projectId: daemon.projectId,
+            runId: options.all ? undefined : options.runId,
+            unread: options.unread,
+            limit: options.limit,
+        });
+        const messages = rows
+            .map((row) => ({
+            id: String(row.message_id ?? `${row.run_id ?? "run"}-${row.subject ?? randomUUID()}`),
+            run_id: String(row.run_id ?? ""),
+            sender_agent_type: String(row.sender_agent_type ?? row.sender ?? "agent"),
+            recipient_agent_type: String(row.recipient_agent_type ?? row.recipient ?? "run"),
+            subject: String(row.subject ?? "message"),
+            body: typeof row.body === "string" ? row.body : JSON.stringify(row.body ?? {}),
+            read: row.unread === false ? 1 : 0,
+            created_at: String(row.created_at ?? new Date().toISOString()),
+            deleted_at: null,
+        }))
+            .filter((row) => !options.agent || row.recipient_agent_type === options.agent);
+        return options.all ? messages : selectRecentMessages(messages, options.limit);
+    }
+    if (options.all) {
+        const rows = await daemon.client.mail.listGlobal({ projectId: daemon.projectId, limit: options.limit });
+        const filtered = options.agent
+            ? rows.filter((row) => row.recipient_agent_type === options.agent)
+            : rows;
+        const unreadFiltered = options.unread ? filtered.filter((row) => row.read === 0) : filtered;
+        return unreadFiltered.map(adaptDaemonMessage);
+    }
+    if (!options.runId)
+        return [];
+    const rows = await daemon.client.mail.list({
+        projectId: daemon.projectId,
+        runId: options.runId,
+        agentType: options.agent,
+        unreadOnly: options.unread,
+    });
+    return selectRecentMessages(rows.map(adaptDaemonMessage), options.limit);
+}
+// ── Run resolution ────────────────────────────────────────────────────────────
+function resolveLatestRunId(store) {
+    // Get the most recently created run (any status)
+    const runs = store.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+    if (runs.length === 0)
+        return null;
+    // Runs are returned in DESC created_at order
+    return runs[0]?.id ?? null;
+}
+function resolveRunIdBySeed(store, seedId) {
+    const runs = store.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+    const seedRuns = runs.filter((r) => r.seed_id === seedId);
+    // Runs are returned DESC by created_at, so [0] is most recent
+    return seedRuns[0]?.id ?? null;
+}
+function getInboxStatusRuns(store) {
+    if (typeof store.getRunsByStatuses !== "function")
+        return [];
+    return store.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+}
+async function listDaemonRuns(daemon) {
+    if (daemon.backend === "elixir") {
+        const runs = await daemon.client.listRuns();
+        return runs
+            .filter((run) => run.project_id === daemon.projectId)
+            .map((run) => ({
+            id: String(run.run_id ?? run.id ?? "unknown"),
+            project_id: daemon.projectId,
+            seed_id: String(run.task_id ?? run.run_id ?? run.id ?? "unknown"),
+            agent_type: "elixir",
+            session_key: null,
+            worktree_path: null,
+            status: String(run.status ?? "running"),
+            started_at: typeof run.started_at === "string" ? run.started_at : null,
+            completed_at: typeof run.completed_at === "string" ? run.completed_at : null,
+            created_at: typeof run.created_at === "string" ? run.created_at : new Date().toISOString(),
+            progress: null,
+            base_branch: null,
+            merge_strategy: null,
+        }));
+    }
+    const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 });
+    return runs.map(adaptDaemonRun);
+}
+async function markDaemonMessageRead(daemon, messageId) {
+    if (daemon.backend === "elixir") {
+        return;
+    }
+    await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId });
+}
+async function sendDaemonMessage(daemon, input) {
+    if (daemon.backend === "elixir") {
+        const response = await daemon.client.sendCommand({
+            command_id: `inbox-send-${randomUUID()}`,
+            command_type: "inbox.send",
+            payload: {
+                project_id: daemon.projectId,
+                run_id: input.runId,
+                sender_agent_type: input.from,
+                recipient_agent_type: input.to,
+                subject: input.subject,
+                body: input.body,
+            },
+        });
+        if (!response.ok) {
+            throw new Error(response.error.message);
+        }
+        return;
+    }
+    await daemon.client.mail.send({
+        projectId: daemon.projectId,
+        runId: input.runId,
+        senderAgentType: input.from,
+        recipientAgentType: input.to,
+        subject: input.subject,
+        body: input.body,
+    });
+}
+// ── Events helper ───────────────────────────────────────────────────────────
+function fetchEventsFromStore(store, limit) {
+    // Fetch all runs and their events
+    const runs = store.getRunsByStatuses([
+        "pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset",
+    ]);
+    const allEvents = [];
+    for (const run of runs) {
+        const rows = store.getRunEvents(run.id);
+        for (const row of rows) {
+            allEvents.push({
+                id: row.id,
+                runId: row.run_id,
+                eventType: row.event_type,
+                details: row.details ? JSON.parse(row.details) : null,
+                createdAt: row.created_at,
+            });
+        }
+    }
+    // Sort by created_at descending
+    allEvents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return allEvents.slice(0, limit);
+}
+function fetchEventsFromStoreForRun(store, runId, limit) {
+    const rows = store.getRunEvents(runId);
+    return rows.map((row) => ({
+        id: row.id,
+        runId: row.run_id,
+        eventType: row.event_type,
+        details: row.details ? JSON.parse(row.details) : null,
+        createdAt: row.created_at,
+    }));
+}
+// ── send subcommand ───────────────────────────────────────────────────────────
+/**
+ * `foreman inbox send` — Send an Agent Mail message from one agent to another
+ * within a pipeline run (replaces the removed `foreman mail send`).
+ *
+ * The --run-id flag falls back to the FOREMAN_RUN_ID environment variable when
+ * not provided.
+ */
+const inboxSendCommand = new Command("send")
+    .description("Send an Agent Mail message within a pipeline run")
+    .option("--run-id <id>", "Run ID (falls back to FOREMAN_RUN_ID env var)")
+    .requiredOption("--from <agent>", "Sender agent role (e.g. explorer, developer)")
+    .requiredOption("--to <agent>", "Recipient agent role (e.g. foreman, developer)")
+    .requiredOption("--subject <subject>", "Message subject (e.g. phase-started, phase-complete, agent-error)")
+    .option("--body <json>", "Message body as JSON string (defaults to '{}')", "{}")
+    .action(async (options) => {
+    // Resolve run ID: flag takes priority, then env var
+    const runId = options.runId ?? (process.env["FOREMAN_RUN_ID"] || undefined);
+    if (!runId) {
+        process.stderr.write("inbox send error: --run-id is required (or set FOREMAN_RUN_ID)\n");
+        process.exit(1);
+        return;
+    }
+    // Validate body is valid JSON
+    let parsedBody;
+    try {
+        // Parse and re-stringify to normalise whitespace; also validates JSON
+        parsedBody = JSON.stringify(JSON.parse(options.body));
+    }
+    catch {
+        process.stderr.write(`inbox send error: --body must be valid JSON (got: ${options.body})\n`);
+        process.exit(1);
+        return;
+    }
+    const projectPath = await resolveRepoRootProjectPath({});
+    try {
+        const resolvedProjectPath = resolve(projectPath);
+        const daemon = await resolveDaemonInboxContext(resolvedProjectPath);
+        if (!daemon) {
+            throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+        }
+        await sendDaemonMessage(daemon, {
+            runId,
+            from: options.from,
+            to: options.to,
+            subject: options.subject,
+            body: parsedBody,
+        });
+        process.exit(0);
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`inbox send error: ${msg}\n`);
+        process.exit(1);
+    }
+});
+// ── Main command ──────────────────────────────────────────────────────────────
+// Exported for unit testing
+export { formatMessage };
+export const inboxCommand = new Command("inbox")
+    .description("View the Postgres message inbox for agents in a pipeline run")
+    .addCommand(inboxSendCommand)
+    .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
+    .option("--run <id>", "Filter to a specific run ID (default: latest run)")
+    .option("--task <id>", "Resolve run by task ID (uses most recent run for that task)")
+    .option("--bead <id>", "Alias for --task (backward compatibility)")
+    .option("--all", "Watch messages across all runs (ignores --run and --task)")
+    .option("--watch", "Poll every 2s for new messages (shows only new ones)")
+    .option("--unread", "Show only unread messages")
+    .option("--limit <n>", "Max messages to show", "50")
+    .option("--ack", "Mark shown messages as read after displaying them")
+    .option("--full", "Show full message payloads (no truncation, JSON pretty-printed)")
+    .option("--project <name>", "Registered project name (default: current directory)")
+    .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+    .option("--events", "Also show pipeline events (phase transitions, PR status, merge queue)")
+    .option("--events-limit <n>", "Max pipeline events to show (default: 50)", "50")
+    .action(async (options) => {
+    const fullPayload = options.full ?? false;
+    const limit = parseInt(options.limit ?? "50", 10);
+    const eventsLimit = parseInt(options["events-limit"] ?? "50", 10);
+    const showEvents = options.events ?? false;
+    const taskFilter = options.task ?? options.bead;
+    // Require --project or --all in multi-project mode
+    await requireProjectOrAllInMultiMode(options.project, options.all ?? false);
+    // Resolve the project root via --project flag or VCS auto-detection
+    let projectPath;
+    try {
+        projectPath = await resolveRepoRootProjectPath({
+            project: options.project,
+            projectPath: options.projectPath,
+        });
+    }
+    catch {
+        projectPath = process.cwd();
+    }
+    const daemon = await resolveDaemonInboxContext(projectPath, options.project);
+    const postgres = process.env.FOREMAN_ENABLE_INBOX_POSTGRES === "1"
+        ? await resolvePostgresInboxProject(projectPath, options.project)
+        : null;
+    const store = daemon || postgres ? null : ForemanStore.forProject(projectPath);
+    try {
+        // ── One-shot global mode (--all without --watch) ───────────────────────
+        if (options.all && !options.watch) {
+            let messages = postgres
+                ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
+                : daemon
+                    ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: options.unread, limit })
+                    : store.getAllMessagesGlobal(limit);
+            // Apply agent filter (by recipient, matching single-run behavior)
+            if (!daemon && options.agent) {
+                messages = messages.filter((m) => m.recipient_agent_type === options.agent);
+            }
+            // Apply unread filter
+            if (!daemon && options.unread) {
+                messages = messages.filter((m) => m.read === 0);
+            }
+            const summaryRuns = postgres
+                ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+                : daemon
+                    ? await listDaemonRuns(daemon)
+                    : getInboxStatusRuns(store);
+            const chronologicalMessages = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+            if (messages.length === 0) {
+                console.log(`No ${options.unread ? "unread " : ""}messages found across all runs${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+            }
+            else {
+                console.log(renderRunProgressSummary(chronologicalMessages, summaryRuns));
+                console.log("");
+                console.log(renderRecentActivity(chronologicalMessages.slice(-Math.min(chronologicalMessages.length, 12))));
+                console.log("");
+                if (fullPayload) {
+                    console.log(`\nInbox — all runs${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+                    for (const msg of messages) {
+                        console.log(formatMessage(msg, true));
+                        console.log("");
+                    }
+                    console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
+                }
+                else {
+                    console.log(`${messages.length} message(s) analyzed. Use --full for complete raw payloads.`);
+                }
+            }
+            if (options.ack && messages.length > 0) {
+                if (postgres) {
+                    for (const msg of messages)
+                        await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+                }
+                else if (daemon) {
+                    for (const msg of messages) {
+                        await markDaemonMessageRead(daemon, msg.id);
+                    }
+                }
+                else {
+                    for (const msg of messages) {
+                        store.markMessageRead(msg.id);
+                    }
+                }
+                console.log(`Marked ${messages.length} message(s) as read.`);
+            }
+            // ── Pipeline events section (--events) ─────────────────────────────
+            if (showEvents) {
+                console.log("");
+                const events = postgres
+                    ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { all: true, limit: eventsLimit })
+                    : daemon
+                        ? await fetchDaemonEvents(daemon, { all: true, limit: eventsLimit })
+                        : fetchEventsFromStore(store, eventsLimit);
+                if (events.length === 0) {
+                    console.log("No pipeline events found.");
+                }
+                else {
+                    console.log(chalk.bold("\nPipeline Events — all runs"));
+                    console.log("─".repeat(70));
+                    for (const event of events) {
+                        console.log(formatPipelineEvent(event));
+                    }
+                    console.log("─".repeat(70));
+                    console.log(`${events.length} event(s) shown.`);
+                }
+            }
+            return;
+        }
+        // ── Global watch mode (--all --watch) ──────────────────────────────────
+        if (options.all && options.watch) {
+            console.log("Watching all runs... (Ctrl-C to stop)\n");
+            const seenIds = new Set();
+            const seenRunIds = new Set();
+            const initialGlobal = postgres
+                ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
+                : daemon
+                    ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: false, limit })
+                    : store.getAllMessagesGlobal(limit);
+            if (initialGlobal.length > 0) {
+                console.log(`── past messages ${"─".repeat(53)}`);
+                if (fullPayload) {
+                    for (const m of initialGlobal) {
+                        console.log(formatMessage(m, true));
+                        console.log("");
+                        seenIds.add(m.id);
+                    }
+                }
+                else {
+                    const rows = initialGlobal.map((m) => formatMessageTable(m));
+                    console.log(renderMessageTable(rows));
+                    console.log("");
+                    for (const m of initialGlobal)
+                        seenIds.add(m.id);
+                }
+                console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+            }
+            const initRuns = postgres
+                ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+                : daemon
+                    ? await listDaemonRuns(daemon)
+                    : store.getRunsByStatuses(["completed", "failed", "running"]);
+            for (const r of initRuns)
+                seenRunIds.add(r.id);
+            const pollAll = () => {
+                void (async () => {
+                    const statusRuns = postgres
+                        ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+                        : daemon
+                            ? await listDaemonRuns(daemon)
+                            : store.getRunsByStatuses(["completed", "failed", "running"]);
+                    for (const run of statusRuns) {
+                        if (!seenRunIds.has(run.id)) {
+                            seenRunIds.add(run.id);
+                            console.log(formatRunStatus(run));
+                            console.log("");
+                        }
+                    }
+                    const msgs = postgres
+                        ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
+                        : daemon
+                            ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: false, limit })
+                            : store.getAllMessagesGlobal(limit);
+                    for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
+                        seenIds.add(msg.id);
+                        if (fullPayload) {
+                            console.log(formatMessage(msg, true));
+                            console.log("");
+                        }
+                        else {
+                            const rows = [formatMessageTable(msg)];
+                            console.log(renderMessageTable(rows));
+                            console.log("");
+                        }
+                    }
+                })().catch(() => undefined);
+            };
+            pollAll();
+            const interval = setInterval(pollAll, 2000);
+            process.on("SIGINT", () => { clearInterval(interval); store?.close(); process.exit(0); });
+            return;
+        }
+        const runId = postgres
+            ? await resolvePostgresRunId(postgres.adapter, postgres.projectId, { run: options.run, task: options.task, bead: options.bead })
+            : daemon
+                ? await resolveDaemonRunId(daemon, { run: options.run, task: options.task, bead: options.bead })
+                : options.run
+                    ?? (taskFilter ? resolveRunIdBySeed(store, taskFilter) : null)
+                    ?? resolveLatestRunId(store);
+        if (!runId) {
+            console.error("No runs found. Start a pipeline first with `foreman run`.");
+            process.exit(1);
+        }
+        // Resolve seed ID for display (run record carries seed_id)
+        const allRuns = postgres
+            ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+            : daemon
+                ? await listDaemonRuns(daemon)
+                : store.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+        const thisRun = allRuns.find((r) => r.id === runId);
+        const seedLabel = thisRun?.seed_id ? `  bead: ${thisRun.seed_id}` : "";
+        if (!options.watch) {
+            // One-shot: show current run lifecycle status then fetch and display messages
+            const runStatusRuns = postgres
+                ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+                : daemon
+                    ? await listDaemonRuns(daemon)
+                    : store.getRunsByStatuses(["completed", "failed"]);
+            const currentRun = runStatusRuns.find((r) => r.id === runId);
+            if (currentRun) {
+                console.log(formatRunStatus(currentRun));
+                console.log("");
+            }
+            const messages = postgres
+                ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+                : daemon
+                    ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: options.unread, limit })
+                    : fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
+            if (messages.length === 0) {
+                console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+            }
+            else {
+                if (fullPayload) {
+                    console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+                    for (const msg of messages) {
+                        console.log(formatMessage(msg, true));
+                        console.log("");
+                    }
+                    console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
+                }
+                else {
+                    const rows = messages.map((msg) => formatMessageTable(msg));
+                    console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
+                    console.log(renderMessageTable(rows));
+                    console.log(`${messages.length} message(s) shown.`);
+                }
+            }
+            if (postgres && !showEvents) {
+                const lifecycleEvents = await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: Math.min(eventsLimit, 10) });
+                if (lifecycleEvents.length > 0) {
+                    console.log(chalk.bold("\nLifecycle Events — run: ") + runId);
+                    console.log("─".repeat(70));
+                    for (const event of lifecycleEvents)
+                        console.log(formatPipelineEvent(event));
+                    console.log("─".repeat(70));
+                }
+            }
+            if (options.ack && messages.length > 0) {
+                if (postgres) {
+                    for (const msg of messages)
+                        await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+                }
+                else if (daemon) {
+                    for (const msg of messages) {
+                        await markDaemonMessageRead(daemon, msg.id);
+                    }
+                }
+                else {
+                    for (const msg of messages) {
+                        store.markMessageRead(msg.id);
+                    }
+                }
+                console.log(`Marked ${messages.length} message(s) as read.`);
+            }
+            // ── Pipeline events section (--events) ─────────────────────────────
+            if (showEvents) {
+                console.log("");
+                const events = postgres
+                    ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: eventsLimit })
+                    : daemon
+                        ? await fetchDaemonEvents(daemon, { runId, limit: eventsLimit })
+                        : fetchEventsFromStoreForRun(store, runId, eventsLimit);
+                if (events.length === 0) {
+                    console.log("No pipeline events found.");
+                }
+                else {
+                    console.log(chalk.bold("\nPipeline Events — run: ") + runId);
+                    console.log("─".repeat(70));
+                    for (const event of events) {
+                        console.log(formatPipelineEvent(event));
+                    }
+                    console.log("─".repeat(70));
+                    console.log(`${events.length} event(s) shown.`);
+                }
+            }
+            return;
+        }
+        // Watch mode: poll every 2s, show past messages first then new ones
+        console.log(`Watching inbox for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
+        const seenIds = new Set();
+        const seenRunIds = new Set();
+        // Initial fetch — print existing messages immediately, then track them as seen
+        const initial = postgres
+            ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: false, limit })
+            : daemon
+                ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: false, limit })
+                : fetchMessages(store, runId, options.agent, false, limit);
+        if (initial.length > 0) {
+            console.log(`── past messages ${"─".repeat(53)}`);
+            if (fullPayload) {
+                for (const m of initial) {
+                    console.log(formatMessage(m, true));
+                    console.log("");
+                    seenIds.add(m.id);
+                }
+                console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+            }
+            else {
+                const rows = initial.map((m) => formatMessageTable(m));
+                console.log(renderMessageTable(rows));
+                console.log("");
+                for (const m of initial)
+                    seenIds.add(m.id);
+                console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+            }
+        }
+        // Seed seenRunIds with any already-completed/failed runs so we only show new transitions
+        const initialRuns = postgres
+            ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+            : daemon
+                ? await listDaemonRuns(daemon)
+                : store.getRunsByStatuses(["completed", "failed"]);
+        for (const r of initialRuns)
+            seenRunIds.add(r.id);
+        const poll = () => {
+            void (async () => {
+                const statusRuns = postgres
+                    ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+                    : daemon
+                        ? await listDaemonRuns(daemon)
+                        : store.getRunsByStatuses(["completed", "failed"]);
+                for (const run of statusRuns) {
+                    if (!seenRunIds.has(run.id)) {
+                        seenRunIds.add(run.id);
+                        console.log(formatRunStatus(run));
+                        console.log("");
+                    }
+                }
+                const msgs = postgres
+                    ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+                    : daemon
+                        ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: options.unread, limit })
+                        : fetchMessages(store, runId, options.agent, options.unread ?? false, limit);
+                const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
+                for (const msg of newMsgs) {
+                    seenIds.add(msg.id);
+                    if (fullPayload) {
+                        console.log(formatMessage(msg, true));
+                        console.log("");
+                    }
+                    else {
+                        const rows = [formatMessageTable(msg)];
+                        console.log(renderMessageTable(rows));
+                        console.log("");
+                    }
+                    if (options.ack) {
+                        if (postgres) {
+                            await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+                        }
+                        else if (daemon) {
+                            await markDaemonMessageRead(daemon, msg.id);
+                        }
+                        else {
+                            store.markMessageRead(msg.id);
+                        }
+                    }
+                }
+            })().catch(() => undefined);
+        };
+        // Initial poll after setup
+        poll();
+        const interval = setInterval(poll, 2000);
+        // Keep the process alive
+        process.on("SIGINT", () => {
+            clearInterval(interval);
+            store?.close();
+            process.exit(0);
+        });
+    }
+    catch (err) {
+        store?.close();
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`inbox error: ${msg}`);
+        process.exit(1);
+    }
+});
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fetchMessages(store, runId, agent, unreadOnly, limit) {
+    let messages;
+    if (agent) {
+        messages = store.getMessages(runId, agent, unreadOnly);
+    }
+    else {
+        // No agent filter — get all messages for the run
+        const all = store.getAllMessages(runId);
+        messages = unreadOnly ? all.filter((m) => m.read === 0) : all;
+    }
+    return selectRecentMessages(messages, limit);
+}
+//# sourceMappingURL=inbox.js.map

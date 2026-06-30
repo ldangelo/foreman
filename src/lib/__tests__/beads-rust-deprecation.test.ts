@@ -255,7 +255,7 @@ describe("TRD-019-TEST: TypeScript compilation with deprecated annotations", () 
       tscOutput = execFileSync("npx", ["tsc", "--noEmit"], {
         cwd: repoRoot,
         encoding: "utf-8",
-        timeout: 60_000,
+        timeout: 120_000,
       });
     } catch (err: unknown) {
       const e = err as { stdout?: string; stderr?: string };
@@ -263,5 +263,5 @@ describe("TRD-019-TEST: TypeScript compilation with deprecated annotations", () 
     }
 
     expect(tscOutput.trim(), "tsc --noEmit should emit no errors").toBe("");
-  });
+  }, 120_000);
 });

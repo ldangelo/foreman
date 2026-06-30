@@ -33,6 +33,7 @@ describe("foreman inbox send command context", () => {
   }
 
   beforeEach(() => {
+    process.env.FOREMAN_BACKEND = "node";
     vi.clearAllMocks();
     mockResolveRepoRootProjectPath.mockReset();
     mockListRegisteredProjects.mockReset();
@@ -42,6 +43,7 @@ describe("foreman inbox send command context", () => {
   });
 
   afterEach(() => {
+    delete process.env.FOREMAN_BACKEND;
     vi.restoreAllMocks();
     for (const dir of tempDirs) {
       rmSync(dir, { recursive: true, force: true });

@@ -376,9 +376,17 @@ describe("default.yaml: onFailure block", () => {
   });
 
   it("loadWorkflowConfig loads default.yaml with onFailure block", () => {
-    const config = loadWorkflowConfig("default", PROJECT_ROOT);
-    expect(config.onFailure).toBeDefined();
-    expect(config.onFailure!.name).toBe("troubleshooter");
+    const tmpHome = join(PROJECT_ROOT, ".foreman-test-troubleshooter-home");
+    const previousHome = process.env["FOREMAN_HOME"];
+    try {
+      process.env["FOREMAN_HOME"] = tmpHome;
+      const config = loadWorkflowConfig("default", PROJECT_ROOT);
+      expect(config.onFailure).toBeDefined();
+      expect(config.onFailure!.name).toBe("troubleshooter");
+    } finally {
+      if (previousHome === undefined) delete process.env["FOREMAN_HOME"];
+      else process.env["FOREMAN_HOME"] = previousHome;
+    }
   });
 });
 

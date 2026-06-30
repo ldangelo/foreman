@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import * as trpcClientModule from "../../lib/trpc-client.js";
+import * as backendModeModule from "../../lib/backend-mode.js";
 import { debugCommand } from "../commands/debug.js";
 import { recoverCommand } from "../commands/recover.js";
 
@@ -105,6 +106,7 @@ describe("daemon context fallback", () => {
     mockCreateVcsBackend.mockResolvedValue({
       getRepoRoot: vi.fn().mockResolvedValue(tmpDir),
     });
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("node");
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => {

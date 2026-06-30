@@ -7,6 +7,9 @@ import { Command } from "commander";
 import type { TaskRow } from "../../lib/db/postgres-adapter.js";
 import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { elapsed } from "../watch-ui.js";
 import { listRegisteredProjects, resolveProjectPathFromOptions } from "./project-task-support.js";
 
@@ -223,6 +226,77 @@ function progressFromRun(row: { progress?: RunProgress | string | null }): RunPr
   return row.progress;
 }
 
+function normalizeElixirRun(row: ElixirRun): Run {
+  const runId = String(row.run_id ?? row.id ?? "");
+  const statusMap: Record<string, Run["status"]> = {
+    pending: "pending",
+    in_progress: "running",
+    running: "running",
+    completed: "completed",
+    failed: "failed",
+    blocked: "conflict",
+    reset: "reset",
+    merged: "merged",
+    "pr-created": "pr-created",
+    conflict: "conflict",
+    "test-failed": "test-failed",
+  };
+  return {
+    id: runId,
+    project_id: String(row.project_id ?? ""),
+    seed_id: String(row.task_id ?? ""),
+    agent_type: "elixir",
+    session_key: null,
+    worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : null,
+    status: statusMap[String(row.status ?? "failed")] ?? "failed",
+    started_at: typeof row.started_at === "string" ? row.started_at : null,
+    completed_at: typeof row.completed_at === "string" ? row.completed_at : null,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date(0).toISOString(),
+    progress: null,
+    base_branch: typeof row.base_branch === "string" ? row.base_branch : null,
+    merge_strategy: null,
+  };
+}
+
+async function resolveElixirRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
+  const projectPath = await resolveProjectPathFromOptions(opts);
+  const projects = await listRegisteredProjects();
+  const project = projects.find((entry) => entry.path === projectPath || entry.name === opts.project || entry.id === opts.project);
+  if (!project) return null;
+
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const runId = opts.run ?? id;
+  const rows = await client.listRuns({ projectId: project.id });
+  const runs = rows.map(normalizeElixirRun);
+
+  if (runId && /^[0-9a-f-]{8,}$/i.test(runId)) {
+    const direct = runs.find((run) => run.id === runId || run.id.startsWith(runId));
+    if (direct) return { run: direct, progress: null, taskId: direct.seed_id };
+  }
+
+  if (!id) return null;
+
+  const tasks = await client.listTasks();
+  const matches = tasks.filter((task) => task.project_id === project.id).filter((task) => {
+    const taskId = task.task_id ?? task.id ?? "";
+    return taskId === id || taskId.startsWith(id);
+  });
+  if (matches.length === 1) {
+    const taskId = matches[0]?.task_id ?? matches[0]?.id ?? "";
+    const taskRunId = matches[0]?.run_id;
+    if (taskRunId) {
+      const run = runs.find((candidate) => candidate.id === taskRunId);
+      if (run) return { run, progress: null, taskId };
+    }
+  }
+
+  const match = runs.find((run) => run.id === id || run.id.startsWith(id) || run.seed_id === id || run.seed_id.startsWith(id));
+  if (!match) return null;
+  return { run: match, progress: null, taskId: match.seed_id };
+}
+
 async function resolveDaemonRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
   const projectPath = await resolveProjectPathFromOptions(opts);
   const projects = await listRegisteredProjects();
@@ -287,10 +361,15 @@ async function resolveLocalRun(id: string | undefined, opts: LogsOpts): Promise<
 
 async function resolveRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
   try {
-    const daemon = await resolveDaemonRun(id, opts);
-    if (daemon) return daemon;
+    if (foremanBackendMode() === "elixir") {
+      const elixir = await resolveElixirRun(id, opts);
+      if (elixir) return elixir;
+    } else {
+      const daemon = await resolveDaemonRun(id, opts);
+      if (daemon) return daemon;
+    }
   } catch {
-    // Fall back to local store when daemon is unavailable.
+    // Fall back to local store when backend resolution is unavailable.
   }
   return resolveLocalRun(id, opts);
 }

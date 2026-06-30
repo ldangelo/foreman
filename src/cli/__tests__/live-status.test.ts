@@ -34,6 +34,9 @@ const {
   mockProjectsStats,
   mockProjectsListNeedsHuman,
   mockRunsListActive,
+  mockEnsureRunning,
+  mockElixirListTasks,
+  mockElixirListRuns,
 } = vi.hoisted(() => {
   const mockGetRepoRoot = vi.fn().mockResolvedValue("/mock/project");
   const mockCreateVcsBackend = vi.fn().mockResolvedValue({
@@ -94,6 +97,9 @@ const {
   const mockProjectsStats = vi.fn();
   const mockProjectsListNeedsHuman = vi.fn();
   const mockRunsListActive = vi.fn();
+  const mockEnsureRunning = vi.fn();
+  const mockElixirListTasks = vi.fn();
+  const mockElixirListRuns = vi.fn();
   const mockCreateTrpcClient = vi.fn(() => ({
     projects: {
       stats: mockProjectsStats,
@@ -132,6 +138,9 @@ const {
     mockProjectsStats,
     mockProjectsListNeedsHuman,
     mockRunsListActive,
+    mockEnsureRunning,
+    mockElixirListTasks,
+    mockElixirListRuns,
   };
 });
 
@@ -153,6 +162,21 @@ vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: mockCreateTrpcClient,
 }));
 
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn().mockImplementation(function MockElixirServerManager() {
+    return { ensureRunning: mockEnsureRunning };
+  }),
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn().mockImplementation(function MockElixirServerClient() {
+    return {
+      listTasks: mockElixirListTasks,
+      listRuns: mockElixirListRuns,
+    };
+  }),
+}));
+
 vi.mock("../commands/project-task-support.js", () => ({
   listRegisteredProjects: mockListRegisteredProjects,
   requireProjectOrAllInMultiMode: vi.fn().mockResolvedValue(undefined),
@@ -172,17 +196,19 @@ vi.mock("../../lib/feature-flags.js", () => ({
 // ── process.exit mock ────────────────────────────────────────────────────────
 let exitSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
+  process.env.FOREMAN_BACKEND = "node";
   exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number | string | null | undefined) => {
     throw new Error(`process.exit(${code ?? ""}) called`);
   });
 });
 afterEach(() => {
+  delete process.env.FOREMAN_BACKEND;
   exitSpy.mockRestore();
 });
 
 // ── Imports ─────────────────────────────────────────────────────────────────
 import { renderLiveStatusHeader, type StatusCounts } from "../commands/status.js";
-import { fetchDaemonStatusSnapshot, fetchStatusCounts } from "../commands/status.js";
+import { fetchDaemonStatusSnapshot, fetchStatusCounts, renderDaemonRunCard } from "../commands/status.js";
 import { statusCommand } from "../commands/status.js";
 import {
   renderProjectHeader,
@@ -289,6 +315,36 @@ describe("daemon-backed status helpers", () => {
     expect(mockProjectsStats).toHaveBeenCalledWith({ projectId: "proj-1" });
   });
 
+  it("uses Elixir status snapshot/counts in default Elixir mode", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "test-project", path: "/mock/project/./" },
+    ]);
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockElixirListTasks.mockResolvedValue([
+      { task_id: "task-1", project_id: "proj-1", status: "ready" },
+      { task_id: "task-2", project_id: "proj-1", status: "failed" },
+      { task_id: "task-3", project_id: "proj-1", status: "stuck" },
+      { task_id: "task-4", project_id: "proj-1", status: "closed" },
+    ]);
+    mockElixirListRuns.mockResolvedValue([
+      { run_id: "run-1", project_id: "proj-1", task_id: "task-1", status: "in_progress", created_at: "2026-01-01T09:45:00Z" },
+    ]);
+
+    const snapshot = await fetchDaemonStatusSnapshot("/mock/project/../project");
+    const counts = await fetchStatusCounts("/mock/project/../project");
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(snapshot).toMatchObject({
+      projectId: "proj-1",
+      failed: 1,
+      stuck: 1,
+      counts: { total: 4, ready: 1, inProgress: 0, completed: 1, blocked: 2 },
+    });
+    expect(snapshot?.activeRuns).toHaveLength(1);
+    expect(counts).toEqual({ total: 4, ready: 1, inProgress: 0, completed: 1, blocked: 2 });
+  });
+
   it("keeps the local fallback when no registered project matches", async () => {
     mockListRegisteredProjects.mockResolvedValue([
       { id: "proj-1", name: "test-project", path: "/mock/project" },
@@ -357,9 +413,118 @@ describe("daemon-backed status helpers", () => {
       daemonSpy.mockRestore();
     }
   });
+
+  it("emits daemon-backed JSON output when a registered daemon snapshot is available", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await statusCommand.parseAsync(["node", "foreman", "--json"], { from: "node" });
+
+    const parsed = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+    expect(parsed.tasks).toMatchObject({
+      total: 20,
+      ready: 3,
+      inProgress: 4,
+      completed: 11,
+      blocked: 2,
+      failed: 1,
+      stuck: 1,
+    });
+    expect(parsed.agents.active).toHaveLength(1);
+  });
+
+  it("emits local fallback JSON output when no daemon project matches", async () => {
+    mockListRegisteredProjects.mockResolvedValue([]);
+    MockForemanStore.forProject.mockImplementation(() => ({
+      getProjectByPath: () => ({ id: "proj-local", path: "/mock/project" }),
+      getRecentOutcomeCounts: () => ({ failed: 2, stuck: 1 }),
+      getActiveRuns: () => [{ id: "run-1", status: "running", seed_id: "seed-1" }],
+      getRunProgress: () => ({ currentPhase: "developer", turns: 2, toolCalls: 1, costUsd: 0.01 }),
+      getSuccessRate: () => ({ rate: 75, merged: 3, failed: 1 }),
+      getMetrics: () => ({ totalCost: 1.23, totalTokens: 456, tasksByStatus: {}, costByRuntime: [] }),
+      close: vi.fn(),
+    }) as any);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await statusCommand.parseAsync(["node", "foreman", "--json"], { from: "node" });
+
+    const parsed = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+    expect(parsed.tasks.failed).toBe(2);
+    expect(parsed.tasks.stuck).toBe(1);
+    expect(parsed.successRate).toMatchObject({ rate: 75, merged: 3, failed: 1 });
+    expect(parsed.costs).toMatchObject({ totalCost: 1.23, totalTokens: 456 });
+  });
 });
 
 // ── Tests: renderLiveStatusHeader() ─────────────────────────────────────────
+
+describe("status --all aggregation", () => {
+  it("warns when --all has no registered projects", async () => {
+    mockListRegisteredProjects.mockResolvedValue([]);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await statusCommand.parseAsync(["node", "foreman", "--all"], { from: "node" });
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("No registered projects found"));
+  });
+
+  it("aggregates registered project stats and ignores stale project failures", async () => {
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "one", path: "/mock/project-1" },
+      { id: "proj-2", name: "two", path: "/mock/project-2" },
+    ]);
+    mockProjectsStats
+      .mockResolvedValueOnce({
+        tasks: { backlog: 1, ready: 2, inProgress: 3, approved: 0, merged: 4, closed: 5, total: 15 },
+        runs: { active: 1, pending: 0 },
+      })
+      .mockRejectedValueOnce(new Error("stale project"));
+    mockProjectsListNeedsHuman
+      .mockResolvedValueOnce([{ status: "failed" }, { status: "conflict" }, { status: "stuck" }])
+      .mockResolvedValueOnce([]);
+    mockRunsListActive
+      .mockResolvedValueOnce([{ id: "run-1", status: "running", created_at: "2026-01-01T00:00:00Z" }])
+      .mockResolvedValueOnce([]);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await statusCommand.parseAsync(["node", "foreman", "--all"], { from: "node" });
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Tasks (All Projects)");
+    expect(rendered).toContain("Total:");
+    expect(rendered).toContain("15");
+    expect(rendered).toContain("Failed (24h): 2");
+    expect(rendered).toContain("Stuck (24h):  1");
+    expect(rendered).toContain("Active Agents: 1");
+    expect(rendered).toContain("Projects: one, two");
+  });
+});
+
+describe("renderDaemonRunCard()", () => {
+  it("falls back to bead_id and derived branch when seed_id/branch are missing", () => {
+    const line = renderDaemonRunCard({
+      id: "run-2",
+      bead_id: "seed-2",
+      status: "pending",
+      created_at: "2026-01-01T10:00:00Z",
+    });
+
+    expect(line).toContain("seed-2");
+    expect(line).toContain("PENDING");
+    expect(line).toContain("foreman/seed-2");
+  });
+
+  it("falls back to the run id and dash branch when no task identity is available", () => {
+    const line = renderDaemonRunCard({
+      id: "run-3",
+      status: "running",
+      created_at: "2026-01-01T10:00:00Z",
+    });
+
+    expect(line).toContain("run-3");
+    expect(line).toContain("RUNNING");
+    expect(line).toContain("—");
+  });
+});
 
 describe("renderLiveStatusHeader()", () => {
   it("includes 'Tasks:' label", () => {

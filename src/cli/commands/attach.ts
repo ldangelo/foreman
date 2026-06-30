@@ -43,7 +43,7 @@ interface DaemonMailMessage {
   deleted_at: string | null;
 }
 
-function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
+export function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
   const statusMap: Record<string, Run["status"]> = {
     pending: "pending",
     running: "running",
@@ -69,7 +69,7 @@ function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
   };
 }
 
-async function resolveDaemonAttachContext(projectPath: string): Promise<DaemonAttachContext | null> {
+export async function resolveDaemonAttachContext(projectPath: string): Promise<DaemonAttachContext | null> {
   try {
     const projects = await listRegisteredProjects();
     const project = projects.find((record) => record.path === projectPath);
@@ -84,13 +84,13 @@ async function resolveDaemonAttachContext(projectPath: string): Promise<DaemonAt
   }
 }
 
-async function resolveDaemonRun(context: DaemonAttachContext, id: string): Promise<Run | null> {
+export async function resolveDaemonRun(context: DaemonAttachContext, id: string): Promise<Run | null> {
   const runs = await context.client.runs.list({ projectId: context.projectId, limit: 100 }) as DaemonRunRow[];
   const row = runs.find((run) => run.id === id || run.id.startsWith(id) || run.bead_id === id);
   return row ? adaptDaemonRun(row, context.projectPath) : null;
 }
 
-function adaptDaemonMessage(row: DaemonMailMessage): Message {
+export function adaptDaemonMessage(row: DaemonMailMessage): Message {
   return {
     id: row.id,
     run_id: row.run_id,
@@ -488,7 +488,7 @@ async function handleStream(
   });
 }
 
-async function handleStreamDaemon(
+export async function handleStreamDaemon(
   run: Run,
   context: DaemonAttachContext,
   signal?: AbortSignal,
@@ -655,10 +655,15 @@ function handleWorktree(run: Run): Promise<number> {
   const shell = process.env.SHELL ?? "/bin/bash";
 
   return new Promise<number>((resolve) => {
-    spawn(shell, [], {
+    const child = spawn(shell, [], {
       cwd: run.worktree_path!,
       stdio: "inherit",
-    }).on("exit", (code) => resolve(code ?? 0));
+    });
+    child.on("error", (err) => {
+      console.error(`Failed to launch shell: ${err.message}`);
+      resolve(1);
+    });
+    child.on("exit", (code) => resolve(code ?? 0));
   });
 }
 

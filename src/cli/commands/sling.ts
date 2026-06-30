@@ -8,6 +8,9 @@ import { analyzeParallel } from "../../orchestrator/sprint-parallel.js";
 import { execute } from "../../orchestrator/sling-executor.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import type { TaskRow } from "../../lib/task-store.js";
 import type { SlingPlan, SlingOptions, SlingResult, ParallelResult } from "../../orchestrator/types.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-task-support.js";
@@ -112,6 +115,82 @@ function createDaemonSlingWriter(client: ReturnType<typeof createTrpcClient>, pr
     },
     async addDependency(fromId: string, toId: string, type: "blocks" | "parent-child" = "blocks") {
       await client.tasks.addDependency({ projectId, fromTaskId: fromId, toTaskId: toId, type });
+    },
+  };
+}
+
+async function createElixirSlingWriter(projectId: string) {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+
+  const listProjectTasks = async (): Promise<ElixirTask[]> => (await client.listTasks()).filter((task) => task.project_id === projectId);
+
+  return {
+    async getByExternalId(externalId: string) {
+      const rows = await listProjectTasks();
+      return rows.find((row) => row.external_id === externalId) ?? null;
+    },
+    async create(opts: { title: string; description?: string | null; type?: string; priority?: number; externalId?: string }) {
+      const existing = await listProjectTasks();
+      const prefix = "foreman";
+      let id = "";
+      for (;;) {
+        const candidate = `${prefix}-${Math.random().toString(16).slice(2, 7)}`;
+        if (!existing.some((row) => (row.task_id ?? row.id) === candidate)) {
+          id = candidate;
+          break;
+        }
+      }
+      const response = await client.sendCommand({
+        command_id: `sling-create-${id}`,
+        command_type: "task.create",
+        payload: {
+          project_id: projectId,
+          task_id: id,
+          title: opts.title,
+          description: opts.description ?? undefined,
+          task_type: opts.type ?? "task",
+          priority: opts.priority ?? 2,
+          external_id: opts.externalId,
+          status: "backlog",
+        },
+      });
+      if (!response.ok) throw new Error(response.error.message);
+      const created = await client.getTask(id);
+      return created as unknown as TaskRow;
+    },
+    async update(id: string, opts: { title?: string; description?: string | null; priority?: number; force?: boolean }) {
+      void opts.force;
+      const response = await client.sendCommand({
+        command_id: `sling-update-${id}`,
+        command_type: "task.update",
+        payload: {
+          project_id: projectId,
+          task_id: id,
+          title: opts.title,
+          description: opts.description ?? undefined,
+          priority: opts.priority,
+        },
+      });
+      if (!response.ok) throw new Error(response.error.message);
+      return await client.getTask(id) as unknown as TaskRow;
+    },
+    async close(id: string, _reason?: string) {
+      const response = await client.sendCommand({
+        command_id: `sling-close-${id}`,
+        command_type: "task.close",
+        payload: { project_id: projectId, task_id: id },
+      });
+      if (!response.ok) throw new Error(response.error.message);
+    },
+    async addDependency(fromId: string, toId: string, _type: "blocks" | "parent-child" = "blocks") {
+      const response = await client.sendCommand({
+        command_id: `sling-dep-${fromId}-${toId}`,
+        command_type: "task.add_dependency",
+        payload: { task_id: fromId, depends_on: toId },
+      });
+      if (!response.ok) throw new Error(response.error.message);
     },
   };
 }
@@ -243,7 +322,9 @@ async function handleTrdImport(
   if (!project) {
     throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
   }
-  const taskWriter = createDaemonSlingWriter(createTrpcClient(), project.id);
+  const taskWriter = foremanBackendMode() === "elixir"
+    ? await createElixirSlingWriter(project.id)
+    : createDaemonSlingWriter(createTrpcClient(), project.id);
   const spinner = createProgressSpinner();
   const result = await execute(
     plan,

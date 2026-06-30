@@ -118,12 +118,12 @@ describe("prompt loader", () => {
     const foremanHome = makeForemanHome();
     writeFileSync(
       join(foremanHome, "prompts", "default", "developer.md"),
-      "# Developer Agent\nRead EXPLORER_REPORT.md\nImplementation Plan",
+      "# Developer Agent\nRead EXPLORER_REPORT.md\n## Developer Handoff",
       "utf8",
     );
     writeFileSync(
       join(foremanHome, "prompts", "default", "explorer.md"),
-      "# Explorer Agent\n## Implementation Plan\n### Likely Edit Files",
+      "# Explorer Agent\n## Developer Handoff\n### Edit First",
       "utf8",
     );
 

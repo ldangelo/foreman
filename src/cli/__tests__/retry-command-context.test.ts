@@ -10,6 +10,12 @@ const mockForemanForProject = vi.hoisted(() => vi.fn());
 const mockPostgresForProject = vi.hoisted(() => vi.fn());
 const mockDispatcherCtor = vi.hoisted(() => vi.fn());
 const mockPostgresAdapterCtor = vi.hoisted(() => vi.fn());
+const mockForemanBackendMode = vi.hoisted(() => vi.fn());
+const mockEnsureRunning = vi.hoisted(() => vi.fn());
+const mockGetTask = vi.hoisted(() => vi.fn());
+const mockListRuns = vi.hoisted(() => vi.fn());
+const mockSendCommand = vi.hoisted(() => vi.fn());
+const mockSchedulerTick = vi.hoisted(() => vi.fn());
 
 const mockLocalTaskClient = {
   show: vi.fn().mockResolvedValue({ status: "open", title: "Local bead" }),
@@ -59,6 +65,27 @@ vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: mockCreateTrpcClient,
 }));
 
+vi.mock("../../lib/backend-mode.js", () => ({
+  foremanBackendMode: mockForemanBackendMode,
+}));
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn().mockImplementation(function MockElixirServerManager() {
+    return { ensureRunning: mockEnsureRunning };
+  }),
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn().mockImplementation(function MockElixirServerClient() {
+    return {
+      getTask: mockGetTask,
+      listRuns: mockListRuns,
+      sendCommand: mockSendCommand,
+      schedulerTick: mockSchedulerTick,
+    };
+  }),
+}));
+
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: {
     forProject: mockForemanForProject,
@@ -91,6 +118,8 @@ describe("retry command bootstrap", () => {
 
     mockRequireProjectOrAllInMultiMode.mockResolvedValue(undefined);
     mockResolveRepoRootProjectPath.mockResolvedValue("/canonical/project");
+    mockForemanBackendMode.mockReturnValue("node");
+    mockListRegisteredProjects.mockResolvedValue([]);
     mockListRegisteredProjects.mockResolvedValue([]);
     mockEnsureCliPostgresPool.mockImplementation(() => undefined);
     mockCreateTaskClient.mockResolvedValue({ taskClient: mockLocalTaskClient, backendType: "beads" });
@@ -100,6 +129,11 @@ describe("retry command bootstrap", () => {
     mockDispatcherCtor.mockImplementation(function MockDispatcherImpl(this: Record<string, unknown>) {
       this.dispatch = vi.fn();
     });
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+    mockGetTask.mockResolvedValue({ task_id: "bead-1", project_id: "proj-1", status: "failed", title: "Registered bead" });
+    mockListRuns.mockResolvedValue([]);
+    mockSendCommand.mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr-1" });
+    mockSchedulerTick.mockResolvedValue({ claimed: [], skipped: [] });
     mockPostgresAdapterCtor.mockImplementation(function MockPostgresAdapterImpl(this: Record<string, unknown>) {
       return {};
     });
@@ -139,6 +173,49 @@ describe("retry command bootstrap", () => {
     expect(runOps.sendMessage).toBeTypeOf("function");
     expect(runOps.logEvent).toBeTypeOf("function");
 
+  });
+
+  it("routes registered retry through Elixir task/runs APIs in Elixir mode", async () => {
+    mockForemanBackendMode.mockReturnValue("elixir");
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "my-project", path: "/canonical/project" },
+    ]);
+
+    await runCommand(["bead-1", "--dry-run", "--project", "my-project", "--project-path", "/worktrees/my-project"]);
+
+    expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+    expect(mockCreateTaskClient).not.toHaveBeenCalled();
+    expect(mockGetTask).toHaveBeenCalledWith("bead-1");
+    expect(mockListRuns).toHaveBeenCalledWith({ projectId: "proj-1" });
+    expect(mockSendCommand).not.toHaveBeenCalled();
+    expect(mockSchedulerTick).not.toHaveBeenCalled();
+    expect(mockPostgresForProject).not.toHaveBeenCalled();
+    expect(mockDispatcherCtor).not.toHaveBeenCalled();
+  });
+
+  it("routes registered retry --dispatch through Elixir scheduler tick in Elixir mode", async () => {
+    mockForemanBackendMode.mockReturnValue("elixir");
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "my-project", path: "/canonical/project" },
+    ]);
+
+    await runCommand(["bead-1", "--dispatch", "--project", "my-project", "--project-path", "/worktrees/my-project"]);
+
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.update",
+      payload: expect.objectContaining({ project_id: "proj-1", task_id: "bead-1", status: "ready" }),
+    }));
+    expect(mockSchedulerTick).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed in Elixir mode when the resolved project is not registered", async () => {
+    mockForemanBackendMode.mockReturnValue("elixir");
+    mockListRegisteredProjects.mockResolvedValue([]);
+
+    await runCommand(["bead-1", "--project-path", "/canonical/project"]);
+
+    expect(mockGetTask).not.toHaveBeenCalled();
+    expect(vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("not registered in Elixir projections");
   });
 
   it("keeps local/unregistered behavior unchanged", async () => {

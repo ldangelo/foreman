@@ -14,8 +14,9 @@ import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
 import { installBundledWorkflows, BUNDLED_WORKFLOW_NAMES } from "../../lib/workflow-loader.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { DatabaseConfigError, DatabaseError } from "../../lib/db/pool-manager.js";
-import { ensureCliPostgresPool } from "./project-task-support.js";
+import { ensureCliPostgresPool, registerProjectInElixir } from "./project-task-support.js";
 import { encrypt } from "../../lib/encryption.js";
 
 type Awaitable<T> = T | Promise<T>;
@@ -272,6 +273,11 @@ async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
   }
 }
 
+export async function maybeRegisterInitializedProjectInElixir(projectDir: string, projectName: string): Promise<void> {
+  if (foremanBackendMode() !== "elixir") return;
+  await registerProjectInElixir(projectDir, { name: projectName, status: "active" });
+}
+
 export function formatInitDatabaseError(err: unknown, projectDir: string): string {
   const intro = "Failed to initialize the Postgres-backed project registry.";
   const fix = `Set DATABASE_URL in ${join(projectDir, ".env")} or your environment to a full Postgres URL like postgresql://user:password@host:5432/database.`;
@@ -361,6 +367,13 @@ export const initCommand = new Command("init")
       process.exit(1);
     } finally {
       store?.close();
+    }
+
+    try {
+      await maybeRegisterInitializedProjectInElixir(projectDir, projectName);
+    } catch (err) {
+      console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+      process.exit(1);
     }
 
     // Install bundled prompt templates to .foreman/prompts/

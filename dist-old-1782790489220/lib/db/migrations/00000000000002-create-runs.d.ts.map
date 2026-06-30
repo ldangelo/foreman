@@ -1,0 +1,1 @@
+{"version":3,"file":"00000000000002-create-runs.d.ts","sourceRoot":"","sources":["../../../../src/lib/db/migrations/00000000000002-create-runs.ts"],"names":[],"mappings":"AAAA;;;;;;;GAOG;AAEH,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,iBAAiB,CAAC;AAExD,wBAAsB,EAAE,CAAC,SAAS,EAAE,gBAAgB,GAAG,OAAO,CAAC,IAAI,CAAC,CAmMnE;AAED,wBAAsB,IAAI,CAAC,SAAS,EAAE,gBAAgB,GAAG,OAAO,CAAC,IAAI,CAAC,CAIrE"}

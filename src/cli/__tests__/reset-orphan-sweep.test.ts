@@ -115,4 +115,54 @@ describe("cleanOrphanWorktrees — keep-set from the async (helper) store", () =
     // "failed"/"stuck" must NOT be consulted as active statuses.
     expect(store.getRunsByStatus).not.toHaveBeenCalledWith("failed", "proj-1");
   });
+
+  it("ignores already-missing worktrees and branches without logging errors", async () => {
+    const worktreesDir = "/wt/.foreman-worktrees/repo";
+    const logs: string[] = [];
+    const store = {
+      getRunsByStatus: vi.fn(async (_status: Run["status"], _projectId: string): Promise<Run[]> => []),
+    };
+    const vcs = {
+      removeWorkspace: vi.fn(async (): Promise<void> => {
+        throw new Error("path is not a working tree");
+      }),
+      deleteBranch: vi.fn(async (): Promise<{ deleted: boolean }> => {
+        throw new Error("branch missing");
+      }),
+    };
+
+    const result = await cleanOrphanWorktrees(store, vcs, "/repo", worktreesDir, "proj-1", {
+      readdir: () => ["bd-gone"],
+      logger: (msg) => logs.push(msg),
+    });
+
+    expect(vcs.removeWorkspace).toHaveBeenCalledWith("/repo", `${worktreesDir}/bd-gone`);
+    expect(vcs.deleteBranch).toHaveBeenCalledWith("/repo", "foreman/bd-gone", { force: true });
+    expect(result.worktreesRemoved).toBe(0);
+    expect(result.branchesDeleted).toBe(0);
+    expect(logs.some((line) => line.includes("error removing orphaned worktree"))).toBe(false);
+  });
+
+  it("logs unexpected orphan worktree removal errors", async () => {
+    const worktreesDir = "/wt/.foreman-worktrees/repo";
+    const logs: string[] = [];
+    const store = {
+      getRunsByStatus: vi.fn(async (_status: Run["status"], _projectId: string): Promise<Run[]> => []),
+    };
+    const vcs = {
+      removeWorkspace: vi.fn(async (): Promise<void> => {
+        throw new Error("permission denied");
+      }),
+      deleteBranch: vi.fn(async (): Promise<{ deleted: boolean }> => ({ deleted: false })),
+    };
+
+    const result = await cleanOrphanWorktrees(store, vcs, "/repo", worktreesDir, "proj-1", {
+      readdir: () => ["bd-error"],
+      logger: (msg) => logs.push(msg),
+    });
+
+    expect(result.worktreesRemoved).toBe(0);
+    expect(result.branchesDeleted).toBe(0);
+    expect(logs.some((line) => line.includes("error removing orphaned worktree: permission denied"))).toBe(true);
+  });
 });

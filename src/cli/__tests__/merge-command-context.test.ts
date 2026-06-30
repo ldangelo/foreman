@@ -467,4 +467,352 @@ describe("merge command registered context", () => {
       undefined,
     );
   });
+
+  it("requires --strategy when using --resolve", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as never);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runCommand(["--resolve", "run-1"]);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("--strategy <theirs|abort> is required"));
+  });
+
+  it("rejects invalid --strategy values for --resolve", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as never);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runCommand(["--resolve", "run-1", "--strategy", "ours"]);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("Invalid strategy 'ours'"));
+  });
+
+  it("dry-run exits early when the queue is empty", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--dry-run"]);
+
+    expect(MockRefinery.mock.results[0]?.value.mergeCompleted).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("No branches in merge queue to preview."));
+  });
+
+  it("reports when --resolve cannot find the requested run", async () => {
+    mockLocalGetRun.mockReturnValue(null);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as never);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runCommand(["--resolve", "run-missing", "--strategy", "theirs"]);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("Run 'run-missing' not found."));
+  });
+
+  it("rejects --resolve for runs that are not in conflict state", async () => {
+    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "completed" });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as never);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runCommand(["--resolve", "run-1", "--strategy", "theirs"]);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("is not in conflict state"));
+  });
+
+  it("prints success output when --resolve merges cleanly", async () => {
+    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "conflict" });
+    MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
+      this.mergeCompleted = vi.fn();
+      this.resolveConflict = vi.fn().mockResolvedValue(true);
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--resolve", "run-1", "--strategy", "theirs"]);
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Resolving conflict for seed-1");
+    expect(rendered).toContain("merged successfully");
+  });
+
+  it("prints abort output when --resolve aborts after an unresolved conflict", async () => {
+    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "conflict" });
+    MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
+      this.mergeCompleted = vi.fn();
+      this.resolveConflict = vi.fn().mockResolvedValue(false);
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--resolve", "run-1", "--strategy", "abort"]);
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Merge aborted");
+    expect(rendered).toContain("marked as failed");
+  });
+
+  it("prints failure output when --resolve with theirs still fails", async () => {
+    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "conflict" });
+    MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
+      this.mergeCompleted = vi.fn();
+      this.resolveConflict = vi.fn().mockResolvedValue(false);
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--resolve", "run-1", "--strategy", "theirs"]);
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Failed to resolve conflict for seed-1");
+    expect(rendered).toContain("marked as failed");
+  });
+
+  it("lists queue entries as JSON", async () => {
+    MockMergeQueue.mockImplementationOnce(function MockMergeQueueImpl(this: Record<string, unknown>) {
+      this.reconcile = vi.fn().mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
+      this.list = vi.fn().mockResolvedValue([
+        {
+          id: 1,
+          branch_name: "foreman/seed-1",
+          seed_id: "seed-1",
+          run_id: "run-1",
+          enqueued_at: new Date().toISOString(),
+          status: "pending",
+          files_modified: ["a.ts"],
+          error: null,
+          retry_count: 0,
+        },
+      ]);
+      this.resetForRetry = vi.fn();
+      this.dequeue = vi.fn();
+      this.updateStatus = vi.fn();
+      this.getRetryableEntries = vi.fn().mockResolvedValue([]);
+      this.reEnqueue = vi.fn().mockResolvedValue(false);
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--list", "--json"]);
+
+    const parsed = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+    expect(parsed.entries).toHaveLength(1);
+    expect(parsed.entries[0]).toMatchObject({ seed_id: "seed-1", run_id: "run-1" });
+  });
+
+  it("lists queue entries with reconcile banner in text mode", async () => {
+    MockMergeQueue.mockImplementationOnce(function MockMergeQueueImpl(this: Record<string, unknown>) {
+      this.reconcile = vi.fn().mockResolvedValue({ enqueued: 2, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
+      this.list = vi.fn().mockResolvedValue([
+        {
+          id: 1,
+          branch_name: "foreman/seed-1",
+          seed_id: "seed-1",
+          run_id: "run-1",
+          enqueued_at: new Date(Date.now() - 60_000).toISOString(),
+          status: "pending",
+          files_modified: ["a.ts", "b.ts"],
+          error: "merge blocked",
+          retry_count: 0,
+        },
+      ]);
+      this.resetForRetry = vi.fn();
+      this.dequeue = vi.fn();
+      this.updateStatus = vi.fn();
+      this.getRetryableEntries = vi.fn().mockResolvedValue([]);
+      this.reEnqueue = vi.fn().mockResolvedValue(false);
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--list"]);
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("reconciled 2 new entry/entries into queue");
+    expect(rendered).toContain("Merge queue (1 entries)");
+    expect(rendered).toContain("seed-1");
+    expect(rendered).toContain("merge blocked");
+    expect(rendered).toContain("Merge all:");
+    expect(rendered).toContain("Merge one:");
+  });
+
+  it("prints a JSON error when no project is registered and --json is used", async () => {
+    mockGetProjectByPath.mockReturnValue(null);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as never);
+
+    await runCommand(["--json"]);
+
+    const parsed = JSON.parse(String(errorSpy.mock.calls[0]?.[0] ?? "{}"));
+    expect(parsed).toEqual({ error: "No project registered. Run 'foreman init' first." });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("lists an empty merge queue as JSON", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--list", "--json"]);
+
+    const parsed = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+    expect(parsed).toEqual({ entries: [] });
+  });
+
+  it("prints the empty merge queue message in text mode", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--list"]);
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("No beads in merge queue."));
+  });
+
+  it("prints branch-missing reconcile warnings before reporting no completed tasks", async () => {
+    MockMergeQueue.mockImplementationOnce(function MockMergeQueueImpl(this: Record<string, unknown>) {
+      this.reconcile = vi.fn().mockResolvedValue({
+        enqueued: 0,
+        skipped: 0,
+        invalidBranch: 0,
+        failedToEnqueue: [{ run_id: "run-1", seed_id: "seed-1", reason: "branch missing" }],
+      });
+      this.list = vi.fn().mockResolvedValue([]);
+      this.resetForRetry = vi.fn().mockResolvedValue(true);
+      this.dequeue = vi.fn().mockResolvedValue(null);
+      this.updateStatus = vi.fn().mockResolvedValue(undefined);
+      this.getRetryableEntries = vi.fn().mockResolvedValue([]);
+      this.reEnqueue = vi.fn().mockResolvedValue(false);
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand([]);
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("could not be enqueued");
+    expect(rendered).toContain("seed-1: branch missing");
+    expect(rendered).toContain("No completed tasks to merge.");
+  });
+
+  it("prints the task-filter empty-state guidance when no completed run is found", async () => {
+    MockMergeQueue.mockImplementationOnce(function MockMergeQueueImpl(this: Record<string, unknown>) {
+      this.reconcile = vi.fn().mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
+      this.list = vi.fn().mockResolvedValue([]);
+      this.resetForRetry = vi.fn().mockResolvedValue(true);
+      this.dequeue = vi.fn().mockResolvedValue(null);
+      this.updateStatus = vi.fn().mockResolvedValue(undefined);
+      this.getRetryableEntries = vi.fn().mockResolvedValue([]);
+      this.reEnqueue = vi.fn().mockResolvedValue(false);
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--task", "seed-404"]);
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("No completed run found for task seed-404.");
+    expect(rendered).toContain("Use 'foreman merge --list' to see tasks ready to merge.");
+  });
+
+  it("prints PR and test-failure summaries from the main merge loop", async () => {
+    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "completed" });
+    MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
+      this.resolveConflict = vi.fn();
+      this.mergeCompleted = vi.fn()
+        .mockResolvedValueOnce({
+          merged: [],
+          conflicts: [],
+          testFailures: [],
+          prsCreated: [{ seedId: "seed-1", branchName: "foreman/seed-1", prUrl: "https://example.test/pr/1" }],
+        })
+        .mockResolvedValueOnce({
+          merged: [],
+          conflicts: [],
+          testFailures: [{ runId: "run-2", seedId: "seed-2", branchName: "foreman/seed-2", error: "tests blew up\nstack" }],
+          prsCreated: [],
+        });
+    });
+    MockMergeQueue.mockImplementationOnce(function MockMergeQueueImpl(this: Record<string, unknown>) {
+      this.reconcile = vi.fn().mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
+      this.list = vi.fn().mockResolvedValue([]);
+      this.resetForRetry = vi.fn().mockResolvedValue(true);
+      this.dequeue = vi.fn()
+        .mockResolvedValueOnce({
+          id: 1,
+          branch_name: "foreman/seed-1",
+          seed_id: "seed-1",
+          run_id: "run-1",
+          enqueued_at: new Date().toISOString(),
+          status: "pending",
+          files_modified: [],
+          error: null,
+          retry_count: 0,
+        })
+        .mockResolvedValueOnce({
+          id: 2,
+          branch_name: "foreman/seed-2",
+          seed_id: "seed-2",
+          run_id: "run-2",
+          enqueued_at: new Date().toISOString(),
+          status: "pending",
+          files_modified: [],
+          error: null,
+          retry_count: 0,
+        })
+        .mockResolvedValueOnce(null);
+      this.updateStatus = vi.fn().mockResolvedValue(undefined);
+      this.getRetryableEntries = vi.fn().mockResolvedValue([]);
+      this.reEnqueue = vi.fn().mockResolvedValue(false);
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand([]);
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("PRs created for 1 conflicting task(s)");
+    expect(rendered).toContain("https://example.test/pr/1");
+    expect(rendered).toContain("Test failures in 1 task(s)");
+    expect(rendered).toContain("tests blew up");
+  });
+
+  it("prints detailed stats output including tier, model, and resolution rate", async () => {
+    MockMergeCostTracker.mockImplementationOnce(function MockMergeCostTrackerImpl(this: Record<string, unknown>) {
+      this.getStats = vi.fn().mockResolvedValue({
+        totalCostUsd: 12.3456,
+        totalInputTokens: 1234,
+        totalOutputTokens: 567,
+        entryCount: 3,
+        byTier: { "1": { count: 2, totalCostUsd: 10.5 } },
+        byModel: { "claude-sonnet": { count: 3, totalCostUsd: 12.3456 } },
+      });
+      this.getResolutionRate = vi.fn().mockResolvedValue({ total: 4, successes: 3, rate: 75 });
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--stats", "weekly"]);
+
+    const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Merge cost statistics (weekly)");
+    expect(rendered).toContain("Total cost:     $12.3456");
+    expect(rendered).toContain("By tier:");
+    expect(rendered).toContain("Tier 1: 2 calls, $10.5000");
+    expect(rendered).toContain("By model:");
+    expect(rendered).toContain("claude-sonnet: 3 calls, $12.3456");
+    expect(rendered).toContain("AI resolution rate (30 days):");
+    expect(rendered).toContain("3/4 conflicts (75.0%)");
+  });
+
+  it("prints stats as JSON when --stats and --json are combined", async () => {
+    MockMergeCostTracker.mockImplementationOnce(function MockMergeCostTrackerImpl(this: Record<string, unknown>) {
+      this.getStats = vi.fn().mockResolvedValue({
+        totalCostUsd: 1.25,
+        totalInputTokens: 100,
+        totalOutputTokens: 50,
+        entryCount: 2,
+        byTier: {},
+        byModel: {},
+      });
+      this.getResolutionRate = vi.fn().mockResolvedValue({ total: 0, successes: 0, rate: 0 });
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCommand(["--stats", "all", "--json"]);
+
+    const parsed = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+    expect(parsed).toMatchObject({
+      totalCostUsd: 1.25,
+      totalInputTokens: 100,
+      totalOutputTokens: 50,
+      entryCount: 2,
+    });
+  });
 });

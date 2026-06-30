@@ -15,8 +15,10 @@ const BUNDLED_WORKFLOWS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..'
 
 function loadBundledBugWorkflow() {
   const originalHome = process.env.HOME;
+  const originalForemanHome = process.env.FOREMAN_HOME;
   const tempHome = mkdtempSync(join(tmpdir(), 'foreman-bug-workflow-test-'));
   process.env.HOME = tempHome;
+  process.env.FOREMAN_HOME = tempHome;
   try {
     return loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
   } finally {
@@ -24,6 +26,11 @@ function loadBundledBugWorkflow() {
       delete process.env.HOME;
     } else {
       process.env.HOME = originalHome;
+    }
+    if (originalForemanHome === undefined) {
+      delete process.env.FOREMAN_HOME;
+    } else {
+      process.env.FOREMAN_HOME = originalForemanHome;
     }
     rmSync(tempHome, { recursive: true, force: true });
   }
@@ -100,8 +107,20 @@ describe('TRD-009 bug.yaml workflow integration', () => {
     });
 
     it('loadWorkflowConfig("bug") returns bug workflow', () => {
-      const wf = loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
-      expect(wf.name).toBe('bug');
+      const originalForemanHome = process.env.FOREMAN_HOME;
+      const tempHome = mkdtempSync(join(tmpdir(), 'foreman-bug-workflow-load-'));
+      process.env.FOREMAN_HOME = tempHome;
+      try {
+        const wf = loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
+        expect(wf.name).toBe('bug');
+      } finally {
+        if (originalForemanHome === undefined) {
+          delete process.env.FOREMAN_HOME;
+        } else {
+          process.env.FOREMAN_HOME = originalForemanHome;
+        }
+        rmSync(tempHome, { recursive: true, force: true });
+      }
     });
 
     it('bug type with no label → bug workflow', () => {

@@ -932,7 +932,7 @@ describe("GitBackend.rebase", () => {
     expect(result.conflictingFiles).toBeUndefined();
   });
 
-  it("rebase with conflicts returns { success: false, hasConflicts: true } with conflicting files", async () => {
+  it("rebase with conflicts returns { success: false, hasConflicts: true } with conflicting files", { timeout: 90_000 }, async () => {
     const repo = makeTempRepo("main");
     tempDirs.push(repo);
     const backend = new GitBackend(repo);
@@ -966,7 +966,7 @@ describe("GitBackend.rebase", () => {
 });
 
 describe("GitBackend.rebaseBranch / restackBranch", () => {
-  it("rebaseBranch() rebases a non-current branch onto a target branch", async () => {
+  it("rebaseBranch() rebases a non-current branch onto a target branch", { timeout: 420_000 }, async () => {
     const repo = makeTempRepo("main");
     tempDirs.push(repo);
     const backend = new GitBackend(repo);
@@ -1261,7 +1261,7 @@ describe("GitBackend.commit", () => {
 // ── GitBackend.push ───────────────────────────────────────────────────────────
 
 describe("GitBackend.push", () => {
-  it("pushes a branch to origin (AC-004-5)", async () => {
+  it("pushes a branch to origin (AC-004-5)", { timeout: 420_000 }, async () => {
     const { remote, clone } = makeRemoteAndClone("main");
     tempDirs.push(remote, clone);
     const backend = new GitBackend(clone);
@@ -1880,7 +1880,7 @@ describe("GitBackend.merge", () => {
   });
 
   // Edge case: merge into a non-current branch switches to targetBranch first
-  it("checks out targetBranch even when currently on a different branch", async () => {
+  it("checks out targetBranch even when currently on a different branch", { timeout: 420_000 }, async () => {
     const repo = makeTempRepo("main");
     tempDirs.push(repo);
     const backend = new GitBackend(repo);

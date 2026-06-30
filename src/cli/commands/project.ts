@@ -11,10 +11,12 @@
  * @module src/cli/commands/project
  */
 import chalk from "chalk";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { Command } from "commander";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { encrypt } from "../../lib/encryption.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { listRegisteredProjects, registerProjectInElixir } from "./project-task-support.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,6 +78,16 @@ function printProjectTable(projects: ProjectRow[], label?: string): void {
 
 function getClient() {
   return createTrpcClient();
+}
+
+function requireNodeProjectCommand(subcommand: string): void {
+  if (foremanBackendMode() !== "elixir") return;
+  console.error(
+    chalk.red(
+      `Error: 'foreman project ${subcommand}' is legacy Node-backed only. Set FOREMAN_BACKEND=node for explicit legacy operation.`,
+    ),
+  );
+  process.exit(1);
 }
 
 function collectErrorDetails(err: unknown): string[] {
@@ -162,6 +174,7 @@ const addCommand = new Command("add")
   .option("--jira-webhook-enabled", "Enable webhook-based triggers")
   .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
   .action(async (githubUrl: string, opts) => {
+    requireNodeProjectCommand("add");
     const client = getClient();
     try {
       const result = (await client.projects.add({
@@ -204,24 +217,64 @@ const addCommand = new Command("add")
   });
 
 // ---------------------------------------------------------------------------
+// foreman project register
+// ---------------------------------------------------------------------------
+
+const registerCommand = new Command("register")
+  .description("Register an existing local repository with Elixir project projections")
+  .argument("[path]", "Repository path (default: current directory)")
+  .option("--name <name>", "Project display name (default: directory name or existing registry name)")
+  .option("--default-branch <branch>", "Default branch name")
+  .option("--status <status>", "Project status", "active")
+  .action(async (pathArg: string | undefined, opts) => {
+    const projectPath = resolve(pathArg ?? process.cwd());
+    const fallbackName = opts.name ?? basename(projectPath);
+    try {
+      const project = await registerProjectInElixir(projectPath, {
+        name: opts.name,
+        defaultBranch: opts.defaultBranch,
+        status: opts.status as "active" | "paused" | "archived",
+      });
+      console.log(chalk.green(`✓ Project '${project.name ?? fallbackName}' registered with Elixir as '${project.id}'`));
+      console.log(chalk.dim(`  Path: ${project.path}`));
+      console.log(chalk.dim(`  Branch: ${project.defaultBranch ?? "main"}`));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`Error: ${message}`));
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
 // foreman project list
 // ---------------------------------------------------------------------------
 
 const listCommand = new Command("list")
-  .description("List all projects via ForemanDaemon")
+  .description("List all projects")
   .option("--status <status>", "Filter by status: active, paused, archived")
   .option("--search <term>", "Search by name")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const client = getClient();
-
     try {
-      const result = await client.projects.list({
-        status: opts.status as "active" | "paused" | "archived" | undefined,
-        search: opts.search,
-      });
-
-      const projects = result as ProjectRow[];
+      const projects = foremanBackendMode() === "elixir"
+        ? (await listRegisteredProjects()).filter((project) => {
+            if (opts.status && project.status && project.status !== opts.status) return false;
+            if (opts.status && !project.status && opts.status !== "active") return false;
+            if (opts.search && !project.name.toLowerCase().includes(String(opts.search).toLowerCase())) return false;
+            return true;
+          }).map((project) => ({
+            id: project.id,
+            name: project.name,
+            path: project.path,
+            status: project.status ?? "active",
+          }))
+        : await (async () => {
+            const client = getClient();
+            return await client.projects.list({
+              status: opts.status as "active" | "paused" | "archived" | undefined,
+              search: opts.search,
+            }) as ProjectRow[];
+          })();
 
       if (opts.json) {
         console.log(JSON.stringify(projects, null, 2));
@@ -250,6 +303,7 @@ const removeCommand = new Command("remove")
   .argument("<id>", "Project ID to remove")
   .option("--force", "Force remove even if there are active agents")
   .action(async (projectId: string, opts) => {
+    requireNodeProjectCommand("remove");
     const client = getClient();
 
     try {
@@ -321,6 +375,7 @@ const editCommand = new Command("edit")
   .option("--jira-webhook-enabled", "Enable webhook-based triggers")
   .option("--jira-webhook-secret-env <name>", "Environment variable for webhook secret")
   .action(async (projectId: string, opts) => {
+    requireNodeProjectCommand("edit");
     const client = getClient();
     try {
       // Build Jira config updates if any Jira options provided
@@ -348,8 +403,9 @@ const editCommand = new Command("edit")
 // ---------------------------------------------------------------------------
 
 export const projectCommand = new Command("project")
-  .description("Manage projects via ForemanDaemon (list/add/remove/edit)")
+  .description("Manage projects (Elixir register/list plus legacy-gated daemon add/remove/edit)")
   .addCommand(addCommand)
+  .addCommand(registerCommand)
   .addCommand(listCommand)
   .addCommand(removeCommand)
   .addCommand(editCommand);

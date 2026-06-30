@@ -103,19 +103,19 @@ describe("prompt templates", () => {
     expect(prompt).toContain("JWT token refresh");
     expect(prompt).toContain("DO NOT modify");
     expect(prompt).toContain("EXPLORER_REPORT.md");
-    expect(prompt).toContain("## Implementation Plan");
+    expect(prompt).toContain("## Developer Handoff");
   });
 
   it("developerPrompt includes seed context", () => {
     const prompt = developerPrompt("bd-123", "Fix auth", "JWT refresh", true);
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("EXPLORER_REPORT.md");
-    expect(prompt).toContain("Implementation Plan");
+    expect(prompt).toContain("Developer Handoff");
   });
 
   it("developerPrompt includes feedback when provided", () => {
     const prompt = developerPrompt("bd-123", "Fix auth", "desc", false, "Tests failed: auth.test.ts");
-    expect(prompt).toContain("Previous Feedback");
+    expect(prompt).toContain("Focused Repair Feedback");
     expect(prompt).toContain("Tests failed: auth.test.ts");
   });
 

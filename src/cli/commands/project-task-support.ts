@@ -1,7 +1,11 @@
 import chalk from "chalk";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { resolveProjectPath } from "../../lib/project-path.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirProject } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
@@ -13,9 +17,31 @@ export interface RegisteredProjectSummary {
   path: string;
   githubUrl?: string;
   defaultBranch?: string;
+  status?: string;
+}
+
+function summaryFromElixirProject(project: ElixirProject): RegisteredProjectSummary {
+  const path = resolve(project.path);
+  const id = project.project_id ?? project.id ?? basename(path);
+  const configuredName = typeof project.config?.name === "string" ? project.config.name : undefined;
+  return {
+    id,
+    name: project.name ?? configuredName ?? basename(path),
+    path,
+    defaultBranch: project.default_branch,
+    status: project.status,
+  };
 }
 
 export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
+  if (foremanBackendMode() === "elixir") {
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    const projects = await client.listProjects();
+    return projects.map(summaryFromElixirProject);
+  }
+
   try {
     const client = createTrpcClient();
     const projects = await client.projects.list() as Array<{
@@ -24,6 +50,7 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
       path: string;
       githubUrl?: string;
       defaultBranch?: string;
+      status?: string;
     }>;
     return projects.map((project) => ({
       id: project.id,
@@ -31,6 +58,7 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
       path: project.path,
       githubUrl: project.githubUrl,
       defaultBranch: project.defaultBranch,
+      status: project.status,
     }));
   } catch {
     const registry = new ProjectRegistry();
@@ -41,8 +69,62 @@ export async function listRegisteredProjects(): Promise<RegisteredProjectSummary
       path: record.path,
       githubUrl: record.githubUrl,
       defaultBranch: record.defaultBranch,
+      status: record.status,
     }));
   }
+}
+
+function defaultElixirProjectId(projectPath: string, name: string): string {
+  const normalizedName = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "project";
+  const suffix = createHash("sha1").update(resolve(projectPath)).digest("hex").slice(0, 5);
+  return `${normalizedName}-${suffix}`;
+}
+
+export async function registerProjectInElixir(
+  projectPath: string,
+  opts: { name?: string; defaultBranch?: string; status?: "active" | "paused" | "archived" } = {},
+): Promise<RegisteredProjectSummary> {
+  const resolvedPath = resolve(projectPath);
+  const registry = new ProjectRegistry();
+  const records = await registry.list().catch(() => []);
+  const existing = records.find((record) => resolve(record.path) === resolvedPath);
+
+  const name = opts.name ?? existing?.name ?? basename(resolvedPath);
+  const projectId = existing?.id ?? defaultElixirProjectId(resolvedPath, name);
+  const defaultBranch = opts.defaultBranch ?? existing?.defaultBranch ?? "main";
+  const projectStatus = opts.status ?? existing?.status ?? "active";
+
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const response = await client.sendCommand({
+    command_id: `project-register-${projectId}-${randomUUID()}`,
+    command_type: "project.register",
+    payload: {
+      project_id: projectId,
+      path: resolvedPath,
+      status: projectStatus,
+      default_branch: defaultBranch,
+      config: { name },
+      health: { ok: true },
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
+
+  return {
+    id: projectId,
+    name,
+    path: resolvedPath,
+    defaultBranch,
+    status: projectStatus,
+  };
 }
 
 export function ensureCliPostgresPool(projectPath: string): void {

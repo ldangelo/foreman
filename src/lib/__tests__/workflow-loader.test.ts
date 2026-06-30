@@ -734,16 +734,24 @@ describe("validateWorkflowConfig — models map", () => {
   });
 
   it("bundled default workflow phases have models map", () => {
-    // Bundled YAMLs have been updated to models map
+    // Bundled YAMLs have been updated to models map.
+    // Force an isolated FOREMAN_HOME so user-local workflow overrides cannot leak in.
     const tmpDir2 = tmpdir() + `/wl-test-${Date.now()}`;
     mkdirSync(tmpDir2, { recursive: true });
-    const config = loadWorkflowConfig("default", tmpDir2);
-    rmSync(tmpDir2, { recursive: true, force: true });
-    for (const phase of config.phases) {
-      if (!phase.builtin) {
-        expect(phase.models).toBeDefined();
-        expect(phase.models!["default"]).toBeTruthy();
+    const previousHome = process.env["FOREMAN_HOME"];
+    process.env["FOREMAN_HOME"] = tmpDir2;
+    try {
+      const config = loadWorkflowConfig("default", tmpDir2);
+      for (const phase of config.phases) {
+        if (!phase.builtin) {
+          expect(phase.models).toBeDefined();
+          expect(phase.models!["default"]).toBeTruthy();
+        }
       }
+    } finally {
+      rmSync(tmpDir2, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env["FOREMAN_HOME"];
+      else process.env["FOREMAN_HOME"] = previousHome;
     }
   });
 });
@@ -1006,12 +1014,19 @@ describe("validateWorkflowConfig — epic mode", () => {
   it("bundled epic.yaml loads with taskPhases and finalPhases", () => {
     const tmpDir2 = tmpdir() + `/wl-epic-test-${Date.now()}`;
     mkdirSync(tmpDir2, { recursive: true });
-    const config = loadWorkflowConfig("epic", tmpDir2);
-    rmSync(tmpDir2, { recursive: true, force: true });
-    expect(config.name).toBe("epic");
-    expect(config.taskPhases).toEqual(["developer", "qa"]);
-    expect(config.finalPhases).toEqual(["finalize"]);
-    expect(config.phases.length).toBeGreaterThanOrEqual(3);
+    const previousHome = process.env["FOREMAN_HOME"];
+    process.env["FOREMAN_HOME"] = tmpDir2;
+    try {
+      const config = loadWorkflowConfig("epic", tmpDir2);
+      expect(config.name).toBe("epic");
+      expect(config.taskPhases).toEqual(["developer", "qa"]);
+      expect(config.finalPhases).toEqual(["finalize"]);
+      expect(config.phases.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      rmSync(tmpDir2, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env["FOREMAN_HOME"];
+      else process.env["FOREMAN_HOME"] = previousHome;
+    }
   });
 
   it("includes the bundled default/smoke/epic workflows", () => {

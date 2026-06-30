@@ -1,8 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { type DashboardReadStore } from "../../lib/store.js";
 import type { Run, RunProgress, Project, Metrics, Event, NativeTask } from "../../lib/store.js";
 import * as projectTaskSupport from "../commands/project-task-support.js";
 import * as trpcClientModule from "../../lib/trpc-client.js";
+import * as backendModeModule from "../../lib/backend-mode.js";
+import * as elixirServerManagerModule from "../../lib/elixir-server-manager.js";
+import * as elixirServerClientModule from "../../lib/elixir-server-client.js";
 import {
   renderEventLine,
   renderProjectHeader,
@@ -803,6 +806,11 @@ describe("renderDashboard with needsHumanTasks", () => {
 // ── approveTask() / retryTask() ───────────────────────────────────────────
 
 describe("approveTask and retryTask", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("node");
+  });
+
   it("approveTask calls daemon task approve", async () => {
     const approve = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
@@ -829,6 +837,26 @@ describe("approveTask and retryTask", () => {
     expect(approve).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-001" });
   });
 
+  it("approveTask uses Elixir task.approve in default Elixir mode", async () => {
+    const sendCommand = vi.fn().mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr-1" });
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project" },
+    ]);
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("elixir");
+    vi.spyOn(elixirServerManagerModule, "ElixirServerManager").mockImplementation(function MockManager() {
+      return { ensureRunning: vi.fn().mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 }) } as unknown as elixirServerManagerModule.ElixirServerManager;
+    });
+    vi.spyOn(elixirServerClientModule, "ElixirServerClient").mockImplementation(function MockClient() {
+      return { sendCommand } as unknown as elixirServerClientModule.ElixirServerClient;
+    });
+
+    await approveTask("task-001", "/some/project");
+    expect(sendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.approve",
+      payload: expect.objectContaining({ project_id: "proj-1", task_id: "task-001" }),
+    }));
+  });
+
   it("retryTask calls daemon task retry", async () => {
     const retry = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
@@ -840,6 +868,26 @@ describe("approveTask and retryTask", () => {
 
     await retryTask("task-001", "/some/project");
     expect(retry).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-001" });
+  });
+
+  it("retryTask uses Elixir task.update->backlog in default Elixir mode", async () => {
+    const sendCommand = vi.fn().mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr-1" });
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project" },
+    ]);
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("elixir");
+    vi.spyOn(elixirServerManagerModule, "ElixirServerManager").mockImplementation(function MockManager() {
+      return { ensureRunning: vi.fn().mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 }) } as unknown as elixirServerManagerModule.ElixirServerManager;
+    });
+    vi.spyOn(elixirServerClientModule, "ElixirServerClient").mockImplementation(function MockClient() {
+      return { sendCommand } as unknown as elixirServerClientModule.ElixirServerClient;
+    });
+
+    await retryTask("task-001", "/some/project");
+    expect(sendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.update",
+      payload: expect.objectContaining({ project_id: "proj-1", task_id: "task-001", status: "backlog" }),
+    }));
   });
 
   it("retryTask resolves registered projects by normalized path", async () => {

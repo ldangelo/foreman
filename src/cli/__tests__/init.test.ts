@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { buildInitWizardConfig, formatInitDatabaseError, initProjectStore } from "../commands/init.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { buildInitWizardConfig, formatInitDatabaseError, initBackend, initProjectStore, maybeRegisterInitializedProjectInElixir } from "../commands/init.js";
 
 type InitProjectStore = Parameters<typeof initProjectStore>[2];
 
@@ -102,6 +102,72 @@ describe("init wizard config", () => {
   });
 });
 
+describe("initBackend", () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code ?? ""})`);
+    }) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("skips beads init for jira projects", async () => {
+    const execSync = vi.fn();
+    const checkExists = vi.fn();
+
+    await initBackend({ projectDir: "/tmp/project", issueTracker: "jira", execSync, checkExists });
+
+    expect(execSync).not.toHaveBeenCalled();
+    expect(checkExists).not.toHaveBeenCalled();
+  });
+
+  it("skips beads init for github projects", async () => {
+    const execSync = vi.fn();
+    const checkExists = vi.fn();
+
+    await initBackend({ projectDir: "/tmp/project", issueTracker: "github", execSync, checkExists });
+
+    expect(execSync).not.toHaveBeenCalled();
+    expect(checkExists).not.toHaveBeenCalled();
+  });
+
+  it("runs br init for beads projects when .beads is missing", async () => {
+    const execSync = vi.fn();
+    const checkExists = vi.fn().mockReturnValue(false);
+
+    await initBackend({ projectDir: "/tmp/project", issueTracker: "beads", execSync, checkExists });
+
+    expect(checkExists).toHaveBeenCalledWith("/tmp/project/.beads");
+    expect(execSync).toHaveBeenCalledWith(expect.stringContaining(".local/bin/br"), ["init"], { stdio: "pipe" });
+  });
+
+  it("skips br init when the beads workspace already exists", async () => {
+    const execSync = vi.fn();
+    const checkExists = vi.fn().mockReturnValue(true);
+
+    await initBackend({ projectDir: "/tmp/project", issueTracker: "beads", execSync, checkExists });
+
+    expect(execSync).not.toHaveBeenCalled();
+  });
+
+  it("fails fast when br init errors", async () => {
+    const execSync = vi.fn(() => {
+      throw new Error("br init failed");
+    });
+    const checkExists = vi.fn().mockReturnValue(false);
+
+    await expect(initBackend({ projectDir: "/tmp/project", issueTracker: "beads", execSync, checkExists })).rejects.toThrow("process.exit(1)");
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
 describe("initProjectStore — sentinel seeding", () => {
   beforeEach(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -164,6 +230,32 @@ describe("initProjectStore — sentinel seeding", () => {
 
     expect(store.getSentinelConfig).toHaveBeenCalledWith("proj-existing");
     expect(store.upsertSentinelConfig).toHaveBeenCalledWith("proj-existing", expect.any(Object));
+  });
+});
+
+describe("maybeRegisterInitializedProjectInElixir", () => {
+  it("registers the initialized project with Elixir in default Elixir mode", async () => {
+    process.env.FOREMAN_BACKEND = "elixir";
+    const spy = vi.spyOn(await import("../commands/project-task-support.js"), "registerProjectInElixir")
+      .mockResolvedValue({ id: "proj-1", name: "my-project", path: "/my/project", defaultBranch: "main", status: "active" });
+
+    await maybeRegisterInitializedProjectInElixir("/my/project", "my-project");
+
+    expect(spy).toHaveBeenCalledWith("/my/project", { name: "my-project", status: "active" });
+    spy.mockRestore();
+    delete process.env.FOREMAN_BACKEND;
+  });
+
+  it("does nothing in explicit node mode", async () => {
+    process.env.FOREMAN_BACKEND = "node";
+    const spy = vi.spyOn(await import("../commands/project-task-support.js"), "registerProjectInElixir")
+      .mockResolvedValue({ id: "proj-1", name: "my-project", path: "/my/project", defaultBranch: "main", status: "active" });
+
+    await maybeRegisterInitializedProjectInElixir("/my/project", "my-project");
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+    delete process.env.FOREMAN_BACKEND;
   });
 });
 

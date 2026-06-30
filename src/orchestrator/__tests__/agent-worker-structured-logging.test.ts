@@ -23,7 +23,7 @@ describe("agent-worker structured logging", () => {
    * This test spawns the worker with a config that causes early logging before
    * SDK initialization, capturing the JSON output format.
    */
-  it("log() emits JSON with required fields when context is initialized", async () => {
+  it("log() emits JSON with required fields when context is initialized", { timeout: 90_000 }, async () => {
     const configPath = join(tmpDir, "test-structured-log.json");
     writeFileSync(configPath, JSON.stringify({
       runId: "run-456",

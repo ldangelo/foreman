@@ -11,6 +11,11 @@ const {
   mockTaskUpdate,
   mockTaskGet,
   mockTaskClose,
+  mockForemanBackendMode,
+  mockEnsureRunning,
+  mockSendCommand,
+  mockElixirListTasks,
+  mockElixirGetTask,
 } = vi.hoisted(() => {
   const mockSelectTaskReadBackend = vi.fn();
 
@@ -32,6 +37,11 @@ const {
   const mockTaskUpdate = vi.fn();
   const mockTaskGet = vi.fn();
   const mockTaskClose = vi.fn();
+  const mockForemanBackendMode = vi.fn();
+  const mockEnsureRunning = vi.fn();
+  const mockSendCommand = vi.fn();
+  const mockElixirListTasks = vi.fn();
+  const mockElixirGetTask = vi.fn();
 
   return {
     mockSelectTaskReadBackend,
@@ -44,6 +54,11 @@ const {
     mockTaskUpdate,
     mockTaskGet,
     mockTaskClose,
+    mockForemanBackendMode,
+    mockEnsureRunning,
+    mockSendCommand,
+    mockElixirListTasks,
+    mockElixirGetTask,
   };
 });
 
@@ -73,7 +88,27 @@ vi.mock("../../lib/trpc-client.js", () => ({
   }),
 }));
 
-import { createPlanClient, inferPrdHintPath } from "../commands/plan.js";
+vi.mock("../../lib/backend-mode.js", () => ({
+  foremanBackendMode: mockForemanBackendMode,
+}));
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn().mockImplementation(function MockElixirServerManager() {
+    return { ensureRunning: mockEnsureRunning };
+  }),
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn().mockImplementation(function MockElixirServerClient() {
+    return {
+      listTasks: mockElixirListTasks,
+      getTask: mockElixirGetTask,
+      sendCommand: mockSendCommand,
+    };
+  }),
+}));
+
+import { createPlanClient, inferPrdHintPath, readPlanningInput } from "../commands/plan.js";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -84,6 +119,21 @@ describe("createPlanClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSelectTaskReadBackend.mockReturnValue("beads");
+    mockForemanBackendMode.mockReturnValue("node");
+    mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766" });
+    mockSendCommand.mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr-1" });
+    mockElixirListTasks.mockResolvedValue([]);
+    mockElixirGetTask.mockResolvedValue({
+      task_id: "native-001",
+      project_id: "proj-1",
+      title: "Plan epic",
+      type: "epic",
+      priority: 1,
+      status: "ready",
+      description: "desc",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    });
 
     mockListRegisteredProjects.mockResolvedValue([{ id: 'proj-1', name: 'test-project', path: PROJECT_PATH }]);
 
@@ -164,6 +214,36 @@ describe("createPlanClient", () => {
     expect(created.priority).toBe("P1");
   });
 
+  it("uses Elixir planning task APIs in default Elixir mode", async () => {
+    mockForemanBackendMode.mockReturnValue("elixir");
+    mockElixirGetTask.mockResolvedValue({
+      task_id: "native-001",
+      project_id: "proj-1",
+      title: "Plan epic",
+      task_type: "epic",
+      priority: 1,
+      status: "ready",
+      description: "desc",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    });
+
+    const client = createPlanClient(PROJECT_PATH);
+    const created = await client.create("Plan epic", {
+      type: "epic",
+      priority: "P1",
+      parent: "parent-123",
+      description: "desc",
+    });
+
+    expect(mockTaskCreate).not.toHaveBeenCalled();
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({ command_type: "task.create" }));
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({ command_type: "task.approve" }));
+    expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({ command_type: "task.add_dependency" }));
+    expect(created.id).toBe("native-001");
+    expect(created.priority).toBe("P1");
+  });
+
   it("marks dependents blocked on native backends until their blocker closes", async () => {
     mockSelectTaskReadBackend.mockReturnValue("native");
     mockTaskGet.mockImplementation(async (id: string) =>
@@ -203,6 +283,46 @@ describe("createPlanClient", () => {
   });
 });
 
+describe("readPlanningInput", () => {
+  it("returns literal description text when the input path does not exist", () => {
+    const input = "Build a user auth system";
+
+    expect(readPlanningInput(input, PROJECT_PATH)).toBe(input);
+  });
+
+  it("reads file contents when the input path exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-plan-read-"));
+    try {
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, "description.md");
+      writeFileSync(file, "# PRD\n\nReal contents\n");
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+      const result = readPlanningInput(file, PROJECT_PATH);
+
+      expect(result).toContain("Real contents");
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Reading description from:"));
+      logSpy.mockRestore();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads absolute existing files and keeps missing absolute paths literal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-plan-read-abs-"));
+    try {
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, "absolute.md");
+      writeFileSync(file, "Absolute contents\n");
+
+      expect(readPlanningInput(file, PROJECT_PATH)).toContain("Absolute contents");
+      expect(readPlanningInput(join(dir, "missing.md"), PROJECT_PATH)).toBe(join(dir, "missing.md"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("inferPrdHintPath", () => {
   it("prefers an explicit --from-prd path", () => {
     expect(inferPrdHintPath("/tmp/out", "/tmp/custom/PRD.md")).toBe("/tmp/custom/PRD.md");
@@ -216,6 +336,18 @@ describe("inferPrdHintPath", () => {
       writeFileSync(join(dir, "PRD-2026-002-new.md"), "# new");
 
       expect(inferPrdHintPath(dir)).toBe(join(dir, "PRD-2026-002-new.md"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to PRD.md when no PRD markdown files exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-plan-hint-empty-"));
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "notes.md"), "ignore");
+
+      expect(inferPrdHintPath(dir)).toBe(join(dir, "PRD.md"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

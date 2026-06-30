@@ -136,4 +136,37 @@ describe("detectStuckRuns", () => {
 
     expect(result.stuck).toHaveLength(1);
   });
+
+  it("ignores running runs with no started_at timestamp", async () => {
+    const { store } = makeMocks();
+    const run = makeRun({ started_at: null });
+    store.getActiveRuns.mockReturnValue([run]);
+
+    const result = await detectStuckRuns(store as any, "proj-1", {
+      stuckTimeoutMinutes: 15,
+    });
+
+    expect(result.stuck).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+    expect(store.updateRun).not.toHaveBeenCalled();
+    expect(store.logEvent).not.toHaveBeenCalled();
+  });
+
+  it("records errors when marking a stuck run fails", async () => {
+    const { store } = makeMocks();
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const run = makeRun({ id: "run-broken", seed_id: "seed-broken", started_at: thirtyMinAgo });
+    store.getActiveRuns.mockReturnValue([run]);
+    store.updateRun.mockRejectedValue(new Error("write failed"));
+
+    const result = await detectStuckRuns(store as any, "proj-1", {
+      stuckTimeoutMinutes: 15,
+    });
+
+    expect(result.stuck).toHaveLength(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("seed-broken");
+    expect(result.errors[0]).toContain("write failed");
+    expect(store.logEvent).not.toHaveBeenCalled();
+  });
 });

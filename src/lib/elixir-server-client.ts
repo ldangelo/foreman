@@ -54,6 +54,7 @@ export type ElixirTask = {
   closed_at?: string | null;
   approved_at?: string | null;
   annotations?: Array<{ body: string; author?: string; created_at?: string }>;
+  dependencies?: string[];
   run_id?: string | null;
 };
 
@@ -129,9 +130,23 @@ export class ElixirServerClient {
     throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
   }
 
-  async listRuns(): Promise<ElixirRun[]> {
-    const body = await this.getJson<{ ok: true; runs: ElixirRun[] }>("/api/v1/runs");
+  async listRuns(opts: { projectId?: string } = {}): Promise<ElixirRun[]> {
+    const params = new URLSearchParams();
+    if (opts.projectId) params.set("project_id", opts.projectId);
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; runs: ElixirRun[] }>(`/api/v1/runs${query ? `?${query}` : ""}`);
     return body.runs;
+  }
+
+  async schedulerTick(): Promise<unknown> {
+    const response = await fetch(new URL("/api/v1/scheduler/tick", this.baseUrl), {
+      method: "POST",
+      headers: this.headers({ command_id: "scheduler-tick", command_type: "scheduler.tick" }),
+      body: JSON.stringify({}),
+    });
+    const body = await response.json() as { ok: true; scheduler: unknown } | ForemanServerError;
+    if (response.ok && body.ok) return body.scheduler;
+    throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
   }
 
   async listInbox(opts: { runId?: string; projectId?: string; limit?: number; unread?: boolean } = {}): Promise<ElixirInboxMessage[]> {

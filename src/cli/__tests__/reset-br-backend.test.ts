@@ -281,6 +281,16 @@ describe("reset kill handle parsing", () => {
 
     expect(getWorkerPid(run)).toBe(24680);
   });
+
+  it("returns null when session metadata has no pid", () => {
+    const run = makeRun({ session_key: "sdk:claude-sonnet-4-6:run-1" });
+    expect(getWorkerPid(run)).toBeNull();
+  });
+
+  it("returns null when session metadata is missing", () => {
+    const run = makeRun({ session_key: null });
+    expect(getWorkerPid(run)).toBeNull();
+  });
 });
 
 describe("closeForemanPullRequest", () => {
@@ -348,6 +358,63 @@ describe("closeForemanPullRequest", () => {
       reason: "head-branch-mismatch",
     });
     expect(execFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports dry-run when an open PR would be closed", async () => {
+    const execFn = vi.fn<ExecFileAsyncFn>().mockResolvedValue({
+      stdout: JSON.stringify({
+        state: "OPEN",
+        headRefName: "foreman/bd-abc",
+        url: "https://github.com/example/repo/pull/42",
+      }),
+      stderr: "",
+    });
+
+    const result = await closeForemanPullRequest("/tmp/project", "foreman/bd-abc", {
+      dryRun: true,
+      execFileAsync: execFn,
+    });
+
+    expect(result).toEqual({
+      action: "dry-run",
+      prUrl: "https://github.com/example/repo/pull/42",
+      reason: "would-close-open-pr",
+    });
+    expect(execFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns none when the matching PR is not open", async () => {
+    const execFn = vi.fn<ExecFileAsyncFn>().mockResolvedValue({
+      stdout: JSON.stringify({
+        state: "CLOSED",
+        headRefName: "foreman/bd-abc",
+        url: "https://github.com/example/repo/pull/43",
+      }),
+      stderr: "",
+    });
+
+    const result = await closeForemanPullRequest("/tmp/project", "foreman/bd-abc", {
+      execFileAsync: execFn,
+    });
+
+    expect(result).toEqual({
+      action: "none",
+      prUrl: "https://github.com/example/repo/pull/43",
+      reason: "pr-not-open",
+    });
+  });
+
+  it("returns none when the PR state payload cannot be parsed", async () => {
+    const execFn = vi.fn<ExecFileAsyncFn>().mockResolvedValue({
+      stdout: "{not-json}",
+      stderr: "",
+    });
+
+    const result = await closeForemanPullRequest("/tmp/project", "foreman/bd-abc", {
+      execFileAsync: execFn,
+    });
+
+    expect(result).toEqual({ action: "none", reason: "unparseable-pr-state" });
   });
 });
 

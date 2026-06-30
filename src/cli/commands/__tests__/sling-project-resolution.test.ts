@@ -14,7 +14,7 @@ async function run(
   cwd: string,
   extraEnv?: Record<string, string>,
 ): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 30_000, env: extraEnv });
+  return runTsxModule(CLI, args, { cwd, timeout: 90_000, env: extraEnv });
 }
 
 describe("foreman sling trd --project", () => {

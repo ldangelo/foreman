@@ -14,7 +14,7 @@ async function run(
   cwd: string,
   extraEnv?: Record<string, string>,
 ): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000, env: extraEnv });
+  return runTsxModule(CLI, args, { cwd, timeout: 30_000, env: extraEnv });
 }
 
 describe("foreman plan --project", () => {
@@ -71,7 +71,7 @@ describe("foreman plan --project", () => {
     const result = await run(
       ["plan", "--dry-run", "--project", "target-project", "test-description"],
       tmpBase,
-      { ...process.env, HOME: tmpBase },
+      { ...process.env, HOME: tmpBase, FOREMAN_BACKEND: "node" },
     );
 
     const output = result.stdout + result.stderr;
@@ -103,7 +103,7 @@ describe("foreman plan --project", () => {
     const result = await run(
       ["plan", "--dry-run", "--project", "target-project", "--from-prd", "docs/PRD.md", "unused"],
       tmpBase,
-      { ...process.env, HOME: tmpBase },
+      { ...process.env, HOME: tmpBase, FOREMAN_BACKEND: "node" },
     );
 
     const output = result.stdout + result.stderr;

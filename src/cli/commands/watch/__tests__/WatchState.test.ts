@@ -2,7 +2,7 @@
  * Unit tests for WatchState.ts
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 const {
   mockListRegisteredProjects,
@@ -10,12 +10,26 @@ const {
   mockFetchDaemonDashboardState,
   mockFetchTaskCounts,
   mockProjectStats,
+  mockCreateTrpcClient,
+  mockEnsureRunning,
+  mockElixirListTasks,
+  mockElixirListInbox,
+  mockElixirListEvents,
+  mockRunsListMessages,
+  mockRunsListEvents,
 } = vi.hoisted(() => ({
   mockListRegisteredProjects: vi.fn(),
   mockTasksList: vi.fn(),
   mockFetchDaemonDashboardState: vi.fn(),
   mockFetchTaskCounts: vi.fn(),
   mockProjectStats: vi.fn(),
+  mockCreateTrpcClient: vi.fn(),
+  mockEnsureRunning: vi.fn(),
+  mockElixirListTasks: vi.fn(),
+  mockElixirListInbox: vi.fn(),
+  mockElixirListEvents: vi.fn(),
+  mockRunsListMessages: vi.fn(),
+  mockRunsListEvents: vi.fn(),
 }));
 
 vi.mock("../../project-task-support.js", () => ({
@@ -23,9 +37,22 @@ vi.mock("../../project-task-support.js", () => ({
 }));
 
 vi.mock("../../../../lib/trpc-client.js", () => ({
-  createTrpcClient: () => ({
-    tasks: { list: mockTasksList },
-    projects: { stats: mockProjectStats },
+  createTrpcClient: mockCreateTrpcClient,
+}));
+
+vi.mock("../../../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn().mockImplementation(function MockElixirServerManager() {
+    return { ensureRunning: mockEnsureRunning };
+  }),
+}));
+
+vi.mock("../../../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn().mockImplementation(function MockElixirServerClient() {
+    return {
+      listTasks: mockElixirListTasks,
+      listInbox: mockElixirListInbox,
+      listEvents: mockElixirListEvents,
+    };
   }),
 }));
 
@@ -41,13 +68,23 @@ import {
   initialWatchState,
   nextPanel,
   handleWatchKey,
+  pollInboxData,
+  pollPipelineEvents,
   pollWatchData,
+  renderHelpOverlay,
   type WatchState,
 } from "../WatchState.js";
 import type { DashboardState } from "../../../dashboard-state.js";
 import type { Run, RunProgress } from "../../../../lib/store.js";
 
 describe("WatchState", () => {
+  beforeEach(() => {
+    process.env.FOREMAN_BACKEND = "node";
+  });
+
+  afterEach(() => {
+    delete process.env.FOREMAN_BACKEND;
+  });
   describe("initialWatchState", () => {
     it("returns a valid initial state", () => {
       const state = initialWatchState();
@@ -144,6 +181,147 @@ describe("WatchState", () => {
       expect(result.render).toBe(true);
       expect(state.focusedPanel).toBe("board");
     });
+
+    it("toggles expanded agents with number keys and expand-all", () => {
+      state.agents = [{ run: { id: "run-1" } }, { run: { id: "run-2" } }] as any;
+
+      let result = handleWatchKey(state, "a");
+      expect(result.render).toBe(true);
+      expect([...state.expandedAgentIndices]).toEqual([0, 1]);
+
+      result = handleWatchKey(state, "1");
+      expect(result.render).toBe(true);
+      expect(state.expandedAgentIndices.has(0)).toBe(false);
+      expect(state.expandedAgentIndices.has(1)).toBe(true);
+
+      result = handleWatchKey(state, "a");
+      expect(result.render).toBe(true);
+      expect(state.expandedAgentIndices.size).toBe(0);
+    });
+
+    it("navigates board selection and returns wake actions for approve/retry", () => {
+      state.focusedPanel = "board";
+      state.agents = [{ run: { id: "run-1" } }] as any;
+      state.board = {
+        counts: { backlog: 0, ready: 0, in_progress: 0, needs_attention: 2, closed: 0 },
+        total: 2,
+        ready: 0,
+        needsAttention: [{ id: "task-1" }, { id: "task-2" }],
+      } as any;
+      state.selectedTaskIndex = 0;
+
+      let result = handleWatchKey(state, "j");
+      expect(result.render).toBe(true);
+      expect(state.selectedTaskIndex).toBe(1);
+
+      result = handleWatchKey(state, "k");
+      expect(result.render).toBe(true);
+      expect(state.selectedTaskIndex).toBe(0);
+
+      result = handleWatchKey(state, "a");
+      expect(result.wake).toBe(true);
+      expect(result.render).toBe(true);
+
+      result = handleWatchKey(state, "r");
+      expect(result.wake).toBe(true);
+      expect(result.render).toBe(true);
+    });
+
+    it("cycles inbox focus onward to events on Tab", () => {
+      state.focusedPanel = "inbox";
+      const result = handleWatchKey(state, "\t");
+      expect(result.render).toBe(true);
+      expect(state.focusedPanel).toBe("events");
+    });
+  });
+
+  describe("pollInboxData", () => {
+    it("loads local-store inbox messages sorted newest-first and marks only a new head entry", async () => {
+      const store = {
+        getAllMessages: vi.fn((runId: string) => runId === "run-1"
+          ? [
+              { id: "msg-1", run_id: "run-1", sender_agent_type: "developer", recipient_agent_type: "foreman", subject: "older", body: "{}", read: 0, created_at: "2026-01-01T00:00:00.000Z", deleted_at: null },
+              { id: "msg-2", run_id: "run-1", sender_agent_type: "qa", recipient_agent_type: "foreman", subject: "newer", body: "{}", read: 0, created_at: "2026-01-01T00:01:00.000Z", deleted_at: null },
+            ]
+          : []),
+      } as any;
+
+      const result = await pollInboxData(store, "msg-1", 5, ["run-1"]);
+
+      expect(result.totalCount).toBe(2);
+      expect(result.newestId).toBe("msg-2");
+      expect(result.messages.map((entry) => entry.message.id)).toEqual(["msg-2", "msg-1"]);
+      expect(result.messages.map((entry) => entry.isNew)).toEqual([true, false]);
+    });
+
+    it("loads Elixir inbox messages without using tRPC in Elixir mode", async () => {
+      process.env.FOREMAN_BACKEND = "elixir";
+      mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+      mockListRegisteredProjects.mockResolvedValue([
+        { id: "proj-1", name: "foreman", path: "/tmp/project" },
+      ]);
+      mockElixirListInbox.mockResolvedValue([
+        { message_id: "msg-1", run_id: "run-1", sender: "developer", recipient: "foreman", subject: "phase-complete", body: { ok: true }, unread: true, created_at: "2026-01-01T00:01:00.000Z" },
+        { message_id: "msg-2", run_id: "run-2", sender_agent_type: "qa", recipient_agent_type: "foreman", subject: "ignored", body: "{}", unread: false, created_at: "2026-01-01T00:00:00.000Z" },
+      ]);
+
+      const result = await pollInboxData({ getAllMessages: vi.fn() } as any, null, 5, ["run-1"], "/tmp/project");
+
+      expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+      expect(result.totalCount).toBe(1);
+      expect(result.messages[0]?.message.id).toBe("msg-1");
+      expect(result.messages[0]?.message.body).toBe('{"ok":true}');
+      expect(result.messages[0]?.message.read).toBe(0);
+      delete process.env.FOREMAN_BACKEND;
+    });
+  });
+
+  describe("pollPipelineEvents", () => {
+    it("loads local-store pipeline events sorted newest-first and marks only a new head entry", async () => {
+      const store = {
+        getRunEvents: vi.fn((runId: string) => runId === "run-1"
+          ? [
+              { id: "evt-1", run_id: "run-1", event_type: "dispatch", details: JSON.stringify({ bead_id: "task-1" }), created_at: "2026-01-01T00:00:00.000Z" },
+              { id: "evt-2", run_id: "run-1", event_type: "fail", details: JSON.stringify({ seedId: "task-1" }), created_at: "2026-01-01T00:01:00.000Z" },
+            ]
+          : []),
+      } as any;
+
+      const result = await pollPipelineEvents(store, "evt-1", 5, ["run-1"]);
+
+      expect(result.totalCount).toBe(2);
+      expect(result.newestId).toBe("evt-2");
+      expect(result.events.map((entry) => entry.id)).toEqual(["evt-2", "evt-1"]);
+      expect(result.events.map((entry) => entry.isNew)).toEqual([true, false]);
+    });
+
+    it("loads Elixir pipeline events without using tRPC in Elixir mode", async () => {
+      process.env.FOREMAN_BACKEND = "elixir";
+      mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
+      mockListRegisteredProjects.mockResolvedValue([
+        { id: "proj-1", name: "foreman", path: "/tmp/project" },
+      ]);
+      mockElixirListEvents.mockResolvedValue([
+        { event_id: "evt-1", run_id: "run-1", event_type: "phase-complete", payload: { phase: "developer" }, occurred_at: "2026-01-01T00:01:00.000Z" },
+        { event_id: "evt-2", run_id: "run-2", event_type: "dispatch", payload: { bead_id: "task-2" }, occurred_at: "2026-01-01T00:00:00.000Z" },
+      ]);
+
+      const result = await pollPipelineEvents({ getRunEvents: vi.fn() } as any, null, 5, ["run-1"], "/tmp/project");
+
+      expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+      expect(result.totalCount).toBe(1);
+      expect(result.events[0]).toMatchObject({ id: "evt-1", eventType: "phase-complete", runId: "run-1", details: { phase: "developer" } });
+      delete process.env.FOREMAN_BACKEND;
+    });
+  });
+
+  describe("renderHelpOverlay", () => {
+    it("renders watch help text", () => {
+      const rendered = renderHelpOverlay(120);
+      expect(rendered).toContain("HELP");
+      expect(rendered).toContain("Cycle focus");
+      expect(rendered).toContain("Open full board");
+    });
   });
 
   describe("pollWatchData", () => {
@@ -153,7 +331,23 @@ describe("WatchState", () => {
       mockFetchDaemonDashboardState.mockReset();
       mockFetchTaskCounts.mockReset();
       mockProjectStats.mockReset();
+      mockCreateTrpcClient.mockClear();
+      mockElixirListTasks.mockReset();
 
+      mockCreateTrpcClient.mockReturnValue({
+        tasks: { list: mockTasksList },
+        projects: { stats: mockProjectStats },
+        runs: {
+          listMessages: mockRunsListMessages,
+          listEvents: mockRunsListEvents,
+        },
+      });
+       mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
++      mockElixirListInbox.mockResolvedValue([]);
++      mockElixirListEvents.mockResolvedValue([]);
++      mockRunsListMessages.mockResolvedValue([]);
++      mockRunsListEvents.mockResolvedValue([]);
+      mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
       mockListRegisteredProjects.mockResolvedValue([
         { id: "proj-1", name: "foreman", path: "/tmp/project" },
       ]);
@@ -253,6 +447,50 @@ describe("WatchState", () => {
       expect(result.board.total).toBe(0);
       expect(result.board.needsAttention).toEqual([]);
       expect(mockTasksList).not.toHaveBeenCalled();
+    });
+
+    it("loads board/task counts from Elixir without creating a tRPC client in Elixir mode", async () => {
+      process.env.FOREMAN_BACKEND = "elixir";
+      mockFetchDaemonDashboardState.mockResolvedValue({
+        projects: [{
+          id: "proj-1",
+          name: "foreman",
+          path: "/tmp/project",
+          status: "active",
+          created_at: "2026-01-01T00:00:00.000Z",
+          updated_at: "2026-01-01T00:00:00.000Z",
+        }],
+        activeRuns: new Map(),
+        completedRuns: new Map(),
+        progresses: new Map(),
+        metrics: new Map(),
+        events: new Map(),
+        lastUpdated: new Date("2026-01-01T00:02:00.000Z"),
+      });
+      mockElixirListTasks.mockResolvedValue([
+        { task_id: "t-ready", project_id: "proj-1", status: "ready", priority: 2, title: "Ready" },
+        { task_id: "t-failed", project_id: "proj-1", status: "failed", priority: 1, title: "Failed" },
+        { task_id: "t-merged", project_id: "proj-1", status: "merged", priority: 3, title: "Merged" },
+      ]);
+
+      const result = await pollWatchData("/tmp/project");
+
+      expect(mockCreateTrpcClient).not.toHaveBeenCalled();
+      expect(result.board.counts).toEqual({
+        backlog: 0,
+        ready: 1,
+        in_progress: 0,
+        needs_attention: 1,
+        closed: 1,
+      });
+      expect(result.taskCounts).toEqual({
+        total: 3,
+        ready: 1,
+        inProgress: 0,
+        completed: 1,
+        blocked: 1,
+      });
+      delete process.env.FOREMAN_BACKEND;
     });
 
     it("populates agents and task counts from dashboard data", async () => {

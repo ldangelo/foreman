@@ -115,4 +115,65 @@ describe("foreman plan command context", () => {
     expect(mockDispatcher).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
   });
+
+  it("fails fast when --from-prd points to a missing file", async () => {
+    const canonicalPath = "/canonical/project";
+
+    mockResolveRepoRootProjectPath.mockResolvedValue(canonicalPath);
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "foreman", path: canonicalPath },
+    ]);
+
+    await runPlan([
+      "Build a user auth system",
+      "--from-prd",
+      "docs/PRD/missing.md",
+    ]);
+
+    expect(mockForProject).toHaveBeenCalledWith(canonicalPath);
+    expect(mockDispatcher).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Object),
+      canonicalPath,
+      null,
+      { externalProjectId: "proj-1" },
+    );
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("PRD file not found");
+    expect(mockStoreClose).toHaveBeenCalledOnce();
+  });
+
+  it("prints the dry-run pipeline using an existing description file", async () => {
+    const canonicalPath = "/canonical/project";
+    const descriptionPath = `${process.cwd()}/src/cli/commands/plan.ts`;
+
+    mockResolveRepoRootProjectPath.mockResolvedValue(canonicalPath);
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "foreman", path: canonicalPath },
+    ]);
+
+    await runPlan([
+      descriptionPath,
+      "--project",
+      "/worktrees/non-canonical-clone",
+      "--dry-run",
+      "--prd-only",
+    ]);
+
+    expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({ project: "/worktrees/non-canonical-clone" });
+    expect(mockDispatcher).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Object),
+      canonicalPath,
+      null,
+      { externalProjectId: "proj-1" },
+    );
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Reading description from:");
+    expect(rendered).toContain("Create PRD");
+    expect(rendered).toContain("Refine PRD");
+    expect(rendered).not.toContain("Create TRD");
+    expect(rendered).toContain("--dry-run: Pipeline not executed.");
+    expect(mockStoreClose).toHaveBeenCalledOnce();
+  });
 });

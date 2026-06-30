@@ -9,8 +9,12 @@
  *   - `foreman watch` state + actions    (commands/watch/)
  */
 import chalk from "chalk";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { foremanBackendMode } from "../lib/backend-mode.js";
+import { ElixirServerClient } from "../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../lib/elixir-server-manager.js";
 import { createTrpcClient } from "../lib/trpc-client.js";
 import {
   ForemanStore,
@@ -59,6 +63,20 @@ interface DaemonProjectRecord {
   path: string;
 }
 
+async function createElixirDashboardClient(): Promise<ElixirServerClient> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+}
+
+function deriveTaskMetrics(tasks: NativeTask[]): Metrics["tasksByStatus"] {
+  const counts: Record<string, number> = {};
+  for (const task of tasks) {
+    counts[task.status] = (counts[task.status] ?? 0) + 1;
+  }
+  return counts;
+}
+
 async function resolveDashboardProjectRecord(
   projects: Array<{ id: string; name: string; path: string }>,
   projectPath: string,
@@ -78,7 +96,6 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
     const visible = current ? [current] : [];
     if (visible.length === 0) return null;
 
-    const client = createTrpcClient();
     const projectRows: Project[] = [];
     const activeRuns = new Map<string, Run[]>();
     const completedRuns = new Map<string, Run[]>();
@@ -88,6 +105,86 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
     const successRates = new Map<string, { rate: number | null; merged: number; failed: number }>();
     const needsHumanTasks: NativeTask[] = [];
 
+    if (foremanBackendMode() === "elixir") {
+      const client = await createElixirDashboardClient();
+      const [allTasks, allRuns] = await Promise.all([client.listTasks(), client.listRuns()]);
+
+      for (const project of visible as DaemonProjectRecord[]) {
+        const projectTasks: NativeTask[] = allTasks
+          .filter((task) => task.project_id === project.id)
+          .map((task) => ({
+            id: task.task_id ?? task.id ?? "unknown",
+            title: task.title ?? (task.task_id ?? task.id ?? "unknown"),
+            description: task.description ?? null,
+            status: (task.status ?? "backlog") as NativeTask["status"],
+            priority: typeof task.priority === "number" ? task.priority : 2,
+            type: task.task_type ?? task.type ?? "task",
+            external_id: task.external_id ?? null,
+            created_at: task.created_at ?? task.updated_at ?? new Date().toISOString(),
+            updated_at: task.updated_at ?? task.created_at ?? new Date().toISOString(),
+            approved_at: task.approved_at ?? null,
+            closed_at: task.closed_at ?? null,
+            run_id: task.run_id ?? null,
+            branch: null,
+          }));
+        const human = projectTasks.filter((task) => NEEDS_HUMAN_STATUSES.includes(task.status as NeedsHumanStatus));
+        const runs = allRuns.filter((run) => run.project_id === project.id && ["pending", "running"].includes(String(run.status ?? "")));
+
+        projectRows.push({
+          id: project.id,
+          name: project.name,
+          path: project.path,
+          status: "active",
+          created_at: "",
+          updated_at: "",
+        });
+
+        activeRuns.set(project.id, runs.map((run) => ({
+          id: String(run.run_id ?? run.id ?? "unknown"),
+          project_id: project.id,
+          seed_id: String(run.task_id ?? run.run_id ?? run.id ?? "unknown"),
+          agent_type: "elixir",
+          session_key: null,
+          worktree_path: null,
+          status: String(run.status ?? "running") as Run["status"],
+          started_at: typeof run.started_at === "string" ? run.started_at : null,
+          completed_at: null,
+          created_at: typeof run.created_at === "string" ? run.created_at : new Date().toISOString(),
+          progress: null,
+          base_branch: null,
+        })));
+        completedRuns.set(project.id, []);
+        events.set(project.id, []);
+        successRates.set(project.id, { rate: null, merged: 0, failed: 0 });
+        const withProject = human.map((task) => ({
+          ...task,
+          projectName: project.name,
+          projectId: project.id,
+          projectPath: project.path,
+        }));
+        needsHumanTasks.push(...withProject);
+        metrics.set(project.id, {
+          totalCost: 0,
+          totalTokens: 0,
+          tasksByStatus: deriveTaskMetrics(projectTasks),
+          costByRuntime: [],
+        });
+      }
+
+      return {
+        projects: projectRows,
+        activeRuns,
+        completedRuns,
+        progresses,
+        metrics,
+        events,
+        lastUpdated: new Date(),
+        successRates,
+        needsHumanTasks: sortNeedsHumanTasks(needsHumanTasks),
+      };
+    }
+
+    const client = createTrpcClient();
     for (const project of visible as DaemonProjectRecord[]) {
       const [stats, human, runs] = await Promise.all([
         client.projects.stats({ projectId: project.id }) as Promise<DaemonDashboardStats>,
@@ -130,7 +227,6 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
         projectPath: project.path,
       }));
       needsHumanTasks.push(...withProject);
-      // Preserve counts in a minimal metrics slot for header cost-free rendering.
       metrics.set(project.id, {
         totalCost: 0,
         totalTokens: 0,
@@ -846,6 +942,21 @@ export async function approveTask(taskId: string, projectPath: string): Promise<
   const resolvedProjectPath = resolve(projectPath);
   const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
   if (!project) throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+
+  if (foremanBackendMode() === "elixir") {
+    const client = await createElixirDashboardClient();
+    const response = await client.sendCommand({
+      command_id: `watch-approve-${taskId}-${randomUUID()}`,
+      command_type: "task.approve",
+      payload: {
+        project_id: project.id,
+        task_id: taskId,
+      },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    return;
+  }
+
   const client = createTrpcClient();
   await client.tasks.approve({ projectId: project.id, taskId });
 }
@@ -863,6 +974,22 @@ export async function retryTask(taskId: string, projectPath: string): Promise<vo
   const resolvedProjectPath = resolve(projectPath);
   const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
   if (!project) throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+
+  if (foremanBackendMode() === "elixir") {
+    const client = await createElixirDashboardClient();
+    const response = await client.sendCommand({
+      command_id: `watch-retry-${taskId}-${randomUUID()}`,
+      command_type: "task.update",
+      payload: {
+        project_id: project.id,
+        task_id: taskId,
+        status: "backlog",
+      },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    return;
+  }
+
   const client = createTrpcClient();
   await client.tasks.retry({ projectId: project.id, taskId });
 }

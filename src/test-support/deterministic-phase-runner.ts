@@ -15,6 +15,7 @@ interface DeterministicScenario {
 const PHASE_ARTIFACTS: Record<string, string> = {
   explorer: "EXPLORER_REPORT.md",
   developer: "DEVELOPER_REPORT.md",
+  documentation: "DOCUMENTATION_REPORT.md",
   qa: "QA_REPORT.md",
   reviewer: "REVIEW.md",
   finalize: "FINALIZE_VALIDATION.md",
@@ -39,7 +40,28 @@ function writeArtifact(cwd: string, artifact: string, body: string): void {
   writeFileSync(path, body, "utf-8");
 }
 
+function extractReportDir(prompt: string): string | null {
+  const mkdirMatch = prompt.match(/mkdir -p \"([^\"]+)\"/);
+  if (mkdirMatch?.[1]) return mkdirMatch[1];
+  const reportPathMatch = prompt.match(/\*\*([^*\n]+\/(?:DEVELOPER_REPORT|DOCUMENTATION_REPORT|QA_REPORT|REVIEW|FINALIZE_VALIDATION|TROUBLESHOOT_REPORT)\.md)\*\*/);
+  if (reportPathMatch?.[1]) return dirname(reportPathMatch[1]);
+  return null;
+}
+
 function buildArtifactBody(phase: string, seedId: string): string {
+  if (phase === "documentation") {
+    return [
+      "# Documentation",
+      "",
+      `Seed: ${seedId}`,
+      "## Verdict: PASS",
+      "",
+      "## Documentation Updated",
+      "- none required for deterministic test",
+      "",
+    ].join("\n");
+  }
+
   if (phase === "qa") {
     return [
       "# QA",
@@ -149,6 +171,7 @@ export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<P
   const scenario = parseScenario(context.seedDescription);
   const artifact = PHASE_ARTIFACTS[phase] ?? `${phase.toUpperCase()}_REPORT.md`;
   const filesChanged: string[] = [];
+  const reportDir = extractReportDir(opts.prompt);
 
   if (phase === "developer") {
     filesChanged.push(...applyScenario(cwd, scenario));
@@ -161,11 +184,11 @@ export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<P
     commitChanges(cwd, context.seedId);
   }
 
-  writeArtifact(
-    cwd,
-    artifact,
-    buildArtifactBody(phase, context.seedId),
-  );
+  const artifactBody = buildArtifactBody(phase, context.seedId);
+  writeArtifact(cwd, artifact, artifactBody);
+  if (reportDir) {
+    writeArtifact(cwd, join(reportDir, artifact), artifactBody);
+  }
   appendFileSync(
     join(cwd, "RUN_LOG.md"),
     `${new Date().toISOString()} ${phase} ${context.seedId}\n`,

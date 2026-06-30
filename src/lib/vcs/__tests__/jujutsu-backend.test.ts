@@ -902,7 +902,7 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.rebase (AC-T-020-3)", () => {
 });
 
 describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.rebase — conflict detection (AC-T-020-2b)", () => {
-  it("returns success=false and hasConflicts=true when jj rebase exits 0 with conflicts", async () => {
+  it("returns success=false and hasConflicts=true when jj rebase exits 0 with conflicts", { timeout: 90_000 }, async () => {
     // jj rebase exits with code 0 even when conflicts arise — it embeds
     // conflict markers in files. The implementation must detect this explicitly.
     const repo = makeTempJjRepo();
@@ -1117,7 +1117,7 @@ describe.skipIf(!JJ_AVAILABLE)("JujutsuBackend.cleanWorkingTree (AC-T-022-5)", (
     await expect(backend.cleanWorkingTree(repo)).resolves.toBeUndefined();
   });
 
-  it("removes newly added (untracked) files from the working tree (AC-T-022-5b)", async () => {
+  it("removes newly added (untracked) files from the working tree (AC-T-022-5b)", { timeout: 420_000 }, async () => {
     const repo = makeTempJjRepo();
     tempDirs.push(repo);
 

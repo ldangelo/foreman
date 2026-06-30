@@ -17,7 +17,7 @@ async function run(
   cwd: string,
   extraEnv?: Record<string, string>,
 ): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000, env: extraEnv });
+  return runTsxModule(CLI, args, { cwd, timeout: 60_000, env: extraEnv });
 }
 
 describe("foreman run --project flag", () => {

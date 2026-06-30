@@ -15,7 +15,7 @@ import {
 describe("PostgresStore testcontainer integration", { timeout: 120_000 }, () => {
   beforeAll(async () => {
     await startPostgresTestcontainer();
-  });
+  }, 120_000);
 
   afterAll(async () => {
     await stopPostgresTestcontainer();

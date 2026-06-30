@@ -1,0 +1,183 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { execFileSync } from "node:child_process";
+const PHASE_ARTIFACTS = {
+    explorer: "EXPLORER_REPORT.md",
+    developer: "DEVELOPER_REPORT.md",
+    documentation: "DOCUMENTATION_REPORT.md",
+    qa: "QA_REPORT.md",
+    reviewer: "REVIEW.md",
+    finalize: "FINALIZE_VALIDATION.md",
+    troubleshooter: "TROUBLESHOOT_REPORT.md",
+};
+function parseScenario(description) {
+    const marker = "FOREMAN_TEST_SCENARIO=";
+    const line = description?.split("\n").find((entry) => entry.includes(marker));
+    if (!line)
+        return {};
+    const raw = line.slice(line.indexOf(marker) + marker.length).trim();
+    try {
+        return JSON.parse(raw);
+    }
+    catch {
+        return {};
+    }
+}
+function writeArtifact(cwd, artifact, body) {
+    const path = join(cwd, artifact);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, body, "utf-8");
+}
+function extractReportDir(prompt) {
+    const mkdirMatch = prompt.match(/mkdir -p \"([^\"]+)\"/);
+    if (mkdirMatch?.[1])
+        return mkdirMatch[1];
+    const reportPathMatch = prompt.match(/\*\*([^*\n]+\/(?:DEVELOPER_REPORT|DOCUMENTATION_REPORT|QA_REPORT|REVIEW|FINALIZE_VALIDATION|TROUBLESHOOT_REPORT)\.md)\*\*/);
+    if (reportPathMatch?.[1])
+        return dirname(reportPathMatch[1]);
+    return null;
+}
+function buildArtifactBody(phase, seedId) {
+    if (phase === "documentation") {
+        return [
+            "# Documentation",
+            "",
+            `Seed: ${seedId}`,
+            "## Verdict: PASS",
+            "",
+            "## Documentation Updated",
+            "- none required for deterministic test",
+            "",
+        ].join("\n");
+    }
+    if (phase === "qa") {
+        return [
+            "# QA",
+            "",
+            `Seed: ${seedId}`,
+            "## Verdict: PASS",
+            "",
+            "## Test Evidence",
+            "- Command: npm test",
+            "- Result: 1 passed, 0 failed",
+            "",
+        ].join("\n");
+    }
+    if (phase === "reviewer") {
+        return [
+            "# Review",
+            "",
+            `Seed: ${seedId}`,
+            "## Verdict: PASS",
+            "",
+            "## Issues",
+            "(none)",
+            "",
+        ].join("\n");
+    }
+    if (phase === "finalize") {
+        return [
+            "# Finalize",
+            "",
+            `Seed: ${seedId}`,
+            "## Verdict: PASS",
+            "## Test Validation: SKIPPED",
+            "## Target Integration: SKIPPED",
+            "",
+        ].join("\n");
+    }
+    if (phase === "explorer") {
+        return [
+            "# Explorer",
+            "",
+            `Seed: ${seedId}`,
+            "## Verdict: PASS",
+            "",
+            "Smoke test noop.",
+            "",
+        ].join("\n");
+    }
+    return [
+        `# ${phase}`,
+        "",
+        `Seed: ${seedId}`,
+        "## Verdict: PASS",
+        "",
+    ].join("\n");
+}
+function applyScenario(cwd, scenario) {
+    const file = scenario.file ?? "test.txt";
+    const target = join(cwd, file);
+    mkdirSync(dirname(target), { recursive: true });
+    const content = scenario.content ?? "deterministic smoke output\n";
+    switch (scenario.kind ?? "create") {
+        case "append": {
+            const existing = existsSync(target) ? readFileSync(target, "utf-8") : "";
+            writeFileSync(target, `${existing}${content}`, "utf-8");
+            break;
+        }
+        case "replace":
+        case "create":
+        default:
+            writeFileSync(target, content, "utf-8");
+            break;
+    }
+    return [file];
+}
+function commitChanges(cwd, seedId) {
+    execFileSync("git", ["add", "-A"], { cwd, stdio: "pipe" });
+    const status = execFileSync("git", ["status", "--short"], {
+        cwd,
+        encoding: "utf-8",
+        stdio: "pipe",
+    }).trim();
+    if (!status)
+        return;
+    execFileSync("git", ["commit", "-m", `Deterministic smoke finalize (${seedId})`], {
+        cwd,
+        stdio: "pipe",
+        env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: "Foreman Test",
+            GIT_AUTHOR_EMAIL: "foreman-test@example.com",
+            GIT_COMMITTER_NAME: "Foreman Test",
+            GIT_COMMITTER_EMAIL: "foreman-test@example.com",
+        },
+    });
+}
+export async function runDeterministicPhase(opts) {
+    const { context, cwd, onTurnEnd } = opts;
+    const phase = context.phaseName;
+    const scenario = parseScenario(context.seedDescription);
+    const artifact = PHASE_ARTIFACTS[phase] ?? `${phase.toUpperCase()}_REPORT.md`;
+    const filesChanged = [];
+    const reportDir = extractReportDir(opts.prompt);
+    if (phase === "developer") {
+        filesChanged.push(...applyScenario(cwd, scenario));
+    }
+    if (phase === "finalize") {
+        if (!filesChanged.length && scenario.kind) {
+            filesChanged.push(...applyScenario(cwd, scenario));
+        }
+        commitChanges(cwd, context.seedId);
+    }
+    const artifactBody = buildArtifactBody(phase, context.seedId);
+    writeArtifact(cwd, artifact, artifactBody);
+    if (reportDir) {
+        writeArtifact(cwd, join(reportDir, artifact), artifactBody);
+    }
+    appendFileSync(join(cwd, "RUN_LOG.md"), `${new Date().toISOString()} ${phase} ${context.seedId}\n`, "utf-8");
+    onTurnEnd?.(1);
+    return {
+        success: true,
+        costUsd: 0,
+        turns: 1,
+        toolCalls: 0,
+        toolBreakdown: {},
+        tokensIn: 0,
+        tokensOut: 0,
+        filesChanged,
+        outputText: filesChanged.join(", "),
+    };
+}
+//# sourceMappingURL=deterministic-phase-runner.js.map

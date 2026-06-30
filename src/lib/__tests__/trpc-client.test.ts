@@ -21,9 +21,11 @@ function makeTempSocketPath() {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  process.env.FOREMAN_BACKEND = "node";
 });
 
 afterEach(() => {
+  delete process.env.FOREMAN_BACKEND;
   vi.restoreAllMocks();
 });
 

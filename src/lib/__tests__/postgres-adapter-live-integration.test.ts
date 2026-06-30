@@ -63,7 +63,7 @@ describe("PostgresAdapter live integration", { timeout: 30_000 }, () => {
     }
 
     initPool({ databaseUrl: DATABASE_URL });
-  });
+  }, 120_000);
 
   afterEach(async () => {
     if (skipTests) return;

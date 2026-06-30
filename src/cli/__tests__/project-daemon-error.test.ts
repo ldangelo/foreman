@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockAdd } = vi.hoisted(() => ({
+const { mockAdd, mockForemanBackendMode } = vi.hoisted(() => ({
   mockAdd: vi.fn(),
+  mockForemanBackendMode: vi.fn(),
 }));
 
 vi.mock("../../lib/trpc-client.js", () => ({
@@ -17,12 +18,17 @@ vi.mock("../../lib/trpc-client.js", () => ({
   }),
 }));
 
+vi.mock("../../lib/backend-mode.js", () => ({
+  foremanBackendMode: mockForemanBackendMode,
+}));
+
 describe("foreman project daemon error handling", () => {
   let originalExit: typeof process.exit;
   let originalError: typeof console.error;
 
   beforeEach(() => {
     mockAdd.mockReset();
+    mockForemanBackendMode.mockReturnValue("node");
     originalExit = process.exit;
     originalError = console.error;
     console.error = vi.fn();

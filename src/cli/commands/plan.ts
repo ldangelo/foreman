@@ -3,8 +3,9 @@ import chalk from "chalk";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
-import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { normalizePriority } from "../../lib/priority.js";
 import { ForemanStore } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
@@ -49,6 +50,23 @@ function taskRowToIssue(row: TaskRow): Issue {
     created_at: row.created_at,
     updated_at: row.updated_at,
     description: row.description ?? null,
+    labels: [],
+  };
+}
+
+function elixirTaskToIssue(task: ElixirTask): Issue {
+  const id = task.task_id ?? task.id ?? "";
+  return {
+    id,
+    title: task.title ?? id,
+    type: task.task_type ?? task.type ?? "task",
+    priority: `P${typeof task.priority === "number" ? task.priority : 2}`,
+    status: task.status ?? "backlog",
+    assignee: null,
+    parent: null,
+    created_at: task.created_at ?? new Date(0).toISOString(),
+    updated_at: task.updated_at ?? task.created_at ?? new Date(0).toISOString(),
+    description: task.description ?? null,
     labels: [],
   };
 }
@@ -161,6 +179,144 @@ class NativePlanTaskClient implements PlanTaskClient {
   }
 }
 
+class ElixirPlanTaskClient implements PlanTaskClient {
+  constructor(private readonly projectPath: string) {}
+
+  private async withClient<T>(fn: (client: ElixirServerClient, projectId: string, projectKey: string) => Promise<T>): Promise<T> {
+    const projects = await listRegisteredProjects();
+    const project = projects.find((record) => record.path === this.projectPath);
+    if (!project) {
+      throw new Error(`Project at '${this.projectPath}' is not registered with the daemon.`);
+    }
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    return fn(new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN), project.id, project.name);
+  }
+
+  async create(title: string, opts?: PlanCreateOptions): Promise<Issue> {
+    return this.withClient(async (client, projectId, projectKey) => {
+      const existing = (await client.listTasks()).filter((task) => task.project_id === projectId);
+      const prefix = projectKey.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "task";
+      const seen = new Set(existing.map((row) => row.task_id ?? row.id ?? ""));
+      let id = "";
+      for (;;) {
+        const candidate = `${prefix}-${Math.random().toString(16).slice(2, 7)}`;
+        if (!seen.has(candidate)) {
+          id = candidate;
+          break;
+        }
+      }
+      const priority = opts?.priority ? normalizePriority(opts.priority) : 2;
+      const createResponse = await client.sendCommand({
+        command_id: `plan-create-${id}`,
+        command_type: "task.create",
+        payload: {
+          project_id: projectId,
+          task_id: id,
+          title,
+          description: opts?.description,
+          task_type: opts?.type ?? "task",
+          priority,
+          status: "backlog",
+        },
+      });
+      if (!createResponse.ok) throw new Error(createResponse.error.message);
+      const approveResponse = await client.sendCommand({
+        command_id: `plan-approve-${id}`,
+        command_type: "task.approve",
+        payload: { project_id: projectId, task_id: id },
+      });
+      if (!approveResponse.ok) throw new Error(approveResponse.error.message);
+      if (opts?.parent) {
+        const depResponse = await client.sendCommand({
+          command_id: `plan-parent-${id}`,
+          command_type: "task.add_dependency",
+          payload: { task_id: id, depends_on: opts.parent },
+        });
+        if (!depResponse.ok) throw new Error(depResponse.error.message);
+      }
+      const current = await client.getTask(id);
+      return elixirTaskToIssue(current ?? {
+        task_id: id,
+        project_id: projectId,
+        title,
+        description: opts?.description,
+        task_type: opts?.type ?? "task",
+        priority,
+        status: "ready",
+      });
+    });
+  }
+
+  async addDependency(fromId: string, toId: string): Promise<void> {
+    await this.withClient(async (client) => {
+      const response = await client.sendCommand({
+        command_id: `plan-dep-${fromId}-${toId}`,
+        command_type: "task.add_dependency",
+        payload: { task_id: fromId, depends_on: toId },
+      });
+      if (!response.ok) throw new Error(response.error.message);
+    });
+  }
+
+  async list(opts?: { status?: string; type?: string }): Promise<Issue[]> {
+    return this.withClient(async (client, projectId) => {
+      const rows = (await client.listTasks()).filter((row) => row.project_id === projectId);
+      return rows
+        .filter((row) => !opts?.status || row.status === opts.status)
+        .filter((row) => !opts?.type || (row.task_type ?? row.type) === opts.type)
+        .map(elixirTaskToIssue);
+    });
+  }
+
+  async ready(): Promise<Issue[]> {
+    return this.list({ status: "ready" });
+  }
+
+  async show(id: string): Promise<{ status: string; description?: string | null; notes?: string | null }> {
+    return this.withClient(async (client) => {
+      const row = await client.getTask(id);
+      if (!row) {
+        throw new Error(`Native task '${id}' not found`);
+      }
+      return {
+        status: row.status ?? "backlog",
+        description: row.description ?? null,
+        notes: null,
+      };
+    });
+  }
+
+  async update(id: string, opts: UpdateOptions): Promise<void> {
+    await this.withClient(async (client, projectId) => {
+      const response = await client.sendCommand({
+        command_id: `plan-update-${id}`,
+        command_type: "task.update",
+        payload: {
+          project_id: projectId,
+          task_id: id,
+          title: opts.title,
+          description: opts.description ?? undefined,
+          status: opts.claim ? "in-progress" : opts.status === "in_progress" ? "in-progress" : opts.status,
+        },
+      });
+      if (!response.ok) throw new Error(response.error.message);
+    });
+  }
+
+  async close(id: string, reason?: string): Promise<void> {
+    void reason;
+    await this.withClient(async (client, projectId) => {
+      const response = await client.sendCommand({
+        command_id: `plan-close-${id}`,
+        command_type: "task.close",
+        payload: { project_id: projectId, task_id: id },
+      });
+      if (!response.ok) throw new Error(response.error.message);
+    });
+  }
+}
+
 class BeadsPlanTaskClient implements PlanTaskClient {
   private readonly clientPromise: Promise<PlanTaskClient>;
 
@@ -206,7 +362,9 @@ class BeadsPlanTaskClient implements PlanTaskClient {
 export function createPlanClient(
   projectPath: string,
 ): PlanTaskClient {
-  // Always use native task store
+  if (foremanBackendMode() === "elixir") {
+    return new ElixirPlanTaskClient(projectPath);
+  }
   return new NativePlanTaskClient(projectPath);
 }
 
@@ -551,14 +709,14 @@ async function runServerPlanningCommand(
   console.log(chalk.dim(`Events: ${response.events.join(", ")}`));
 }
 
-function readPlanningInput(description: string, projectPath: string): string {
+export function readPlanningInput(description: string, projectPath: string): string {
   const resolvedPath = isAbsolute(description) ? resolve(description) : resolve(projectPath, description);
   if (!existsSync(resolvedPath)) return description;
   console.log(chalk.dim(`Reading description from: ${resolvedPath}`));
   return readFileSync(resolvedPath, "utf-8");
 }
 
-function buildPipelineSteps(
+export function buildPipelineSteps(
   productDescription: string,
   outputDir: string,
   fromPrd: string | undefined,

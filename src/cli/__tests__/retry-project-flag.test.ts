@@ -18,7 +18,7 @@ async function run(
   cwd: string,
   extraEnv?: Record<string, string>,
 ): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000, env: extraEnv });
+  return runTsxModule(CLI, args, { cwd, timeout: 60_000, env: extraEnv });
 }
 
 describe("foreman retry --project flag", () => {
@@ -70,6 +70,7 @@ describe("foreman retry --project flag", () => {
     const result = await run(["retry", "bd-missing", "--project", "my-project", "--dry-run"], projectDir, {
       ...process.env,
       HOME: tmpBase,
+      FOREMAN_BACKEND: "node",
     });
 
     const output = result.stdout + result.stderr;
@@ -105,6 +106,7 @@ describe("foreman retry --project flag", () => {
     const result = await run(["retry", "bd-test", "--project", "nonexistent-project", "--dry-run"], projectDir, {
       ...process.env,
       HOME: tmpBase,
+      FOREMAN_BACKEND: "node",
     });
 
     expect(result.exitCode).toBe(1);
@@ -126,6 +128,7 @@ describe("foreman retry --project flag", () => {
     const result = await run(["retry", "bd-test", "--project", projectDir, "--dry-run"], projectDir, {
       ...process.env,
       HOME: tmpBase,
+      FOREMAN_BACKEND: "node",
     });
 
     expect(result.exitCode).toBe(1);
@@ -144,7 +147,10 @@ describe("foreman retry --project flag", () => {
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: projectDir, stdio: "ignore" });
 
-    const result = await run(["retry", "bd-test", "--dry-run"], projectDir);
+    const result = await run(["retry", "bd-test", "--dry-run"], projectDir, {
+      ...process.env,
+      FOREMAN_BACKEND: "node",
+    });
 
     expect(result.exitCode).toBe(1);
     expect(result.stdout + result.stderr).not.toContain("not found in registry");

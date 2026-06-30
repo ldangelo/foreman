@@ -1,0 +1,103 @@
+import { NativeTaskClient } from "./native-task-client.js";
+import { PostgresAdapter } from "./db/postgres-adapter.js";
+import { initPool, isPoolInitialised } from "./db/pool-manager.js";
+import { resolveProjectDatabaseUrl } from "./project-mail-client.js";
+import { ProjectRegistry } from "./project-registry.js";
+import { ForemanStore } from "./store.js";
+const NATIVE_TOTAL_STATUSES = [
+    "backlog",
+    "ready",
+    "in-progress",
+    "merged",
+    "closed",
+    "conflict",
+    "failed",
+    "stuck",
+    "blocked",
+];
+const NATIVE_BLOCKED_STATUSES = [
+    "backlog",
+    "conflict",
+    "failed",
+    "stuck",
+    "blocked",
+];
+async function resolveRegisteredProject(projectPath, registeredProjectId) {
+    const databaseUrl = resolveProjectDatabaseUrl(projectPath);
+    if (databaseUrl && !isPoolInitialised()) {
+        try {
+            initPool({ databaseUrl });
+        }
+        catch {
+            // Best effort only — callers fall back to local behavior when the pool is unavailable.
+        }
+    }
+    const registries = databaseUrl
+        ? [new ProjectRegistry({ pg: new PostgresAdapter() }), new ProjectRegistry()]
+        : [new ProjectRegistry()];
+    for (const registry of registries) {
+        try {
+            const projects = await registry.list();
+            if (registeredProjectId) {
+                const byId = projects.find((project) => project.id === registeredProjectId);
+                if (byId) {
+                    return { id: byId.id, path: byId.path };
+                }
+                continue;
+            }
+            const byPath = projects.find((project) => project.path === projectPath);
+            if (byPath) {
+                return { id: byPath.id, path: byPath.path };
+            }
+        }
+        catch {
+            // Keep falling back — local/unregistered mode should remain available.
+        }
+    }
+    return null;
+}
+export async function createTaskClient(projectPath, opts) {
+    const registered = await resolveRegisteredProject(projectPath, opts?.registeredProjectId);
+    return {
+        backendType: "native",
+        taskClient: new NativeTaskClient(projectPath, { registeredProjectId: registered?.id }),
+    };
+}
+async function fetchNativeTaskCounts(projectPath, registeredProjectId) {
+    const registered = await resolveRegisteredProject(projectPath, registeredProjectId);
+    if (registered) {
+        const adapter = new PostgresAdapter();
+        const [total, ready, inProgress, completed, blocked] = await Promise.all([
+            adapter.listTasks(registered.id, { status: [...NATIVE_TOTAL_STATUSES], limit: 1000 }),
+            adapter.listTasks(registered.id, { status: ["ready"], limit: 1000 }),
+            adapter.listTasks(registered.id, { status: ["in-progress"], limit: 1000 }),
+            adapter.listTasks(registered.id, { status: ["merged", "closed"], limit: 1000 }),
+            adapter.listTasks(registered.id, { status: [...NATIVE_BLOCKED_STATUSES], limit: 1000 }),
+        ]);
+        return {
+            total: total.length,
+            ready: ready.length,
+            inProgress: inProgress.length,
+            completed: completed.length,
+            blocked: blocked.length,
+        };
+    }
+    const store = ForemanStore.forProject(projectPath);
+    const list = (statuses) => store.listTasksByStatus?.(statuses) ?? [];
+    try {
+        return {
+            total: list([...NATIVE_TOTAL_STATUSES]).length,
+            ready: list(["ready"]).length,
+            inProgress: list(["in-progress"]).length,
+            completed: list(["merged", "closed"]).length,
+            blocked: list([...NATIVE_BLOCKED_STATUSES]).length,
+        };
+    }
+    finally {
+        store.close();
+    }
+}
+export async function fetchTaskCounts(projectPath) {
+    return fetchNativeTaskCounts(projectPath);
+}
+//# sourceMappingURL=task-client-factory.js.map

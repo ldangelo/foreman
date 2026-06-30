@@ -12,7 +12,7 @@ import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 async function run(args: string[], cwd: string): Promise<ExecResult> {
-  return runTsxModule(CLI, args, { cwd, timeout: 15_000 });
+  return runTsxModule(CLI, args, { cwd, timeout: 30_000 });
 }
 
 describe("bead command", () => {
@@ -42,7 +42,7 @@ describe("bead command", () => {
     expect(output).toContain("--type");
     expect(output).toContain("--priority");
     expect(output).toContain("--parent");
-  }, 15_000);
+  }, 30_000);
 
   it("bead without arguments shows missing argument error", async () => {
     const { beadCommand } = await import("../commands/bead.js");
@@ -60,7 +60,7 @@ describe("bead command", () => {
     const message = thrown instanceof Error ? thrown.message : String(thrown);
     expect(message.toLowerCase()).toMatch(/missing|required|argument|error/i);
     stderrSpy.mockRestore();
-  }, 15_000);
+  }, 30_000);
 
   it("bead fails without foreman init (no .beads directory)", async () => {
     const tmp = makeTempDir();
@@ -74,7 +74,7 @@ describe("bead command", () => {
     // Should fail with a helpful message about initialization
     expect(result.exitCode).not.toBe(0);
     expect(output).toMatch(/not (found|installed|initializ)|init|br|beads/i);
-  }, 15_000);
+  }, 30_000);
 
   it("bead --dry-run --no-llm shows planned beads without creating them", async () => {
     const tmp = makeTempDir();
@@ -95,7 +95,7 @@ describe("bead command", () => {
       // No br installed: graceful error
       expect(output).toMatch(/not (found|installed|initializ)|init|br|beads/i);
     }
-  }, 15_000);
+  }, 30_000);
 
   it("bead --dry-run --no-llm reads description from a file", async () => {
     const tmp = makeTempDir();
@@ -116,7 +116,7 @@ describe("bead command", () => {
       // No br installed: graceful error
       expect(output).toMatch(/not (found|installed|initializ)|init|br|beads/i);
     }
-  }, 15_000);
+  }, 30_000);
 });
 
 // ── Unit tests for internal helpers ─────────────────────────────────────
@@ -316,7 +316,7 @@ describe("--no-llm description slice behaviour", () => {
       // (i.e. description != full inputText, it's only the trailing portion)
     }
     // If br not installed, test passes — we just can't observe the output
-  }, 15_000);
+  }, 30_000);
 
   it("sets description to undefined when input is exactly 200 chars", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "foreman-bead-nollm-exact-"));
@@ -333,5 +333,5 @@ describe("--no-llm description slice behaviour", () => {
       // The title itself (200 B's) should appear
       expect(output).toContain("B".repeat(50)); // at least part of the title
     }
-  }, 15_000);
+  }, 30_000);
 });

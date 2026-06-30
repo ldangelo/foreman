@@ -44,6 +44,7 @@
     "test:report:e2e:full-run": "mkdir -p .foreman/test-reports && vitest run -c vitest.e2e.full-run.config.ts --reporter=json --outputFile=.foreman/test-reports/e2e-full-run.json || test -f .foreman/test-reports/e2e-full-run.json",
     "test:report:system": "mkdir -p .foreman/test-reports && vitest run -c vitest.system.config.ts --reporter=json --outputFile=.foreman/test-reports/system.json || test -f .foreman/test-reports/system.json",
     "test:report:ci": "mkdir -p .foreman/test-reports && npm run test:report:unit && npm run test:report:integration && npm run test:report:e2e:smoke && npm run test:report:e2e:full-run",
+    "test:coverage:ci": "node scripts/test-coverage-ci.mjs",
     "prebuilds:download": "tsx scripts/download-prebuilds.ts",
     "prebuilds:download:force": "tsx scripts/download-prebuilds.ts --force",
     "prebuilds:status": "tsx scripts/download-prebuilds.ts --status",

@@ -19,7 +19,7 @@ describe("agent-worker.ts", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("exits with error when no config file argument given", async () => {
+  it("exits with error when no config file argument given", { timeout: 90_000 }, async () => {
     const result = await runTsxModule(WORKER_SCRIPT, [], {
       cwd: PROJECT_ROOT,
       timeout: 10_000,

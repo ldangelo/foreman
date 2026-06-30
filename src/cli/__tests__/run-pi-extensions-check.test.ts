@@ -83,9 +83,13 @@ vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   parsePiEvent: vi.fn(),
 }));
 
-vi.mock("node:fs", () => ({
-  existsSync: (...args: unknown[]) => mockExistsSync(...args),
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    existsSync: (...args: unknown[]) => mockExistsSync(...args),
+  };
+});
 
 vi.mock("../../lib/trpc-client.js", () => ({
   createTrpcClient: () => ({

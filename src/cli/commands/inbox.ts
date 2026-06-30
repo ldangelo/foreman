@@ -12,6 +12,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
@@ -20,6 +21,8 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import type { AgentMessageRow, RunRow } from "../../lib/db/postgres-adapter.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, ensureCliPostgresPool } from "./project-task-support.js";
 
 interface DaemonMailMessage {
@@ -53,6 +56,16 @@ interface DaemonPipelineEventRow {
   created_at: string;
 }
 
+type InboxClientContext =
+  | { backend: "node"; client: ReturnType<typeof createTrpcClient>; projectId: string }
+  | { backend: "elixir"; client: ElixirServerClient; projectId: string };
+
+async function createElixirInboxClient(): Promise<ElixirServerClient> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+}
+
 interface PipelineEvent {
   id: string;
   runId: string | null;
@@ -82,14 +95,14 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "stuck":                 "⚠",
 };
 
-function formatPipelineEvent(event: PipelineEvent): string {
+export function formatPipelineEvent(event: PipelineEvent): string {
   const ts = formatTimestamp(event.createdAt);
   const icon = PIPELINE_EVENT_ICONS[event.eventType] ?? "·";
   const summary = formatEventSummary(event.eventType, event.details);
   return `[${ts}] ${icon} ${event.eventType} — ${summary}`;
 }
 
-function formatEventSummary(eventType: string, details: Record<string, unknown> | null): string {
+export function formatEventSummary(eventType: string, details: Record<string, unknown> | null): string {
   if (!details) return eventType;
 
   switch (eventType) {
@@ -123,7 +136,7 @@ function formatEventSummary(eventType: string, details: Record<string, unknown> 
   }
 }
 
-function adaptPostgresEvent(row: { id: string; run_id: string | null; event_type: string; payload: unknown; created_at: string | Date }): PipelineEvent {
+export function adaptPostgresEvent(row: { id: string; run_id: string | null; event_type: string; payload: unknown; created_at: string | Date }): PipelineEvent {
   const payload = typeof row.payload === "string"
     ? JSON.parse(row.payload)
     : row.payload;
@@ -136,7 +149,7 @@ function adaptPostgresEvent(row: { id: string; run_id: string | null; event_type
   };
 }
 
-async function fetchPostgresEvents(
+export async function fetchPostgresEvents(
   adapter: PostgresAdapter,
   projectId: string,
   options: { all?: boolean; runId?: string; limit: number },
@@ -149,16 +162,32 @@ async function fetchPostgresEvents(
   return rows.map(adaptPostgresEvent);
 }
 
-async function fetchDaemonEvents(
-  client: ReturnType<typeof createTrpcClient>,
-  projectId: string,
+export async function fetchDaemonEvents(
+  daemon: InboxClientContext,
   options: { all?: boolean; runId?: string; limit: number },
 ): Promise<PipelineEvent[]> {
+  if (daemon.backend === "elixir") {
+    const rows = await daemon.client.listEvents({
+      projectId: daemon.projectId,
+      runId: options.all ? undefined : options.runId,
+      limit: 1000,
+    });
+    return rows
+      .map((row) => ({
+        id: String(row.event_id ?? `${row.run_id ?? "run"}-${row.event_type ?? row.type ?? "event"}`),
+        runId: row.run_id ? String(row.run_id) : null,
+        eventType: String(row.event_type ?? row.type ?? "event"),
+        details: row.payload && typeof row.payload === "object" ? row.payload as Record<string, unknown> : null,
+        createdAt: String(row.occurred_at ?? row.created_at ?? new Date().toISOString()),
+      }))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, options.limit);
+  }
+
   if (options.all) {
-    // Fetch runs then events for each
-    const runs = await client.runs.list({ projectId, limit: 100 }) as DaemonRunRow[];
+    const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[];
     const eventLists = await Promise.all(
-      runs.map((run) => client.runs.listEvents({ runId: run.id }) as Promise<DaemonPipelineEventRow[]>),
+      runs.map((run) => daemon.client.runs.listEvents({ runId: run.id }) as Promise<DaemonPipelineEventRow[]>),
     );
     return eventLists
       .flat()
@@ -173,7 +202,7 @@ async function fetchDaemonEvents(
       .slice(0, options.limit);
   }
   if (!options.runId) return [];
-  const rows = await client.runs.listEvents({ runId: options.runId }) as DaemonPipelineEventRow[];
+  const rows = await daemon.client.runs.listEvents({ runId: options.runId }) as DaemonPipelineEventRow[];
   return rows
     .map((row) => ({
       id: row.id,
@@ -673,7 +702,7 @@ function formatRunStatus(run: Run): string {
   return `[${ts}] ${chalk.bold("●")} ${run.seed_id} ${statusStr} (run ${run.id})`;
 }
 
-function adaptDaemonMessage(row: DaemonMailMessage): Message {
+export function adaptDaemonMessage(row: DaemonMailMessage): Message {
   return {
     id: row.id,
     run_id: row.run_id,
@@ -772,7 +801,7 @@ function renderRecentActivity(messages: Message[]): string {
   return lines.join("\n");
 }
 
-function adaptDaemonRun(row: DaemonRunRow): Run {
+export function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: "",
@@ -820,7 +849,7 @@ function adaptPostgresMessage(row: AgentMessageRow): Message {
   };
 }
 
-async function resolvePostgresInboxProject(projectPath: string, projectSelector?: string): Promise<{ adapter: PostgresAdapter; projectId: string } | null> {
+export async function resolvePostgresInboxProject(projectPath: string, projectSelector?: string): Promise<{ adapter: PostgresAdapter; projectId: string } | null> {
   ensureCliPostgresPool(projectPath);
   const projects = await listRegisteredProjects();
   const project = projectSelector
@@ -830,7 +859,7 @@ async function resolvePostgresInboxProject(projectPath: string, projectSelector?
   return { adapter: new PostgresAdapter(), projectId: project.id };
 }
 
-async function resolvePostgresRunId(
+export async function resolvePostgresRunId(
   adapter: PostgresAdapter,
   projectId: string,
   options: { run?: string; task?: string; bead?: string },
@@ -842,7 +871,7 @@ async function resolvePostgresRunId(
   return runs[0]?.id ?? null;
 }
 
-async function fetchPostgresMessages(
+export async function fetchPostgresMessages(
   adapter: PostgresAdapter,
   projectId: string,
   options: { all?: boolean; runId?: string; agent?: string; unread?: boolean; limit: number },
@@ -863,29 +892,39 @@ async function fetchPostgresMessages(
   return selectRecentMessages(rows.map(adaptPostgresMessage), options.limit);
 }
 
-export async function resolveDaemonInboxContext(projectPath: string, projectSelector?: string): Promise<{
-  client: ReturnType<typeof createTrpcClient>;
-  projectId: string;
-} | null> {
+export async function resolveDaemonInboxContext(projectPath: string, projectSelector?: string): Promise<InboxClientContext | null> {
   try {
     const projects = await listRegisteredProjects();
     const project = projectSelector
       ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
       : projects.find((record) => resolve(record.path) === resolve(projectPath));
     if (!project) return null;
-    return { client: createTrpcClient(), projectId: project.id };
+    if (foremanBackendMode() === "elixir") {
+      return { backend: "elixir", client: await createElixirInboxClient(), projectId: project.id };
+    }
+    return { backend: "node", client: createTrpcClient(), projectId: project.id };
   } catch {
     return null;
   }
 }
 
-async function resolveDaemonRunId(
-  client: ReturnType<typeof createTrpcClient>,
-  projectId: string,
+export async function resolveDaemonRunId(
+  daemon: InboxClientContext,
   options: { run?: string; task?: string; bead?: string },
 ): Promise<string | null> {
   if (options.run) return options.run;
-  const runs = await client.runs.list({ projectId, limit: 100 }) as DaemonRunRow[];
+  if (daemon.backend === "elixir") {
+    const runs = await daemon.client.listRuns();
+    const filtered = runs.filter((run) => run.project_id === daemon.projectId);
+    const taskFilter = options.task ?? options.bead;
+    if (taskFilter) {
+      const match = filtered.find((run) => String(run.task_id ?? "") === taskFilter);
+      return match?.run_id ? String(match.run_id) : match?.id ? String(match.id) : null;
+    }
+    const first = filtered[0];
+    return first?.run_id ? String(first.run_id) : first?.id ? String(first.id) : null;
+  }
+  const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[];
   const taskFilter = options.task ?? options.bead;
   if (taskFilter) {
     const match = runs.find((run) => run.bead_id === taskFilter);
@@ -898,13 +937,35 @@ export function selectRecentMessages(messages: Message[], limit: number): Messag
   return messages.slice(Math.max(0, messages.length - limit));
 }
 
-async function fetchDaemonMessages(
-  client: ReturnType<typeof createTrpcClient>,
-  projectId: string,
+export async function fetchDaemonMessages(
+  daemon: InboxClientContext,
   options: { all?: boolean; runId?: string; agent?: string; unread?: boolean; limit: number },
 ): Promise<Message[]> {
+  if (daemon.backend === "elixir") {
+    const rows = await daemon.client.listInbox({
+      projectId: daemon.projectId,
+      runId: options.all ? undefined : options.runId,
+      unread: options.unread,
+      limit: options.limit,
+    });
+    const messages = rows
+      .map((row) => ({
+        id: String(row.message_id ?? `${row.run_id ?? "run"}-${row.subject ?? randomUUID()}`),
+        run_id: String(row.run_id ?? ""),
+        sender_agent_type: String(row.sender_agent_type ?? row.sender ?? "agent"),
+        recipient_agent_type: String(row.recipient_agent_type ?? row.recipient ?? "run"),
+        subject: String(row.subject ?? "message"),
+        body: typeof row.body === "string" ? row.body : JSON.stringify(row.body ?? {}),
+        read: row.unread === false ? 1 : 0,
+        created_at: String(row.created_at ?? new Date().toISOString()),
+        deleted_at: null,
+      }))
+      .filter((row) => !options.agent || row.recipient_agent_type === options.agent);
+    return options.all ? messages : selectRecentMessages(messages, options.limit);
+  }
+
   if (options.all) {
-    const rows = await client.mail.listGlobal({ projectId, limit: options.limit }) as DaemonMailMessage[];
+    const rows = await daemon.client.mail.listGlobal({ projectId: daemon.projectId, limit: options.limit }) as DaemonMailMessage[];
     const filtered = options.agent
       ? rows.filter((row) => row.recipient_agent_type === options.agent)
       : rows;
@@ -912,8 +973,8 @@ async function fetchDaemonMessages(
     return unreadFiltered.map(adaptDaemonMessage);
   }
   if (!options.runId) return [];
-  const rows = await client.mail.list({
-    projectId,
+  const rows = await daemon.client.mail.list({
+    projectId: daemon.projectId,
     runId: options.runId,
     agentType: options.agent,
     unreadOnly: options.unread,
@@ -945,6 +1006,70 @@ function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null 
 function getInboxStatusRuns(store: ForemanStore): ReturnType<ForemanStore["getRunsByStatuses"]> {
   if (typeof store.getRunsByStatuses !== "function") return [];
   return store.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+}
+
+export async function listDaemonRuns(daemon: InboxClientContext): Promise<Run[]> {
+  if (daemon.backend === "elixir") {
+    const runs = await daemon.client.listRuns();
+    return runs
+      .filter((run) => run.project_id === daemon.projectId)
+      .map((run) => ({
+        id: String(run.run_id ?? run.id ?? "unknown"),
+        project_id: daemon.projectId,
+        seed_id: String(run.task_id ?? run.run_id ?? run.id ?? "unknown"),
+        agent_type: "elixir",
+        session_key: null,
+        worktree_path: null,
+        status: String(run.status ?? "running") as Run["status"],
+        started_at: typeof run.started_at === "string" ? run.started_at : null,
+        completed_at: typeof run.completed_at === "string" ? run.completed_at : null,
+        created_at: typeof run.created_at === "string" ? run.created_at : new Date().toISOString(),
+        progress: null,
+        base_branch: null,
+        merge_strategy: null,
+      }));
+  }
+  const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[];
+  return runs.map(adaptDaemonRun);
+}
+
+async function markDaemonMessageRead(daemon: InboxClientContext, messageId: string): Promise<void> {
+  if (daemon.backend === "elixir") {
+    return;
+  }
+  await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId });
+}
+
+async function sendDaemonMessage(
+  daemon: InboxClientContext,
+  input: { runId: string; from: string; to: string; subject: string; body: string },
+): Promise<void> {
+  if (daemon.backend === "elixir") {
+    const response = await daemon.client.sendCommand({
+      command_id: `inbox-send-${randomUUID()}`,
+      command_type: "inbox.send",
+      payload: {
+        project_id: daemon.projectId,
+        run_id: input.runId,
+        sender_agent_type: input.from,
+        recipient_agent_type: input.to,
+        subject: input.subject,
+        body: input.body,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(response.error.message);
+    }
+    return;
+  }
+  await daemon.client.mail.send({
+    projectId: daemon.projectId,
+    runId: input.runId,
+    senderAgentType: input.from,
+    recipientAgentType: input.to,
+    subject: input.subject,
+    body: input.body,
+  });
 }
 
 // ── Events helper ───────────────────────────────────────────────────────────
@@ -1015,6 +1140,7 @@ const inboxSendCommand = new Command("send")
         "inbox send error: --run-id is required (or set FOREMAN_RUN_ID)\n",
       );
       process.exit(1);
+      return;
     }
 
     // Validate body is valid JSON
@@ -1033,17 +1159,14 @@ const inboxSendCommand = new Command("send")
     const projectPath = await resolveRepoRootProjectPath({});
     try {
       const resolvedProjectPath = resolve(projectPath);
-      const projects = await listRegisteredProjects();
-      const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
-      if (!project) {
+      const daemon = await resolveDaemonInboxContext(resolvedProjectPath);
+      if (!daemon) {
         throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
       }
-      const client = createTrpcClient();
-      await client.mail.send({
-        projectId: project.id,
+      await sendDaemonMessage(daemon, {
         runId,
-        senderAgentType: options.from,
-        recipientAgentType: options.to,
+        from: options.from,
+        to: options.to,
         subject: options.subject,
         body: parsedBody,
       });
@@ -1113,10 +1236,10 @@ export const inboxCommand = new Command("inbox")
       projectPath = process.cwd();
     }
 
-    const postgres = foremanBackendMode() === "elixir"
+    const daemon = await resolveDaemonInboxContext(projectPath, options.project);
+    const postgres = process.env.FOREMAN_ENABLE_INBOX_POSTGRES === "1"
       ? await resolvePostgresInboxProject(projectPath, options.project)
       : null;
-    const daemon = postgres ? null : await resolveDaemonInboxContext(projectPath, options.project);
     const store = daemon || postgres ? null : ForemanStore.forProject(projectPath);
 
     try {
@@ -1125,7 +1248,7 @@ export const inboxCommand = new Command("inbox")
         let messages = postgres
           ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
           : daemon
-            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
+            ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: options.unread, limit })
             : store!.getAllMessagesGlobal(limit);
 
         // Apply agent filter (by recipient, matching single-run behavior)
@@ -1141,7 +1264,7 @@ export const inboxCommand = new Command("inbox")
         const summaryRuns = postgres
           ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
           : daemon
-            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+            ? await listDaemonRuns(daemon)
             : getInboxStatusRuns(store!);
         const chronologicalMessages = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
@@ -1169,7 +1292,7 @@ export const inboxCommand = new Command("inbox")
             for (const msg of messages) await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
           } else if (daemon) {
             for (const msg of messages) {
-              await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+              await markDaemonMessageRead(daemon, msg.id);
             }
           } else {
             for (const msg of messages) {
@@ -1185,7 +1308,7 @@ export const inboxCommand = new Command("inbox")
           const events = postgres
             ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { all: true, limit: eventsLimit })
             : daemon
-              ? await fetchDaemonEvents(daemon.client, daemon.projectId, { all: true, limit: eventsLimit })
+              ? await fetchDaemonEvents(daemon, { all: true, limit: eventsLimit })
               : fetchEventsFromStore(store!, eventsLimit);
 
           if (events.length === 0) {
@@ -1211,7 +1334,7 @@ export const inboxCommand = new Command("inbox")
         const initialGlobal = postgres
           ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
           : daemon
-            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
+            ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: false, limit })
             : store!.getAllMessagesGlobal(limit);
         if (initialGlobal.length > 0) {
           console.log(`── past messages ${"─".repeat(53)}`);
@@ -1228,7 +1351,7 @@ export const inboxCommand = new Command("inbox")
         const initRuns = postgres
           ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
           : daemon
-            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+            ? await listDaemonRuns(daemon)
             : store!.getRunsByStatuses(["completed", "failed", "running"]);
         for (const r of initRuns) seenRunIds.add(r.id);
         const pollAll = (): void => {
@@ -1236,7 +1359,7 @@ export const inboxCommand = new Command("inbox")
             const statusRuns = postgres
               ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
               : daemon
-                ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+                ? await listDaemonRuns(daemon)
                 : store!.getRunsByStatuses(["completed", "failed", "running"]);
             for (const run of statusRuns) {
               if (!seenRunIds.has(run.id)) { seenRunIds.add(run.id); console.log(formatRunStatus(run)); console.log(""); }
@@ -1244,7 +1367,7 @@ export const inboxCommand = new Command("inbox")
             const msgs = postgres
               ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
               : daemon
-                ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
+                ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: false, limit })
                 : store!.getAllMessagesGlobal(limit);
             for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
               seenIds.add(msg.id);
@@ -1268,7 +1391,7 @@ export const inboxCommand = new Command("inbox")
       const runId = postgres
         ? await resolvePostgresRunId(postgres.adapter, postgres.projectId, { run: options.run, task: options.task, bead: options.bead })
         : daemon
-          ? await resolveDaemonRunId(daemon.client, daemon.projectId, { run: options.run, task: options.task, bead: options.bead })
+          ? await resolveDaemonRunId(daemon, { run: options.run, task: options.task, bead: options.bead })
           : options.run
             ?? (taskFilter ? resolveRunIdBySeed(store!, taskFilter) : null)
             ?? resolveLatestRunId(store!);
@@ -1281,7 +1404,7 @@ export const inboxCommand = new Command("inbox")
       const allRuns = postgres
         ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
         : daemon
-          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+          ? await listDaemonRuns(daemon)
           : store!.getRunsByStatuses(
             ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
           );
@@ -1293,7 +1416,7 @@ export const inboxCommand = new Command("inbox")
         const runStatusRuns = postgres
           ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
           : daemon
-            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+            ? await listDaemonRuns(daemon)
             : store!.getRunsByStatuses(["completed", "failed"]);
         const currentRun = runStatusRuns.find((r) => r.id === runId);
         if (currentRun) {
@@ -1304,7 +1427,7 @@ export const inboxCommand = new Command("inbox")
         const messages = postgres
           ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: options.unread, limit })
           : daemon
-            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+            ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: options.unread, limit })
             : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
         if (messages.length === 0) {
           console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
@@ -1339,7 +1462,7 @@ export const inboxCommand = new Command("inbox")
             for (const msg of messages) await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
           } else if (daemon) {
             for (const msg of messages) {
-              await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+              await markDaemonMessageRead(daemon, msg.id);
             }
           } else {
             for (const msg of messages) {
@@ -1355,7 +1478,7 @@ export const inboxCommand = new Command("inbox")
           const events = postgres
             ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: eventsLimit })
             : daemon
-              ? await fetchDaemonEvents(daemon.client, daemon.projectId, { runId, limit: eventsLimit })
+              ? await fetchDaemonEvents(daemon, { runId, limit: eventsLimit })
               : fetchEventsFromStoreForRun(store!, runId, eventsLimit);
 
           if (events.length === 0) {
@@ -1382,7 +1505,7 @@ export const inboxCommand = new Command("inbox")
       const initial = postgres
         ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: false, limit })
         : daemon
-          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: false, limit })
+          ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: false, limit })
           : fetchMessages(store!, runId, options.agent, false, limit);
       if (initial.length > 0) {
         console.log(`── past messages ${"─".repeat(53)}`);
@@ -1402,7 +1525,7 @@ export const inboxCommand = new Command("inbox")
       const initialRuns = postgres
         ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
         : daemon
-          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+          ? await listDaemonRuns(daemon)
           : store!.getRunsByStatuses(["completed", "failed"]);
       for (const r of initialRuns) seenRunIds.add(r.id);
 
@@ -1411,7 +1534,7 @@ export const inboxCommand = new Command("inbox")
           const statusRuns = postgres
             ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
             : daemon
-              ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
+              ? await listDaemonRuns(daemon)
               : store!.getRunsByStatuses(["completed", "failed"]);
           for (const run of statusRuns) {
             if (!seenRunIds.has(run.id)) {
@@ -1424,7 +1547,7 @@ export const inboxCommand = new Command("inbox")
           const msgs = postgres
             ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: options.unread, limit })
             : daemon
-              ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+              ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: options.unread, limit })
               : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
           const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
           for (const msg of newMsgs) {
@@ -1441,7 +1564,7 @@ export const inboxCommand = new Command("inbox")
               if (postgres) {
                 await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
               } else if (daemon) {
-                await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+                await markDaemonMessageRead(daemon, msg.id);
               } else {
                 store!.markMessageRead(msg.id);
               }

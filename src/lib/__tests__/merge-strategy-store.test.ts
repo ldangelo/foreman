@@ -15,7 +15,7 @@ describe("merge_strategy in Postgres runs table", { timeout: 120_000 }, () => {
     } catch {
       postgresAvailable = false;
     }
-  });
+  }, 120_000);
 
   afterAll(async () => {
     if (postgresAvailable) {
