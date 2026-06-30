@@ -159,11 +159,11 @@ foreman task create \
   --description "When CodeRabbit reports a transient rate limit, schedule retry after cooldown instead of terminal failure."
 ```
 
-You can also generate task(s) from a natural-language description (or a file path) with LLM parsing:
+The legacy Node/beads task generator can still generate task(s) from a natural-language description (or a file path) with LLM parsing, but it is intentionally gated behind explicit Node mode:
 
 ```bash
-foreman task create --from-text "Fix the login timeout bug"
-foreman task create --from-text docs/issue.md --dry-run
+FOREMAN_BACKEND=node foreman task create --from-text "Fix the login timeout bug"
+FOREMAN_BACKEND=node foreman task create --from-text docs/issue.md --dry-run
 ```
 
 Good task descriptions include:

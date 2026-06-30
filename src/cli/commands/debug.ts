@@ -283,6 +283,9 @@ export const debugCommand = new Command("debug")
     const projectPath = await resolveRepoRootProjectPath({});
     const isElixir = foremanBackendMode() === "elixir";
     const elixir = isElixir ? await resolveElixirDebugContext(projectPath) : null;
+    if (isElixir && !elixir) {
+      throw new Error(`Project at '${projectPath}' is not registered in Elixir projections.`);
+    }
     const daemon = isElixir ? null : await resolveDaemonDebugContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 

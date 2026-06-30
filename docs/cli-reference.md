@@ -594,15 +594,15 @@ foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_ru
 
 ### `foreman task create`
 
-Create a new task in backlog status, or generate task(s) from a natural-language description with `--from-text` (replaces the deprecated `foreman bead`, which remains as a hidden alias).
+Create a new task in backlog status. The legacy Node/beads natural-language generator is still available with `--from-text` (replaces the deprecated `foreman bead`, which remains as a hidden alias), but it requires explicit `FOREMAN_BACKEND=node`.
 
 ```bash
 foreman task create --title "Fix login timeout" --type bug --priority 1
-foreman task create --from-text "Fix the login timeout bug"
-foreman task create --from-text docs/issue.md       # From a file
-foreman task create --from-text "..." --parent bd-abc1  # Set parent task ID
-foreman task create --from-text "..." --dry-run     # Preview
-foreman task create --from-text "..." --no-llm      # Skip AI parsing (text becomes the title)
+FOREMAN_BACKEND=node foreman task create --from-text "Fix the login timeout bug"
+FOREMAN_BACKEND=node foreman task create --from-text docs/issue.md       # From a file
+FOREMAN_BACKEND=node foreman task create --from-text "..." --parent bd-abc1  # Set parent task ID
+FOREMAN_BACKEND=node foreman task create --from-text "..." --dry-run     # Preview
+FOREMAN_BACKEND=node foreman task create --from-text "..." --no-llm      # Skip AI parsing (text becomes the title)
 ```
 
 | Option | Default | Description |
@@ -611,7 +611,7 @@ foreman task create --from-text "..." --no-llm      # Skip AI parsing (text beco
 | `--description <text>` | — | Optional task description |
 | `--type <type>` | `task` | Task type: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question` |
 | `--priority <level>` | `medium` | Priority: `0`–`4` or `critical`/`high`/`medium`/`low`/`backlog` |
-| `--from-text <description>` | — | Create task(s) from a natural-language description (or file path) using an LLM |
+| `--from-text <description>` | — | Legacy Node/beads generator: create task(s) from a natural-language description (or file path) using an LLM; requires `FOREMAN_BACKEND=node` |
 | `--parent <id>` | — | Parent task ID (only with `--from-text`) |
 | `--dry-run` | — | Preview without creating (only with `--from-text`) |
 | `--no-llm` | — | Skip LLM parsing — create a single task with the text as title (only with `--from-text`) |
@@ -641,7 +641,7 @@ foreman import --to-elixir --file migration.json --no-auto-start
 | `--command-id <id>` | Explicit server command id for idempotent retries |
 | `--no-auto-start` | Require an already-running Elixir server |
 
-While migration is incomplete, compatibility mode can delegate these commands to a legacy TS Foreman binary: `run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`.
+For explicit legacy operation, compatibility mode can delegate these commands to a legacy TS Foreman binary when `FOREMAN_BACKEND=node` is set: `run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`.
 
 ```bash
 FOREMAN_LEGACY_COMPATIBILITY_MODE=1 \

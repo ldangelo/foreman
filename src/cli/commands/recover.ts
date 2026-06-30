@@ -524,6 +524,9 @@ export const recoverCommand = new Command("recover")
     const projectPath = await resolveRepoRootProjectPath({});
     const isElixir = foremanBackendMode() === "elixir";
     const elixir = isElixir ? await resolveElixirRecoverContext(projectPath) : null;
+    if (isElixir && !elixir) {
+      throw new Error(`Project at '${projectPath}' is not registered in Elixir projections.`);
+    }
     const daemon = isElixir ? null : await resolveDaemonRecoverContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 

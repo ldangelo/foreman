@@ -38,7 +38,7 @@ foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
-foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead')
+FOREMAN_BACKEND=node foreman task create --from-text "X"  # legacy natural-language task creation (replaces 'foreman bead')
 foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
 foreman purge runs     # Remove stale failed run records
 foreman inbox          # Agent mail + selected-run lifecycle events
