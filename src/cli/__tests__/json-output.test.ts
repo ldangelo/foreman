@@ -200,11 +200,13 @@ vi.mock("../../lib/trpc-client.js", () => ({
 // Any unexpected error path that calls process.exit will throw instead.
 let exitSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
+  process.env.FOREMAN_BACKEND = "node";
   exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number | string | null | undefined) => {
     throw new Error(`process.exit(${code ?? ""}) called`);
   });
 });
 afterEach(() => {
+  delete process.env.FOREMAN_BACKEND;
   exitSpy.mockRestore();
 });
 
