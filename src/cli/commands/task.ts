@@ -36,7 +36,6 @@ import type { PrState } from "../../lib/pr-state.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { RunProgress } from "../../lib/store.js";
 import { elapsed } from "../watch-ui.js";
-import { createTasksFromText } from "./create-from-text.js";
 
 // ── Run Activity Helpers ──────────────────────────────────────────────────────
 
@@ -937,7 +936,7 @@ export async function performBeadsImport(
 // ── foreman task create ───────────────────────────────────────────────────────
 
 const createCommand = new Command("create")
-  .description("Create a new task in backlog status, or generate task(s) from natural language with --from-text")
+  .description("Create a new task in backlog status")
   .option("--title <text>", "Task title (required unless --from-text is used)")
   .option("--description <text>", "Optional task description")
   .option(
@@ -950,7 +949,7 @@ const createCommand = new Command("create")
   )
   .option(
     "--from-text <description>",
-    "Create task(s) from a natural-language description (or file path) using an LLM — replaces 'foreman bead'",
+    "Removed: natural-language task generation is not available after the Elixir backend cutover",
   )
   .option("--parent <id>", "Parent task ID (only with --from-text)")
   .option("--dry-run", "Show what would be created without creating tasks (only with --from-text)")
@@ -972,43 +971,11 @@ const createCommand = new Command("create")
       project?: string;
       projectPath?: string;
     }) => {
-      // ── Natural-language path (--from-text), shared with 'foreman bead' ──
+      // ── Removed natural-language path (--from-text), formerly shared with 'foreman bead' ──
       if (opts.fromText !== undefined) {
-        if (foremanBackendMode() !== "node") {
-          console.error(
-            chalk.red(
-              "Error: task create --from-text uses the legacy Node/beads task generator and is only available with FOREMAN_BACKEND=node.",
-            ),
-          );
-          process.exit(1);
-        }
-
-        const incompatible: string[] = [];
-        if (opts.title !== undefined) incompatible.push("--title");
-        if (opts.description !== undefined) incompatible.push("--description");
-        if (opts.project !== undefined) incompatible.push("--project");
-        if (incompatible.length > 0) {
-          console.error(
-            chalk.red(
-              `Error: --from-text cannot be combined with ${incompatible.join(", ")} — the description text drives title/description, and the LLM path runs against a project directory (use --project-path).`,
-            ),
-          );
-          process.exit(1);
-        }
-
-        await createTasksFromText(
-          opts.fromText,
-          {
-            type: opts.type,
-            priority: opts.priority,
-            parent: opts.parent,
-            dryRun: opts.dryRun,
-            llm: opts.llm,
-            model: opts.model,
-          },
-          opts.projectPath ? resolve(opts.projectPath) : undefined,
-        );
-        return;
+        console.error(chalk.red("Error: task create --from-text was removed after the Elixir backend cutover."));
+        console.error(chalk.dim("  Use structured task creation: foreman task create --title <text> [--description <text>]"));
+        process.exit(1);
       }
 
       // ── Structured path ───────────────────────────────────────────────
@@ -1026,7 +993,7 @@ const createCommand = new Command("create")
 
       if (opts.title === undefined) {
         console.error(
-          chalk.red(`Error: --title is required (or use --from-text "<description>" for natural-language creation).`),
+          chalk.red("Error: --title is required."),
         );
         process.exit(1);
       }

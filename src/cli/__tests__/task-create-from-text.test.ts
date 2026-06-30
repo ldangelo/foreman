@@ -1,9 +1,6 @@
 /**
- * `foreman bead` is folded into `foreman task create --from-text`.
- *
- * Both spellings delegate to the shared createTasksFromText() implementation
- * (extracted from bead.ts into create-from-text.ts). `foreman bead` stays as
- * a hidden, deprecated command that prints a one-line notice.
+ * Natural-language task creation (`foreman task create --from-text` and the
+ * hidden `foreman bead` alias) was removed after the Elixir backend cutover.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -70,10 +67,10 @@ describe("foreman task create --from-text", () => {
     expect(flags).toContain("--priority");
   });
 
-  it("delegates --from-text to the shared createTasksFromText implementation", async () => {
+  it("rejects --from-text without delegating to the legacy generator", async () => {
     const taskCommand = await freshTaskCommand();
 
-    await taskCommand.parseAsync(
+    await expect(taskCommand.parseAsync(
       [
         "create",
         "--from-text", "Add OAuth login and fix session bug",
@@ -84,39 +81,15 @@ describe("foreman task create --from-text", () => {
         "--model", "claude-test-model",
       ],
       { from: "user" },
-    );
+    )).rejects.toThrow("process.exit(1)");
 
-    expect(mockCreateTasksFromText).toHaveBeenCalledTimes(1);
-    const [description, opts] = mockCreateTasksFromText.mock.calls[0];
-    expect(description).toBe("Add OAuth login and fix session bug");
-    expect(opts).toEqual(
-      expect.objectContaining({
-        type: "bug",
-        priority: "P1",
-        parent: "task-abc12",
-        dryRun: true,
-        llm: true,
-        model: "claude-test-model",
-      }),
-    );
+    expect(mockCreateTasksFromText).not.toHaveBeenCalled();
+    const messages = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(messages.some((line: string) => line.includes("removed after the Elixir backend cutover"))).toBe(true);
+    expect(messages.some((line: string) => line.includes("FOREMAN_BACKEND=node"))).toBe(false);
   });
 
-  it("passes llm:false when --no-llm is given with --from-text", async () => {
-    const taskCommand = await freshTaskCommand();
-
-    await taskCommand.parseAsync(
-      ["create", "--from-text", "single task", "--no-llm"],
-      { from: "user" },
-    );
-
-    expect(mockCreateTasksFromText).toHaveBeenCalledWith(
-      "single task",
-      expect.objectContaining({ llm: false }),
-      undefined,
-    );
-  });
-
-  it("errors clearly when --from-text is combined with --title", async () => {
+  it("reports removal even when --from-text is combined with --title", async () => {
     const taskCommand = await freshTaskCommand();
 
     await expect(
@@ -127,7 +100,7 @@ describe("foreman task create --from-text", () => {
     ).rejects.toThrow("process.exit(1)");
 
     const messages = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
-    expect(messages.some((line: string) => line.includes("--from-text") && line.includes("--title"))).toBe(true);
+    expect(messages.some((line: string) => line.includes("removed after the Elixir backend cutover"))).toBe(true);
     expect(mockCreateTasksFromText).not.toHaveBeenCalled();
   });
 
@@ -174,33 +147,21 @@ describe("foreman bead (deprecated)", () => {
     errSpy.mockRestore();
   });
 
-  it("prints a deprecation notice pointing at task create --from-text and delegates", async () => {
+  it("reports removal and does not delegate", async () => {
     const beadCommand = await freshBeadCommand();
 
-    await beadCommand.parseAsync(
+    await expect(beadCommand.parseAsync(
       ["Fix the login timeout bug", "--type", "bug", "--priority", "P0", "--no-llm", "--dry-run"],
       { from: "user" },
-    );
+    )).rejects.toThrow("process.exit(1)");
 
     const notices = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
-    expect(
-      notices.some((line: string) => line.includes("deprecated") && line.includes("task create --from-text")),
-    ).toBe(true);
-
-    expect(mockCreateTasksFromText).toHaveBeenCalledTimes(1);
-    const [description, opts] = mockCreateTasksFromText.mock.calls[0];
-    expect(description).toBe("Fix the login timeout bug");
-    expect(opts).toEqual(
-      expect.objectContaining({
-        type: "bug",
-        priority: "P0",
-        llm: false,
-        dryRun: true,
-      }),
-    );
+    expect(notices.some((line: string) => line.includes("removed after the Elixir backend cutover"))).toBe(true);
+    expect(notices.some((line: string) => line.includes("FOREMAN_BACKEND=node"))).toBe(false);
+    expect(mockCreateTasksFromText).not.toHaveBeenCalled();
   });
 
-  it("rejects default Elixir mode and requires explicit Node legacy mode", async () => {
+  it("reports the same removal in default Elixir mode", async () => {
     mockForemanBackendMode.mockReturnValue("elixir");
     const beadCommand = await freshBeadCommand();
 
@@ -209,7 +170,8 @@ describe("foreman bead (deprecated)", () => {
     ).rejects.toThrow("process.exit(1)");
 
     const messages = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
-    expect(messages.some((line: string) => line.includes("FOREMAN_BACKEND=node"))).toBe(true);
+    expect(messages.some((line: string) => line.includes("removed after the Elixir backend cutover"))).toBe(true);
+    expect(messages.some((line: string) => line.includes("FOREMAN_BACKEND=node"))).toBe(false);
     expect(mockCreateTasksFromText).not.toHaveBeenCalled();
   });
 

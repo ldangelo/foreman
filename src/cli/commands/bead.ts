@@ -1,16 +1,13 @@
 /**
  * `foreman bead` — DEPRECATED spelling for natural-language task creation.
  *
- * The implementation lives in create-from-text.ts and is shared with the
- * canonical spelling: `foreman task create --from-text "<description>"`.
- * This command is registered hidden and prints a one-line deprecation notice
- * before delegating; all of its original flags keep working.
+ * Natural-language task generation was removed after the Elixir backend
+ * cutover. This hidden command remains only to return an explicit removal
+ * message for old scripts.
  */
 import { Command } from "commander";
 import chalk from "chalk";
-import { createTasksFromText, type CreateFromTextOptions } from "./create-from-text.js";
-import { printDeprecationNotice } from "./cli-output.js";
-import { foremanBackendMode } from "../../lib/backend-mode.js";
+import type { CreateFromTextOptions } from "./create-from-text.js";
 
 // Re-export the shared helpers under their historical module path so existing
 // importers/tests of bead.js keep working.
@@ -40,15 +37,10 @@ export const beadCommand = new Command("bead")
       description: string,
       opts: CreateFromTextOptions,
     ) => {
-      if (foremanBackendMode() !== "node") {
-        console.error(
-          chalk.red(
-            "Error: foreman bead uses the legacy Node/beads task generator and is only available with FOREMAN_BACKEND=node. Use 'FOREMAN_BACKEND=node foreman bead ...' for explicit legacy operation.",
-          ),
-        );
-        process.exit(1);
-      }
-      printDeprecationNotice("foreman bead", "foreman task create --from-text");
-      await createTasksFromText(description, opts);
+      void description;
+      void opts;
+      console.error(chalk.red("Error: foreman bead was removed after the Elixir backend cutover."));
+      console.error(chalk.dim("  Use structured task creation: foreman task create --title <text> [--description <text>]"));
+      process.exit(1);
     },
   );
