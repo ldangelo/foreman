@@ -72,6 +72,12 @@ function parseElixirCoverage(output) {
   return Number(match[1]);
 }
 
+function parseElixirTestFailures(output) {
+  const match = output.match(/\b\d+\s+tests?,\s+(\d+)\s+failures?\b/);
+  if (!match) return null;
+  return Number(match[1]);
+}
+
 function elixirModuleHtmlName(relativePath) {
   const withoutPrefix = relativePath.replace(/^lib\/foreman_server\/?/, "").replace(/\.ex$/, "");
   if (withoutPrefix === "") return "Elixir.ForemanServer.html";
@@ -164,10 +170,20 @@ const mixResult = run("mix", ["test", "--cover"], {
 });
 process.stdout.write(mixResult.stdout ?? "");
 process.stderr.write(mixResult.stderr ?? "");
-if (mixResult.status !== 0 && !/Coverage test failed, threshold not met/.test(`${mixResult.stdout ?? ""}\n${mixResult.stderr ?? ""}`)) {
+const mixOutput = `${mixResult.stdout ?? ""}\n${mixResult.stderr ?? ""}`;
+const elixirFailures = parseElixirTestFailures(mixOutput);
+if (elixirFailures === null) {
+  console.error("Could not confirm Elixir test failure count from mix test --cover output");
   process.exit(mixResult.status ?? 1);
 }
-const elixirLinePct = parseElixirCoverage(`${mixResult.stdout ?? ""}\n${mixResult.stderr ?? ""}`);
+if (elixirFailures > 0) {
+  console.error(`Elixir coverage tests failed: ${elixirFailures} failure(s)`);
+  process.exit(1);
+}
+if (mixResult.status !== 0 && !/Coverage test failed, threshold not met/.test(mixOutput)) {
+  process.exit(mixResult.status ?? 1);
+}
+const elixirLinePct = parseElixirCoverage(mixOutput);
 const elixirBranch = elixirBranchCoverage();
 
 const summary = {
