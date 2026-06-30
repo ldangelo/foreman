@@ -24,6 +24,7 @@ const nodeFrontendScope = [
   "src/cli/commands/pr.ts",
   "src/cli/commands/project-context.ts",
   "src/cli/commands/project-task-support.ts",
+  "src/cli/commands/purge-zombie-runs.ts",
   "src/cli/commands/recover.ts",
   "src/cli/commands/run-task.ts",
   "src/cli/commands/run.ts",
