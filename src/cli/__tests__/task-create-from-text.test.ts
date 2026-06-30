@@ -7,13 +7,18 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { mockCreateTasksFromText } = vi.hoisted(() => ({
+const { mockCreateTasksFromText, mockForemanBackendMode } = vi.hoisted(() => ({
   mockCreateTasksFromText: vi.fn(),
+  mockForemanBackendMode: vi.fn(),
 }));
 
 vi.mock("../commands/create-from-text.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createTasksFromText: mockCreateTasksFromText,
+}));
+
+vi.mock("../../lib/backend-mode.js", () => ({
+  foremanBackendMode: mockForemanBackendMode,
 }));
 
 async function freshTaskCommand() {
@@ -36,6 +41,7 @@ describe("foreman task create --from-text", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateTasksFromText.mockResolvedValue(undefined);
+    mockForemanBackendMode.mockReturnValue("node");
     exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`process.exit(${code ?? ""})`);
     }) as never);
@@ -155,6 +161,7 @@ describe("foreman bead (deprecated)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateTasksFromText.mockResolvedValue(undefined);
+    mockForemanBackendMode.mockReturnValue("node");
     errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 

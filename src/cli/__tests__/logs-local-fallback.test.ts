@@ -58,7 +58,7 @@ describe("logs command local fallback", () => {
     process.env.HOME = process.cwd();
     process.exitCode = undefined;
     mockResolveProjectPathFromOptions.mockResolvedValue("/tmp/project");
-    mockForemanBackendMode.mockReturnValue("elixir");
+    mockForemanBackendMode.mockReturnValue("node");
     mockListRegisteredProjects.mockResolvedValue([]);
     mockEnsureRunning.mockRejectedValue(new Error("server unavailable"));
     vi.spyOn(console, "log").mockImplementation(() => undefined);

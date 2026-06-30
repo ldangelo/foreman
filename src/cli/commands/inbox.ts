@@ -893,12 +893,19 @@ export async function fetchPostgresMessages(
 }
 
 export async function resolveDaemonInboxContext(projectPath: string, projectSelector?: string): Promise<InboxClientContext | null> {
-  const projects = await listRegisteredProjects();
+  const backendMode = foremanBackendMode();
+  let projects: Awaited<ReturnType<typeof listRegisteredProjects>>;
+  try {
+    projects = await listRegisteredProjects();
+  } catch (error) {
+    if (backendMode === "elixir") throw error;
+    return null;
+  }
   const project = projectSelector
     ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
     : projects.find((record) => resolve(record.path) === resolve(projectPath));
   if (!project) return null;
-  if (foremanBackendMode() === "elixir") {
+  if (backendMode === "elixir") {
     return { backend: "elixir", client: await createElixirInboxClient(), projectId: project.id };
   }
   return { backend: "node", client: createTrpcClient(), projectId: project.id };
