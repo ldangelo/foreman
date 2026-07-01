@@ -5,11 +5,14 @@ import type { Run } from "../../lib/store.js";
 // Must be declared before any imports that use them (vitest hoists vi.mock calls).
 
 vi.mock("node:child_process", () => ({
-  // Stub execFile so promisify(execFile)(...) resolves immediately.
-  // promisify passes callback as the last argument; we call it with no error.
+  // Stub execFile. merge-base defaults to "not merged"; prune succeeds.
+  // promisify passes callback as the last argument.
   execFile: vi.fn((...args: unknown[]) => {
+    const argv = Array.isArray(args[1]) ? args[1] as string[] : [];
     const cb = args[args.length - 1];
-    if (typeof cb === "function") cb(null, "", "");
+    if (typeof cb !== "function") return;
+    if (argv.includes("merge-base")) cb(new Error("not ancestor"), "", "");
+    else cb(null, "", "");
   }),
 }));
 
@@ -190,7 +193,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("failed");
-    expect(results[0].message).toContain("foreman reset");
+    expect(results[0].message).toContain("foreman retry");
     expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
@@ -206,7 +209,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("stuck");
-    expect(results[0].message).toContain("foreman reset");
+    expect(results[0].message).toContain("foreman retry");
     expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 
@@ -237,7 +240,7 @@ describe("Doctor.checkOrphanedWorktrees", () => {
 
     expect(results[0].status).toBe("warn");
     expect(results[0].message).toContain("test-failed");
-    expect(results[0].message).toContain("foreman reset");
+    expect(results[0].message).toContain("foreman retry");
     expect(mockRemoveWorkspace).not.toHaveBeenCalled();
   });
 

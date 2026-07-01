@@ -252,14 +252,14 @@ Common keys:
 
 The board also monitors agent inbox updates. When a new inbox message arrives for a run, the board reloads only the task tied to that run and moves that card if its status changed; it does not refresh the entire board. `open` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention so they are visible for triage. Press `r` for a full manual refresh. The header shows an animated `refreshing…` indicator while full reload is in progress, then a `refreshed <time>` marker when the latest event-driven or manual update finishes. For exact options and keybindings, see [CLI Reference](./cli-reference.md#foreman-board).
 
-## Retry and Reset Guidance
+## Retry and Cleanup Guidance
 
-Use retry/reset surgically.
+Use retry and doctor cleanup surgically.
 
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
 - Use `foreman retry <task-id>` for retryable failed/stuck run recovery.
-- Use `--dry-run` before destructive cleanup.
-- Do not reset active work with uncommitted controller changes unless those changes are committed or exported.
+- Use `foreman doctor --dry-run` to preview cleanup of zombie/stale runs and merged/orphaned worktrees.
+- Use `foreman doctor --fix` for safe cleanup after review; it does not replace inspecting valuable in-progress work.
 
 Transient failures include provider rate limits, provider overloads (`529 overloaded_error`), temporary network failures, and unavailable external CLIs. Max-turn failures are treated as expensive human-review signals; inspect the diff/log before retrying.
 

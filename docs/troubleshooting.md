@@ -533,7 +533,8 @@ foreman retry <task-id> --dispatch # Retry through Elixir-backed recovery
 
 ```bash
 foreman doctor                    # Automated health checks
-foreman doctor --fix              # Auto-fix common issues
+foreman doctor --dry-run          # Preview safe stale run/worktree cleanup
+foreman doctor --fix              # Auto-fix safe stale runs, zombie runs, prompts/workflows, and merged/orphaned worktrees
 foreman debug <task-id>           # AI analysis of what went wrong
 foreman debug <task-id> --raw     # All artifacts without AI cost
 

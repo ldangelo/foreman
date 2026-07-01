@@ -22,7 +22,7 @@ foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
 foreman retry <seed>   # Re-run a failed pipeline phase
-foreman doctor         # Health checks (br, Pi, DB integrity)
+foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
 foreman debug <id>     # AI-powered execution analysis (Opus)
 foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
 foreman plan X         # PRD -> TRD pipeline
@@ -234,7 +234,7 @@ foreman debug <bead-id> --raw   # Dump all artifacts without AI
 foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs
-foreman doctor         # Check br binary, Pi binary, DB integrity
+foreman doctor         # Check br/Pi, DB integrity, stale runs/worktrees
 foreman status         # See all active/failed agents
 foreman retry <seed>   # Re-run a specific pipeline phase
 

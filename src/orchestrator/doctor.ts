@@ -52,6 +52,7 @@ interface RunLookupLike {
   getActiveRuns(projectId?: string): MaybePromise<Run[]>;
   getRunsForSeed(seedId: string, projectId?: string): MaybePromise<Run[]>;
   updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at">>): MaybePromise<void>;
+  deleteRun?(runId: string): MaybePromise<boolean>;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -1277,16 +1278,53 @@ export class Doctor {
           message: `PR open — awaiting manual review/merge (run ${prCreatedRun.id.slice(0, 8)})`,
         });
       } else if (failableRun) {
-        const hint = failableRun.status === "failed" || failableRun.status === "test-failed"
-          ? "use 'foreman reset' to retry"
-          : failableRun.status === "stuck"
-            ? "use 'foreman reset' to recover"
+        let defaultBranch = "main";
+        try {
+          defaultBranch = await resolveDefaultBranch(
+            this.projectPath,
+            async (projectPath) => (await this.getVcsBackend()).detectDefaultBranch(projectPath),
+            loadProjectConfig(this.projectPath),
+          );
+        } catch {
+          defaultBranch = "main";
+        }
+        const alreadyMerged = await this.isBranchMerged(seedId, defaultBranch);
+        if (alreadyMerged && dryRun) {
+          results.push({
+            name: `worktree: ${seedId}`,
+            status: "warn",
+            message: `Run is '${failableRun.status}' but branch is already merged. Would mark run merged and remove worktree (dry-run).`,
+          });
+        } else if (alreadyMerged && fix) {
+          try {
+            await Promise.resolve(runStore.updateRun(failableRun.id, { status: "merged", completed_at: new Date().toISOString() }));
+            await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
+            await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
+            try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
+            results.push({
+              name: `worktree: ${seedId}`,
+              status: "fixed",
+              message: `Run was '${failableRun.status}' but branch is already merged`,
+              fixApplied: `Marked run merged and removed worktree at ${wt.path}`,
+            });
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            results.push({
+              name: `worktree: ${seedId}`,
+              status: "warn",
+              message: `Already merged but could not auto-clean failed worktree: ${msg}`,
+            });
+          }
+        } else {
+          const hint = failableRun.status === "failed" || failableRun.status === "test-failed" || failableRun.status === "stuck"
+            ? "use 'foreman retry <task-id>' to retry; stale records are cleaned by 'foreman doctor --fix'"
             : "resolve merge conflict manually";
-        results.push({
-          name: `worktree: ${seedId}`,
-          status: "warn",
-          message: `Run in '${failableRun.status}' state — ${hint}`,
-        });
+          results.push({
+            name: `worktree: ${seedId}`,
+            status: "warn",
+            message: `Run in '${failableRun.status}' state — ${hint}`,
+          });
+        }
       } else {
         // Check if the branch exists on origin before removing locally.
         // NOTE: Uses locally-cached remote-tracking refs; does NOT network-fetch.
@@ -1626,6 +1664,14 @@ export class Doctor {
     const retentionMs = PIPELINE_TIMEOUTS.failedRunRetentionDays * 24 * 60 * 60 * 1000;
     const now = Date.now();
 
+    const agedActionableFailed = actionableFailed.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age > retentionMs;
+    });
+    const recentActionableFailed = actionableFailed.filter((r) => {
+      const age = now - new Date(r.created_at).getTime();
+      return age <= retentionMs;
+    });
     const agedHistoricalFailed = historicalFailed.filter((r) => {
       const age = now - new Date(r.created_at).getTime();
       return age > retentionMs;
@@ -1646,31 +1692,39 @@ export class Doctor {
     });
 
     // Total runs eligible for age-based cleanup
-    const agedTotal = agedHistoricalFailed.length + agedStuck.length;
+    const agedTotal = agedActionableFailed.length + agedHistoricalFailed.length + agedStuck.length;
 
     if (agedTotal > 0) {
       if (dryRun) {
         results.push({
           name: `failed/stuck runs (aged, dry-run)`,
           status: "warn",
-          message: `${agedTotal} failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s) are eligible for cleanup. Would mark as completed (dry-run). Re-run with --fix to apply.`,
+          message: `${agedTotal} failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s) are eligible for cleanup. Would delete stale run records when supported, otherwise mark completed (dry-run). Re-run with --fix to apply.`,
         });
       } else if (fix) {
-        const allAged = [...agedHistoricalFailed, ...agedStuck];
+        const allAged = [...agedActionableFailed, ...agedHistoricalFailed, ...agedStuck];
+        let deleted = 0;
+        let completed = 0;
         for (const run of allAged) {
-          await Promise.resolve(runStore.updateRun(run.id, { status: "completed" }));
+          if (typeof runStore.deleteRun === "function") {
+            const ok = await Promise.resolve(runStore.deleteRun(run.id));
+            if (ok) deleted++;
+          } else {
+            await Promise.resolve(runStore.updateRun(run.id, { status: "completed", completed_at: new Date().toISOString() }));
+            completed++;
+          }
         }
         results.push({
           name: `failed/stuck runs (aged, cleaned up)`,
           status: "fixed",
           message: `Cleaned up ${agedTotal} aged failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s)`,
-          fixApplied: `Marked ${agedTotal} aged run(s) as completed`,
+          fixApplied: deleted > 0 ? `Deleted ${deleted} stale run record(s)` : `Marked ${completed} aged run(s) as completed`,
         });
       } else {
         results.push({
           name: `failed/stuck runs (aged)`,
           status: "warn",
-          message: `${agedTotal} failed/stuck run(s) are older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s). Use --fix to clean up.`,
+          message: `${agedTotal} failed/stuck run(s) are older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s). Use --fix to delete stale records where supported or mark them completed.`,
         });
       }
     }
@@ -1685,11 +1739,11 @@ export class Doctor {
     }
 
     // Actionable failures: seeds with ONLY failed runs — need attention
-    if (actionableFailed.length > 0) {
+    if (recentActionableFailed.length > 0) {
       results.push({
         name: `failed runs`,
         status: "warn",
-        message: `${actionableFailed.length} failed run(s): ${actionableFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${actionableFailed.length > 5 ? "..." : ""}. Use 'foreman reset' to retry.`,
+        message: `${recentActionableFailed.length} failed run(s): ${recentActionableFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentActionableFailed.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry.`,
       });
     }
 
@@ -1698,7 +1752,7 @@ export class Doctor {
       results.push({
         name: `stuck runs`,
         status: "warn",
-        message: `${recentStuck.length} stuck run(s): ${recentStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentStuck.length > 5 ? "..." : ""}. Use 'foreman reset' to retry or 'foreman run --resume' to continue.`,
+        message: `${recentStuck.length} stuck run(s): ${recentStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentStuck.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry; use 'foreman attach <task-id>' to inspect live sessions.`,
       });
     }
 
@@ -1706,7 +1760,7 @@ export class Doctor {
       totalResolved > 0 ||
       agedTotal > 0 ||
       recentHistoricalFailed.length > 0 ||
-      actionableFailed.length > 0 ||
+      recentActionableFailed.length > 0 ||
       recentStuck.length > 0;
 
     if (!hasAnyIssue) {

@@ -48,6 +48,7 @@ function makeStore(projectPath = "/tmp/project") {
     getRunsForSeed: vi.fn(() => [] as Run[]),
     getActiveRuns: vi.fn(() => [] as Run[]),
     updateRun: vi.fn(),
+    deleteRun: vi.fn(() => true),
     logEvent: vi.fn(),
     getRun: vi.fn((_id: string) => null as Run | null),
   };
@@ -553,6 +554,27 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
       expect(result.status).toBe("fixed");
       expect(result.fixApplied).toContain("Re-enqueued 1 entry(ies)");
+    });
+  });
+
+  describe("checkFailedStuckRuns cleanup", () => {
+    it("fix deletes aged failed/stuck run records when the store supports deletion", async () => {
+      const { doctor, store } = makeMocks();
+      const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+      const failed = makeRun({ id: "failed-1", seed_id: "task-1", status: "failed", created_at: old });
+      const stuck = makeRun({ id: "stuck-1", seed_id: "task-2", status: "stuck", created_at: old });
+      store.getRunsByStatus.mockImplementation(((status: Run["status"]) => {
+        if (status === "failed") return [failed];
+        if (status === "stuck") return [stuck];
+        return [];
+      }) as never);
+      store.getRunsForSeed.mockReturnValue([]);
+
+      const results = await doctor.checkFailedStuckRuns({ fix: true });
+
+      expect(results.some((result) => result.status === "fixed" && result.fixApplied?.includes("Deleted 2 stale run record"))).toBe(true);
+      expect(store.deleteRun).toHaveBeenCalledWith("failed-1");
+      expect(store.deleteRun).toHaveBeenCalledWith("stuck-1");
     });
   });
 

@@ -491,11 +491,11 @@ Security controls for the Elixir server:
 - Destructive command-router actions such as `task.close`, `task.block`, and `task.update` append `AuthorizationChecked` and `AuditRecorded` events after the command executes.
 
 ### `foreman doctor`
-Check environment health: Postgres connectivity, daemon status, br binary, Pi binary, GitHub auth.
+Check environment health: Postgres connectivity, stray legacy daemon status, br/Pi binaries, GitHub auth, stale run records, zombie runs, and stale/orphaned worktrees.
 
 ```bash
 foreman doctor
-foreman doctor --fix                    # Auto-fix recoverable issues
+foreman doctor --fix                    # Auto-fix safe cleanup: zombie/stale runs, merged/orphaned worktrees, prompts/workflows
 ```
 
 ### `foreman inbox`

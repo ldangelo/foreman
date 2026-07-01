@@ -282,7 +282,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, and workflow configs.
+Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, workflow configs, stale run records, zombie runs, and stale/orphaned worktrees.
 
 ```bash
 foreman doctor                    # Run all health checks
@@ -293,7 +293,7 @@ foreman doctor --json             # Machine-readable output
 
 | Option | Description |
 |--------|-------------|
-| `--fix` | Auto-fix issues (install missing prompts, migrate stores, etc.) |
+| `--fix` | Auto-fix safe issues: install missing prompts/workflows, migrate stores, mark zombie runs failed, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
 
