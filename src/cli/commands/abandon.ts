@@ -118,12 +118,15 @@ async function abandonRun(
 async function findCompletedRunsWithMissingBranches(store: RunStore, projectPath: string): Promise<Run[]> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const completed = await Promise.resolve(store.getRunsByStatus("completed"));
-  const seenSeeds = new Set<string>();
+  const branchExistsCache = new Map<string, boolean>();
   const missing: Run[] = [];
   for (const run of completed) {
-    if (seenSeeds.has(run.seed_id)) continue;
-    seenSeeds.add(run.seed_id);
-    const exists = await vcs.branchExists(projectPath, branchForSeed(run.seed_id));
+    const branchName = branchForSeed(run.seed_id);
+    let exists = branchExistsCache.get(branchName);
+    if (exists === undefined) {
+      exists = await vcs.branchExists(projectPath, branchName);
+      branchExistsCache.set(branchName, exists);
+    }
     if (!exists) missing.push(run);
   }
   return missing;
