@@ -43,6 +43,7 @@ import { prCommand } from "./commands/pr.js";
 import { resetCommand } from "./commands/reset.js";
 import { attachCommand } from "./commands/attach.js";
 import { abandonCommand } from "./commands/abandon.js";
+import { cleanStateCommand } from "./commands/clean-state.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { boardCommand } from "./commands/board.js";
 import { watchCommand } from "./commands/watch/index.js";
@@ -103,6 +104,7 @@ program.addCommand(prCommand);
 program.addCommand(resetCommand);
 program.addCommand(attachCommand);
 program.addCommand(abandonCommand);
+program.addCommand(cleanStateCommand);
 program.addCommand(doctorCommand);
 program.addCommand(boardCommand);
 program.addCommand(watchCommand); // also handles the deprecated 'dashboard' alias

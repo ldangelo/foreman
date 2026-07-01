@@ -552,6 +552,16 @@ foreman abandon --missing-branches --dry-run
 
 Removes merge-queue entries, archives/removes the worktree, marks the task blocked, and records the run as failed. Branch deletion is opt-in. `--missing-branches` bulk-abandons completed runs whose Foreman branch is gone.
 
+### `foreman clean-state`
+Drop stale/obsolete Foreman work and return to a clean operator state.
+
+```bash
+foreman clean-state --dry-run
+foreman clean-state --force --delete-branches
+```
+
+Removes stale/conflict merge-queue entries, abandons non-active runs, removes non-active Foreman worktrees, and optionally deletes branches. Active pending/running work is skipped.
+
 ### `foreman pr`
 Create pull requests for completed branches that couldn't be auto-merged.
 

@@ -354,6 +354,19 @@ foreman abandon --missing-branches --reason "branch missing"
 
 Abandon removes matching merge-queue entries, archives/removes the run worktree, marks the task `blocked` unless `--keep-task` is used, and marks the run failed with an audit event. Branch deletion is opt-in via `--delete-branch`; use `--force` for unmerged branches. Use `--missing-branches` to bulk-abandon completed runs whose `foreman/<task>` branch is missing locally, which clears stale rows that otherwise make `foreman merge` warn repeatedly.
 
+### `foreman clean-state`
+
+Reset Foreman to a clean operator state by intentionally dropping stale/obsolete Foreman work.
+
+```bash
+foreman clean-state --dry-run
+foreman clean-state --force
+foreman clean-state --force --delete-branches
+foreman clean-state --force --delete-branches --delete-origin-branches
+```
+
+`clean-state` removes stale/conflict merge-queue entries, marks non-active related runs abandoned (`failed` with `merge_strategy: none`), removes non-active Foreman worktrees, and marks related tasks blocked unless `--keep-tasks` is used. It never mutates active pending/running runs. Mutating cleanup requires `--force`; without `--force` it previews only. Origin branch deletion is never implicit; opt in with `--delete-origin-branches`.
+
 ### `foreman stop`
 Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 

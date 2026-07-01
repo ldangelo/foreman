@@ -262,6 +262,7 @@ Use retry and doctor cleanup surgically.
 - Use `foreman doctor --fix` for safe cleanup after review; it does not replace inspecting valuable in-progress work.
 - Use `foreman abandon <task-or-run-id> --reason "..."` when obsolete work should not land; preview with `--dry-run` and opt into branch deletion with `--delete-branch --force`.
 - Use `foreman abandon --missing-branches --dry-run` to preview bulk cleanup of completed runs whose `foreman/<task>` branch is already gone, then rerun without `--dry-run` to clear repeated merge warnings.
+- Use `foreman clean-state --dry-run` when you want to reset Foreman to a clean operator state by dropping stale/obsolete non-active work; apply with `--force`, and add `--delete-branches`/`--delete-origin-branches` only when branch deletion is intended.
 
 Transient failures include provider rate limits, provider overloads (`529 overloaded_error`), temporary network failures, and unavailable external CLIs. Max-turn failures are treated as expensive human-review signals; inspect the diff/log before retrying.
 
