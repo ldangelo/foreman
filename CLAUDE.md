@@ -18,7 +18,6 @@ npx vitest run <file>  # run a single test file
 # CLI (after build or via tsx)
 foreman init           # Initialize project + beads
 foreman run            # Tick Elixir scheduler for ready-task dispatch
-FOREMAN_BACKEND=node foreman run --bead X   # Legacy direct task dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
@@ -38,7 +37,6 @@ foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
-FOREMAN_BACKEND=node foreman task create --from-text "X"  # legacy natural-language task creation (replaces 'foreman bead')
 foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
 foreman purge runs     # Remove stale failed run records
 foreman inbox          # Agent mail + selected-run lifecycle events

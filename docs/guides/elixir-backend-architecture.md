@@ -21,13 +21,13 @@ Legacy spellings remain hidden or compatibility-only during migration and point 
 | Old spelling | Replacement |
 |--------------|-------------|
 | `foreman dashboard` | `foreman watch` |
-| `foreman bead` | `foreman task create --from-text` |
+| `foreman bead` | Removed; use structured `foreman task create --title ...` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow without those phases |
 | `foreman inbox send` replaces removed `foreman mail send` | Use `foreman inbox send` |
 
-When TypeScript-era migration is incomplete, `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` with `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` delegates supported commands to the legacy binary only when `FOREMAN_BACKEND=node` is set. Elixir is the default after cutover: legacy delegation is disabled and `foreman daemon start|restart` refuses to launch the Node daemon scheduler. Use `foreman server start` so the Elixir scheduler is the only active scheduler for the project. The scheduler ticks every 5 seconds by default, claims dispatchable `ready` tasks within configured capacity, and launches the Node/Pi worker bridge.
+Legacy TS delegation has been removed after cutover. `foreman daemon start|restart` refuses to launch the Node daemon scheduler; use `foreman server start` so the Elixir scheduler is the only active scheduler for the project. The scheduler ticks every 5 seconds by default, claims dispatchable `ready` tasks within configured capacity, and launches the Node/Pi worker bridge.
 
 ## Troubleshooting model
 

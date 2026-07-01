@@ -98,7 +98,7 @@ foreman doctor
 
 If commands report daemon or database issues, run `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
 
-Elixir backend work uses a separate local server. Elixir is the default backend after cutover; this disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
+Elixir backend work uses a separate local server. After cutover, legacy TS delegation is removed and `foreman daemon start|restart` is blocked so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
 
 ```bash
 foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
@@ -137,15 +137,12 @@ foreman import --to-elixir --file migration.json
 foreman import --to-elixir --from-node --project foreman
 ```
 
-The import maps legacy projects, tasks, runs, workflows, inbox messages, and config to durable events/projections so historical runs remain readable. `--from-node` snapshots the selected Node/Postgres project into Elixir. After importing, `FOREMAN_BACKEND=elixir foreman board --project <name>` reads and mutates task state through Elixir without the Node daemon socket. For explicit legacy operation, compatibility mode can delegate supported commands to the legacy TS CLI only with `FOREMAN_BACKEND=node`:
+The import maps legacy projects, tasks, runs, workflows, inbox messages, and config to durable events/projections so historical runs remain readable. `--from-node` snapshots the selected Node/Postgres project into Elixir. After importing, `foreman board --project <name>` reads and mutates task state through Elixir without the Node daemon socket.
 
 ```bash
-FOREMAN_LEGACY_COMPATIBILITY_MODE=1 \
-FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
 foreman status
 ```
 
-Delegation supports `run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, and `doctor` only when `FOREMAN_BACKEND=node` is set for explicit legacy operation.
 
 ### 4. Create a Task
 
@@ -159,12 +156,7 @@ foreman task create \
   --description "When CodeRabbit reports a transient rate limit, schedule retry after cooldown instead of terminal failure."
 ```
 
-The legacy Node/beads task generator can still generate task(s) from a natural-language description (or a file path) with LLM parsing, but it is intentionally gated behind explicit Node mode:
-
-```bash
-FOREMAN_BACKEND=node foreman task create --from-text "Fix the login timeout bug"
-FOREMAN_BACKEND=node foreman task create --from-text docs/issue.md --dry-run
-```
+The legacy Node/beads natural-language generator was removed after the Elixir cutover; create structured tasks with `--title` and `--description`.
 
 Good task descriptions include:
 
@@ -188,17 +180,13 @@ foreman task approve <task-id>
 foreman run --project my-project
 ```
 
-Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers stay queued until the blocker closes. The daemon uses the same queue and writes dispatch/skip summaries to its logs so stalled cycles are diagnosable.
+Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers stay queued until the blocker closes. The Elixir scheduler uses the same queue and writes dispatch/skip summaries to its events/logs so stalled cycles are diagnosable.
 
 Useful variants:
 
 ```bash
-FOREMAN_BACKEND=node foreman run --bead <task-id>      # Legacy direct task dispatch
-FOREMAN_BACKEND=node foreman run --max-agents 2        # Legacy Node dispatcher capacity
 foreman run --dry-run             # Check Elixir server availability without ticking
 foreman run --no-watch            # Tick once and exit
-FOREMAN_BACKEND=node foreman run --yes                 # Legacy auto-confirm prompts
-FOREMAN_BACKEND=node foreman run --workflow quick      # Legacy Node workflow override
 ```
 
 Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
@@ -279,45 +267,7 @@ Transient failures include provider rate limits, provider overloads (`529 overlo
 
 ### Direct Task Execution with `foreman run task`
 
-For debugging, recovery, and manual reruns in explicit legacy Node mode where the task may be in any state (failed, closed, in-progress, backlog, etc.), use `foreman run task`:
-
-```bash
-FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> [options]
-```
-
-**Key behaviors:**
-
-- **Bypasses state gating** — runs regardless of task status (ready, backlog, closed, failed, etc.)
-- **Preserves safety mechanisms** — worktree and run locking still apply
-- **Explicit workflow** — specify the workflow as a positional argument (not via `--workflow` flag)
-- **Suitable for:**
-  - Re-running a completed/closed task with a different workflow
-  - Testing a new workflow against an existing task
-  - Debugging by running a subset of phases
-  - Recovery scenarios where the task state doesn't reflect the desired action
-
-**Common uses:**
-
-```bash
-# Run a closed task with the default task workflow
-FOREMAN_BACKEND=node foreman run task foreman-12345 task --project my-project --no-watch
-
-# Run with a custom workflow path
-FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/custom.yaml --target-branch main
-
-# Dry run to preview without executing
-FOREMAN_BACKEND=node foreman run task foreman-12345 task --dry-run
-
-# Run with a specific model override
-FOREMAN_BACKEND=node foreman run task foreman-12345 task --model anthropic/claude-opus-4-6
-```
-
-**When to use `foreman run task` vs `foreman run --task`:**
-
-| Command | State gating | Workflow selection | Typical use |
-|---------|--------------|--------------------|-------------|
-| `FOREMAN_BACKEND=node foreman run --task <id>` | Yes (task must be `ready`) | `--workflow` flag | Legacy direct dispatch |
-| `FOREMAN_BACKEND=node foreman run task <id> <workflow>` | No (any state) | Positional argument | Legacy debug, recovery, testing |
+Operator use of `foreman run task` was removed after the Elixir cutover. Use scheduler-backed `foreman run` for ready work or `foreman retry` for retry flows instead.
 
 ## Documentation Expectations
 

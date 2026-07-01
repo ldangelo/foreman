@@ -100,136 +100,12 @@ flowchart TD
     H --> I[Operators monitor via foreman watch/status/inbox/debug]
 ```
 
-The historical Node dispatcher flow below is retained only for explicit legacy operation with `FOREMAN_BACKEND=node`:
-
-```mermaid
-flowchart TD
-    subgraph DAEMON["FOREMAN_BACKEND=node foreman daemon start"]
-        DA[Initialize PoolManager → Postgres]
-        DB[Start Fastify + Unix socket: ~/.foreman/daemon.sock]
-        DC[Health check endpoint responds]
-        DA --> DB --> DC
-    end
-
-    subgraph CLI["FOREMAN_BACKEND=node foreman run"]
-        A[User runs FOREMAN_BACKEND=node foreman run] --> B[Dispatcher.dispatch]
-        B --> C{daemon reachable?}
-        C -- No --> DAEMON_ERR[Error: start daemon first]
-        C -- Yes --> D[dependency-unblocked native ready tasks]
-        D --> E{selectStrategy}
-        E -- AI triage available --> F[score + sort by AI recommendation]
-        E -- default --> H[sort by priority P0→P4]
-        F --> I[For each task...]
-        H --> I
-        I --> J{Skip checks}
-        J -- already active --> SKIP[Skip: already running]
-        J -- completed, unmerged --> SKIP2[Skip: awaiting merge]
-        J -- in backoff from stuck --> SKIP3[Skip: exponential backoff]
-        J -- over max agents limit --> SKIP4[Skip: agent limit]
-        J -- passes all checks --> K[Fetch full task detail\ntitle, description, labels]
-    end
-
-    subgraph SETUP["Per-task setup"]
-        K --> L[resolveBaseBranch\nstack on dependency branch?]
-        L --> M[createWorktree\ngit worktree add foreman/task-id]
-        M --> N[Write TASK.md\ninto worktree]
-        N --> O[daemon: store.createRun → Postgres]
-        O --> P[update task status → in_progress]
-        P --> Q[spawnAgent]
-    end
-
-    subgraph SPAWN["Agent spawn"]
-        Q --> R{Pi binary\non PATH?}
-        R -- Yes --> S[PiRpcSpawnStrategy\npi --mode rpc JSONL]
-        R -- No --> T[Claude SDK\nquery fallback]
-        S --> U[Write config.json\nto temp file]
-        T --> U
-        U --> V[spawn agent-worker.ts\nas detached child process]
-        V --> W[daemon: store.updateRun → running]
-    end
-
-    subgraph WORKER["agent-worker process (detached)"]
-        W --> X[Read + delete config.json]
-        X --> Y[Open worktree log\nOpen ~/.foreman/logs/runId.log]
-        Y --> Z[Init PostgresMailClient\n(daemon-backed Postgres mail)]
-        Z --> AA{pipeline mode?}
-        AA -- No --> AB[Single agent via Pi RPC]
-        AA -- Yes --> AC[runPipeline]
-    end
-
-    subgraph PIPELINE["Pipeline phases"]
-        AC --> P1A
-
-        subgraph P1["Phase 1: Explorer (Haiku, 12 turns, read-only)"]
-            P1A[Register agent-mail identity] --> P1B[Run SDK query\nexplorerPrompt]
-            P1B --> P1C[Write EXPLORER_REPORT.md]
-            P1C --> P1D[Write EXPLORER_TRACE.{md,json}]
-            P1D --> P1E[Mail report to developer inbox]
-        end
-
-        P1A --> P1_ok{success?}
-        P1_ok -- No --> STUCK[markStuck → task reset to open\nexponential backoff]
-        P1_ok -- Yes --> P2A
-
-        subgraph P2["Phase 2: Developer (Sonnet, 50 turns default / 60 turns feature, read+write)"]
-            P2A[Reserve worktree files via Agent Mail] --> P2B[Run SDK query\ndeveloperPrompt + explorer context]
-            P2B --> P2C[Write DEVELOPER_REPORT.md]
-            P2C --> P2D[Write DEVELOPER_TRACE.{md,json}]
-            P2D --> P2E[Release file reservations]
-        end
-
-        P2A --> P2_ok{success?}
-        P2_ok -- No --> STUCK
-
-        P2_ok -- Yes --> P3A
-
-        subgraph P3["Phase 3: QA (Sonnet, 30 turns, read+bash)"]
-            P3A[Run SDK query\nqaPrompt + dev report]
-            P3A --> P3B[Run tests\nWrite QA_REPORT.md]
-            P3B --> P3C[Write QA_TRACE.{md,json}]
-            P3C --> P3D[Parse verdict: PASS / FAIL]
-        end
-
-        P3D --> P3_ok{QA verdict?}
-        P3_ok -- FAIL, retries left --> RETRY[Increment devRetries\nPass QA feedback to dev]
-        RETRY --> P2A
-        P3_ok -- FAIL, max retries --> P4A
-
-        P3_ok -- PASS --> P4A
-
-        subgraph P4["Phase 4: Reviewer (Sonnet, 20 turns, read-only)"]
-            P4A[Run SDK query\nreviewerPrompt]
-            P4A --> P4B[Write REVIEW.md]
-            P4B --> P4C[Write REVIEWER_TRACE.{md,json}]
-            P4C --> P4D{CRITICAL or\nWARNING issues?}
-            P4D -- Yes --> FAIL_REV[Mark pipeline FAILED_REVIEW]
-        end
-
-        P4D -- No --> P5A
-
-        subgraph P5["Phase 5: Finalize"]
-            P5A[git add, commit, push\nforeman/task-id branch]
-            P5A --> P5B[native task merge/close]
-            P5B --> P5C[Enqueue to MergeQueue\nmail branch-ready to merge-agent]
-        end
-    end
-
-    subgraph MERGE["Merge queue"]
-        P5C --> MQ1[MergeQueue picks up branch]
-        MQ1 --> MQ2{Conflict tier?}
-        MQ2 -- T1/T2: no conflicts --> MQ3[Auto-rebase + merge to main]
-        MQ2 -- T3/T4: conflicts --> MQ4[AI conflict resolution via Pi session]
-        MQ4 --> MQ3
-        MQ3 --> MQ5[mail merge-complete to foreman]
-        MQ5 --> MQ6[store.updateRun → merged]
-    end
-```
+The historical Node dispatcher/tRPC server flow has been removed from the operator surface after Elixir cutover. The retained Node code is the CLI/frontend and the Elixir-launched Node/Pi worker bridge.
 
 **Key decision points:**
 
 | Decision | Outcome |
 |---|---|
-| **Daemon check** | Legacy `FOREMAN_BACKEND=node foreman run` requires daemon reachable — prompts to start if not |
 | **Backoff check** | Task recently failed/stuck → exponential delay before retry |
 | **Dependency stacking** | Task depends on open task → worktree branches from that dependency's branch |
 | **Pi vs SDK** | `pi` binary on PATH → JSONL RPC protocol; otherwise Claude SDK `query()` |
@@ -492,16 +368,11 @@ foreman init --wizard
 ```
 
 ### `foreman run`
-Dispatch AI coding agents to ready tasks. In default Elixir mode this sends a scheduler tick to the Elixir orchestration server; use `foreman watch` or `foreman status --watch` to monitor. Set `FOREMAN_BACKEND=node` only for explicit legacy Node dispatcher operation.
+Dispatch AI coding agents to ready tasks by sending a scheduler tick to the Elixir orchestration server; use `foreman watch` or `foreman status --watch` to monitor.
 
 ```bash
 foreman run                              # Tick Elixir scheduler for ready tasks
 foreman run --project my-project         # Tick against a registered project context
-FOREMAN_BACKEND=node foreman run --task task-abc              # Legacy direct task dispatch
-FOREMAN_BACKEND=node foreman run --max-agents 3               # Legacy Node dispatcher capacity
-FOREMAN_BACKEND=node foreman run --yes                        # Legacy auto-confirm prompts
-FOREMAN_BACKEND=node foreman run --model claude-opus-4-6      # Legacy model override
-FOREMAN_BACKEND=node foreman run --no-tests                   # Legacy skip test suite in merge step
 foreman run --dry-run                    # Check Elixir server availability without ticking
 ```
 
@@ -590,9 +461,9 @@ foreman import --to-elixir --file migration.json
 foreman import --to-elixir --from-node --project foreman  # snapshot current Node/Postgres project into Elixir
 ```
 
-The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. For explicit legacy operation, set `FOREMAN_BACKEND=node`, `FOREMAN_LEGACY_COMPATIBILITY_MODE=1`, and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` to delegate supported commands (`run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`) to the legacy TS CLI.
+The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. Legacy TS delegation has been removed after cutover.
 
-Elixir is the default backend after cutover. This disables legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Set `FOREMAN_BACKEND=node` only for explicit legacy operation. In Elixir cutover mode, commands that still lack Elixir parity fail before opening the legacy daemon socket with an explicit parity-gap message; `foreman board` reads and writes task state through Elixir after importing project state. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the backend after cutover. This removes legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Operator commands either use Elixir-backed APIs/events/projections or report removal; `foreman board` reads and writes task state through Elixir after importing project state. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
 Parse a TRD and create a native task hierarchy.
@@ -613,7 +484,7 @@ foreman daemon status         # Show PID, socket path, health
 foreman daemon restart        # Stop + start
 ```
 
-> Most legacy Node-backed commands (`foreman task`, `foreman status`, `foreman inbox`, etc.) require the daemon to be running. Start it once with `foreman daemon start`. After Elixir cutover, `foreman daemon start|restart` is blocked by default; use `foreman server start` instead. Set `FOREMAN_BACKEND=node` only for explicit legacy daemon operation.
+> `foreman daemon start|restart` was removed after Elixir cutover; use `foreman server start` instead. `foreman daemon stop/status` remain only for inspecting or stopping stray legacy daemon processes.
 
 ### `foreman server`
 Manage the experimental Elixir orchestration server.
@@ -916,10 +787,9 @@ phases:
     retryOnFail: 2
 ```
 
-Direct task execution is available for recovery/debug flows in explicit legacy Node mode and bypasses scheduler state gates while preserving run/worktree locks:
+Operator direct task execution was removed after the Elixir cutover; use scheduler-backed `foreman run` or `foreman retry` instead:
 
 ```bash
-FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> --project <name> --no-watch
 ```
 
 **Key behaviors:**
@@ -938,13 +808,10 @@ FOREMAN_BACKEND=node foreman run task <task-id> <workflow-path> --project <name>
 
 ```bash
 # Run a closed task with the task workflow
-FOREMAN_BACKEND=node foreman run task foreman-12345 task --project my-project --no-watch
 
 # Run with a custom workflow path
-FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/debug.yaml --target-branch main
 
 # Dry run to preview
-FOREMAN_BACKEND=node foreman run task foreman-12345 task --dry-run
 ```
 
 The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.

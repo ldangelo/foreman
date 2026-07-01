@@ -28,13 +28,13 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 | Deprecated | Use instead |
 |------------|-------------|
 | `foreman dashboard` | `foreman watch` |
-| `foreman bead` | `foreman task create --from-text` |
+| `foreman bead` | Removed; use structured `foreman task create --title ...` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow |
 | removed `foreman mail send` | `foreman inbox send` |
 
-Legacy TS delegation can be enabled with `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` only when `FOREMAN_BACKEND=node` is set. Elixir is the default after cutover; it disables legacy TS delegation and blocks `foreman daemon start|restart` so the Node scheduler cannot run beside the Elixir scheduler.
+Legacy TS delegation and Node daemon start/restart were removed after the Elixir cutover; use `foreman server start` for the scheduler.
 
 ---
 
@@ -63,40 +63,28 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 ### `foreman run`
 
-Dispatch ready tasks to AI agents. In default Elixir mode this sends a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches. Set `FOREMAN_BACKEND=node` only for explicit legacy operation with the old Node/Postgres dispatcher loop.
+Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.
 
 Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
 ```bash
-foreman run                       # Dispatch all ready tasks (up to max-agents)
+foreman run                       # Dispatch all ready tasks through the Elixir scheduler
 foreman run --project my-project   # Dispatch against a registered project without cd
-FOREMAN_BACKEND=node foreman run --task bd-abc1        # Legacy direct dispatch by task ID
-foreman run --dry-run             # Check Elixir server availability without ticking
-FOREMAN_BACKEND=node foreman run --max-agents 3        # Legacy Node dispatcher capacity
-FOREMAN_BACKEND=node foreman run --resume              # Legacy Node recovery path
-FOREMAN_BACKEND=node foreman run --resume-failed       # Legacy Node failed-run recovery
-foreman run --no-watch            # Tick once and exit; monitor with watch/status
-foreman run --yes                 # Auto-confirm prompts in legacy Node mode
-FOREMAN_BACKEND=node foreman run --no-pipeline         # Legacy single-agent mode
-FOREMAN_BACKEND=node foreman run --workflow quick      # Legacy Node workflow override
-FOREMAN_BACKEND=node foreman run --model anthropic/claude-opus-4-6  # Legacy model override
+foreman run --dry-run              # Check Elixir server availability without ticking
+foreman run --no-watch             # Tick once and exit; monitor with watch/status
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--task <id>` | — | Legacy Node direct dispatch only; requires `FOREMAN_BACKEND=node` |
-| `--bead <id>` | — | Alias for `--task` (legacy Node compatibility) |
-| `--max-agents <n>` | `5` | Legacy Node dispatcher capacity; Elixir scheduler owns capacity in default mode |
-| `--model <model>` | — | Legacy Node model override |
-| `--dry-run` | — | Show what would be dispatched without doing it |
+| `--task <id>` / `--bead <id>` | — | Removed after Elixir cutover; use normal `foreman run` or `foreman retry` |
+| `--max-agents <n>` | `5` | Removed operator override; Elixir scheduler owns capacity |
+| `--model <model>` | — | Removed operator override; workflow/provider config owns worker models |
+| `--dry-run` | — | Check Elixir server availability without sending a scheduler tick |
 | `--no-watch` | — | Exit immediately after dispatching |
-| `--yes` | — | Answer yes to run confirmation prompts, including non-default target branch confirmation |
-| `--resume` | — | Legacy Node recovery path; requires `FOREMAN_BACKEND=node` |
-| `--resume-failed` | — | Legacy Node recovery path; requires `FOREMAN_BACKEND=node` |
-| `--no-pipeline` | — | Legacy Node single-worker mode; requires `FOREMAN_BACKEND=node` |
-| `--workflow <name>` | — | Legacy Node workflow override; requires `FOREMAN_BACKEND=node` |
-| `--no-auto-dispatch` | — | Legacy Node auto-dispatch toggle |
-| `--telemetry` | — | Legacy Node worker tracing (requires OTEL_* env vars) |
+| `--yes` | — | Answer yes to supported run confirmation prompts |
+| `--resume` / `--resume-failed` | — | Removed; use `foreman retry` |
+| `--no-pipeline` / `--workflow <name>` | — | Removed dispatch-shaping options; workflow selection is scheduler-owned |
+| `--no-auto-dispatch` / `--telemetry` | — | Removed legacy dispatcher options |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
 > **Deprecated:** `--skip-explore` and `--skip-review` are still parsed for backwards compatibility but have **no effect** on the pipeline (phase shape is defined entirely by the workflow YAML). They are hidden from `--help` and print a deprecation warning. Use `--workflow quick` (a bundled workflow without explorer/reviewer phases) or a custom workflow instead.
@@ -105,12 +93,7 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 
 ### `foreman run task`
 
-Run a specific task through an explicit workflow, bypassing scheduler state gates. This direct worker path is legacy/debug compatibility and requires `FOREMAN_BACKEND=node` for operator use. The hidden `--run-id` bridge is reserved for Elixir scheduler-launched Node/Pi workers; when that bridge sees an Elixir-only task, Foreman mirrors task metadata into the Postgres worker store before execution so prompts receive title/type/priority/description metadata.
-
-```bash
-FOREMAN_BACKEND=node foreman run task foreman-12345 task --project foreman --no-watch
-FOREMAN_BACKEND=node foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
-```
+Operator use of `foreman run task` was removed after the Elixir cutover. The hidden `--run-id` bridge is reserved for Elixir scheduler-launched Node/Pi workers; when that bridge sees an Elixir-only task, Foreman mirrors task metadata into the worker store before execution so prompts receive title/type/priority/description metadata.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -340,7 +323,7 @@ foreman server stop               # Stop server started by Foreman
 
 `server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token. Binding the Elixir HTTP server beyond loopback also requires this token. Worker starts strip forbidden host variables (`FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, `DATABASE_*`) and scope explicit project/run secrets to the run. Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events.
 
-Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the default backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start` unless `FOREMAN_BACKEND=node` is set explicitly. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
+Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
 ### `foreman reset`
 
@@ -594,28 +577,21 @@ foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_ru
 
 ### `foreman task create`
 
-Create a new task in backlog status. The legacy Node/beads natural-language generator is still available with `--from-text` (replaces the deprecated `foreman bead`, which remains as a hidden alias), but it requires explicit `FOREMAN_BACKEND=node`.
+Create a new structured task in backlog status. The legacy Node/beads natural-language generator (`--from-text` and hidden `foreman bead`) was removed after the Elixir backend cutover.
 
 ```bash
 foreman task create --title "Fix login timeout" --type bug --priority 1
-FOREMAN_BACKEND=node foreman task create --from-text "Fix the login timeout bug"
-FOREMAN_BACKEND=node foreman task create --from-text docs/issue.md       # From a file
-FOREMAN_BACKEND=node foreman task create --from-text "..." --parent bd-abc1  # Set parent task ID
-FOREMAN_BACKEND=node foreman task create --from-text "..." --dry-run     # Preview
-FOREMAN_BACKEND=node foreman task create --from-text "..." --no-llm      # Skip AI parsing (text becomes the title)
+foreman task create --title "Fix login timeout" --description "Session expires too early"
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--title <text>` | — | Task title (required unless `--from-text` is used) |
+| `--title <text>` | — | Task title (required) |
 | `--description <text>` | — | Optional task description |
 | `--type <type>` | `task` | Task type: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question` |
 | `--priority <level>` | `medium` | Priority: `0`–`4` or `critical`/`high`/`medium`/`low`/`backlog` |
-| `--from-text <description>` | — | Legacy Node/beads generator: create task(s) from a natural-language description (or file path) using an LLM; requires `FOREMAN_BACKEND=node` |
-| `--parent <id>` | — | Parent task ID (only with `--from-text`) |
-| `--dry-run` | — | Preview without creating (only with `--from-text`) |
-| `--no-llm` | — | Skip LLM parsing — create a single task with the text as title (only with `--from-text`) |
-| `--model <model>` | — | Claude model for AI parsing (only with `--from-text`) |
+| `--from-text <description>` | — | Removed after Elixir cutover; use `--title` and `--description` |
+| `--parent <id>` / `--dry-run` / `--no-llm` / `--model` | — | Removed natural-language generator options |
 | `--project <name>` | current directory | Registered project name |
 | `--project-path <absolute-path>` | — | Absolute project path (advanced/script usage) |
 
@@ -641,15 +617,7 @@ foreman import --to-elixir --file migration.json --no-auto-start
 | `--command-id <id>` | Explicit server command id for idempotent retries |
 | `--no-auto-start` | Require an already-running Elixir server |
 
-For explicit legacy operation, compatibility mode can delegate these commands to a legacy TS Foreman binary when `FOREMAN_BACKEND=node` is set: `run`, `status`, `watch`, `reset`, `retry`, `stop`, `merge`, `pr`, `attach`, `inbox`, `task`, `plan`, `sling`, `doctor`.
-
-```bash
-FOREMAN_LEGACY_COMPATIBILITY_MODE=1 \
-FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman \
-foreman run
-```
-
-Elixir is the default backend after cutover, so legacy delegation is disabled and `foreman daemon start|restart` cannot launch the Node scheduler unless `FOREMAN_BACKEND=node` is set explicitly. Use `foreman server start` for the Elixir backend; set `FOREMAN_BACKEND=node` only for explicit legacy operation. Elixir cutover parity: `foreman board` uses Elixir task projections and task commands; remaining daemon-backed commands fail before socket access with an explicit parity-gap message until their Elixir route lands.
+Elixir is the backend after cutover. Legacy TS delegation has been removed, and `foreman daemon start|restart` now fails with guidance to use `foreman server start`. Operator commands either route through Elixir-backed APIs/events/projections or report removal.
 
 ---
 
