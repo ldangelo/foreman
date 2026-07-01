@@ -1668,13 +1668,14 @@ async function runMergeBuiltinPhase(args: {
   };
 }
 
-function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict"): string {
+function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge"): string {
   if (eventType === "phase-start") return "phase_started";
   if (eventType === "complete") return "phase_completed";
   if (eventType === "phase-failed") return "phase_failed";
   if (eventType === "phase-retry") return "phase_retry";
   if (eventType === "phase-skipped") return "phase_skipped";
   if (eventType === "phase-verdict") return "phase_verdict";
+  if (eventType === "phase-nudge") return "phase_nudge";
   return "heartbeat";
 }
 

@@ -87,6 +87,8 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "PhaseRetried":          "↻",
   "PhaseSkipped":          "↷",
   "PhaseVerdict":          "◆",
+  "PhaseNudged":           "!",
+  "phase-nudge":           "!",
   "dispatch":              "→",
   "claim":                 "◈",
   "complete":              "✓",
@@ -161,6 +163,11 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "PhaseVerdict": {
       const verdict = detailString(details, ["verdict"]);
       return phase ? `${phase} verdict${verdict ? `: ${verdict}` : ""}${target ? ` for ${target}` : ""}` : eventType;
+    }
+    case "PhaseNudged":
+    case "phase-nudge": {
+      const recipient = detailString(details, ["recipient"]);
+      return phase ? `Overwatch nudged ${phase}${target ? ` for ${target}` : ""}${recipient ? ` → ${recipient}` : ""}${error ? `: ${error}` : ""}` : eventType;
     }
     case "RunStarted":
       return `Started${target ? ` ${target}` : ""}${workflow ? ` (${workflow})` : ""}`;

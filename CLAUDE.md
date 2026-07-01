@@ -72,7 +72,7 @@ TRD-2026-014 Elixir migration split:
 ```
 Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker
    |                              |                                  |
-   |                              |                                  └─ Pi SDK phases, ordered events/heartbeats/logs/artifacts
+   |                              |                                  └─ Pi SDK phases, ordered events/heartbeats/logs/artifacts + overwatch nudges
    |                              └─ commands, events, projections, run/phase actors, recovery, VCS/PR, doctor/metrics, audits
    └─ command parsing, auto-start, projection rendering, legacy alias/deprecation warnings
 ```
@@ -262,7 +262,7 @@ npx tsc --noEmit       # Type-check without building
 
 **Common failure modes:**
 
-- Agent stuck in Developer phase → `foreman retry <task>` or Elixir recovery workflow
+- Agent stuck in Developer phase → check `foreman inbox --task <id> --events` for overwatch nudges, then `foreman retry <task>` or Elixir recovery workflow
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)

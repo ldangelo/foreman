@@ -232,6 +232,49 @@ describe("HeartbeatManager", () => {
       expect(mockStore.logEvent).not.toHaveBeenCalled();
     });
 
+    it("sends overwatch nudge and event after unchanged heartbeat intervals", async () => {
+      const heartbeatWriter = {
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      };
+      const sendNudge = vi.fn().mockResolvedValue(undefined);
+      const manager = new HeartbeatManager(
+        { enabled: true, intervalSeconds: 60, overwatchStaleIntervals: 1, overwatchMaxNudges: 1 },
+        mockStoreInstance,
+        "proj-123",
+        "run-456",
+        mockVcsInstance,
+        "/worktrees/project/task-abc",
+        heartbeatWriter,
+        { sendNudge },
+      );
+
+      await manager.start("developer");
+      manager.setTaskId("task-123");
+      manager.update({
+        turns: 1,
+        toolCalls: 2,
+        toolBreakdown: { Read: 2 },
+        costUsd: 0.01,
+        tokensIn: 100,
+        tokensOut: 50,
+        lastFileEdited: null,
+        lastActivity: new Date().toISOString(),
+      });
+
+      await manager.fireHeartbeat();
+      await manager.fireHeartbeat();
+
+      expect(sendNudge).toHaveBeenCalledWith(
+        "developer-task-123",
+        "Overwatch nudge: developer",
+        expect.stringContaining("Refocus on the current phase objective"),
+      );
+      expect(heartbeatWriter.logEvent).toHaveBeenCalledWith(
+        "phase-nudge",
+        expect.objectContaining({ phase: "developer", taskId: "task-123", recipient: "developer-task-123" }),
+      );
+    });
+
     it("should fall back to local store.logEvent when no writer is provided", async () => {
       const manager = new HeartbeatManager(
         { enabled: true },

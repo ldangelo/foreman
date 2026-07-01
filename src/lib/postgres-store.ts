@@ -54,6 +54,7 @@ export type EventType =
   | "phase-retry"
   | "phase-skipped"
   | "phase-verdict"
+  | "phase-nudge"
   | "heartbeat";
 
 /**

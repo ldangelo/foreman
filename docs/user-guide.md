@@ -9,7 +9,7 @@ Foreman runs AI engineering work through a managed pipeline:
 1. Tasks enter the native PostgreSQL-backed task store.
 2. `foreman run` dispatches ready tasks to isolated git worktrees.
 3. Workflow phases run in order: exploration, implementation, verification, review, documentation, finalization, PR review, and merge where configured.
-4. Foreman records progress, phase reports, logs, mail, and merge status. In the Elixir backend, domain events are the source of truth and trigger scheduler/watch behavior; projections/read views, including status/log displays, are read models used for display and decisions after events are observed.
+4. Foreman records progress, phase reports, logs, mail, and merge status. In the Elixir backend, domain events are the source of truth and trigger scheduler/watch behavior; projections/read views, including status/log displays, are read models used for display and decisions after events are observed. During long phases, overwatch monitors heartbeat movement and sends phase-targeted Agent Mail nudges when an agent appears idle.
 5. Completed work is finalized and merged through the configured workflow.
 
 Use Foreman when you want multiple AI agents working safely on one repository without sharing a dirty working tree.
@@ -200,7 +200,7 @@ foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for event-projected agent messages (including message contents) plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. For stuck runs, use `foreman retry` or Elixir recovery workflows.
+Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for event-projected agent messages (including message contents) plus current lifecycle/terminal events; add `--events` to see phase completions, retries, verdicts, and overwatch nudges. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. For stuck runs, use `foreman retry` or Elixir recovery workflows.
 
 ### 8. Triage Failures
 

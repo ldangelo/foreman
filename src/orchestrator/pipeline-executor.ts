@@ -117,7 +117,7 @@ export interface PhaseObservabilityInput {
 
 export interface PipelineObservabilityWriter {
   updateProgress?: (progress: RunProgress) => Promise<void> | void;
-  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict", data: Record<string, unknown>) => Promise<void> | void;
+  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge", data: Record<string, unknown>) => Promise<void> | void;
 }
 
 /** A child task within an epic pipeline run. */
@@ -1008,10 +1008,16 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   const heartbeatConfig: HeartbeatConfig = {
     enabled: true,
     intervalSeconds: 60,
+    overwatchEnabled: true,
+    overwatchStaleIntervals: 2,
+    overwatchMaxNudges: 3,
   };
   const worktreePath = config.worktreePath;
   ctx.heartbeatManager = config.vcsBackend
-    ? createHeartbeatManager(heartbeatConfig, store, config.projectId, config.runId, config.vcsBackend, worktreePath, ctx.observabilityWriter) ?? undefined
+    ? createHeartbeatManager(heartbeatConfig, store, config.projectId, config.runId, config.vcsBackend, worktreePath, ctx.observabilityWriter, {
+      sendNudge: (recipient, subject, body) => ctx.sendMailText(ctx.agentMailClient, recipient, subject, body),
+      log: ctx.log,
+    }) ?? undefined
     : undefined;
   ctx.heartbeatManager?.setTaskId(taskId);
   ctx.activityPhases = [];

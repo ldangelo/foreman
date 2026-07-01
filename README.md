@@ -20,7 +20,7 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Native task storage** — Elixir-backed tasks/events/projections
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
 - **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
-- **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections
+- **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections; phase overwatch sends Agent Mail nudges when heartbeat stats stop moving
 
 > **Note:** Foreman uses the Elixir backend for operator workflows after cutover. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
 
@@ -57,7 +57,7 @@ TRD-2026-014 adds an Elixir/OTP orchestration server alongside the existing Node
 
 - **Node CLI**: parses operator commands, starts or locates the Elixir server, sends authenticated JSON commands/reads, renders projection responses, and keeps deprecated aliases pointing at replacements.
 - **Elixir server**: owns durable commands, append-only events, CQRS projections, run/phase actors, scheduler capacity, automatic 5-second scheduler ticks that claim dispatchable `ready` tasks and launch the Node/Pi worker bridge, VCS/PR state machines, inbox/debug/attach views, recovery, doctor/metrics, and authorization audit events.
-- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/logs/artifacts back to Elixir, and receives scoped project/run environment metadata.
+- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/logs/artifacts back to Elixir, sends phase-specific overwatch nudges when a phase appears idle, and receives scoped project/run environment metadata.
 
 See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) for the migration architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
 
@@ -499,7 +499,7 @@ foreman doctor --fix                    # Auto-fix safe cleanup: retryable/zombi
 ```
 
 ### `foreman inbox`
-View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. Message contents appear in the default table preview; use `--full` for complete bodies. Add `--events` to include phase completions, retries, verdicts, worktree creation, dispatch, and merge/refinery lifecycle events.
+View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. Message contents appear in the default table preview; use `--full` for complete bodies. Add `--events` to include phase completions, retries, verdicts, overwatch nudges, worktree creation, dispatch, and merge/refinery lifecycle events.
 
 ```bash
 foreman inbox                            # Latest run's messages

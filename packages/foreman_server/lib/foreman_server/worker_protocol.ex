@@ -140,6 +140,7 @@ defmodule ForemanServer.WorkerProtocol do
   defp worker_event_type("phase_retry"), do: "PhaseRetried"
   defp worker_event_type("phase_skipped"), do: "PhaseSkipped"
   defp worker_event_type("phase_verdict"), do: "PhaseVerdict"
+  defp worker_event_type("phase_nudge"), do: "PhaseNudged"
   defp worker_event_type(type), do: Macro.camelize(type)
 
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
