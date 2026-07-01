@@ -495,7 +495,7 @@ Check environment health: Postgres connectivity, stray legacy daemon status, br/
 
 ```bash
 foreman doctor
-foreman doctor --fix                    # Auto-fix safe cleanup: zombie/stale runs, merged/orphaned worktrees, prompts/workflows
+foreman doctor --fix                    # Auto-fix safe cleanup: retryable/zombie/stale runs, merged/orphaned worktrees, prompts/workflows
 ```
 
 ### `foreman inbox`

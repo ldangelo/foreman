@@ -293,7 +293,7 @@ foreman doctor --json             # Machine-readable output
 
 | Option | Description |
 |--------|-------------|
-| `--fix` | Auto-fix safe issues: install missing prompts/workflows, migrate stores, mark zombie runs failed, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
+| `--fix` | Auto-fix safe issues: install missing prompts/workflows, migrate stores, mark zombie runs failed, reset retryable failed/stuck runs, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
 

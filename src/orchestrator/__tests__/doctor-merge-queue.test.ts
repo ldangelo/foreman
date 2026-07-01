@@ -430,6 +430,18 @@ describe("Doctor - Merge Queue Health Checks", () => {
       expect(registeredQueue.reconcile).toHaveBeenCalledWith("/tmp/project");
       expect(store.getDb).not.toHaveBeenCalled();
     });
+
+    it("does not report fixed when reconcile enqueues nothing", async () => {
+      const { doctor, mergeQueue } = makeMocks();
+      mergeQueue.missingFromQueue.mockReturnValue([{ run_id: "run-1", seed_id: "seed-1" }]);
+      mergeQueue.reconcile.mockResolvedValue({ enqueued: 0, skipped: 1, invalidBranch: 1, failedToEnqueue: [] });
+
+      const result = await doctor.checkCompletedRunsNotQueued({ fix: true, projectPath: "/tmp/project" });
+
+      expect(result.status).toBe("warn");
+      expect(result.fixApplied).toBeUndefined();
+      expect(result.details).toContain("0 enqueued");
+    });
   });
 
   describe("checkStuckConflictFailedEntries", () => {
@@ -575,6 +587,33 @@ describe("Doctor - Merge Queue Health Checks", () => {
       expect(results.some((result) => result.status === "fixed" && result.fixApplied?.includes("Deleted 2 stale run record"))).toBe(true);
       expect(store.deleteRun).toHaveBeenCalledWith("failed-1");
       expect(store.deleteRun).toHaveBeenCalledWith("stuck-1");
+    });
+
+    it("fix resets recent failed/stuck runs and tasks for retry", async () => {
+      const store = makeStore();
+      const taskClient = {
+        show: vi.fn(async () => ({ status: "failed" })),
+        resetToReady: vi.fn(async () => {}),
+        update: vi.fn(async () => {}),
+      };
+      const doctor = new Doctor(store as any, "/tmp/project", makeLocalQueue() as any, taskClient as any, undefined, undefined, undefined, "native");
+      const recent = new Date().toISOString();
+      const failed = makeRun({ id: "failed-1", seed_id: "task-1", status: "failed", created_at: recent });
+      const stuck = makeRun({ id: "stuck-1", seed_id: "task-2", status: "stuck", created_at: recent });
+      store.getRunsByStatus.mockImplementation(((status: Run["status"]) => {
+        if (status === "failed") return [failed];
+        if (status === "stuck") return [stuck];
+        return [];
+      }) as never);
+      store.getRunsForSeed.mockReturnValue([]);
+
+      const results = await doctor.checkFailedStuckRuns({ fix: true });
+
+      expect(results.some((result) => result.status === "fixed" && result.fixApplied?.includes("Reset 2 run"))).toBe(true);
+      expect(taskClient.resetToReady).toHaveBeenCalledWith("task-1", "foreman doctor --fix");
+      expect(taskClient.resetToReady).toHaveBeenCalledWith("task-2", "foreman doctor --fix");
+      expect(store.updateRun).toHaveBeenCalledWith("failed-1", expect.objectContaining({ status: "reset" }));
+      expect(store.updateRun).toHaveBeenCalledWith("stuck-1", expect.objectContaining({ status: "failed" }));
     });
   });
 

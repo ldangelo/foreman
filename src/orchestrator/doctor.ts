@@ -21,6 +21,7 @@ import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
 import { GhCli } from "../lib/gh-cli.js";
 import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 import { JiraApiClient } from "../daemon/jira-api-client.js";
+import { getSeedRetryTargetStatus } from "../lib/run-status.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -52,6 +53,7 @@ interface RunLookupLike {
   getActiveRuns(projectId?: string): MaybePromise<Run[]>;
   getRunsForSeed(seedId: string, projectId?: string): MaybePromise<Run[]>;
   updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at">>): MaybePromise<void>;
+  logEvent?(projectId: string, eventType: "restart", data: Record<string, unknown>, runId?: string): MaybePromise<void>;
   deleteRun?(runId: string): MaybePromise<boolean>;
 }
 
@@ -1564,6 +1566,67 @@ export class Doctor {
     }
   }
 
+  private async applyRetryFixForRuns(
+    runs: Run[],
+    runStore: RunLookupLike,
+    projectId: string,
+    dryRun: boolean,
+  ): Promise<{ resetTasks: number; resetRuns: number; skipped: string[] }> {
+    const resetSeeds = new Set<string>();
+    let resetTasks = 0;
+    let resetRuns = 0;
+    const skipped: string[] = [];
+
+    for (const run of runs) {
+      if (!resetSeeds.has(run.seed_id) && this.taskClient) {
+        resetSeeds.add(run.seed_id);
+        try {
+          const task = await this.taskClient.show(run.seed_id);
+          const target = getSeedRetryTargetStatus(task.status, {
+            command: "retry",
+            backendType: this.backendType ?? "native",
+          });
+          if (target && target !== task.status && !dryRun) {
+            if (target === "ready" && typeof this.taskClient.resetToReady === "function") {
+              await this.taskClient.resetToReady(run.seed_id, "foreman doctor --fix");
+            } else {
+              await this.taskClient.update(run.seed_id, { status: target });
+            }
+            resetTasks++;
+          } else if (target && target === task.status) {
+            resetTasks++;
+          } else if (!target) {
+            skipped.push(`${run.seed_id}: task status ${task.status} is terminal`);
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          skipped.push(`${run.seed_id}: ${msg}`);
+        }
+      }
+
+      const nextRunStatus = run.status === "stuck" || run.status === "running" || run.status === "pending"
+        ? "failed"
+        : "reset";
+      if (!dryRun) {
+        await Promise.resolve(runStore.updateRun(run.id, {
+          status: nextRunStatus,
+          completed_at: new Date().toISOString(),
+        }));
+        if (typeof runStore.logEvent === "function") {
+          await Promise.resolve(runStore.logEvent(
+            projectId,
+            "restart",
+            { reason: "foreman doctor --fix", seedId: run.seed_id, previousRunStatus: run.status },
+            run.id,
+          ));
+        }
+      }
+      resetRuns++;
+    }
+
+    return { resetTasks, resetRuns, skipped };
+  }
+
   async checkFailedStuckRuns(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     const { fix = false, dryRun = false } = opts;
     const runStore = this.getRunStore();
@@ -1738,22 +1801,42 @@ export class Doctor {
       });
     }
 
-    // Actionable failures: seeds with ONLY failed runs — need attention
-    if (recentActionableFailed.length > 0) {
+    // Actionable recent failures/stuck runs: --fix performs the retry reset
+    // that `foreman retry <task-id>` would otherwise ask the operator to run.
+    const retryableRecent = [...recentActionableFailed, ...recentStuck];
+    if (retryableRecent.length > 0 && dryRun) {
       results.push({
-        name: `failed runs`,
+        name: "failed/stuck runs (retry reset, dry-run)",
         status: "warn",
-        message: `${recentActionableFailed.length} failed run(s): ${recentActionableFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentActionableFailed.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry.`,
+        message: `${retryableRecent.length} failed/stuck run(s) would be reset for retry: ${retryableRecent.slice(0, 5).map((r) => r.seed_id).join(", ")}${retryableRecent.length > 5 ? "..." : ""}.`,
       });
-    }
+    } else if (retryableRecent.length > 0 && fix) {
+      const fixResult = await this.applyRetryFixForRuns(retryableRecent, runStore, project.id, false);
+      results.push({
+        name: "failed/stuck runs (retry reset)",
+        status: fixResult.resetRuns > 0 ? "fixed" : "warn",
+        message: `Reset ${fixResult.resetRuns} failed/stuck run(s) for retry${fixResult.skipped.length > 0 ? `; skipped ${fixResult.skipped.length}` : ""}`,
+        details: fixResult.skipped.length > 0 ? fixResult.skipped.slice(0, 5).join("; ") : undefined,
+        fixApplied: fixResult.resetRuns > 0 ? `Reset ${fixResult.resetRuns} run(s) and ${fixResult.resetTasks} task(s) to retryable state` : undefined,
+      });
+    } else {
+      // Actionable failures: seeds with ONLY failed runs — need attention
+      if (recentActionableFailed.length > 0) {
+        results.push({
+          name: `failed runs`,
+          status: "warn",
+          message: `${recentActionableFailed.length} failed run(s): ${recentActionableFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentActionableFailed.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry, or 'foreman doctor --fix' to reset retryable runs in bulk.`,
+        });
+      }
 
-    // Stuck runs that are recent (actionable)
-    if (recentStuck.length > 0) {
-      results.push({
-        name: `stuck runs`,
-        status: "warn",
-        message: `${recentStuck.length} stuck run(s): ${recentStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentStuck.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry; use 'foreman attach <task-id>' to inspect live sessions.`,
-      });
+      // Stuck runs that are recent (actionable)
+      if (recentStuck.length > 0) {
+        results.push({
+          name: `stuck runs`,
+          status: "warn",
+          message: `${recentStuck.length} stuck run(s): ${recentStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentStuck.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry, 'foreman attach <task-id>' to inspect, or 'foreman doctor --fix' to reset retryable runs in bulk.`,
+        });
+      }
     }
 
     const hasAnyIssue =
@@ -2297,11 +2380,15 @@ export class Doctor {
     if (fix && opts.projectPath) {
       try {
         const result = await this.reconcileMissingCompletedRuns(opts.projectPath);
+        const applied = result.enqueued > 0;
         return {
           name: "completed runs queued",
-          status: "fixed",
-          message: `MQ-011: ${missing.length} completed run(s) not in merge queue`,
-          fixApplied: `Reconciled: ${result.enqueued} enqueued, ${result.skipped} skipped, ${result.invalidBranch} invalid branch(es)`,
+          status: applied ? "fixed" : "warn",
+          message: applied
+            ? `MQ-011: ${missing.length} completed run(s) not in merge queue`
+            : `MQ-011: ${missing.length} completed run(s) not in merge queue; no entries could be enqueued`,
+          fixApplied: applied ? `Reconciled: ${result.enqueued} enqueued, ${result.skipped} skipped, ${result.invalidBranch} invalid branch(es)` : undefined,
+          details: applied ? undefined : `Reconciled: ${result.enqueued} enqueued, ${result.skipped} skipped, ${result.invalidBranch} invalid branch(es)`,
         };
       } catch (reconcileErr: unknown) {
         const msg = reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr);
@@ -2464,6 +2551,18 @@ export class Doctor {
    * Run all merge queue health checks.
    */
   async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
+    if (opts.fix) {
+      // Fixes mutate shared queue state. Run sequentially so one check does not
+      // re-create work another check is concurrently deleting/failing.
+      const duplicates = await this.checkDuplicateMergeQueueEntries(opts);
+      const orphaned = await this.checkOrphanedMergeQueueEntries(opts);
+      const resolved = await this.checkResolvedMergeQueueEntries(opts);
+      const stale = await this.checkStaleMergeQueueEntries(opts);
+      const stuckConflictFailed = await this.checkStuckConflictFailedEntries(opts);
+      const notQueued = await this.checkCompletedRunsNotQueued({ fix: opts.fix, dryRun: opts.dryRun, projectPath: opts.projectPath });
+      return [stale, duplicates, orphaned, notQueued, resolved, stuckConflictFailed];
+    }
+
     const [stale, duplicates, orphaned, notQueued, resolved, stuckConflictFailed] = await Promise.all([
       this.checkStaleMergeQueueEntries(opts),
       this.checkDuplicateMergeQueueEntries(opts),
