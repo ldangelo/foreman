@@ -7,19 +7,14 @@
  */
 import { Command } from "commander";
 import chalk from "chalk";
-import type { CreateFromTextOptions } from "./create-from-text.js";
-
-// Re-export the shared helpers under their historical module path so existing
-// importers/tests of bead.js keep working.
-export {
-  createBeadClient,
-  createTasksFromText,
-  normaliseIssue,
-  parseLlmResponse,
-  repairTruncatedJson,
-  type BeadCommandClient,
-  type CreateFromTextOptions,
-} from "./create-from-text.js";
+interface RemovedBeadOptions {
+  type?: string;
+  priority?: string;
+  parent?: string;
+  dryRun?: boolean;
+  llm?: boolean;
+  model?: string;
+}
 
 // ── Command ──────────────────────────────────────────────────────────────
 
@@ -35,7 +30,7 @@ export const beadCommand = new Command("bead")
   .action(
     async (
       description: string,
-      opts: CreateFromTextOptions,
+      opts: RemovedBeadOptions,
     ) => {
       void description;
       void opts;

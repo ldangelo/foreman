@@ -4,14 +4,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { mockCreateTasksFromText, mockForemanBackendMode } = vi.hoisted(() => ({
-  mockCreateTasksFromText: vi.fn(),
+const { mockForemanBackendMode } = vi.hoisted(() => ({
   mockForemanBackendMode: vi.fn(),
-}));
-
-vi.mock("../commands/create-from-text.js", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  createTasksFromText: mockCreateTasksFromText,
 }));
 
 vi.mock("../../lib/backend-mode.js", () => ({
@@ -37,7 +31,6 @@ describe("foreman task create --from-text", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCreateTasksFromText.mockResolvedValue(undefined);
     mockForemanBackendMode.mockReturnValue("node");
     exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`process.exit(${code ?? ""})`);
@@ -83,7 +76,6 @@ describe("foreman task create --from-text", () => {
       { from: "user" },
     )).rejects.toThrow("process.exit(1)");
 
-    expect(mockCreateTasksFromText).not.toHaveBeenCalled();
     const messages = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
     expect(messages.some((line: string) => line.includes("removed after the Elixir backend cutover"))).toBe(true);
     expect(messages.some((line: string) => line.includes("FOREMAN_BACKEND=node"))).toBe(false);
@@ -101,7 +93,6 @@ describe("foreman task create --from-text", () => {
 
     const messages = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
     expect(messages.some((line: string) => line.includes("removed after the Elixir backend cutover"))).toBe(true);
-    expect(mockCreateTasksFromText).not.toHaveBeenCalled();
   });
 
   it("still requires --title for structured creation (no --from-text)", async () => {
@@ -124,7 +115,6 @@ describe("foreman task create --from-text", () => {
 
     const messages = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
     expect(messages.some((line: string) => line.includes("--from-text"))).toBe(true);
-    expect(mockCreateTasksFromText).not.toHaveBeenCalled();
   });
 });
 
@@ -134,7 +124,6 @@ describe("foreman bead (deprecated)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCreateTasksFromText.mockResolvedValue(undefined);
     mockForemanBackendMode.mockReturnValue("node");
     exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`process.exit(${code ?? ""})`);
@@ -158,7 +147,6 @@ describe("foreman bead (deprecated)", () => {
     const notices = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
     expect(notices.some((line: string) => line.includes("removed after the Elixir backend cutover"))).toBe(true);
     expect(notices.some((line: string) => line.includes("FOREMAN_BACKEND=node"))).toBe(false);
-    expect(mockCreateTasksFromText).not.toHaveBeenCalled();
   });
 
   it("reports the same removal in default Elixir mode", async () => {
@@ -172,7 +160,6 @@ describe("foreman bead (deprecated)", () => {
     const messages = errSpy.mock.calls.map((call: unknown[]) => String(call[0]));
     expect(messages.some((line: string) => line.includes("removed after the Elixir backend cutover"))).toBe(true);
     expect(messages.some((line: string) => line.includes("FOREMAN_BACKEND=node"))).toBe(false);
-    expect(mockCreateTasksFromText).not.toHaveBeenCalled();
   });
 
   it("keeps all existing bead flags registered", async () => {
