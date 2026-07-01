@@ -2,16 +2,11 @@ export type ForemanBackendMode = "node" | "elixir";
 
 type Env = Record<string, string | undefined>;
 
-const truthy = new Set(["1", "true", "yes", "complete", "completed"]);
-
-export function migrationComplete(env: Env = process.env): boolean {
-  return truthy.has((env.FOREMAN_MIGRATION_COMPLETE ?? "").toLowerCase());
+export function migrationComplete(_env: Env = process.env): boolean {
+  return true;
 }
 
-export function foremanBackendMode(env: Env = process.env): ForemanBackendMode {
-  const configured = (env.FOREMAN_BACKEND ?? "").toLowerCase();
-  if (configured === "node") return "node";
-  if (configured === "elixir") return "elixir";
+export function foremanBackendMode(_env: Env = process.env): ForemanBackendMode {
   return "elixir";
 }
 

@@ -3,45 +3,30 @@ import { foremanBackendMode, migrationComplete, nodeDaemonAllowed, nodeDaemonDis
 import { createTrpcClient } from "../trpc-client.js";
 
 describe("Foreman backend mode", () => {
-  it("defaults to Elixir after cutover", () => {
+  it("always selects Elixir after cutover", () => {
     expect(foremanBackendMode({})).toBe("elixir");
-    expect(nodeDaemonAllowed({})).toBe(false);
+    expect(foremanBackendMode({ FOREMAN_BACKEND: "node" })).toBe("elixir");
+    expect(nodeDaemonAllowed({ FOREMAN_BACKEND: "node" })).toBe(false);
   });
 
-  it("selects Elixir and disables the Node daemon scheduler when requested", () => {
-    const env = { FOREMAN_BACKEND: "elixir" };
-    expect(foremanBackendMode(env)).toBe("elixir");
-    expect(nodeDaemonAllowed(env)).toBe(false);
-    expect(nodeDaemonDisabledMessage(env)).toContain("FOREMAN_BACKEND=elixir");
+  it("reports migration as complete after cutover", () => {
+    expect(migrationComplete({})).toBe(true);
+    expect(migrationComplete({ FOREMAN_MIGRATION_COMPLETE: "false" })).toBe(true);
   });
 
-  it("blocks implicit Node daemon tRPC clients in Elixir mode before socket use", () => {
-    const oldBackend = process.env.FOREMAN_BACKEND;
-    process.env.FOREMAN_BACKEND = "elixir";
-    try {
-      expect(() => createTrpcClient()).toThrow(/Elixir backend parity gap/);
-    } finally {
-      if (oldBackend === undefined) delete process.env.FOREMAN_BACKEND;
-      else process.env.FOREMAN_BACKEND = oldBackend;
-    }
+  it("explains that the Node daemon scheduler was removed", () => {
+    expect(nodeDaemonDisabledMessage({ FOREMAN_BACKEND: "node" })).toContain("removed after the Elixir backend cutover");
+    expect(nodeDaemonDisabledMessage({})).toContain("foreman server start");
   });
 
-  it("still allows explicit legacy tRPC clients in Node mode", () => {
+  it("blocks implicit Node daemon tRPC clients before socket use", () => {
     const oldBackend = process.env.FOREMAN_BACKEND;
     process.env.FOREMAN_BACKEND = "node";
     try {
-      expect(() => createTrpcClient()).not.toThrow();
+      expect(() => createTrpcClient()).toThrow(/removed legacy Node daemon tRPC API/);
     } finally {
       if (oldBackend === undefined) delete process.env.FOREMAN_BACKEND;
       else process.env.FOREMAN_BACKEND = oldBackend;
     }
-  });
-
-  it("treats migration completion as an Elixir cutover gate", () => {
-    const env = { FOREMAN_MIGRATION_COMPLETE: "true" };
-    expect(migrationComplete(env)).toBe(true);
-    expect(foremanBackendMode(env)).toBe("elixir");
-    expect(nodeDaemonAllowed(env)).toBe(false);
-    expect(nodeDaemonDisabledMessage(env)).toContain("FOREMAN_MIGRATION_COMPLETE");
   });
 });
