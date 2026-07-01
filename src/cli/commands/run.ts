@@ -47,7 +47,6 @@ import { runTaskCommand, skipFlagsDeprecationWarning } from "./run-task.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RunLookup } from "../../orchestrator/refinery-agent.js";
 import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
-import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 
@@ -612,7 +611,7 @@ export const runCommand = new Command("run")
       }
     }
 
-    if (foremanBackendMode() === "elixir" && runtimeMode !== "test" && process.env.VITEST !== "true") {
+    if (runtimeMode !== "test" && process.env.VITEST !== "true") {
       if (beadFilter) {
         console.error(chalk.red("Error: foreman run --task/--bead was removed after the Elixir backend cutover. Use normal 'foreman run' to tick the scheduler, or 'foreman retry <task-id>' for retry flows."));
         process.exit(1);

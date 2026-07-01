@@ -44,7 +44,6 @@ import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
-import { foremanBackendMode } from "../../lib/backend-mode.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -584,7 +583,7 @@ export const runTaskCommand = new Command("task")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (taskId, workflowPath, opts) => {
-    if (foremanBackendMode() === "elixir" && process.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.VITEST !== "true" && !opts.runId) {
+    if (process.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.VITEST !== "true" && !opts.runId) {
       console.error(
         chalk.red(
           "Error: foreman run task operator use was removed after the Elixir backend cutover. Elixir scheduler worker launches use the internal --run-id bridge.",
