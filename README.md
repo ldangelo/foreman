@@ -540,6 +540,17 @@ foreman retry task-abc --dispatch       # Reset and dispatch immediately
 foreman retry task-abc --dry-run        # Preview the retry flow
 ```
 
+### `foreman abandon`
+Abandon obsolete work that should not land.
+
+```bash
+foreman abandon task-abc --reason "too stale to land"
+foreman abandon task-abc --dry-run
+foreman abandon task-abc --delete-branch --force
+```
+
+Removes merge-queue entries, archives/removes the worktree, marks the task blocked, and records the run as failed. Branch deletion is opt-in.
+
 ### `foreman pr`
 Create pull requests for completed branches that couldn't be auto-merged.
 

@@ -340,6 +340,18 @@ foreman retry bd-abc1 --dry-run   # Preview
 | `--dry-run` | Show what would happen |
 | `--project <name-or-path>` | Target a registered project name or absolute project path |
 
+### `foreman abandon`
+
+Abandon obsolete Foreman work that should not land.
+
+```bash
+foreman abandon <task-or-run-id> --reason "too stale to land"
+foreman abandon <task-or-run-id> --dry-run
+foreman abandon <task-or-run-id> --delete-branch --force
+```
+
+Abandon removes matching merge-queue entries, archives/removes the run worktree, marks the task `blocked` unless `--keep-task` is used, and marks the run failed with an audit event. Branch deletion is opt-in via `--delete-branch`; use `--force` for unmerged branches.
+
 ### `foreman stop`
 Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 
