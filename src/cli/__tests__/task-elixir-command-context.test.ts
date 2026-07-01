@@ -104,7 +104,8 @@ describe("foreman task command Elixir context", () => {
 
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     const rendered = errSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("only available with FOREMAN_BACKEND=node");
+    expect(rendered).toContain("removed after the Elixir backend cutover");
+    expect(rendered).not.toContain("FOREMAN_BACKEND=node");
   });
 
   it("routes task create through Elixir commands without creating a tRPC client", async () => {

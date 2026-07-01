@@ -31,12 +31,12 @@ describe("TRD-2026-014 operator docs", () => {
     expect(combined).toContain("foreman dashboard");
     expect(combined).toContain("foreman watch");
     expect(combined).toContain("foreman bead");
-    expect(combined).toContain("foreman task create --from-text");
+    expect(combined).toContain("foreman task create --title");
     expect(combined).toContain("foreman purge-logs");
     expect(combined).toContain("foreman purge logs");
     expect(combined).toContain("--skip-explore");
     expect(combined).toContain("--workflow quick");
-    expect(combined).toContain("FOREMAN_LEGACY_COMPATIBILITY_MODE");
+    expect(combined).toContain("Legacy TypeScript delegation was removed");
   });
 
   it("documents event, projection, and recovery troubleshooting concepts with examples", () => {
