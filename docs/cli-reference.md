@@ -326,31 +326,7 @@ foreman server stop               # Stop server started by Foreman
 Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
 ### `foreman reset`
-
-Reset failed or stuck runs. By default this cleans up worktrees, deletes branches, and resets task status to a dispatchable state. Use `--preserve-worktree`/`--retry-failed-phase` for focused repair when you want to keep the current branch and worktree after a phase failure.
-
-```bash
-foreman reset                     # Reset all failed/stuck runs
-foreman reset --project my-project # Reset runs in a registered project without cd
-foreman reset --task bd-abc1      # Reset a specific task by ID
-foreman reset --all               # Reset ALL active runs (nuclear option)
-foreman reset --detect-stuck      # Find and reset stuck agents
-foreman reset --preserve-worktree --task bd-abc1  # Reset state but keep branch/worktree
-foreman reset --retry-failed-phase --task bd-abc1 # Alias for focused phase repair reset
-foreman reset --dry-run           # Preview what would be reset
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--task <id>` | — | Reset a specific task's runs |
-| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
-| `--all` | — | Reset ALL active runs |
-| `--detect-stuck` | — | Run stuck detection first |
-| `--timeout <minutes>` | `15` | Stuck detection timeout |
-| `--dry-run` | — | Preview changes |
-| `--preserve-worktree` | — | Reset task/run state without removing the worktree or branch |
-| `--retry-failed-phase` | — | Focused repair reset; preserves the worktree and branch for the next dispatch |
-| `--project <name-or-path>` | — | Target a registered project name or absolute project path |
+Removed after Elixir cutover. Use `foreman retry` or Elixir-backed recovery workflows instead.
 
 ### `foreman retry`
 
@@ -372,26 +348,7 @@ foreman retry bd-abc1 --dry-run   # Preview
 | `--project <name-or-path>` | Target a registered project name or absolute project path |
 
 ### `foreman stop`
-
-Gracefully stop running agents.
-
-```bash
-foreman stop                      # Stop all running agents
-foreman stop bd-abc1              # Stop a specific task's agent
-foreman stop --list               # List active runs
-foreman stop --force              # Force kill with SIGKILL
-foreman stop --dry-run            # Preview
-```
-
-| Option | Description |
-|--------|-------------|
-| `--list` | List active runs without stopping |
-| `--force` | Force kill with SIGKILL instead of graceful shutdown |
-| `--dry-run` | Preview without stopping |
-
----
-
-## Merging & PRs
+Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 
 ### `foreman merge`
 
@@ -714,4 +671,4 @@ foreman purge runs --dry-run      # Preview
 |--------|-------------|
 | `--dry-run` | Preview without making changes |
 
-> **Removed commands:** `foreman monitor` has been removed — use `foreman reset --detect-stuck` instead. `foreman mail send` has been removed — use `foreman inbox send`.
+> **Removed commands:** `foreman monitor` and `foreman reset` have been removed — use `foreman retry` or Elixir-backed recovery workflows instead. `foreman mail send` has been removed — use `foreman inbox send`.

@@ -386,11 +386,13 @@ function formatElapsed(startedAt: string | null): string {
 // ── CLI Command ─────────────────────────────────────────────────────────
 
 export const stopCommand = new Command("stop")
-  .description("Gracefully stop running foreman agents without destroying infrastructure")
-  .argument("[id]", "Run ID or bead ID to stop (omit to stop all active runs)")
-  .option("--list", "List all active runs")
-  .option("--force", "Force kill with SIGKILL instead of SIGTERM")
-  .option("--dry-run", "Show what would be stopped without doing it")
-  .action(async (id: string | undefined, opts: StopOpts) => {
-    process.exit(await stopCommandAction(id, opts));
+  .description("Removed after Elixir cutover; use Elixir run controls")
+  .argument("[id]", "Run ID or task ID (removed operator surface)")
+  .option("--list", "Removed legacy run-store listing")
+  .option("--force", "Removed legacy force stop")
+  .option("--dry-run", "Removed legacy dry run")
+  .action(async (_id: string | undefined, _opts: StopOpts) => {
+    console.error(chalk.red("Error: foreman stop was removed after the Elixir backend cutover."));
+    console.error(chalk.dim("  Use Elixir run/recovery controls via foreman server/attach/retry workflows."));
+    process.exit(1);
   });

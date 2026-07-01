@@ -30,6 +30,7 @@ Track operator-facing transition from Node daemon/tRPC-backed workflows to Elixi
 | `foreman task dep remove` | Removed | CLI prints an Elixir-cutover removal message. | No local/tRPC backend fallback. |
 | `foreman task import --from-beads` | Elixir | Imports legacy beads JSONL through Elixir `task.create` and `task.add_dependency`; description now says Elixir-backed task store. | Import reads local `.beads` files as source data only. |
 | `foreman board`, `watch`, `status`, `logs`, `inbox`, `retry`, `recover`, `debug`, `plan`, `sling`, `attach` | Elixir + approved local utilities | Default registered-project backend state uses Elixir projections/APIs and fails closed instead of silently falling back. | Remaining local-store reads are listed below as approved local utilities; residual tRPC calls hit a fail-closed shim and cannot open the daemon socket. |
+| `foreman stop` / `foreman reset` | Removed | CLI rejects both commands after cutover instead of mutating local run-store state. | Operators use `foreman retry` or Elixir-backed recovery controls. |
 | `foreman daemon start/restart` | Removed | CLI always rejects start/restart with `foreman server start` guidance. | `daemon stop/status` remain for stray legacy process inspection/cleanup only. |
 | Legacy TS delegation envs | Removed | CLI entrypoint no longer calls legacy delegation; docs no longer advertise the envs. | None approved. |
 
@@ -41,11 +42,10 @@ These references were audited because they match `ForemanStore`, `PostgresStore`
 | --- | --- | --- |
 | `src/cli/commands/run-task.ts` | Internal `--run-id` worker bridge and worker-store metadata for Pi execution. | Required retained Elixir-launched Node/Pi worker bridge. Operator direct use is removed. |
 | `src/cli/commands/run.ts` | Worker/refinery support and sentinel wrapping around scheduler-driven work. | `foreman run` operator dispatch is Elixir scheduler tick; local store code supports retained worker execution/cleanup paths. |
-| `src/cli/commands/stop.ts` | Stop/cleanup active local worker processes and run records when needed. | Process cleanup utility; does not select Node daemon/tRPC backend and does not advertise Node mode. |
 | `src/cli/commands/retry.ts` | Local run lookup/cleanup around retry flows. | Default retry state resolution is Elixir; local store adapter is cleanup/compatibility around worker records. |
 | `src/cli/commands/status.ts`, `src/cli/dashboard-state.ts`, `src/cli/commands/watch/*` | Dashboard/log/render helpers may read local worker artifacts or historical local store records. | Backend state for registered projects is Elixir; local reads are display/artifact helpers and not a scheduler/backend fallback. |
 | `src/cli/commands/logs.ts`, `debug.ts`, `attach.ts`, `recover.ts`, `inbox.ts` | Read local logs, reports, or historical worker artifacts. | Artifact inspection remains part of the Node CLI/frontend; backend run/task state uses Elixir where registered. |
-| `src/cli/commands/worktree.ts`, `purge-logs.ts`, `purge-zombie-runs.ts`, `doctor.ts` | Cleanup of local worktrees/logs/stale run records and health checks. | Local cleanup utilities are not a Node backend control plane. |
+| `src/cli/commands/worktree.ts`, `purge-logs.ts`, `purge-zombie-runs.ts`, `doctor.ts` | Cleanup of local worktrees/logs/stale run records and health checks. | Local cleanup utilities are not a Node backend control plane; run-state reset/stop surfaces were removed. |
 | `src/cli/commands/sentinel.ts` | Sentinel configuration/run history helpers. | Retained until sentinel state is fully Elixir-native; does not reopen daemon/tRPC and is not gated to Node backend. |
 | `src/cli/commands/local-store-adapter.ts` | Async wrapper for local cleanup/run-store methods used by the above utilities. | Approved support module for local cleanup utilities only. |
 

@@ -21,11 +21,7 @@ foreman run            # Tick Elixir scheduler for ready-task dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
-foreman reset          # Clean up failed/stuck runs
-foreman reset --detect-stuck  # Detect + reset stuck runs (replaces 'foreman monitor')
-foreman reset --task X --preserve-worktree  # Reset state but keep repair worktree/branch
 foreman retry <seed>   # Re-run a failed pipeline phase
-foreman stop           # Gracefully stop all agents
 foreman doctor         # Health checks (br, Pi, DB integrity)
 foreman debug <id>     # AI-powered execution analysis (Opus)
 foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
@@ -240,8 +236,6 @@ foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 # Stuck or failed runs
 foreman doctor         # Check br binary, Pi binary, DB integrity
 foreman status         # See all active/failed agents
-foreman reset          # Reset all failed/stuck runs to open
-foreman reset --bead X # Reset a specific run
 foreman retry <seed>   # Re-run a specific pipeline phase
 
 # Agent logs (streamed during run)
@@ -266,7 +260,7 @@ npx tsc --noEmit       # Type-check without building
 
 **Common failure modes:**
 
-- Agent stuck in Developer phase → `foreman retry <seed>` or `foreman reset --bead <bead>`
+- Agent stuck in Developer phase → `foreman retry <seed>` or Elixir recovery workflow
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)

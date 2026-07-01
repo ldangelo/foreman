@@ -200,7 +200,7 @@ foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. To detect and reset stuck runs, use `foreman reset --detect-stuck`.
+Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for run messages plus current lifecycle/terminal events. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. For stuck runs, use `foreman retry` or Elixir recovery workflows.
 
 ### 8. Triage Failures
 
@@ -215,7 +215,7 @@ Recommended order:
 
 ```bash
 foreman logs <run-id>
-foreman reset --bead <task-id> --dry-run
+foreman retry <task-id> --dry-run
 foreman retry <task-id> --dispatch
 ```
 
@@ -257,8 +257,7 @@ The board also monitors agent inbox updates. When a new inbox message arrives fo
 Use retry/reset surgically.
 
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
-- Use `foreman reset --bead <task-id>` to clear failed/stuck run state and make the task retryable.
-- Use `foreman reset --bead <task-id> --preserve-worktree` (or `--retry-failed-phase`) when a repair should keep the failed run's branch/worktree instead of starting from a clean checkout.
+- Use `foreman retry <task-id>` for retryable failed/stuck run recovery.
 - Use `--dry-run` before destructive cleanup.
 - Do not reset active work with uncommitted controller changes unless those changes are committed or exported.
 
