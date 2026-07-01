@@ -348,9 +348,11 @@ Abandon obsolete Foreman work that should not land.
 foreman abandon <task-or-run-id> --reason "too stale to land"
 foreman abandon <task-or-run-id> --dry-run
 foreman abandon <task-or-run-id> --delete-branch --force
+foreman abandon --missing-branches --dry-run
+foreman abandon --missing-branches --reason "branch missing"
 ```
 
-Abandon removes matching merge-queue entries, archives/removes the run worktree, marks the task `blocked` unless `--keep-task` is used, and marks the run failed with an audit event. Branch deletion is opt-in via `--delete-branch`; use `--force` for unmerged branches.
+Abandon removes matching merge-queue entries, archives/removes the run worktree, marks the task `blocked` unless `--keep-task` is used, and marks the run failed with an audit event. Branch deletion is opt-in via `--delete-branch`; use `--force` for unmerged branches. Use `--missing-branches` to bulk-abandon completed runs whose `foreman/<task>` branch is missing locally, which clears stale rows that otherwise make `foreman merge` warn repeatedly.
 
 ### `foreman stop`
 Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.

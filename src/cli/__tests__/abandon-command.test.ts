@@ -9,6 +9,7 @@ const {
   mockMergeQueueRemove,
   mockRemoveWorkspace,
   mockDeleteBranch,
+  mockBranchExists,
 } = vi.hoisted(() => {
   const mockResolveProjectContext = vi.fn();
   const mockLocalStore = {
@@ -19,6 +20,7 @@ const {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     updateTaskStatus: vi.fn(),
+    getRunsByStatus: vi.fn(),
   };
   const mockPostgresStore = {
     close: vi.fn(),
@@ -27,11 +29,13 @@ const {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     updateTaskStatus: vi.fn(),
+    getRunsByStatus: vi.fn(),
   };
   const mockMergeQueueList = vi.fn(async () => []);
   const mockMergeQueueRemove = vi.fn(async () => {});
   const mockRemoveWorkspace = vi.fn(async () => {});
   const mockDeleteBranch = vi.fn(async () => ({ deleted: true, wasFullyMerged: false }));
+  const mockBranchExists = vi.fn(async () => false);
   return {
     mockResolveProjectContext,
     mockLocalStore,
@@ -40,6 +44,7 @@ const {
     mockMergeQueueRemove,
     mockRemoveWorkspace,
     mockDeleteBranch,
+    mockBranchExists,
   };
 });
 
@@ -74,6 +79,7 @@ vi.mock("../../lib/vcs/index.js", () => ({
     create: vi.fn(async () => ({
       removeWorkspace: mockRemoveWorkspace,
       deleteBranch: mockDeleteBranch,
+      branchExists: mockBranchExists,
     })),
   },
 }));
@@ -107,6 +113,8 @@ describe("abandonAction", () => {
     mockResolveProjectContext.mockResolvedValue({ projectPath: "/tmp/project", registered: { id: "proj-1" } });
     mockPostgresStore.getRun.mockResolvedValue(makeRun());
     mockPostgresStore.getRunsForSeed.mockResolvedValue([]);
+    mockPostgresStore.getRunsByStatus.mockResolvedValue([]);
+    mockBranchExists.mockResolvedValue(false);
     mockMergeQueueList.mockResolvedValue([
       { id: 7, run_id: "run-1", seed_id: "task-1", branch_name: "foreman/task-1" },
     ] as never);
@@ -136,5 +144,20 @@ describe("abandonAction", () => {
     await abandonAction("run-1", { deleteBranch: true, force: true });
 
     expect(mockDeleteBranch).toHaveBeenCalledWith("/tmp/project", "foreman/task-1", { force: true });
+  });
+
+  it("bulk-abandons completed runs with missing branches", async () => {
+    mockPostgresStore.getRunsByStatus.mockResolvedValue([
+      makeRun({ id: "run-1", seed_id: "task-1" }),
+      makeRun({ id: "run-2", seed_id: "task-2", worktree_path: "/tmp/wt/task-2" }),
+    ]);
+    mockBranchExists.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const code = await abandonAction(undefined, { missingBranches: true, reason: "branch missing" });
+
+    expect(code).toBe(0);
+    expect(mockPostgresStore.updateRun).toHaveBeenCalledTimes(1);
+    expect(mockPostgresStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "failed" }));
+    expect(mockRemoveWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/wt/task-1");
   });
 });

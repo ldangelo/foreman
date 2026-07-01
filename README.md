@@ -547,9 +547,10 @@ Abandon obsolete work that should not land.
 foreman abandon task-abc --reason "too stale to land"
 foreman abandon task-abc --dry-run
 foreman abandon task-abc --delete-branch --force
+foreman abandon --missing-branches --dry-run
 ```
 
-Removes merge-queue entries, archives/removes the worktree, marks the task blocked, and records the run as failed. Branch deletion is opt-in.
+Removes merge-queue entries, archives/removes the worktree, marks the task blocked, and records the run as failed. Branch deletion is opt-in. `--missing-branches` bulk-abandons completed runs whose Foreman branch is gone.
 
 ### `foreman pr`
 Create pull requests for completed branches that couldn't be auto-merged.

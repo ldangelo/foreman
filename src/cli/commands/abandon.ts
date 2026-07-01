@@ -18,6 +18,7 @@ export interface AbandonOpts {
   force?: boolean;
   keepWorktree?: boolean;
   keepTask?: boolean;
+  missingBranches?: boolean;
   project?: string;
   projectPath?: string;
 }
@@ -54,7 +55,81 @@ async function removeMergeQueueEntries(
   return matches.length;
 }
 
-export async function abandonAction(target: string, opts: AbandonOpts = {}): Promise<number> {
+async function abandonRun(
+  run: Run,
+  opts: AbandonOpts,
+  deps: {
+    projectPath: string;
+    store: RunStore;
+    queue: MergeQueue | PostgresMergeQueue;
+    vcs: Awaited<ReturnType<typeof VcsBackendFactory.create>>;
+  },
+): Promise<void> {
+  const dryRun = opts.dryRun ?? false;
+  const reason = opts.reason ?? "abandoned by operator";
+  const branchName = branchForSeed(run.seed_id);
+
+  console.log(chalk.bold(`${dryRun ? "Would abandon" : "Abandoning"} ${chalk.cyan(run.seed_id)} (${run.id})`));
+  console.log(`  reason: ${reason}`);
+
+  const queueRemoved = await removeMergeQueueEntries(deps.queue, run, dryRun);
+  console.log(`  ${dryRun ? "would remove" : "removed"} ${queueRemoved} merge queue entr${queueRemoved === 1 ? "y" : "ies"}`);
+
+  if (!opts.keepWorktree && run.worktree_path) {
+    if (dryRun) {
+      console.log(`  would remove worktree ${chalk.dim(run.worktree_path)}`);
+    } else {
+      await archiveWorktreeReports(deps.projectPath, run.worktree_path, run.seed_id).catch(() => {});
+      await deps.vcs.removeWorkspace(deps.projectPath, run.worktree_path);
+      console.log(`  removed worktree ${chalk.dim(run.worktree_path)}`);
+    }
+  }
+
+  if (opts.deleteBranch) {
+    if (dryRun) {
+      console.log(`  would delete branch ${chalk.dim(branchName)}${opts.force ? " (force)" : ""}`);
+    } else {
+      const result = await deps.vcs.deleteBranch(deps.projectPath, branchName, { force: opts.force });
+      console.log(`  ${result.deleted ? "deleted" : "kept"} branch ${chalk.dim(branchName)}${result.wasFullyMerged ? " (merged)" : ""}`);
+    }
+  }
+
+  if (!opts.keepTask && "updateTaskStatus" in deps.store) {
+    if (dryRun) {
+      console.log(`  would mark task ${chalk.dim(run.seed_id)} blocked`);
+    } else {
+      await Promise.resolve(deps.store.updateTaskStatus(run.seed_id, "blocked"));
+      console.log(`  marked task ${chalk.dim(run.seed_id)} blocked`);
+    }
+  }
+
+  if (!dryRun) {
+    await Promise.resolve(deps.store.updateRun(run.id, { status: "failed", completed_at: new Date().toISOString() }));
+    await Promise.resolve(deps.store.logEvent(run.project_id, "fail", {
+      seedId: run.seed_id,
+      reason,
+      abandoned: true,
+      branchName,
+    }, run.id));
+    console.log(`  marked run ${chalk.dim(run.id)} failed`);
+  }
+}
+
+async function findCompletedRunsWithMissingBranches(store: RunStore, projectPath: string): Promise<Run[]> {
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  const completed = await Promise.resolve(store.getRunsByStatus("completed"));
+  const seenSeeds = new Set<string>();
+  const missing: Run[] = [];
+  for (const run of completed) {
+    if (seenSeeds.has(run.seed_id)) continue;
+    seenSeeds.add(run.seed_id);
+    const exists = await vcs.branchExists(projectPath, branchForSeed(run.seed_id));
+    if (!exists) missing.push(run);
+  }
+  return missing;
+}
+
+export async function abandonAction(target: string | undefined, opts: AbandonOpts = {}): Promise<number> {
   const { projectPath, registered } = await resolveProjectContext(opts, { normalizePaths: true });
   const localStore = ForemanStore.forProject(projectPath);
   const store: RunStore = registered ? PostgresStore.forProject(registered.id) : localStore;
@@ -64,68 +139,40 @@ export async function abandonAction(target: string, opts: AbandonOpts = {}): Pro
   };
 
   try {
+    const queue = registered
+      ? new PostgresMergeQueue(registered.id)
+      : new MergeQueue(localStore.getDb());
+    const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+    const deps = { projectPath, store, queue, vcs };
+
+    if (opts.missingBranches) {
+      const runs = await findCompletedRunsWithMissingBranches(store, projectPath);
+      if (runs.length === 0) {
+        console.log(chalk.green("No completed runs with missing local branches found."));
+        return 0;
+      }
+      console.log(chalk.bold(`${opts.dryRun ? "Would abandon" : "Abandoning"} ${runs.length} completed run(s) with missing local branches.`));
+      for (const run of runs) {
+        await abandonRun(run, opts, deps);
+      }
+      if (opts.dryRun) console.log(chalk.yellow("Dry run complete — no changes were made."));
+      else console.log(chalk.green("Done."));
+      return 0;
+    }
+
+    if (!target) {
+      console.error(chalk.red("Error: provide <task-or-run-id> or use --missing-branches."));
+      return 1;
+    }
     const run = await getRun(store, target);
     if (!run) {
       console.error(chalk.red(`Error: No run or task found for '${target}'.`));
       return 1;
     }
 
-    const dryRun = opts.dryRun ?? false;
-    const reason = opts.reason ?? "abandoned by operator";
-    const branchName = branchForSeed(run.seed_id);
-    const queue = registered
-      ? new PostgresMergeQueue(registered.id)
-      : new MergeQueue(localStore.getDb());
-    const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-
-    console.log(chalk.bold(`${dryRun ? "Would abandon" : "Abandoning"} ${chalk.cyan(run.seed_id)} (${run.id})`));
-    console.log(`  reason: ${reason}`);
-
-    const queueRemoved = await removeMergeQueueEntries(queue, run, dryRun);
-    console.log(`  ${dryRun ? "would remove" : "removed"} ${queueRemoved} merge queue entr${queueRemoved === 1 ? "y" : "ies"}`);
-
-    if (!opts.keepWorktree && run.worktree_path) {
-      if (dryRun) {
-        console.log(`  would remove worktree ${chalk.dim(run.worktree_path)}`);
-      } else {
-        await archiveWorktreeReports(projectPath, run.worktree_path, run.seed_id).catch(() => {});
-        await vcs.removeWorkspace(projectPath, run.worktree_path);
-        console.log(`  removed worktree ${chalk.dim(run.worktree_path)}`);
-      }
-    }
-
-    if (opts.deleteBranch) {
-      if (dryRun) {
-        console.log(`  would delete branch ${chalk.dim(branchName)}${opts.force ? " (force)" : ""}`);
-      } else {
-        const result = await vcs.deleteBranch(projectPath, branchName, { force: opts.force });
-        console.log(`  ${result.deleted ? "deleted" : "kept"} branch ${chalk.dim(branchName)}${result.wasFullyMerged ? " (merged)" : ""}`);
-      }
-    }
-
-    if (!opts.keepTask && "updateTaskStatus" in store) {
-      if (dryRun) {
-        console.log(`  would mark task ${chalk.dim(run.seed_id)} blocked`);
-      } else {
-        await Promise.resolve(store.updateTaskStatus(run.seed_id, "blocked"));
-        console.log(`  marked task ${chalk.dim(run.seed_id)} blocked`);
-      }
-    }
-
-    if (dryRun) {
-      console.log(chalk.yellow("Dry run complete — no changes were made."));
-      return 0;
-    }
-
-    await Promise.resolve(store.updateRun(run.id, { status: "failed", completed_at: new Date().toISOString() }));
-    await Promise.resolve(store.logEvent(run.project_id, "fail", {
-      seedId: run.seed_id,
-      reason,
-      abandoned: true,
-      branchName,
-    }, run.id));
-    console.log(`  marked run ${chalk.dim(run.id)} failed`);
-    console.log(chalk.green("Done."));
+    await abandonRun(run, opts, deps);
+    if (opts.dryRun) console.log(chalk.yellow("Dry run complete — no changes were made."));
+    else console.log(chalk.green("Done."));
     return 0;
   } finally {
     close();
@@ -134,7 +181,8 @@ export async function abandonAction(target: string, opts: AbandonOpts = {}): Pro
 
 export const abandonCommand = new Command("abandon")
   .description("Abandon obsolete Foreman work: dequeue run, remove worktree, and mark task blocked")
-  .argument("<task-or-run-id>", "Task/seed id or run id to abandon")
+  .argument("[task-or-run-id]", "Task/seed id or run id to abandon")
+  .option("--missing-branches", "Bulk-abandon completed runs whose foreman/<task> branch is missing locally")
   .option("--reason <text>", "Reason recorded in run history")
   .option("--dry-run", "Preview changes without applying them")
   .option("--delete-branch", "Delete the foreman/<task> branch too")
@@ -143,7 +191,7 @@ export const abandonCommand = new Command("abandon")
   .option("--keep-task", "Do not mark the task blocked")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (target: string, opts: AbandonOpts) => {
+  .action(async (target: string | undefined, opts: AbandonOpts) => {
     try {
       const code = await abandonAction(target, opts);
       if (code !== 0) process.exit(code);
