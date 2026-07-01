@@ -80,29 +80,28 @@ Legacy TypeScript delegation was removed after the Elixir cutover. Operator comm
 ```bash
 foreman status                    # Check turns and lastActivity timestamp
 foreman attach <task-id> --follow # Tail the agent log
-foreman inbox --bead <task-id>    # Check for error mail (--bead is alias for <task-id>)
+foreman inbox --task <task-id>    # Check for error mail and lifecycle events
 ```
 
 **Common causes and fixes:**
 
 1. **Rate limited** — The AI provider or CodeRabbit CLI throttled requests. Foreman retries CodeRabbit CLI rate limits with short backoff and then marks the run retryable instead of looping back through developer/QA.
    ```bash
-   # Wait for rate limit to reset, or stop and retry later
-   foreman stop <task-id>
+   # Wait for rate limit to reset, then retry through Elixir-backed recovery
    foreman retry <task-id> --dispatch
    ```
 
 2. **Agent in a loop** — The agent is retrying a failing operation.
    ```bash
    foreman attach <task-id> --follow  # Check what it's doing
-   foreman stop <task-id>             # Kill it
-   foreman reset --bead <task-id>     # Reset to open (--bead is alias)
+   foreman debug <task-id>            # Analyze what went wrong
+   foreman retry <task-id> --dispatch # Retry through Elixir-backed recovery
    ```
 
 3. **Pi SDK session hung** — The in-process agent session stopped responding.
    ```bash
-   foreman stop <task-id> --force     # Force kill
-   foreman reset --bead <task-id>
+   foreman debug <task-id>            # Inspect failure context
+   foreman retry <task-id> --dispatch # Retry through Elixir-backed recovery
    ```
 
 ### Agent crashes immediately on startup
@@ -161,7 +160,7 @@ cd ../.foreman-worktrees/<repo-name>/<task-id>
 git add -A
 git commit -m "Manual commit for <task-id>"
 git push -u origin foreman/<task-id>
-foreman merge --bead <task-id>    # --bead is backward-compatible alias
+foreman merge <task-id>
 ```
 
 ### Task won't dispatch because it's not in "ready" status
@@ -173,42 +172,15 @@ foreman merge --bead <task-id>    # --bead is backward-compatible alias
 - Task failed and was marked as `failed`
 - Task was manually set to a non-ready status
 
-**Fix:** Use `foreman run task` to bypass state gating:
-
-```bash
-# Run regardless of task status
-foreman run task <task-id> <workflow> --project my-project --no-watch
-
-# Dry run to preview
-foreman run task <task-id> task --dry-run
-
-# Common workflows: task, feature, epic, quick
-foreman run task <task-id> quick --project my-project --no-watch
-```
-
-**Note:** Worktree and run locking still apply — if an active run exists for this task, you'll see a lock error. Use `foreman stop <task-id>` first.
+**Fix:** Operator use of `foreman run task` was removed after the Elixir cutover. Use `foreman retry <task-id>` for recovery, or update the task/workflow through Elixir-backed commands before the next scheduler tick.
 
 ### Testing a new workflow on an existing task
 
 **Symptoms:** You want to test a custom workflow or different phase configuration on a task without changing its status.
 
-**Fix:** Use `foreman run task` with the workflow path:
+**Fix:** Operator use of `foreman run task` was removed after the Elixir cutover. Test workflow changes through the normal Elixir scheduler path on a disposable task/project.
 
-```bash
-# Test with a custom workflow
-foreman run task <task-id> ~/.foreman/workflows/custom.yaml --project my-project
-
-# Test with quick workflow (no explorer/reviewer phases)
-foreman run task <task-id> quick --project my-project --no-watch
-
-# Debug with a specific model
-foreman run task <task-id> task --model anthropic/claude-opus-4-6 --project my-project
-```
-
-This is useful for:
-- Testing phase configurations before committing to a workflow
-- Running only certain phases (use a custom workflow YAML)
-- Debugging with different models or turn limits
+This is useful for validating phase configurations before applying them to production tasks.
 
 ---
 
@@ -254,7 +226,7 @@ git merge --abort                 # Clean up
 
    # Then merge
    cd ../..
-   foreman merge --bead <task-id>  # --bead is backward-compatible alias
+   foreman merge <task-id>
    ```
 
 3. **Test failures during merge** — The refinery runs tests and they fail.
@@ -300,9 +272,9 @@ grep "merge.*fail\|test.*fail" ~/.foreman/logs/<latest-runId>.err
 
 **Fix:**
 ```bash
-# Stop the loop
-foreman stop <task-id>
-br close <task-id> --force --reason "Stopping retry loop"
+# Inspect and move forward through Elixir-backed recovery
+foreman debug <task-id>
+foreman retry <task-id> --dispatch
 
 # Manually merge if the fix is good
 git merge foreman/<task-id> --no-edit
@@ -328,11 +300,9 @@ git status
 **Fix:**
 ```bash
 # Use Foreman commands instead of manual rm -rf
-foreman stop <task-id>
 foreman worktree clean --dry-run  # Preview what will be removed
 foreman worktree clean            # Remove the worktree and prune stale refs
-foreman reset --bead <task-id>    # --bead is backward-compatible alias
-foreman run --bead <task-id>      # Fresh dispatch (--bead is alias)
+foreman retry <task-id> --dispatch # Retry through Elixir-backed recovery
 ```
 
 ### "index.lock: File exists" error
@@ -448,8 +418,8 @@ foreman attach <task-id> --follow # Watch what the agent is doing
 
 1. **Agent in fix-test-fix loop** — Developer keeps fixing, QA keeps failing.
    ```bash
-   foreman stop <task-id>
    foreman debug <task-id>         # Analyze what went wrong
+   foreman retry <task-id> --dispatch
    ```
 
 2. **Agent exploring too broadly** — Explorer reading too many files.
@@ -492,7 +462,7 @@ phases:
 foreman inbox --all --limit 100
 
 # Check specific task
-foreman inbox --bead <task-id>   # --bead is backward-compatible alias
+foreman inbox --task <task-id>
 
 # Check if the mail client initialized
 grep "agent-mail" ~/.foreman/logs/<runId>.err
@@ -502,7 +472,7 @@ grep "agent-mail" ~/.foreman/logs/<runId>.err
 
 1. **Wrong run ID** — The inbox defaults to the latest run, which might not be the one you expect.
    ```bash
-   foreman inbox --bead <task-id>  # Use task ID (--bead is alias)
+   foreman inbox --task <task-id>
    ```
 
 2. **Agent Mail client failed to initialize** — Check logs for errors.
@@ -554,8 +524,7 @@ md5 package-lock.json             # Compare with cache dir names
 ```bash
 # Clear the cache and let it rebuild
 rm -rf .foreman/setup-cache/
-foreman reset --bead <task-id>   # --bead is backward-compatible alias
-foreman run --bead <task-id>     # Fresh dispatch (--bead is alias)
+foreman retry <task-id> --dispatch # Retry through Elixir-backed recovery
 ```
 
 ---
