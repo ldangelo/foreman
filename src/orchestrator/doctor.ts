@@ -534,7 +534,7 @@ export class Doctor {
     return {
       name: "legacy daemon health",
       status: "pass",
-      message: "Legacy ForemanDaemon is not running; use foreman server doctor for the Elixir backend",
+      message: "No stray legacy daemon detected; use foreman server doctor for the Elixir backend",
     };
   }
 
