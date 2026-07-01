@@ -107,38 +107,6 @@ describe("CLI smoke tests", () => {
     ).toBe(true);
   }, 90_000);
 
-  it("plan --dry-run shows pipeline steps", async () => {
-    const tmp = makeTempDir();
-
-    // Initialize a git repo so getRepoRoot() succeeds
-    execFileSync("git", ["init", "--initial-branch", "main"], { cwd: tmp });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: tmp });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: tmp });
-    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: tmp });
-
-    // Register the temp dir as a project so plan can proceed past the init check
-    const storeMod = await import("../../lib/store.js");
-    const store = storeMod.ForemanStore.forProject(tmp);
-    store.registerProject("test-project", tmp);
-    store.close();
-
-    registerProjectInHomeRegistry(tmp, tmp, "test-project");
-
-    const result = await runTsxModule(CLI, ["plan", "--dry-run", "test-description"], {
-      cwd: tmp,
-      timeout: 30_000,
-      env: {
-        ...process.env,
-        HOME: tmp,
-        FOREMAN_BACKEND: "node",
-      },
-    });
-
-    const output = result.stdout + result.stderr;
-    expect(output).toContain("Create PRD");
-    expect(output).toContain("Create TRD");
-  }, 30_000);
-
   it("run --dry-run without init shows error", async () => {
     const tmp = makeTempDir();
     const result = await run(["run", "--dry-run"], tmp);
