@@ -2553,13 +2553,16 @@ export class Doctor {
   async checkMergeQueueHealth(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     if (opts.fix) {
       // Fixes mutate shared queue state. Run sequentially so one check does not
-      // re-create work another check is concurrently deleting/failing.
+      // re-create work another check is concurrently deleting/failing. Reconcile
+      // completed runs before resolved/stale cleanup because reconcile can
+      // enqueue already-resolved or stale rows that must be cleaned in the same
+      // doctor --fix run.
       const duplicates = await this.checkDuplicateMergeQueueEntries(opts);
       const orphaned = await this.checkOrphanedMergeQueueEntries(opts);
+      const notQueued = await this.checkCompletedRunsNotQueued({ fix: opts.fix, dryRun: opts.dryRun, projectPath: opts.projectPath });
       const resolved = await this.checkResolvedMergeQueueEntries(opts);
       const stale = await this.checkStaleMergeQueueEntries(opts);
       const stuckConflictFailed = await this.checkStuckConflictFailedEntries(opts);
-      const notQueued = await this.checkCompletedRunsNotQueued({ fix: opts.fix, dryRun: opts.dryRun, projectPath: opts.projectPath });
       return [stale, duplicates, orphaned, notQueued, resolved, stuckConflictFailed];
     }
 
