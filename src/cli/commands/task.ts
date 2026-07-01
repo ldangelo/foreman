@@ -14,7 +14,7 @@
  *   foreman task close <id>
  *   foreman task dep add <from-id> <to-id> [--type blocks|parent-child]
  *   foreman task dep list <id>
- *   foreman task dep remove <from-id> <to-id> [--type blocks|parent-child]
+ *   foreman task dep remove <from-id> <to-id> [--type blocks|parent-child] (removed after Elixir cutover)
  *
  * @module src/cli/commands/task
  */
@@ -26,7 +26,6 @@ import { join, resolve } from "node:path";
 import chalk from "chalk";
 import type { TaskDependencyRow as DependencyRow, TaskNoteRow, TaskRow } from "../../lib/db/postgres-adapter.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
-import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
@@ -60,8 +59,7 @@ interface RunActivityInfo {
 /**
  * Fetch live run activity information for a task.
  * 
- * In Elixir mode, uses Elixir run projections only and never falls back to the legacy Node backend.
- * In explicit Node mode, uses tRPC/Postgres compatibility paths.
+ * Uses Elixir run projections for registered projects and never opens the removed Node daemon socket.
  */
 async function fetchRunActivity(
   projectPath: string,
@@ -77,49 +75,6 @@ async function fetchRunActivity(
     return run ? elixirRunToActivity(run) : null;
   }
 
-  // Try daemon tRPC first in explicit Node mode (for registered projects)
-  if (projectId) {
-    try {
-      const client = createTrpcClient();
-      const [run, progressData] = await Promise.all([
-        client.runs.get({ runId }) as Promise<{ id: string; status: string; started_at?: string; finished_at?: string } | null>,
-        client.runs.getProgress({ runId }) as Promise<RunProgress | null>,
-      ]);
-
-      if (!run) return null;
-
-      const now = Date.now();
-      const lastActivityMs = progressData?.lastActivity
-        ? new Date(progressData.lastActivity).getTime()
-        : null;
-      const isStuck = run.status === "running" &&
-        lastActivityMs !== null &&
-        (now - lastActivityMs) > STUCK_THRESHOLD_MS;
-      const isStale = run.status === "running" &&
-        (progressData?.toolCalls ?? 0) > 0 &&
-        lastActivityMs !== null &&
-        (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2;
-
-      return {
-        runId: run.id,
-        status: run.status,
-        currentPhase: progressData?.currentPhase ?? null,
-        lastActivity: progressData?.lastActivity ?? null,
-        lastActivityElapsed: progressData?.lastActivity
-          ? elapsed(progressData.lastActivity)
-          : null,
-        isStuck,
-        isStale,
-        toolCalls: progressData?.toolCalls ?? 0,
-        costUsd: progressData?.costUsd ?? 0,
-        turns: progressData?.turns ?? 0,
-        startedAt: run.started_at ?? null,
-        completedAt: run.finished_at ?? null,
-      };
-    } catch {
-      // Daemon unavailable or run not found — fall through to Postgres
-    }
-  }
 
   // Fallback: use Postgres store (for unregistered projects or daemon unavailability)
   const store = ForemanStore.forProject(projectPath);
@@ -260,7 +215,7 @@ interface TaskProjectRegistration {
 }
 
 interface TaskProjectContext extends TaskProjectRegistration {
-  client: TrpcClient;
+  client: any;
 }
 
 export function normalizeTaskIdPrefix(raw: string | null | undefined): string {
@@ -351,13 +306,9 @@ async function resolveTaskProjectRegistration(
 }
 
 async function resolveTaskProjectContext(
-  opts: { project?: string; projectPath?: string },
+  _opts: { project?: string; projectPath?: string },
 ): Promise<TaskProjectContext> {
-  const registration = await resolveTaskProjectRegistration(opts);
-  return {
-    ...registration,
-    client: createTrpcClient(),
-  };
+  throw new Error("The legacy Node task backend was removed after the Elixir backend cutover. Use an Elixir-backed task command.");
 }
 
 async function createElixirTaskCommandClient(): Promise<ElixirServerClient> {
@@ -385,7 +336,7 @@ function elixirTaskToTaskRow(task: ElixirTask): TaskRow {
   } as unknown as TaskRow;
 }
 
-async function listAllTasks(client: TrpcClient, projectId: string): Promise<TaskRow[]> {
+async function listAllTasks(client: any, projectId: string): Promise<TaskRow[]> {
   return await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
 }
 
@@ -833,9 +784,10 @@ export async function performBeadsImport(
 ): Promise<TaskImportResult> {
   const jsonlPath = resolveBeadsImportPath(projectPath);
   const beads = parseBeadsJsonl(jsonlPath);
-  const { client, projectId, projectName } = await resolveTaskProjectContext({ projectPath });
+  const { projectId, projectName } = await resolveTaskProjectRegistration({ projectPath });
+  const client = await createElixirTaskCommandClient();
   const now = new Date().toISOString();
-  const existingRows = await listAllTasks(client, projectId);
+  const existingRows = await listAllElixirTasks(client, projectId);
   const existingIds = new Set(existingRows.map((row) => row.id));
 
   const existingByExternalId = new Map<string, string>();
@@ -887,19 +839,15 @@ export async function performBeadsImport(
 
   if (!opts.dryRun) {
     for (const record of prepared) {
-      await client.tasks.create({
-        projectId,
-        id: record.nativeId,
+      await sendElixirTaskCommand(client, "task.create", {
+        project_id: projectId,
+        task_id: record.nativeId,
         title: record.bead.title,
         description: record.bead.description ?? undefined,
         type: record.type,
         priority: record.priority,
         status: record.status,
-        externalId: record.bead.id,
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-        approvedAt: record.approvedAt ?? undefined,
-        closedAt: record.closedAt ?? undefined,
+        external_id: record.bead.id,
       });
     }
 
@@ -914,12 +862,13 @@ export async function performBeadsImport(
           : null;
 
         if (!blockerId) continue;
-        await client.tasks.addDependency({
-          projectId,
-          fromTaskId: blockerId,
-          toTaskId: fromTaskId,
-          type: dependencyType,
-        });
+        if (dependencyType === "blocks") {
+          await sendElixirTaskCommand(client, "task.add_dependency", {
+            project_id: projectId,
+            task_id: fromTaskId,
+            depends_on: blockerId,
+          });
+        }
       }
     }
   }
@@ -1088,7 +1037,7 @@ const createCommand = new Command("create")
 // ── foreman task list ─────────────────────────────────────────────────────────
 
 const listCommand = new Command("list")
-  .description("List tasks from the daemon-backed task store")
+  .description("List tasks from the Elixir-backed task store")
   .option("--status <status>", "Filter by task status (e.g. ready, backlog, in-progress)")
   .option("--run-status <status>", "Filter by run status (e.g. running, stuck, failed, completed)")
   .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
@@ -1602,14 +1551,15 @@ const noteCommand = new Command("note")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { body: string; kind: string; author: string; project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const { projectId } = await resolveTaskProjectRegistration(opts);
+      const client = await createElixirTaskCommandClient();
+      const rows = await listAllElixirTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
-      await client.tasks.addNote({
-        projectId,
-        taskId: resolvedId,
+      await sendElixirTaskCommand(client, "task.annotate", {
+        project_id: projectId,
+        task_id: resolvedId,
         author: opts.author,
-        kind: opts.kind as "progress" | "issue" | "blocker" | "review" | "qa" | "final" | "failure" | "manual" | "system",
+        kind: opts.kind,
         body: opts.body,
       });
       console.log(chalk.green(`✓ Note added to '${formatTaskIdDisplay(resolvedId)}'.`));
@@ -1852,7 +1802,7 @@ const closeCommand = new Command("close")
 // ── foreman task import ───────────────────────────────────────────────────────
 
 const importCommand = new Command("import")
-  .description("Import legacy beads JSONL data into the daemon-backed task store")
+  .description("Import legacy beads JSONL data into the Elixir-backed task store")
   .requiredOption("--from-beads", "Import tasks from .beads/issues.jsonl or .beads/beads.jsonl")
   .option("--dry-run", "Preview the first 5 mappings without writing to the database")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -1906,15 +1856,20 @@ const depAddCommand = new Command("add")
       }
 
       try {
-        const { client, projectId } = await resolveTaskProjectContext(opts);
-        const rows = await listAllTasks(client, projectId);
+        if (opts.type !== "blocks") {
+          console.error(chalk.red("Error: task dep add --type parent-child was removed after the Elixir backend cutover."));
+          console.error(chalk.dim("  Elixir task dependencies currently support blocker relationships only."));
+          process.exit(1);
+        }
+        const { projectId } = await resolveTaskProjectRegistration(opts);
+        const client = await createElixirTaskCommandClient();
+        const rows = await listAllElixirTasks(client, projectId);
         const resolvedFromId = resolveTaskId(rows, fromId);
         const resolvedToId = resolveTaskId(rows, toId);
-        await client.tasks.addDependency({
-          projectId,
-          fromTaskId: resolvedFromId,
-          toTaskId: resolvedToId,
-          type: opts.type as "blocks" | "parent-child",
+        await sendElixirTaskCommand(client, "task.add_dependency", {
+          project_id: projectId,
+          task_id: resolvedToId,
+          depends_on: resolvedFromId,
         });
         const verb = opts.type === "blocks" ? "blocks" : "is parent of";
         console.log(
@@ -1942,20 +1897,24 @@ const depListCommand = new Command("list")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const { projectId } = await resolveTaskProjectRegistration(opts);
+      const client = await createElixirTaskCommandClient();
+      const rows = await listAllElixirTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
-
-      const blockedBy = await client.tasks.listDependencies({
-        projectId,
-        taskId: resolvedId,
-        direction: "incoming",
-      }) as DependencyRow[];
-      const blocking = await client.tasks.listDependencies({
-        projectId,
-        taskId: resolvedId,
-        direction: "outgoing",
-      }) as DependencyRow[];
+      const current = rows.find((row) => row.id === resolvedId);
+      const currentDependencies = ((current as unknown as { dependencies?: string[] } | undefined)?.dependencies ?? []);
+      const blockedBy = currentDependencies.map((dependencyId) => ({
+        type: "blocks",
+        from_task_id: dependencyId,
+        to_task_id: resolvedId,
+      })) as DependencyRow[];
+      const blocking = rows
+        .filter((row) => (((row as unknown as { dependencies?: string[] }).dependencies ?? []).includes(resolvedId)))
+        .map((row) => ({
+          type: "blocks",
+          from_task_id: resolvedId,
+          to_task_id: row.id,
+        })) as DependencyRow[];
 
       if (blockedBy.length === 0 && blocking.length === 0) {
         console.log(chalk.dim(`Task '${formatTaskIdDisplay(resolvedId)}' has no dependencies.`));
@@ -1995,26 +1954,12 @@ const depRemoveCommand = new Command("remove")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
-      try {
-        const { client, projectId } = await resolveTaskProjectContext(opts);
-        const rows = await listAllTasks(client, projectId);
-        const resolvedFromId = resolveTaskId(rows, fromId);
-        const resolvedToId = resolveTaskId(rows, toId);
-        await client.tasks.removeDependency({
-          projectId,
-          fromTaskId: resolvedFromId,
-          toTaskId: resolvedToId,
-          type: opts.type as "blocks" | "parent-child",
-        });
-        console.log(
-          chalk.green(
-            `✓ Dependency removed: '${formatTaskIdDisplay(resolvedFromId)}' → '${formatTaskIdDisplay(resolvedToId)}'.`,
-          ),
-        );
-      } catch (err) {
-        console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
-        process.exit(1);
-      }
+      void fromId;
+      void toId;
+      void opts;
+      console.error(chalk.red("Error: task dep remove was removed after the Elixir backend cutover."));
+      console.error(chalk.dim("  Remove or adjust dependencies through the Elixir task command API when a removal event is available."));
+      process.exit(1);
     },
   );
 

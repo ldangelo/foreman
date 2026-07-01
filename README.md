@@ -467,9 +467,8 @@ foreman sling trd docs/TRD.md --auto    # Skip confirmation
 Inspect or stop stray legacy ForemanDaemon processes. Start/restart were removed after Elixir cutover; use `foreman server start`.
 
 ```bash
-foreman daemon stop           # Stop running daemon
-foreman daemon status         # Show PID, socket path, health
-foreman daemon restart        # Stop + start
+foreman daemon stop           # Stop stray legacy daemon
+foreman daemon status         # Show stray legacy daemon PID/socket status
 ```
 
 > `foreman daemon start|restart` was removed after Elixir cutover; use `foreman server start` instead. `foreman daemon stop/status` remain only for inspecting or stopping stray legacy daemon processes.
