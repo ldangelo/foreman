@@ -93,8 +93,8 @@ defmodule ForemanServer.SecurityTest do
                "run_id" => "run-one",
                "project_id" => "project-one",
                "worker_id" => "worker-one",
-               "project_secrets" => %{"PROJECT_ONE_TOKEN" => "p1"},
-               "run_secrets" => %{"RUN_ONE_TOKEN" => "r1"}
+               "project_secrets" => %{"PROJECT_ONE_TOKEN" => "project-one-secret-value"},
+               "run_secrets" => %{"RUN_ONE_TOKEN" => "run-one-secret-value"}
              })
 
     assert {:ok, %{event: second}} =
@@ -102,8 +102,8 @@ defmodule ForemanServer.SecurityTest do
                "run_id" => "run-two",
                "project_id" => "project-two",
                "worker_id" => "worker-two",
-               "project_secrets" => %{"PROJECT_TWO_TOKEN" => "p2"},
-               "run_secrets" => %{"RUN_TWO_TOKEN" => "r2"}
+               "project_secrets" => %{"PROJECT_TWO_TOKEN" => "project-two-secret-value"},
+               "run_secrets" => %{"RUN_TWO_TOKEN" => "run-two-secret-value"}
              })
 
     assert first.payload.prepared_env["PROJECT_ONE_TOKEN"] == "[REDACTED]"
@@ -116,7 +116,12 @@ defmodule ForemanServer.SecurityTest do
     refute Map.has_key?(second.payload.prepared_env, "PROJECT_ONE_TOKEN")
     refute Map.has_key?(second.payload.prepared_env, "RUN_ONE_TOKEN")
 
-    assert_persisted_payloads_exclude_secret_values(["p1", "r1", "p2", "r2"])
+    assert_persisted_payloads_exclude_secret_values([
+      "project-one-secret-value",
+      "run-one-secret-value",
+      "project-two-secret-value",
+      "run-two-secret-value"
+    ])
   end
 
   test "remote access requires a configured auth token" do
