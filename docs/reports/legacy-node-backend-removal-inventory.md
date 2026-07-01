@@ -19,6 +19,10 @@ This inventory tracks operator-facing legacy Node backend paths after the Elixir
 | `foreman run` dispatch-shaping options (`--no-pipeline`, `--workflow`, `--model`, `--max-agents`, `--no-auto-dispatch`, legacy telemetry/stagger controls) | Removed from normal operator dispatch. Elixir scheduler/workflow/provider config owns dispatch policy. |
 | `foreman run task` | Removed for operators. The hidden `--run-id` bridge remains reserved for Elixir scheduler-launched Node/Pi workers. |
 | `foreman task create --from-text` | Removed. Operators create structured tasks with `--title` and optional `--description`. |
+| `foreman task note` | Replaced with Elixir `task.annotate`. |
+| `foreman task dep add/list` | Replaced with Elixir task projections/`task.add_dependency` for blocker relationships. |
+| `foreman task dep remove` | Removed until an Elixir dependency-removal event/API exists. |
+| `foreman task import --from-beads` | Replaced with Elixir `task.create` / `task.add_dependency`; local `.beads` files are source data only. |
 | hidden `foreman bead` | Removed with explicit message pointing to structured task creation. |
 | `foreman daemon start` / `restart` | Removed with guidance to `foreman server start`. `daemon stop/status` remain only to inspect or stop stray legacy daemon processes. |
 | Legacy TS delegation envs (`FOREMAN_LEGACY_COMPATIBILITY_MODE`, `FOREMAN_LEGACY_TS_BIN`) | Removed from the CLI entrypoint and docs. |
@@ -28,6 +32,7 @@ This inventory tracks operator-facing legacy Node backend paths after the Elixir
 - `rg 'FOREMAN_BACKEND=node|FOREMAN_LEGACY|requireNode' src/cli/commands src/lib` finds no supported operator fallback guidance or legacy requirement helpers.
 - `createTrpcClient()` references still identify residual unreachable compatibility branches. The tRPC client itself is now an isolated fail-closed shim, and the Node daemon server/router entrypoints were deleted. These references are not approved operator paths.
 - The retained Node/Pi worker bridge remains in scope because Elixir scheduler launches Node workers for Pi SDK execution.
+- `ForemanStore`/`PostgresStore`/`local-store-adapter` references were audited. Remaining uses are approved local utilities for worker bridge metadata, local log/report/artifact display, worktree/log/stale-run cleanup, stray daemon stop/status, or sentinel local bookkeeping. They are not approved alternate operator backends and do not reopen the removed Node daemon/tRPC control plane. See `docs/reports/elixir-transition-inventory.md` for the per-file exception table.
 
 ## Verification expectations
 
