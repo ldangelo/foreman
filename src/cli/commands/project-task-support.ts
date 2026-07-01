@@ -31,10 +31,17 @@ function summaryFromElixirProject(project: ElixirProject): RegisteredProjectSumm
   };
 }
 
-export async function listRegisteredProjects(opts: { includeArchived?: boolean } = {}): Promise<RegisteredProjectSummary[]> {
+function elixirClient(): Promise<ElixirServerClient> {
+  if (process.env.FOREMAN_SERVER_URL) {
+    return Promise.resolve(new ElixirServerClient(process.env.FOREMAN_SERVER_URL, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN));
+  }
+
   const manager = new ElixirServerManager();
-  const status = await manager.ensureRunning();
-  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  return manager.ensureRunning().then((status) => new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN));
+}
+
+export async function listRegisteredProjects(opts: { includeArchived?: boolean } = {}): Promise<RegisteredProjectSummary[]> {
+  const client = await elixirClient();
   const projects = await client.listProjects();
   return projects
     .map(summaryFromElixirProject)
@@ -65,9 +72,7 @@ export async function registerProjectInElixir(
   const defaultBranch = opts.defaultBranch ?? existing?.defaultBranch ?? "main";
   const projectStatus = opts.status ?? existing?.status ?? "active";
 
-  const manager = new ElixirServerManager();
-  const status = await manager.ensureRunning();
-  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const client = await elixirClient();
   const response = await client.sendCommand({
     command_id: `project-register-${projectId}-${randomUUID()}`,
     command_type: "project.register",
@@ -95,9 +100,7 @@ export async function registerProjectInElixir(
 }
 
 export async function archiveProjectInElixir(projectId: string, opts: { force?: boolean } = {}): Promise<void> {
-  const manager = new ElixirServerManager();
-  const status = await manager.ensureRunning();
-  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const client = await elixirClient();
   const response = await client.sendCommand({
     command_id: `project-archive-${projectId}-${randomUUID()}`,
     command_type: "project.archive",
@@ -121,9 +124,7 @@ export async function updateProjectInElixir(
   if (updates.status) payload.status = updates.status;
   if (updates.defaultBranch) payload.default_branch = updates.defaultBranch;
 
-  const manager = new ElixirServerManager();
-  const status = await manager.ensureRunning();
-  const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  const client = await elixirClient();
   const response = await client.sendCommand({
     command_id: `project-update-${projectId}-${randomUUID()}`,
     command_type: "project.update",
