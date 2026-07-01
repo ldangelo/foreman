@@ -33,7 +33,6 @@ const nodeFrontendScope = [
   "src/cli/commands/server.ts",
   "src/cli/commands/sling.ts",
   "src/cli/commands/stop.ts",
-  "src/cli/commands/task.ts",
   "src/cli/commands/watch/render.ts",
   "src/cli/commands/worktree.ts",
   "src/lib/archive-reports.ts",
