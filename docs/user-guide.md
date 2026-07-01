@@ -256,6 +256,7 @@ The board also monitors agent inbox updates. When a new inbox message arrives fo
 
 Use retry and doctor cleanup surgically.
 
+- Use `foreman reset <task-id>` when active work is stale or must pick up new Foreman runtime behavior; it stops the worker, abandons the current run while keeping the task, resets the task to ready, and dispatches it again.
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
 - Use `foreman retry <task-id>` for retryable failed/stuck run recovery.
 - Use `foreman doctor --dry-run` to preview cleanup of zombie/stale runs and merged/orphaned worktrees.

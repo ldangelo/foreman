@@ -529,7 +529,16 @@ foreman sentinel status                  # Show sentinel status
 ```
 
 ### `foreman reset`
-Removed after Elixir cutover. Use `foreman retry` or Elixir-backed recovery workflows instead.
+Reset active task work and rerun it.
+
+```bash
+foreman reset task-abc                  # Stop worker, abandon current run, set ready, dispatch
+foreman reset task-abc --reason "stale worker"
+foreman reset task-abc --dry-run        # Preview
+foreman reset task-abc --keep-worktree  # Preserve current worktree
+```
+
+Use this for stale active workers or when a task needs to pick up new Foreman runtime behavior. The command is Elixir-backed and keeps the task while marking the abandoned run failed.
 
 ### `foreman retry`
 Retry a task in place, optionally dispatching it again immediately.

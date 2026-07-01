@@ -319,7 +319,22 @@ foreman server stop               # Stop server started by Foreman
 Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases and stream worker events. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
 ### `foreman reset`
-Removed after Elixir cutover. Use `foreman retry` or Elixir-backed recovery workflows instead.
+
+Reset active Elixir-backed task work. The command stops the active worker process when present, abandons the current run while keeping the task, removes the run worktree unless `--keep-worktree` is set, sets the task back to `ready`, and requests scheduler dispatch.
+
+```bash
+foreman reset foreman-abc12
+foreman reset foreman-abc12 --reason "stale worker"
+foreman reset foreman-abc12 --dry-run
+foreman reset foreman-abc12 --keep-worktree
+```
+
+| Option | Description |
+|--------|-------------|
+| `--reason <text>` | Reason recorded in run history |
+| `--dry-run` | Preview stop/abandon/reset/dispatch steps |
+| `--keep-worktree` | Do not remove the current run worktree |
+| `--project <name-or-path>` | Target a registered project name or absolute project path |
 
 ### `foreman retry`
 
@@ -691,4 +706,4 @@ foreman purge runs --dry-run      # Preview
 |--------|-------------|
 | `--dry-run` | Preview without making changes |
 
-> **Removed commands:** `foreman monitor` and `foreman reset` have been removed — use `foreman retry` or Elixir-backed recovery workflows instead. `foreman mail send` has been removed — use `foreman inbox send`.
+> **Removed commands:** `foreman monitor` has been removed. `foreman mail send` has been removed — use `foreman inbox send`.
