@@ -64,7 +64,6 @@ import { jiraCommand } from "./commands/jira.js";
 import { logsCommand } from "./commands/logs.js";
 import { serverCommand } from "./commands/server.js";
 import { mcpCommand } from "./commands/mcp.js";
-import { maybeDelegateToLegacyTs } from "./legacy-coexistence.js";
 function isCliEntrypoint(): boolean {
   try {
     const invokedPath = process.argv[1];
@@ -145,13 +144,5 @@ Deprecated aliases print the replacement spelling when used:
   legacy purge-zombie-runs -> purge runs`,
 );
 if (isCliEntrypoint()) {
-  try {
-    const delegation = maybeDelegateToLegacyTs();
-    if (delegation.delegated) process.exit(delegation.status);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  }
-
   program.parse();
 }
