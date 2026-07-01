@@ -6,35 +6,34 @@
 
 **What it does:** Foreman is a multi-agent coding orchestrator. It coordinates multiple AI coding agents to work in parallel on the same codebase using git worktrees for isolation, orchestrating a 5-phase pipeline (Explorer → Developer ↔ QA → Reviewer → Finalize) with automatic merging, inter-agent messaging, and progress tracking.
 
-Foreman decomposes development work into parallelizable tasks, dispatches them to AI coding agents in isolated git worktrees, and automatically merges results back — all tracked through a PostgreSQL-backed daemon for multi-project aggregation.
+Foreman decomposes development work into parallelizable tasks, dispatches them to AI coding agents in isolated git worktrees, and automatically merges results back — all coordinated through the Elixir backend and rendered by the Node CLI.
 
 ## Why Foreman?
 
 You already have AI coding agents. What you don't have is a way to run several of them simultaneously on the same codebase without them stepping on each other. Foreman solves this:
 
-- **Work decomposition** — PRD → TRD → native tasks (PostgreSQL-backed via daemon, PostgreSQL for standalone)
+- **Work decomposition** — PRD → TRD → Elixir-backed native tasks
 - **Git isolation** — each agent gets its own worktree (zero conflicts during development)
 - **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
 - **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
-- **Persistent daemon** — ForemanDaemon optionally runs in background to serve tRPC over Unix socket + HTTP, sharing a Postgres pool across all CLI invocations
-- **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations; PostgreSQL or Postgres-backed depending on daemon mode
-- **Native task storage** — PostgreSQL-backed tasks for daemon and standalone workflows
+- **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations through Elixir-backed projections
+- **Native task storage** — Elixir-backed tasks/events/projections
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
 - **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
-- **Progress tracking** — every task, agent, and phase tracked in PostgreSQL
+- **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections
 
-> **Note:** Foreman uses PostgreSQL when the daemon is running (for multi-project aggregation) and for standalone development. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
+> **Note:** Foreman uses the Elixir backend for operator workflows after cutover. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
 
 ## Architecture
 
 ```
-Foreman CLI / Dispatcher
+Node CLI / frontend
   │
-  ├─ ForemanDaemon (optional persistent background process)
-  │    ├─ tRPC router over Unix socket + HTTP
-  │    │    Procedures: projects, tasks, runs, events, messages
-  │    ├─ Postgres pool (PoolManager singleton) — shared across CLI invocations
-  │    └─ Fastify web server (optional HTTP port)
+  ├─ Elixir/OTP server
+  │    ├─ authenticated HTTP JSON API
+  │    ├─ durable event store + CQRS projections
+  │    ├─ scheduler, run/phase actors, recovery, inbox/debug views
+  │    └─ launches Node/Pi worker bridge
   │
   ├─ per task: agent-worker.ts (detached child process)
   │    └─ Pi SDK (in-process)
@@ -45,10 +44,6 @@ Foreman CLI / Dispatcher
   │    Phases defined in ~/.foreman/workflows/*.yaml
   │    Model selection, retries, mail hooks, artifacts — all YAML config
   │    Per-phase reports/traces → ~/.foreman/reports/... (outside repo commits)
-  │
-  ├─ TrpcClient (CLI → daemon transport)
-  │    Unix socket: ~/.foreman/daemon.sock
-  │    httpBatchLink → type-safe procedure calls
   │
   └─ Refinery + autoMerge
        Triggers immediately after finalize phase
@@ -66,13 +61,7 @@ TRD-2026-014 adds an Elixir/OTP orchestration server alongside the existing Node
 
 See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) for the migration architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
 
-**ForemanDaemon lifecycle:**
-- `foreman daemon start` — validates Postgres, starts Fastify + Unix socket listener
-- `foreman daemon stop` — clean shutdown (release pool, close socket)
-- `foreman daemon status` — PID, socket path, health endpoint
-- Auto-restart on unexpected exit (detected via `foreman doctor`)
-
-> **Note:** Foreman uses PostgreSQL via `DATABASE_URL`. The daemon owns the shared Postgres pool and exposes a tRPC layer for CLI commands, avoiding per-invocation connection overhead and enabling multi-project aggregation.
+**Legacy daemon lifecycle:** `foreman daemon start/restart` was removed after Elixir cutover. Use `foreman server start` and `foreman server doctor`; `foreman daemon stop/status` only inspect or stop stray legacy processes.
 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
 1. **Explorer** (Haiku, 12 turns, read-only) — concise developer handoff → `EXPLORER_REPORT.md`
@@ -117,7 +106,7 @@ The historical Node dispatcher/tRPC server flow has been removed from the operat
 ## Prerequisites
 
 - **Node.js 20+**
-- **PostgreSQL 15+** — required only when running the daemon (`foreman daemon start`); optional otherwise
+- **Elixir/OTP backend** — started automatically by CLI paths or explicitly with `foreman server start`
   ```bash
   # macOS
   brew install postgresql@15
@@ -211,8 +200,8 @@ foreman doctor              # Check installation and dependencies
 cd ~/your-project
 foreman init --name my-project
 
-# 2. Start the Foreman daemon (validates Postgres, starts tRPC)
-foreman daemon start
+# 2. Start/check the Elixir backend
+foreman server start
 
 # 3. Create or import tasks
 foreman task create "Add user auth" --type feature --priority 1
@@ -234,7 +223,7 @@ foreman merge
 
 ## Messaging
 
-Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are stored in **PostgreSQL** for standalone development or **PostgreSQL** (via ForemanDaemon) for multi-project aggregation.
+Foreman includes a built-in messaging system for inter-agent communication and pipeline coordination. Messages are surfaced through Elixir-backed inbox/event projections.
 
 ### How agents send messages
 
@@ -475,10 +464,9 @@ foreman sling trd docs/TRD.md --auto    # Skip confirmation
 ```
 
 ### `foreman daemon`
-Manage the ForemanDaemon background process (Postgres-backed state).
+Inspect or stop stray legacy ForemanDaemon processes. Start/restart were removed after Elixir cutover; use `foreman server start`.
 
 ```bash
-foreman daemon start          # Start daemon in background (validates Postgres)
 foreman daemon stop           # Stop running daemon
 foreman daemon status         # Show PID, socket path, health
 foreman daemon restart        # Stop + start
@@ -512,7 +500,7 @@ foreman doctor --fix                    # Auto-fix recoverable issues
 ```
 
 ### `foreman inbox`
-View inter-agent messages from pipeline runs. Routes through ForemanDaemon.
+View inter-agent messages from pipeline runs through Elixir-backed projections.
 
 ```bash
 foreman inbox                            # Latest run's messages
@@ -595,7 +583,7 @@ Foreman integrates with GitHub for bi-directional issue tracking, webhook-driven
 ### Features
 
 - **Bi-directional issue sync** — Push and pull GitHub issues as Foreman tasks via `foreman issue sync`
-- **Real-time webhooks** — Issue and pull request events stream to ForemanDaemon via `POST /webhook`
+- **Real-time webhooks** — issue and pull request events are ingested through Elixir-backed integration paths
 - **Auto-import rules** — Issues with `foreman` or `foreman:dispatch` label can be imported directly into Foreman
 - **Priority mapping** — `foreman:priority:0-4` labels map GitHub issues onto Foreman task priorities
 - **PR visibility** — Pull request events and merge outcomes are recorded alongside task and run state
@@ -646,7 +634,7 @@ foreman issue view <repo>#<number>              # View single issue details
 
 ### Webhooks
 
-Foreman includes a built-in webhook handler (`src/daemon/webhook-handler.ts`) that receives GitHub events and routes them through ForemanDaemon.
+Legacy Node webhook handlers are retained only as utility code during cleanup; operator ingestion is Elixir-backed after cutover.
 
 Webhooks use **HMAC-SHA256** signature verification. The daemon rejects payloads with invalid signatures:
 
@@ -723,7 +711,7 @@ Foreman supports one runtime task store: **native tasks** backed by PostgreSQL (
 
 ### Native tasks
 
-Tasks are created, tracked, and closed entirely within Foreman through tRPC procedures (when daemon is running) or directly via PostgreSQL.
+Tasks are created, tracked, and closed through Elixir-backed commands/events/projections.
 
 ```bash
 # Native task lifecycle
@@ -833,12 +821,12 @@ export FOREMAN_MAX_PIPELINE_REVIEW_LOOPS=0   # Per-run retry/review loop budget;
 |---|---|
 | `.foreman/` | Project-level config, workflow assets, and runtime metadata |
 | `.beads/` | Legacy beads_rust task data for one-time import (JSONL, git-tracked) |
-| `~/.foreman/daemon.sock` | ForemanDaemon Unix socket (tRPC over HTTP) — optional |
+| `~/.foreman/daemon.sock` | Legacy daemon socket, only relevant when inspecting/stopping stray legacy processes |
 | `~/.foreman/daemon.pid` | Daemon process ID — optional |
 | `~/.foreman/logs/` | Per-run agent logs + daemon stdout/stderr |
 | `DATABASE_URL` | PostgreSQL connection string — only required when running daemon |
 
-**Storage model:** Foreman stores application state in PostgreSQL through the daemon/tRPC layer or direct standalone access. Native PostgreSQL tasks are the only supported runtime task store; beads_rust data is import-only legacy input.
+**Storage model:** Foreman stores operator state through the Elixir backend event/projection model. Native tasks are the supported runtime task store; beads_rust data is import-only legacy input.
 
 ## Project Structure
 
@@ -850,12 +838,10 @@ foreman/
 │   │       ├── run.ts              # Main dispatch + merge loop
 │   │       ├── status.ts           # Status display
 │   │       ├── merge.ts            # Manual merge trigger
-│   │       ├── daemon.ts           # Daemon lifecycle management
+│   │       ├── daemon.ts           # Inspect/stop stray legacy daemons
 │   │       └── doctor.ts           # Health checks
-│   ├── daemon/                     # ForemanDaemon (optional background process)
-│   │   ├── index.ts                # Entry point: PoolManager, Fastify, socket
-│   │   ├── router.ts               # tRPC procedures (projects, tasks, runs, mail)
-│   │   └── webhook-handler.ts      # GitHub webhook receiver
+│   ├── daemon/                     # Legacy webhook/Jira utilities retained during cleanup
+│   │   └── webhook-handler.ts      # GitHub webhook utility
 │   ├── orchestrator/               # Core orchestration engine
 │   │   ├── dispatcher.ts           # Task → agent spawning strategies
 │   │   ├── pi-rpc-spawn-strategy.ts  # Pi RPC spawn (primary)
@@ -865,13 +851,13 @@ foreman/
 │   │   ├── roles.ts                # Phase prompts + tool configs
 │   │   └── sentinel.ts             # Background health monitor
 │   └── lib/
-│       ├── daemon-manager.ts       # Daemon PID/socket lifecycle
-│       ├── trpc-client.ts           # Unix socket → daemon tRPC transport
+│       ├── daemon-manager.ts       # Inspect/stop stray legacy daemon PID/socket
+│       ├── trpc-client.ts           # fail-closed shim for removed daemon tRPC API
 │       ├── db/
-│       │   ├── pool-manager.ts     # Postgres pool singleton (daemon only)
-│       │   └── postgres-adapter.ts # Postgres DB operations (daemon only)
-│       ├── store.ts                # Project-level PostgreSQL store (default)
-│       ├── postgres-store.ts       # Postgres-backed store (daemon mode)
+│       │   ├── pool-manager.ts     # Legacy Postgres pool utilities
+│       │   └── postgres-adapter.ts # Legacy Postgres adapter utilities
+│       ├── store.ts                # Legacy project-level PostgreSQL store
+│       ├── postgres-store.ts       # Legacy Postgres-backed store
 │       ├── beads-rust.ts           # Compatibility br CLI wrapper
 │       └── git.ts                  # Git worktree management
 ├── packages/

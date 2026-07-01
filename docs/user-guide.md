@@ -86,22 +86,21 @@ Docs that must be considered for every fix or feature:
 
 ## Day-to-Day Workflow
 
-### 1. Start or Check the Daemon
+### 1. Start or Check the Elixir Server
 
-Foreman uses PostgreSQL and usually runs through the daemon for shared project state.
+Foreman uses the Elixir backend for shared project state and scheduling.
 
 ```bash
-foreman daemon status
-foreman daemon start
+foreman server start
+foreman server doctor        # validates DB/projections/workers/VCS/providers/integrations
 foreman doctor
 ```
 
-If commands report daemon or database issues, run `foreman doctor` and check [Troubleshooting](./troubleshooting.md).
+If commands report backend or database issues, run `foreman server doctor` and check [Troubleshooting](./troubleshooting.md).
 
-Elixir backend work uses a separate local server. After cutover, legacy TS delegation is removed and `foreman daemon start|restart` is blocked so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
+After cutover, legacy TS delegation is removed and `foreman daemon start|restart` is blocked so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
 
 ```bash
-foreman server doctor        # auto-starts and validates DB/projections/workers/VCS/providers/integrations
 foreman server stop
 ```
 

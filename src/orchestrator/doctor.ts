@@ -487,11 +487,11 @@ export class Doctor {
     };
   }
 
-  // TRD-067: Daemon / Postgres / gh auth checks
+  // TRD-067: Legacy daemon / Postgres / gh auth checks
 
   /**
-   * Check if ForemanDaemon is running and responding on its health endpoint.
-   * Tries Unix socket first, then localhost HTTP fallback.
+   * Inspect only for stray legacy daemon processes after Elixir cutover.
+   * Operators should use `foreman server doctor` for the active backend.
    */
   async checkDaemonHealth(): Promise<CheckResult> {
     const socketPath = join(homedir(), ".foreman", "daemon.sock");
@@ -505,9 +505,9 @@ export class Doctor {
         });
         if (response.ok) {
           return {
-            name: "daemon health",
-            status: "pass",
-            message: "ForemanDaemon is running and healthy",
+            name: "legacy daemon health",
+            status: "warn",
+            message: "A legacy ForemanDaemon is still running; stop it with: foreman daemon stop",
           };
         }
       } catch {
@@ -522,9 +522,9 @@ export class Doctor {
       });
       if (response.ok) {
         return {
-          name: "daemon health",
-          status: "pass",
-          message: "ForemanDaemon is running and healthy (HTTP)",
+          name: "legacy daemon health",
+          status: "warn",
+          message: "A legacy ForemanDaemon is still running over HTTP; stop it with: foreman daemon stop",
         };
       }
     } catch {
@@ -532,9 +532,9 @@ export class Doctor {
     }
 
     return {
-      name: "daemon health",
-      status: "warn",
-      message: "ForemanDaemon is not running. Start with: foreman daemon start",
+      name: "legacy daemon health",
+      status: "pass",
+      message: "Legacy ForemanDaemon is not running; use foreman server doctor for the Elixir backend",
     };
   }
 
@@ -741,7 +741,7 @@ export class Doctor {
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.
     // TRD-028: Add Jujutsu binary and colocated mode checks.
-    // TRD-067: Add daemon health, Postgres connectivity, and gh auth checks.
+    // TRD-067: Add legacy daemon health, Postgres connectivity, and gh auth checks.
     // TRD-013: Add Jira connectivity check.
     // TRD-032: Add Jira webhook endpoint check.
     const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult, poolCapacityResult, jiraResult, jiraWebhookResult] = await Promise.all([

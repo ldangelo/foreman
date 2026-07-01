@@ -24,7 +24,7 @@ Track operator-facing transition from Node daemon/tRPC-backed workflows to Elixi
 | `foreman run task` | Removed for operators / retained bridge | Operator invocation fails after cutover. Hidden `--run-id` remains for Elixir scheduler-launched Node/Pi workers. | Retained bridge is approved scope. |
 | `foreman task create --from-text` / hidden `foreman bead` | Removed | CLI reports removal and structured task guidance; legacy generator source/tests were deleted. | None approved. |
 | Structured `foreman task create/list/show/approve/update/close` | Elixir | Structured task command paths route through Elixir-backed APIs/commands for registered projects. | Residual Node compatibility code is being deleted/isolated in follow-up cleanup. |
-| `foreman board`, `watch`, `status`, `logs`, `inbox`, `retry`, `recover`, `debug`, `plan`, `sling`, `attach` | Elixir | Default registered-project paths use Elixir projections/APIs and fail closed instead of silently falling back. | Residual `createTrpcClient()` imports identify cleanup work; not approved operator fallbacks. |
+| `foreman board`, `watch`, `status`, `logs`, `inbox`, `retry`, `recover`, `debug`, `plan`, `sling`, `attach` | Elixir | Default registered-project paths use Elixir projections/APIs and fail closed instead of silently falling back. | Residual unreachable compatibility branches call a fail-closed `createTrpcClient()` shim; no practical daemon socket dependency remains. |
 | `foreman daemon start/restart` | Removed | CLI always rejects start/restart with `foreman server start` guidance. | `daemon stop/status` remain for stray legacy process inspection/cleanup only. |
 | Legacy TS delegation envs | Removed | CLI entrypoint no longer calls legacy delegation; docs no longer advertise the envs. | None approved. |
 
@@ -34,10 +34,10 @@ Track operator-facing transition from Node daemon/tRPC-backed workflows to Elixi
 - Elixir-launched Node/Pi worker bridge remains in scope for Pi SDK execution.
 - Filesystem artifacts/log readers remain in scope where they read worker output rather than owning backend state.
 
-## Residual cleanup queue
+## Approved retained exceptions
 
-- Residual `createTrpcClient()` call sites remain in unreachable compatibility branches; the client itself is now an isolated fail-closed shim and the Node daemon server/router entrypoints were deleted.
-- Continue deleting dead compatibility branches and local backend/store code where doing so does not touch the retained Node CLI/frontend or Elixir-launched Node/Pi worker bridge.
+- Residual `createTrpcClient()` call sites remain only in unreachable compatibility branches; the client itself is an isolated fail-closed shim and the Node daemon server/router entrypoints were deleted, so no operator command can open the old daemon socket.
+- `foreman daemon stop/status` remain only for inspecting or stopping stray legacy daemon processes; start/restart are removed.
 
 ## Coverage and verification gate
 
