@@ -36,8 +36,8 @@ Track operator-facing transition from Node daemon/tRPC-backed workflows to Elixi
 
 ## Residual cleanup queue
 
-- Delete or isolate residual `createTrpcClient()`/Node daemon/tRPC/local backend code that is no longer reachable from approved operator workflows.
-- Delete obsolete Node daemon server/router tests with the server implementation when all imports are removed or moved to retained utility modules.
+- Residual `createTrpcClient()` call sites remain in unreachable compatibility branches; the client itself is now an isolated fail-closed shim and the Node daemon server/router entrypoints were deleted.
+- Continue deleting dead compatibility branches and local backend/store code where doing so does not touch the retained Node CLI/frontend or Elixir-launched Node/Pi worker bridge.
 
 ## Coverage and verification gate
 

@@ -26,7 +26,7 @@ This inventory tracks operator-facing legacy Node backend paths after the Elixir
 ## Current audit notes
 
 - `rg 'FOREMAN_BACKEND=node|FOREMAN_LEGACY|requireNode' src/cli/commands src/lib` finds no supported operator fallback guidance or legacy requirement helpers.
-- `createTrpcClient()` references still identify residual Node daemon compatibility code to delete or isolate in the follow-up deletion task. They are not approved operator paths.
+- `createTrpcClient()` references still identify residual unreachable compatibility branches. The tRPC client itself is now an isolated fail-closed shim, and the Node daemon server/router entrypoints were deleted. These references are not approved operator paths.
 - The retained Node/Pi worker bridge remains in scope because Elixir scheduler launches Node workers for Pi SDK execution.
 
 ## Verification expectations
