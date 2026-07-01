@@ -7,7 +7,6 @@ defmodule ForemanServer.CommandRouter do
     MigrationImporter,
     PlanningFlow,
     ProjectionStore,
-    Scheduler,
     Security
   }
 
@@ -111,7 +110,6 @@ defmodule ForemanServer.CommandRouter do
              correlation_id: Map.get(metadata, :correlation_id)
            }),
          {:ok, audit_events} <- maybe_audit(command, event_type, enriched_payload) do
-      maybe_schedule_dispatch(event_type, enriched_payload)
       {:ok, %{event: event, audit_events: audit_events, projection: ProjectionStore.snapshot()}}
     end
   end
@@ -236,20 +234,6 @@ defmodule ForemanServer.CommandRouter do
        input: command
      }, "command:#{Map.get(command, :command_id, command_type)}"}
   end
-
-  defp maybe_schedule_dispatch(event_type, payload)
-       when event_type in ["TaskCreated", "TaskUpdated"] do
-    if Map.get(payload, :status) in ["ready", "approved"] do
-      Task.start(fn ->
-        Process.sleep(100)
-        if Process.whereis(Scheduler), do: Scheduler.tick()
-      end)
-    end
-
-    :ok
-  end
-
-  defp maybe_schedule_dispatch(_event_type, _payload), do: :ok
 
   defp maybe_audit(%{command_type: command_type} = command, event_type, payload) do
     if Security.destructive_command?(command_type) do

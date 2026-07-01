@@ -9,7 +9,7 @@ Foreman runs AI engineering work through a managed pipeline:
 1. Tasks enter the native PostgreSQL-backed task store.
 2. `foreman run` dispatches ready tasks to isolated git worktrees.
 3. Workflow phases run in order: exploration, implementation, verification, review, documentation, finalization, PR review, and merge where configured.
-4. Foreman records progress, phase reports, logs, mail, and merge status.
+4. Foreman records progress, phase reports, logs, mail, and merge status. In the Elixir backend, domain events are the source of truth and trigger scheduler/watch behavior; projections/read views, including status/log displays, are read models used for display and decisions after events are observed.
 5. Completed work is finalized and merged through the configured workflow.
 
 Use Foreman when you want multiple AI agents working safely on one repository without sharing a dirty working tree.
@@ -18,7 +18,7 @@ Use Foreman when you want multiple AI agents working safely on one repository wi
 
 ### Projects
 
-A project is a repository registered with Foreman. Commands that act on a project accept `--project <name-or-path>` so you can operate from another directory.
+A project is a repository registered with Foreman. `foreman init` applies pending packaged Postgres migrations before registration, so normal project setup keeps the database schema current. Commands that act on a project accept `--project <name-or-path>` so you can operate from another directory.
 
 Common commands:
 

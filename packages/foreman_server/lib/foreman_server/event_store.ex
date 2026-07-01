@@ -75,6 +75,7 @@ defmodule ForemanServer.EventStore do
          {:ok, event} <- Event.new(input, stream_version),
          :ok <- append_to_file(state.path, event) do
       ProjectionStore.apply_event(event)
+      notify_event_consumers(event)
       {:reply, {:ok, event}, %{state | events: state.events ++ [event]}}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -146,6 +147,14 @@ defmodule ForemanServer.EventStore do
     else
       []
     end
+  end
+
+  defp notify_event_consumers(%Event{} = event) do
+    if Process.whereis(ForemanServer.Scheduler) do
+      ForemanServer.Scheduler.handle_event(event)
+    end
+
+    :ok
   end
 
   defp append_to_file(path, %Event{} = event) do

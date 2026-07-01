@@ -178,7 +178,7 @@ devbox run daemon:start     # build, migrate, and start the daemon
 devbox run test             # run the full test suite
 ```
 
-If you prefer not to use Docker for Postgres, override `DATABASE_URL` in your shell or `.env` and run the normal npm migration scripts directly.
+If you prefer not to use Docker for Postgres, override `DATABASE_URL` in your shell or `.env` and run the normal npm migration scripts directly. `foreman init` also applies pending packaged Postgres migrations before registering the project, so end users normally do not need to run `db:migrate` manually.
 
 ### PowerShell (Windows)
 
@@ -348,7 +348,7 @@ For the complete CLI reference with all options and examples, see **[CLI Referen
 For common problems and solutions, see **[Troubleshooting Guide](docs/troubleshooting.md)**.
 
 ### `foreman init`
-Initialize Foreman in a project directory. Registers the project and sets up `.foreman/`.
+Initialize Foreman in a project directory. Applies pending packaged Postgres migrations, registers the project, and sets up `.foreman/`.
 Use `--wizard` for interactive setup that writes `.foreman/config.yaml` with VCS, workflow, and issue-tracker settings.
 
 ```bash
@@ -372,7 +372,7 @@ Each agent gets:
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events by default in Postgres-backed Elixir mode.
+Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events by default in Postgres-backed Elixir mode. Use `foreman inbox --all --watch --events` to stream new lifecycle events and run status changes across the project.
 
 ```bash
 foreman status
@@ -452,7 +452,7 @@ foreman import --to-elixir --from-node --project foreman  # snapshot current Nod
 
 The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. Legacy TS delegation has been removed after cutover.
 
-Elixir is the backend after cutover. This removes legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Operator commands either use Elixir-backed APIs/events/projections or report removal; `foreman board` reads and writes task state through Elixir after importing project state. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the backend after cutover. This removes legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Operator commands either use Elixir-backed APIs/events/projections or report removal; `foreman board` reads and writes task state through Elixir after importing project state. Domain events are the source of truth and trigger operational behavior; projections/read views, including status/log displays, are derived read models used after an event signal or explicit reconciliation. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
 
 ### `foreman sling trd`
 Parse a TRD and create a native task hierarchy.

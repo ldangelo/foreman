@@ -25,6 +25,8 @@ import { PostgresStore } from "../lib/postgres-store.js";
 import type { RunProgressSummary } from "./read-models.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { initPool, isPoolInitialised } from "../lib/db/pool-manager.js";
+import { ElixirServerManager } from "../lib/elixir-server-manager.js";
+import { ElixirServerClient } from "../lib/elixir-server-client.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import {
   ROLE_CONFIGS,
@@ -1666,6 +1668,47 @@ async function runMergeBuiltinPhase(args: {
   };
 }
 
+function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat"): string {
+  if (eventType === "phase-start") return "phase_started";
+  if (eventType === "complete") return "phase_completed";
+  return "heartbeat";
+}
+
+function createElixirWorkerObservabilityWriter(
+  config: WorkerConfig,
+  registeredProjectId: string,
+): PipelineObservabilityWriter | undefined {
+  let clientPromise: Promise<ElixirServerClient> | undefined;
+  let sequence = 0;
+  const workerId = `node-pipeline:${config.taskId}`;
+
+  const client = (): Promise<ElixirServerClient> => {
+    clientPromise ??= new ElixirServerManager().ensureRunning().then((status) => (
+      new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN)
+    ));
+    return clientPromise;
+  };
+
+  return {
+    async logEvent(eventType, data) {
+      const phaseId = typeof data.phase === "string" ? data.phase : typeof data.phase_id === "string" ? data.phase_id : "pipeline";
+      const nextSequence = sequence + 1;
+      await (await client()).sendWorkerEvent({
+        run_id: config.runId,
+        project_id: registeredProjectId,
+        phase_id: phaseId,
+        worker_id: workerId,
+        type: elixirWorkerEventType(eventType),
+        sequence: nextSequence,
+        status: typeof data.status === "string" ? data.status : undefined,
+        message: typeof data.message === "string" ? data.message : undefined,
+        details: { ...data, task_id: config.taskId },
+      });
+      sequence = nextSequence;
+    },
+  };
+}
+
 async function runPipeline(
   config: WorkerConfig,
   store: ForemanStore,
@@ -1705,6 +1748,9 @@ async function runPipeline(
       registeredProjectId,
     },
   );
+  const elixirWorkerObservabilityWriter = registeredProjectId
+    ? createElixirWorkerObservabilityWriter(config, registeredProjectId)
+    : undefined;
   const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = registeredReadStore
     ? {
         async updateProgress(progress) {
@@ -1717,10 +1763,17 @@ async function runPipeline(
         },
         async logEvent(eventType, data) {
           try {
+            await elixirWorkerObservabilityWriter?.logEvent?.(eventType, data);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log(`[pipeline-observability] ${eventType} event append failed (non-fatal): ${msg}`);
+          }
+
+          try {
             await registeredReadStore.logEvent(registeredProjectId!, eventType, data, config.runId);
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            log(`[pipeline-observability] ${eventType} event failed (non-fatal): ${msg}`);
+            log(`[pipeline-observability] ${eventType} projection write failed (non-fatal): ${msg}`);
           }
         },
       }

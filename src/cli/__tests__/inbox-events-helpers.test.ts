@@ -30,7 +30,10 @@ import {
   fetchDaemonEvents,
   fetchPostgresEvents,
   formatEventSummary,
+  formatPipelineEvent,
   resolvePostgresInboxProject,
+  selectUnseenEvents,
+  sortEventsChronologically,
 } from "../commands/inbox.js";
 
 describe("inbox event helpers", () => {
@@ -83,8 +86,8 @@ describe("inbox event helpers", () => {
 
   it.each([
     ["phase-start", {}, "phase-start"],
-    ["phase-start", { phase: "developer" }, "Start: developer"],
-    ["phase-complete", { phase: "qa" }, "Complete: qa"],
+    ["phase-start", { phase: "developer" }, "Start developer"],
+    ["phase-complete", { phase: "qa" }, "Complete qa"],
     ["dispatch", {}, "Dispatch"],
     ["complete", {}, "Complete"],
     ["fail", {}, "Failed"],
@@ -95,11 +98,44 @@ describe("inbox event helpers", () => {
     ["conflict", { bead_id: "bd-2" }, "conflict: bd-2"],
     ["test-fail", {}, "test-fail"],
     ["stuck", {}, "Stuck"],
-    ["custom", { taskId: "task-1" }, "custom: task-1"],
+    ["custom", { taskId: "task-1" }, "custom: task task-1"],
     ["custom", {}, "custom"],
     ["anything", null, "anything"],
   ])("formatEventSummary covers %s fallback branches", (eventType, details, expected) => {
     expect(formatEventSummary(eventType, details as Record<string, unknown> | null)).toBe(expected);
+  });
+
+  it("formats Elixir domain events with useful task, run, and phase context", () => {
+    expect(formatEventSummary("TaskUpdated", { task_id: "foreman-1", status: "in_progress", run_id: "run-1" }))
+      .toBe("Updated task foreman-1 → in_progress (run run-1)");
+    expect(formatEventSummary("PhaseStarted", { task_id: "foreman-1", phase_id: "developer", run_id: "run-1" }))
+      .toBe("Start developer for task foreman-1");
+    expect(formatEventSummary("WorkerLaunchRequested", { task_id: "foreman-1", workflow: "bug" }))
+      .toBe("Worker launch requested for task foreman-1 (bug)");
+    expect(formatPipelineEvent({ id: "evt-1", runId: "run-1", taskId: "foreman-1", eventType: "RunFailed", details: { phase_id: "qa" }, createdAt: "2026-01-01T00:00:00.000Z" }))
+      .toContain("RunFailed — Failed task foreman-1 at qa");
+  });
+
+  it("sortEventsChronologically returns a new oldest-to-newest array", () => {
+    const events = [
+      { id: "evt-3", runId: "run-1", eventType: "TaskUpdated", details: null, createdAt: "2026-01-01T00:03:00.000Z" },
+      { id: "evt-1", runId: "run-1", eventType: "TaskCreated", details: null, createdAt: "2026-01-01T00:01:00.000Z" },
+      { id: "evt-2", runId: "run-1", eventType: "RunStarted", details: null, createdAt: "2026-01-01T00:02:00.000Z" },
+    ];
+
+    expect(sortEventsChronologically(events).map((event) => event.id)).toEqual(["evt-1", "evt-2", "evt-3"]);
+    expect(events.map((event) => event.id)).toEqual(["evt-3", "evt-1", "evt-2"]);
+  });
+
+  it("selectUnseenEvents returns chronological events that watch mode has not printed", () => {
+    const seen = new Set(["evt-1"]);
+    const events = [
+      { id: "evt-3", runId: "run-1", eventType: "TaskUpdated", details: null, createdAt: "2026-01-01T00:03:00.000Z" },
+      { id: "evt-1", runId: "run-1", eventType: "TaskCreated", details: null, createdAt: "2026-01-01T00:01:00.000Z" },
+      { id: "evt-2", runId: "run-1", eventType: "RunStarted", details: null, createdAt: "2026-01-01T00:02:00.000Z" },
+    ];
+
+    expect(selectUnseenEvents(events, seen).map((event) => event.id)).toEqual(["evt-2", "evt-3"]);
   });
 
   it("fetchDaemonEvents maps Elixir fallback event fields", async () => {

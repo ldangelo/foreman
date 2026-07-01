@@ -2,10 +2,12 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
@@ -88,6 +90,32 @@ export async function initBackend(opts: InitBackendOpts): Promise<void> {
 }
 
 // ── Store init logic ──────────────────────────────────────────────────────
+
+export function runPostgresMigrations(
+  projectDir: string,
+  execSync: typeof execFileSync = execFileSync,
+): void {
+  const dotEnvPath = join(projectDir, ".env");
+  const databaseUrl = existsSync(dotEnvPath)
+    ? readFileSync(dotEnvPath, "utf8").match(/^\s*DATABASE_URL=(.+)\s*$/m)?.[1]?.trim().replace(/^[\'"]|[\'"]$/g, "")
+    : undefined;
+  const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../lib/db/migrations");
+  const require = createRequire(import.meta.url);
+  const nodePgMigrateBin = require.resolve("node-pg-migrate/bin/node-pg-migrate");
+  const args = [nodePgMigrateBin, "-m", migrationsDir, "up"];
+
+  if (readdirSync(migrationsDir).some((file) => file.endsWith(".ts"))) {
+    args.push("--tsx");
+  }
+
+  execSync(process.execPath, args, {
+    stdio: "pipe",
+    env: {
+      ...process.env,
+      ...(databaseUrl ? { DATABASE_URL: databaseUrl } : {}),
+    },
+  });
+}
 
 /**
  * Register project and task default sentinel config if not already present.
@@ -279,7 +307,7 @@ export async function maybeRegisterInitializedProjectInElixir(projectDir: string
 }
 
 export function formatInitDatabaseError(err: unknown, projectDir: string): string {
-  const intro = "Failed to initialize the Postgres-backed project registry.";
+  const intro = "Failed to initialize the Postgres database schema or project registry.";
   const fix = `Set DATABASE_URL in ${join(projectDir, ".env")} or your environment to a full Postgres URL like postgresql://user:password@host:5432/database.`;
 
   if (err instanceof DatabaseConfigError) {
@@ -348,6 +376,9 @@ export const initCommand = new Command("init")
 
     let store: PostgresStore | null = null;
     try {
+      // Apply shared Postgres migrations before registry/store access.
+      runPostgresMigrations(projectDir);
+
       // Register project and task sentinel config
       ensureCliPostgresPool(projectDir);
       const registry = new ProjectRegistry({ pg: new PostgresAdapter() });

@@ -21,19 +21,38 @@ defmodule ForemanServer.Scheduler do
   @spec state() :: map()
   def state, do: GenServer.call(__MODULE__, :state)
 
+  @spec handle_event(map()) :: :ok
+  def handle_event(event) when is_map(event) do
+    GenServer.cast(__MODULE__, {:event_appended, event})
+  end
+
   @impl true
   def init(opts) do
-    interval_ms = Keyword.get(opts, :tick_interval_ms, scheduler_env(:tick_interval_ms, @default_tick_interval_ms))
+    interval_ms =
+      Keyword.get(
+        opts,
+        :tick_interval_ms,
+        scheduler_env(:tick_interval_ms, @default_tick_interval_ms)
+      )
+
     auto_tick = Keyword.get(opts, :auto_tick, scheduler_env(:auto_tick, true))
 
     state = %{
       max_concurrent: Keyword.get(opts, :max_concurrent, scheduler_env(:max_concurrent, 2)),
       project_limits: Keyword.get(opts, :project_limits, scheduler_env(:project_limits, %{})),
       default_phases: Keyword.get(opts, :default_phases, @default_phases),
-      worker_launcher: Keyword.get(opts, :worker_launcher, scheduler_env(:worker_launcher, ForemanServer.WorkerLauncher)),
+      worker_launcher:
+        Keyword.get(
+          opts,
+          :worker_launcher,
+          scheduler_env(:worker_launcher, ForemanServer.WorkerLauncher)
+        ),
       auto_tick: auto_tick,
+      event_triggered_ticks:
+        Keyword.get(opts, :event_triggered_ticks, scheduler_env(:event_triggered_ticks, true)),
       tick_interval_ms: interval_ms,
-      last_tick: nil
+      last_tick: nil,
+      last_event_id: nil
     }
 
     if auto_tick, do: schedule_tick(interval_ms)
@@ -58,6 +77,19 @@ defmodule ForemanServer.Scheduler do
   end
 
   @impl true
+  def handle_cast({:event_appended, event}, %{event_triggered_ticks: true} = state) do
+    if dispatch_trigger_event?(event) do
+      result = dispatch(state)
+      {:noreply, %{state | last_tick: result, last_event_id: event_id(event)}}
+    else
+      {:noreply, %{state | last_event_id: event_id(event)}}
+    end
+  end
+
+  def handle_cast({:event_appended, event}, state),
+    do: {:noreply, %{state | last_event_id: event_id(event)}}
+
+  @impl true
   def handle_info(:tick, %{auto_tick: true, tick_interval_ms: interval_ms} = state) do
     result = dispatch(state)
     schedule_tick(interval_ms)
@@ -69,6 +101,16 @@ defmodule ForemanServer.Scheduler do
   defp schedule_tick(interval_ms) when is_integer(interval_ms) and interval_ms > 0 do
     Process.send_after(self(), :tick, interval_ms)
   end
+
+  defp dispatch_trigger_event?(%{event_type: event_type, payload: payload})
+       when event_type in ["TaskCreated", "TaskUpdated", "TaskApproved", "TaskStatusChanged"] do
+    Map.get(payload, :status) in ["ready", "approved"]
+  end
+
+  defp dispatch_trigger_event?(_event), do: false
+
+  defp event_id(%{event_id: event_id}), do: event_id
+  defp event_id(_event), do: nil
 
   defp dispatch(state) do
     tasks = ProjectionStore.dispatchable_tasks()
@@ -135,7 +177,10 @@ defmodule ForemanServer.Scheduler do
              stream_id: "task:#{task.task_id}",
              event_type: "TaskUpdated",
              payload: %{task_id: task.task_id, status: "in_progress", run_id: run_id},
-             metadata: %{correlation_id: run_id, idempotency_key: "claim:#{task.task_id}:#{run_id}"}
+             metadata: %{
+               correlation_id: run_id,
+               idempotency_key: "claim:#{task.task_id}:#{run_id}"
+             }
            }),
          {:ok, _pid} <-
            RunActor.start_run(%{
@@ -173,11 +218,14 @@ defmodule ForemanServer.Scheduler do
     |> Map.values()
     |> Enum.filter(fn run ->
       task = Map.get(snapshot.tasks, Map.get(run, :task_id))
-      Map.get(run, :status) == "in_progress" and Map.get(task || %{}, :status) in ["in_progress", "in-progress"]
+
+      Map.get(run, :status) == "in_progress" and
+        Map.get(task || %{}, :status) in ["in_progress", "in-progress"]
     end)
     |> Enum.map(fn run ->
       task = Map.get(snapshot.tasks, Map.get(run, :task_id), %{})
       updated_at = Map.get(run, :updated_at) || Map.get(task, :updated_at)
+
       %{
         run_id: Map.get(run, :run_id),
         task_id: Map.get(run, :task_id),
@@ -194,10 +242,13 @@ defmodule ForemanServer.Scheduler do
   defp stale_active_runs(active_runs), do: Enum.filter(active_runs, &Map.get(&1, :stale))
 
   defp stale?(nil, _now), do: true
-  defp stale?(updated_at, now), do: age_seconds(updated_at, now) > scheduler_env(:stale_active_seconds, 30 * 60)
+
+  defp stale?(updated_at, now),
+    do: age_seconds(updated_at, now) > scheduler_env(:stale_active_seconds, 30 * 60)
 
   defp age_seconds(nil, _now), do: nil
   defp age_seconds(%DateTime{} = updated_at, now), do: DateTime.diff(now, updated_at, :second)
+
   defp age_seconds(updated_at, now) when is_binary(updated_at) do
     case DateTime.from_iso8601(updated_at) do
       {:ok, parsed, _offset} -> DateTime.diff(now, parsed, :second)

@@ -149,6 +149,31 @@ export class ElixirServerClient {
     throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
   }
 
+  async sendWorkerEvent(payload: {
+    run_id: string;
+    phase_id: string;
+    worker_id: string;
+    type: string;
+    sequence: number;
+    project_id?: string;
+    status?: string;
+    message?: string;
+    output?: string;
+    exit_code?: number;
+    artifact_paths?: string[];
+    report_paths?: string[];
+    details?: Record<string, unknown>;
+  }): Promise<ForemanServerOk> {
+    const response = await fetch(new URL("/worker/v1/events", this.baseUrl), {
+      method: "POST",
+      headers: this.headers({ command_id: `worker-event-${payload.run_id}-${payload.sequence}`, command_type: "worker.event" }),
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json() as ForemanServerOk | ForemanServerError;
+    if (response.ok && body.ok) return body;
+    throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
+  }
+
   async listInbox(opts: { runId?: string; projectId?: string; limit?: number; unread?: boolean } = {}): Promise<ElixirInboxMessage[]> {
     const params = new URLSearchParams();
     if (opts.runId) params.set("run_id", opts.runId);

@@ -69,6 +69,8 @@ async function createElixirInboxClient(): Promise<ElixirServerClient> {
 interface PipelineEvent {
   id: string;
   runId: string | null;
+  taskId?: string | null;
+  projectId?: string | null;
   eventType: string;
   details: Record<string, unknown> | null;
   createdAt: string;
@@ -78,11 +80,15 @@ interface PipelineEvent {
 
 const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "phase-start":           "▶",
+  "PhaseStarted":          "▶",
   "phase-complete":        "✓",
+  "PhaseCompleted":        "✓",
   "dispatch":              "→",
   "claim":                 "◈",
   "complete":              "✓",
   "fail":                  "✗",
+  "RunFailed":             "✗",
+  "WorkerLaunchFailed":    "✗",
   "merge":                 "⚡",
   "pr-created":            "⎇",
   "merge-queue-enqueue":   "⏳",
@@ -98,25 +104,65 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
 export function formatPipelineEvent(event: PipelineEvent): string {
   const ts = formatTimestamp(event.createdAt);
   const icon = PIPELINE_EVENT_ICONS[event.eventType] ?? "·";
-  const summary = formatEventSummary(event.eventType, event.details);
+  const details = event.details ? {
+    ...event.details,
+    task_id: event.details.task_id ?? event.taskId,
+    run_id: event.details.run_id ?? event.runId,
+    project_id: event.details.project_id ?? event.projectId,
+  } : null;
+  const summary = formatEventSummary(event.eventType, details);
   return `[${ts}] ${icon} ${event.eventType} — ${summary}`;
+}
+
+function detailString(details: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = details[key];
+    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "number") return String(value);
+  }
+  return undefined;
 }
 
 export function formatEventSummary(eventType: string, details: Record<string, unknown> | null): string {
   if (!details) return eventType;
 
+  const taskId = detailString(details, ["task_id", "taskId", "bead_id", "beadId"]);
+  const runId = detailString(details, ["run_id", "runId"]);
+  const phase = detailString(details, ["phase_id", "phase", "current_phase"]);
+  const status = detailString(details, ["status"]);
+  const workflow = detailString(details, ["workflow"]);
+  const error = detailString(details, ["error", "reason", "message"]);
+  const target = taskId ? `task ${taskId}` : runId ? `run ${runId}` : undefined;
+
   switch (eventType) {
     case "phase-start":
+    case "PhaseStarted":
+      return phase ? `Start ${phase}${target ? ` for ${target}` : ""}` : target ? `Start phase for ${target}` : eventType;
     case "phase-complete":
-      return details.phase ? `${eventType === "phase-start" ? "Start" : "Complete"}: ${details.phase}` : eventType;
+    case "PhaseCompleted":
+      return phase ? `Complete ${phase}${target ? ` for ${target}` : ""}` : target ? `Complete phase for ${target}` : eventType;
+    case "RunStarted":
+      return `Started${target ? ` ${target}` : ""}${workflow ? ` (${workflow})` : ""}`;
+    case "TaskCreated":
+      return `Created${target ? ` ${target}` : ""}${status ? ` → ${status}` : ""}`;
+    case "TaskUpdated":
+      return `Updated${target ? ` ${target}` : ""}${status ? ` → ${status}` : ""}${runId ? ` (run ${runId})` : ""}`;
+    case "TaskAnnotated":
+      return `Note added${target ? ` to ${target}` : ""}`;
+    case "WorkerLaunchRequested":
+      return `Worker launch requested${target ? ` for ${target}` : ""}${workflow ? ` (${workflow})` : ""}${runId ? ` (run ${runId})` : ""}`;
+    case "WorkerLaunchFailed":
+      return `Worker launch failed${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}`;
+    case "RunFailed":
+      return `Failed${target ? ` ${target}` : ""}${phase ? ` at ${phase}` : ""}${error ? `: ${error}` : ""}`;
     case "dispatch":
-      return details.bead_id ? `Dispatch: ${details.bead_id}` : "Dispatch";
+      return taskId ? `Dispatch: ${taskId}` : "Dispatch";
     case "complete":
-      return details.taskId ? `Complete: ${details.taskId}` : "Complete";
+      return taskId ? `Complete: ${taskId}` : "Complete";
     case "fail":
-      return details.taskId ? `Failed: ${details.taskId}` : "Failed";
+      return taskId ? `Failed: ${taskId}` : "Failed";
     case "merge":
-      return details.bead_id ? `Merged: ${details.bead_id}` : "Merged";
+      return taskId ? `Merged: ${taskId}` : "Merged";
     case "pr-created":
       return details.pr_number ? `PR #${details.pr_number} created` : "PR created";
     case "merge-queue-enqueue":
@@ -124,25 +170,26 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "merge-queue-resolve":
     case "merge-queue-fallback":
     case "merge-cleanup-fallback":
-      return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
+      return taskId ? `${eventType}: ${taskId}` : eventType;
     case "conflict":
     case "test-fail":
-      return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
+      return taskId ? `${eventType}: ${taskId}` : eventType;
     case "stuck":
-      return details.taskId ? `Stuck: ${details.taskId}` : "Stuck";
+      return taskId ? `Stuck: ${taskId}` : "Stuck";
     default:
-      return details.bead_id ? `${eventType}: ${details.bead_id}` :
-             details.taskId ? `${eventType}: ${details.taskId}` : eventType;
+      return target ? `${eventType}: ${target}` : eventType;
   }
 }
 
-export function adaptPostgresEvent(row: { id: string; run_id: string | null; event_type: string; payload: unknown; created_at: string | Date }): PipelineEvent {
+export function adaptPostgresEvent(row: { id: string; run_id: string | null; task_id?: string | null; project_id?: string | null; event_type: string; payload: unknown; created_at: string | Date }): PipelineEvent {
   const payload = typeof row.payload === "string"
     ? JSON.parse(row.payload)
     : row.payload;
   return {
     id: row.id,
     runId: row.run_id,
+    taskId: row.task_id,
+    projectId: row.project_id,
     eventType: row.event_type,
     details: payload && typeof payload === "object" ? payload as Record<string, unknown> : null,
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
@@ -162,6 +209,14 @@ export async function fetchPostgresEvents(
   return rows.map(adaptPostgresEvent);
 }
 
+export function sortEventsChronologically(events: PipelineEvent[]): PipelineEvent[] {
+  return [...events].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+export function selectUnseenEvents(events: PipelineEvent[], seenIds: Set<string>): PipelineEvent[] {
+  return sortEventsChronologically(events.filter((event) => !seenIds.has(event.id)));
+}
+
 export async function fetchDaemonEvents(
   daemon: InboxClientContext,
   options: { all?: boolean; runId?: string; limit: number },
@@ -176,6 +231,8 @@ export async function fetchDaemonEvents(
       .map((row) => ({
         id: String(row.event_id ?? `${row.run_id ?? "run"}-${row.event_type ?? row.type ?? "event"}`),
         runId: row.run_id ? String(row.run_id) : null,
+        taskId: row.task_id ? String(row.task_id) : null,
+        projectId: row.project_id ? String(row.project_id) : null,
         eventType: String(row.event_type ?? row.type ?? "event"),
         details: row.payload && typeof row.payload === "object" ? row.payload as Record<string, unknown> : null,
         createdAt: String(row.occurred_at ?? row.created_at ?? new Date().toISOString()),
@@ -1319,7 +1376,7 @@ export const inboxCommand = new Command("inbox")
           } else {
             console.log(chalk.bold("\nPipeline Events — all runs"));
             console.log("─".repeat(70));
-            for (const event of events) {
+            for (const event of sortEventsChronologically(events)) {
               console.log(formatPipelineEvent(event));
             }
             console.log("─".repeat(70));
@@ -1333,7 +1390,8 @@ export const inboxCommand = new Command("inbox")
       if (options.all && options.watch) {
         console.log("Watching all runs... (Ctrl-C to stop)\n");
         const seenIds = new Set<string>();
-        const seenRunIds = new Set<string>();
+        const seenEventIds = new Set<string>();
+        const seenRunStatuses = new Map<string, string>();
         const initialGlobal = postgres
           ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
           : daemon
@@ -1356,7 +1414,26 @@ export const inboxCommand = new Command("inbox")
           : daemon
             ? await listDaemonRuns(daemon)
             : store!.getRunsByStatuses(["completed", "failed", "running"]);
-        for (const r of initRuns) seenRunIds.add(r.id);
+        for (const r of initRuns) seenRunStatuses.set(r.id, r.status);
+
+        if (showEvents) {
+          const initialEvents = postgres
+            ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { all: true, limit: eventsLimit })
+            : daemon
+              ? await fetchDaemonEvents(daemon, { all: true, limit: eventsLimit })
+              : fetchEventsFromStore(store!, eventsLimit);
+
+          if (initialEvents.length > 0) {
+            console.log(`── past events ${"─".repeat(55)}`);
+            for (const event of sortEventsChronologically(initialEvents)) {
+              seenEventIds.add(event.id);
+              console.log(formatPipelineEvent(event));
+            }
+            console.log(`── live ${"─".repeat(62)}\n`);
+          } else {
+            console.log(`── live ${"─".repeat(62)}\n`);
+          }
+        }
         const pollAll = (): void => {
           void (async () => {
             const statusRuns = postgres
@@ -1365,7 +1442,24 @@ export const inboxCommand = new Command("inbox")
                 ? await listDaemonRuns(daemon)
                 : store!.getRunsByStatuses(["completed", "failed", "running"]);
             for (const run of statusRuns) {
-              if (!seenRunIds.has(run.id)) { seenRunIds.add(run.id); console.log(formatRunStatus(run)); console.log(""); }
+              const priorStatus = seenRunStatuses.get(run.id);
+              if (priorStatus !== run.status) {
+                seenRunStatuses.set(run.id, run.status);
+                console.log(formatRunStatus(run));
+                console.log("");
+              }
+            }
+
+            if (showEvents) {
+              const events = postgres
+                ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { all: true, limit: eventsLimit })
+                : daemon
+                  ? await fetchDaemonEvents(daemon, { all: true, limit: eventsLimit })
+                  : fetchEventsFromStore(store!, eventsLimit);
+              for (const event of selectUnseenEvents(events, seenEventIds)) {
+                seenEventIds.add(event.id);
+                console.log(formatPipelineEvent(event));
+              }
             }
             const msgs = postgres
               ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })

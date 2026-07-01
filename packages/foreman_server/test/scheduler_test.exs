@@ -15,10 +15,13 @@ defmodule ForemanServer.SchedulerTest do
 
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+
     Application.put_env(:foreman_server, :scheduler,
       auto_tick: false,
+      event_triggered_ticks: false,
       worker_launcher: ForemanServer.SchedulerTest.NoopLauncher
     )
+
     assert :ok = Application.start(:foreman_server)
 
     on_exit(fn ->
@@ -75,11 +78,14 @@ defmodule ForemanServer.SchedulerTest do
 
   test "periodic tick automatically claims ready tasks" do
     Application.stop(:foreman_server)
+
     Application.put_env(:foreman_server, :scheduler,
       auto_tick: true,
+      event_triggered_ticks: false,
       tick_interval_ms: 20,
       worker_launcher: ForemanServer.SchedulerTest.NoopLauncher
     )
+
     assert :ok = Application.start(:foreman_server)
 
     create_task("task-auto", %{project_id: "alpha", status: "ready"})
@@ -89,7 +95,38 @@ defmodule ForemanServer.SchedulerTest do
     assert %{current_phase: "developer"} = RunActor.state(run_id)
   end
 
+  test "event appended to ready task stream triggers scheduler without projection polling tick" do
+    Application.stop(:foreman_server)
+
+    Application.put_env(:foreman_server, :scheduler,
+      auto_tick: false,
+      event_triggered_ticks: true,
+      worker_launcher: ForemanServer.SchedulerTest.NoopLauncher
+    )
+
+    assert :ok = Application.start(:foreman_server)
+
+    assert {:ok, _event} =
+             ForemanServer.EventStore.append(%{
+               stream_id: "task:task-event",
+               event_type: "TaskCreated",
+               payload: %{
+                 task_id: "task-event",
+                 title: "event task",
+                 project_id: "alpha",
+                 status: "ready"
+               },
+               metadata: %{correlation_id: "task-event", idempotency_key: "task-event-create"}
+             })
+
+    assert_receive_tick(fn -> ProjectionStore.snapshot().tasks["task-event"].status end)
+    assert run_id = ProjectionStore.snapshot().tasks["task-event"].run_id
+    assert %{current_phase: "developer"} = RunActor.state(run_id)
+    assert Scheduler.state().last_event_id
+  end
+
   defp assert_receive_tick(fun, attempts \\ 20)
+
   defp assert_receive_tick(fun, attempts) when attempts > 0 do
     if fun.() == "in_progress" do
       :ok

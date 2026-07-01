@@ -61,6 +61,27 @@ describe("ElixirServerClient", () => {
     });
   });
 
+  it("sends worker protocol events", async () => {
+    globalThis.fetch = fetchMock;
+    mockJsonResponse(202, { ok: true, events: ["evt-worker"], projection_version: 4, correlation_id: "run-1" });
+    const client = new ElixirServerClient("http://server.test", "token-1");
+
+    await expect(client.sendWorkerEvent({
+      run_id: "run-1",
+      project_id: "proj-1",
+      phase_id: "developer",
+      worker_id: "node-pipeline:task-1",
+      type: "phase_started",
+      sequence: 1,
+      details: { task_id: "task-1" },
+    })).resolves.toMatchObject({ ok: true, events: ["evt-worker"] });
+
+    expect(fetchMock).toHaveBeenCalledWith(new URL("/worker/v1/events", "http://server.test"), expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ authorization: "Bearer token-1" }),
+    }));
+  });
+
   it("reads project, task, run, inbox, event, log, report, debug, and scheduler projections", async () => {
     globalThis.fetch = fetchMock;
     mockJsonResponse(200, { ok: true, projects: [{ id: "proj-1", path: "/repo" }] });

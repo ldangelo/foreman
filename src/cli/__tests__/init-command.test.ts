@@ -15,6 +15,7 @@ const {
   mockPostgresStoreForProject,
   mockQuestion,
   mockRlClose,
+  mockExecFileSync,
 } = vi.hoisted(() => ({
   mockEnsureCliPostgresPool: vi.fn(),
   mockRegisterProjectInElixir: vi.fn(),
@@ -27,6 +28,11 @@ const {
   mockPostgresStoreForProject: vi.fn(),
   mockQuestion: vi.fn(),
   mockRlClose: vi.fn(),
+  mockExecFileSync: vi.fn(),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
 }));
 
 vi.mock("../commands/project-task-support.js", () => ({
@@ -139,6 +145,11 @@ describe("init command", () => {
 
     await invokeInit({});
 
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      process.execPath,
+      expect.arrayContaining([expect.stringContaining("node-pg-migrate"), "up"]),
+      expect.objectContaining({ stdio: "pipe" }),
+    );
     expect(mockInstallBundledPrompts).toHaveBeenCalled();
     expect(mockPostgresStoreForProject).toHaveBeenCalledWith("proj-1");
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
@@ -170,7 +181,7 @@ describe("init command", () => {
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const rendered = vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("Failed to initialize the Postgres-backed project registry.");
+    expect(rendered).toContain("Failed to initialize the Postgres database schema or project registry.");
     expect(rendered).toContain("database offline");
   });
 

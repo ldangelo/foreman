@@ -16,7 +16,7 @@ npx tsc --noEmit       # type check only
 npx vitest run <file>  # run a single test file
 
 # CLI (after build or via tsx)
-foreman init           # Initialize project + beads
+foreman init           # Apply packaged Postgres migrations + initialize project
 foreman run            # Tick Elixir scheduler for ready-task dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
@@ -66,6 +66,8 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 ```
 
 TRD-2026-014 Elixir migration split:
+
+**Event-sourced orchestration invariant:** domain events are the source of truth and operational trigger. Projections are read models only. Scheduler/run loop, inbox/watch surfaces, and recovery flows must consume or reconcile from events, then read projections to decide action; do not rely on projection polling as the primary signal.
 
 ```
 Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker

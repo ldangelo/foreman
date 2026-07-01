@@ -42,7 +42,7 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 
 ### `foreman init`
 
-Initialize Foreman in a project. Creates `.foreman/` directory, installs default workflow configs, prompts, and registers the project in the Postgres store.
+Initialize Foreman in a project. Applies pending packaged Postgres migrations, creates `.foreman/` directory, installs default workflow configs, prompts, and registers the project in the Postgres store.
 
 ```bash
 foreman init                      # Initialize with auto-detected name
@@ -447,7 +447,7 @@ Initial tools include one-call smoke status, health, scheduler status/tick, proj
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator. In Elixir/default backend mode, inbox reads the shared Postgres run/message/event tables directly and does not require the Node daemon socket. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written.
+View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator. In Elixir/default backend mode, inbox reads the shared Postgres run/message/event tables directly and does not require the Node daemon socket. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project.
 
 ```bash
 foreman inbox                     # Show latest run's messages
