@@ -37,7 +37,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts <command>
 
 ```
 foreman plan        →  Ensemble pipeline  →  Product description → PRD → TRD
-foreman sling trd   →  Structured parser  →  TRD → Seeds + Beads task hierarchy
+foreman sling trd   →  Structured parser  →  TRD → Tasks + Beads task hierarchy
 foreman run         →  Agent dispatcher   →  Spawn agents on ready tasks
 foreman task create →  Task management    →  Create, update, list tasks
 foreman monitor     →  Progress checker   →  Detect stuck/completed agents
@@ -87,10 +87,10 @@ through the dispatcher with full tracking in Postgres:
 The dispatch loop automatically waits for each step to complete before unblocking the next.
 All steps visible in the dashboard alongside coding agents.
 
-### 3. Sling TRD (TRD → Seeds + Beads)
+### 3. Sling TRD (TRD → Tasks + Beads)
 
 ```bash
-# Sling a structured TRD into seeds + beads
+# Sling a structured TRD into tasks + beads
 npx tsx ~/Development/Fortium/foreman/src/cli/index.ts sling trd docs/TRD.md
 
 # Preview without creating tasks
@@ -101,7 +101,7 @@ npx tsx ~/Development/Fortium/foreman/src/cli/index.ts sling trd docs/TRD.md --a
 ```
 
 Parses a structured TRD (with table sections, explicit metadata) and dual-writes to both
-seeds (`sd`) and beads_rust (`br`) with explicit dependencies.
+tasks (`sd`) and beads_rust (`br`) with explicit dependencies.
 
 ### 4. Run (Dispatch Agents)
 
@@ -317,7 +317,7 @@ When orchestrating from the main OpenClaw session:
 ```
 1. User: "Build the auth module from this description"
 2. Jarvis: Run foreman plan with the description → generates PRD → TRD
-3. Jarvis: Run foreman sling trd on the TRD → creates seeds + beads
+3. Jarvis: Run foreman sling trd on the TRD → creates tasks + beads
 4. Jarvis: Run foreman run (or manually spawn via sessions_spawn)
 5. Jarvis: Periodically run foreman monitor to check progress
 6. Jarvis: When tasks complete, run foreman merge

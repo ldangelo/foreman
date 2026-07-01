@@ -17,9 +17,9 @@ export interface LocalRunStoreAdapter {
   getRunsByStatus(
     ...args: Parameters<ForemanStore["getRunsByStatus"]>
   ): Promise<ReturnType<ForemanStore["getRunsByStatus"]>>;
-  getRunsForSeed(
-    ...args: Parameters<ForemanStore["getRunsForSeed"]>
-  ): Promise<ReturnType<ForemanStore["getRunsForSeed"]>>;
+  getRunsForTask(
+    ...args: Parameters<ForemanStore["getRunsForTask"]>
+  ): Promise<ReturnType<ForemanStore["getRunsForTask"]>>;
   updateRun(...args: Parameters<ForemanStore["updateRun"]>): Promise<void>;
   deleteRun(runId: string): Promise<ReturnType<ForemanStore["deleteRun"]>>;
   logEvent(...args: Parameters<ForemanStore["logEvent"]>): Promise<void>;
@@ -37,7 +37,7 @@ export function wrapLocalRunStore(store: ForemanStore): LocalRunStoreAdapter {
     getRun: async (id) => store.getRun(id),
     getActiveRuns: async (projectId) => store.getActiveRuns(projectId),
     getRunsByStatus: async (status, projectId) => store.getRunsByStatus(status, projectId),
-    getRunsForSeed: async (seedId, projectId) => store.getRunsForSeed(seedId, projectId),
+    getRunsForTask: async (taskId, projectId) => store.getRunsForTask(taskId, projectId),
     updateRun: async (runId, updates) => store.updateRun(runId, updates),
     deleteRun: async (runId) => store.deleteRun(runId),
     logEvent: async (projectId, eventType, data, runId) =>

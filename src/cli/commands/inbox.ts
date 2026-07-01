@@ -112,9 +112,9 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "dispatch":
       return details.bead_id ? `Dispatch: ${details.bead_id}` : "Dispatch";
     case "complete":
-      return details.seedId ? `Complete: ${details.seedId}` : "Complete";
+      return details.taskId ? `Complete: ${details.taskId}` : "Complete";
     case "fail":
-      return details.seedId ? `Failed: ${details.seedId}` : "Failed";
+      return details.taskId ? `Failed: ${details.taskId}` : "Failed";
     case "merge":
       return details.bead_id ? `Merged: ${details.bead_id}` : "Merged";
     case "pr-created":
@@ -129,10 +129,10 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "test-fail":
       return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
     case "stuck":
-      return details.seedId ? `Stuck: ${details.seedId}` : "Stuck";
+      return details.taskId ? `Stuck: ${details.taskId}` : "Stuck";
     default:
       return details.bead_id ? `${eventType}: ${details.bead_id}` :
-             details.seedId ? `${eventType}: ${details.seedId}` : eventType;
+             details.taskId ? `${eventType}: ${details.taskId}` : eventType;
   }
 }
 
@@ -297,7 +297,7 @@ function formatMessage(msg: Message, fullPayload = false): string {
     if (typeof parsed["status"] === "string") parts.push(`status=${parsed["status"]}`);
     if (typeof parsed["error"] === "string") parts.push(`error=${parsed["error"]}`);
     if (typeof parsed["currentPhase"] === "string") parts.push(`currentPhase=${parsed["currentPhase"]}`);
-    if (typeof parsed["seedId"] === "string") parts.push(`seedId=${parsed["seedId"]}`);
+    if (typeof parsed["taskId"] === "string") parts.push(`taskId=${parsed["taskId"]}`);
     if (typeof parsed["runId"] === "string") parts.push(`runId=${parsed["runId"]}`);
     if (typeof parsed["message"] === "string") parts.push(`message=${parsed["message"]}`);
     if (typeof parsed["kind"] === "string") parts.push(`kind=${parsed["kind"]}`);
@@ -343,7 +343,7 @@ interface ParsedMessageBody {
   status?: string;
   error?: string;
   currentPhase?: string;
-  seedId?: string;
+  taskId?: string;
   runId?: string;
   message?: string;
   kind?: string;
@@ -369,7 +369,7 @@ export function parseMessageBody(body: string): ParsedMessageBody {
       status: typeof parsed["status"] === "string" ? parsed["status"] : undefined,
       error: typeof parsed["error"] === "string" ? parsed["error"] : undefined,
       currentPhase: typeof parsed["currentPhase"] === "string" ? parsed["currentPhase"] : undefined,
-      seedId: typeof parsed["seedId"] === "string" ? parsed["seedId"] : undefined,
+      taskId: typeof parsed["taskId"] === "string" ? parsed["taskId"] : undefined,
       runId: typeof parsed["runId"] === "string" ? parsed["runId"] : undefined,
       message: typeof parsed["message"] === "string" ? parsed["message"] : undefined,
       kind: typeof parsed["kind"] === "string" ? parsed["kind"] : undefined,
@@ -416,7 +416,7 @@ export function formatMessageTable(msg: Message, argsMaxLen = DEFAULT_ARGS_WIDTH
   const parsed = parseMessageBody(msg.body);
   return {
     date: formatTimestamp(msg.created_at),
-    ticket: parsed.seedId ?? msg.run_id,
+    ticket: parsed.taskId ?? msg.run_id,
     sender: msg.sender_agent_type,
     receiver: msg.recipient_agent_type,
     kind: parsed.kind,
@@ -699,7 +699,7 @@ function formatRunStatus(run: Run): string {
   } else {
     statusStr = chalk.yellow(run.status.toUpperCase());
   }
-  return `[${ts}] ${chalk.bold("●")} ${run.seed_id} ${statusStr} (run ${run.id})`;
+  return `[${ts}] ${chalk.bold("●")} ${run.task_id} ${statusStr} (run ${run.id})`;
 }
 
 export function adaptDaemonMessage(row: DaemonMailMessage): Message {
@@ -725,8 +725,8 @@ function messagePhase(msg: Message): string | undefined {
   return parseMessageBody(msg.body).phase ?? phaseFromSender(msg.sender_agent_type);
 }
 
-function messageSeed(msg: Message): string {
-  return parseMessageBody(msg.body).seedId ?? msg.run_id;
+function messageTask(msg: Message): string {
+  return parseMessageBody(msg.body).taskId ?? msg.run_id;
 }
 
 function messageActivity(msg: Message): string {
@@ -771,14 +771,14 @@ function renderRunProgressSummary(messages: Message[], runs: Run[]): string {
     const latestError = [...list].reverse().find((msg) => msg.subject === "agent-error" || parseMessageBody(msg.body).error);
     const phase = latest ? messagePhase(latest) : undefined;
     const parsedLatest = latest ? parseMessageBody(latest.body) : {};
-    const seed = run?.seed_id ?? (latest ? messageSeed(latest) : runId);
+    const task = run?.task_id ?? (latest ? messageTask(latest) : runId);
     const status = run?.status ?? "unknown";
     const stage = phase
       ? `${phase}${parsedLatest.kind ? `:${parsedLatest.kind}` : ""}`
       : "unknown";
     const lastAt = latest ? formatTimestamp(latest.created_at) : "—";
     const error = latestError ? parseMessageBody(latestError.body).error : undefined;
-    lines.push(`- ${seed}  run=${runId.slice(0, 8)}…  status=${status}  stage=${stage}  last=${lastAt}`);
+    lines.push(`- ${task}  run=${runId.slice(0, 8)}…  status=${status}  stage=${stage}  last=${lastAt}`);
     if (error) lines.push(`  ${chalk.red("error:")} ${wrapText(error, Math.max(40, getTerminalWidth() - 10)).replace(/\n/g, "\n  ")}`);
   }
   return lines.join("\n");
@@ -791,7 +791,7 @@ function renderRecentActivity(messages: Message[]): string {
   for (const msg of messages) {
     const phase = messagePhase(msg) ?? "—";
     const activity = messageActivity(msg);
-    lines.push(`[${formatTimestamp(msg.created_at)}] ${messageSeed(msg)} ${phase} ${msg.sender_agent_type} → ${msg.recipient_agent_type}`);
+    lines.push(`[${formatTimestamp(msg.created_at)}] ${messageTask(msg)} ${phase} ${msg.sender_agent_type} → ${msg.recipient_agent_type}`);
     lines.push(`  ${activity}`);
     const args = messageArgs(msg);
     if (args && args !== activity) {
@@ -805,7 +805,7 @@ export function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: "",
-    seed_id: row.bead_id,
+    task_id: row.bead_id,
     agent_type: "daemon",
     session_key: null,
     worktree_path: null,
@@ -822,7 +822,7 @@ function adaptPostgresRun(row: RunRow): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    seed_id: row.seed_id,
+    task_id: row.task_id,
     agent_type: row.agent_type,
     session_key: row.session_key,
     worktree_path: row.worktree_path,
@@ -867,7 +867,7 @@ export async function resolvePostgresRunId(
   if (options.run) return options.run;
   const runs = await adapter.listRuns(projectId, { limit: 100 });
   const taskFilter = options.task ?? options.bead;
-  if (taskFilter) return runs.find((run) => run.seed_id === taskFilter)?.id ?? null;
+  if (taskFilter) return runs.find((run) => run.task_id === taskFilter)?.id ?? null;
   return runs[0]?.id ?? null;
 }
 
@@ -997,13 +997,13 @@ function resolveLatestRunId(store: ForemanStore): string | null {
   return runs[0]?.id ?? null;
 }
 
-function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null {
+function resolveRunIdByTask(store: ForemanStore, taskId: string): string | null {
   const runs = store.getRunsByStatuses(
     ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
   );
-  const seedRuns = runs.filter((r) => r.seed_id === seedId);
+  const taskRuns = runs.filter((r) => r.task_id === taskId);
   // Runs are returned DESC by created_at, so [0] is most recent
-  return seedRuns[0]?.id ?? null;
+  return taskRuns[0]?.id ?? null;
 }
 
 function getInboxStatusRuns(store: ForemanStore): ReturnType<ForemanStore["getRunsByStatuses"]> {
@@ -1019,7 +1019,7 @@ export async function listDaemonRuns(daemon: InboxClientContext): Promise<Run[]>
       .map((run) => ({
         id: String(run.run_id ?? run.id ?? "unknown"),
         project_id: daemon.projectId,
-        seed_id: String(run.task_id ?? run.run_id ?? run.id ?? "unknown"),
+        task_id: String(run.task_id ?? run.run_id ?? run.id ?? "unknown"),
         agent_type: "elixir",
         session_key: null,
         worktree_path: null,
@@ -1396,14 +1396,14 @@ export const inboxCommand = new Command("inbox")
         : daemon
           ? await resolveDaemonRunId(daemon, { run: options.run, task: options.task, bead: options.bead })
           : options.run
-            ?? (taskFilter ? resolveRunIdBySeed(store!, taskFilter) : null)
+            ?? (taskFilter ? resolveRunIdByTask(store!, taskFilter) : null)
             ?? resolveLatestRunId(store!);
       if (!runId) {
         console.error("No runs found. Start a pipeline first with `foreman run`.");
         process.exit(1);
       }
 
-      // Resolve seed ID for display (run record carries seed_id)
+      // Resolve task ID for display (run record carries task_id)
       const allRuns = postgres
         ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
         : daemon
@@ -1412,7 +1412,7 @@ export const inboxCommand = new Command("inbox")
             ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
           );
       const thisRun = allRuns.find((r) => r.id === runId);
-      const seedLabel = thisRun?.seed_id ? `  bead: ${thisRun.seed_id}` : "";
+      const taskLabel = thisRun?.task_id ? `  bead: ${thisRun.task_id}` : "";
 
       if (!options.watch) {
         // One-shot: show current run lifecycle status then fetch and display messages
@@ -1433,10 +1433,10 @@ export const inboxCommand = new Command("inbox")
             ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: options.unread, limit })
             : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
         if (messages.length === 0) {
-          console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+          console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${taskLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
         } else {
           if (fullPayload) {
-            console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+            console.log(`\nInbox — run: ${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
             for (const msg of messages) {
               console.log(formatMessage(msg, true));
               console.log("");
@@ -1444,7 +1444,7 @@ export const inboxCommand = new Command("inbox")
             console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
           } else {
             const rows = messages.map((msg) => formatMessageTable(msg));
-            console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
+            console.log(`\nInbox — run: ${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
             console.log(renderMessageTable(rows));
             console.log(`${messages.length} message(s) shown.`);
           }
@@ -1500,7 +1500,7 @@ export const inboxCommand = new Command("inbox")
       }
 
       // Watch mode: poll every 2s, show past messages first then new ones
-      console.log(`Watching inbox for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
+      console.log(`Watching inbox for run ${runId}${taskLabel}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
       const seenIds = new Set<string>();
       const seenRunIds = new Set<string>();
 
@@ -1524,7 +1524,7 @@ export const inboxCommand = new Command("inbox")
         }
       }
 
-      // Seed seenRunIds with any already-completed/failed runs so we only show new transitions
+      // Task seenRunIds with any already-completed/failed runs so we only show new transitions
       const initialRuns = postgres
         ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
         : daemon

@@ -38,7 +38,7 @@ function makeCtx(phase = 'unknown'): ExtensionContext {
   return {
     phase,
     runId: 'run-test',
-    seedId: 'seed-test',
+    taskId: 'task-test',
     getContextUsage: () => ({ totalTokens: 0, inputTokens: 0, outputTokens: 0 }),
     log: () => undefined,
   };

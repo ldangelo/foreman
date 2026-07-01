@@ -8,7 +8,7 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('epic', ['workflow:experimental'])).toBe('experimental');
     });
 
-    it('returns label value even when seedType matches a bundled workflow', () => {
+    it('returns label value even when taskType matches a bundled workflow', () => {
       // Label override takes priority over type-based resolution
       expect(resolveWorkflowName('smoke', ['workflow:override-wf'])).toBe('override-wf');
       expect(resolveWorkflowName('bug', ['workflow:override-wf'])).toBe('override-wf');
@@ -37,7 +37,7 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('random')).toBe('default');
     });
 
-    it('empty seedType falls back to default', () => {
+    it('empty taskType falls back to default', () => {
       expect(resolveWorkflowName('')).toBe('default');
       expect(resolveWorkflowName('')).toBe('default');
     });

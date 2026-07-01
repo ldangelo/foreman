@@ -37,7 +37,7 @@ interface InitProjectStore {
  * Options bag for initBackend — injectable for testing.
  */
 export interface InitBackendOpts {
-  /** Directory containing the project (.seeds / .beads live here). */
+  /** Directory containing the project (.tasks / .beads live here). */
   projectDir: string;
   /** The issue tracker selected in the wizard (beads/jira/github). */
   issueTracker: "beads" | "jira" | "github";
@@ -90,7 +90,7 @@ export async function initBackend(opts: InitBackendOpts): Promise<void> {
 // ── Store init logic ──────────────────────────────────────────────────────
 
 /**
- * Register project and seed default sentinel config if not already present.
+ * Register project and task default sentinel config if not already present.
  * Exported for unit testing.
  */
 export async function initProjectStore(
@@ -109,7 +109,7 @@ export async function initProjectStore(
     projectId = project.id;
   }
 
-  // Seed default sentinel config only on first init
+  // Task default sentinel config only on first init
   if (!(await store.getSentinelConfig(projectId))) {
     await store.upsertSentinelConfig(projectId, {
       branch: "main",
@@ -348,7 +348,7 @@ export const initCommand = new Command("init")
 
     let store: PostgresStore | null = null;
     try {
-      // Register project and seed sentinel config
+      // Register project and task sentinel config
       ensureCliPostgresPool(projectDir);
       const registry = new ProjectRegistry({ pg: new PostgresAdapter() });
       let project = (await registry.list()).find((record) => record.path === projectDir || record.name === projectName);

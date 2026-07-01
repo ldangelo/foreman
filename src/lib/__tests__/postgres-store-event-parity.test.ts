@@ -16,13 +16,13 @@ describe("PostgresStore event parity", () => {
     const store = new PostgresStore("proj-123", adapter);
 
     await store.logEvent("proj-123", "phase-start", {
-      seedId: "seed-456",
+      taskId: "task-456",
       phase: "developer",
       runId: "run-789",
     }, "run-789");
 
     await store.logEvent("proj-123", "heartbeat", {
-      seedId: "seed-456",
+      taskId: "task-456",
       phase: "developer",
       runId: "run-789",
     }, "run-789");
@@ -30,10 +30,10 @@ describe("PostgresStore event parity", () => {
     expect(recordPipelineEvent).toHaveBeenNthCalledWith(1, {
       projectId: "proj-123",
       runId: "run-789",
-      taskId: "seed-456",
+      taskId: "task-456",
       eventType: "phase-start",
       payload: {
-        seedId: "seed-456",
+        taskId: "task-456",
         phase: "developer",
         runId: "run-789",
       },
@@ -42,10 +42,10 @@ describe("PostgresStore event parity", () => {
     expect(recordPipelineEvent).toHaveBeenNthCalledWith(2, {
       projectId: "proj-123",
       runId: "run-789",
-      taskId: "seed-456",
+      taskId: "task-456",
       eventType: "heartbeat",
       payload: {
-        seedId: "seed-456",
+        taskId: "task-456",
         phase: "developer",
         runId: "run-789",
       },

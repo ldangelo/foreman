@@ -184,7 +184,7 @@ describe("WatchLayout", () => {
           run: {
             id: "run-1",
             project_id: "proj-1",
-            seed_id: "task-1",
+            task_id: "task-1",
             agent_type: "developer",
             session_key: null,
             worktree_path: "/tmp/wt",

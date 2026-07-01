@@ -21,10 +21,10 @@ foreman run            # Tick Elixir scheduler for ready-task dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
-foreman retry <seed>   # Re-run a failed pipeline phase
+foreman retry <task>   # Re-run a failed pipeline phase
 foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
 foreman debug <id>     # AI-powered execution analysis (Opus)
-foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
+foreman sling trd X    # TRD -> task hierarchy (tasks + beads)
 foreman plan X         # PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
@@ -236,7 +236,7 @@ foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 # Stuck or failed runs
 foreman doctor         # Check br/Pi, DB integrity, stale runs/worktrees
 foreman status         # See all active/failed agents
-foreman retry <seed>   # Re-run a specific pipeline phase
+foreman retry <task>   # Re-run a specific pipeline phase
 
 # Agent logs (streamed during run)
 ls ~/.foreman/logs/    # One .log file per runId
@@ -260,7 +260,7 @@ npx tsc --noEmit       # Type-check without building
 
 **Common failure modes:**
 
-- Agent stuck in Developer phase → `foreman retry <seed>` or Elixir recovery workflow
+- Agent stuck in Developer phase → `foreman retry <task>` or Elixir recovery workflow
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)
@@ -336,7 +336,7 @@ Agent worker logs are automatically written to `~/.foreman/logs/<runId>.log` and
 ## Metadata
 - Date: <ISO date>
 - Phase: <explorer | developer | qa | reviewer | finalize>
-- Seed: <seed-id>
+- Task: <task-id>
 - Run ID: <run-id>
 
 ## Key Activities

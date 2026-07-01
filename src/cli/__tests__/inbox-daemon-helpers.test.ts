@@ -205,8 +205,8 @@ describe("inbox daemon helper functions", () => {
     const nodeRuns = await listDaemonRuns(nodeDaemon);
 
     expect(elixirRuns).toHaveLength(1);
-    expect(elixirRuns[0]?.seed_id).toBe("task-1");
+    expect(elixirRuns[0]?.task_id).toBe("task-1");
     expect(nodeRuns).toHaveLength(1);
-    expect(nodeRuns[0]?.seed_id).toBe("task-2");
+    expect(nodeRuns[0]?.task_id).toBe("task-2");
   });
 });

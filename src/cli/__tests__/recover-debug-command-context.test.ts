@@ -59,19 +59,19 @@ describe("clean replay helpers", () => {
     const sourceDir = mkdtempSync(join(tmpdir(), "foreman-replay-source-"));
     const destinationDir = mkdtempSync(join(tmpdir(), "foreman-replay-dest-"));
     mkdirSync(join(sourceDir, "src"), { recursive: true });
-    mkdirSync(join(sourceDir, "docs", "reports", "seed-1"), { recursive: true });
+    mkdirSync(join(sourceDir, "docs", "reports", "task-1"), { recursive: true });
     writeFileSync(join(sourceDir, "src", "feature.ts"), "export const value = 1;\n");
     writeFileSync(join(sourceDir, "TEST_RESULTS.md"), "generated\n");
-    writeFileSync(join(sourceDir, "docs", "reports", "seed-1", "QA_REPORT.md"), "report\n");
+    writeFileSync(join(sourceDir, "docs", "reports", "task-1", "QA_REPORT.md"), "report\n");
 
     const result = applyCleanReplayChanges(
       sourceDir,
       destinationDir,
-      [" M src/feature.ts", "?? TEST_RESULTS.md", "?? docs/reports/seed-1/QA_REPORT.md"].join("\n"),
+      [" M src/feature.ts", "?? TEST_RESULTS.md", "?? docs/reports/task-1/QA_REPORT.md"].join("\n"),
     );
 
     expect(result.copiedFiles).toEqual(["src/feature.ts"]);
-    expect(result.skippedFiles).toEqual(["TEST_RESULTS.md", "docs/reports/seed-1/QA_REPORT.md"]);
+    expect(result.skippedFiles).toEqual(["TEST_RESULTS.md", "docs/reports/task-1/QA_REPORT.md"]);
     expect(readFileSync(join(destinationDir, "src", "feature.ts"), "utf-8")).toContain("value = 1");
     rmSync(sourceDir, { recursive: true, force: true });
     rmSync(destinationDir, { recursive: true, force: true });
@@ -96,7 +96,7 @@ describe("clean replay helpers", () => {
 describe("foreman debug/recover command context", () => {
   let tmpDir: string;
   let localStore: {
-    getRunsForSeed: ReturnType<typeof vi.fn>;
+    getRunsForTask: ReturnType<typeof vi.fn>;
     getRunProgress: ReturnType<typeof vi.fn>;
     getAllMessages: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -120,7 +120,7 @@ describe("foreman debug/recover command context", () => {
         mkdirSync(workspacePath, { recursive: true });
         return Promise.resolve({
           workspacePath,
-          branchName: "foreman/seed-1-clean-replay",
+          branchName: "foreman/task-1-clean-replay",
         });
       }),
       stageAll: vi.fn().mockResolvedValue(undefined),
@@ -128,7 +128,7 @@ describe("foreman debug/recover command context", () => {
       push: vi.fn().mockResolvedValue(undefined),
     });
     localStore = {
-      getRunsForSeed: vi.fn(),
+      getRunsForTask: vi.fn(),
       getRunProgress: vi.fn(),
       getAllMessages: vi.fn(),
       close: vi.fn(),
@@ -148,9 +148,9 @@ describe("foreman debug/recover command context", () => {
     return {
       id: "run-daemon",
       project_id: "proj-1",
-      bead_id: "seed-1",
+      bead_id: "task-1",
       status: "running",
-      branch: "foreman/seed-1",
+      branch: "foreman/task-1",
       agent_type: "daemon",
       session_key: null,
       worktree_path: null,
@@ -168,7 +168,7 @@ describe("foreman debug/recover command context", () => {
     return {
       id: "run-local",
       project_id: "proj-local",
-      seed_id: "seed-1",
+      task_id: "task-1",
       status: "running",
       agent_type: "daemon",
       session_key: null,
@@ -197,13 +197,13 @@ describe("foreman debug/recover command context", () => {
     resolveRepoRootProjectPathMock.mockResolvedValue(canonicalPath);
     listRegisteredProjectsMock.mockResolvedValue([{ id: "proj-1", name: "foreman", path: canonicalPath }]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--reason", "stale-blocked"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--reason", "stale-blocked"]);
 
     expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
     expect(ForemanStore.forProject).toHaveBeenCalledWith(canonicalPath);
     expect(mockCreateTrpcClient).toHaveBeenCalledTimes(1);
-    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "seed-1", limit: 50 });
-    expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
+    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "task-1", limit: 50 });
+    expect(localStore.getRunsForTask).not.toHaveBeenCalled();
   });
 
   it("resolves registered debug from a non-canonical cwd to the registered project path", async () => {
@@ -217,13 +217,13 @@ describe("foreman debug/recover command context", () => {
     resolveRepoRootProjectPathMock.mockResolvedValue(canonicalPath);
     listRegisteredProjectsMock.mockResolvedValue([{ id: "proj-1", name: "foreman", path: canonicalPath }]);
 
-    await runCommand(debugCommand, ["seed-1", "--raw"]);
+    await runCommand(debugCommand, ["task-1", "--raw"]);
 
     expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
     expect(ForemanStore.forProject).toHaveBeenCalledWith(canonicalPath);
     expect(mockCreateTrpcClient).toHaveBeenCalledTimes(1);
-    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "seed-1", limit: 50 });
-    expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
+    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "task-1", limit: 50 });
+    expect(localStore.getRunsForTask).not.toHaveBeenCalled();
   });
 
   it("uses Elixir registered recover/debug context without creating tRPC in default Elixir mode", async () => {
@@ -231,7 +231,7 @@ describe("foreman debug/recover command context", () => {
     const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
     const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
     const listRuns = vi.fn().mockResolvedValue([
-      { run_id: "run-elixir", project_id: "proj-1", task_id: "seed-1", status: "running", created_at: "2026-04-25T00:00:00.000Z" },
+      { run_id: "run-elixir", project_id: "proj-1", task_id: "task-1", status: "running", created_at: "2026-04-25T00:00:00.000Z" },
     ]);
     const listInbox = vi.fn().mockResolvedValue([]);
     vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("elixir");
@@ -245,33 +245,33 @@ describe("foreman debug/recover command context", () => {
     resolveRepoRootProjectPathMock.mockResolvedValue(canonicalPath);
     listRegisteredProjectsMock.mockResolvedValue([{ id: "proj-1", name: "foreman", path: canonicalPath }]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--reason", "stale-blocked"]);
-    await runCommand(debugCommand, ["seed-1", "--raw"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--reason", "stale-blocked"]);
+    await runCommand(debugCommand, ["task-1", "--raw"]);
 
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     expect(listRuns).toHaveBeenCalledWith({ projectId: "proj-1" });
     expect(listInbox).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-elixir", limit: 100 });
-    expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
+    expect(localStore.getRunsForTask).not.toHaveBeenCalled();
   });
 
   it("keeps local unregistered behavior unchanged", async () => {
     const resolveRepoRootProjectPathMock = vi.mocked(projectTaskSupport.resolveRepoRootProjectPath);
     const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
     const localRun = mockLocalRun();
-    localStore.getRunsForSeed.mockReturnValue([localRun]);
+    localStore.getRunsForTask.mockReturnValue([localRun]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
 
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--reason", "stale-blocked"]);
-    await runCommand(debugCommand, ["seed-1", "--raw"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--reason", "stale-blocked"]);
+    await runCommand(debugCommand, ["task-1", "--raw"]);
 
     expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
     expect(ForemanStore.forProject).toHaveBeenCalledWith(tmpDir);
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
-    expect(localStore.getRunsForSeed).toHaveBeenCalledWith("seed-1");
+    expect(localStore.getRunsForTask).toHaveBeenCalledWith("task-1");
     expect(localStore.getRunProgress).toHaveBeenCalled();
     expect(localStore.getAllMessages).toHaveBeenCalled();
   });
@@ -288,13 +288,13 @@ describe("foreman debug/recover command context", () => {
       "",
     ].join("\n"));
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--reason", "stale-blocked"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--reason", "stale-blocked"]);
 
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).toContain("─── Recommended Recovery ───");
@@ -313,13 +313,13 @@ describe("foreman debug/recover command context", () => {
       "",
     ].join("\n"));
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1"]);
+    await runCommand(recoverCommand, ["task-1"]);
 
     const prompt = mockRunWithPiSdk.mock.calls[0]?.[0]?.prompt as string;
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
@@ -339,13 +339,13 @@ describe("foreman debug/recover command context", () => {
       "",
     ].join("\n"));
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--reason", "stale-blocked"]);
+    await runCommand(recoverCommand, ["task-1", "--reason", "stale-blocked"]);
 
     const prompt = mockRunWithPiSdk.mock.calls[0]?.[0]?.prompt as string;
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
@@ -365,21 +365,21 @@ describe("foreman debug/recover command context", () => {
       "",
     ].join("\n"));
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--prepare-clean-replay"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--prepare-clean-replay"]);
 
     expect(mockVcsFactoryCreate).toHaveBeenCalledWith({ backend: "auto" }, tmpDir);
     const vcs = await mockVcsFactoryCreate.mock.results[0]?.value;
     expect(vcs.detectDefaultBranch).toHaveBeenCalledWith(tmpDir);
-    expect(vcs.createWorkspace).toHaveBeenCalledWith(tmpDir, "seed-1-clean-replay", "main");
+    expect(vcs.createWorkspace).toHaveBeenCalledWith(tmpDir, "task-1-clean-replay", "main");
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).toContain("─── Clean Replay Workspace ───");
-    expect(output).toContain("Branch: foreman/seed-1-clean-replay");
+    expect(output).toContain("Branch: foreman/task-1-clean-replay");
     expect(output).toContain(`Path: ${join(tmpDir, "clean-replay-workspace")}`);
   });
 
@@ -388,7 +388,7 @@ describe("foreman debug/recover command context", () => {
     const listRegisteredProjectsMock = vi.mocked(projectTaskSupport.listRegisteredProjects);
     const worktreePath = join(tmpDir, "worktree-apply-replay");
     mkdirSync(join(worktreePath, "src"), { recursive: true });
-    mkdirSync(join(worktreePath, "docs", "reports", "seed-1"), { recursive: true });
+    mkdirSync(join(worktreePath, "docs", "reports", "task-1"), { recursive: true });
     writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), [
       "## Rebase",
       "- Status: FAILED",
@@ -405,13 +405,13 @@ describe("foreman debug/recover command context", () => {
       return "mock-output\n";
     }) as (...args: unknown[]) => string);
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--apply-clean-replay"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--apply-clean-replay"]);
 
     const destinationPath = join(tmpDir, "clean-replay-workspace", "src", "feature.ts");
     expect(readFileSync(destinationPath, "utf-8")).toContain("replayed = true");
@@ -441,13 +441,13 @@ describe("foreman debug/recover command context", () => {
       return "mock-output\n";
     }) as (...args: unknown[]) => string);
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--validate-clean-replay"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--validate-clean-replay"]);
 
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).toContain("─── Clean Replay Validation ───");
@@ -474,17 +474,17 @@ describe("foreman debug/recover command context", () => {
       return "mock-output\n";
     }) as (...args: unknown[]) => string);
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--commit-clean-replay"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--commit-clean-replay"]);
 
     const vcs = await mockVcsFactoryCreate.mock.results[0]?.value;
     expect(vcs.stageAll).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"));
-    expect(vcs.commit).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "fix: replay seed-1 cleanly from current main");
+    expect(vcs.commit).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "fix: replay task-1 cleanly from current main");
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).toContain("─── Clean Replay Commit ───");
     expect(output).toContain("Status: PASS");
@@ -508,21 +508,21 @@ describe("foreman debug/recover command context", () => {
       return "mock-output\n";
     }) as (...args: unknown[]) => string);
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--push-clean-replay"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--push-clean-replay"]);
 
     const vcs = await mockVcsFactoryCreate.mock.results[0]?.value;
     expect(vcs.stageAll).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"));
-    expect(vcs.commit).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "fix: replay seed-1 cleanly from current main");
-    expect(vcs.push).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "foreman/seed-1-clean-replay");
+    expect(vcs.commit).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "fix: replay task-1 cleanly from current main");
+    expect(vcs.push).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "foreman/task-1-clean-replay");
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).toContain("─── Clean Replay Push ───");
-    expect(output).toContain("Branch: foreman/seed-1-clean-replay");
+    expect(output).toContain("Branch: foreman/task-1-clean-replay");
   });
 
   it("executes the full clean replay flow with one flag", async () => {
@@ -545,20 +545,20 @@ describe("foreman debug/recover command context", () => {
       return "mock-output\n";
     }) as (...args: unknown[]) => string);
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--raw", "--execute-clean-replay"]);
+    await runCommand(recoverCommand, ["task-1", "--raw", "--execute-clean-replay"]);
 
     const destinationPath = join(tmpDir, "clean-replay-workspace", "src", "feature.ts");
     expect(readFileSync(destinationPath, "utf-8")).toContain("done = true");
     const vcs = await mockVcsFactoryCreate.mock.results[0]?.value;
     expect(vcs.stageAll).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"));
-    expect(vcs.commit).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "fix: replay seed-1 cleanly from current main");
-    expect(vcs.push).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "foreman/seed-1-clean-replay");
+    expect(vcs.commit).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "fix: replay task-1 cleanly from current main");
+    expect(vcs.push).toHaveBeenCalledWith(join(tmpDir, "clean-replay-workspace"), "foreman/task-1-clean-replay");
     const output = vi.mocked(console.log).mock.calls.map((call) => call.join(" ")).join("\n");
     expect(output).toContain("─── Clean Replay Applied Files ───");
     expect(output).toContain("─── Clean Replay Validation ───");
@@ -588,13 +588,13 @@ describe("foreman debug/recover command context", () => {
       return "mock-output\n";
     }) as (...args: unknown[]) => string);
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await expect(runCommand(recoverCommand, ["seed-1", "--raw", "--commit-clean-replay"]))
+    await expect(runCommand(recoverCommand, ["task-1", "--raw", "--commit-clean-replay"]))
       .rejects.toThrow();
 
     const vcs = await mockVcsFactoryCreate.mock.results[0]?.value;
@@ -626,13 +626,13 @@ describe("foreman debug/recover command context", () => {
       return "mock-output\n";
     }) as (...args: unknown[]) => string);
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await expect(runCommand(recoverCommand, ["seed-1", "--raw", "--push-clean-replay"]))
+    await expect(runCommand(recoverCommand, ["task-1", "--raw", "--push-clean-replay"]))
       .rejects.toThrow();
 
     const vcs = await mockVcsFactoryCreate.mock.results[0]?.value;
@@ -655,13 +655,13 @@ describe("foreman debug/recover command context", () => {
       "",
     ].join("\n"));
 
-    localStore.getRunsForSeed.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
+    localStore.getRunsForTask.mockReturnValue([{ ...mockLocalRun(), worktree_path: worktreePath }]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
     resolveRepoRootProjectPathMock.mockResolvedValue(tmpDir);
     listRegisteredProjectsMock.mockResolvedValue([]);
 
-    await runCommand(recoverCommand, ["seed-1", "--reason", "finalize-conflict"]);
+    await runCommand(recoverCommand, ["task-1", "--reason", "finalize-conflict"]);
 
     const prompt = mockRunWithPiSdk.mock.calls[0]?.[0]?.prompt as string;
     expect(prompt).toContain("**Failure reason reported:** `finalize-conflict`");
@@ -675,9 +675,9 @@ describe("foreman debug/recover command context", () => {
 
     resolveRepoRootProjectPathMock.mockRejectedValue(new Error("not a repo"));
 
-    await expect(runCommand(recoverCommand, ["seed-1", "--raw", "--reason", "stale-blocked"]))
+    await expect(runCommand(recoverCommand, ["task-1", "--raw", "--reason", "stale-blocked"]))
       .rejects.toThrow("not a repo");
-    await expect(runCommand(debugCommand, ["seed-1", "--raw"]))
+    await expect(runCommand(debugCommand, ["task-1", "--raw"]))
       .rejects.toThrow("not a repo");
 
     expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});

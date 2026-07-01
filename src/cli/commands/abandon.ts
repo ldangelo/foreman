@@ -23,8 +23,8 @@ export interface AbandonOpts {
   projectPath?: string;
 }
 
-function branchForSeed(seedId: string): string {
-  return seedId.startsWith("foreman/") ? seedId : `foreman/${seedId}`;
+function branchForTask(taskId: string): string {
+  return taskId.startsWith("foreman/") ? taskId : `foreman/${taskId}`;
 }
 
 async function getRun(store: RunStore, id: string): Promise<Run | null> {
@@ -32,9 +32,9 @@ async function getRun(store: RunStore, id: string): Promise<Run | null> {
     const direct = await Promise.resolve(store.getRun(id));
     if (direct) return direct;
   } catch {
-    // Non-UUID task ids can make Postgres run lookup fail; fall back to seed lookup.
+    // Non-UUID task ids can make Postgres run lookup fail; fall back to task lookup.
   }
-  const runs = await Promise.resolve(store.getRunsForSeed(id));
+  const runs = await Promise.resolve(store.getRunsForTask(id));
   return runs[0] ?? null;
 }
 
@@ -43,10 +43,10 @@ async function removeMergeQueueEntries(
   run: Run,
   dryRun: boolean,
 ): Promise<number> {
-  const branchName = branchForSeed(run.seed_id);
+  const branchName = branchForTask(run.task_id);
   const entries = await Promise.resolve(queue.list()) as MergeQueueEntry[];
   const matches = entries.filter((entry) =>
-    entry.run_id === run.id || entry.seed_id === run.seed_id || entry.branch_name === branchName,
+    entry.run_id === run.id || entry.task_id === run.task_id || entry.branch_name === branchName,
   );
   if (dryRun) return matches.length;
   for (const entry of matches) {
@@ -67,9 +67,9 @@ async function abandonRun(
 ): Promise<void> {
   const dryRun = opts.dryRun ?? false;
   const reason = opts.reason ?? "abandoned by operator";
-  const branchName = branchForSeed(run.seed_id);
+  const branchName = branchForTask(run.task_id);
 
-  console.log(chalk.bold(`${dryRun ? "Would abandon" : "Abandoning"} ${chalk.cyan(run.seed_id)} (${run.id})`));
+  console.log(chalk.bold(`${dryRun ? "Would abandon" : "Abandoning"} ${chalk.cyan(run.task_id)} (${run.id})`));
   console.log(`  reason: ${reason}`);
 
   const queueRemoved = await removeMergeQueueEntries(deps.queue, run, dryRun);
@@ -79,7 +79,7 @@ async function abandonRun(
     if (dryRun) {
       console.log(`  would remove worktree ${chalk.dim(run.worktree_path)}`);
     } else {
-      await archiveWorktreeReports(deps.projectPath, run.worktree_path, run.seed_id).catch(() => {});
+      await archiveWorktreeReports(deps.projectPath, run.worktree_path, run.task_id).catch(() => {});
       await deps.vcs.removeWorkspace(deps.projectPath, run.worktree_path);
       console.log(`  removed worktree ${chalk.dim(run.worktree_path)}`);
     }
@@ -96,17 +96,17 @@ async function abandonRun(
 
   if (!opts.keepTask && "updateTaskStatus" in deps.store) {
     if (dryRun) {
-      console.log(`  would mark task ${chalk.dim(run.seed_id)} blocked`);
+      console.log(`  would mark task ${chalk.dim(run.task_id)} blocked`);
     } else {
-      await Promise.resolve(deps.store.updateTaskStatus(run.seed_id, "blocked"));
-      console.log(`  marked task ${chalk.dim(run.seed_id)} blocked`);
+      await Promise.resolve(deps.store.updateTaskStatus(run.task_id, "blocked"));
+      console.log(`  marked task ${chalk.dim(run.task_id)} blocked`);
     }
   }
 
   if (!dryRun) {
     await Promise.resolve(deps.store.updateRun(run.id, { status: "failed", completed_at: new Date().toISOString(), merge_strategy: "none" }));
     await Promise.resolve(deps.store.logEvent(run.project_id, "fail", {
-      seedId: run.seed_id,
+      taskId: run.task_id,
       reason,
       abandoned: true,
       branchName,
@@ -121,7 +121,7 @@ async function findCompletedRunsWithMissingBranches(store: RunStore, projectPath
   const branchExistsCache = new Map<string, boolean>();
   const missing: Run[] = [];
   for (const run of completed) {
-    const branchName = branchForSeed(run.seed_id);
+    const branchName = branchForTask(run.task_id);
     let exists = branchExistsCache.get(branchName);
     if (exists === undefined) {
       exists = await vcs.branchExists(projectPath, branchName);
@@ -184,7 +184,7 @@ export async function abandonAction(target: string | undefined, opts: AbandonOpt
 
 export const abandonCommand = new Command("abandon")
   .description("Abandon obsolete Foreman work: dequeue run, remove worktree, and mark task blocked")
-  .argument("[task-or-run-id]", "Task/seed id or run id to abandon")
+  .argument("[task-or-run-id]", "Task/task id or run id to abandon")
   .option("--missing-branches", "Bulk-abandon completed runs whose foreman/<task> branch is missing locally")
   .option("--reason <text>", "Reason recorded in run history")
   .option("--dry-run", "Preview changes without applying them")

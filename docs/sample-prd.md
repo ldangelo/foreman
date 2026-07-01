@@ -10,7 +10,7 @@ Set up the PostgreSQL database with the following tables:
 - `sessions` table with id, user_id, token, expires_at, created_at
 - `audit_log` table with id, user_id, action, details, created_at
 
-Create migration scripts for initial schema and seed data.
+Create migration scripts for initial schema and task data.
 
 ## Authentication Endpoints
 

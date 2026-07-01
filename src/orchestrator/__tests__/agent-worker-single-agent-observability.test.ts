@@ -65,12 +65,12 @@ describe("single-agent observability routing", () => {
       "proj-1",
       "run-1",
       "complete",
-      { seedId: "seed-1", title: "Seed 1" },
+      { taskId: "task-1", title: "Task 1" },
       logFn,
     );
 
     expect(registeredStore.updateRunProgress).toHaveBeenCalledWith("run-1", progress);
-    expect(registeredStore.logEvent).toHaveBeenCalledWith("proj-1", "complete", { seedId: "seed-1", title: "Seed 1" }, "run-1");
+    expect(registeredStore.logEvent).toHaveBeenCalledWith("proj-1", "complete", { taskId: "task-1", title: "Task 1" }, "run-1");
     expect(registeredStore.updateRunProgress).toHaveBeenCalledTimes(1);
     expect(registeredStore.logEvent).toHaveBeenCalledTimes(1);
     expect(localStore.updateRunProgress).not.toHaveBeenCalled();
@@ -96,12 +96,12 @@ describe("single-agent observability routing", () => {
       "proj-2",
       "run-2",
       "fail",
-      { seedId: "seed-2", reason: "boom" },
+      { taskId: "task-2", reason: "boom" },
       logFn,
     );
 
     expect(localStore.updateRunProgress).toHaveBeenCalledWith("run-2", progress);
-    expect(localStore.logEvent).toHaveBeenCalledWith("proj-2", "fail", { seedId: "seed-2", reason: "boom" }, "run-2");
+    expect(localStore.logEvent).toHaveBeenCalledWith("proj-2", "fail", { taskId: "task-2", reason: "boom" }, "run-2");
     expect(localStore.updateRunProgress).toHaveBeenCalledTimes(1);
     expect(localStore.logEvent).toHaveBeenCalledTimes(1);
     expect(registeredStore.updateRunProgress).toHaveBeenCalledTimes(1);
@@ -124,12 +124,12 @@ describe("single-agent observability routing", () => {
       "proj-3",
       "run-3",
       "stuck",
-      { seedId: "seed-3", reason: "rate limit" },
+      { taskId: "task-3", reason: "rate limit" },
       logFn,
     );
 
     expect(localStore.updateRunProgress).toHaveBeenCalledWith("run-3", progress);
-    expect(localStore.logEvent).toHaveBeenCalledWith("proj-3", "stuck", { seedId: "seed-3", reason: "rate limit" }, "run-3");
+    expect(localStore.logEvent).toHaveBeenCalledWith("proj-3", "stuck", { taskId: "task-3", reason: "rate limit" }, "run-3");
     expect(localStore.updateRunProgress).toHaveBeenCalledTimes(1);
     expect(localStore.logEvent).toHaveBeenCalledTimes(1);
     expect(logFn).not.toHaveBeenCalled();

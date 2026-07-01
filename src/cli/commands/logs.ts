@@ -135,7 +135,7 @@ export function extractRecentToolEvents(logContent: string, limit: number): Rece
 
 function renderRunHeader(resolved: ResolvedRun): void {
   const { run, progress, taskId } = resolved;
-  console.log(chalk.bold(`\n  Logs: ${taskId ?? run.seed_id ?? run.id}`));
+  console.log(chalk.bold(`\n  Logs: ${taskId ?? run.task_id ?? run.id}`));
   console.log(`  Run ID:      ${run.id}`);
   console.log(`  Status:      ${run.status}`);
   if (progress?.currentPhase) console.log(`  Phase:       ${progress.currentPhase}`);
@@ -209,7 +209,7 @@ function renderSummary(runId: string, tailCount: number): void {
 function normalizeDaemonRun(row: Run & { bead_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }): Run {
   return {
     ...row,
-    seed_id: row.seed_id ?? row.bead_id ?? row.id,
+    task_id: row.task_id ?? row.bead_id ?? row.id,
     completed_at: row.completed_at ?? row.finished_at ?? null,
   };
 }
@@ -244,7 +244,7 @@ function normalizeElixirRun(row: ElixirRun): Run {
   return {
     id: runId,
     project_id: String(row.project_id ?? ""),
-    seed_id: String(row.task_id ?? ""),
+    task_id: String(row.task_id ?? ""),
     agent_type: "elixir",
     session_key: null,
     worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : null,
@@ -273,7 +273,7 @@ async function resolveElixirRun(id: string | undefined, opts: LogsOpts): Promise
 
   if (runId && /^[0-9a-f-]{8,}$/i.test(runId)) {
     const direct = runs.find((run) => run.id === runId || run.id.startsWith(runId));
-    if (direct) return { run: direct, progress: null, taskId: direct.seed_id };
+    if (direct) return { run: direct, progress: null, taskId: direct.task_id };
   }
 
   if (!id) return null;
@@ -292,9 +292,9 @@ async function resolveElixirRun(id: string | undefined, opts: LogsOpts): Promise
     }
   }
 
-  const match = runs.find((run) => run.id === id || run.id.startsWith(id) || run.seed_id === id || run.seed_id.startsWith(id));
+  const match = runs.find((run) => run.id === id || run.id.startsWith(id) || run.task_id === id || run.task_id.startsWith(id));
   if (!match) return null;
-  return { run: match, progress: null, taskId: match.seed_id };
+  return { run: match, progress: null, taskId: match.task_id };
 }
 
 async function resolveDaemonRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
@@ -311,7 +311,7 @@ async function resolveDaemonRun(id: string | undefined, opts: LogsOpts): Promise
       if (directRow) {
         const run = normalizeDaemonRun(directRow);
         const progress = await client.runs.getProgress({ runId: run.id }) as RunProgress | null;
-        return { run, progress: progress ?? progressFromRun(directRow), taskId: run.seed_id };
+        return { run, progress: progress ?? progressFromRun(directRow), taskId: run.task_id };
       }
     } catch {
       // Treat positional non-run IDs as task IDs below.
@@ -332,10 +332,10 @@ async function resolveDaemonRun(id: string | undefined, opts: LogsOpts): Promise
 
   const runRows = await client.runs.list({ projectId: project.id, limit: 100 }) as Array<Run & { bead_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }>;
   const runs = runRows.map(normalizeDaemonRun);
-  const match = runs.find((run) => run.id === id || run.id.startsWith(id) || run.seed_id === id || run.seed_id.startsWith(id));
+  const match = runs.find((run) => run.id === id || run.id.startsWith(id) || run.task_id === id || run.task_id.startsWith(id));
   if (!match) return null;
   const progress = await client.runs.getProgress({ runId: match.id }) as RunProgress | null;
-  return { run: match, progress: progress ?? progressFromRun(runRows.find((row) => row.id === match.id) ?? {}), taskId: match.seed_id };
+  return { run: match, progress: progress ?? progressFromRun(runRows.find((row) => row.id === match.id) ?? {}), taskId: match.task_id };
 }
 
 async function resolveLocalRun(id: string | undefined, opts: LogsOpts): Promise<ResolvedRun | null> {
@@ -346,10 +346,10 @@ async function resolveLocalRun(id: string | undefined, opts: LogsOpts): Promise<
     const runId = opts.run ?? id;
     if (runId) {
       const direct = store.getRun(runId);
-      if (direct) return { run: direct, progress: store.getRunProgress(direct.id), taskId: direct.seed_id };
+      if (direct) return { run: direct, progress: store.getRunProgress(direct.id), taskId: direct.task_id };
     }
     if (!id || !project) return null;
-    const runs = store.getRunsForSeed(id, project.id);
+    const runs = store.getRunsForTask(id, project.id);
     if (runs.length > 0 && runs[0]) {
       return { run: runs[0], progress: store.getRunProgress(runs[0].id), taskId: id };
     }

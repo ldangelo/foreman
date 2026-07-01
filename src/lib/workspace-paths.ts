@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, join, normalize, relative } from "node:p
  * Default layout keeps workspaces outside the repository root to avoid parent
  * repo state writes (for example .beads/issues.jsonl) dirtying active agent
  * workspaces:
- *   <repo-parent>/.foreman-worktrees/<repo-name>/<seedId>
+ *   <repo-parent>/.foreman-worktrees/<repo-name>/<taskId>
  *
  * FOREMAN_WORKTREE_ROOT may override the parent directory used to hold all
  * project workspaces. When set, Foreman appends the repo basename so multiple
@@ -25,17 +25,17 @@ export function getWorkspaceRoot(repoPath: string): string {
   return join(dirname(normalize(repoPath)), ".foreman-worktrees", repoName);
 }
 
-/** Return the full workspace path for a specific seed. */
-export function getWorkspacePath(repoPath: string, seedId: string): string {
-  return join(getWorkspaceRoot(repoPath), seedId);
+/** Return the full workspace path for a specific task. */
+export function getWorkspacePath(repoPath: string, taskId: string): string {
+  return join(getWorkspaceRoot(repoPath), taskId);
 }
 
 /**
  * Infer the project root from a workspace path.
  *
  * Supports both layouts:
- *   legacy:   <repo>/.foreman-worktrees/<seedId>
- *   external: <repo-parent>/.foreman-worktrees/<repo-name>/<seedId>
+ *   legacy:   <repo>/.foreman-worktrees/<taskId>
+ *   external: <repo-parent>/.foreman-worktrees/<repo-name>/<taskId>
  */
 export function inferProjectPathFromWorkspacePath(workspacePath: string): string {
   const normalized = normalize(workspacePath);

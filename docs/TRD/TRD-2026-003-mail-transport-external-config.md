@@ -38,7 +38,7 @@ This TRD translates PRD-2026-003 into an implementable plan for two independentl
 
 **Part 1 -- Agent Mail Read Transport:** Wire up the read path for inter-phase messages. Agent Mail already sends Explorer reports, QA feedback, and QA reports as messages. This part adds the corresponding reads so Agent Mail becomes the primary transport, with disk files as automatic fallback. Also closes the Reviewer send gap, fixes `acknowledgeMessage()` registry resolution, adds stale message filtering via `runId`, and adds the Explorer report read path. Approximately 60 lines of new code plus targeted modifications.
 
-**Part 2 -- Externalized Prompts and Workflow Config:** Move phase system prompts from TypeScript template literals in `roles.ts` to user-editable markdown files in `~/.foreman/prompts/`. Move phase mechanical config (model, budget, tools) to `~/.foreman/phases.json`. Move pipeline phase sequences to `~/.foreman/workflows.json` keyed by seed type. Add `foreman init` config seeding and a Reproducer phase for bug workflows. Three new loader modules plus bundled defaults.
+**Part 2 -- Externalized Prompts and Workflow Config:** Move phase system prompts from TypeScript template literals in `roles.ts` to user-editable markdown files in `~/.foreman/prompts/`. Move phase mechanical config (model, budget, tools) to `~/.foreman/phases.json`. Move pipeline phase sequences to `~/.foreman/workflows.json` keyed by task type. Add `foreman init` config tasking and a Reproducer phase for bug workflows. Three new loader modules plus bundled defaults.
 
 **Scope:** 25 implementation tasks + 22 paired test tasks = 47 total tasks across 4 phases. No Postgres schema changes. No changes to `foreman status` or `foreman monitor`. Full backward compatibility when Agent Mail is unavailable or config files are absent.
 
@@ -56,25 +56,25 @@ This TRD translates PRD-2026-003 into an implementable plan for two independentl
 
 ```
 Explorer --- sdk.query() -------------------------------------------------->
-  +-- sendMailText -> "developer-{seedId}"  "Explorer Report [run:{runId}]"     [existing send]
+  +-- sendMailText -> "developer-{taskId}"  "Explorer Report [run:{runId}]"     [existing send]
   +-- writes EXPLORER_REPORT.md                                                  [kept as fallback]
 
-Developer <-- fetchLatestPhaseMessage("developer-{seedId}", "Explorer Report")   [NEW read]
+Developer <-- fetchLatestPhaseMessage("developer-{taskId}", "Explorer Report")   [NEW read]
           <-- fallback: EXPLORER_REPORT.md on disk
   +-- writes implementation files
 
 QA --- sdk.query() -------------------------------------------------------->
-  [FAIL] +-- sendMailText -> "developer-{seedId}"  "QA Feedback - Retry N [run:{runId}]"  [existing send]
-  [PASS] +-- sendMailText -> "reviewer-{seedId}"   "QA Report [run:{runId}]"              [existing send]
+  [FAIL] +-- sendMailText -> "developer-{taskId}"  "QA Feedback - Retry N [run:{runId}]"  [existing send]
+  [PASS] +-- sendMailText -> "reviewer-{taskId}"   "QA Report [run:{runId}]"              [existing send]
 
-Developer (retry) <-- fetchLatestPhaseMessage("developer-{seedId}", "QA Feedback", runId)   [NEW read]
+Developer (retry) <-- fetchLatestPhaseMessage("developer-{taskId}", "QA Feedback", runId)   [NEW read]
                   <-- fallback: QA_REPORT.md on disk
 
 Reviewer --- sdk.query() -------------------------------------------------->
-  [issues] +-- sendMailText -> "developer-{seedId}"  "Review Findings [run:{runId}]"      [NEW send]
+  [issues] +-- sendMailText -> "developer-{taskId}"  "Review Findings [run:{runId}]"      [NEW send]
   +-- sendMailText -> "foreman"  "Review Complete"                                         [existing send]
 
-Developer (retry) <-- fetchLatestPhaseMessage("developer-{seedId}", "Review Findings", runId) [NEW read]
+Developer (retry) <-- fetchLatestPhaseMessage("developer-{taskId}", "Review Findings", runId) [NEW read]
                   <-- fallback: local reviewFeedback variable
 
 Finalize --> sends "branch-ready" to refinery                                              [existing send]
@@ -90,17 +90,17 @@ runPipeline() starts
   |     |-- absent or invalid? -> return ROLE_CONFIGS from roles.ts
   |     |-- env var overrides (FOREMAN_EXPLORER_MODEL etc.) take precedence
   |
-  |-- getWorkflow(seed.type)
-  |     |-- ~/.foreman/workflows.json exists? -> parse -> lookup seed type
-  |     |-- absent or invalid? -> return DEFAULT_WORKFLOWS[seed.type]
-  |     |-- unknown seed type? -> fallback to "feature" workflow
+  |-- getWorkflow(task.type)
+  |     |-- ~/.foreman/workflows.json exists? -> parse -> lookup task type
+  |     |-- absent or invalid? -> return DEFAULT_WORKFLOWS[task.type]
+  |     |-- unknown task type? -> fallback to "feature" workflow
   |
   |-- Cross-validate: every phase in workflow has a phases.json entry or ROLE_CONFIGS fallback
   |     |-- "finalize" always valid (implemented directly in runPipeline)
-  |     |-- unknown phase with no fallback -> fail seed before spawning agents
+  |     |-- unknown phase with no fallback -> fail task before spawning agents
   |
   |-- Validate: every workflow ends with "finalize"
-  |     |-- missing finalize -> fail seed before spawning agents
+  |     |-- missing finalize -> fail task before spawning agents
   |
   |-- For each phase in workflow:
         |-- loadPrompt(phase, variables, builtInFallback)
@@ -142,7 +142,7 @@ src/
       reproducer.md               [CREATE] Default Reproducer prompt
   cli/
     commands/
-      init.ts                     [MODIFY] Config file seeding
+      init.ts                     [MODIFY] Config file tasking
 
 UNCHANGED:
   src/orchestrator/roles.ts       -- prompt functions + ROLE_CONFIGS kept as fallbacks
@@ -165,10 +165,10 @@ Messages include `runId` for stale message filtering:
 
 | Message | Subject Format | From -> To |
 |---------|---------------|------------|
-| Explorer Report | `"Explorer Report [run:{runId}]"` | worker -> `developer-{seedId}` |
-| QA Feedback | `"QA Feedback - Retry N [run:{runId}]"` | worker -> `developer-{seedId}` |
-| QA Report | `"QA Report [run:{runId}]"` | worker -> `reviewer-{seedId}` |
-| Review Findings | `"Review Findings [run:{runId}]"` | worker -> `developer-{seedId}` |
+| Explorer Report | `"Explorer Report [run:{runId}]"` | worker -> `developer-{taskId}` |
+| QA Feedback | `"QA Feedback - Retry N [run:{runId}]"` | worker -> `developer-{taskId}` |
+| QA Report | `"QA Report [run:{runId}]"` | worker -> `reviewer-{taskId}` |
+| Review Findings | `"Review Findings [run:{runId}]"` | worker -> `developer-{taskId}` |
 | Phase Complete | `"phase-complete"` | worker -> `foreman` |
 | Review Complete | `"Review Complete"` | worker -> `foreman` |
 
@@ -188,11 +188,11 @@ interface PhaseConfigFile {
 }
 ```
 
-**`~/.foreman/workflows.json`** -- phase sequences by seed type:
+**`~/.foreman/workflows.json`** -- phase sequences by task type:
 
 ```typescript
 interface WorkflowConfigFile {
-  [seedType: string]: string[];  // ordered array of phase names, must end with "finalize"
+  [taskType: string]: string[];  // ordered array of phase names, must end with "finalize"
 }
 ```
 
@@ -295,7 +295,7 @@ interface WorkflowConfigFile {
 - File: `src/orchestrator/agent-worker.ts`
 - Actions:
   1. In the Dev<->QA retry loop (around line 1134), after `runPhase("qa")` returns, add `fetchLatestPhaseMessage()` call before the existing `readReport()` call
-  2. Read from inbox: `const qaMailBody = await fetchLatestPhaseMessage(agentMailClient, \`developer-${seedId}\`, "QA Feedback", runId)`
+  2. Read from inbox: `const qaMailBody = await fetchLatestPhaseMessage(agentMailClient, \`developer-${taskId}\`, "QA Feedback", runId)`
   3. Fall back to disk: `const qaReport = qaMailBody ?? readReport(worktreePath, "QA_REPORT.md")`
   4. Keep all downstream logic unchanged (`parseVerdict`, `extractIssues`, `feedbackContext` assignment)
 - Validates PRD ACs: AC-003-1, AC-003-2, AC-003-3, AC-003-4
@@ -328,7 +328,7 @@ interface WorkflowConfigFile {
 - Actions:
   1. In the post-Reviewer dev-retry block (around line 1205), after `reviewFeedback` is extracted, add a `sendMailText()` call
   2. Guard: only send if `reviewReport` is non-null (AC-004-2)
-  3. Call: `sendMailText(agentMailClient, \`developer-${seedId}\`, \`Review Findings [run:${runId}]\`, reviewFeedback)`
+  3. Call: `sendMailText(agentMailClient, \`developer-${taskId}\`, \`Review Findings [run:${runId}]\`, reviewFeedback)`
   4. Fire-and-forget -- existing `sendMailText` already handles errors silently (AC-004-3)
 - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3
 - Implementation AC:
@@ -357,7 +357,7 @@ interface WorkflowConfigFile {
 - File: `src/orchestrator/agent-worker.ts`
 - Actions:
   1. In the post-Reviewer dev-retry block, after the send in TRD-004, before calling `developerPrompt()` in the retry (around line 1220)
-  2. Add: `const reviewMailBody = await fetchLatestPhaseMessage(agentMailClient, \`developer-${seedId}\`, "Review Findings", runId)`
+  2. Add: `const reviewMailBody = await fetchLatestPhaseMessage(agentMailClient, \`developer-${taskId}\`, "Review Findings", runId)`
   3. Use: `const reviewFeedbackForDev = reviewMailBody ?? reviewFeedback`
   4. Pass `reviewFeedbackForDev` to `developerPrompt()` instead of `reviewFeedback`
 - Validates PRD ACs: AC-005-1, AC-005-2, AC-005-3
@@ -386,7 +386,7 @@ interface WorkflowConfigFile {
 - File: `src/orchestrator/agent-worker.ts`
 - Actions:
   1. Before the Developer phase starts (around line 1047), after `hasExplorerReport` is determined
-  2. If `hasExplorerReport` is true, attempt to read Explorer report from mail: `const explorerMailBody = await fetchLatestPhaseMessage(agentMailClient, \`developer-${seedId}\`, "Explorer Report", runId)`
+  2. If `hasExplorerReport` is true, attempt to read Explorer report from mail: `const explorerMailBody = await fetchLatestPhaseMessage(agentMailClient, \`developer-${taskId}\`, "Explorer Report", runId)`
   3. If `explorerMailBody` is non-null, use it as the Explorer context for the Developer
   4. Fall back to existing `readReport(worktreePath, "EXPLORER_REPORT.md")` when mail body is null
   5. This read is informational (populates context), not a gate -- the Developer proceeds regardless
@@ -490,7 +490,7 @@ interface WorkflowConfigFile {
   6. Export `loadPrompt` and `renderTemplate` (for testing)
 - Validates PRD ACs: AC-008-1, AC-008-2, AC-008-3, AC-008-4, AC-008-5, AC-008-6, AC-008-7
 - Implementation AC:
-  - [ ] Given `~/.foreman/prompts/explorer.md` exists with `{{seedId}}` and `{{seedTitle}}`, when `loadPrompt("explorer", { seedId: "bd-abc1", seedTitle: "Fix login" }, fallback)` is called, then placeholders are replaced with values
+  - [ ] Given `~/.foreman/prompts/explorer.md` exists with `{{taskId}}` and `{{taskTitle}}`, when `loadPrompt("explorer", { taskId: "bd-abc1", taskTitle: "Fix login" }, fallback)` is called, then placeholders are replaced with values
   - [ ] Given a prompt with `{{#if feedbackContext}}...{{/if}}` and `feedbackContext` is undefined, when rendered, then the block is omitted
   - [ ] Given a prompt with `{{#if feedbackContext}}...{{/if}}` and `feedbackContext` is non-empty, when rendered, then block content is included with markers removed
   - [ ] Given the prompt file does not exist, when `loadPrompt` is called, then the `fallback` string is rendered with variable substitution
@@ -509,9 +509,9 @@ interface WorkflowConfigFile {
   3. Test `renderTemplate` directly for template edge cases
 - Validates PRD ACs: AC-008-1 through AC-008-7, AC-016-1, AC-016-2, AC-016-3
 - Implementation AC:
-  - [ ] Given a temp prompt file with `{{seedId}}`, when `loadPrompt` is called with `seedId: "bd-abc1"`, then the output contains `"bd-abc1"` in place of the placeholder
+  - [ ] Given a temp prompt file with `{{taskId}}`, when `loadPrompt` is called with `taskId: "bd-abc1"`, then the output contains `"bd-abc1"` in place of the placeholder
   - [ ] Given a temp prompt with `{{#if feedbackContext}}FEEDBACK{{/if}}` and vars `{ feedbackContext: undefined }`, when rendered, then `"FEEDBACK"` is absent from output
-  - [ ] Given no prompt file exists, when `loadPrompt` is called with fallback `"Default prompt for {{seedId}}"`, then output is `"Default prompt for bd-abc1"`
+  - [ ] Given no prompt file exists, when `loadPrompt` is called with fallback `"Default prompt for {{taskId}}"`, then output is `"Default prompt for bd-abc1"`
   - [ ] Given a template with `{{unknownVar}}`, when `renderTemplate` is called, then `{{unknownVar}}` is replaced with `""`
 
 ---
@@ -599,15 +599,15 @@ interface WorkflowConfigFile {
 - Actions:
   1. Define `DEFAULT_WORKFLOWS` constant: feature, bug, chore, docs
   2. Create `loadWorkflows()`: read `~/.foreman/workflows.json`, parse, return; on error, warn and return defaults
-  3. Create `getWorkflow(seedType)`: lookup in loaded workflows, fall back to `"feature"` workflow for unknown types
+  3. Create `getWorkflow(taskType)`: lookup in loaded workflows, fall back to `"feature"` workflow for unknown types
   4. Export both functions and `DEFAULT_WORKFLOWS`
 - Validates PRD ACs: AC-011-1 through AC-011-6
 - Implementation AC:
   - [ ] Given `~/.foreman/workflows.json` exists with valid JSON, when `loadWorkflows()` is called, then it returns the parsed workflow map
   - [ ] Given `workflows.json` does not exist, when called, then it returns `DEFAULT_WORKFLOWS`
   - [ ] Given `workflows.json` has invalid JSON, when called, then it warns and returns `DEFAULT_WORKFLOWS`
-  - [ ] Given `seedType = "bug"`, when `getWorkflow("bug")` is called, then it returns `["reproducer", "developer", "qa", "finalize"]`
-  - [ ] Given `seedType = "unknown"`, when `getWorkflow("unknown")` is called, then it returns the `"feature"` workflow
+  - [ ] Given `taskType = "bug"`, when `getWorkflow("bug")` is called, then it returns `["reproducer", "developer", "qa", "finalize"]`
+  - [ ] Given `taskType = "unknown"`, when `getWorkflow("unknown")` is called, then it returns the `"feature"` workflow
   - [ ] Given a custom workflow `"spike": ["explorer", "finalize"]` in the file, when `getWorkflow("spike")` is called, then it returns `["explorer", "finalize"]`
 
 ---
@@ -635,18 +635,18 @@ interface WorkflowConfigFile {
 
 - File: `src/lib/workflow-config-loader.ts` (extend) or `src/orchestrator/agent-worker.ts`
 - Actions:
-  1. Create `validateWorkflowPhases(workflow: string[], phaseConfigs: Record<string, unknown>, seedType: string): void`
+  1. Create `validateWorkflowPhases(workflow: string[], phaseConfigs: Record<string, unknown>, taskType: string): void`
   2. For each phase in the workflow: check if it exists in `phaseConfigs` or in `ROLE_CONFIGS` (built-in fallback)
   3. Special case: `"finalize"` is always valid (implemented directly in `runPipeline()`)
-  4. If unknown phase found, throw descriptive error: `"Workflow '${seedType}' references unknown phase '${phaseName}' which has no config in phases.json or ROLE_CONFIGS"`
+  4. If unknown phase found, throw descriptive error: `"Workflow '${taskType}' references unknown phase '${phaseName}' which has no config in phases.json or ROLE_CONFIGS"`
   5. Call this validation at the start of `runPipeline()` before any agent is spawned
-  6. On validation failure, mark seed as failed with descriptive error
+  6. On validation failure, mark task as failed with descriptive error
 - Validates PRD ACs: AC-024-1, AC-024-2, AC-024-3, AC-024-4
 - Implementation AC:
   - [ ] Given workflow contains `"reproducer"` and `phaseConfigs` has a `"reproducer"` entry, when validation runs, then it passes
   - [ ] Given workflow contains `"reproducer"` but neither `phaseConfigs` nor `ROLE_CONFIGS` has it, when validation runs, then an error is thrown identifying `"reproducer"` and the workflow
   - [ ] Given workflow contains `"finalize"`, when validation runs, then `"finalize"` is accepted without checking configs
-  - [ ] Given validation fails, when the error propagates, then the seed is marked as failed and no agent phases execute
+  - [ ] Given validation fails, when the error propagates, then the task is marked as failed and no agent phases execute
 
 ---
 
@@ -671,8 +671,8 @@ interface WorkflowConfigFile {
 - Actions:
   1. Create `validateFinalizeEnforcement(workflows: Record<string, string[]>): void`
   2. For each workflow in the map, verify the last element is `"finalize"`
-  3. If any workflow is missing `"finalize"` as last phase, throw: `"Workflow '${seedType}' must end with 'finalize' but ends with '${lastPhase}'"`
-  4. If `"finalize"` appears but is not last: `"Workflow '${seedType}' has 'finalize' at position ${idx} but it must be the last phase"`
+  3. If any workflow is missing `"finalize"` as last phase, throw: `"Workflow '${taskType}' must end with 'finalize' but ends with '${lastPhase}'"`
+  4. If `"finalize"` appears but is not last: `"Workflow '${taskType}' has 'finalize' at position ${idx} but it must be the last phase"`
   5. Call this validation inside `loadWorkflows()` or at pipeline start
 - Validates PRD ACs: AC-025-1, AC-025-2, AC-025-3, AC-025-4
 - Implementation AC:
@@ -703,15 +703,15 @@ interface WorkflowConfigFile {
 - File: `src/orchestrator/agent-worker.ts`
 - Actions:
   1. Add imports: `loadPhaseConfigs` from `phase-config-loader.js`, `getWorkflow` from `workflow-config-loader.js`, `loadPrompt` from `prompt-loader.js`
-  2. At `runPipeline()` start, load configs: `const phaseConfigs = loadPhaseConfigs()` and `const phases = getWorkflow(seed.type ?? "feature")`
-  3. Run cross-validation: `validateWorkflowPhases(phases, phaseConfigs, seed.type)` and finalize enforcement
+  2. At `runPipeline()` start, load configs: `const phaseConfigs = loadPhaseConfigs()` and `const phases = getWorkflow(task.type ?? "feature")`
+  3. Run cross-validation: `validateWorkflowPhases(phases, phaseConfigs, task.type)` and finalize enforcement
   4. Replace hardcoded phase sequence with iteration over `phases` array
   5. For each phase in the workflow (except `"finalize"`), use `phaseConfigs[phaseName]` for model/budget/tools
 - Validates PRD ACs: AC-012-1, AC-012-2, AC-012-3, AC-012-6
 - Implementation AC:
-  - [ ] Given seed type `"feature"`, when `runPipeline()` executes, then phases `["explorer", "developer", "qa", "reviewer", "finalize"]` are run
-  - [ ] Given seed type `"bug"`, when `runPipeline()` executes, then phases `["reproducer", "developer", "qa", "finalize"]` are run (no Explorer, no Reviewer)
-  - [ ] Given seed type `"chore"`, when `runPipeline()` executes, then phases `["developer", "finalize"]` are run (no Explorer, QA, or Reviewer)
+  - [ ] Given task type `"feature"`, when `runPipeline()` executes, then phases `["explorer", "developer", "qa", "reviewer", "finalize"]` are run
+  - [ ] Given task type `"bug"`, when `runPipeline()` executes, then phases `["reproducer", "developer", "qa", "finalize"]` are run (no Explorer, no Reviewer)
+  - [ ] Given task type `"chore"`, when `runPipeline()` executes, then phases `["developer", "finalize"]` are run (no Explorer, QA, or Reviewer)
   - [ ] Given no external config files, when `runPipeline()` executes, then behavior is identical to current hardcoded implementation
 
 ---
@@ -720,7 +720,7 @@ interface WorkflowConfigFile {
 
 - File: `src/orchestrator/agent-worker.ts`
 - Actions:
-  1. Replace direct `explorerPrompt(...)` calls with: `loadPrompt("explorer", { seedId, seedTitle, seedDescription, seedComments }, explorerPrompt(seedId, seedTitle, description, comments))`
+  1. Replace direct `explorerPrompt(...)` calls with: `loadPrompt("explorer", { taskId, taskTitle, taskDescription, taskComments }, explorerPrompt(taskId, taskTitle, description, comments))`
   2. Replace direct `developerPrompt(...)` calls similarly, using the existing function as fallback
   3. Replace direct `qaPrompt(...)` and `reviewerPrompt(...)` calls similarly
 - Validates PRD ACs: AC-012-4
@@ -784,9 +784,9 @@ interface WorkflowConfigFile {
   8. Test reviewer skip when absent from workflow
 - Validates PRD ACs: AC-012-1 through AC-012-8
 - Implementation AC:
-  - [ ] Given a mock pipeline with seed type `"feature"`, when `runPipeline()` executes, then the phase sequence recorded is `["explorer", "developer", "qa", "reviewer", "finalize"]`
-  - [ ] Given a mock pipeline with seed type `"bug"`, when `runPipeline()` executes, then the phase sequence is `["reproducer", "developer", "qa", "finalize"]`
-  - [ ] Given a mock pipeline with seed type `"chore"`, when `runPipeline()` executes, then the phase sequence is `["developer", "finalize"]`
+  - [ ] Given a mock pipeline with task type `"feature"`, when `runPipeline()` executes, then the phase sequence recorded is `["explorer", "developer", "qa", "reviewer", "finalize"]`
+  - [ ] Given a mock pipeline with task type `"bug"`, when `runPipeline()` executes, then the phase sequence is `["reproducer", "developer", "qa", "finalize"]`
+  - [ ] Given a mock pipeline with task type `"chore"`, when `runPipeline()` executes, then the phase sequence is `["developer", "finalize"]`
   - [ ] Given a mock pipeline with external explorer prompt file, when Explorer runs, then the external prompt is used
   - [ ] Given a mock pipeline with no external config files, when `runPipeline()` executes, then behavior matches current hardcoded implementation
 
@@ -809,7 +809,7 @@ interface WorkflowConfigFile {
   4. Extract `developerPrompt()` into `developer.md` with `{{#if feedbackContext}}` conditional block
   5. Extract `qaPrompt()` into `qa.md`
   6. Extract `reviewerPrompt()` into `reviewer.md`
-  7. Create `reproducer.md` prompt for bug reproduction with `{{seedId}}`, `{{seedTitle}}`, `{{seedDescription}}`
+  7. Create `reproducer.md` prompt for bug reproduction with `{{taskId}}`, `{{taskTitle}}`, `{{taskDescription}}`
   8. Ensure all files use the documented template variable table from PRD Section 6.4
 - Validates PRD ACs: AC-014-1, AC-014-2, AC-014-3, AC-014-4, AC-014-5
 - Implementation AC:
@@ -835,15 +835,15 @@ interface WorkflowConfigFile {
 
 ---
 
-### Phase 3: Init Seeding and UX (Part 2 UX from PRD)
+### Phase 3: Init Tasking and UX (Part 2 UX from PRD)
 
 ---
 
-#### TRD-019: `foreman init` Config Seeding (2h) [satisfies REQ-013]
+#### TRD-019: `foreman init` Config Tasking (2h) [satisfies REQ-013]
 
 - File: `src/cli/commands/init.ts`
 - Actions:
-  1. After existing `initAgentMailConfig()` call, add config seeding logic
+  1. After existing `initAgentMailConfig()` call, add config tasking logic
   2. Check if `~/.foreman/phases.json` exists; if not, copy from `src/defaults/phases.json` and print confirmation
   3. Check if `~/.foreman/workflows.json` exists; if not, copy from `src/defaults/workflows.json` and print confirmation
   4. Check if `~/.foreman/prompts/` exists; if not, create directory and copy all `.md` files from `src/defaults/prompts/` and print confirmation
@@ -860,9 +860,9 @@ interface WorkflowConfigFile {
 
 ---
 
-#### TRD-019-TEST: `foreman init` Config Seeding Tests (2h) [verifies TRD-019] [satisfies REQ-013] [depends: TRD-019]
+#### TRD-019-TEST: `foreman init` Config Tasking Tests (2h) [verifies TRD-019] [satisfies REQ-013] [depends: TRD-019]
 
-- File: `src/cli/commands/__tests__/init-config-seeding.test.ts` (new)
+- File: `src/cli/commands/__tests__/init-config-tasking.test.ts` (new)
 - Actions:
   1. Use temp directories to simulate `~/.foreman/`
   2. Test fresh init: all files created
@@ -871,9 +871,9 @@ interface WorkflowConfigFile {
   5. Test that confirmation messages are printed
 - Validates PRD ACs: AC-013-1 through AC-013-5
 - Implementation AC:
-  - [ ] Given a temp home dir with no `.foreman/`, when init seeding runs, then `phases.json`, `workflows.json`, and `prompts/*.md` are all created
-  - [ ] Given a temp home dir with existing `phases.json`, when init seeding runs, then `phases.json` is untouched but missing files are still created
-  - [ ] Given a temp home dir with existing `prompts/explorer.md` but no `prompts/developer.md`, when init seeding runs, then only `developer.md` (and other missing prompts) are copied
+  - [ ] Given a temp home dir with no `.foreman/`, when init tasking runs, then `phases.json`, `workflows.json`, and `prompts/*.md` are all created
+  - [ ] Given a temp home dir with existing `phases.json`, when init tasking runs, then `phases.json` is untouched but missing files are still created
+  - [ ] Given a temp home dir with existing `prompts/explorer.md` but no `prompts/developer.md`, when init tasking runs, then only `developer.md` (and other missing prompts) are copied
 
 ---
 
@@ -886,19 +886,19 @@ interface WorkflowConfigFile {
 - File: `src/orchestrator/agent-worker.ts` and `src/defaults/prompts/reproducer.md`
 - Actions:
   1. Add `"reproducer"` as a recognized phase in the pipeline loop (driven by workflow config, no hardcoding)
-  2. When the workflow includes `"reproducer"` as the first phase, run it with: `loadPrompt("reproducer", { seedId, seedTitle, seedDescription }, builtInReproducerPrompt)`
+  2. When the workflow includes `"reproducer"` as the first phase, run it with: `loadPrompt("reproducer", { taskId, taskTitle, taskDescription }, builtInReproducerPrompt)`
   3. Use `phaseConfigs["reproducer"]` for model/budget/tools (from `phases.json` or built-in default)
   4. After Reproducer completes, check for `REPRODUCER_REPORT.md`
-  5. Send reproducer report to Developer inbox via Agent Mail: `sendMailText(agentMailClient, \`developer-${seedId}\`, \`Reproducer Report [run:${runId}]\`, reproducerReport)`
-  6. If Reproducer fails (cannot reproduce bug or phase errors), mark seed as stuck with note `"Reproduction failed"` and do NOT proceed to Developer. Do NOT auto-reset to open.
+  5. Send reproducer report to Developer inbox via Agent Mail: `sendMailText(agentMailClient, \`developer-${taskId}\`, \`Reproducer Report [run:${runId}]\`, reproducerReport)`
+  6. If Reproducer fails (cannot reproduce bug or phase errors), mark task as stuck with note `"Reproduction failed"` and do NOT proceed to Developer. Do NOT auto-reset to open.
   7. Create built-in `reproducerPrompt()` function in `roles.ts` as fallback (or use the bundled `reproducer.md` default). **Note:** This modifies `roles.ts` — the only change to that file in this TRD. The new function follows the same pattern as `explorerPrompt()` etc. and is tracked under REQ-015/AC-015-3.
   8. Add `"reproducer"` entry to `ROLE_CONFIGS` or handle it in `loadPhaseConfigs()` fallback
 - Validates PRD ACs: AC-015-1, AC-015-2, AC-015-3, AC-015-4
 - Implementation AC:
-  - [ ] Given seed type `"bug"` and workflow `["reproducer", "developer", "qa", "finalize"]`, when `runPipeline()` executes, then the Reproducer phase runs first using the reproducer prompt and config
+  - [ ] Given task type `"bug"` and workflow `["reproducer", "developer", "qa", "finalize"]`, when `runPipeline()` executes, then the Reproducer phase runs first using the reproducer prompt and config
   - [ ] Given the Reproducer phase completes successfully, when it finishes, then `REPRODUCER_REPORT.md` is written and the report is sent to the Developer inbox
-  - [ ] Given the Reproducer prompt template, when rendered, then it includes `{{seedId}}`, `{{seedTitle}}`, and `{{seedDescription}}`
-  - [ ] Given the Reproducer phase fails to reproduce the bug, when failure is detected, then the pipeline stops, the seed is marked as stuck with `"Reproduction failed"`, and no auto-reset occurs
+  - [ ] Given the Reproducer prompt template, when rendered, then it includes `{{taskId}}`, `{{taskTitle}}`, and `{{taskDescription}}`
+  - [ ] Given the Reproducer phase fails to reproduce the bug, when failure is detected, then the pipeline stops, the task is marked as stuck with `"Reproduction failed"`, and no auto-reset occurs
 
 ---
 
@@ -906,15 +906,15 @@ interface WorkflowConfigFile {
 
 - File: `src/orchestrator/__tests__/agent-worker-reproducer.test.ts` (new)
 - Actions:
-  1. Test Reproducer runs as first phase for bug seeds
+  1. Test Reproducer runs as first phase for bug tasks
   2. Test report is written and sent to Developer inbox
-  3. Test failure handling: seed marked stuck, no Developer phase
-  4. Test prompt rendering with seed variables
+  3. Test failure handling: task marked stuck, no Developer phase
+  4. Test prompt rendering with task variables
 - Validates PRD ACs: AC-015-1, AC-015-2, AC-015-3, AC-015-4
 - Implementation AC:
-  - [ ] Given a mock pipeline with bug seed, when the Reproducer phase runs, then it is the first phase executed and uses reproducer config
+  - [ ] Given a mock pipeline with bug task, when the Reproducer phase runs, then it is the first phase executed and uses reproducer config
   - [ ] Given a successful Reproducer phase, when it completes, then `sendMailText` is called with subject containing `"Reproducer Report"`
-  - [ ] Given a failed Reproducer phase, when failure is detected, then the seed is marked stuck and the Developer phase does NOT run
+  - [ ] Given a failed Reproducer phase, when failure is detected, then the task is marked stuck and the Developer phase does NOT run
 
 ---
 
@@ -1026,11 +1026,11 @@ The NFR tasks below are validated through the implementation and test tasks abov
 | TRD-017-TEST | 2h | TRD-017, TRD-010 | P1 |
 | **Phase 2 Total** | **30h** | | |
 
-### Phase 3: Init Seeding -- 1 day (4h)
+### Phase 3: Init Tasking -- 1 day (4h)
 
 | Task | Estimate | Dependencies | Priority |
 |------|----------|-------------|----------|
-| TRD-019: foreman init config seeding | 2h | TRD-017 | P2 |
+| TRD-019: foreman init config tasking | 2h | TRD-017 | P2 |
 | TRD-019-TEST | 2h | TRD-019 | P2 |
 | **Phase 3 Total** | **4h** | | |
 
@@ -1091,8 +1091,8 @@ Phase 2: Config Loaders (independent of Phase 1)
   TRD-017 (Bundled defaults) -- independent
     +-- TRD-017-TEST
 
-Phase 3: Init Seeding
-  TRD-017 --> TRD-019 (foreman init seeding)
+Phase 3: Init Tasking
+  TRD-017 --> TRD-019 (foreman init tasking)
     +-- TRD-019-TEST
 
 Phase 4: Reproducer
@@ -1169,7 +1169,7 @@ A task is complete when:
 | REQ-010 | Phase config schema validation | TRD-012 | TRD-012-TEST |
 | REQ-011 | Workflow config loader | TRD-013 | TRD-013-TEST |
 | REQ-012 | Wire loaders into runPipeline | TRD-016a, TRD-016b, TRD-016c, TRD-016d, TRD-016e | TRD-016-TEST |
-| REQ-013 | foreman init config seeding | TRD-019 | TRD-019-TEST |
+| REQ-013 | foreman init config tasking | TRD-019 | TRD-019-TEST |
 | REQ-014 | Bundled default files | TRD-017 | TRD-017-TEST |
 | REQ-015 | Reproducer phase | TRD-020 | TRD-020-TEST |
 | REQ-016 | Part 2 unit tests | *(covered by individual test tasks)* | TRD-010-TEST through TRD-017-TEST |

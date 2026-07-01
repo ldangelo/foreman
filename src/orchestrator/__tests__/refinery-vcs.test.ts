@@ -4,7 +4,7 @@
  * Acceptance criteria:
  *   AC-T-012-1: Given a mock VcsBackend, when Refinery.mergeCompleted() runs
  *               a clean squash merge, then `vcs.mergeWithoutCommit()` is invoked
- *               and the seed is closed.
+ *               and the task is closed.
  *   AC-T-012-2: Given a squash merge returning conflicts, when refinery processes,
  *               then the conflict resolution cascade is triggered.
  *   AC-T-012-3: refinery.ts no longer imports or calls mergeWorktree().
@@ -35,8 +35,8 @@ vi.mock("../../lib/git.js", () => ({
 }));
 
 vi.mock("../task-backend-ops.js", () => ({
-  enqueueCloseSeed: vi.fn(),
-  enqueueResetSeedToOpen: vi.fn(),
+  enqueueCloseTask: vi.fn(),
+  enqueueResetTaskToOpen: vi.fn(),
   enqueueAddNotesToBead: vi.fn(),
   enqueueSetBeadStatus: vi.fn(),
 }));
@@ -47,7 +47,7 @@ vi.mock("../../lib/archive-reports.js", () => ({
 }));
 
 import { execFile } from "node:child_process";
-import { enqueueCloseSeed, enqueueResetSeedToOpen } from "../task-backend-ops.js";
+import { enqueueCloseTask, enqueueResetTaskToOpen } from "../task-backend-ops.js";
 import { Refinery } from "../refinery.js";
 
 // ── VcsBackend Mock Factory ───────────────────────────────────────────────────
@@ -71,7 +71,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     branchExistsOnRemote: vi.fn().mockResolvedValue(false),
     deleteBranch: vi.fn().mockResolvedValue({ deleted: true }),
     // Workspace operations
-    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/workspace", branchName: "foreman/seed-abc" }),
+    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/workspace", branchName: "foreman/task-abc" }),
     removeWorkspace: vi.fn().mockResolvedValue(undefined),
     listWorkspaces: vi.fn().mockResolvedValue([]),
     // Staging and commit
@@ -127,7 +127,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seed-abc",
+    task_id: "task-abc",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: null,
@@ -155,7 +155,7 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
     sendMessage: vi.fn(),
     getDb: vi.fn(() => mockDb),
   };
-  const seeds = {
+  const tasks = {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
     update: vi.fn(async () => undefined),
@@ -173,20 +173,20 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
     },
   );
 
-  const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
-  return { store, seeds, refinery, vcs };
+  const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcs);
+  return { store, tasks, refinery, vcs };
 }
 
 // ── AC-T-012-1: Clean Squash Merge ──────────────────────────────────────────
 
-describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes the seed", () => {
+describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes the task", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("invokes git merge --squash with the feature branch on clean merge", async () => {
     const { store, refinery, vcs } = makeMocks();
-    const run = makeRun({ seed_id: "seed-001" });
+    const run = makeRun({ task_id: "task-001" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });
@@ -195,44 +195,44 @@ describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes t
     expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp/project", "main");
     expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith(
       "/tmp/project",
-      "foreman/seed-001",
+      "foreman/task-001",
       "main",
     );
   });
 
-  it("closes the seed via enqueueCloseSeed after a successful merge", async () => {
+  it("closes the task via enqueueCloseTask after a successful merge", async () => {
     const { store, refinery } = makeMocks();
-    const run = makeRun({ seed_id: "seed-001" });
+    const run = makeRun({ task_id: "task-001" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // AC-T-012-1: seed must be closed after merge
-    expect(enqueueCloseSeed).toHaveBeenCalledWith(
+    // AC-T-012-1: task must be closed after merge
+    expect(enqueueCloseTask).toHaveBeenCalledWith(
       expect.anything(),
-      "seed-001",
+      "task-001",
       "refinery",
     );
   });
 
   it("marks run as merged in store after clean merge", async () => {
     const { store, refinery } = makeMocks();
-    const run = makeRun({ seed_id: "seed-002" });
+    const run = makeRun({ task_id: "task-002" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.merged).toHaveLength(1);
-    expect(report.merged[0].seedId).toBe("seed-002");
+    expect(report.merged[0].taskId).toBe("task-002");
     expect(store.updateRun).toHaveBeenCalledWith(
       run.id,
       expect.objectContaining({ status: "merged" }),
     );
   });
 
-  it("does NOT call enqueueCloseSeed when squash merge has conflicts", async () => {
+  it("does NOT call enqueueCloseTask when squash merge has conflicts", async () => {
     const { store, refinery, vcs } = makeMocks();
-    const run = makeRun({ seed_id: "seed-003" });
+    const run = makeRun({ task_id: "task-003" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     // Squash merge fails with conflict; gh not available -> falls back to conflict tracking
@@ -254,8 +254,8 @@ describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes t
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // AC-T-012-1: seed should NOT be closed on failure
-    expect(enqueueCloseSeed).not.toHaveBeenCalled();
+    // AC-T-012-1: task should NOT be closed on failure
+    expect(enqueueCloseTask).not.toHaveBeenCalled();
   });
 
   it("calls vcs.detectDefaultBranch() to resolve target branch when not specified", async () => {
@@ -287,7 +287,7 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
 
   it("triggers conflict cascade when squash merge returns code conflicts", async () => {
     const { store, refinery, vcs } = makeMocks();
-    const run = makeRun({ seed_id: "seed-conflict" });
+    const run = makeRun({ task_id: "task-conflict" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     // gh pr create fails -> falls back to conflict tracking
@@ -313,23 +313,23 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
 
     // AC-T-012-2: conflict cascade must be triggered
     expect(report.conflicts).toHaveLength(1);
-    expect(report.conflicts[0].seedId).toBe("seed-conflict");
+    expect(report.conflicts[0].taskId).toBe("task-conflict");
     expect(report.conflicts[0].conflictFiles).toContain("src/main.ts");
   });
 
-  it("does not auto-reopen seeds when conflicts are detected", async () => {
+  it("does not auto-reopen tasks when conflicts are detected", async () => {
     const conflictFiles = ["src/main.ts", "src/index.ts"];
     const { store, refinery, vcs } = makeMocks();
     // Override after makeMocks to ensure our mock is used
     (vcs as any).getConflictingFiles = vi.fn().mockResolvedValue(conflictFiles);
     (vcs as any).mergeWithoutCommit = vi.fn().mockRejectedValue(new Error("CONFLICT: merge conflict"));
-    const run = makeRun({ seed_id: "seed-reset" });
+    const run = makeRun({ task_id: "task-reset" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });
 
     // AC-T-012-2: conflict cascade now leaves the bead blocked until an explicit human retry/reset.
-    expect(enqueueResetSeedToOpen).not.toHaveBeenCalled();
+    expect(enqueueResetTaskToOpen).not.toHaveBeenCalled();
   });
 
   it("attempts gh pr create as part of conflict cascade", async () => {
@@ -338,7 +338,7 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
     // Override after makeMocks to ensure our mock is used
     (vcs as any).getConflictingFiles = vi.fn().mockResolvedValue(conflictFiles);
     (vcs as any).mergeWithoutCommit = vi.fn().mockRejectedValue(new Error("CONFLICT: merge conflict"));
-    const run = makeRun({ seed_id: "seed-pr" });
+    const run = makeRun({ task_id: "task-pr" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     const prUrl = "https://github.com/org/repo/pull/42";
@@ -361,19 +361,19 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
     expect(report.prsCreated[0].prUrl).toBe(prUrl);
   });
 
-  it("does not close seed on conflict -- only closes on successful merge", async () => {
+  it("does not close task on conflict -- only closes on successful merge", async () => {
     const conflictFiles = ["src/main.ts"];
     const { store, refinery, vcs } = makeMocks();
     // Override after makeMocks to ensure our mock is used
     (vcs as any).getConflictingFiles = vi.fn().mockResolvedValue(conflictFiles);
     (vcs as any).mergeWithoutCommit = vi.fn().mockRejectedValue(new Error("CONFLICT: merge conflict"));
-    const run = makeRun({ seed_id: "seed-no-close" });
+    const run = makeRun({ task_id: "task-no-close" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // AC-T-012-2: seed should NOT be closed when there are conflicts
-    expect(enqueueCloseSeed).not.toHaveBeenCalled();
+    // AC-T-012-2: task should NOT be closed when there are conflicts
+    expect(enqueueCloseTask).not.toHaveBeenCalled();
   });
 
   it("conflict file list comes from vcs.getConflictingFiles after squash merge", async () => {
@@ -384,7 +384,7 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
     // Override after makeMocks to ensure our mock is used
     (vcs as any).getConflictingFiles = getConflictingFilesMock;
     (vcs as any).mergeWithoutCommit = vi.fn().mockRejectedValue(new Error("CONFLICT: merge conflict"));
-    const run = makeRun({ seed_id: "seed-files" });
+    const run = makeRun({ task_id: "task-files" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     (execFile as any).mockImplementation(
@@ -453,9 +453,9 @@ describe("AC-T-012-3: refinery.ts no longer imports or calls mergeWorktree", () 
     // The constructor with all 4 args should work
     const mockDb = { prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })) };
     const store = { getRunsByStatus: vi.fn(() => []), getRunsByStatuses: vi.fn(() => []), getRun: vi.fn(), updateRun: vi.fn(), logEvent: vi.fn(), getRunsByBaseBranch: vi.fn(() => []), sendMessage: vi.fn(), getDb: vi.fn(() => mockDb) };
-    const seeds = { getGraph: vi.fn(), show: vi.fn(), update: vi.fn() };
+    const tasks = { getGraph: vi.fn(), show: vi.fn(), update: vi.fn() };
     const vcs = makeMockVcs();
-    const r = new Refinery(store as any, seeds as any, "/tmp", vcs);
+    const r = new Refinery(store as any, tasks as any, "/tmp", vcs);
     expect(r).toBeInstanceOf(Refinery);
   });
 
@@ -506,7 +506,7 @@ describe("AC-T-012-4: Refinery uses vcs.removeWorkspace() instead of removeWorkt
 
   it("refinery.ts calls vcs.removeWorkspace() when removing worktree on successful merge", async () => {
     const { store, refinery, vcs } = makeMocks();
-    const run = makeRun({ seed_id: "seed-remove-test", worktree_path: "/tmp/worktrees/seed-remove-test" });
+    const run = makeRun({ task_id: "task-remove-test", worktree_path: "/tmp/worktrees/task-remove-test" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });
@@ -514,7 +514,7 @@ describe("AC-T-012-4: Refinery uses vcs.removeWorkspace() instead of removeWorkt
     // AC-T-012-4: vcs.removeWorkspace() should be called after successful merge
     expect(vcs.removeWorkspace).toHaveBeenCalledWith(
       "/tmp/project",
-      "/tmp/worktrees/seed-remove-test",
+      "/tmp/worktrees/task-remove-test",
     );
   });
 });

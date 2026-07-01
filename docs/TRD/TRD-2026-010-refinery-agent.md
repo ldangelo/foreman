@@ -37,7 +37,7 @@ auto-merge.ts
        └─ Refinery.mergeCompleted() — per-run merge flow
             │
             ├─ scanForConflictMarkers()     — committed-content scan
-            ├─ autoCommitStateFiles()        — commit dirty .seeds/.foreman/
+            ├─ autoCommitStateFiles()        — commit dirty .tasks/.foreman/
             ├─ removeReportFiles()           — pre-merge cleanup
             ├─ VcsBackend.rebase()           — rebase onto target
             ├─ autoResolveRebaseConflicts()   — report-file rebase auto-resolve
@@ -50,7 +50,7 @@ auto-merge.ts
             │    └─ Fallback: gh pr create
             ├─ MergeValidator (post-AI resolution validation)
             ├─ archiveReportsPostMerge()      — post-merge cleanup
-            ├─ enqueueCloseSeed()             — close bead after success
+            ├─ enqueueCloseTask()             — close bead after success
             ├─ closeNativeTaskPostMerge()     — REQ-018 native task update
             ├─ rebaseStackedBranches()        — rebase dependents onto target
             └─ sendMail()                     — lifecycle notifications
@@ -61,7 +61,7 @@ auto-merge.ts
 | File | Class/Fn | Responsibility |
 |------|----------|----------------|
 | `src/orchestrator/refinery.ts` | `Refinery` | Main merge orchestrator. Rebase → squash merge → conflict cascade → cleanup → bead closure |
-| `src/orchestrator/refinery.ts` | `preserveBeadChanges()` | Extract `.seeds/` changes from a branch via patch, apply to target branch before deletion |
+| `src/orchestrator/refinery.ts` | `preserveBeadChanges()` | Extract `.tasks/` changes from a branch via patch, apply to target branch before deletion |
 | `src/orchestrator/auto-merge.ts` | `autoMerge()` | Top-level trigger. Reconciles completed runs into queue, drains entries, handles strategy routing (`auto`/`pr`/`none`) |
 | `src/orchestrator/auto-merge.ts` | `syncBeadStatusAfterMerge()` | Syncs bead status from run status to br after merge outcome (immediate post-merge sync) |
 | `src/orchestrator/merge-queue.ts` | `MergeQueue` | Postgres-backed FIFO queue. `enqueue`, `dequeue`, `reconcile`, `resetForRetry`, `getOrderedPending` (cluster-aware) |
@@ -69,7 +69,7 @@ auto-merge.ts
 | `src/orchestrator/conflict-resolver.ts` | `REPORT_FILES` | Constants: report filenames that can be auto-resolved |
 | `src/orchestrator/merge-validator.ts` | `MergeValidator` | Post-AI resolution validation: conflict markers, prose detection, markdown fencing, syntax check |
 | `src/orchestrator/merge-config.ts` | `MergeQueueConfig` / `loadMergeConfig()` | Tier thresholds, cost limits, syntax checkers, prose detection patterns |
-| `src/orchestrator/task-backend-ops.ts` | `enqueueCloseSeed()`, `enqueueResetSeedToOpen()`, etc. | Enqueue br write operations via ForemanStore bead_write_queue (serialized by dispatcher) |
+| `src/orchestrator/task-backend-ops.ts` | `enqueueCloseTask()`, `enqueueResetTaskToOpen()`, etc. | Enqueue br write operations via ForemanStore bead_write_queue (serialized by dispatcher) |
 | `src/orchestrator/task-backend-ops.ts` | `syncBeadStatusOnStartup()` | Reconcile br status from Postgres on foreman startup (dry-run mode supported) |
 | `src/orchestrator/types.ts` | `MergeReport`, `MergedRun`, `ConflictRun`, `FailedRun`, `CreatedPr`, `PrReport` | Result types for merge operations |
 
@@ -104,7 +104,7 @@ Refinery always uses `--squash` merges so each feature branch becomes a single c
 - Makes rollback trivial (`git reset --hard HEAD~1`)
 - Produces a clean `git log` with one entry per feature
 
-The squash commit message uses the bead title if available, otherwise `foreman/<seedId>: squash merge`.
+The squash commit message uses the bead title if available, otherwise `foreman/<taskId>: squash merge`.
 
 ### 3. Conflict Marker Scanning (Committed Content Only)
 
@@ -114,7 +114,7 @@ The squash commit message uses the bead title if available, otherwise `foreman/<
 
 Report files (`QA_REPORT.md`, `REVIEW.md`, `TASK.md`, `SESSION_LOG.md`, etc.) are:
 1. **Removed pre-merge** via `removeReportFiles()` — prevents conflicts
-2. **Archived post-merge** to `.foreman/reports/<name>-<seedId>.md` — preserves the artifact
+2. **Archived post-merge** to `.foreman/reports/<name>-<taskId>.md` — preserves the artifact
 
 `ConflictResolver.isReportFile()` determines which files are auto-resolvable (includes `.beads/` files — latest bead state wins).
 
@@ -123,8 +123,8 @@ Report files (`QA_REPORT.md`, `REVIEW.md`, `TASK.md`, `SESSION_LOG.md`, etc.) ar
 Multiple `agent-worker` processes can call `autoMerge()` concurrently after `finalize`, all writing to the shared `.beads/beads.db`. Direct `br` CLI calls cause `POSTGRES_BUSY` contention.
 
 **Solution**: All br write operations are enqueued via `ForemanStore.enqueueBeadWrite()`:
-- `enqueueCloseSeed()` — close after successful merge
-- `enqueueResetSeedToOpen()` — reset on failure
+- `enqueueCloseTask()` — close after successful merge
+- `enqueueResetTaskToOpen()` — reset on failure
 - `enqueueAddNotesToBead()` — annotate failure reasons
 - `enqueueAddLabelsToBead()` — phase-tracking labels
 - `enqueueSetBeadStatus()` — arbitrary status transitions
@@ -134,7 +134,7 @@ The **dispatcher** (single process) drains the queue sequentially, eliminating P
 
 ### 6. Bead Closure Timing
 
-The bead is closed **after** the code lands in the target branch (`enqueueCloseSeed()` called after `vcs.commit()`). This ensures:
+The bead is closed **after** the code lands in the target branch (`enqueueCloseTask()` called after `vcs.commit()`). This ensures:
 - Bead shows `review` (awaiting merge) during the merge window
 - Bead shows `closed` only after code is on the target
 
@@ -153,9 +153,9 @@ Target branch is resolved from the bead's `branch:<name>` label (via `extractBra
 - **`pr`**: Create a GitHub PR for manual review
 - **`none`**: Mark as merged without any merge operation (for manual workflows)
 
-### 10. `.seeds/` Preservation
+### 10. `.tasks/` Preservation
 
-`preserveBeadChanges()` extracts `.seeds/` changes from a branch before it's deleted, applies them as a patch to the target branch, and commits them. This ensures task tracker state from completed branches isn't lost when worktrees are removed.
+`preserveBeadChanges()` extracts `.tasks/` changes from a branch before it's deleted, applies them as a patch to the target branch, and commits them. This ensures task tracker state from completed branches isn't lost when worktrees are removed.
 
 ---
 
@@ -202,7 +202,7 @@ Fallback: gh pr create
 | MQ-013 | `conflict-resolver.ts` | File exceeds max file line limit |
 | MQ-014 | `conflict-resolver.ts` | Untracked working-tree file conflicts with added file |
 | MQ-018 | `conflict-resolver.ts` | All tiers exhausted — conflict PR created |
-| MQ-019 | `refinery.ts` | `.seeds/` patch application failed |
+| MQ-019 | `refinery.ts` | `.tasks/` patch application failed |
 | MQ-020 | `refinery.ts` | Auto-commit of state files failed (non-fatal) |
 
 ---
@@ -227,7 +227,7 @@ interface MergeReport {
 interface MergeQueueEntry {
   id: number;
   branch_name: string;
-  seed_id: string;
+  task_id: string;
   run_id: string;
   agent_name: string | null;
   files_modified: string[];
@@ -307,7 +307,7 @@ Only **core merge failures** (conflicts, test failures, unexpected errors) are r
 1. **Jujutsu rebase in colocated repos**: The `gitSpecial` 2-arg rebase form (`rebase upstream branch`) operates from the main repo context, which jj's colocated mode intercepts. Rebase inside the workspace directory is used as mitigation.
 2. **Conflict cluster ordering**: `MergeQueue.getOrderedPending()` uses file overlap to order merges, but this is approximate — two branches modifying the same file in different ways will still conflict regardless of merge order.
 3. **Stacked branch base tracking**: `base_branch` is cleared after rebase but if the rebase itself fails, the old `base_branch` value persists. `rebaseStackedBranches()` skips inactive runs, so stale bases don't cause incorrect behavior.
-4. **`.seeds/` preservation on merge conflict**: If a branch has conflicts, `preserveBeadChanges()` is not called. The `.seeds/` changes on the conflicting branch require manual extraction.
+4. **`.tasks/` preservation on merge conflict**: If a branch has conflicts, `preserveBeadChanges()` is not called. The `.tasks/` changes on the conflicting branch require manual extraction.
 
 ---
 
@@ -318,7 +318,7 @@ Only **core merge failures** (conflicts, test failures, unexpected errors) are r
 | F1 | Parallel merge of non-conflicting branches | Medium |
 | F2 | Configurable squash merge message template | Low |
 | F3 | Merge preview UI (`foreman merge --dry-run --preview`) | Medium |
-| F4 | Automatic `.seeds/` preservation on conflict | High |
+| F4 | Automatic `.tasks/` preservation on conflict | High |
 | F5 | Jujutsu-native rebase-all-stacked operation | Low |
 
 ---
@@ -336,7 +336,7 @@ Only **core merge failures** (conflicts, test failures, unexpected errors) are r
 - `src/orchestrator/conflict-resolver.ts` → `src/orchestrator/merge-validator.ts`
 - `src/orchestrator/conflict-resolver.ts` → `src/orchestrator/pi-sdk-runner.ts`
 - `src/orchestrator/task-backend-ops.ts` → `src/lib/store.ts` (bead_write_queue)
-- `src/orchestrator/task-backend-ops.ts` → `src/lib/run-status.ts` (mapRunStatusToSeedStatus)
+- `src/orchestrator/task-backend-ops.ts` → `src/lib/run-status.ts` (mapRunStatusToTaskStatus)
 
 ---
 

@@ -53,8 +53,8 @@ function makePipelineContext(
     config: {
       runId: "run-test-1",
       projectId: "proj-test",
-      seedId: "bd-test",
-      seedTitle: "Test task",
+      taskId: "bd-test",
+      taskTitle: "Test task",
       model: "anthropic/claude-haiku-4-5",
       worktreePath: tmpDir,
       env: {},
@@ -263,7 +263,7 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
             join(tmpDir, "FINALIZE_VALIDATION.md"),
             [
               "# Finalize Validation",
-              "## Seed: bd-test",
+              "## Task: bd-test",
               "## Test Validation",
               "- Status: FAIL",
               "- Output: 3 tests failed",
@@ -277,7 +277,7 @@ describe("executePipeline(): finalize FAIL verdict → retry developer", () => {
             join(tmpDir, "FINALIZE_VALIDATION.md"),
             [
               "# Finalize Validation",
-              "## Seed: bd-test",
+              "## Task: bd-test",
               "## Test Validation",
               "- Status: PASS",
               "",

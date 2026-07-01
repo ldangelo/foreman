@@ -34,7 +34,7 @@ export interface IStore {
   // Runs
   createRun(
     projectId: string,
-    seedId: string,
+    taskId: string,
     agentType: string,
     worktreePath: string | null,
     opts?: {
@@ -55,8 +55,8 @@ export interface IStore {
   getRunsByStatusSince(status: Run["status"], since: string, projectId?: string): Promise<Run[]>;
   purgeOldRuns(olderThan: string, projectId?: string): Promise<number>;
   deleteRun(runId: string): Promise<boolean>;
-  getRunsForSeed(seedId: string, projectId?: string): Promise<Run[]>;
-  hasActiveOrPendingRun(seedId: string, projectId?: string): Promise<boolean>;
+  getRunsForTask(taskId: string, projectId?: string): Promise<Run[]>;
+  hasActiveOrPendingRun(taskId: string, projectId?: string): Promise<boolean>;
   getRunsByBaseBranch(baseBranch: string, projectId?: string): Promise<Run[]>;
 
   // Events

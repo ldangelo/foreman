@@ -6,7 +6,7 @@ import {
 import type { ForemanStore, Run } from "../../../lib/store.js";
 
 function makeFakeStore() {
-  const run = { id: "run-1", seed_id: "seed-1", status: "failed" } as unknown as Run;
+  const run = { id: "run-1", task_id: "task-1", status: "failed" } as unknown as Run;
   const project = { id: "proj-1", path: "/tmp/project" };
 
   const fake = {
@@ -14,7 +14,7 @@ function makeFakeStore() {
     getRun: vi.fn().mockReturnValue(run),
     getActiveRuns: vi.fn().mockReturnValue([run]),
     getRunsByStatus: vi.fn().mockReturnValue([run]),
-    getRunsForSeed: vi.fn().mockReturnValue([run]),
+    getRunsForTask: vi.fn().mockReturnValue([run]),
     updateRun: vi.fn(),
     deleteRun: vi.fn().mockReturnValue(true),
     logEvent: vi.fn(),
@@ -58,12 +58,12 @@ describe("wrapLocalRunStore", () => {
     expect(fake.getRunsByStatus).toHaveBeenCalledWith("failed", "proj-1");
   });
 
-  it("delegates getRunsForSeed", async () => {
+  it("delegates getRunsForTask", async () => {
     const { fake, store, run } = makeFakeStore();
     const adapter = wrapLocalRunStore(store);
 
-    await expect(adapter.getRunsForSeed("seed-1", "proj-1")).resolves.toEqual([run]);
-    expect(fake.getRunsForSeed).toHaveBeenCalledWith("seed-1", "proj-1");
+    await expect(adapter.getRunsForTask("task-1", "proj-1")).resolves.toEqual([run]);
+    expect(fake.getRunsForTask).toHaveBeenCalledWith("task-1", "proj-1");
   });
 
   it("delegates updateRun", async () => {

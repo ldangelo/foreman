@@ -27,7 +27,7 @@ defmodule ForemanServer.DebugViewsTest do
   end
 
   test "worker stdout stderr tool and assistant events render compact and raw logs" do
-    seed_worker_events()
+    task_worker_events()
 
     assert {:ok, compact} = DebugViews.logs("run-debug", mode: :compact)
     assert compact.mode == "compact"
@@ -307,7 +307,7 @@ defmodule ForemanServer.DebugViewsTest do
            )
   end
 
-  defp seed_worker_events do
+  defp task_worker_events do
     assert {:ok, _} =
              WorkerProtocol.start_phase("developer", %{
                run_id: "run-debug",

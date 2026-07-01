@@ -109,8 +109,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
   it("returns empty stageCommand (jj auto-stages)", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
-      seedId: 'bd-test',
-      seedTitle: 'Test task',
+      taskId: 'bd-test',
+      taskTitle: 'Test task',
       baseBranch: 'main',
       worktreePath: '/tmp/worktrees/bd-test',
     });
@@ -120,8 +120,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
   it("returns jj describe command for commitCommand", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
-      seedId: 'bd-test',
-      seedTitle: 'Test task',
+      taskId: 'bd-test',
+      taskTitle: 'Test task',
       baseBranch: 'main',
       worktreePath: '/tmp/worktrees/bd-test',
     });
@@ -136,8 +136,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
   it("returns a jj git push bookmark command for pushCommand", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
-      seedId: 'bd-test',
-      seedTitle: 'Test task',
+      taskId: 'bd-test',
+      taskTitle: 'Test task',
       baseBranch: 'main',
       worktreePath: '/tmp/worktrees/bd-test',
     });
@@ -149,8 +149,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
   it("returns jj rebase command with base branch for integrateTargetCommand", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
-      seedId: 'bd-test',
-      seedTitle: 'Test task',
+      taskId: 'bd-test',
+      taskTitle: 'Test task',
       baseBranch: 'dev',
       worktreePath: '/tmp/worktrees/bd-test',
     });
@@ -161,8 +161,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
   it("returns jj workspace forget for cleanCommand", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
-      seedId: 'bd-test',
-      seedTitle: 'Test task',
+      taskId: 'bd-test',
+      taskTitle: 'Test task',
       baseBranch: 'main',
       worktreePath: '/tmp/worktrees/bd-test',
     });
@@ -173,8 +173,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
   it("all 6 FinalizeCommands fields are present", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
-      seedId: 'bd-abc',
-      seedTitle: 'Some task',
+      taskId: 'bd-abc',
+      taskTitle: 'Some task',
       baseBranch: 'main',
       worktreePath: '/tmp/worktrees/bd-abc',
     });
@@ -194,8 +194,8 @@ describe("JujutsuBackend.getFinalizeCommands", () => {
   it("branchVerifyCommand uses jj bookmark list (positional arg, no --name flag)", () => {
     const b = new JujutsuBackend('/tmp');
     const cmds = b.getFinalizeCommands({
-      seedId: 'bd-xyz',
-      seedTitle: 'XYZ task',
+      taskId: 'bd-xyz',
+      taskTitle: 'XYZ task',
       baseBranch: 'main',
       worktreePath: '/tmp',
     });

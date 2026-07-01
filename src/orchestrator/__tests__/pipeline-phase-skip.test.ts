@@ -20,7 +20,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seeds-001",
+    task_id: "tasks-001",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: "/tmp/wt",
@@ -39,10 +39,10 @@ function makeMocks() {
     logEvent: vi.fn(),
     getRunEvents: vi.fn((): unknown[] => []),
   };
-  const seeds = {
+  const tasks = {
     show: vi.fn(async () => ({ status: "open" })),
   };
-  return { store, seeds };
+  return { store, tasks };
 }
 
 // ── worktreeHasProgress ───────────────────────────────────────────────────
@@ -119,8 +119,8 @@ describe("Monitor.recoverStuck() — phase-skip preservation", () => {
     // Arrange — write an explorer artifact so hasProgress returns true
     writeFileSync(join(worktreeDir, "EXPLORER_REPORT.md"), "# Explorer Report\n");
 
-    const { store, seeds } = makeMocks();
-    const monitor = new Monitor(store as never, seeds as never, tmpDir);
+    const { store, tasks } = makeMocks();
+    const monitor = new Monitor(store as never, tasks as never, tmpDir);
     const run = makeRun({ worktree_path: worktreeDir });
 
     // Act
@@ -146,8 +146,8 @@ describe("Monitor.recoverStuck() — phase-skip preservation", () => {
   it("logs a recover event with worktreePreserved: true when artifacts exist", async () => {
     writeFileSync(join(worktreeDir, "QA_REPORT.md"), "# QA Report\n## Verdict: PASS\n");
 
-    const { store, seeds } = makeMocks();
-    const monitor = new Monitor(store as never, seeds as never, tmpDir);
+    const { store, tasks } = makeMocks();
+    const monitor = new Monitor(store as never, tasks as never, tmpDir);
     const run = makeRun({ worktree_path: worktreeDir });
 
     await monitor.recoverStuck(run, 3);
@@ -162,7 +162,7 @@ describe("Monitor.recoverStuck() — phase-skip preservation", () => {
 
   it("removes and recreates the worktree when no artifacts exist", async () => {
     // Arrange — empty worktree (no artifacts)
-    const { store, seeds } = makeMocks();
+    const { store, tasks } = makeMocks();
 
     // Mock createWorktree by spying via the git module — but since we can't easily
     // mock ESM module internals here, we instead verify the observable behaviour:
@@ -172,7 +172,7 @@ describe("Monitor.recoverStuck() — phase-skip preservation", () => {
     // and createWorktree will attempt to call git. We mock the whole monitor with a
     // partial override to isolate the unit under test.
 
-    const monitor = new Monitor(store as never, seeds as never, tmpDir);
+    const monitor = new Monitor(store as never, tasks as never, tmpDir);
 
     // Spy on the internal call by checking the logEvent details
     const run = makeRun({ worktree_path: worktreeDir }); // no artifacts in worktreeDir
@@ -202,11 +202,11 @@ describe("Monitor.recoverStuck() — phase-skip preservation", () => {
   it("returns false and marks failed when max retries exceeded regardless of artifacts", async () => {
     writeFileSync(join(worktreeDir, "EXPLORER_REPORT.md"), "# Explorer Report\n");
 
-    const { store, seeds } = makeMocks();
+    const { store, tasks } = makeMocks();
     // Simulate 3 previous recover events (already at max)
     store.getRunEvents.mockReturnValue([{}, {}, {}] as unknown[]);
 
-    const monitor = new Monitor(store as never, seeds as never, tmpDir);
+    const monitor = new Monitor(store as never, tasks as never, tmpDir);
     const run = makeRun({ worktree_path: worktreeDir });
 
     const result = await monitor.recoverStuck(run, 3);
@@ -221,8 +221,8 @@ describe("Monitor.recoverStuck() — phase-skip preservation", () => {
   it("preserves worktree when only REVIEW.md exists (reviewer already done)", async () => {
     writeFileSync(join(worktreeDir, "REVIEW.md"), "# Review\n## Verdict: PASS\n");
 
-    const { store, seeds } = makeMocks();
-    const monitor = new Monitor(store as never, seeds as never, tmpDir);
+    const { store, tasks } = makeMocks();
+    const monitor = new Monitor(store as never, tasks as never, tmpDir);
     const run = makeRun({ worktree_path: worktreeDir });
 
     const result = await monitor.recoverStuck(run, 3);
@@ -235,8 +235,8 @@ describe("Monitor.recoverStuck() — phase-skip preservation", () => {
   });
 
   it("handles null worktree_path gracefully (treats as no-progress)", async () => {
-    const { store, seeds } = makeMocks();
-    const monitor = new Monitor(store as never, seeds as never, tmpDir);
+    const { store, tasks } = makeMocks();
+    const monitor = new Monitor(store as never, tasks as never, tmpDir);
     const run = makeRun({ worktree_path: null });
 
     // Should not throw — will attempt to recreate (createWorktree may fail, that's ok)

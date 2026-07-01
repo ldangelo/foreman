@@ -89,8 +89,8 @@ describe("purgeZombieRunsAction", () => {
     const store = {
       getProjectByPath: vi.fn().mockResolvedValue({ id: "proj-1", path: "/repo/project" }),
       getRunsByStatus: vi.fn().mockResolvedValue([
-        { id: "run-1", seed_id: "bd-1", status: "failed" },
-        { id: "run-2", seed_id: "bd-2", status: "failed" },
+        { id: "run-1", task_id: "bd-1", status: "failed" },
+        { id: "run-2", task_id: "bd-2", status: "failed" },
       ]),
       deleteRun: vi.fn(),
     };
@@ -108,8 +108,8 @@ describe("purgeZombieRunsAction", () => {
     const store = {
       getProjectByPath: vi.fn().mockResolvedValue({ id: "proj-1", path: "/repo/project" }),
       getRunsByStatus: vi.fn().mockResolvedValue([
-        { id: "run-1", seed_id: "bd-open", status: "failed" },
-        { id: "run-2", seed_id: "bd-error", status: "failed" },
+        { id: "run-1", task_id: "bd-open", status: "failed" },
+        { id: "run-2", task_id: "bd-error", status: "failed" },
       ]),
       deleteRun: vi.fn(),
     };
@@ -128,7 +128,7 @@ describe("purgeZombieRunsAction", () => {
     const store = {
       getProjectByPath: vi.fn().mockResolvedValue({ id: "proj-1", path: "/repo/project" }),
       getRunsByStatus: vi.fn().mockResolvedValue([
-        { id: "run-1", seed_id: "bd-1", status: "failed" },
+        { id: "run-1", task_id: "bd-1", status: "failed" },
       ]),
       deleteRun: vi.fn().mockResolvedValue(true),
     };

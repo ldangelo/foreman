@@ -12,7 +12,7 @@
 #
 # Artifact path conventions:
 #   - PRD/TRD: docs/PRD/PRD-{yyyymm}-{title-slug}.md (project docs, committed)
-#   - Phase reports: docs/reports/{seedId}/{REPORT}.md (execution reports, committed)
+#   - Phase reports: docs/reports/{taskId}/{REPORT}.md (execution reports, committed)
 #
 # skipIfArtifact: checked at phase start to skip if report already exists.
 

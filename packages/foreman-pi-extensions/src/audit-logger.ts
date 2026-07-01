@@ -21,7 +21,7 @@ import type {
 export interface AuditEntry {
   timestamp: string;
   runId: string;
-  seedId: string;
+  taskId: string;
   phase: string;
   eventType: string;
   toolName?: string;
@@ -72,11 +72,11 @@ export function createAuditExtension(outputDir?: string): ForemanExtension {
     }
   }
 
-  function makeBase(eventType: string): Pick<AuditEntry, 'timestamp' | 'runId' | 'seedId' | 'phase' | 'eventType'> {
+  function makeBase(eventType: string): Pick<AuditEntry, 'timestamp' | 'runId' | 'taskId' | 'phase' | 'eventType'> {
     return {
       timestamp: new Date().toISOString(),
       runId: process.env['FOREMAN_RUN_ID'] ?? 'unknown',
-      seedId: process.env['FOREMAN_SEED_ID'] ?? 'unknown',
+      taskId: process.env['FOREMAN_TASK_ID'] ?? 'unknown',
       phase: process.env['FOREMAN_PHASE'] ?? 'unknown',
       eventType,
     };
@@ -150,7 +150,7 @@ export function recordBlockedToolCall(_entry: {
   phase: string;
   reason: string;
   runId?: string;
-  seedId?: string;
+  taskId?: string;
 }): void {
   // No-op in Phase 1 — tool-gate correlation is implemented in TRD-006.
 }

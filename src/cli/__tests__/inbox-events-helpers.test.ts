@@ -63,7 +63,7 @@ describe("inbox event helpers", () => {
   it("fetchPostgresEvents supports run-specific, project-wide, and empty modes", async () => {
     const adapter = {
       listPipelineEventsForRun: vi.fn().mockResolvedValue([
-        { id: "evt-1", run_id: "run-1", event_type: "fail", payload: JSON.stringify({ seedId: "task-1" }), created_at: "2026-01-01T00:00:00.000Z" },
+        { id: "evt-1", run_id: "run-1", event_type: "fail", payload: JSON.stringify({ taskId: "task-1" }), created_at: "2026-01-01T00:00:00.000Z" },
       ]),
       listProjectPipelineEvents: vi.fn().mockResolvedValue([
         { id: "evt-2", run_id: null, event_type: "dispatch", payload: { bead_id: "task-2" }, created_at: new Date("2026-01-01T00:01:00.000Z") },
@@ -76,7 +76,7 @@ describe("inbox event helpers", () => {
 
     expect(adapter.listPipelineEventsForRun).toHaveBeenCalledWith("run-1", 10);
     expect(adapter.listProjectPipelineEvents).toHaveBeenCalledWith("proj-1", 10);
-    expect(byRun[0]).toMatchObject({ eventType: "fail", details: { seedId: "task-1" } });
+    expect(byRun[0]).toMatchObject({ eventType: "fail", details: { taskId: "task-1" } });
     expect(byProject[0]).toMatchObject({ eventType: "dispatch", details: { bead_id: "task-2" } });
     expect(empty).toEqual([]);
   });
@@ -95,7 +95,7 @@ describe("inbox event helpers", () => {
     ["conflict", { bead_id: "bd-2" }, "conflict: bd-2"],
     ["test-fail", {}, "test-fail"],
     ["stuck", {}, "Stuck"],
-    ["custom", { seedId: "seed-1" }, "custom: seed-1"],
+    ["custom", { taskId: "task-1" }, "custom: task-1"],
     ["custom", {}, "custom"],
     ["anything", null, "anything"],
   ])("formatEventSummary covers %s fallback branches", (eventType, details, expected) => {
@@ -130,7 +130,7 @@ describe("inbox event helpers", () => {
         listEvents: vi.fn().mockImplementation(async ({ runId }: { runId?: string }) => {
           const rows = [
             { event_id: "evt-1", run_id: "run-1", event_type: "dispatch", payload: { bead_id: "task-1" }, occurred_at: "2026-01-01T00:00:00.000Z" },
-            { event_id: "evt-2", run_id: "run-2", event_type: "fail", payload: { seedId: "task-2" }, occurred_at: "2026-01-01T00:02:00.000Z" },
+            { event_id: "evt-2", run_id: "run-2", event_type: "fail", payload: { taskId: "task-2" }, occurred_at: "2026-01-01T00:02:00.000Z" },
           ];
           return rows.filter((row) => (runId ? row.run_id === runId : true));
         }),
@@ -150,7 +150,7 @@ describe("inbox event helpers", () => {
               { id: "evt-1", run_id: "run-1", event_type: "dispatch", details: JSON.stringify({ bead_id: "task-1" }), created_at: "2026-01-01T00:00:00.000Z" },
             ])
             .mockResolvedValueOnce([
-              { id: "evt-2", run_id: "run-2", event_type: "fail", details: JSON.stringify({ seedId: "task-2" }), created_at: "2026-01-01T00:02:00.000Z" },
+              { id: "evt-2", run_id: "run-2", event_type: "fail", details: JSON.stringify({ taskId: "task-2" }), created_at: "2026-01-01T00:02:00.000Z" },
             ])
             .mockResolvedValueOnce([
               { id: "evt-3", run_id: "run-2", event_type: "phase-complete", details: JSON.stringify({ phase: "developer" }), created_at: "2026-01-01T00:03:00.000Z" },

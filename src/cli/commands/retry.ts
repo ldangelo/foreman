@@ -12,7 +12,7 @@ import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./pr
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
 import { printDryRunNotice } from "./cli-output.js";
-import { getSeedRetryTargetStatus } from "../../lib/run-status.js";
+import { getTaskRetryTargetStatus } from "../../lib/run-status.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -28,7 +28,7 @@ export interface RetryOpts {
 
 interface RetryStore {
   getProjectByPath(path: string): Promise<{ id: string; path: string } | null>;
-  getRunsForSeed(seedId: string, projectId: string): Promise<import("../../lib/store.js").Run[]>;
+  getRunsForTask(taskId: string, projectId: string): Promise<import("../../lib/store.js").Run[]>;
   updateRun(runId: string, updates: Partial<Pick<import("../../lib/store.js").Run, "status" | "completed_at">>): Promise<void>;
   logEvent(projectId: string, eventType: "restart", data: Record<string, unknown>, runId?: string): Promise<void>;
 }
@@ -105,7 +105,7 @@ async function retryElixirTask(
     console.log(`  Latest run: ${chalk.dim("(none)")}`);
   }
 
-  const beadResetTarget = getSeedRetryTargetStatus(beadStatus, { command: "retry", backendType: "native" });
+  const beadResetTarget = getTaskRetryTargetStatus(beadStatus, { command: "retry", backendType: "native" });
   const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== beadStatus;
   const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === beadStatus;
 
@@ -208,7 +208,7 @@ export async function retryAction(
   console.log(`  Status: ${chalk.yellow(bead.status)}`);
 
   // 3. Look up run history
-  const runs = await store.getRunsForSeed(beadId, project.id);
+  const runs = await store.getRunsForTask(beadId, project.id);
   const latestRun = runs.length > 0 ? runs[0] : null;
 
   if (latestRun) {
@@ -220,7 +220,7 @@ export async function retryAction(
   }
 
   // 4. Determine what needs to be reset
-  const beadResetTarget = getSeedRetryTargetStatus(bead.status, { command: "retry", backendType });
+  const beadResetTarget = getTaskRetryTargetStatus(bead.status, { command: "retry", backendType });
   const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== bead.status;
   const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === bead.status;
 
@@ -339,20 +339,20 @@ export async function retryAction(
     const result = await disp.dispatch({
       maxAgents: 1,
       model: opts.model,
-      seedId: beadId,
+      taskId: beadId,
       dryRun,
     });
 
     if (result.dispatched.length > 0) {
       for (const t of result.dispatched) {
         console.log(
-          `  ${chalk.green("dispatched")} ${t.seedId} → worktree ${t.worktreePath}`,
+          `  ${chalk.green("dispatched")} ${t.taskId} → worktree ${t.worktreePath}`,
         );
       }
     } else if (result.skipped.length > 0) {
       for (const s of result.skipped) {
         console.log(
-          `  ${chalk.yellow("skipped")} ${s.seedId}: ${s.reason}`,
+          `  ${chalk.yellow("skipped")} ${s.taskId}: ${s.reason}`,
         );
       }
     } else {
@@ -450,7 +450,7 @@ export const retryCommand = new Command("retry")
               const failures = await pg.listTasks(registered.id, { status: ["failed", "stuck", "conflict"], limit: 1000 });
               return failures.filter((t) => t.updated_at >= since).length;
             },
-            getActiveSeedIds: async () => {
+            getActiveTaskIds: async () => {
               const active = await pg.listPipelineRuns(registered.id, { status: "running", limit: 1000 });
               const pending = await pg.listPipelineRuns(registered.id, { status: "pending", limit: 1000 });
               return [...active, ...pending].map((r) => r.bead_id);
@@ -460,8 +460,8 @@ export const retryCommand = new Command("retry")
               const pending = await pg.listPipelineRuns(registered.id, { status: "pending", limit: 1000 });
               return active.length + pending.length;
             },
-            hasActiveOrPendingRun: async (seedId) => {
-              const runs = await pg.listPipelineRuns(registered.id, { beadId: seedId, limit: 20 });
+            hasActiveOrPendingRun: async (taskId) => {
+              const runs = await pg.listPipelineRuns(registered.id, { beadId: taskId, limit: 20 });
               return runs.some((r) => ["pending", "running", "success"].includes(r.status));
             },
             nativeTaskOps: {
@@ -472,13 +472,13 @@ export const retryCommand = new Command("retry")
               claimTask: async (taskId, runId) => await pg.claimTask(registered.id, taskId, runId),
             },
             runOps: {
-              createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+              createRun: async ({ runId, taskId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
                 const createdAt = new Date().toISOString();
-                const existing = await pg.listPipelineRuns(registered.id, { beadId: seedId });
+                const existing = await pg.listPipelineRuns(registered.id, { beadId: taskId });
                 await pg.createPipelineRun({
                   id: runId,
                   projectId: registered.id,
-                  beadId: seedId,
+                  beadId: taskId,
                   runNumber: existing.length + 1,
                   branch: branchName,
                   trigger: "bead",
@@ -490,7 +490,7 @@ export const retryCommand = new Command("retry")
                 return {
                   id: runId,
                   project_id: registered.id,
-                  seed_id: seedId,
+                  task_id: taskId,
                   agent_type: agentType,
                   session_key: null,
                   worktree_path: worktreePath,
@@ -536,7 +536,7 @@ export const retryCommand = new Command("retry")
                 await pg.recordPipelineEvent({
                   projectId: registered.id,
                   runId,
-                  taskId: payload.seedId as string | undefined,
+                  taskId: payload.taskId as string | undefined,
                   eventType: mappedEventType,
                   payload,
                 });

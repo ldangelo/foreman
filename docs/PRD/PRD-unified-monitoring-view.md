@@ -159,7 +159,7 @@ The terminal is divided into three panels:
 ### FR-3: Agent Panel
 
 - Show all active runs from Postgres (`status = 'pending' | 'running'`)
-- Each agent card shows: status icon, seed_id, status, phase, cost, turn count, tool count, last tool call
+- Each agent card shows: status icon, task_id, status, phase, cost, turn count, tool count, last tool call
 - Collapsed by default (single line per agent)
 - Press number key (1-9) to expand a specific agent card inline
 - Show cost total at panel bottom
@@ -298,7 +298,7 @@ src/cli/commands/watch/
 - [ ] Resize (SIGWINCH) triggers re-layout without crash
 
 ### AC-3: Agent Panel
-- [ ] Shows all active runs (pending/running) with status icon, seed_id, phase, cost, turns, tools
+- [ ] Shows all active runs (pending/running) with status icon, task_id, phase, cost, turns, tools
 - [ ] Keys 1-9 expand specific agent cards
 - [ ] Panel footer shows total cost across all agents
 - [ ] Shows "No agents running" when appropriate

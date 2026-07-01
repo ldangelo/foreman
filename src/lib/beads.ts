@@ -109,15 +109,15 @@ export class BeadsClient implements ITaskClient {
     } catch {
       throw new Error(
         `sd (beads) CLI not found at ${SD_PATH}. ` +
-          `Install via: bun install -g @os-eco/seeds-cli`,
+          `Install via: bun install -g @os-eco/tasks-cli`,
       );
     }
   }
 
-  /** Check whether .seeds/ exists in the project. */
+  /** Check whether .tasks/ exists in the project. */
   async isInitialized(): Promise<boolean> {
     try {
-      await access(join(this.projectPath, ".seeds"));
+      await access(join(this.projectPath, ".tasks"));
       return true;
     } catch {
       return false;

@@ -99,20 +99,20 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
       )).flat();
       return runs.filter((run) => run.created_at >= since).length;
     },
-    getActiveSeedIds: async () => {
+    getActiveTaskIds: async () => {
       const activeRuns = await daemonStore.getActiveRuns(projectId);
-      return activeRuns.map((run) => run.seed_id);
+      return activeRuns.map((run) => run.task_id);
     },
     getActiveAgentCount: async () => {
       const activeRuns = await daemonStore.getActiveRuns(projectId);
       return activeRuns.length;
     },
-    hasActiveOrPendingRun: async (seedId: string) => {
-      const runs = await pg.listPipelineRuns(projectId, { beadId: seedId, limit: 20 });
+    hasActiveOrPendingRun: async (taskId: string) => {
+      const runs = await pg.listPipelineRuns(projectId, { beadId: taskId, limit: 20 });
       return runs.some((run) => ["pending", "running", "success"].includes(run.status));
     },
     getRunsByStatus: async (status, overrideProjectId) => await daemonStore.getRunsByStatus(status, overrideProjectId),
-    getRunsForSeed: async (seedId, overrideProjectId) => await daemonStore.getRunsForSeed(seedId, overrideProjectId),
+    getRunsForTask: async (taskId, overrideProjectId) => await daemonStore.getRunsForTask(taskId, overrideProjectId),
     getRun: async (runId) => await daemonStore.getRun(runId),
     getActiveRuns: async (overrideProjectId) => await daemonStore.getActiveRuns(overrideProjectId),
     nativeTaskOps: {
@@ -123,13 +123,13 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
       claimTask: async (taskId: string, runId: string) => await pg.claimTask(projectId, taskId, runId),
     },
     runOps: {
-      createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+      createRun: async ({ runId, taskId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
         const createdAt = new Date().toISOString();
-        const existing = await pg.listPipelineRuns(projectId, { beadId: seedId });
+        const existing = await pg.listPipelineRuns(projectId, { beadId: taskId });
         await pg.createPipelineRun({
           id: runId,
           projectId,
-          beadId: seedId,
+          beadId: taskId,
           runNumber: existing.length + 1,
           branch: branchName,
           trigger: "bead",
@@ -141,7 +141,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
         const run: Run = {
           id: runId,
           project_id: projectId,
-          seed_id: seedId,
+          task_id: taskId,
           agent_type: agentType,
           session_key: null,
           worktree_path: worktreePath,
@@ -188,7 +188,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
         await pg.recordPipelineEvent({
           projectId,
           runId,
-          taskId: payload.seedId as string | undefined,
+          taskId: payload.taskId as string | undefined,
           eventType: mappedEventType,
           payload,
         });
@@ -932,7 +932,7 @@ export const runCommand = new Command("run")
               pipeline,
               runtimeMode,
               workflow: workflowOverride,
-              seedId: beadFilter,
+              taskId: beadFilter,
               notifyUrl,
               targetBranch,
               staggerMs,
@@ -959,7 +959,7 @@ export const runCommand = new Command("run")
         if (result.resumed.length > 0) {
           console.log(chalk.green.bold(`Resumed ${result.resumed.length} agent(s):\n`));
           for (const task of result.resumed) {
-            console.log(`  ${chalk.cyan(task.seedId)} (was ${chalk.yellow(task.previousStatus)})`);
+            console.log(`  ${chalk.cyan(task.taskId)} (was ${chalk.yellow(task.previousStatus)})`);
             console.log(`    Model:    ${chalk.magenta(task.model)}`);
             console.log(`    Session:  ${chalk.dim(task.sessionId)}`);
             console.log(`    Run ID:   ${task.runId}`);
@@ -972,7 +972,7 @@ export const runCommand = new Command("run")
         if (result.skipped.length > 0) {
           console.log(chalk.dim(`Skipped ${result.skipped.length} run(s):`));
           for (const task of result.skipped) {
-            console.log(`  ${chalk.dim(task.seedId)} — ${task.reason}`);
+            console.log(`  ${chalk.dim(task.taskId)} — ${task.reason}`);
           }
           console.log();
         }
@@ -1042,7 +1042,7 @@ export const runCommand = new Command("run")
           pipeline,
           runtimeMode,
           workflow: workflowOverride,
-          seedId: beadFilter,
+          taskId: beadFilter,
           notifyUrl,
           targetBranch,
           staggerMs,
@@ -1052,7 +1052,7 @@ export const runCommand = new Command("run")
         if (result.dispatched.length > 0) {
           console.log(chalk.green.bold(`Dispatched ${result.dispatched.length} task(s):\n`));
           for (const task of result.dispatched) {
-            console.log(`  ${chalk.cyan(task.seedId)} ${task.title}`);
+            console.log(`  ${chalk.cyan(task.taskId)} ${task.title}`);
             console.log(`    Model:    ${chalk.magenta(task.model)}`);
             console.log(`    Branch:   ${task.branchName}`);
             console.log(`    Worktree: ${task.worktreePath}`);
@@ -1067,7 +1067,7 @@ export const runCommand = new Command("run")
         if (result.skipped.length > 0) {
           console.log(chalk.dim(`Skipped ${result.skipped.length} task(s):`));
           for (const task of result.skipped) {
-            console.log(`  ${chalk.dim(task.seedId)} ${chalk.dim(task.title)} — ${task.reason}`);
+            console.log(`  ${chalk.dim(task.taskId)} ${chalk.dim(task.title)} — ${task.reason}`);
           }
           console.log();
         }

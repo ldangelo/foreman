@@ -63,7 +63,7 @@ describe("WorktreeManager", () => {
     const manager = new WorktreeManager({ root: join(tmpDir("foreman-worktrees-"), "worktrees") });
     const worktree = await manager.createWorktree({
       projectId: "proj",
-      beadId: "seed-1",
+      beadId: "task-1",
       repoPath: repo,
       baseBranch: "main",
     });
@@ -83,7 +83,7 @@ describe("WorktreeManager", () => {
     const manager = new WorktreeManager({ root });
     const first = await manager.createWorktree({
       projectId: "proj",
-      beadId: "seed-1",
+      beadId: "task-1",
       repoPath: repo,
       baseBranch: "main",
     });
@@ -92,7 +92,7 @@ describe("WorktreeManager", () => {
 
     const second = await manager.createWorktree({
       projectId: "proj",
-      beadId: "seed-1",
+      beadId: "task-1",
       repoPath: repo,
       baseBranch: "main",
     });
@@ -111,7 +111,7 @@ describe("WorktreeManager", () => {
     git(repo, ["config", "user.name", "Test User"]);
     commitFile(repo, "file.txt", "old\n", "old");
     git(repo, ["push", "origin", "main"]);
-    git(repo, ["branch", "foreman/seed-1", "main"]);
+    git(repo, ["branch", "foreman/task-1", "main"]);
 
     const updater = join(tmpDir("foreman-updater-"), "repo");
     execFileSync("git", ["clone", remote, updater], { stdio: "pipe" });
@@ -123,7 +123,7 @@ describe("WorktreeManager", () => {
     const manager = new WorktreeManager({ root: join(tmpDir("foreman-worktrees-"), "worktrees") });
     const worktree = await manager.createWorktree({
       projectId: "proj",
-      beadId: "seed-1",
+      beadId: "task-1",
       repoPath: repo,
       baseBranch: "main",
     });

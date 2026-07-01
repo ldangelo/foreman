@@ -44,7 +44,7 @@ export interface SessionStats {
  * Heartbeat event data written to the store.
  */
 export interface HeartbeatData {
-  seedId: string;
+  taskId: string;
   phase: string;
   turns: number;
   toolCalls: number;
@@ -109,8 +109,8 @@ export class HeartbeatManager {
   private phaseStartFiles: string[] = [];
   /** HEAD commit at the start of the phase. */
   private phaseStartHead: string = "";
-  /** Seed ID attached to heartbeat events for task attribution. */
-  private seedId = "";
+  /** Task ID attached to heartbeat events for task attribution. */
+  private taskId = "";
   /** Whether the heartbeat has fired at least once this phase. */
   private hasFired = false;
 
@@ -243,7 +243,7 @@ export class HeartbeatManager {
     }
 
     const heartbeatData: HeartbeatData = {
-      seedId: this.seedId,
+      taskId: this.taskId,
       phase: this.currentPhase,
       turns: stats.turns,
       toolCalls: stats.toolCalls,
@@ -289,11 +289,11 @@ export class HeartbeatManager {
   }
 
   /**
-   * Set the seed ID for heartbeat events.
+   * Set the task ID for heartbeat events.
    * Called by the pipeline executor after dispatch.
    */
-  setSeedId(seedId: string): void {
-    this.seedId = seedId;
+  setTaskId(taskId: string): void {
+    this.taskId = taskId;
   }
 }
 

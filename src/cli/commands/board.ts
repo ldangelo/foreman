@@ -350,7 +350,7 @@ interface BoardInboxMessageRow {
 
 interface BoardRunRow {
   id: string;
-  seed_id?: string | null;
+  task_id?: string | null;
   bead_id?: string | null;
 }
 
@@ -363,7 +363,7 @@ export async function pollBoardInboxTaskUpdates(
   projectPath: string,
   lastSeenId: string | null,
   limit = 100,
-  cursorSeeded = lastSeenId !== null,
+  cursorTasked = lastSeenId !== null,
 ): Promise<BoardInboxUpdateResult> {
   const context = await resolveBoardContext(projectPath);
   if (context.backend === "elixir") {
@@ -374,7 +374,7 @@ export async function pollBoardInboxTaskUpdates(
   const rows = await client.mail.listGlobal({ projectId, limit }) as BoardInboxMessageRow[];
   const newestId = rows[rows.length - 1]?.id ?? null;
 
-  if (!cursorSeeded) {
+  if (!cursorTasked) {
     return { taskIds: [], newestId };
   }
 
@@ -385,7 +385,7 @@ export async function pollBoardInboxTaskUpdates(
 
   for (const runId of runIds) {
     const run = await client.runs.get({ runId }) as BoardRunRow | null;
-    const taskId = run?.seed_id ?? run?.bead_id ?? null;
+    const taskId = run?.task_id ?? run?.bead_id ?? null;
     if (taskId) taskIds.add(taskId);
   }
 
@@ -1854,7 +1854,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let refreshSpinnerTimer: NodeJS.Timeout | null = null;
   let inboxMonitorTimer: NodeJS.Timeout | null = null;
   let boardInboxLastSeenId: string | null = null;
-  let boardInboxCursorSeeded = false;
+  let boardInboxCursorTasked = false;
   let inboxUpdateInFlight = false;
   let quit = false;
   let stdinRawMode = false;
@@ -1941,13 +1941,13 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   } catch {
     boardInboxLastSeenId = null;
   }
-  boardInboxCursorSeeded = true;
+  boardInboxCursorTasked = true;
 
   const processInboxTaskUpdates = async () => {
     if (quit || inboxUpdateInFlight) return;
     inboxUpdateInFlight = true;
     try {
-      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorSeeded);
+      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorTasked);
       if (update.taskIds.length === 0) {
         if (update.newestId) {
           boardInboxLastSeenId = update.newestId;

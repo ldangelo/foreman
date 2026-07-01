@@ -166,7 +166,7 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
     // (without detaching, the loop would continue polling for new tasks)
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
-        { seedId: "s-1", runId: "run-111", title: "Task 1", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-1", runtime: "claude-code" },
+        { taskId: "s-1", runId: "run-111", title: "Task 1", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-1", runtime: "claude-code" },
       ],
       skipped: [],
       activeAgents: 1,
@@ -187,7 +187,7 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
     // Dispatch 1 task; watchRunsInk returns detached=true to exit cleanly
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
-        { seedId: "s-2", runId: "run-222", title: "Task 2", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-2", runtime: "claude-code" },
+        { taskId: "s-2", runId: "run-222", title: "Task 2", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-2", runtime: "claude-code" },
       ],
       skipped: [],
       activeAgents: 1,
@@ -216,7 +216,7 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
   it("does NOT pass autoDispatch when --no-watch is set", async () => {
     mockDispatch.mockResolvedValue({
       dispatched: [
-        { seedId: "s-3", runId: "run-333", title: "Task 3", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-3", runtime: "claude-code" },
+        { taskId: "s-3", runId: "run-333", title: "Task 3", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-3", runtime: "claude-code" },
       ],
       skipped: [],
       activeAgents: 1,
@@ -243,7 +243,7 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
     // 1st dispatch returns a task → watchRunsInk captures callback and returns detached=true
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
-        { seedId: "s-4", runId: "run-444", title: "Task 4", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-4", runtime: "claude-code" },
+        { taskId: "s-4", runId: "run-444", title: "Task 4", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-4", runtime: "claude-code" },
       ],
       skipped: [],
       activeAgents: 1,
@@ -256,7 +256,7 @@ describe("auto-dispatch: passes callback to watchRunsInk", () => {
     // Now invoke the captured callback — it should call dispatcher.dispatch
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
-        { seedId: "s-5", runId: "run-555", title: "Task 5", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-5", runtime: "claude-code" },
+        { taskId: "s-5", runId: "run-555", title: "Task 5", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-5", runtime: "claude-code" },
       ],
       skipped: [],
       activeAgents: 1,

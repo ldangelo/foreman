@@ -130,14 +130,14 @@ describe("GitBackend Integration: Full create-commit-push-merge pipeline", () =>
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
-    const seedId = "test-seed-001";
+    const taskId = "test-task-001";
 
     // ── Phase 1: Create workspace ──────────────────────────────────────
-    const workspaceResult = await backend.createWorkspace(localDir, seedId, "dev");
+    const workspaceResult = await backend.createWorkspace(localDir, taskId, "dev");
 
-    expect(workspaceResult.branchName).toBe(`foreman/${seedId}`);
+    expect(workspaceResult.branchName).toBe(`foreman/${taskId}`);
     expect(workspaceResult.workspacePath).toBe(
-      getWorkspacePath(localDir, seedId),
+      getWorkspacePath(localDir, taskId),
     );
     expect(existsSync(workspaceResult.workspacePath)).toBe(true);
 
@@ -157,7 +157,7 @@ describe("GitBackend Integration: Full create-commit-push-merge pipeline", () =>
     expect(statusAfterStage).not.toContain("??");
 
     // ── Phase 4: Commit ───────────────────────────────────────────────
-    const commitMessage = `Implement feature (${seedId})`;
+    const commitMessage = `Implement feature (${taskId})`;
     await backend.commit(workspaceResult.workspacePath, commitMessage);
 
     // HEAD should now point to a valid commit
@@ -227,11 +227,11 @@ describe("GitBackend Integration: Full create-commit-push-merge pipeline", () =>
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
-    const seedId = "test-seed-list";
+    const taskId = "test-task-list";
 
     const { workspacePath, branchName } = await backend.createWorkspace(
       localDir,
-      seedId,
+      taskId,
       "dev",
     );
     tempDirs.push(workspacePath);
@@ -254,11 +254,11 @@ describe("GitBackend Integration: Full create-commit-push-merge pipeline", () =>
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
-    const seedId = "test-seed-no-conflict";
+    const taskId = "test-task-no-conflict";
 
     const { workspacePath, branchName } = await backend.createWorkspace(
       localDir,
-      seedId,
+      taskId,
       "dev",
     );
     tempDirs.push(workspacePath);
@@ -266,7 +266,7 @@ describe("GitBackend Integration: Full create-commit-push-merge pipeline", () =>
     // Write a unique file — won't conflict with anything on dev
     writeFileSync(join(workspacePath, "unique-feature.ts"), 'export const x = 42;\n');
     await backend.stageAll(workspacePath);
-    await backend.commit(workspacePath, `feat: add unique feature (${seedId})`);
+    await backend.commit(workspacePath, `feat: add unique feature (${taskId})`);
     await backend.push(workspacePath, branchName);
 
     await backend.fetch(localDir);
@@ -288,11 +288,11 @@ describe("AC-007-2: Git commands are called in the expected order", () => {
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
-    const seedId = "test-ac007-2";
+    const taskId = "test-ac007-2";
 
     const { workspacePath, branchName } = await backend.createWorkspace(
       localDir,
-      seedId,
+      taskId,
       "dev",
     );
     tempDirs.push(workspacePath);
@@ -318,11 +318,11 @@ describe("AC-007-2: Git commands are called in the expected order", () => {
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
-    const seedId = "test-ac007-seq";
+    const taskId = "test-ac007-seq";
 
     const { workspacePath, branchName } = await backend.createWorkspace(
       localDir,
-      seedId,
+      taskId,
       "dev",
     );
     tempDirs.push(workspacePath);
@@ -356,11 +356,11 @@ describe("AC-007-2: Git commands are called in the expected order", () => {
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
-    const seedId = "test-ac007-stage";
+    const taskId = "test-ac007-stage";
 
     const { workspacePath } = await backend.createWorkspace(
       localDir,
-      seedId,
+      taskId,
       "dev",
     );
     tempDirs.push(workspacePath);
@@ -400,21 +400,21 @@ describe("AC-022-1: GitBackend abstraction overhead is negligible", () => {
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
-    const seedId = "test-ac022-perf";
+    const taskId = "test-ac022-perf";
 
     const startTime = Date.now();
 
     // Execute the full pipeline via the abstraction layer
     const { workspacePath, branchName } = await backend.createWorkspace(
       localDir,
-      seedId,
+      taskId,
       "dev",
     );
     tempDirs.push(workspacePath);
 
     writeFileSync(join(workspacePath, "perf-test.ts"), "export const perf = true;\n");
     await backend.stageAll(workspacePath);
-    await backend.commit(workspacePath, `perf: test commit (${seedId})`);
+    await backend.commit(workspacePath, `perf: test commit (${taskId})`);
     await backend.push(workspacePath, branchName);
     await backend.fetch(localDir);
     const mergeResult = await backend.merge(localDir, branchName, "dev");
@@ -493,12 +493,12 @@ describe("GitBackend Integration: Rebase before merge (Foreman finalize pattern)
     tempDirs.push(remoteDir, localDir);
 
     const backend = new GitBackend(localDir);
-    const seedId = "test-rebase-merge";
+    const taskId = "test-rebase-merge";
 
     // Create workspace on feature branch
     const { workspacePath, branchName } = await backend.createWorkspace(
       localDir,
-      seedId,
+      taskId,
       "dev",
     );
     tempDirs.push(workspacePath);
@@ -506,7 +506,7 @@ describe("GitBackend Integration: Rebase before merge (Foreman finalize pattern)
     // Add a commit on the feature branch
     writeFileSync(join(workspacePath, "feature-work.ts"), "export const work = 'done';\n");
     await backend.stageAll(workspacePath);
-    await backend.commit(workspacePath, `feat: feature work (${seedId})`);
+    await backend.commit(workspacePath, `feat: feature work (${taskId})`);
 
     // Simulate dev branch advancing (a new commit on dev AFTER workspace was created)
     // We do this directly in the local repo

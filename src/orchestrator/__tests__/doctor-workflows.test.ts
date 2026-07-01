@@ -12,7 +12,7 @@ function makeMocks(projectPath: string) {
   const store = {
     getProjectByPath: vi.fn().mockReturnValue(null),
     getRunsByStatus: vi.fn().mockReturnValue([]),
-    getRunsForSeed: vi.fn().mockReturnValue([]),
+    getRunsForTask: vi.fn().mockReturnValue([]),
     getActiveRuns: vi.fn().mockReturnValue([]),
     updateRun: vi.fn(),
     logEvent: vi.fn(),

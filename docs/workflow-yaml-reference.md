@@ -749,7 +749,7 @@ phases:
       onFail: developer
 ```
 
-The prompt file (`~/.foreman/prompts/default/security-scan.md`) defines the agent's instructions, using `{{seedId}}`, `{{seedTitle}}`, `{{seedDescription}}`, and other template variables.
+The prompt file (`~/.foreman/prompts/default/security-scan.md`) defines the agent's instructions, using `{{taskId}}`, `{{taskTitle}}`, `{{taskDescription}}`, and other template variables.
 
 ---
 

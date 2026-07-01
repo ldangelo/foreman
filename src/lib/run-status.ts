@@ -1,7 +1,7 @@
 /**
  * run-status.ts
  *
- * Shared types and pure functions for mapping Postgres run statuses to br seed
+ * Shared types and pure functions for mapping Postgres run statuses to br task
  * statuses (and detecting mismatches between the two systems).
  *
  * This module is placed in src/lib/ so that it can be consumed by both:
@@ -20,23 +20,23 @@ import type { TaskClientBackend } from "./task-client-factory.js";
 
 /**
  * Describes a detected mismatch between a run's terminal status in Postgres and
- * the corresponding seed's status in the br backend.
+ * the corresponding task's status in the br backend.
  */
 export interface StateMismatch {
-  seedId: string;
+  taskId: string;
   runId: string;
   runStatus: RunStatus;
-  actualSeedStatus: string;
-  expectedSeedStatus: string;
+  actualTaskStatus: string;
+  expectedTaskStatus: string;
 }
 
 // ── Status mapping ───────────────────────────────────────────────────────────
 
 /**
- * Map a Postgres run status to the expected br seed status.
+ * Map a Postgres run status to the expected br task status.
  *
  * Postgres is the source of truth for run state; br is the slave.  This mapping
- * defines the correct seed state given a run's terminal state.
+ * defines the correct task state given a run's terminal state.
  *
  * Mapping:
  *   pending / running              → in_progress
@@ -48,7 +48,7 @@ export interface StateMismatch {
  *   cooldown                       → open    (task in cooldown, waiting to be retried)
  *   reset                          → open    (safe default: makes task visible again)
  */
-export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
+export function mapRunStatusToTaskStatus(runStatus: RunStatus): string {
   switch (runStatus) {
     // Active pipeline: agent is still running
     case "pending":
@@ -85,7 +85,7 @@ export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
 /**
  * Map a Postgres run status to the expected native task status.
  *
- * Similar to mapRunStatusToSeedStatus but returns NativeTaskStatus values
+ * Similar to mapRunStatusToTaskStatus but returns NativeTaskStatus values
  * (with hyphen, e.g. "in-progress") suitable for native task store updates.
  *
  * Mapping:
@@ -99,19 +99,19 @@ export function mapRunStatusToSeedStatus(runStatus: RunStatus): string {
  *   reset                          → ready  (safe default: makes task visible again)
  *
  * NOTE: "open" is NOT a valid NativeTaskStatus — it exists only in the legacy br
- * seed backend. For native tasks, "ready" is the correct status for tasks that
+ * task backend. For native tasks, "ready" is the correct status for tasks that
  * should be picked up for retry.
  */
-// ── Seed retry/reset target status ───────────────────────────────────────────
+// ── Task retry/reset target status ───────────────────────────────────────────
 
 /**
- * Seed statuses that indicate an interrupted or failed pipeline and should be
+ * Task statuses that indicate an interrupted or failed pipeline and should be
  * reset to "ready" so the task can be re-dispatched.
  *
  * Shared by `foreman reset` and `foreman retry` (previously duplicated as
  * RETRY_READY_STATUSES in reset.ts and RETRYABLE_NATIVE_STATUSES in retry.ts).
  */
-const RETRYABLE_PIPELINE_SEED_STATUSES: ReadonlySet<string> = new Set([
+const RETRYABLE_PIPELINE_TASK_STATUSES: ReadonlySet<string> = new Set([
   "backlog",
   "ready",
   "in-progress",
@@ -126,13 +126,13 @@ const RETRYABLE_PIPELINE_SEED_STATUSES: ReadonlySet<string> = new Set([
   "finalize",
 ]);
 
-/** Mode selector for {@link getSeedRetryTargetStatus}. */
-export type SeedRetryTargetOptions =
+/** Mode selector for {@link getTaskRetryTargetStatus}. */
+export type TaskRetryTargetOptions =
   | { command: "reset" }
   | { command: "retry"; backendType: TaskClientBackend };
 
 /**
- * Map a seed's current status to the status it should be reset to so the task
+ * Map a task's current status to the status it should be reset to so the task
  * becomes retryable, or `null` if it must be left unchanged (terminal).
  *
  * Two modes preserve the historical per-command semantics:
@@ -143,9 +143,9 @@ export type SeedRetryTargetOptions =
  *   backend unknown statuses fall back to `null`; for br-style backends only
  *   "open"/"in_progress"/"blocked" are retryable (→ "open").
  */
-export function getSeedRetryTargetStatus(
+export function getTaskRetryTargetStatus(
   currentStatus: string,
-  options: SeedRetryTargetOptions,
+  options: TaskRetryTargetOptions,
 ): "open" | "ready" | null {
   const isTerminal =
     currentStatus === "closed" || currentStatus === "completed" || currentStatus === "merged";
@@ -157,7 +157,7 @@ export function getSeedRetryTargetStatus(
     if (isTerminal) {
       return null;
     }
-    if (RETRYABLE_PIPELINE_SEED_STATUSES.has(currentStatus)) {
+    if (RETRYABLE_PIPELINE_TASK_STATUSES.has(currentStatus)) {
       return "ready";
     }
     return "open";
@@ -170,7 +170,7 @@ export function getSeedRetryTargetStatus(
     if (currentStatus === "ready") {
       return "ready";
     }
-    if (RETRYABLE_PIPELINE_SEED_STATUSES.has(currentStatus)) {
+    if (RETRYABLE_PIPELINE_TASK_STATUSES.has(currentStatus)) {
       return "ready";
     }
     return null;

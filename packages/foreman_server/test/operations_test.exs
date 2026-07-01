@@ -24,7 +24,7 @@ defmodule ForemanServer.OperationsTest do
   end
 
   test "doctor validates operational dependencies and projection lag" do
-    seed_run_events("run-doctor")
+    task_run_events("run-doctor")
 
     assert {:ok, doctor} = Operations.doctor()
     assert doctor.ok == true
@@ -39,7 +39,7 @@ defmodule ForemanServer.OperationsTest do
   end
 
   test "metrics include phase timers, retries, failures, recoveries, worker restarts, and lag" do
-    seed_run_events("run-metrics")
+    task_run_events("run-metrics")
 
     append_run_event("PhaseRetried", %{
       run_id: "run-metrics",
@@ -88,7 +88,7 @@ defmodule ForemanServer.OperationsTest do
   end
 
   test "projection lag reports when projection checkpoint trails event store" do
-    seed_run_events("run-lag")
+    task_run_events("run-lag")
     events = EventStore.all()
     assert {:ok, lagging_projection} = ProjectionStore.rebuild(Enum.drop(events, -1))
 
@@ -96,7 +96,7 @@ defmodule ForemanServer.OperationsTest do
     assert metrics.projection_lag == 1
   end
 
-  defp seed_run_events(run_id) do
+  defp task_run_events(run_id) do
     append_run_event(
       "RunStarted",
       %{run_id: run_id, phase_order: ["build"]},

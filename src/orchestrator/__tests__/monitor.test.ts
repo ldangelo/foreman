@@ -6,7 +6,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seeds-001",
+    task_id: "tasks-001",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: "/tmp/wt",
@@ -27,20 +27,20 @@ function makeMocks() {
     getRunProgress: vi.fn(async () => null),
     getRunEvents: vi.fn((): any[] => []),
   };
-  const seeds = {
+  const tasks = {
     show: vi.fn(async () => ({ status: "open" })),
   };
-  const monitor = new Monitor(store as any, seeds as any, "/tmp/project");
-  return { store, seeds, monitor };
+  const monitor = new Monitor(store as any, tasks as any, "/tmp/project");
+  return { store, tasks, monitor };
 }
 
 describe("Monitor", () => {
   describe("checkAll", () => {
-    it("detects completed run when seed status is closed", async () => {
-      const { store, seeds, monitor } = makeMocks();
+    it("detects completed run when task status is closed", async () => {
+      const { store, tasks, monitor } = makeMocks();
       const run = makeRun();
       store.getActiveRuns.mockReturnValue([run]);
-      seeds.show.mockResolvedValue({ status: "closed" });
+      tasks.show.mockResolvedValue({ status: "closed" });
 
       const report = await monitor.checkAll();
 
@@ -50,12 +50,12 @@ describe("Monitor", () => {
     });
 
     it("detects stuck agent when started_at exceeds timeout", async () => {
-      const { store, seeds, monitor } = makeMocks();
+      const { store, tasks, monitor } = makeMocks();
       // Started 30 minutes ago
       const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
       const run = makeRun({ started_at: thirtyMinAgo });
       store.getActiveRuns.mockReturnValue([run]);
-      seeds.show.mockResolvedValue({ status: "open" });
+      tasks.show.mockResolvedValue({ status: "open" });
 
       const report = await monitor.checkAll({ stuckTimeoutMinutes: 15 });
 
@@ -64,11 +64,11 @@ describe("Monitor", () => {
     });
 
     it("does not downgrade a run that is already merged in the store", async () => {
-      const { store, seeds, monitor } = makeMocks();
+      const { store, tasks, monitor } = makeMocks();
       const run = makeRun({ id: "run-merged-race" });
       store.getActiveRuns.mockReturnValue([run]);
       store.getRun.mockResolvedValueOnce({ ...run, status: "merged" });
-      seeds.show.mockResolvedValue({ status: "open" });
+      tasks.show.mockResolvedValue({ status: "open" });
 
       const report = await monitor.checkAll({ stuckTimeoutMinutes: 15 });
 
@@ -80,10 +80,10 @@ describe("Monitor", () => {
     });
 
     it("keeps active runs as active when recently started", async () => {
-      const { store, seeds, monitor } = makeMocks();
+      const { store, tasks, monitor } = makeMocks();
       const run = makeRun({ started_at: new Date().toISOString() });
       store.getActiveRuns.mockReturnValue([run]);
-      seeds.show.mockResolvedValue({ status: "open" });
+      tasks.show.mockResolvedValue({ status: "open" });
 
       const report = await monitor.checkAll({ stuckTimeoutMinutes: 15 });
 
@@ -93,18 +93,18 @@ describe("Monitor", () => {
     });
 
     it("returns correct categorization across all arrays", async () => {
-      const { store, seeds, monitor } = makeMocks();
-      const completedRun = makeRun({ id: "run-done", seed_id: "seeds-done" });
+      const { store, tasks, monitor } = makeMocks();
+      const completedRun = makeRun({ id: "run-done", task_id: "tasks-done" });
       const stuckRun = makeRun({
         id: "run-stuck",
-        seed_id: "seeds-stuck",
+        task_id: "tasks-stuck",
         started_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
       });
-      const activeRun = makeRun({ id: "run-active", seed_id: "seeds-active" });
+      const activeRun = makeRun({ id: "run-active", task_id: "tasks-active" });
 
       store.getActiveRuns.mockReturnValue([completedRun, stuckRun, activeRun]);
-      seeds.show.mockImplementation(async (...args: any[]) => {
-        if (args[0] === "seeds-done") return { status: "closed" };
+      tasks.show.mockImplementation(async (...args: any[]) => {
+        if (args[0] === "tasks-done") return { status: "closed" };
         return { status: "open" };
       });
 
@@ -144,17 +144,17 @@ describe("Monitor", () => {
 
   describe("logging", () => {
     it("logs events on status changes", async () => {
-      const { store, seeds, monitor } = makeMocks();
+      const { store, tasks, monitor } = makeMocks();
       const run = makeRun();
       store.getActiveRuns.mockReturnValue([run]);
-      seeds.show.mockResolvedValue({ status: "closed" });
+      tasks.show.mockResolvedValue({ status: "closed" });
 
       await monitor.checkAll();
 
       expect(store.logEvent).toHaveBeenCalledWith(
         run.project_id,
         "complete",
-        expect.objectContaining({ seedId: run.seed_id }),
+        expect.objectContaining({ taskId: run.task_id }),
         run.id,
       );
     });

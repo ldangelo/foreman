@@ -1,42 +1,42 @@
 import { describe, it, expect } from "vitest";
-import { mapRunStatusToSeedStatus, mapRunStatusToNativeTaskStatus } from "../run-status.js";
+import { mapRunStatusToTaskStatus, mapRunStatusToNativeTaskStatus } from "../run-status.js";
 
-describe("mapRunStatusToSeedStatus", () => {
+describe("mapRunStatusToTaskStatus", () => {
   it("maps pending to in_progress", () => {
-    expect(mapRunStatusToSeedStatus("pending")).toBe("in_progress");
+    expect(mapRunStatusToTaskStatus("pending")).toBe("in_progress");
   });
   it("maps running to in_progress", () => {
-    expect(mapRunStatusToSeedStatus("running")).toBe("in_progress");
+    expect(mapRunStatusToTaskStatus("running")).toBe("in_progress");
   });
   it("maps completed to review — pipeline done, awaiting merge (not yet closed)", () => {
-    expect(mapRunStatusToSeedStatus("completed")).toBe("review");
+    expect(mapRunStatusToTaskStatus("completed")).toBe("review");
   });
   it("maps merged to closed", () => {
-    expect(mapRunStatusToSeedStatus("merged")).toBe("closed");
+    expect(mapRunStatusToTaskStatus("merged")).toBe("closed");
   });
   it("maps pr-created to closed", () => {
-    expect(mapRunStatusToSeedStatus("pr-created")).toBe("closed");
+    expect(mapRunStatusToTaskStatus("pr-created")).toBe("closed");
   });
   it("maps failed to failed — unexpected pipeline exception", () => {
-    expect(mapRunStatusToSeedStatus("failed")).toBe("failed");
+    expect(mapRunStatusToTaskStatus("failed")).toBe("failed");
   });
   it("maps stuck to open — agent pipeline stuck, safe to retry", () => {
-    expect(mapRunStatusToSeedStatus("stuck")).toBe("open");
+    expect(mapRunStatusToTaskStatus("stuck")).toBe("open");
   });
   it("maps conflict to blocked — merge conflict needs human intervention", () => {
-    expect(mapRunStatusToSeedStatus("conflict")).toBe("blocked");
+    expect(mapRunStatusToTaskStatus("conflict")).toBe("blocked");
   });
   it("maps test-failed to blocked — post-merge tests failed, needs intervention", () => {
-    expect(mapRunStatusToSeedStatus("test-failed")).toBe("blocked");
+    expect(mapRunStatusToTaskStatus("test-failed")).toBe("blocked");
   });
   it("maps reset to open — safe to retry", () => {
-    expect(mapRunStatusToSeedStatus("reset")).toBe("open");
+    expect(mapRunStatusToTaskStatus("reset")).toBe("open");
   });
   it("completed does NOT map to closed — bead stays visible until merge lands", () => {
-    expect(mapRunStatusToSeedStatus("completed")).not.toBe("closed");
+    expect(mapRunStatusToTaskStatus("completed")).not.toBe("closed");
   });
   it("completed does NOT map to in_progress — visually distinct from actively-running tasks", () => {
-    expect(mapRunStatusToSeedStatus("completed")).not.toBe("in_progress");
+    expect(mapRunStatusToTaskStatus("completed")).not.toBe("in_progress");
   });
 });
 

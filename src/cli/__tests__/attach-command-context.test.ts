@@ -59,7 +59,7 @@ describe("attach command context", () => {
       close: vi.fn(),
       getRun: vi.fn().mockReturnValue(null),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: "/tmp/project" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunProgress: vi.fn().mockReturnValue(null),
       getAllMessages: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
@@ -87,9 +87,9 @@ describe("attach command context", () => {
           {
             id: "run-1",
             project_id: "proj-1",
-            bead_id: "seed-1",
+            bead_id: "task-1",
             status: "running",
-            branch: "foreman/seed-1",
+            branch: "foreman/task-1",
             agent_type: "developer",
             session_key: null,
             worktree_path: "/tmp/wt",
@@ -110,7 +110,7 @@ describe("attach command context", () => {
 
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("Attachable sessions:");
-    expect(rendered).toContain("seed-1");
+    expect(rendered).toContain("task-1");
   });
 
   it("prints usage and exits when no id is provided", async () => {

@@ -16,7 +16,7 @@ function makeRun(overrides: Record<string, unknown> = {}) {
   return {
     id: "run-1",
     project_id: "project-1",
-    seed_id: "seed-1",
+    task_id: "task-1",
     agent_type: "developer",
     session_key: null,
     worktree_path: "/tmp/worktree-1",

@@ -61,14 +61,14 @@ interface SentinelStore {
  * Continuous testing agent that monitors a branch on a schedule.
  *
  * Usage:
- *   const agent = new SentinelAgent(store, seeds, projectId, projectPath);
+ *   const agent = new SentinelAgent(store, tasks, projectId, projectPath);
  *   agent.start(opts, (result) => console.log(result));
  *   // later...
  *   agent.stop();
  */
 export class SentinelAgent {
   private store: SentinelStore;
-  private seeds: SentinelTaskClient;
+  private tasks: SentinelTaskClient;
   private projectId: string;
   private projectPath: string;
   private vcsBackend?: Pick<VcsBackend, "resolveRef">;
@@ -78,13 +78,13 @@ export class SentinelAgent {
 
   constructor(
     store: SentinelStore,
-    seeds: SentinelTaskClient,
+    tasks: SentinelTaskClient,
     projectId: string,
     projectPath: string,
     vcsBackend?: Pick<VcsBackend, "resolveRef">,
   ) {
     this.store = store;
-    this.seeds = seeds;
+    this.tasks = tasks;
     this.projectId = projectId;
     this.projectPath = projectPath;
     this.vcsBackend = vcsBackend;
@@ -315,7 +315,7 @@ export class SentinelAgent {
     try {
       // Check for an existing open issue with the same title to avoid duplicates.
       // Filter by label to narrow the search to sentinel-created issues only.
-      const existingIssues = await this.seeds.list({
+      const existingIssues = await this.tasks.list({
         status: "open",
         label: "kind:sentinel",
       });
@@ -325,9 +325,9 @@ export class SentinelAgent {
           `[sentinel] Found existing issue ${duplicate.id} for "${title}"`,
         );
         // If the task client supports claim(), transition it to in-progress
-        if ("claim" in this.seeds && typeof this.seeds.claim === "function") {
+        if ("claim" in this.tasks && typeof this.tasks.claim === "function") {
           try {
-            const claimed = await this.seeds.claim(duplicate.id);
+            const claimed = await this.tasks.claim(duplicate.id);
             console.log(`[sentinel] Claimed issue — now status: ${claimed.status}`);
           } catch (err) {
             console.log(`[sentinel] Could not claim issue (may already be in-progress): ${err}`);
@@ -335,7 +335,7 @@ export class SentinelAgent {
         }
         return;
       }
-      await this.seeds.create(title, {
+      await this.tasks.create(title, {
         type: "bug",
         priority: "P0",
         description,

@@ -36,7 +36,7 @@ const DEFAULT_WORKFLOW = join(PROJECT_ROOT, "src", "defaults", "workflows", "def
 
 function makeStore(runData?: {
   id: string;
-  seed_id: string;
+  task_id: string;
   status: string;
   started_at?: string;
   completed_at?: string;
@@ -46,7 +46,7 @@ function makeStore(runData?: {
       ? {
           id: runData.id,
           project_id: "proj-1",
-          seed_id: runData.seed_id,
+          task_id: runData.task_id,
           agent_type: "pipeline",
           session_key: null,
           worktree_path: "/tmp/test",
@@ -157,7 +157,7 @@ describe("createGetRunStatusTool", () => {
   it("returns run info when run exists", async () => {
     const store = makeStore({
       id: "run-123",
-      seed_id: "bd-abc",
+      task_id: "bd-abc",
       status: "stuck",
     });
     const tool = createGetRunStatusTool(store);
@@ -166,7 +166,7 @@ describe("createGetRunStatusTool", () => {
     const info = JSON.parse(text) as Record<string, unknown>;
     expect(info.runId).toBe("run-123");
     expect(info.beadId).toBe("bd-abc");
-    expect(info.seedId).toBe("bd-abc");
+    expect(info.taskId).toBe("bd-abc");
     expect(info.status).toBe("stuck");
     expect(info.currentPhase).toBe("finalize");
     expect(info.costUsd).toBe(1.23);
@@ -236,9 +236,9 @@ describe("createCloseBeadTool", () => {
     expect(text).toContain("Failed to close bead");
   });
 
-  it("accepts legacy seedId as an alias for beadId", async () => {
+  it("accepts legacy taskId as an alias for beadId", async () => {
     const tool = createCloseBeadTool("/nonexistent/path");
-    const result = await tool.execute("call-1", { seedId: "bd-legacy", reason: "work done" }, undefined, undefined, {} as never);
+    const result = await tool.execute("call-1", { taskId: "bd-legacy", reason: "work done" }, undefined, undefined, {} as never);
     const text = (result.content[0] as { type: string; text: string }).text;
     expect(text).toContain("Failed to close bead bd-legacy");
   });

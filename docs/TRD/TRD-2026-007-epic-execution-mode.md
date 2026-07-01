@@ -115,7 +115,7 @@ Dispatcher
 **1h** | [satisfies REQ-001, REQ-004, REQ-008]
 - Validates PRD ACs: AC-001-1, AC-004-1
 - Implementation ACs:
-  - Given `PipelineContext`, when `epicTasks` is set, then it contains an ordered array of `{seedId, seedTitle, seedDescription}` objects
+  - Given `PipelineContext`, when `epicTasks` is set, then it contains an ordered array of `{taskId, taskTitle, taskDescription}` objects
   - Given `PipelineRunConfig`, when `epicId` is set, then the run is linked to the parent epic bead
 
 #### TRD-005: Implement outer task loop in executePipeline for epic mode

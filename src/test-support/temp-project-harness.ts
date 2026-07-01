@@ -11,7 +11,7 @@ import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { PostgresStore } from "../lib/postgres-store.js";
 import { startPostgresTestcontainer } from "./postgres-testcontainer.js";
 
-interface SeedTaskOptions {
+interface TaskTaskOptions {
   title: string;
   type?: string;
   priority?: number;
@@ -22,7 +22,7 @@ interface SeedTaskOptions {
 export interface TempProjectHarness {
   projectPath: string;
   cleanup(): void;
-  seedTask(opts: SeedTaskOptions): Promise<string>;
+  taskTask(opts: TaskTaskOptions): Promise<string>;
   addDependency(blockedTaskId: string, blockerTaskId: string): Promise<void>;
   getTaskStatus(taskId: string): Promise<string | null>;
   getRunStatuses(): Promise<string[]>;
@@ -190,7 +190,7 @@ export async function createTempProjectHarness(): Promise<TempProjectHarness> {
     cleanup() {
       removeDirWithRetries(projectPath);
     },
-    seedTask(opts) {
+    taskTask(opts) {
       return withRetry(async () => {
         const description = opts.scenario
           ? `FOREMAN_TEST_SCENARIO=${JSON.stringify(opts.scenario)}`

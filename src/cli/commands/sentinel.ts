@@ -175,9 +175,9 @@ sentinelCommand
       const store = registered
         ? wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id)
         : wrapLocalSentinelStore(localStore);
-      const seeds = await createSentinelTaskClient(projectPath);
+      const tasks = await createSentinelTaskClient(projectPath);
 
-      const agent = new SentinelAgent(store, seeds, registered.id, projectPath, vcs);
+      const agent = new SentinelAgent(store, tasks, registered.id, projectPath, vcs);
       const options = {
         branch: opts.branch as string,
         testCommand: opts.testCommand as string,
@@ -265,7 +265,7 @@ sentinelCommand
       ensureCliPostgresPool(projectPath);
       const store = wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id);
       // Check if Jira is configured for this project
-      let seeds = await createSentinelTaskClient(projectPath);
+      let tasks = await createSentinelTaskClient(projectPath);
       const { loadProjectConfig } = await import("../../lib/project-config.js");
       const projectConfig = loadProjectConfig(projectPath);
       if (projectConfig?.issueTracker?.backend === "jira") {
@@ -279,7 +279,7 @@ sentinelCommand
         });
         if (jiraClient) {
           console.log(chalk.dim("  Issue tracker: Jira (bugs will be filed in Jira)"));
-          seeds = jiraClient as unknown as typeof seeds;
+          tasks = jiraClient as unknown as typeof tasks;
         } else {
           console.log(chalk.yellow("  Warning: Jira configured but could not connect. Falling back to task backend."));
         }
@@ -297,7 +297,7 @@ sentinelCommand
         failureThreshold,
         dryRun: Boolean(opts.dryRun),
       };
-      const agent = new SentinelAgent(store, seeds, registered.id, projectPath, vcs);
+      const agent = new SentinelAgent(store, tasks, registered.id, projectPath, vcs);
       // Write lockfile
       writeSentinelLock(registered.id, {
         pid: process.pid,

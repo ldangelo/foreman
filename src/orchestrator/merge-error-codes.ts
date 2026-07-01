@@ -21,7 +21,7 @@ export const MQ_ERRORS = {
   "MQ-015": "Tier skipped (pattern learning)",
   "MQ-016": "Fallback preferred (pattern learning)",
   "MQ-018": "All tiers exhausted, merge aborted",
-  "MQ-019": "Seed preservation patch failed",
+  "MQ-019": "Task preservation patch failed",
   "MQ-020": "Auto-commit state files failed",
 } as const;
 

@@ -585,7 +585,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       opts.onTraceEvent?.({
         kind: "complete",
         phase: phaseTrace.phase,
-        seedId: phaseTrace.seedId,
+        taskId: phaseTrace.taskId,
         message: `phase=${phaseTrace.phase} success=${String(success)} artifactPresent=${String(phaseTrace.artifactPresent)} commandHonored=${String(phaseTrace.commandHonored)}`,
         traceFile: tracePaths.relativeJsonPath,
         traceMarkdownFile: tracePaths.relativeMarkdownPath,
@@ -633,7 +633,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       opts.onTraceEvent?.({
         kind: "complete",
         phase: phaseTrace.phase,
-        seedId: phaseTrace.seedId,
+        taskId: phaseTrace.taskId,
         message: `phase=${phaseTrace.phase} success=false error=${reason}`,
         traceFile: tracePaths.relativeJsonPath,
         traceMarkdownFile: tracePaths.relativeMarkdownPath,

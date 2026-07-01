@@ -13,7 +13,7 @@
 
 ### 1.1 Architecture Overview
 
-The sling-trd system introduces four new modules that convert a structured TRD markdown document into task hierarchies in both seeds (sd) and beads_rust (br) tracking systems. It replaces the retired `decompose` command with a purpose-built table parser, dual-tracker executor, and sprint parallelization analyzer.
+The sling-trd system introduces four new modules that convert a structured TRD markdown document into task hierarchies in both tasks (sd) and beads_rust (br) tracking systems. It replaces the retired `decompose` command with a purpose-built table parser, dual-tracker executor, and sprint parallelization analyzer.
 
 ```
 foreman sling trd <file> (CLI)
@@ -44,7 +44,7 @@ SlingExecutor (dual-write execution engine)
   |-- handleCompletedTasks(): skip/close/open logic
   |
   v
-SeedsClient (existing)     BeadsRustClient (new, mirrors SeedsClient)
+TasksClient (existing)     BeadsRustClient (new, mirrors TasksClient)
   |-- create()               |-- create()
   |-- close()                |-- close()
   |-- addDependency()        |-- addDependency()
@@ -60,8 +60,8 @@ SeedsClient (existing)     BeadsRustClient (new, mirrors SeedsClient)
 | `src/cli/commands/sling.ts` | Parent `sling` command with `trd` subcommand, CLI option parsing, preview display, progress spinner | `trd-parser.ts`, `sling-executor.ts` |
 | `src/orchestrator/trd-parser.ts` | Deterministic TRD markdown parser: tables, hierarchy, ACs, risks, quality, sprint summary | — (pure functions, no side effects) |
 | `src/orchestrator/sprint-parallel.ts` | Sprint-level parallelization: dep graph, independent sets, TRD validation | `trd-parser.ts` (types only) |
-| `src/orchestrator/sling-executor.ts` | Dual-write engine: sequential creation, dep wiring, idempotency, completed task handling | `seeds.ts`, `beads-rust.ts`, `trd-parser.ts` |
-| `src/lib/beads-rust.ts` | br CLI wrapper: typed methods mirroring SeedsClient | — (shells out to `br` binary) |
+| `src/orchestrator/sling-executor.ts` | Dual-write engine: sequential creation, dep wiring, idempotency, completed task handling | `tasks.ts`, `beads-rust.ts`, `trd-parser.ts` |
+| `src/lib/beads-rust.ts` | br CLI wrapper: typed methods mirroring TasksClient | — (shells out to `br` binary) |
 
 ### 1.3 Data Flow
 
@@ -208,9 +208,9 @@ interface BrIssueDetail extends BrIssue {
 | CLI → TrdParser | Internal | `parseTrd(content)` returns `SlingPlan` |
 | CLI → SprintParallelAnalyzer | Internal | `analyze(plan)` returns `ParallelResult` |
 | CLI → SlingExecutor | Internal | `execute(plan, parallel, options)` returns `SlingResult` |
-| SlingExecutor → SeedsClient | Outbound | Existing `seeds.ts` methods: `create()`, `close()`, `addDependency()`, `list()` |
-| SlingExecutor → BeadsRustClient | Outbound | New `beads-rust.ts` methods mirroring SeedsClient |
-| SlingExecutor → sd CLI | Outbound | Via SeedsClient (shells out to `~/.bun/bin/sd`) |
+| SlingExecutor → TasksClient | Outbound | Existing `tasks.ts` methods: `create()`, `close()`, `addDependency()`, `list()` |
+| SlingExecutor → BeadsRustClient | Outbound | New `beads-rust.ts` methods mirroring TasksClient |
+| SlingExecutor → sd CLI | Outbound | Via TasksClient (shells out to `~/.bun/bin/sd`) |
 | SlingExecutor → br CLI | Outbound | Via BeadsRustClient (shells out to `~/.local/bin/br`) |
 
 ### 1.6 Error Code System
@@ -236,7 +236,7 @@ All sling errors use structured codes `SLING-001` through `SLING-012`. Error cod
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| SL-T001 | Implement `BeadsRustClient` class with `create()`, `close()`, `update()`, `addDependency()`, `list()`, `search()` methods. Mirror SeedsClient pattern: shell out to `br` binary with `--json` flag, parse JSON responses. Include `ensureBrInstalled()` and `isInitialized()` checks | 4h | -- | `src/lib/beads-rust.ts` | [ ] |
+| SL-T001 | Implement `BeadsRustClient` class with `create()`, `close()`, `update()`, `addDependency()`, `list()`, `search()` methods. Mirror TasksClient pattern: shell out to `br` binary with `--json` flag, parse JSON responses. Include `ensureBrInstalled()` and `isInitialized()` checks | 4h | -- | `src/lib/beads-rust.ts` | [ ] |
 | SL-T002 | Implement `execBr()` low-level helper function. Handle `br` CLI JSON envelope unwrapping (br returns `{ id, title, ... }` directly, not wrapped like sd). Include error handling for non-zero exit codes | 2h | -- | `src/lib/beads-rust.ts` | [ ] |
 | SL-T003 | Write unit tests for BeadsRustClient — mock `execFile` calls, verify argument construction, JSON parsing, error handling, missing binary detection | 4h | SL-T001, SL-T002 | `src/lib/__tests__/beads-rust.test.ts` | [ ] |
 
@@ -298,7 +298,7 @@ All sling errors use structured codes `SLING-001` through `SLING-012`. Error cod
 |----|------|------|------|-------|--------|
 | SL-T025 | Implement `detectExistingEpic()` — search sd (via `sd list --labels trd:<doc-id>`) and br (via `br list --label trd:<doc-id>`) for existing epic. Return epic IDs if found. SLING-009 on duplicate | 3h | SL-T001, SL-T004 | `src/orchestrator/sling-executor.ts` | [ ] |
 | SL-T026 | Implement `executeForTracker()` — sequential creation of epic → sprints → stories → tasks for a single tracker (sd or br). Build `trdIdToTrackerId` lookup map during creation. Apply labels: `trd:<ID>`, `kind:sprint/story/test/spike`, `est:<N>h`, `parallel:<group>`, `risk:<level>`. Use `--parent` for hierarchy. Emit progress callbacks for spinner | 5h | SL-T025, SL-T004 | `src/orchestrator/sling-executor.ts` | [ ] |
-| SL-T027 | Implement type/priority mapping — `toSeedsType()`, `toSeedsPriority()`, `toBrType()`, `toBrPriority()` in sling-executor.ts (br accepts same type names as sd). Handle task type inference from title: "test" → kind:test, "spike" → kind:spike | 2h | -- | `src/orchestrator/sling-executor.ts` | [ ] |
+| SL-T027 | Implement type/priority mapping — `toTasksType()`, `toTasksPriority()`, `toBrType()`, `toBrPriority()` in sling-executor.ts (br accepts same type names as sd). Handle task type inference from title: "test" → kind:test, "spike" → kind:spike | 2h | -- | `src/orchestrator/sling-executor.ts` | [ ] |
 | SL-T028 | Implement `wireDependencies()` — second pass after all issues created. For each task with deps, look up `trdIdToTrackerId` map, call `addDependency()`. Warn on missing targets (SLING-007). Detect cycles (SLING-008) | 3h | SL-T026 | `src/orchestrator/sling-executor.ts` | [ ] |
 
 #### Story 4.2: Completed Task Handling
@@ -328,7 +328,7 @@ All sling errors use structured codes `SLING-001` through `SLING-012`. Error cod
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| SL-T037 | Write unit tests for executor — mock SeedsClient and BeadsRustClient. Test: hierarchy creation order, label application, dep wiring, skip-completed, close-completed, idempotency, force, AC attachment, risk labels, quality notes, sprint summaries, progress callbacks | 6h | SL-T025 through SL-T036 | `src/orchestrator/__tests__/sling-executor.test.ts` | [ ] |
+| SL-T037 | Write unit tests for executor — mock TasksClient and BeadsRustClient. Test: hierarchy creation order, label application, dep wiring, skip-completed, close-completed, idempotency, force, AC attachment, risk labels, quality notes, sprint summaries, progress callbacks | 6h | SL-T025 through SL-T036 | `src/orchestrator/__tests__/sling-executor.test.ts` | [ ] |
 | SL-T038 | Write tests for error handling — SLING-003/004 (missing CLI graceful degradation), SLING-005 (neither available), SLING-006 (individual task failure continues batch), SLING-007 (missing dep target warning), SLING-008 (circular dep detection) | 4h | SL-T037 | `src/orchestrator/__tests__/sling-executor-errors.test.ts` | [ ] |
 
 ### 2.5 Sprint 5: CLI Command (FR-5) + Registration
@@ -552,8 +552,8 @@ Sprint 6 (Polish) -- depends on Sprint 5
 ### 6.4 Compatibility
 
 - Works with TRD format as exemplified by docs/TRD/merge-queue.md
-- Compatible with existing sd CLI (seeds) and br CLI (beads_rust)
-- Does not modify existing seeds/beads data (additive only, unless `--force`)
+- Compatible with existing sd CLI (tasks) and br CLI (beads_rust)
+- Does not modify existing tasks/beads data (additive only, unless `--force`)
 - New types added to `src/orchestrator/types.ts` without breaking existing interfaces
 
 ---

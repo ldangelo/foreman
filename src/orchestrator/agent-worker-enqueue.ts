@@ -26,8 +26,8 @@ export interface EnqueueOptions {
   db?: SqlDbLike;
   /** Optional daemon/Postgres project id for queue writes. */
   projectId?: string;
-  /** The seed ID for this task. */
-  seedId: string;
+  /** The task ID for this task. */
+  taskId: string;
   /** The run ID for this pipeline execution. */
   runId: string;
   /** The merge action this completed run requires. */
@@ -55,7 +55,7 @@ export interface EnqueueResult {
  * This ensures finalization is never blocked by merge queue failures.
  */
 export async function enqueueToMergeQueue(options: EnqueueOptions): Promise<EnqueueResult> {
-  const { db, projectId, seedId, runId, operation = "auto_merge", getFilesModified } = options;
+  const { db, projectId, taskId, runId, operation = "auto_merge", getFilesModified } = options;
 
   try {
     // Collect modified files — tolerate failures
@@ -68,8 +68,8 @@ export async function enqueueToMergeQueue(options: EnqueueOptions): Promise<Enqu
 
     const entry = projectId
       ? await new PostgresMergeQueue(projectId, new PostgresAdapter()).enqueue({
-          branchName: `foreman/${seedId}`,
-          seedId,
+          branchName: `foreman/${taskId}`,
+          taskId,
           runId,
           operation,
           agentName: "pipeline",
@@ -77,8 +77,8 @@ export async function enqueueToMergeQueue(options: EnqueueOptions): Promise<Enqu
         })
       : db
         ? new MergeQueue(db).enqueue({
-            branchName: `foreman/${seedId}`,
-            seedId,
+            branchName: `foreman/${taskId}`,
+            taskId,
             runId,
             operation,
             agentName: "pipeline",

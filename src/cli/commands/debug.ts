@@ -78,7 +78,7 @@ function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    seed_id: row.bead_id,
+    task_id: row.bead_id,
     agent_type: row.agent_type ?? "daemon",
     session_key: row.session_key,
     worktree_path: row.worktree_path,
@@ -153,7 +153,7 @@ function adaptElixirRun(row: ElixirRun): Run {
   return {
     id: runId,
     project_id: String(row.project_id ?? ""),
-    seed_id: String(row.task_id ?? ""),
+    task_id: String(row.task_id ?? ""),
     agent_type: "elixir",
     session_key: null,
     worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : null,
@@ -229,7 +229,7 @@ function formatMessages(messages: Message[]): string {
 function formatRunSummary(run: Run, progress: Record<string, unknown> | null): string {
   const lines = [
     `Run ID: ${run.id}`,
-    `Seed: ${run.seed_id}`,
+    `Task: ${run.task_id}`,
     `Status: ${run.status}`,
     `Agent Type: ${run.agent_type}`,
     `Started: ${run.started_at ?? "unknown"}`,
@@ -245,7 +245,7 @@ function formatRunSummary(run: Run, progress: Record<string, unknown> | null): s
 // ── Diagnostic prompt ───────────────────────────────────────────────────────
 
 function buildDiagnosticPrompt(
-  seedId: string,
+  taskId: string,
   runSummary: string,
   messages: string,
   reports: Record<string, string>,
@@ -263,7 +263,7 @@ function buildDiagnosticPrompt(
     : "## Agent Worker Log\n(not found)";
 
   return loadAndInterpolate("debug.md", {
-    seedId,
+    taskId,
     runSummary,
     messages,
     reportSections: reportSections ? `## Pipeline Reports\n${reportSections}` : "## Pipeline Reports\n(none found)",
@@ -289,14 +289,14 @@ export const debugCommand = new Command("debug")
     const daemon = isElixir ? null : await resolveDaemonDebugContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 
-    // Find runs for this seed
+    // Find runs for this task
     const runs = elixir
       ? await resolveElixirRuns(elixir, beadId)
       : daemon
         ? await resolveDaemonRuns(daemon, beadId)
-        : store.getRunsForSeed(beadId);
+        : store.getRunsForTask(beadId);
     if (runs.length === 0) {
-      console.error(chalk.red(`No runs found for seed ${beadId}`));
+      console.error(chalk.red(`No runs found for task ${beadId}`));
       process.exit(1);
     }
 
@@ -306,7 +306,7 @@ export const debugCommand = new Command("debug")
       : runs[0]; // latest
 
     if (!run) {
-      console.error(chalk.red(`Run ${opts.run} not found for seed ${beadId}`));
+      console.error(chalk.red(`Run ${opts.run} not found for task ${beadId}`));
       console.error(`Available runs: ${runs.map((r) => `${r.id.slice(0, 8)} (${r.status})`).join(", ")}`);
       process.exit(1);
     }

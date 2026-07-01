@@ -45,7 +45,7 @@ Then it enqueues and immediately drains merge:
 // src/orchestrator/agent-worker.ts:1311-1345
 const enqueueResult = await enqueueToMergeQueue({
   projectId: config.projectId,
-  seedId,
+  taskId,
   runId,
   operation: "auto_merge",
   worktreePath,

@@ -37,8 +37,8 @@ describe("agent-worker.ts", () => {
     writeFileSync(configPath, JSON.stringify({
       runId: "test-run-001",
       projectId: "test-project",
-      seedId: "test-seed",
-      seedTitle: "Test Seed",
+      taskId: "test-task",
+      taskTitle: "Test Task",
       model: "claude-sonnet-4-6",
       worktreePath: tmpDir,
       projectPath: tmpDir,
@@ -69,8 +69,8 @@ describe("agent-worker.ts", () => {
     writeFileSync(configPath, JSON.stringify({
       runId: "test-run-log",
       projectId: "test-project",
-      seedId: "test-seed-log",
-      seedTitle: "Test Logging",
+      taskId: "test-task-log",
+      taskTitle: "Test Logging",
       model: "claude-sonnet-4-6",
       worktreePath: tmpDir,
       projectPath: tmpDir,
@@ -96,41 +96,41 @@ describe("agent-worker.ts", () => {
     if (existsSync(logFile)) {
       const content = readFileSync(logFile, "utf-8");
       expect(content).toContain("[foreman-worker]");
-      expect(content).toContain("test-seed-log");
+      expect(content).toContain("test-task-log");
       expect(content).toContain("Test Logging");
     }
     // If log file doesn't exist, the worker crashed before logging
     // (e.g., store init failure) — that's acceptable for this test
   });
 
-  describe("seed reset to open on failure — source regression tests", () => {
+  describe("task reset to open on failure — source regression tests", () => {
     /**
-     * These tests verify by source inspection that resetSeedToOpen() is called
+     * These tests verify by source inspection that resetTaskToOpen() is called
      * in the critical failure paths of agent-worker.ts.
      *
      * Source-inspection is used here because the integration approach (spawning
-     * the worker with a bad API key) fails before reaching resetSeedToOpen due to
+     * the worker with a bad API key) fails before reaching resetTaskToOpen due to
      * Postgres FOREIGN KEY constraints on the unregistered project_id. The source
      * inspection approach is lighter and catches the same regression risk: that
-     * a refactor accidentally removes the resetSeedToOpen calls.
+     * a refactor accidentally removes the resetTaskToOpen calls.
      */
     const WORKER_SRC_PATH = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
 
-    it("catch block (main error path) enqueues resetSeedToOpen via bead write queue", () => {
+    it("catch block (main error path) enqueues resetTaskToOpen via bead write queue", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      // The main catch block must enqueue a reset-seed operation
-      expect(source).toContain("enqueueResetSeedToOpen(store, seedId, ");
+      // The main catch block must enqueue a reset-task operation
+      expect(source).toContain("enqueueResetTaskToOpen(store, taskId, ");
     });
 
-    it("enqueueResetSeedToOpen is imported from task-backend-ops", () => {
+    it("enqueueResetTaskToOpen is imported from task-backend-ops", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      expect(source).toMatch(/import.*enqueueResetSeedToOpen.*from.*task-backend-ops/);
+      expect(source).toMatch(/import.*enqueueResetTaskToOpen.*from.*task-backend-ops/);
     });
 
-    it("enqueueResetSeedToOpen is called at least twice (catch block + finalize path)", () => {
+    it("enqueueResetTaskToOpen is called at least twice (catch block + finalize path)", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
       // Count occurrences — there should be at least 2 (catch block + markStuck)
-      const matches = source.match(/enqueueResetSeedToOpen\(/g) ?? [];
+      const matches = source.match(/enqueueResetTaskToOpen\(/g) ?? [];
       expect(matches.length).toBeGreaterThanOrEqual(2);
     });
   });
@@ -181,24 +181,24 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
   it("routes markStuck observability writes through registered-aware helpers", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { writeMarkStuckEvent, writeMarkStuckProgress } from "./agent-worker-mark-stuck-observability.js";');
-    expect(source).toContain('markStuck: async (storeArg, runIdArg, projectIdArg, seedIdArg, seedTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) =>');
+    expect(source).toContain('markStuck: async (storeArg, runIdArg, projectIdArg, taskIdArg, taskTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) =>');
     expect(source).toContain('await writeMarkStuckProgress(localStore, registeredReadStore, runId, progress, log);');
     expect(source).toContain('await writeMarkStuckEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {');
     const progressIndex = source.indexOf('await writeMarkStuckProgress(localStore, registeredReadStore, runId, progress, log);');
     const terminalIndex = source.indexOf('await updateTerminalRunStatus({', progressIndex);
     const eventIndex = source.indexOf('await writeMarkStuckEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {', terminalIndex);
-    const resetIndex = source.indexOf('enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");', eventIndex);
-    const failIndex = source.indexOf('enqueueMarkBeadFailed(store, seedId, "agent-worker-markStuck");', eventIndex);
-    const notesIndex = source.indexOf('enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");', eventIndex);
+    const resetIndex = source.indexOf('enqueueResetTaskToOpen(store, taskId, "agent-worker-markStuck");', eventIndex);
+    const failIndex = source.indexOf('enqueueMarkBeadFailed(store, taskId, "agent-worker-markStuck");', eventIndex);
+    const notesIndex = source.indexOf('enqueueAddNotesToBead(store, taskId, failureNote, "agent-worker-markStuck");', eventIndex);
     expect(progressIndex).toBeGreaterThan(-1);
     expect(terminalIndex).toBeGreaterThan(progressIndex);
     expect(eventIndex).toBeGreaterThan(terminalIndex);
     expect(resetIndex).toBeGreaterThan(eventIndex);
     expect(failIndex).toBeGreaterThan(eventIndex);
     expect(notesIndex).toBeGreaterThan(eventIndex);
-    expect(source).toContain('enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");');
-    expect(source).toContain('enqueueMarkBeadFailed(store, seedId, "agent-worker-markStuck");');
-    expect(source).toContain('enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");');
+    expect(source).toContain('enqueueResetTaskToOpen(store, taskId, "agent-worker-markStuck");');
+    expect(source).toContain('enqueueMarkBeadFailed(store, taskId, "agent-worker-markStuck");');
+    expect(source).toContain('enqueueAddNotesToBead(store, taskId, failureNote, "agent-worker-markStuck");');
   });
 
   it("routes single-agent progress and terminal observability through registered-aware helpers", () => {

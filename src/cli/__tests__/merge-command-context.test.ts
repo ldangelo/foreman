@@ -264,7 +264,7 @@ describe("merge command registered context", () => {
     mockGetProjectByPath.mockReturnValue({ id: "proj-local", path: "/mock/project" });
     mockLocalGetRun.mockReturnValue(null);
     MockPostgresStore.mockImplementationOnce(function MockPostgresStoreImpl(this: Record<string, unknown>) {
-      this.getRun = vi.fn().mockResolvedValue({ id: "run-1", seed_id: "seed-1", status: "conflict" });
+      this.getRun = vi.fn().mockResolvedValue({ id: "run-1", task_id: "task-1", status: "conflict" });
       this.getRunsByStatus = vi.fn();
       this.getRunsByStatuses = vi.fn();
       this.getRunsByBaseBranch = vi.fn();
@@ -290,8 +290,8 @@ describe("merge command registered context", () => {
 
     const mainEntry = {
       id: 1,
-      branch_name: "foreman/seed-1",
-      seed_id: "seed-1",
+      branch_name: "foreman/task-1",
+      task_id: "task-1",
       run_id: "run-1",
       enqueued_at: new Date().toISOString(),
       status: "pending" as const,
@@ -301,8 +301,8 @@ describe("merge command registered context", () => {
     };
     const retryEntry = {
       id: 2,
-      branch_name: "foreman/seed-2",
-      seed_id: "seed-2",
+      branch_name: "foreman/task-2",
+      task_id: "task-2",
       run_id: "run-2",
       enqueued_at: new Date().toISOString(),
       status: "failed" as const,
@@ -310,11 +310,11 @@ describe("merge command registered context", () => {
       error: null,
       retry_count: 1,
     };
-    mockLocalGetRun.mockImplementation((runId: string) => ({ id: runId, seed_id: runId.replace("run-", "seed-"), status: "completed" }));
+    mockLocalGetRun.mockImplementation((runId: string) => ({ id: runId, task_id: runId.replace("run-", "task-"), status: "completed" }));
     MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
       this.resolveConflict = vi.fn();
       this.mergeCompleted = vi.fn().mockResolvedValue({
-        merged: [{ seedId: "seed-1", branchName: "foreman/seed-1" }],
+        merged: [{ taskId: "task-1", branchName: "foreman/task-1" }],
         conflicts: [],
         testFailures: [],
         prsCreated: [],
@@ -342,8 +342,8 @@ describe("merge command registered context", () => {
       "proj-1",
     ]);
     expect(mockSyncBeadStatusAfterMerge.mock.calls).toEqual([
-      [expect.any(Object), expect.any(Object), "run-1", "seed-1", "/mock/project", undefined, MockPostgresStore.mock.results[0].value],
-      [expect.any(Object), expect.any(Object), "run-2", "seed-2", "/mock/project", undefined, MockPostgresStore.mock.results[0].value],
+      [expect.any(Object), expect.any(Object), "run-1", "task-1", "/mock/project", undefined, MockPostgresStore.mock.results[0].value],
+      [expect.any(Object), expect.any(Object), "run-2", "task-2", "/mock/project", undefined, MockPostgresStore.mock.results[0].value],
     ]);
   });
 
@@ -353,8 +353,8 @@ describe("merge command registered context", () => {
 
     const retryEntry = {
       id: 3,
-      branch_name: "foreman/seed-3",
-      seed_id: "seed-3",
+      branch_name: "foreman/task-3",
+      task_id: "task-3",
       run_id: "run-3",
       enqueued_at: new Date().toISOString(),
       status: "failed" as const,
@@ -367,7 +367,7 @@ describe("merge command registered context", () => {
     MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
       this.resolveConflict = vi.fn();
       this.mergeCompleted = vi.fn().mockResolvedValue({
-        merged: [{ seedId: "seed-3", branchName: "foreman/seed-3" }],
+        merged: [{ taskId: "task-3", branchName: "foreman/task-3" }],
         conflicts: [],
         testFailures: [],
         prsCreated: [],
@@ -390,7 +390,7 @@ describe("merge command registered context", () => {
       expect.any(Object),
       expect.any(Object),
       "run-3",
-      "seed-3",
+      "task-3",
       "/mock/project",
       undefined,
       MockPostgresStore.mock.results[0].value,
@@ -398,14 +398,14 @@ describe("merge command registered context", () => {
     expect(MockRefinery.mock.results[0]?.value.mergeCompleted).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: "proj-1",
-        seedId: "seed-3",
+        taskId: "task-3",
         overrideRun: undefined,
       }),
     );
   });
 
   it("keeps local resolve and dequeue behavior unchanged when the project is not registered", async () => {
-    const localConflictRun = { id: "run-1", seed_id: "seed-1", status: "conflict" };
+    const localConflictRun = { id: "run-1", task_id: "task-1", status: "conflict" };
     mockLocalGetRun.mockReturnValue(localConflictRun);
     MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
       this.mergeCompleted = vi.fn();
@@ -420,11 +420,11 @@ describe("merge command registered context", () => {
 
     vi.clearAllMocks();
     mockGetProjectByPath.mockReturnValue({ id: "proj-local", path: "/mock/project" });
-    mockLocalGetRun.mockReturnValue({ id: "run-2", seed_id: "seed-2", status: "completed" });
+    mockLocalGetRun.mockReturnValue({ id: "run-2", task_id: "task-2", status: "completed" });
     MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
       this.resolveConflict = vi.fn();
       this.mergeCompleted = vi.fn().mockResolvedValue({
-        merged: [{ seedId: "seed-2", branchName: "foreman/seed-2" }],
+        merged: [{ taskId: "task-2", branchName: "foreman/task-2" }],
         conflicts: [],
         testFailures: [],
         prsCreated: [],
@@ -437,8 +437,8 @@ describe("merge command registered context", () => {
       this.dequeue = vi.fn()
         .mockResolvedValueOnce({
           id: 1,
-          branch_name: "foreman/seed-2",
-          seed_id: "seed-2",
+          branch_name: "foreman/task-2",
+          task_id: "task-2",
           run_id: "run-2",
           enqueued_at: new Date().toISOString(),
           status: "pending",
@@ -461,7 +461,7 @@ describe("merge command registered context", () => {
       expect.any(Object),
       expect.any(Object),
       "run-2",
-      "seed-2",
+      "task-2",
       "/mock/project",
       undefined,
       undefined,
@@ -509,7 +509,7 @@ describe("merge command registered context", () => {
   });
 
   it("rejects --resolve for runs that are not in conflict state", async () => {
-    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "completed" });
+    mockLocalGetRun.mockReturnValue({ id: "run-1", task_id: "task-1", status: "completed" });
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as never);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -520,7 +520,7 @@ describe("merge command registered context", () => {
   });
 
   it("prints success output when --resolve merges cleanly", async () => {
-    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "conflict" });
+    mockLocalGetRun.mockReturnValue({ id: "run-1", task_id: "task-1", status: "conflict" });
     MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
       this.mergeCompleted = vi.fn();
       this.resolveConflict = vi.fn().mockResolvedValue(true);
@@ -530,12 +530,12 @@ describe("merge command registered context", () => {
     await runCommand(["--resolve", "run-1", "--strategy", "theirs"]);
 
     const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("Resolving conflict for seed-1");
+    expect(rendered).toContain("Resolving conflict for task-1");
     expect(rendered).toContain("merged successfully");
   });
 
   it("prints abort output when --resolve aborts after an unresolved conflict", async () => {
-    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "conflict" });
+    mockLocalGetRun.mockReturnValue({ id: "run-1", task_id: "task-1", status: "conflict" });
     MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
       this.mergeCompleted = vi.fn();
       this.resolveConflict = vi.fn().mockResolvedValue(false);
@@ -550,7 +550,7 @@ describe("merge command registered context", () => {
   });
 
   it("prints failure output when --resolve with theirs still fails", async () => {
-    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "conflict" });
+    mockLocalGetRun.mockReturnValue({ id: "run-1", task_id: "task-1", status: "conflict" });
     MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
       this.mergeCompleted = vi.fn();
       this.resolveConflict = vi.fn().mockResolvedValue(false);
@@ -560,7 +560,7 @@ describe("merge command registered context", () => {
     await runCommand(["--resolve", "run-1", "--strategy", "theirs"]);
 
     const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("Failed to resolve conflict for seed-1");
+    expect(rendered).toContain("Failed to resolve conflict for task-1");
     expect(rendered).toContain("marked as failed");
   });
 
@@ -570,8 +570,8 @@ describe("merge command registered context", () => {
       this.list = vi.fn().mockResolvedValue([
         {
           id: 1,
-          branch_name: "foreman/seed-1",
-          seed_id: "seed-1",
+          branch_name: "foreman/task-1",
+          task_id: "task-1",
           run_id: "run-1",
           enqueued_at: new Date().toISOString(),
           status: "pending",
@@ -592,7 +592,7 @@ describe("merge command registered context", () => {
 
     const parsed = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
     expect(parsed.entries).toHaveLength(1);
-    expect(parsed.entries[0]).toMatchObject({ seed_id: "seed-1", run_id: "run-1" });
+    expect(parsed.entries[0]).toMatchObject({ task_id: "task-1", run_id: "run-1" });
   });
 
   it("lists queue entries with reconcile banner in text mode", async () => {
@@ -601,8 +601,8 @@ describe("merge command registered context", () => {
       this.list = vi.fn().mockResolvedValue([
         {
           id: 1,
-          branch_name: "foreman/seed-1",
-          seed_id: "seed-1",
+          branch_name: "foreman/task-1",
+          task_id: "task-1",
           run_id: "run-1",
           enqueued_at: new Date(Date.now() - 60_000).toISOString(),
           status: "pending",
@@ -624,7 +624,7 @@ describe("merge command registered context", () => {
     const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("reconciled 2 new entry/entries into queue");
     expect(rendered).toContain("Merge queue (1 entries)");
-    expect(rendered).toContain("seed-1");
+    expect(rendered).toContain("task-1");
     expect(rendered).toContain("merge blocked");
     expect(rendered).toContain("Merge all:");
     expect(rendered).toContain("Merge one:");
@@ -665,7 +665,7 @@ describe("merge command registered context", () => {
         enqueued: 0,
         skipped: 0,
         invalidBranch: 0,
-        failedToEnqueue: [{ run_id: "run-1", seed_id: "seed-1", reason: "branch missing" }],
+        failedToEnqueue: [{ run_id: "run-1", task_id: "task-1", reason: "branch missing" }],
       });
       this.list = vi.fn().mockResolvedValue([]);
       this.resetForRetry = vi.fn().mockResolvedValue(true);
@@ -680,7 +680,7 @@ describe("merge command registered context", () => {
 
     const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("could not be enqueued");
-    expect(rendered).toContain("seed-1: branch missing");
+    expect(rendered).toContain("task-1: branch missing");
     expect(rendered).toContain("No completed tasks to merge.");
   });
 
@@ -696,15 +696,15 @@ describe("merge command registered context", () => {
     });
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-    await runCommand(["--task", "seed-404"]);
+    await runCommand(["--task", "task-404"]);
 
     const rendered = logSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("No completed run found for task seed-404.");
+    expect(rendered).toContain("No completed run found for task task-404.");
     expect(rendered).toContain("Use 'foreman merge --list' to see tasks ready to merge.");
   });
 
   it("prints PR and test-failure summaries from the main merge loop", async () => {
-    mockLocalGetRun.mockReturnValue({ id: "run-1", seed_id: "seed-1", status: "completed" });
+    mockLocalGetRun.mockReturnValue({ id: "run-1", task_id: "task-1", status: "completed" });
     MockRefinery.mockImplementationOnce(function MockRefineryImpl(this: Record<string, unknown>) {
       this.resolveConflict = vi.fn();
       this.mergeCompleted = vi.fn()
@@ -712,12 +712,12 @@ describe("merge command registered context", () => {
           merged: [],
           conflicts: [],
           testFailures: [],
-          prsCreated: [{ seedId: "seed-1", branchName: "foreman/seed-1", prUrl: "https://example.test/pr/1" }],
+          prsCreated: [{ taskId: "task-1", branchName: "foreman/task-1", prUrl: "https://example.test/pr/1" }],
         })
         .mockResolvedValueOnce({
           merged: [],
           conflicts: [],
-          testFailures: [{ runId: "run-2", seedId: "seed-2", branchName: "foreman/seed-2", error: "tests blew up\nstack" }],
+          testFailures: [{ runId: "run-2", taskId: "task-2", branchName: "foreman/task-2", error: "tests blew up\nstack" }],
           prsCreated: [],
         });
     });
@@ -728,8 +728,8 @@ describe("merge command registered context", () => {
       this.dequeue = vi.fn()
         .mockResolvedValueOnce({
           id: 1,
-          branch_name: "foreman/seed-1",
-          seed_id: "seed-1",
+          branch_name: "foreman/task-1",
+          task_id: "task-1",
           run_id: "run-1",
           enqueued_at: new Date().toISOString(),
           status: "pending",
@@ -739,8 +739,8 @@ describe("merge command registered context", () => {
         })
         .mockResolvedValueOnce({
           id: 2,
-          branch_name: "foreman/seed-2",
-          seed_id: "seed-2",
+          branch_name: "foreman/task-2",
+          task_id: "task-2",
           run_id: "run-2",
           enqueued_at: new Date().toISOString(),
           status: "pending",

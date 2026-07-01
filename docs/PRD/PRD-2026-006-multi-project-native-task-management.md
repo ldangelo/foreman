@@ -430,7 +430,7 @@ The system shall provide `foreman task close <id>` and unrestricted manual statu
 **Acceptance Criteria:**
 
 - AC-009.1: After this change, `foreman sling trd <file>` does not invoke `br create` or any `BeadsRustClient` method. All task creation goes through `NativeTaskStore.create()`. Existing sling output format (task titles, descriptions, dependencies, priorities) is preserved.
-- AC-009.2: Tasks created by sling enter `backlog` status. The operator must run `foreman task approve <id>` (or `foreman task approve --all --from-sling <seed>`) before the dispatcher will pick them up.
+- AC-009.2: Tasks created by sling enter `backlog` status. The operator must run `foreman task approve <id>` (or `foreman task approve --all --from-sling <task>`) before the dispatcher will pick them up.
 - AC-009.3: If the current project has not yet been initialized with the native task store (no `tasks` table in `foreman.db`), `foreman sling trd` automatically runs the schema migration before creating tasks, with a one-time message: `"Migrating task store to native format..."`.
 
 ---

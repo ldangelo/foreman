@@ -34,12 +34,12 @@ describe("markStuck observability routing", () => {
       "proj-1",
       "run-1",
       "stuck",
-      { seedId: "seed-1", phase: "developer" },
+      { taskId: "task-1", phase: "developer" },
       logFn,
     );
 
     expect(registeredStore.updateRunProgress).toHaveBeenCalledWith("run-1", progress);
-    expect(registeredStore.logEvent).toHaveBeenCalledWith("proj-1", "stuck", { seedId: "seed-1", phase: "developer" }, "run-1");
+    expect(registeredStore.logEvent).toHaveBeenCalledWith("proj-1", "stuck", { taskId: "task-1", phase: "developer" }, "run-1");
     expect(registeredStore.updateRunProgress).toHaveBeenCalledTimes(1);
     expect(registeredStore.logEvent).toHaveBeenCalledTimes(1);
     expect(localStore.updateRunProgress).not.toHaveBeenCalled();
@@ -65,12 +65,12 @@ describe("markStuck observability routing", () => {
       "proj-2",
       "run-2",
       "fail",
-      { seedId: "seed-2", phase: "qa" },
+      { taskId: "task-2", phase: "qa" },
       logFn,
     );
 
     expect(localStore.updateRunProgress).toHaveBeenCalledWith("run-2", progress);
-    expect(localStore.logEvent).toHaveBeenCalledWith("proj-2", "fail", { seedId: "seed-2", phase: "qa" }, "run-2");
+    expect(localStore.logEvent).toHaveBeenCalledWith("proj-2", "fail", { taskId: "task-2", phase: "qa" }, "run-2");
     expect(localStore.updateRunProgress).toHaveBeenCalledTimes(1);
     expect(localStore.logEvent).toHaveBeenCalledTimes(1);
     expect(registeredStore.updateRunProgress).toHaveBeenCalledTimes(1);
@@ -93,12 +93,12 @@ describe("markStuck observability routing", () => {
       "proj-3",
       "run-3",
       "stuck",
-      { seedId: "seed-3", phase: "review" },
+      { taskId: "task-3", phase: "review" },
       logFn,
     );
 
     expect(localStore.updateRunProgress).toHaveBeenCalledWith("run-3", progress);
-    expect(localStore.logEvent).toHaveBeenCalledWith("proj-3", "stuck", { seedId: "seed-3", phase: "review" }, "run-3");
+    expect(localStore.logEvent).toHaveBeenCalledWith("proj-3", "stuck", { taskId: "task-3", phase: "review" }, "run-3");
     expect(localStore.updateRunProgress).toHaveBeenCalledTimes(1);
     expect(localStore.logEvent).toHaveBeenCalledTimes(1);
     expect(logFn).not.toHaveBeenCalled();

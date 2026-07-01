@@ -102,7 +102,7 @@ describe("init helpers", () => {
     expect(vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("already exists");
   });
 
-  it("initProjectStore seeds sentinel config only when missing", async () => {
+  it("initProjectStore tasks sentinel config only when missing", async () => {
     const store = {
       getProjectByPath: vi.fn().mockResolvedValue(null),
       registerProject: vi.fn().mockResolvedValue({ id: "proj-1" }),

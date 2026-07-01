@@ -26,7 +26,7 @@ Define **read-only interfaces** for all data that orchestrator modules consume f
 // Read model interfaces — orchestrator never constructs these, only reads
 export interface RunSummary {
   id: string;
-  seedId: string;
+  taskId: string;
   status: RunStatus;
   agentType: string;
   startedAt: string | null;
@@ -54,7 +54,7 @@ export type PrState = "none" | "draft" | "open" | "merged" | "closed";
 // Read model interface — store implementations must satisfy this
 export interface RunStoreReadModel {
   getRun(runId: string): Promise<RunSummary | null>;
-  getRunsForSeed(seedId: string): Promise<RunSummary[]>;
+  getRunsForTask(taskId: string): Promise<RunSummary[]>;
   getActiveRuns(projectId: string): Promise<RunSummary[]>;
   getRunsByStatus(status: RunStatus, projectId: string): Promise<RunSummary[]>;
 }
@@ -75,7 +75,7 @@ export interface RunFactory {
   createRun(args: {
     runId: string;
     projectId: string;
-    seedId: string;
+    taskId: string;
     agentType: string;
     branchName: string;
     worktreePath: string | null;
@@ -130,8 +130,8 @@ export class ForemanStoreReadModelAdapter implements RunStoreReadModel {
     return run ? mapRunToSummary(run) : null;
   }
   
-  async getRunsForSeed(seedId: string): Promise<RunSummary[]> {
-    const runs = await this.store.getRunsForSeed(seedId);
+  async getRunsForTask(taskId: string): Promise<RunSummary[]> {
+    const runs = await this.store.getRunsForTask(taskId);
     return runs.map(mapRunToSummary);
   }
   // ...

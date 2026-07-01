@@ -7,8 +7,8 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("../task-backend-ops.js", () => ({
-  enqueueCloseSeed: vi.fn(),
-  enqueueResetSeedToOpen: vi.fn(),
+  enqueueCloseTask: vi.fn(),
+  enqueueResetTaskToOpen: vi.fn(),
   enqueueAddNotesToBead: vi.fn(),
   enqueueSetBeadStatus: vi.fn(),
 }));
@@ -25,7 +25,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-jj-1",
     project_id: "proj-1",
-    seed_id: "seed-jj",
+    task_id: "task-jj",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: "/tmp/jj-workspace",
@@ -50,7 +50,7 @@ function makeMockVcs(): VcsBackend {
     branchExists: vi.fn().mockResolvedValue(true),
     branchExistsOnRemote: vi.fn().mockResolvedValue(true),
     deleteBranch: vi.fn().mockResolvedValue({ deleted: true, wasFullyMerged: true }),
-    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/tmp/jj-workspace", branchName: "foreman/seed-jj" }),
+    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/tmp/jj-workspace", branchName: "foreman/task-jj" }),
     removeWorkspace: vi.fn().mockResolvedValue(undefined),
     listWorkspaces: vi.fn().mockResolvedValue([]),
     stageAll: vi.fn().mockResolvedValue(undefined),
@@ -129,13 +129,13 @@ describe("Refinery jj rebase path", () => {
       sendMessage: vi.fn(),
       getDb: vi.fn(() => mockDb),
     };
-    const seeds = {
+    const tasks = {
       getGraph: vi.fn(async () => ({ edges: [] })),
       show: vi.fn(async () => null),
       update: vi.fn(async () => undefined),
     };
     const vcs = makeMockVcs();
-    const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
+    const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcs);
 
     await refinery.mergeCompleted({ runTests: false });
 

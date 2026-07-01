@@ -67,18 +67,18 @@ describe("preserveBeadChanges()", () => {
     vi.clearAllMocks();
   });
 
-  it("extracts .seeds/ changes and applies them to target", async () => {
-    const patchContent = "diff --git a/.seeds/issues.jsonl b/.seeds/issues.jsonl\n+some bead data\n";
+  it("extracts .tasks/ changes and applies them to target", async () => {
+    const patchContent = "diff --git a/.tasks/issues.jsonl b/.tasks/issues.jsonl\n+some bead data\n";
     const backend = makeBackend();
 
     mockGitSuccess({
-      "diff main...foreman/seed-abc -- .seeds/": patchContent,
+      "diff main...foreman/task-abc -- .tasks/": patchContent,
       "commit -m": "",
     });
 
     const result = await preserveBeadChanges(
       "/tmp/project",
-      "foreman/seed-abc",
+      "foreman/task-abc",
       "main",
       backend,
     );
@@ -87,22 +87,22 @@ describe("preserveBeadChanges()", () => {
     expect(vi.mocked(writeFileSync)).toHaveBeenCalled();
     expect(backend.applyPatchToIndex).toHaveBeenCalledWith(
       "/tmp/project",
-      expect.stringContaining(".foreman-seed-patch-"),
+      expect.stringContaining(".foreman-task-patch-"),
     );
     expect(backend.commit).toHaveBeenCalledWith(
       "/tmp/project",
-      "chore: preserve seed changes from seed-abc",
+      "chore: preserve task changes from task-abc",
     );
   });
 
-  it("does nothing when no .seeds/ changes exist", async () => {
+  it("does nothing when no .tasks/ changes exist", async () => {
     mockGitSuccess({
-      "diff main...foreman/seed-abc -- .seeds/": "",
+      "diff main...foreman/task-abc -- .tasks/": "",
     });
 
     const result = await preserveBeadChanges(
       "/tmp/project",
-      "foreman/seed-abc",
+      "foreman/task-abc",
       "main",
     );
 
@@ -111,7 +111,7 @@ describe("preserveBeadChanges()", () => {
   });
 
   it("logs warning on patch failure but does not throw", async () => {
-    const patchContent = "diff --git a/.seeds/issues.jsonl b/.seeds/issues.jsonl\n+data\n";
+    const patchContent = "diff --git a/.tasks/issues.jsonl b/.tasks/issues.jsonl\n+data\n";
     const backend = {
       applyPatchToIndex: vi.fn().mockRejectedValue(new Error("patch does not apply")),
       commit: vi.fn().mockResolvedValue(undefined),
@@ -129,7 +129,7 @@ describe("preserveBeadChanges()", () => {
 
     const result = await preserveBeadChanges(
       "/tmp/project",
-      "foreman/seed-fail",
+      "foreman/task-fail",
       "main",
       backend,
     );
@@ -139,7 +139,7 @@ describe("preserveBeadChanges()", () => {
   });
 
   it("always cleans up temp file even on failure", async () => {
-    const patchContent = "diff --git a/.seeds/x b/.seeds/x\n+data\n";
+    const patchContent = "diff --git a/.tasks/x b/.tasks/x\n+data\n";
     const backend = {
       applyPatchToIndex: vi.fn().mockRejectedValue(new Error("apply failed")),
       commit: vi.fn().mockResolvedValue(undefined),
@@ -155,14 +155,14 @@ describe("preserveBeadChanges()", () => {
       },
     );
 
-    await preserveBeadChanges("/tmp/project", "foreman/seed-cleanup", "main", backend);
+    await preserveBeadChanges("/tmp/project", "foreman/task-cleanup", "main", backend);
 
     // unlinkSync should be called for temp file cleanup
     expect(vi.mocked(unlinkSync)).toHaveBeenCalled();
   });
 
-  it("preserves only .seeds/ directory changes", async () => {
-    // The diff command should specifically filter to .seeds/
+  it("preserves only .tasks/ directory changes", async () => {
+    // The diff command should specifically filter to .tasks/
     const calls: string[][] = [];
     (execFile as any).mockImplementation(
       (_cmd: string, args: string[], _opts: any, callback: Function) => {
@@ -171,10 +171,10 @@ describe("preserveBeadChanges()", () => {
       },
     );
 
-    await preserveBeadChanges("/tmp/project", "foreman/seed-only", "main");
+    await preserveBeadChanges("/tmp/project", "foreman/task-only", "main");
 
     const diffCall = calls.find((c) => c.includes("diff"));
     expect(diffCall).toBeDefined();
-    expect(diffCall).toContain(".seeds/");
+    expect(diffCall).toContain(".tasks/");
   });
 });

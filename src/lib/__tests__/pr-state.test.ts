@@ -46,10 +46,10 @@ afterEach(() => {
 });
 
 describe("getPrState", () => {
-  it("returns an error state when no branch or seed id is provided", async () => {
+  it("returns an error state when no branch or task id is provided", async () => {
     await expect(getPrState({ projectPath: "/repo" })).resolves.toMatchObject({
       status: "error",
-      error: "Neither branchName nor seedId provided",
+      error: "Neither branchName nor taskId provided",
       summary: "—",
     });
     expect(execFileMock).not.toHaveBeenCalled();
@@ -59,7 +59,7 @@ describe("getPrState", () => {
     queueExecResult({ code: 1, stderr: "unknown revision" });
     queueExecResult({ code: 1, stderr: "no pull request found" });
 
-    await expect(getPrState({ projectPath: "/repo", seedId: "task-1" })).resolves.toMatchObject({
+    await expect(getPrState({ projectPath: "/repo", taskId: "task-1" })).resolves.toMatchObject({
       status: "none",
       currentHeadSha: null,
       summary: "no PR (branch deleted)",

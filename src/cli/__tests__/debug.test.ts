@@ -13,7 +13,7 @@ const {
   mockElixirListInbox,
   mockRunWithPiSdk,
   mockGetHighspeedModel,
-  mockStoreGetRunsForSeed,
+  mockStoreGetRunsForTask,
   mockStoreGetRunProgress,
   mockStoreGetAllMessages,
   mockStoreClose,
@@ -28,7 +28,7 @@ const {
   mockElixirListInbox: vi.fn(),
   mockRunWithPiSdk: vi.fn(),
   mockGetHighspeedModel: vi.fn(),
-  mockStoreGetRunsForSeed: vi.fn(),
+  mockStoreGetRunsForTask: vi.fn(),
   mockStoreGetRunProgress: vi.fn(),
   mockStoreGetAllMessages: vi.fn(),
   mockStoreClose: vi.fn(),
@@ -94,12 +94,12 @@ describe("foreman debug", () => {
     mockElixirListInbox.mockResolvedValue([]);
     mockRunWithPiSdk.mockResolvedValue({ success: true, costUsd: 0.12, outputText: "analysis summary" });
     mockGetHighspeedModel.mockReturnValue("mock-model");
-    mockStoreGetRunsForSeed.mockReturnValue([]);
+    mockStoreGetRunsForTask.mockReturnValue([]);
     mockStoreGetRunProgress.mockReturnValue({ currentPhase: "developer" });
     mockStoreGetAllMessages.mockReturnValue([]);
     mockStoreClose.mockReset();
     mockForemanStoreForProject.mockReturnValue({
-      getRunsForSeed: mockStoreGetRunsForSeed,
+      getRunsForTask: mockStoreGetRunsForTask,
       getRunProgress: mockStoreGetRunProgress,
       getAllMessages: mockStoreGetAllMessages,
       close: mockStoreClose,
@@ -157,7 +157,7 @@ describe("foreman debug", () => {
             sender_agent_type: "foreman",
             recipient_agent_type: "developer",
             subject: "bead-claimed",
-            body: '{"seedId":"foreman-a01cf"}',
+            body: '{"taskId":"foreman-a01cf"}',
             read: 0,
             created_at: "2026-04-25T00:02:00.000Z",
             deleted_at: null,
@@ -175,20 +175,20 @@ describe("foreman debug", () => {
     expect(output).toContain("bead-claimed");
   });
 
-  it("fails clearly when no runs exist for the seed", async () => {
+  it("fails clearly when no runs exist for the task", async () => {
     const debugCommand = await freshCommand();
 
-    await expect(debugCommand.parseAsync(["missing-seed"], { from: "user" })).rejects.toThrow("process.exit(1)");
+    await expect(debugCommand.parseAsync(["missing-task"], { from: "user" })).rejects.toThrow("process.exit(1)");
 
-    expect(vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("No runs found for seed missing-seed");
+    expect(vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("No runs found for task missing-task");
   });
 
   it("fails clearly when the requested run selector does not match", async () => {
-    mockStoreGetRunsForSeed.mockReturnValue([
+    mockStoreGetRunsForTask.mockReturnValue([
       {
         id: "run-12345678",
         project_id: "proj-1",
-        seed_id: "task-1",
+        task_id: "task-1",
         agent_type: "developer",
         session_key: null,
         worktree_path: null,
@@ -206,7 +206,7 @@ describe("foreman debug", () => {
     await expect(debugCommand.parseAsync(["task-1", "--run", "run-missing"], { from: "user" })).rejects.toThrow("process.exit(1)");
 
     const rendered = vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("Run run-missing not found for seed task-1");
+    expect(rendered).toContain("Run run-missing not found for task task-1");
     expect(rendered).toContain("Available runs:");
   });
 
@@ -245,11 +245,11 @@ describe("foreman debug", () => {
   });
 
   it("reports AI analysis failure when runWithPiSdk fails", async () => {
-    mockStoreGetRunsForSeed.mockReturnValue([
+    mockStoreGetRunsForTask.mockReturnValue([
       {
         id: "run-12345678",
         project_id: "proj-1",
-        seed_id: "task-1",
+        task_id: "task-1",
         agent_type: "developer",
         session_key: null,
         worktree_path: null,

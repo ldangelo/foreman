@@ -180,7 +180,7 @@ CLI Commands (--project flag)
 │
 └── worktrees/               # Git worktrees for dispatched tasks
     └── <project-id>/        # e.g., foreman-abc12
-        └── foreman-<seed>   # Per-task worktree
+        └── foreman-<task>   # Per-task worktree
 ```
 
 ### 5.3 Postgres Schema Design
@@ -204,7 +204,7 @@ CREATE TABLE projects (
 CREATE TABLE runs (
   id          TEXT PRIMARY KEY,
   project_id  TEXT NOT NULL REFERENCES projects(id),
-  seed_id     TEXT NOT NULL,
+  task_id     TEXT NOT NULL,
   agent_type  TEXT NOT NULL,
   -- ... all existing columns, project_id added as NOT NULL
 );
@@ -397,7 +397,7 @@ Foreman shall manage the lifecycle of cloned GitHub repositories under `~/.forem
 Worktrees for dispatched tasks shall be created in `~/.foreman/worktrees/<project-id>/` rather than within the project clone directory.
 
 **Acceptance Criteria:**
-- AC-009.1: `dispatcher.createWorktree()` creates worktrees at `~/.foreman/worktrees/<project-id>/<seed-id>` relative to the project clone, e.g., `~/.foreman/worktrees/foreman-abc12/foreman-xyz789`.
+- AC-009.1: `dispatcher.createWorktree()` creates worktrees at `~/.foreman/worktrees/<project-id>/<task-id>` relative to the project clone, e.g., `~/.foreman/worktrees/foreman-abc12/foreman-xyz789`.
 - AC-009.2: The VCS backend (Git or Jujutsu) is initialized in the worktree directory using the project's clone as the reference: `git worktree add --checkout <worktree-path> <branch> <project-clone-path>`.
 - AC-009.3: `foreman worktree list` shows all worktrees across all registered projects with columns: `PROJECT`, `WORKTREE`, `BRANCH`, `STATUS` (active/clean/dirty), `TASK`.
 - AC-009.4: `foreman worktree clean` removes orphaned worktrees (worktrees whose task no longer exists or whose branch is fully merged). Confirmation prompt unless `--force` is provided.

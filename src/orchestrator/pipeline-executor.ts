@@ -85,11 +85,11 @@ export interface PhaseResult {
 async function phaseAgentError(
   agentMailClient: AnyMailClient | null | undefined,
   phaseName: string,
-  seedId: string,
+  taskId: string,
   sinceIso: string,
 ): Promise<{ error: string; retryable: boolean } | null> {
   if (!agentMailClient) return null;
-  const expectedSenders = new Set([phaseName, `${phaseName}-${seedId}`]);
+  const expectedSenders = new Set([phaseName, `${phaseName}-${taskId}`]);
   const sinceMs = Date.parse(sinceIso);
   const messages = await agentMailClient.fetchInbox("foreman", { limit: 50 });
   const msg = [...messages].reverse().find((candidate) =>
@@ -122,12 +122,12 @@ export interface PipelineObservabilityWriter {
 
 /** A child task within an epic pipeline run. */
 export interface EpicTask {
-  /** Bead/seed ID of the child task. */
-  seedId: string;
+  /** Bead/task ID of the child task. */
+  taskId: string;
   /** Title of the child task bead. */
-  seedTitle: string;
+  taskTitle: string;
   /** Description of the child task bead. */
-  seedDescription?: string;
+  taskDescription?: string;
   /** GitHub issue number for this task (from github_issue_number field). */
   githubIssueNumber?: number;
 }
@@ -135,17 +135,17 @@ export interface EpicTask {
 export interface PipelineRunConfig {
   runId: string;
   projectId: string;
-  seedId: string;
-  seedTitle: string;
-  seedDescription?: string;
-  seedComments?: string;
-  seedType?: string;
-  seedLabels?: string[];
+  taskId: string;
+  taskTitle: string;
+  taskDescription?: string;
+  taskComments?: string;
+  taskType?: string;
+  taskLabels?: string[];
   /**
    * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
    * Used to select the per-priority model from the workflow YAML models map.
    */
-  seedPriority?: string;
+  taskPriority?: string;
   model: string;
   worktreePath: string;
   projectPath?: string;
@@ -166,7 +166,7 @@ export interface PipelineRunConfig {
    * When present, pipeline-executor passes it to onTaskPhaseChange(taskId, phaseName)
    * at each phase transition (REQ-012).
    */
-  taskId?: string | null;
+  nativeTaskId?: string | null;
   /**
    * Parent epic bead ID. When set, this run is part of an epic execution.
    * Used to link child task results back to the parent epic.
@@ -244,12 +244,12 @@ export interface PipelineContext {
    * Epic mode callback: update a child task bead's status.
    * Called when a task starts (in_progress) or completes (closed/failed).
    */
-  onTaskStatusChange?: (taskSeedId: string, status: "in_progress" | "completed" | "failed") => Promise<void>;
+  onTaskStatusChange?: (taskTaskId: string, status: "in_progress" | "completed" | "failed") => Promise<void>;
   /**
    * Epic mode callback: create a bug bead when QA fails on a task.
    * Returns the created bug bead ID, or undefined if creation fails.
    */
-  onTaskQaFailure?: (taskSeedId: string, taskTitle: string, epicId: string) => Promise<string | undefined>;
+  onTaskQaFailure?: (taskTaskId: string, taskTitle: string, epicId: string) => Promise<string | undefined>;
   /**
    * Epic mode callback: close a bug bead when QA passes after retry.
    */
@@ -266,7 +266,7 @@ export interface PipelineContext {
   /**
    * Called after the last phase (finalize) completes.
    * Responsible for: reading finalize mail, enqueuing to merge queue,
-   * updating run status, resetting seed on failure, sending branch-ready mail.
+   * updating run status, resetting task on failure, sending branch-ready mail.
    * @param info.success - Whether the pipeline completed successfully.
    *                        Only send branch-ready when success=true AND currentPhase=finalize.
    */
@@ -311,7 +311,7 @@ function sendTraceMail(
   ctx: PipelineContext,
   client: AnyMailClient | null,
   phaseName: string,
-  seedId: string,
+  taskId: string,
   worktreePath: string,
   result: PhaseResult,
 ): void {
@@ -752,7 +752,7 @@ function detectCompletedTasks(worktreePath: string): Set<string> {
  */
 async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig, store, logFile } = ctx;
-  const { runId, seedId, worktreePath } = config;
+  const { runId, taskId, worktreePath } = config;
   let epicTasks = ctx.epicTasks!;
   const taskPhaseNames = workflowConfig.taskPhases!;
   const finalPhaseNames = workflowConfig.finalPhases ?? [];
@@ -771,7 +771,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   const resumedTaskIds = detectCompletedTasks(worktreePath);
 
   if (resumedTaskIds.size > 0) {
-    const remainingTasks = epicTasks.filter((t) => !resumedTaskIds.has(t.seedId));
+    const remainingTasks = epicTasks.filter((t) => !resumedTaskIds.has(t.taskId));
     const skippedCount = totalTaskCount - remainingTasks.length;
 
     if (skippedCount > 0) {
@@ -783,7 +783,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
 
   const taskPhaseStr = taskPhaseNames.join(" → ");
   const finalPhaseStr = finalPhaseNames.length > 0 ? ` | final: ${finalPhaseNames.join(" → ")}` : "";
-  ctx.log(`[EPIC] Starting epic pipeline for ${seedId} — ${epicTasks.length} tasks`);
+  ctx.log(`[EPIC] Starting epic pipeline for ${taskId} — ${epicTasks.length} tasks`);
   ctx.log(`[EPIC] Per-task phases: ${taskPhaseStr}${finalPhaseStr}`);
   await appendFile(logFile, `\n[EPIC] Epic pipeline: ${epicTasks.length} tasks, taskPhases: ${taskPhaseStr}${finalPhaseStr}\n`);
 
@@ -814,29 +814,29 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
 
   for (let taskIdx = 0; taskIdx < epicTasks.length; taskIdx++) {
     const task = epicTasks[taskIdx];
-    ctx.log(`[EPIC] Task ${taskIdx + 1}/${epicTasks.length}: ${task.seedId} — ${task.seedTitle}`);
-    await appendFile(logFile, `\n[EPIC] === Task ${taskIdx + 1}/${epicTasks.length}: ${task.seedId} ===\n`);
+    ctx.log(`[EPIC] Task ${taskIdx + 1}/${epicTasks.length}: ${task.taskId} — ${task.taskTitle}`);
+    await appendFile(logFile, `\n[EPIC] === Task ${taskIdx + 1}/${epicTasks.length}: ${task.taskId} ===\n`);
     const epicTaskCostBefore = totalProgress.costUsd;
 
     // TRD-012: Update epic progress in RunProgress
-    totalProgress.epicCurrentTaskId = task.seedId;
+    totalProgress.epicCurrentTaskId = task.taskId;
     await writeNormalPhaseProgress(store, runId, totalProgress, ctx.observabilityWriter);
 
     // TRD-011: Mark task bead as in_progress
     if (ctx.onTaskStatusChange) {
-      await ctx.onTaskStatusChange(task.seedId, "in_progress").catch(() => {});
+      await ctx.onTaskStatusChange(task.taskId, "in_progress").catch(() => {});
     }
 
-    // Build a task-specific config overlay (use task's seedId/title/description for prompts)
+    // Build a task-specific config overlay (use task's taskId/title/description for prompts)
     const taskConfig: PipelineRunConfig = {
       ...config,
-      // Keep the epic's seedId for run tracking, but pass task info for prompts
-      seedDescription: task.seedDescription ?? config.seedDescription,
-      seedComments: `Epic task ${taskIdx + 1}/${epicTasks.length}: ${task.seedTitle}\n` +
+      // Keep the epic's taskId for run tracking, but pass task info for prompts
+      taskDescription: task.taskDescription ?? config.taskDescription,
+      taskComments: `Epic task ${taskIdx + 1}/${epicTasks.length}: ${task.taskTitle}\n` +
         (completedTaskIds.length > 0
           ? `Previously completed: ${completedTaskIds.join(", ")}\n`
           : "") +
-        (config.seedComments ?? ""),
+        (config.taskComments ?? ""),
     };
 
     // Create a task-scoped context with taskPhases only
@@ -861,68 +861,68 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
 
     if (result.success) {
       completedCount++;
-      completedTaskIds.push(task.seedId);
+      completedTaskIds.push(task.taskId);
 
       // TRD-010: Close bug bead if QA passed after retry
-      const activeBugBeadId = activeBugBeadIds.get(task.seedId);
+      const activeBugBeadId = activeBugBeadIds.get(task.taskId);
       if (activeBugBeadId && ctx.onTaskQaPass) {
         await ctx.onTaskQaPass(activeBugBeadId).catch(() => {});
       }
-      activeBugBeadIds.delete(task.seedId);
+      activeBugBeadIds.delete(task.taskId);
 
       // Commit after each successful task (epic mode: one commit per task)
       if (config.vcsBackend) {
         try {
-          await config.vcsBackend.commit(worktreePath, `${task.seedTitle} (${task.seedId})`);
-          ctx.log(`[EPIC] Committed task ${task.seedId}`);
+          await config.vcsBackend.commit(worktreePath, `${task.taskTitle} (${task.taskId})`);
+          ctx.log(`[EPIC] Committed task ${task.taskId}`);
         } catch (err: unknown) {
           // Non-fatal: commit may fail if no changes (e.g. test-only task)
           const msg = err instanceof Error ? err.message : String(err);
-          ctx.log(`[EPIC] Commit for ${task.seedId} skipped: ${msg}`);
+          ctx.log(`[EPIC] Commit for ${task.taskId} skipped: ${msg}`);
         }
       }
 
       // TRD-011: Mark task bead as completed
       if (ctx.onTaskStatusChange) {
-        await ctx.onTaskStatusChange(task.seedId, "completed").catch(() => {});
+        await ctx.onTaskStatusChange(task.taskId, "completed").catch(() => {});
       }
 
       // TRD-012: Update epic progress
       totalProgress.epicTasksCompleted = completedCount;
       totalProgress.epicCostByTask ??= {};
-      totalProgress.epicCostByTask[task.seedId] = result.progress.costUsd - epicTaskCostBefore;
+      totalProgress.epicCostByTask[task.taskId] = result.progress.costUsd - epicTaskCostBefore;
       await writeNormalPhaseProgress(store, runId, totalProgress, ctx.observabilityWriter);
 
-      ctx.log(`[EPIC] Task ${task.seedId} PASSED (${completedCount}/${epicTasks.length} done)`);
-      await appendFile(logFile, `\n[EPIC] Task ${task.seedId} PASSED\n`);
+      ctx.log(`[EPIC] Task ${task.taskId} PASSED (${completedCount}/${epicTasks.length} done)`);
+      await appendFile(logFile, `\n[EPIC] Task ${task.taskId} PASSED\n`);
     } else {
       failedCount++;
 
       // TRD-010: Create bug bead on QA failure
       if (result.retriesExhausted && ctx.onTaskQaFailure && config.epicId) {
-        const activeBugBeadId = await ctx.onTaskQaFailure(task.seedId, task.seedTitle, config.epicId).catch(() => undefined);
+        const activeBugBeadId = await ctx.onTaskQaFailure(task.taskId, task.taskTitle, config.epicId).catch(() => undefined);
         if (activeBugBeadId) {
-          activeBugBeadIds.set(task.seedId, activeBugBeadId);
-          ctx.log(`[EPIC] Created bug bead ${activeBugBeadId} for QA failure on ${task.seedId}`);
+          activeBugBeadIds.set(task.taskId, activeBugBeadId);
+          ctx.log(`[EPIC] Created bug bead ${activeBugBeadId} for QA failure on ${task.taskId}`);
         }
       }
 
       // TRD-011: Mark task bead as failed
       if (ctx.onTaskStatusChange) {
-        await ctx.onTaskStatusChange(task.seedId, "failed").catch(() => {});
+        await ctx.onTaskStatusChange(task.taskId, "failed").catch(() => {});
       }
 
-      ctx.log(`[EPIC] Task ${task.seedId} FAILED${result.retriesExhausted ? " (retries exhausted)" : ""}`);
-      await appendFile(logFile, `\n[EPIC] Task ${task.seedId} FAILED\n`);
+      ctx.log(`[EPIC] Task ${task.taskId} FAILED${result.retriesExhausted ? " (retries exhausted)" : ""}`);
+      await appendFile(logFile, `\n[EPIC] Task ${task.taskId} FAILED\n`);
 
       // Apply onError strategy
       if (workflowConfig.onError === "stop") {
-        ctx.log(`[EPIC] onError=stop — halting epic after task ${task.seedId} failure`);
+        ctx.log(`[EPIC] onError=stop — halting epic after task ${task.taskId} failure`);
         await appendFile(logFile, `\n[EPIC] Halted (onError=stop)\n`);
         await ctx.markStuck(
-          store, runId, config.projectId, seedId, config.seedTitle,
+          store, runId, config.projectId, taskId, config.taskTitle,
           totalProgress, "epic-task-failed",
-          `Task ${task.seedId} failed — epic halted (onError=stop)`,
+          `Task ${task.taskId} failed — epic halted (onError=stop)`,
           config.projectPath, ctx.notifyClient,
         );
         return;
@@ -984,7 +984,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
  */
 async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig, store, logFile } = ctx;
-  const { seedId } = config;
+  const { taskId } = config;
 
   const progress: RunProgress = {
     toolCalls: 0,
@@ -1000,7 +1000,7 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   };
 
   const phaseNames = workflowConfig.phases.map((p) => p.name).join(" → ");
-  ctx.log(`Pipeline starting for ${seedId} [workflow: ${workflowConfig.name}]`);
+  ctx.log(`Pipeline starting for ${taskId} [workflow: ${workflowConfig.name}]`);
   ctx.log(`[PIPELINE] Phase sequence: ${phaseNames}`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n[PIPELINE] Phase sequence: ${phaseNames}\n`);
 
@@ -1013,7 +1013,7 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   ctx.heartbeatManager = config.vcsBackend
     ? createHeartbeatManager(heartbeatConfig, store, config.projectId, config.runId, config.vcsBackend, worktreePath, ctx.observabilityWriter) ?? undefined
     : undefined;
-  ctx.heartbeatManager?.setSeedId(seedId);
+  ctx.heartbeatManager?.setTaskId(taskId);
   ctx.activityPhases = [];
 
   const result = await runPhaseSequence(ctx, workflowConfig.phases, progress, false, ctx.observabilityWriter);
@@ -1027,7 +1027,7 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
       await generateActivityLog({
         worktreePath,
         runId: config.runId,
-        seedId: config.seedId,
+        taskId: config.taskId,
         phases: ctx.activityPhases,
         vcs: config.vcsBackend,
         targetBranch: config.targetBranch ?? "main",
@@ -1067,9 +1067,9 @@ async function runPhaseSequence(
   observabilityWriter?: PipelineObservabilityWriter,
 ): Promise<PhaseSequenceResult> {
   const { config, workflowConfig, store, logFile, notifyClient, agentMailClient } = ctx;
-  const { runId, projectId, seedId, seedTitle, worktreePath } = config;
-  const description = config.seedDescription ?? "(no description)";
-  const comments = config.seedComments;
+  const { runId, projectId, taskId, taskTitle, worktreePath } = config;
+  const description = config.taskDescription ?? "(no description)";
+  const comments = config.taskComments;
 
   const progress = { ...initialProgress };
   const phaseRecords: PhaseRecord[] = [];
@@ -1107,7 +1107,7 @@ async function runPhaseSequence(
     body: string,
     metadata?: Record<string, unknown>,
   ): Promise<void> => {
-    await ctx.onTaskPhaseNote?.(config.taskId ?? null, phaseName, kind, body, metadata);
+    await ctx.onTaskPhaseNote?.(config.nativeTaskId ?? null, phaseName, kind, body, metadata);
   };
 
   // Build a phase index for retryWith lookups
@@ -1125,10 +1125,10 @@ async function runPhaseSequence(
     if (prePhaseBudgetReason) {
       ctx.log(`[PIPELINE] Budget stop before ${phaseName}: ${prePhaseBudgetReason}`);
       await writeTaskPhaseNote(phaseName, "failure", prePhaseBudgetReason, { retryable: false, budget: true });
-      await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, prePhaseBudgetReason, config.projectPath, notifyClient);
+      await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, prePhaseBudgetReason, config.projectPath, notifyClient);
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
-    const agentName = `${phaseName}-${seedId}`;
+    const agentName = `${phaseName}-${taskId}`;
     const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
     const phaseType = phase.bash
       ? "bash"
@@ -1138,13 +1138,13 @@ async function runPhaseSequence(
           ? "builtin"
           : "prompt";
     const phaseMeta: TaskMeta = {
-      id: seedId,
-      title: seedTitle,
+      id: taskId,
+      title: taskTitle,
       description,
-      type: config.seedType ?? '',
+      type: config.taskType ?? '',
       priority: 2,
       ...ctx.taskMeta,
-      projectReportsDir: ctx.taskMeta?.projectReportsDir || getRunReportsDir(projectId, seedId, runId),
+      projectReportsDir: ctx.taskMeta?.projectReportsDir || getRunReportsDir(projectId, taskId, runId),
     };
 
     if (phase.retryOnly && !retryOnlyActivations.has(phaseName)) {
@@ -1182,7 +1182,7 @@ async function runPhaseSequence(
 
     // 3. Send phase-started mail
     if (phase.mail?.onStart !== false) {
-      ctx.sendMail(agentMailClient, "foreman", "phase-started", { seedId, phase: phaseName });
+      ctx.sendMail(agentMailClient, "foreman", "phase-started", { taskId, phase: phaseName });
     }
 
     // 4. Reserve files
@@ -1223,8 +1223,8 @@ async function runPhaseSequence(
 
       if (phaseName === "finalize") {
         const finalizeCommands = vcsBackend.getFinalizeCommands({
-          seedId,
-          seedTitle,
+          taskId,
+          taskTitle,
           baseBranch,
           worktreePath,
           githubIssueNumber: config.githubIssueNumber,
@@ -1276,11 +1276,11 @@ async function runPhaseSequence(
       prompt = phase.command
         ? interpolateTaskPlaceholders(phase.command, phaseMeta)
         : buildPhasePrompt(phaseName, {
-          seedId,
-          seedTitle,
-          seedDescription: description,
-          seedComments: comments,
-          seedType: config.seedType,
+          taskId,
+          taskTitle,
+          taskDescription: description,
+          taskComments: comments,
+          taskType: config.taskType,
           runId,
           hasExplorerReport,
           requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
@@ -1297,11 +1297,11 @@ async function runPhaseSequence(
 
     const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];
     const fallbackModel = roleConfigFallback?.model ?? config.model;
-    let phaseModel = resolvePhaseModel(phase, config.seedPriority, fallbackModel);
+    let phaseModel = resolvePhaseModel(phase, config.taskPriority, fallbackModel);
 
     // FR-2: Write phase-start event to store before agent spawns
     await writeNormalPhaseEvent(store, projectId, runId, "phase-start", {
-      seedId,
+      taskId,
       phase: phaseName,
       worktreePath,
       expectedWorktree: worktreePath,
@@ -1342,10 +1342,10 @@ async function runPhaseSequence(
         await appendFile(logFile, `\n[PIPELINE] EXPLORER CIRCUIT BREAKER: ${recentExplorerFailures.length} failures detected, failing fast\n`);
         const errorMsg = `Explorer circuit breaker: ${recentExplorerFailures.length} failures in the last hour`;
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId, phase: phaseName, error: errorMsg, retryable: false,
+          taskId, phase: phaseName, error: errorMsg, retryable: false,
         });
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
-        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
     }
@@ -1369,7 +1369,7 @@ async function runPhaseSequence(
         const errorMsg = `Builtin phase ${phaseName} is not supported by this runner`;
         ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
-        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
 
@@ -1417,7 +1417,7 @@ async function runPhaseSequence(
         }
         writeIncrementalPipelineReport({
           worktreePath,
-          seedId,
+          taskId,
           runId,
           completedPhases: ctx.activityPhases,
           targetBranch: config.targetBranch,
@@ -1437,10 +1437,10 @@ async function runPhaseSequence(
 
         if (isRateLimitError(errorMsg)) {
           ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-            seedId, phase: phaseName, error: errorMsg, retryable: true,
+            taskId, phase: phaseName, error: errorMsg, retryable: true,
           });
           await writeTaskPhaseNote(phaseName, "failure", `${phaseName} rate limited: ${errorMsg}`, { retryable: true });
-          await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+          await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
           return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
         }
 
@@ -1454,12 +1454,12 @@ async function runPhaseSequence(
           if (currentRetries < maxRetries) {
             retryCounts[phaseName] = currentRetries + 1;
             if (phase.mail?.onFail) {
-              const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
+              const feedbackTarget = `${phase.mail.onFail}-${taskId}`;
               ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
             }
             feedbackContext = feedback;
             ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-              seedId, phase: phaseName, error: errorMsg, retryable: true,
+              taskId, phase: phaseName, error: errorMsg, retryable: true,
             });
             ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
@@ -1477,25 +1477,25 @@ async function runPhaseSequence(
         }
 
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId, phase: phaseName, error: errorMsg, retryable: false,
+          taskId, phase: phaseName, error: errorMsg, retryable: false,
         });
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
-        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
 
       if (phase.mail?.onComplete !== false) {
         ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
-          seedId, phase: phaseName, status: "completed", cost: 0, turns: 0,
+          taskId, phase: phaseName, status: "completed", cost: 0, turns: 0,
         });
       }
-      await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: 0 }, observabilityWriter);
+      await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { taskId, phase: phaseName, costUsd: 0 }, observabilityWriter);
       await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
         costUsd: 0,
         turns: 0,
         artifactPresent,
       });
-      await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
+      await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
       if (result.stopPipelineSuccess) {
         ctx.log(`[${phaseName.toUpperCase()}] Completed and requested successful pipeline stop`);
         return { success: true, phaseRecords, retryCounts, qaVerdictForLog, progress };
@@ -1547,10 +1547,10 @@ async function runPhaseSequence(
 
         if (isRateLimitError(errorMsg)) {
           ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-            seedId, phase: phaseName, error: errorMsg, retryable: true,
+            taskId, phase: phaseName, error: errorMsg, retryable: true,
           });
           await writeTaskPhaseNote(phaseName, "failure", `${phaseName} rate limited: ${errorMsg}`, { retryable: true });
-          await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+          await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
           return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
         }
 
@@ -1565,12 +1565,12 @@ async function runPhaseSequence(
           if (currentRetries < maxRetries) {
             retryCounts[phaseName] = currentRetries + 1;
             if (phase.mail?.onFail) {
-              const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
+              const feedbackTarget = `${phase.mail.onFail}-${taskId}`;
               ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
             }
             feedbackContext = feedback;
             ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-              seedId, phase: phaseName, error: errorMsg, retryable: true,
+              taskId, phase: phaseName, error: errorMsg, retryable: true,
             });
             ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
@@ -1585,10 +1585,10 @@ async function runPhaseSequence(
         }
 
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId, phase: phaseName, error: errorMsg, retryable: false,
+          taskId, phase: phaseName, error: errorMsg, retryable: false,
         });
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
-        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
       // Handle verdict if configured
@@ -1610,23 +1610,23 @@ async function runPhaseSequence(
 
         if (phase.mail?.onComplete !== false) {
           ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
-            seedId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
+            taskId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
           });
         }
-        await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, observabilityWriter);
+        await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { taskId, phase: phaseName, costUsd: result.costUsd }, observabilityWriter);
         await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
           costUsd: result.costUsd,
           turns: result.turns,
           artifactPresent: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
         });
-        await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
+        await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
 
         if (phase.mail?.forwardArtifactTo && phase.artifact) {
           const artifactContent = readReport(worktreePath, phase.artifact);
           if (artifactContent) {
             const targetAgent = phase.mail.forwardArtifactTo === "foreman"
               ? "foreman"
-              : `${phase.mail.forwardArtifactTo}-${seedId}`;
+              : `${phase.mail.forwardArtifactTo}-${taskId}`;
             const subject = phase.mail.forwardArtifactTo === "foreman"
               ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
               : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
@@ -1689,7 +1689,7 @@ async function runPhaseSequence(
     let phaseSucceeded = result.success && !commandPhaseContractError;
     let phaseError = commandPhaseContractError ?? result.error;
 
-    const explicitAgentError = await phaseAgentError(agentMailClient, phaseName, seedId, phaseRunStartedAt);
+    const explicitAgentError = await phaseAgentError(agentMailClient, phaseName, taskId, phaseRunStartedAt);
     if (explicitAgentError) {
       phaseSucceeded = false;
       phaseError = explicitAgentError.error;
@@ -1778,7 +1778,7 @@ async function runPhaseSequence(
       }
       writeIncrementalPipelineReport({
         worktreePath,
-        seedId,
+        taskId,
         runId,
         completedPhases: ctx.activityPhases,
         targetBranch: config.targetBranch,
@@ -1806,7 +1806,7 @@ async function runPhaseSequence(
     if (postPhaseBudgetReason) {
       ctx.log(`[PIPELINE] Budget stop after ${phaseName}: ${postPhaseBudgetReason}`);
       await writeTaskPhaseNote(phaseName, "failure", postPhaseBudgetReason, { retryable: false, budget: true });
-      await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, postPhaseBudgetReason, config.projectPath, notifyClient);
+      await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, postPhaseBudgetReason, config.projectPath, notifyClient);
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
 
@@ -1822,10 +1822,10 @@ async function runPhaseSequence(
 
       if (explicitAgentError && !explicitAgentError.retryable) {
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-          seedId, phase: phaseName, error: errorMsg, retryable: false,
+          taskId, phase: phaseName, error: errorMsg, retryable: false,
         });
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} agent-error: ${errorMsg}`, { retryable: false });
-        await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
       }
 
@@ -1899,15 +1899,15 @@ async function runPhaseSequence(
               // Handle success: send phase-complete, labels, forward artifact.
               if (phase.mail?.onComplete !== false) {
                 ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
-                  seedId, phase: phaseName, status: "completed", cost: fallbackResult.costUsd, turns: fallbackResult.turns,
+                  taskId, phase: phaseName, status: "completed", cost: fallbackResult.costUsd, turns: fallbackResult.turns,
                 });
               }
-              await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: fallbackResult.costUsd }, observabilityWriter);
+              await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { taskId, phase: phaseName, costUsd: fallbackResult.costUsd }, observabilityWriter);
               await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed after model fallback.`, {
                 costUsd: fallbackResult.costUsd,
                 turns: fallbackResult.turns,
               });
-              await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
+              await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
 
               if (phase.mail?.forwardArtifactTo && phase.artifact) {
                 const interpolatedArtifact = interpolateTaskPlaceholders(
@@ -1918,7 +1918,7 @@ async function runPhaseSequence(
                 if (artifactContent) {
                   const targetAgent = phase.mail.forwardArtifactTo === "foreman"
                     ? "foreman"
-                    : `${phase.mail.forwardArtifactTo}-${seedId}`;
+                    : `${phase.mail.forwardArtifactTo}-${taskId}`;
                   const subject = phase.mail.forwardArtifactTo === "foreman"
                     ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
                     : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
@@ -1973,16 +1973,16 @@ async function runPhaseSequence(
 
           // Mark task as in cooldown state so dispatcher skips it
           try {
-            store.updateTaskStatus(seedId, "cooldown");
-            ctx.log(`[${phaseName.toUpperCase()}] Task ${seedId} marked as cooldown until ${cooldownUntil}`);
+            store.updateTaskStatus(taskId, "cooldown");
+            ctx.log(`[${phaseName.toUpperCase()}] Task ${taskId} marked as cooldown until ${cooldownUntil}`);
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            ctx.log(`[${phaseName.toUpperCase()}] Warning: Failed to mark task ${seedId} as cooldown: ${msg.slice(0, 200)}`);
+            ctx.log(`[${phaseName.toUpperCase()}] Warning: Failed to mark task ${taskId} as cooldown: ${msg.slice(0, 200)}`);
           }
 
           // Log the cooldown event for tracking
           store.logEvent(projectId, "cooldown", {
-            seedId,
+            taskId,
             phase: phaseName,
             cooldownUntil,
             cooldownSeconds,
@@ -1991,7 +1991,7 @@ async function runPhaseSequence(
 
           // Notify the operator
           ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-            seedId, phase: phaseName, error: errorMsg, retryable: true,
+            taskId, phase: phaseName, error: errorMsg, retryable: true,
             cooldownUntil, cooldownSeconds,
           });
           await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg} — cooldown until ${cooldownUntil}`, { retryable: true, cooldownUntil });
@@ -2002,10 +2002,10 @@ async function runPhaseSequence(
       const kind = failureKind(errorMsg);
       const retryable = kind === "provider_transient";
       ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-        seedId, phase: phaseName, error: errorMsg, retryable, failureKind: kind,
+        taskId, phase: phaseName, error: errorMsg, retryable, failureKind: kind,
       });
       await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable, failureKind: kind });
-      await ctx.markStuck(store, runId, projectId, seedId, seedTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
+      await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
     }
 
@@ -2120,7 +2120,7 @@ async function runPhaseSequence(
           retryCounts[retryCountKey] = currentRetries + 1;
 
           if (phase.mail?.onFail && report) {
-            const feedbackTarget = `${phase.mail.onFail}-${seedId}`;
+            const feedbackTarget = `${phase.mail.onFail}-${taskId}`;
             ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
           }
           feedbackContext = feedbackContext ?? (report ? extractIssues(report) : `(${phaseName} failed but no report)`);
@@ -2154,23 +2154,23 @@ async function runPhaseSequence(
     // 9. Handle success: send phase-complete, labels, forward artifact.
     if (phase.mail?.onComplete !== false) {
       ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
-        seedId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
+        taskId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
       });
     }
-    await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { seedId, phase: phaseName, costUsd: result.costUsd }, observabilityWriter);
+    await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { taskId, phase: phaseName, costUsd: result.costUsd }, observabilityWriter);
     await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
       costUsd: result.costUsd,
       turns: result.turns,
       artifactPresent,
     });
-    await ctx.onTaskPhaseChange?.(config.taskId ?? null, phaseName);
+    await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
 
     if (phase.mail?.forwardArtifactTo && phase.artifact) {
       const artifactContent = readReport(worktreePath, phase.artifact);
       if (artifactContent) {
         const targetAgent = phase.mail.forwardArtifactTo === "foreman"
           ? "foreman"
-          : `${phase.mail.forwardArtifactTo}-${seedId}`;
+          : `${phase.mail.forwardArtifactTo}-${taskId}`;
         const subject = phase.mail.forwardArtifactTo === "foreman"
           ? `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Complete`
           : `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Report`;
@@ -2194,16 +2194,16 @@ async function writeSessionLogSafe(
   qaVerdictForLog: "pass" | "fail" | "unknown",
 ): Promise<void> {
   const { config } = ctx;
-  const { seedId, seedTitle, worktreePath } = config;
-  const description = config.seedDescription ?? "(no description)";
+  const { taskId, taskTitle, worktreePath } = config;
+  const description = config.taskDescription ?? "(no description)";
 
   try {
     const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(worktreePath);
     const sessionLogData: SessionLogData = {
-      seedId,
-      seedTitle,
-      seedDescription: description,
-      branchName: `foreman/${seedId}`,
+      taskId,
+      taskTitle,
+      taskDescription: description,
+      branchName: `foreman/${taskId}`,
       projectName: basename(pipelineProjectPath),
       phases: phaseRecords,
       totalCostUsd: progress.costUsd,

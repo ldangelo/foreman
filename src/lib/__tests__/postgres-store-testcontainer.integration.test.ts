@@ -70,7 +70,7 @@ describe("PostgresStore testcontainer integration", { timeout: 120_000 }, () => 
     await store.sendMessage(run.id, "developer", "qa", "phase-complete", "done");
 
     const fetchedRun = await store.getRun(run.id);
-    expect(fetchedRun).toEqual(expect.objectContaining({ id: run.id, status: "running", seed_id: task.id }));
+    expect(fetchedRun).toEqual(expect.objectContaining({ id: run.id, status: "running", task_id: task.id }));
     expect(await store.getRunProgress(run.id)).toEqual(
       expect.objectContaining({ currentPhase: "developer", tokensIn: 11, tokensOut: 22 }),
     );

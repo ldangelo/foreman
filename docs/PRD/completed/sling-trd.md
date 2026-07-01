@@ -12,11 +12,11 @@
 
 ### 1.1 Problem Statement
 
-Foreman's existing `decompose` command converts TRDs into seeds using heuristic markdown parsing (H2 sections as stories, checklist items as tasks). This works for loosely-structured documents but **fails to extract the rich metadata already present in a well-structured TRD**: explicit task IDs, table-formatted dependencies, hour estimates, file references, status indicators, sprint groupings, and parallelization opportunities.
+Foreman's existing `decompose` command converts TRDs into tasks using heuristic markdown parsing (H2 sections as stories, checklist items as tasks). This works for loosely-structured documents but **fails to extract the rich metadata already present in a well-structured TRD**: explicit task IDs, table-formatted dependencies, hour estimates, file references, status indicators, sprint groupings, and parallelization opportunities.
 
 The merge-queue TRD (docs/TRD/merge-queue.md) exemplifies this: 79 tasks across 9 sprints with explicit dependency chains (e.g., `MQ-T027` depends on `MQ-T026, MQ-T012`), hour estimates, file paths, and completion status — none of which `decompose` can extract from its table format.
 
-Additionally, the project now uses **two task tracking systems** — seeds (`sd`) for Foreman's agent pipeline and beads_rust (`br`) for broader project management — but no command writes to both simultaneously.
+Additionally, the project now uses **two task tracking systems** — tasks (`sd`) for Foreman's agent pipeline and beads_rust (`br`) for broader project management — but no command writes to both simultaneously.
 
 ### 1.2 Solution
 
@@ -44,7 +44,7 @@ A new `foreman sling trd <file>` command (subcommand pattern: `sling` parent, `t
 
 | Persona | Description | Pain Point |
 |---------|-------------|------------|
-| **Foreman Operator** | Engineer running `foreman run` to dispatch AI agents | Manually creates 50-80 seeds after TRD is written; deps are error-prone |
+| **Foreman Operator** | Engineer running `foreman run` to dispatch AI agents | Manually creates 50-80 tasks after TRD is written; deps are error-prone |
 | **Project Lead** | Uses br/bd for project-level tracking, sd for agent dispatch | Must duplicate task creation across two systems |
 | **AI Agent Pipeline** | Automated pipeline consuming `sd ready` | Blocked tasks must be correctly wired or agents pick up unready work |
 
@@ -137,7 +137,7 @@ Parse the TRD markdown format to extract the task hierarchy.
 - AC-1.17: Section 7 "Risk Register" parsed; risk labels applied to tasks listed in "Tasks Affected" column
 - AC-1.18: Section 6 "Quality Requirements" appended to epic description/notes
 
-### FR-2: Dual-Write to Seeds (sd) and Beads Rust (br)
+### FR-2: Dual-Write to Tasks (sd) and Beads Rust (br)
 
 Create the full task hierarchy in both tracking systems.
 
@@ -235,14 +235,14 @@ Epic: TRD: Merge Queue Epic (79 tasks, 9 sprints)
 
   ║ Parallel Group A:
   ║  Sprint 5: Overlap Clustering (12h, 4 tasks) [P2]
-  ║  Sprint 6: Worktree/DryRun/Seeds (37h, 13 tasks) [P2]
+  ║  Sprint 6: Worktree/DryRun/Tasks (37h, 13 tasks) [P2]
 
   ║ Parallel Group B:
   ║  Sprint 7: Learning and Costs (27h, 10 tasks) [P3]
   ║  Sprint 8: Polish (15h, 6 tasks) [P3]
 
 Summary: 79 tasks (75 completed, 4 open), 231 est. hours
-Targets: sd (seeds) + br (beads_rust)
+Targets: sd (tasks) + br (beads_rust)
 ```
 
 **Acceptance Criteria:**
@@ -308,7 +308,7 @@ Support re-running sling-trd on an already-slung TRD.
 
 - Works with TRD format as exemplified by docs/TRD/merge-queue.md
 - Compatible with existing sd and br CLI versions
-- Does not modify existing seeds/beads data (additive only, unless `--force`)
+- Does not modify existing tasks/beads data (additive only, unless `--force`)
 
 ---
 
@@ -324,7 +324,7 @@ Options:
   --dry-run             Preview without creating tasks
   --auto                Skip confirmation prompt
   --json                Output parsed structure as JSON
-  --sd-only             Write to seeds (sd) only
+  --sd-only             Write to tasks (sd) only
   --br-only             Write to beads_rust (br) only
   --skip-completed      Skip [x] tasks (not created)
   --close-completed     Create [x] tasks and immediately close them
@@ -401,7 +401,7 @@ Options:
 
 ### 9.2 Reuse Opportunities
 
-- **Type mappings**: Implement `toSeedsType()`, `toSeedsPriority()`, `toBrType()`, `toBrPriority()` in sling-executor.ts
+- **Type mappings**: Implement `toTasksType()`, `toTasksPriority()`, `toBrType()`, `toBrPriority()` in sling-executor.ts
 - **Execution pattern**: Dual-write executor pattern in sling-executor.ts
 - **SlingPlan type**: Defined in `src/orchestrator/types.ts` with sprint/story/task hierarchy
 - **Display helpers**: `printSlingPlan()`, `priorityBadge()`, `complexityBadge()` in sling.ts
@@ -413,7 +413,7 @@ Options:
 | `src/cli/commands/sling.ts` | Parent `sling` command with `trd` subcommand |
 | `src/orchestrator/trd-parser.ts` | TRD table format parser (tasks, deps, ACs, parallel detection) |
 | `src/orchestrator/sling-executor.ts` | Dual-write execution engine (sd + br) |
-| `src/lib/beads-rust.ts` | br CLI wrapper (mirrors seeds.ts pattern — typed methods: create, close, addDependency, list, update, search) |
+| `src/lib/beads-rust.ts` | br CLI wrapper (mirrors tasks.ts pattern — typed methods: create, close, addDependency, list, update, search) |
 
 ---
 
@@ -428,7 +428,7 @@ Options:
 | 5 | Command name structure? | `foreman sling trd <file>` | Subcommand pattern extensible to `sling prd`, `sling spec`, etc. |
 | 6 | Priority derivation? | Parse from TRD headers, fallback to sprint-number mapping | Respects TRD author intent; ordinal fallback for TRDs without explicit priority indicators |
 | 7 | Acceptance criteria handling? | Store ACs on stories | Parse Section 5, match to stories by FR number, store as acceptance/description field |
-| 8 | br wrapper architecture? | New beads-rust.ts module | Mirrors seeds.ts pattern; typed wrapper reusable by future commands |
+| 8 | br wrapper architecture? | New beads-rust.ts module | Mirrors tasks.ts pattern; typed wrapper reusable by future commands |
 | 9 | Parallel detection scope? | Sprint-level only | Story/task parallelism is an agent scheduling concern handled by `sd ready` / `br ready` |
 | 10 | Table column parsing? | Auto-detect from header row | Identifies columns by name; handles reordered/optional columns. Only ID and Task required |
 | 11 | Creation concurrency? | Sequential per-tracker | All sd issues first, then all br issues. Predictable ordering, no concurrency bugs |

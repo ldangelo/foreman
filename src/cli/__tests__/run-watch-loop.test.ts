@@ -239,7 +239,7 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
       .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
       .mockResolvedValueOnce({
         dispatched: [
-          { seedId: "s-new", runId: "run-new", title: "Newly Ready Task", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-new", runtime: "claude-code" },
+          { taskId: "s-new", runId: "run-new", title: "Newly Ready Task", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-new", runtime: "claude-code" },
         ],
         skipped: [],
         activeAgents: 1,
@@ -278,7 +278,7 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
       .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
       .mockResolvedValueOnce({
         dispatched: [
-          { seedId: "s-late", runId: "run-late", title: "Late Task", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-late", runtime: "claude-code" },
+          { taskId: "s-late", runId: "run-late", title: "Late Task", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-late", runtime: "claude-code" },
         ],
         skipped: [],
         activeAgents: 1,
@@ -398,7 +398,7 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
       .mockResolvedValueOnce({ dispatched: [], skipped: [], activeAgents: 0 })
       .mockResolvedValueOnce({
         dispatched: [
-          { seedId: "s-reset", runId: "run-reset", title: "Reset Task", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-reset", runtime: "claude-code" },
+          { taskId: "s-reset", runId: "run-reset", title: "Reset Task", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-reset", runtime: "claude-code" },
         ],
         skipped: [],
         activeAgents: 1,
@@ -425,7 +425,7 @@ describe("dispatch loop: watch-and-continue when nothing dispatched but agents a
     // (without detaching, the loop would continue polling for new tasks in watch mode)
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
-        { seedId: "s-1", runId: "run-111", title: "Task 1", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-1", runtime: "claude-code" },
+        { taskId: "s-1", runId: "run-111", title: "Task 1", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/s-1", runtime: "claude-code" },
       ],
       skipped: [],
       activeAgents: 1,

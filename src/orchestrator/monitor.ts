@@ -12,7 +12,7 @@ import { PIPELINE_LIMITS } from "../lib/config.js";
 
 export interface HungSessionInfo {
   runId: string;
-  seedId: string;
+  taskId: string;
   worktreePath: string | null;
   currentPhase: string | null;
   lastActivity: string | null;
@@ -118,14 +118,14 @@ export class Monitor {
         // ── Completion check via taskClient.show() ────────────────────
         let issueStatus: string | null = null;
         try {
-          const issueDetail = await this.taskClient.show(run.seed_id);
+          const issueDetail = await this.taskClient.show(run.task_id);
           issueStatus = issueDetail.status;
         } catch (showErr: unknown) {
           if (isNotFoundError(showErr)) {
             // Transient during migration: issue not yet visible in new backend.
             // Log a warning but continue to the stuck-timeout check below.
             console.warn(
-              `[monitor] transient show() error for ${run.seed_id}: ` +
+              `[monitor] transient show() error for ${run.task_id}: ` +
               `${showErr instanceof Error ? showErr.message : String(showErr)}`,
             );
           } else {
@@ -143,7 +143,7 @@ export class Monitor {
           await this.store.logEvent(
             run.project_id,
             "complete",
-            { seedId: run.seed_id, detectedBy: "monitor" },
+            { taskId: run.task_id, detectedBy: "monitor" },
             run.id,
           );
           report.completed.push({ ...run, status: "completed" });
@@ -160,7 +160,7 @@ export class Monitor {
             await this.store.logEvent(
               run.project_id,
               "stuck",
-              { seedId: run.seed_id, elapsedMinutes: Math.round(elapsedMinutes) },
+              { taskId: run.task_id, elapsedMinutes: Math.round(elapsedMinutes) },
               run.id,
             );
             report.stuck.push({ ...run, status: "stuck" });
@@ -179,7 +179,7 @@ export class Monitor {
         await this.store.logEvent(
           run.project_id,
           "fail",
-          { seedId: run.seed_id, error: message },
+          { taskId: run.task_id, error: message },
           run.id,
         );
         report.failed.push({ ...run, status: "failed" });
@@ -225,7 +225,7 @@ export class Monitor {
       if (staleMs > threshold) {
         const info: HungSessionInfo = {
           runId: run.id,
-          seedId: run.seed_id,
+          taskId: run.task_id,
           worktreePath: run.worktree_path,
           currentPhase: progress.currentPhase ?? null,
           lastActivity: progress.lastActivity,
@@ -239,7 +239,7 @@ export class Monitor {
           run.project_id,
           "stuck",
           {
-            seedId: run.seed_id,
+            taskId: run.task_id,
             reason: "hung_api_session",
             currentPhase: progress.currentPhase ?? null,
             lastActivity: progress.lastActivity,
@@ -275,7 +275,7 @@ export class Monitor {
       await this.store.logEvent(
         run.project_id,
         "fail",
-        { seedId: run.seed_id, reason: `Max retries (${maxRetries}) exceeded` },
+        { taskId: run.task_id, reason: `Max retries (${maxRetries}) exceeded` },
         run.id,
       );
       return false;
@@ -299,7 +299,7 @@ export class Monitor {
         run.project_id,
         "recover",
         {
-          seedId: run.seed_id,
+          taskId: run.task_id,
           attempt: retryCount + 1,
           maxRetries,
           worktreePreserved: true,
@@ -314,7 +314,7 @@ export class Monitor {
     // No prior progress — remove the old worktree and recreate it fresh.
     if (run.worktree_path) {
       try {
-        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.task_id);
       } catch {
         // Archive is best-effort — don't block worktree removal
       }
@@ -327,7 +327,7 @@ export class Monitor {
 
     // Recreate worktree
     try {
-      const { workspacePath: worktreePath } = await this.getVcsBackend().createWorkspace(this.projectPath, run.seed_id);
+      const { workspacePath: worktreePath } = await this.getVcsBackend().createWorkspace(this.projectPath, run.task_id);
 
       await this.store.updateRun(run.id, {
         status: "pending",
@@ -339,7 +339,7 @@ export class Monitor {
       await this.store.logEvent(
         run.project_id,
         "recover",
-        { seedId: run.seed_id, attempt: retryCount + 1, maxRetries, worktreePreserved: false },
+        { taskId: run.task_id, attempt: retryCount + 1, maxRetries, worktreePreserved: false },
         run.id,
       );
 
@@ -353,7 +353,7 @@ export class Monitor {
       await this.store.logEvent(
         run.project_id,
         "fail",
-        { seedId: run.seed_id, reason: `Recovery failed: ${message}` },
+        { taskId: run.task_id, reason: `Recovery failed: ${message}` },
         run.id,
       );
       return false;

@@ -90,7 +90,7 @@ describe("deterministic smoke e2e", () => {
       process.env.FOREMAN_RUNTIME_MODE = "test";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      const taskId = await harness.seedTask({
+      const taskId = await harness.taskTask({
         title: "Smoke write test.txt",
         scenario: {
           kind: "create",
@@ -128,7 +128,7 @@ describe("deterministic smoke e2e", () => {
       process.env.FOREMAN_RUNTIME_MODE = "test";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      const taskA = await harness.seedTask({
+      const taskA = await harness.taskTask({
         title: "Conflict A",
         scenario: {
           kind: "replace",
@@ -136,7 +136,7 @@ describe("deterministic smoke e2e", () => {
           content: "conflict-a\n",
         },
       });
-      const taskB = await harness.seedTask({
+      const taskB = await harness.taskTask({
         title: "Conflict B",
         scenario: {
           kind: "replace",

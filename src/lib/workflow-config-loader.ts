@@ -7,7 +7,7 @@
  */
 
 // Re-export resolveWorkflowName as resolveWorkflowType for backward compat.
-// The new function normalises seedType: "smoke" → "smoke", everything else → "default".
-// The old function returned seedType as-is (e.g. "feature"), which would fail
+// The new function normalises taskType: "smoke" → "smoke", everything else → "default".
+// The old function returned taskType as-is (e.g. "feature"), which would fail
 // prompt lookup. We intentionally preserve the old signature but delegate.
 export { resolveWorkflowName as resolveWorkflowType } from "./workflow-loader.js";

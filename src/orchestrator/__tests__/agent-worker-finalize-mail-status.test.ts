@@ -25,7 +25,7 @@ describe("agent-worker finalize mail status handling", () => {
 
   it("marks deterministic finalize failures as failed without retry", () => {
     expect(source).toContain('const terminalStatus = finalizeRetryable ? "stuck" : "failed"');
-    expect(source).toContain('enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize")');
+    expect(source).toContain('enqueueMarkBeadFailed(store, taskId, "agent-worker-finalize")');
   });
 
   it("does not assume finalize success when finalize mail is missing", () => {
@@ -37,7 +37,7 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('if (troubleshooterResolved)');
     expect(source).toContain('skipMergeQueue = true;');
     expect(source).toContain('Branch already matches ${completionTargetBranch} after troubleshooter recovery');
-    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+    expect(source).toContain('enqueueCloseTask(store, taskId, "agent-worker-finalize")');
   });
 
   it("treats non-retryable pre-existing test failures as merged when the branch already landed", () => {
@@ -45,7 +45,7 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('await updateTerminalRunStatus({');
     expect(source).toContain('status: "merged"');
     expect(source).toContain('Pre-existing test failures but branch already matches ${completionTargetBranch}');
-    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+    expect(source).toContain('enqueueCloseTask(store, taskId, "agent-worker-finalize")');
   });
 
   it("skips troubleshooter for non-retryable pre-existing finalize test failures", () => {
@@ -82,7 +82,7 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('sendMail(agentMailClient, "refinery", "branch-ready", {');
     expect(source).toContain('await updateTerminalRunStatus({');
     expect(source).toContain('enqueueToMergeQueue({');
-    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+    expect(source).toContain('enqueueCloseTask(store, taskId, "agent-worker-finalize")');
   });
 
   it("routes finalize terminal statuses through the helper", () => {

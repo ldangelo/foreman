@@ -35,13 +35,13 @@ describe("agent-worker.ts — nothing_to_commit for verification beads (bd-w8sj)
     expect(source).toContain('errorDetail === "nothing_to_commit"');
   });
 
-  it("reads seedType from config to determine if bead is a verification bead", () => {
-    expect(source).toContain("config.seedType");
+  it("reads taskType from config to determine if bead is a verification bead", () => {
+    expect(source).toContain("config.taskType");
     expect(source).toContain('beadType === "test"');
   });
 
-  it("reads seedTitle from config for title-based verification bead detection", () => {
-    expect(source).toContain("config.seedTitle");
+  it("reads taskTitle from config for title-based verification bead detection", () => {
+    expect(source).toContain("config.taskTitle");
     expect(source).toContain("beadTitle");
   });
 
@@ -108,13 +108,13 @@ describe("finalize.md — nothing_to_commit verification bead logic (bd-w8sj)", 
     expect(prompt).toContain("nothing_to_commit_verification_bead");
   });
 
-  it("checks seedType for test type", () => {
-    expect(prompt).toContain("{{seedType}}");
+  it("checks taskType for test type", () => {
+    expect(prompt).toContain("{{taskType}}");
     expect(prompt).toContain('"test"');
   });
 
-  it("checks seedTitle for verify/validate/test keywords", () => {
-    expect(prompt).toContain("{{seedTitle}}");
+  it("checks taskTitle for verify/validate/test keywords", () => {
+    expect(prompt).toContain("{{taskTitle}}");
     expect(prompt).toContain("verify");
     expect(prompt).toContain("validate");
   });
@@ -134,11 +134,11 @@ describe("finalize.md — nothing_to_commit verification bead logic (bd-w8sj)", 
 
 describe("verification bead detection logic", () => {
   // Mirrors the logic in agent-worker.ts onPipelineComplete
-  function isVerificationBead(seedType: string, seedTitle: string): boolean {
-    return seedType === "test" || /verify|validate|test/i.test(seedTitle);
+  function isVerificationBead(taskType: string, taskTitle: string): boolean {
+    return taskType === "test" || /verify|validate|test/i.test(taskTitle);
   }
 
-  it("matches seedType=test", () => {
+  it("matches taskType=test", () => {
     expect(isVerificationBead("test", "Some bead")).toBe(true);
   });
 
@@ -163,7 +163,7 @@ describe("verification bead detection logic", () => {
     expect(isVerificationBead("task", "Implement OAuth2 login")).toBe(false);
   });
 
-  it("handles empty seedType gracefully", () => {
+  it("handles empty taskType gracefully", () => {
     expect(isVerificationBead("", "Verify user registration")).toBe(true);
     expect(isVerificationBead("", "Add new feature")).toBe(false);
   });

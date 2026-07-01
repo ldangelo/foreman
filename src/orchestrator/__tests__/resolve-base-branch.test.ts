@@ -1,6 +1,6 @@
 /**
  * Tests for resolveBaseBranch() — dispatcher helper that detects whether a
- * seed should be stacked on a dependency branch instead of main.
+ * task should be stacked on a dependency branch instead of main.
  *
  * TRD-015: Updated to use VcsBackend.branchExists() instead of gitBranchExists shim.
  */
@@ -38,10 +38,10 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "dep-seed",
+    task_id: "dep-task",
     agent_type: "claude-code",
     session_key: null,
-    worktree_path: "/tmp/worktrees/dep-seed",
+    worktree_path: "/tmp/worktrees/dep-task",
     status: "completed",
     started_at: new Date().toISOString(),
     completed_at: null,
@@ -54,7 +54,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 
 function makeStore(runs: Run[] = []) {
   return {
-    getRunsForSeed: vi.fn((_seedId: string) => runs),
+    getRunsForTask: vi.fn((_taskId: string) => runs),
   };
 }
 
@@ -74,13 +74,13 @@ describe("resolveBaseBranch()", () => {
     mockBranchExists = vi.fn().mockResolvedValue(false);
   });
 
-  it("returns undefined when seed has no dependencies", async () => {
+  it("returns undefined when task has no dependencies", async () => {
     mockShowFn = vi.fn().mockResolvedValue({ dependencies: [] });
     mockBranchExists = vi.fn().mockResolvedValue(false);
     const store = makeStore([]);
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-b", "/tmp/project", store, backend);
+    const result = await resolveBaseBranch("task-b", "/tmp/project", store, backend);
 
     expect(result).toBeUndefined();
   });
@@ -88,10 +88,10 @@ describe("resolveBaseBranch()", () => {
   it("returns undefined when dependency branch does not exist locally", async () => {
     mockShowFn = vi.fn().mockResolvedValue({ dependencies: ["dep-a"] });
     mockBranchExists = vi.fn().mockResolvedValue(false); // branch doesn't exist
-    const store = makeStore([makeRun({ seed_id: "dep-a", status: "completed" })]);
+    const store = makeStore([makeRun({ task_id: "dep-a", status: "completed" })]);
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-b", "/tmp/project", store, backend);
+    const result = await resolveBaseBranch("task-b", "/tmp/project", store, backend);
 
     expect(result).toBeUndefined();
   });
@@ -99,10 +99,10 @@ describe("resolveBaseBranch()", () => {
   it("returns dependency branch when dep branch exists locally and dep run is completed", async () => {
     mockShowFn = vi.fn().mockResolvedValue({ dependencies: ["dep-a"] });
     mockBranchExists = vi.fn().mockResolvedValue(true); // branch exists
-    const store = makeStore([makeRun({ seed_id: "dep-a", status: "completed" })]);
+    const store = makeStore([makeRun({ task_id: "dep-a", status: "completed" })]);
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-b", "/tmp/project", store, backend);
+    const result = await resolveBaseBranch("task-b", "/tmp/project", store, backend);
 
     expect(result).toBeUndefined();
   });
@@ -111,10 +111,10 @@ describe("resolveBaseBranch()", () => {
     mockShowFn = vi.fn().mockResolvedValue({ dependencies: ["dep-a"] });
     mockBranchExists = vi.fn().mockResolvedValue(true); // branch exists
     // status is "merged" — dep already landed in main
-    const store = makeStore([makeRun({ seed_id: "dep-a", status: "merged" })]);
+    const store = makeStore([makeRun({ task_id: "dep-a", status: "merged" })]);
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-b", "/tmp/project", store, backend);
+    const result = await resolveBaseBranch("task-b", "/tmp/project", store, backend);
 
     expect(result).toBeUndefined();
   });
@@ -123,10 +123,10 @@ describe("resolveBaseBranch()", () => {
     mockShowFn = vi.fn().mockResolvedValue({ dependencies: ["dep-a"] });
     mockBranchExists = vi.fn().mockResolvedValue(true);
     // status is "running" — dep hasn't finished yet
-    const store = makeStore([makeRun({ seed_id: "dep-a", status: "running" })]);
+    const store = makeStore([makeRun({ task_id: "dep-a", status: "running" })]);
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-b", "/tmp/project", store, backend);
+    const result = await resolveBaseBranch("task-b", "/tmp/project", store, backend);
 
     expect(result).toBeUndefined();
   });
@@ -137,7 +137,7 @@ describe("resolveBaseBranch()", () => {
     const store = makeStore([]); // no runs for dep
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-b", "/tmp/project", store, backend);
+    const result = await resolveBaseBranch("task-b", "/tmp/project", store, backend);
 
     expect(result).toBeUndefined();
   });
@@ -147,15 +147,15 @@ describe("resolveBaseBranch()", () => {
     // both branches exist
     mockBranchExists = vi.fn().mockResolvedValue(true);
     const store = {
-      getRunsForSeed: vi.fn((id: string) => {
-        if (id === "dep-a") return [makeRun({ seed_id: "dep-a", status: "completed" })];
-        if (id === "dep-b") return [makeRun({ seed_id: "dep-b", status: "completed" })];
+      getRunsForTask: vi.fn((id: string) => {
+        if (id === "dep-a") return [makeRun({ task_id: "dep-a", status: "completed" })];
+        if (id === "dep-b") return [makeRun({ task_id: "dep-b", status: "completed" })];
         return [];
       }),
     };
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-c", "/tmp/project", store, backend);
+    const result = await resolveBaseBranch("task-c", "/tmp/project", store, backend);
 
     // Should return the first matching dep
     expect(result).toBeUndefined();
@@ -165,19 +165,19 @@ describe("resolveBaseBranch()", () => {
     mockShowFn = vi.fn().mockResolvedValue({ dependencies: ["dep-a"] });
     mockBranchExists = vi.fn().mockResolvedValue(true);
     const runLookup = {
-      getRunsForSeed: vi.fn(async (id: string) => {
+      getRunsForTask: vi.fn(async (id: string) => {
         if (id === "dep-a") {
-          return [makeRun({ seed_id: "dep-a", status: "completed" })];
+          return [makeRun({ task_id: "dep-a", status: "completed" })];
         }
         return [];
       }),
     };
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-b", "/tmp/project", runLookup, backend);
+    const result = await resolveBaseBranch("task-b", "/tmp/project", runLookup, backend);
 
     expect(result).toBeUndefined();
-    expect(runLookup.getRunsForSeed).not.toHaveBeenCalled();
+    expect(runLookup.getRunsForTask).not.toHaveBeenCalled();
   });
 
   it("returns undefined and does not throw when br fails", async () => {
@@ -185,7 +185,7 @@ describe("resolveBaseBranch()", () => {
     const store = makeStore([]);
     const backend = makeBackend();
 
-    const result = await resolveBaseBranch("seed-b", "/tmp/project", store, backend);
+    const result = await resolveBaseBranch("task-b", "/tmp/project", store, backend);
 
     expect(result).toBeUndefined();
   });
@@ -197,7 +197,7 @@ describe("resolveBaseBranch()", () => {
     const store = makeStore([]);
     const backend = makeBackend();
 
-    await resolveBaseBranch("seed-x", "/tmp/project", store, backend);
+    await resolveBaseBranch("task-x", "/tmp/project", store, backend);
 
     expect(branchExistsSpy).not.toHaveBeenCalled();
   });

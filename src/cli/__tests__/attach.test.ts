@@ -20,7 +20,7 @@ function makeRun(overrides: Record<string, unknown> = {}) {
   return {
     id: "run-1",
     project_id: "project-1",
-    seed_id: "seed-1",
+    task_id: "task-1",
     agent_type: "developer",
     session_key: null,
     worktree_path: "/tmp/worktree-1",
@@ -100,10 +100,10 @@ describe("attach command", () => {
       getProjectByPath: vi.fn().mockReturnValue({ id: "project-1" }),
       getRunsByStatus: vi.fn((status: string) => {
         if (status === "running") {
-          return [makeRun({ seed_id: "seed-running", progress: JSON.stringify({ currentPhase: "developer", toolCalls: 3, filesChanged: ["a.ts"], costUsd: 1.25 }) })];
+          return [makeRun({ task_id: "task-running", progress: JSON.stringify({ currentPhase: "developer", toolCalls: 3, filesChanged: ["a.ts"], costUsd: 1.25 }) })];
         }
         if (status === "failed") {
-          return [makeRun({ id: "run-2", seed_id: "seed-failed", status: "failed", progress: null })];
+          return [makeRun({ id: "run-2", task_id: "task-failed", status: "failed", progress: null })];
         }
         return [];
       }),
@@ -112,8 +112,8 @@ describe("attach command", () => {
     listSessionsEnhanced(store, "/tmp/project");
 
     expect(logSpy).toHaveBeenCalledWith("Attachable sessions:\n");
-    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("seed-running"))).toBe(true);
-    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("seed-failed"))).toBe(true);
+    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("task-running"))).toBe(true);
+    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("task-failed"))).toBe(true);
   });
 
   it("errors when listing local sessions without a registered project", () => {
@@ -151,7 +151,7 @@ describe("attach command", () => {
 
     await expect(attachAction("run-1", { stream: true }, store, "/tmp/project")).resolves.toBe(0);
     expect(store.getAllMessages).toHaveBeenCalledWith("run-1");
-    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("Run seed-1 is already completed."))).toBe(true);
+    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("Run task-1 is already completed."))).toBe(true);
   });
 
   it("streams new messages until the run reaches a terminal state", async () => {
@@ -205,7 +205,7 @@ describe("attach command", () => {
             {
               id: "run-1",
               project_id: "project-1",
-              bead_id: "seed-running",
+              bead_id: "task-running",
               status: "running",
               branch: "feature/a",
               agent_type: "developer",
@@ -227,7 +227,7 @@ describe("attach command", () => {
     await listSessionsEnhancedDaemon(daemon);
 
     expect(logSpy).toHaveBeenCalledWith("Attachable sessions:\n");
-    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("seed-running"))).toBe(true);
+    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("task-running"))).toBe(true);
   });
 
   it("shows a friendly message when no daemon sessions exist", async () => {
@@ -262,7 +262,7 @@ describe("attach command", () => {
             {
               id: "run-1",
               project_id: "project-1",
-              bead_id: "seed-1",
+              bead_id: "task-1",
               status: "running",
               branch: "feature/a",
               agent_type: "developer",
@@ -303,7 +303,7 @@ describe("attach command", () => {
             {
               id: "run-1",
               project_id: "project-1",
-              bead_id: "seed-1",
+              bead_id: "task-1",
               status: "running",
               branch: "feature/a",
               agent_type: "developer",
@@ -344,7 +344,7 @@ describe("attach command", () => {
             {
               id: "run-1",
               project_id: "project-1",
-              bead_id: "seed-1",
+              bead_id: "task-1",
               status: "running",
               branch: "feature/a",
               agent_type: "developer",

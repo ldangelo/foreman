@@ -14,7 +14,7 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
       type: "text",
       notNull: true,
     },
-    seed_id: {
+    task_id: {
       type: "text",
       notNull: true,
     },
@@ -92,7 +92,7 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
   });
 
   pgm.createIndex("merge_queue", ["project_id", "status", "enqueued_at"], { ifNotExists: true });
-  pgm.createIndex("merge_queue", ["project_id", "seed_id"], { ifNotExists: true });
+  pgm.createIndex("merge_queue", ["project_id", "task_id"], { ifNotExists: true });
   pgm.createIndex("merge_queue", ["project_id", "run_id"], { ifNotExists: true });
   pgm.createIndex("merge_queue", ["project_id", "branch_name", "run_id"], { ifNotExists: true, unique: true });
 }

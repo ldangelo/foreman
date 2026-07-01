@@ -65,7 +65,7 @@ describe("ForemanStore disabled local-store compatibility", () => {
     expect(store.getRunsByStatusesSince(["failed"], "2026-01-01T00:00:00.000Z", "project-1")).toEqual([]);
     expect(store.purgeOldRuns("2026-01-01T00:00:00.000Z")).toBe(0);
     expect(store.deleteRun("run-1")).toBe(false);
-    expect(store.getRunsForSeed("task-1")).toEqual([]);
+    expect(store.getRunsForTask("task-1")).toEqual([]);
     expect(store.hasActiveOrPendingRun("task-1")).toBe(false);
     expect(store.getRunsByBaseBranch("main")).toEqual([]);
 

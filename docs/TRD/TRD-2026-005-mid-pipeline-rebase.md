@@ -281,7 +281,7 @@ ALTER TABLE runs RENAME TO runs_old;
 
 CREATE TABLE runs (
   id TEXT PRIMARY KEY,
-  seedId TEXT NOT NULL,
+  taskId TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN (
     'pending', 'running', 'completed', 'failed', 'stuck', 'merged',
     'conflict', 'test-failed', 'pr-created', 'reset',
@@ -812,7 +812,7 @@ Extend `foreman inbox` to support filtering by mail type via `--type <type>`. Su
 **File:** `src/cli/__tests__/inbox-rebase-filter.test.ts`
 **Estimate:** 1h
 
-- ( ) AC-T-014-1: Given a seeded mailbox with 3 mail types, when `inbox --type rebase-context` runs, then only mails with `type === 'rebase-context'` are returned.
+- ( ) AC-T-014-1: Given a tasked mailbox with 3 mail types, when `inbox --type rebase-context` runs, then only mails with `type === 'rebase-context'` are returned.
 - ( ) AC-T-014-2: Given `inbox --bead <id>` with multiple rebase event mails, when rendered, then mails are sorted ascending by `createdAt`.
 
 ---

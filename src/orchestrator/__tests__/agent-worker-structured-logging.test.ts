@@ -28,8 +28,8 @@ describe("agent-worker structured logging", () => {
     writeFileSync(configPath, JSON.stringify({
       runId: "run-456",
       projectId: "test-project",
-      seedId: "ABC-123",
-      seedTitle: "Test Structured Logging",
+      taskId: "ABC-123",
+      taskTitle: "Test Structured Logging",
       model: "claude-haiku-4-6",
       worktreePath: tmpDir,
       projectPath: tmpDir,
@@ -97,8 +97,8 @@ describe("agent-worker structured logging", () => {
     writeFileSync(configPath, JSON.stringify({
       runId: "run-789",
       projectId: "test-project",
-      seedId: "XYZ-456",
-      seedTitle: "Test Session Logging",
+      taskId: "XYZ-456",
+      taskTitle: "Test Session Logging",
       model: "claude-haiku-4-6",
       worktreePath: tmpDir,
       projectPath: tmpDir,
@@ -154,8 +154,8 @@ describe("agent-worker structured logging", () => {
       expect(workerSource).toContain("attempt:");
 
       // Verify initLogContext sets all fields correctly
-      expect(workerSource).toContain("issueId: config.seedId");
-      expect(workerSource).toContain("issueIdentifier: config.seedId");
+      expect(workerSource).toContain("issueId: config.taskId");
+      expect(workerSource).toContain("issueIdentifier: config.taskId");
       expect(workerSource).toContain("sessionId: config.resume ?? null");
       expect(workerSource).toContain("runId: config.runId");
       expect(workerSource).toContain("attempt: config.attemptNumber ?? 1");
@@ -201,7 +201,7 @@ describe("agent-worker structured logging", () => {
       // Verify WorkerConfig interface
       expect(workerSource).toContain("interface WorkerConfig");
       expect(workerSource).toContain("runId: string");
-      expect(workerSource).toContain("seedId: string");
+      expect(workerSource).toContain("taskId: string");
       expect(workerSource).toContain("attemptNumber?: number");
       expect(workerSource).toContain("resume?: string");
     });

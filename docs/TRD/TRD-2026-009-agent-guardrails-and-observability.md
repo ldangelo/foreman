@@ -163,8 +163,8 @@ export function createDirectoryGuardrail(
 - Handle relative paths by prepending the correct worktree path.
 
 **Implementation ACs:**
-- Given `createDirectoryGuardrail({ expectedCwd: "/worktrees/proj/seed-abc" }, ...)` with mode `"veto"`, when the agent's `pwd` is `/wrong/path` and the agent runs `edit`, then the hook returns `{ allowed: false }` and logs a `guardrail-veto` event.
-- Given the same config with mode `"auto-correct"`, when the agent runs `Bash` with args `{ command: "npm test" }`, then the hook returns `{ allowed: true, correctedArgs: { command: "cd /worktrees/proj/seed-abc && npm test" } }`.
+- Given `createDirectoryGuardrail({ expectedCwd: "/worktrees/proj/task-abc" }, ...)` with mode `"veto"`, when the agent's `pwd` is `/wrong/path` and the agent runs `edit`, then the hook returns `{ allowed: false }` and logs a `guardrail-veto` event.
+- Given the same config with mode `"auto-correct"`, when the agent runs `Bash` with args `{ command: "npm test" }`, then the hook returns `{ allowed: true, correctedArgs: { command: "cd /worktrees/proj/task-abc && npm test" } }`.
 - Given mode `"disabled"`, when the hook is called, then it returns `{ allowed: true }` immediately without any checks.
 - Guardrail overhead per tool call: <5ms (measured via `performance.now()`).
 
@@ -207,7 +207,7 @@ export interface PiRunOptions {
 For each tool factory call, wrap the resulting tool with the guardrail hook. The wrapper intercepts tool calls, runs directory verification, and either corrects arguments or throws a structured error before the tool executes.
 
 **Implementation ACs:**
-- Given `PiRunOptions` with `guardrailConfig: { directory: { mode: "veto" }, expectedCwd: "/worktrees/proj/seed-abc" }`, when the agent runs a tool from the wrong directory, then the guardrail intercepts it and the tool call is not executed.
+- Given `PiRunOptions` with `guardrailConfig: { directory: { mode: "veto" }, expectedCwd: "/worktrees/proj/task-abc" }`, when the agent runs a tool from the wrong directory, then the guardrail intercepts it and the tool call is not executed.
 - Given `PiRunOptions` without `guardrailConfig`, when tools are built, then no guardrail is active.
 - Given the Pi SDK session is created with guardrail, when `session.prompt()` is called, then the guardrail hook is active for all tool calls.
 
@@ -238,7 +238,7 @@ In `src/orchestrator/pipeline-executor.ts`, before each `runPhase()` call, write
 ```typescript
 interface PhaseStartEvent {
   event_type: "phase-start";
-  seedId: string;
+  taskId: string;
   phase: string;
   worktreePath: string;
   model: string;
@@ -250,7 +250,7 @@ interface PhaseStartEvent {
 
 **Implementation ACs:**
 - Given a pipeline with phases `fix → test → finalize`, when the `test` phase starts, then `store.logEvent()` is called with `eventType: "phase-start"` before `runPhase()` is invoked.
-- Given a `phase-start` event, when the events table is queried, then all required fields (seedId, phase, worktreePath, model, runId, targetBranch) are present.
+- Given a `phase-start` event, when the events table is queried, then all required fields (taskId, phase, worktreePath, model, runId, targetBranch) are present.
 
 [depends: none — can be implemented in parallel with TRD-009-003]
 
@@ -281,7 +281,7 @@ export interface HeartbeatConfig {
 }
 
 export interface HeartbeatData {
-  seedId: string;
+  taskId: string;
   phase: string;
   turns: number;
   toolCalls: number;
@@ -330,7 +330,7 @@ export class HeartbeatManager {
 ```typescript
 interface HeartbeatEvent {
   event_type: "heartbeat";
-  seedId: string;
+  taskId: string;
   phase: string;
   turns: number;
   toolCalls: number;
@@ -428,7 +428,7 @@ export interface PhaseRecord {
 **`ActivityLog` interface** (add to `session-log.ts`):
 ```typescript
 export interface ActivityLog {
-  seedId: string;
+  taskId: string;
   runId: string;
   phases: PhaseRecord[];
   totalCostUsd: number;
@@ -473,7 +473,7 @@ Create `src/orchestrator/activity-logger.ts` with the `generateActivityLog()` fu
 export async function generateActivityLog(opts: {
   worktreePath: string;
   runId: string;
-  seedId: string;
+  taskId: string;
   phases: PhaseRecord[];
   vcsBackend: VcsBackend;
   targetBranch: string;
@@ -567,7 +567,7 @@ export interface StaleWorktreeCheckResult {
  * @param store - ForemanStore for event logging
  * @param projectId - Foreman project ID
  * @param runId - Current run ID
- * @param seedId - Seed identifier
+ * @param taskId - Task identifier
  * @param opts - Options: autoRebase (default: true), failOnConflict (default: true)
  * @returns StaleWorktreeCheckResult
  */
@@ -578,7 +578,7 @@ export async function checkAndRebaseStaleWorktree(
   store: ForemanStore,
   projectId: string,
   runId: string,
-  seedId: string,
+  taskId: string,
   opts?: { autoRebase?: boolean; failOnConflict?: boolean },
 ): Promise<StaleWorktreeCheckResult>
 ```
@@ -653,7 +653,7 @@ async function preFinalizeRebaseCheck(
   store: ForemanStore,
   projectId: string,
   runId: string,
-  seedId: string,
+  taskId: string,
 ): Promise<void>
 ```
 
@@ -698,7 +698,7 @@ Write vitest tests:
 
 Write an integration test in `src/orchestrator/__tests__/pipeline-executor.test.ts` that:
 1. Spins up a real git worktree with a test project
-2. Dispatches a seed with all guardrails enabled (via config)
+2. Dispatches a task with all guardrails enabled (via config)
 3. Runs the full pipeline through `pipeline-executor`
 4. Verifies all acceptance criteria
 
@@ -715,7 +715,7 @@ describe("guardrails and observability e2e", () => {
 });
 ```
 
-**Setup**: Use a temporary directory with a minimal git repo. Create a seed that makes a simple file edit.
+**Setup**: Use a temporary directory with a minimal git repo. Create a task that makes a simple file edit.
 
 **Note**: Full e2e tests may require mocking the Pi SDK session to avoid LLM costs during testing.
 

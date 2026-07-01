@@ -33,9 +33,9 @@ describe("reviewer.md template: VCS placeholder variables", () => {
 describe("buildPhasePrompt reviewer: GitBackend VCS rendering (AC-T-027-1)", () => {
   it("renders 'git' as vcsBackendName in reviewer prompt", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "Fix auth token refresh",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "Fix auth token refresh",
       runId: "run-123",
       vcsBackendName: "git",
       vcsBranchPrefix: "foreman/",
@@ -46,9 +46,9 @@ describe("buildPhasePrompt reviewer: GitBackend VCS rendering (AC-T-027-1)", () 
 
   it("renders 'foreman/' as vcsBranchPrefix in reviewer prompt for git backend", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "Fix auth token refresh",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "Fix auth token refresh",
       runId: "run-123",
       vcsBackendName: "git",
       vcsBranchPrefix: "foreman/",
@@ -59,9 +59,9 @@ describe("buildPhasePrompt reviewer: GitBackend VCS rendering (AC-T-027-1)", () 
 
   it("does not leave unresolved vcs* placeholders for git backend", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       runId: "run-123",
       vcsBackendName: "git",
       vcsBranchPrefix: "foreman/",
@@ -76,9 +76,9 @@ describe("buildPhasePrompt reviewer: GitBackend VCS rendering (AC-T-027-1)", () 
 describe("buildPhasePrompt reviewer: JujutsuBackend VCS rendering (AC-T-027-2)", () => {
   it("renders 'jujutsu' as vcsBackendName in reviewer prompt", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "Fix auth token refresh",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "Fix auth token refresh",
       runId: "run-123",
       vcsBackendName: "jujutsu",
       vcsBranchPrefix: "foreman/",
@@ -89,9 +89,9 @@ describe("buildPhasePrompt reviewer: JujutsuBackend VCS rendering (AC-T-027-2)",
 
   it("renders 'foreman/' as vcsBranchPrefix in reviewer prompt for jujutsu backend", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "Fix auth token refresh",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "Fix auth token refresh",
       runId: "run-123",
       vcsBackendName: "jujutsu",
       vcsBranchPrefix: "foreman/",
@@ -102,9 +102,9 @@ describe("buildPhasePrompt reviewer: JujutsuBackend VCS rendering (AC-T-027-2)",
 
   it("does not leave unresolved vcs* placeholders for jujutsu backend", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       runId: "run-123",
       vcsBackendName: "jujutsu",
       vcsBranchPrefix: "foreman/",
@@ -115,9 +115,9 @@ describe("buildPhasePrompt reviewer: JujutsuBackend VCS rendering (AC-T-027-2)",
 
   it("prompt does not contain 'git' as backend name when jujutsu is specified", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       runId: "run-123",
       vcsBackendName: "jujutsu",
       vcsBranchPrefix: "foreman/",
@@ -132,9 +132,9 @@ describe("buildPhasePrompt reviewer: JujutsuBackend VCS rendering (AC-T-027-2)",
 describe("buildPhasePrompt reviewer: default values when VCS vars omitted", () => {
   it("defaults to 'git' as vcsBackendName when not provided", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-def",
-      seedTitle: "Default test",
-      seedDescription: "desc",
+      taskId: "bd-def",
+      taskTitle: "Default test",
+      taskDescription: "desc",
     });
     expect(prompt).toContain("git");
     expect(prompt).not.toContain("{{vcsBackendName}}");
@@ -142,9 +142,9 @@ describe("buildPhasePrompt reviewer: default values when VCS vars omitted", () =
 
   it("defaults to 'foreman/' as vcsBranchPrefix when not provided", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-def",
-      seedTitle: "Default test",
-      seedDescription: "desc",
+      taskId: "bd-def",
+      taskTitle: "Default test",
+      taskDescription: "desc",
     });
     expect(prompt).toContain("foreman/");
     expect(prompt).not.toContain("{{vcsBranchPrefix}}");
@@ -152,9 +152,9 @@ describe("buildPhasePrompt reviewer: default values when VCS vars omitted", () =
 
   it("does not leave unresolved placeholders with default values", () => {
     const prompt = buildPhasePrompt("reviewer", {
-      seedId: "bd-def",
-      seedTitle: "Default test",
-      seedDescription: "desc",
+      taskId: "bd-def",
+      taskTitle: "Default test",
+      taskDescription: "desc",
       runId: "run-def",
     });
     expect(prompt).not.toContain("{{vcsBackendName}}");

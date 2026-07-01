@@ -35,10 +35,10 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seed-abc",
+    task_id: "task-abc",
     agent_type: "claude-code",
     session_key: null,
-    worktree_path: "/tmp/worktrees/seed-abc",
+    worktree_path: "/tmp/worktrees/task-abc",
     status: "completed",
     started_at: new Date().toISOString(),
     completed_at: null,
@@ -58,12 +58,12 @@ function makeMocks() {
     logEvent: vi.fn(),
     getDb: vi.fn(() => mockDb),
   };
-  const seeds = {
+  const tasks = {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
   };
-  const refinery = new Refinery(store as unknown as Parameters<typeof Refinery.prototype.createPRs>[0] extends undefined ? never : never, seeds as unknown as Parameters<typeof Refinery.prototype.createPRs>[0] extends undefined ? never : never, "/tmp/project");
-  return { store, seeds, refinery: refinery as Refinery };
+  const refinery = new Refinery(store as unknown as Parameters<typeof Refinery.prototype.createPRs>[0] extends undefined ? never : never, tasks as unknown as Parameters<typeof Refinery.prototype.createPRs>[0] extends undefined ? never : never, "/tmp/project");
+  return { store, tasks, refinery: refinery as Refinery };
 }
 
 // Typed helper to avoid the `any` escape hatch on makeMocks
@@ -78,7 +78,7 @@ function createTestRefinery() {
     logEvent: vi.fn(),
     getDb: vi.fn(() => mockDb),
   };
-  const seeds = {
+  const tasks = {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
   };
@@ -90,8 +90,8 @@ function createTestRefinery() {
     resolveRef: vi.fn(async () => "abc123"),
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock wiring
-  const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
-  return { store, seeds, refinery };
+  const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcsBackend as any);
+  return { store, tasks, refinery };
 }
 
 function mockExecFileForPR(prUrl = "https://github.com/org/repo/pull/42") {
@@ -175,7 +175,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
     it("logs pr-created event with PR URL", async () => {
       const { store, refinery } = createTestRefinery();
-      const run = makeRun({ id: "run-99", project_id: "proj-1", seed_id: "seed-xyz" });
+      const run = makeRun({ id: "run-99", project_id: "proj-1", task_id: "task-xyz" });
       store.getRunsByStatus.mockReturnValue([run]);
 
       mockExecFileForPR("https://github.com/org/repo/pull/7");
@@ -213,7 +213,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
     it("pushes branch before creating PR", async () => {
       const { store, refinery } = createTestRefinery();
-      store.getRunsByStatus.mockReturnValue([makeRun({ seed_id: "seed-push" })]);
+      store.getRunsByStatus.mockReturnValue([makeRun({ task_id: "task-push" })]);
 
       const callOrder: string[] = [];
       (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
@@ -245,12 +245,12 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
       };
       const store = {
-        getRun: vi.fn().mockReturnValue(makeRun({ id: "run-merge", seed_id: "seed-merge", worktree_path: "/tmp/worktrees/seed-merge" })),
+        getRun: vi.fn().mockReturnValue(makeRun({ id: "run-merge", task_id: "task-merge", worktree_path: "/tmp/worktrees/task-merge" })),
         updateRun: vi.fn(),
         logEvent: vi.fn(),
         getDb: vi.fn(() => mockDb),
       };
-      const seeds = {
+      const tasks = {
         getGraph: vi.fn(async () => ({ edges: [] })),
         show: vi.fn(async () => null),
       };
@@ -261,7 +261,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         diff: vi.fn(async () => ""),
         resolveRef: vi.fn(async () => "abc123"),
       };
-      const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
+      const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcsBackend as any);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
       process.env.FOREMAN_RUNTIME_MODE = "normal";
 
@@ -272,7 +272,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
               callback(null, {
                 stdout: JSON.stringify({
                   state: "OPEN",
-                  headRefName: "foreman/seed-merge",
+                  headRefName: "foreman/task-merge",
                   headRefOid: "abc123",
                   url: "https://github.com/org/repo/pull/55",
                 }),
@@ -292,14 +292,14 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
         expect(report.unexpectedErrors).toHaveLength(0);
         expect(report.merged).toEqual([
-          expect.objectContaining({ runId: "run-merge", seedId: "seed-merge", branchName: "foreman/seed-merge" }),
+          expect.objectContaining({ runId: "run-merge", taskId: "task-merge", branchName: "foreman/task-merge" }),
         ]);
         const mergeCall = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls.find(
           (c: unknown[]) => c[0] === "gh" && Array.isArray(c[1]) && c[1][0] === "pr" && c[1][1] === "merge",
         );
         expect(mergeCall).toBeDefined();
         expect(mergeCall?.[1]).not.toContain("--delete-branch");
-        expect(vcsBackend.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/seed-merge");
+        expect(vcsBackend.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/task-merge");
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;
       }
@@ -310,12 +310,12 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
       };
       const store = {
-        getRun: vi.fn().mockReturnValue(makeRun({ id: "run-merge-fallback", seed_id: "seed-merge-fallback", worktree_path: "/tmp/worktrees/seed-merge-fallback" })),
+        getRun: vi.fn().mockReturnValue(makeRun({ id: "run-merge-fallback", task_id: "task-merge-fallback", worktree_path: "/tmp/worktrees/task-merge-fallback" })),
         updateRun: vi.fn(),
         logEvent: vi.fn(),
         getDb: vi.fn(() => mockDb),
       };
-      const seeds = {
+      const tasks = {
         getGraph: vi.fn(async () => ({ edges: [] })),
         show: vi.fn(async () => null),
       };
@@ -326,7 +326,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         diff: vi.fn(async () => ""),
         resolveRef: vi.fn(async () => "abc1234"),
       };
-      const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcsBackend as any);
+      const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcsBackend as any);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
       process.env.FOREMAN_RUNTIME_MODE = "normal";
       let viewCount = 0;
@@ -339,7 +339,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
               callback(null, {
                 stdout: JSON.stringify({
                   state: viewCount === 1 ? "OPEN" : "MERGED",
-                  headRefName: "foreman/seed-merge-fallback",
+                  headRefName: "foreman/task-merge-fallback",
                   headRefOid: "abc1234",
                   url: "https://github.com/org/repo/pull/56",
                 }),
@@ -349,8 +349,8 @@ describe("MQ-T058d: PR creation strategy decision", () => {
             }
             if (cmd === "gh" && args[0] === "pr" && args[1] === "merge") {
               callback(
-                new Error("Command failed: gh pr merge foreman/seed-merge-fallback --squash\nfailed to delete local branch foreman/seed-merge-fallback: failed to run git: error: cannot delete branch 'foreman/seed-merge-fallback' used by worktree at '/tmp/worktrees/seed-merge-fallback'\n"),
-                { stdout: "", stderr: "failed to delete local branch foreman/seed-merge-fallback: failed to run git: error: cannot delete branch 'foreman/seed-merge-fallback' used by worktree at '/tmp/worktrees/seed-merge-fallback'\n" },
+                new Error("Command failed: gh pr merge foreman/task-merge-fallback --squash\nfailed to delete local branch foreman/task-merge-fallback: failed to run git: error: cannot delete branch 'foreman/task-merge-fallback' used by worktree at '/tmp/worktrees/task-merge-fallback'\n"),
+                { stdout: "", stderr: "failed to delete local branch foreman/task-merge-fallback: failed to run git: error: cannot delete branch 'foreman/task-merge-fallback' used by worktree at '/tmp/worktrees/task-merge-fallback'\n" },
               );
               return;
             }
@@ -362,17 +362,17 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
         expect(report.unexpectedErrors).toHaveLength(0);
         expect(report.merged).toEqual([
-          expect.objectContaining({ runId: "run-merge-fallback", seedId: "seed-merge-fallback", branchName: "foreman/seed-merge-fallback" }),
+          expect.objectContaining({ runId: "run-merge-fallback", taskId: "task-merge-fallback", branchName: "foreman/task-merge-fallback" }),
         ]);
         expect(store.updateRun).toHaveBeenCalledWith("run-merge-fallback", expect.objectContaining({ status: "merged" }));
         expect(store.logEvent).toHaveBeenCalledWith(
           "proj-1",
           "merge-cleanup-fallback",
-          expect.objectContaining({ seedId: "seed-merge-fallback", branchName: "foreman/seed-merge-fallback" }),
+          expect.objectContaining({ taskId: "task-merge-fallback", branchName: "foreman/task-merge-fallback" }),
           "run-merge-fallback",
         );
-        expect(vcsBackend.resolveRef).toHaveBeenCalledWith("/tmp/project", "foreman/seed-merge-fallback");
-        expect(vcsBackend.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/seed-merge-fallback");
+        expect(vcsBackend.resolveRef).toHaveBeenCalledWith("/tmp/project", "foreman/task-merge-fallback");
+        expect(vcsBackend.removeWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/worktrees/task-merge-fallback");
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;
       }
@@ -382,7 +382,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
   describe("Refinery.ensurePullRequestForRun() reuses existing PRs correctly", () => {
     it("reopens a closed PR by URL when reusing the same branch", async () => {
       const { store, refinery } = createTestRefinery();
-      const run = makeRun({ id: "run-77", seed_id: "seed-reopen" });
+      const run = makeRun({ id: "run-77", task_id: "task-reopen" });
       store.getRun.mockReturnValue(run);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
       process.env.FOREMAN_RUNTIME_MODE = "normal";
@@ -398,7 +398,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
               callback(null, {
                 stdout: JSON.stringify({
                   state: "CLOSED",
-                  headRefName: "foreman/seed-reopen",
+                  headRefName: "foreman/task-reopen",
                   headRefOid: "abc123",
                   url: "https://github.com/org/repo/pull/77",
                 }),
@@ -436,7 +436,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
     it("reuses an open PR when the branch SHA changed after retry", async () => {
       const { store, refinery } = createTestRefinery();
-      const run = makeRun({ id: "run-90", seed_id: "seed-open-pr-retry" });
+      const run = makeRun({ id: "run-90", task_id: "task-open-pr-retry" });
       store.getRun.mockReturnValue(run);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
       process.env.FOREMAN_RUNTIME_MODE = "normal";
@@ -452,7 +452,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
               callback(null, {
                 stdout: JSON.stringify({
                   state: "OPEN",
-                  headRefName: "foreman/seed-open-pr-retry",
+                  headRefName: "foreman/task-open-pr-retry",
                   headRefOid: "oldsha",
                   url: "https://github.com/org/repo/pull/90",
                 }),
@@ -489,7 +489,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
     it("creates a fresh PR when a non-open PR branch SHA has changed (stale PR, AC-2)", async () => {
       const { store, refinery } = createTestRefinery();
-      const run = makeRun({ id: "run-88", seed_id: "seed-reopen-fallback" });
+      const run = makeRun({ id: "run-88", task_id: "task-reopen-fallback" });
       store.getRun.mockReturnValue(run);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
       process.env.FOREMAN_RUNTIME_MODE = "normal";
@@ -507,7 +507,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
               callback(null, {
                 stdout: JSON.stringify({
                   state: "CLOSED",
-                  headRefName: "foreman/seed-reopen-fallback",
+                  headRefName: "foreman/task-reopen-fallback",
                   headRefOid: "xyz456",
                   url: "https://github.com/org/repo/pull/88",
                 }),
@@ -558,7 +558,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
 
     it("creates a fresh PR instead of reusing an already-merged PR for the same branch", async () => {
       const { store, refinery } = createTestRefinery();
-      const run = makeRun({ id: "run-89", seed_id: "seed-merged-pr-refresh" });
+      const run = makeRun({ id: "run-89", task_id: "task-merged-pr-refresh" });
       store.getRun.mockReturnValue(run);
       const previousMode = process.env.FOREMAN_RUNTIME_MODE;
       process.env.FOREMAN_RUNTIME_MODE = "normal";
@@ -574,7 +574,7 @@ describe("MQ-T058d: PR creation strategy decision", () => {
               callback(null, {
                 stdout: JSON.stringify({
                   state: "MERGED",
-                  headRefName: "foreman/seed-merged-pr-refresh",
+                  headRefName: "foreman/task-merged-pr-refresh",
                   headRefOid: "oldmergedsha",
                   url: "https://github.com/org/repo/pull/101",
                 }),

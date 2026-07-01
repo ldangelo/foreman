@@ -30,7 +30,7 @@ import { WorktreeManager } from "../lib/worktree-manager.js";
 import type { TaskMeta } from "../lib/interpolate.js";
 import { getRunReportsDir } from "../lib/report-paths.js";
 import type {
-  SeedInfo,
+  TaskInfo,
   DispatchResult,
   DispatchedTask,
   SkippedTask,
@@ -76,25 +76,25 @@ interface OrphanedWorkerConfigStore {
 }
 
 interface BaseBranchRunLookup {
-  getRunsForSeed(seedId: string): Awaitable<Run[]>;
+  getRunsForTask(taskId: string): Awaitable<Run[]>;
 }
 
 export interface DispatcherOverrides {
   getRecentFailureCount?: (projectId: string, since: string) => Promise<number>;
   nativeTaskOps?: NativeTaskOps;
-  getActiveSeedIds?: () => Promise<string[]>;
-  hasActiveOrPendingRun?: (seedId: string) => Promise<boolean>;
+  getActiveTaskIds?: () => Promise<string[]>;
+  hasActiveOrPendingRun?: (taskId: string) => Promise<boolean>;
   getActiveAgentCount?: () => Promise<number>;
   externalProjectId?: string;
   getRunsByStatus?: (status: RunStatus, projectId: string) => Promise<Run[]>;
-  getRunsForSeed?: (seedId: string, projectId: string) => Promise<Run[]>;
+  getRunsForTask?: (taskId: string, projectId: string) => Promise<Run[]>;
   getRun?: (runId: string) => Promise<Run | null>;
   getActiveRuns?: (projectId: string) => Promise<Run[]>;
   runOps?: {
     createRun?: (args: {
       runId: string;
       projectId: string;
-      seedId: string;
+      taskId: string;
       agentType: string;
       branchName: string;
       worktreePath: string | null;
@@ -147,7 +147,7 @@ export class Dispatcher {
   private runLifecycleService: RunLifecycleService;
 
   constructor(
-    private seeds: ITaskClient,
+    private tasks: ITaskClient,
     private store: DispatcherStoreDeps,
     private projectPath: string,
     private bvClient?: BvClient | null,
@@ -190,7 +190,7 @@ export class Dispatcher {
 
   private async createRunRecord(
     projectId: string,
-    seedId: string,
+    taskId: string,
     agentType: string,
     worktreePath: string | null,
     branchName: string,
@@ -200,7 +200,7 @@ export class Dispatcher {
       sessionKey?: string | null;
     },
   ): Promise<Run> {
-    return this.runLifecycleService.createRunRecord(projectId, seedId, agentType, worktreePath, branchName, opts);
+    return this.runLifecycleService.createRunRecord(projectId, taskId, agentType, worktreePath, branchName, opts);
   }
 
   private async updateRunRecord(
@@ -269,14 +269,14 @@ export class Dispatcher {
     return this.runLifecycleService.getRunsByStatusRecord(status, projectId);
   }
 
-  private async getRunsForSeedRecord(
-    seedId: string,
+  private async getRunsForTaskRecord(
+    taskId: string,
     projectId: string,
   ): Promise<Run[]> {
-    if (this.overrides?.getRunsForSeed) {
-      return this.overrides.getRunsForSeed(seedId, projectId);
+    if (this.overrides?.getRunsForTask) {
+      return this.overrides.getRunsForTask(taskId, projectId);
     }
-    return this.runLifecycleService.getRunsForSeedRecord(seedId, projectId);
+    return this.runLifecycleService.getRunsForTaskRecord(taskId, projectId);
   }
 
   private async getRunRecord(runId: string): Promise<Run | null> {
@@ -287,7 +287,7 @@ export class Dispatcher {
   }
 
   /**
-   * Query ready seeds, create worktrees, write TASK.md, and record runs.
+   * Query ready tasks, create worktrees, write TASK.md, and record runs.
    */
   async dispatch(opts?: {
     maxAgents?: number;
@@ -303,7 +303,7 @@ export class Dispatcher {
      * Takes priority over `workflow:<name>` labels and taskTypeWorkflowMap.
      */
     workflow?: string;
-    seedId?: string;
+    taskId?: string;
     /** URL of the notification server (e.g. "http://127.0.0.1:PORT") */
     notifyUrl?: string;
     /** Override target branch for merges (when working on a feature branch instead of default). */
@@ -420,10 +420,10 @@ export class Dispatcher {
           try {
             // Look up task from native store: try external_id first, then id
             const task = this.overrides?.nativeTaskOps
-              ? await this.overrides.nativeTaskOps.getTaskByExternalId(run.seed_id)
-                ?? await this.overrides.nativeTaskOps.getTaskById(run.seed_id)
-              : await this.store.getTaskByExternalId(run.seed_id)
-                ?? await this.store.getTaskById(run.seed_id);
+              ? await this.overrides.nativeTaskOps.getTaskByExternalId(run.task_id)
+                ?? await this.overrides.nativeTaskOps.getTaskById(run.task_id)
+              : await this.store.getTaskByExternalId(run.task_id)
+                ?? await this.store.getTaskById(run.task_id);
             if (task) {
               const state = task.status;
               activeRunsByState.set(state, (activeRunsByState.get(state) ?? 0) + 1);
@@ -443,10 +443,10 @@ export class Dispatcher {
     const nativeTasks = this.overrides?.nativeTaskOps
       ? await this.overrides.nativeTaskOps.getReadyTasks()
       : await this.store.getReadyTasks();
-    let readySeeds: Issue[] = nativeTasks.map(nativeTaskToIssue);
+    let readyTasks: Issue[] = nativeTasks.map(nativeTaskToIssue);
 
-    // Sort ready seeds using bv triage scores when available, falling back to priority sort.
-    if (!opts?.seedId) {
+    // Sort ready tasks using bv triage scores when available, falling back to priority sort.
+    if (!opts?.taskId) {
       if (this.bvClient) {
         const triageResult = await this.bvClient.robotTriage();
         if (triageResult !== null) {
@@ -455,7 +455,7 @@ export class Dispatcher {
           for (const rec of triageResult.recommendations) {
             scoreMap.set(rec.id, rec.score);
           }
-          readySeeds = [...readySeeds].sort((a, b) => {
+          readyTasks = [...readyTasks].sort((a, b) => {
             const hasA = scoreMap.has(a.id);
             const hasB = scoreMap.has(b.id);
             // Tasks in recommendations come before tasks not in recommendations
@@ -468,49 +468,49 @@ export class Dispatcher {
             // Neither ranked: fall back to priority sort
             return normalizePriority(a.priority) - normalizePriority(b.priority);
           });
-          log(`bv triage scored ${readySeeds.length} ready seeds`);
+          log(`bv triage scored ${readyTasks.length} ready tasks`);
         } else {
           if (!this.bvFallbackWarned) {
             log("bv unavailable, using priority-sort fallback");
             this.bvFallbackWarned = true;
           }
-          readySeeds = [...readySeeds].sort(
+          readyTasks = [...readyTasks].sort(
             (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
           );
         }
       } else {
         // No bvClient provided — sort by priority
-        readySeeds = [...readySeeds].sort(
+        readyTasks = [...readyTasks].sort(
           (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
         );
       }
     }
 
-    // Filter to a specific seed if requested
-    if (opts?.seedId) {
-      if (await this.hasMergedOutcomeWithoutLaterReset(opts.seedId, projectId)) {
+    // Filter to a specific task if requested
+    if (opts?.taskId) {
+      if (await this.hasMergedOutcomeWithoutLaterReset(opts.taskId, projectId)) {
         return {
           dispatched: [],
           skipped: [{
-            seedId: opts.seedId,
-            title: opts.seedId,
+            taskId: opts.taskId,
+            title: opts.taskId,
             reason: "Latest authoritative run already merged — use foreman reset/retry to rerun explicitly",
           }],
           resumed: [],
           activeAgents: activeRuns.length,
         };
       }
-      let target = readySeeds.find((b) => b.id === opts.seedId);
+      let target = readyTasks.find((b) => b.id === opts.taskId);
       if (!target) {
         // Try external_id first (for tasks that have it set)
         let nativeMatch = this.overrides?.nativeTaskOps
-          ? await this.overrides.nativeTaskOps.getTaskByExternalId(opts.seedId)
-          : await this.store.getTaskByExternalId(opts.seedId);
+          ? await this.overrides.nativeTaskOps.getTaskByExternalId(opts.taskId)
+          : await this.store.getTaskByExternalId(opts.taskId);
         // Fall back to id lookup when external_id is not set (common for native tasks)
         if (!nativeMatch) {
           nativeMatch = this.overrides?.nativeTaskOps
-            ? await this.overrides.nativeTaskOps.getTaskById(opts.seedId)
-            : await this.store.getTaskById(opts.seedId);
+            ? await this.overrides.nativeTaskOps.getTaskById(opts.taskId)
+            : await this.store.getTaskById(opts.taskId);
         }
         if (nativeMatch) {
           if (nativeMatch.status === "ready") {
@@ -519,9 +519,9 @@ export class Dispatcher {
             return {
               dispatched: [],
               skipped: [{
-                seedId: opts.seedId,
+                taskId: opts.taskId,
                 title: nativeMatch.title,
-                reason: `Native task for ${opts.seedId} is ${nativeMatch.status} (not ready)`
+                reason: `Native task for ${opts.taskId} is ${nativeMatch.status} (not ready)`
               }],
               resumed: [],
               activeAgents: activeRuns.length,
@@ -532,12 +532,12 @@ export class Dispatcher {
       if (!target) {
         return {
           dispatched: [],
-          skipped: [{ seedId: opts.seedId, title: opts.seedId, reason: `Task ${opts.seedId} not found` }],
+          skipped: [{ taskId: opts.taskId, title: opts.taskId, reason: `Task ${opts.taskId} not found` }],
           resumed: [],
           activeAgents: activeRuns.length,
         };
       }
-      readySeeds = [target];
+      readyTasks = [target];
     }
 
     const dispatched: DispatchedTask[] = [];
@@ -565,7 +565,7 @@ export class Dispatcher {
         // Daemon background dispatch: ignore the developer's checked-out branch
         // and treat the project as being on its default branch. This suppresses
         // `branch:<current>` auto-labeling while leaving parent-bead branch-label
-        // inheritance intact (that path keys off seed.parent, not currentBranch).
+        // inheritance intact (that path keys off task.parent, not currentBranch).
         currentBranch = defaultBranch;
       } else {
         currentBranch = await resolveUsableBranchLabel(await branchBackend.getCurrentBranch(this.projectPath));
@@ -574,40 +574,40 @@ export class Dispatcher {
       // Non-fatal: branch detection failure must not block dispatch
     }
 
-    // Skip seeds that already have an active run
-    const activeSeedIds = new Set(
-      this.overrides?.getActiveSeedIds
-        ? await this.overrides.getActiveSeedIds()
-        : activeRuns.map((r) => r.seed_id),
+    // Skip tasks that already have an active run
+    const activeTaskIds = new Set(
+      this.overrides?.getActiveTaskIds
+        ? await this.overrides.getActiveTaskIds()
+        : activeRuns.map((r) => r.task_id),
     );
 
-    // Also skip seeds that have a completed-but-unmerged run (prevent duplicate runs)
+    // Also skip tasks that have a completed-but-unmerged run (prevent duplicate runs)
     const completedRuns = await this.getRunsByStatusRecord("completed", projectId);
-    const completedSeedIds = new Set(completedRuns.map((r) => r.seed_id));
+    const completedTaskIds = new Set(completedRuns.map((r) => r.task_id));
 
-    for (const seed of readySeeds) {
-      if (await this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+    for (const task of readyTasks) {
+      if (await this.hasMergedOutcomeWithoutLaterReset(task.id, projectId)) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           reason: "Latest authoritative run already merged — explicit reset/retry required",
         });
         continue;
       }
 
-      if (activeSeedIds.has(seed.id)) {
+      if (activeTaskIds.has(task.id)) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           reason: "Already has an active run",
         });
         continue;
       }
 
-      if (completedSeedIds.has(seed.id)) {
+      if (completedTaskIds.has(task.id)) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           reason: "Has completed run awaiting merge — run 'foreman merge' or wait for auto-merge",
         });
         continue;
@@ -617,50 +617,50 @@ export class Dispatcher {
       // Epic beads are dispatched as a single epic runner that executes all
       // child tasks sequentially within one worktree. Native task store does not
       // have children support, so epics dispatch as single-agent tasks.
-      if (seed.type === "epic") {
-        log(`[dispatch] Epic ${seed.id} — dispatching as single-agent task`);
+      if (task.type === "epic") {
+        log(`[dispatch] Epic ${task.id} — dispatching as single-agent task`);
         // Fall through to regular dispatch so the epic's phases
         // (developer → qa → finalize) run as a single worktree.
       }
 
-      // Skip seeds that are in cooldown state after a retryable failure.
+      // Skip tasks that are in cooldown state after a retryable failure.
       // Cooldown is checked BEFORE stuck backoff because a task in cooldown
       // should not be subject to stuck backoff — it has a specific wait period
       // defined by the cooldown_until timestamp on the run record.
-      const cooldownResult = await this.checkCooldownState(seed.id, projectId);
+      const cooldownResult = await this.checkCooldownState(task.id, projectId);
       if (cooldownResult.inCooldown) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           reason: cooldownResult.reason ?? "In cooldown period after retryable failure",
         });
         continue;
       }
 
-      // Skip seeds that are in exponential backoff after recent stuck runs
-      const backoffResult = await this.checkStuckBackoff(seed.id, projectId);
+      // Skip tasks that are in exponential backoff after recent stuck runs
+      const backoffResult = await this.checkStuckBackoff(task.id, projectId);
       if (backoffResult.inBackoff) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           reason: backoffResult.reason ?? "In backoff period after recent stuck runs",
         });
         continue;
       }
 
       // ── Per-state concurrency limit check (Backlog-006) ─────────────────────
-      // Check if this seed's target state has hit its per-state concurrency limit.
+      // Check if this task's target state has hit its per-state concurrency limit.
       // States not in byState are unlimited (only constrained by global available).
       if (concurrencyConfig?.byState) {
-        const stateLimit = concurrencyConfig.byState[seed.status];
+        const stateLimit = concurrencyConfig.byState[task.status];
         if (stateLimit != null && stateLimit > 0) {
-          const activeCount = activeRunsByState.get(seed.status) ?? 0;
-          const pendingCount = statePendingCount[seed.status] ?? 0;
+          const activeCount = activeRunsByState.get(task.status) ?? 0;
+          const pendingCount = statePendingCount[task.status] ?? 0;
           if (activeCount + pendingCount >= stateLimit) {
             skipped.push({
-              seedId: seed.id,
-              title: seed.title,
-              reason: `State '${seed.status}' concurrency limit reached (${stateLimit} active + pending)`,
+              taskId: task.id,
+              title: task.title,
+              reason: `State '${task.status}' concurrency limit reached (${stateLimit} active + pending)`,
             });
             continue;
           }
@@ -669,36 +669,36 @@ export class Dispatcher {
 
       if (dispatched.length >= available) {
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           reason: `Agent limit reached (${effectiveMaxAgents})`,
         });
         continue;
       }
 
       // Track this pending dispatch for per-state limit accounting
-      if (concurrencyConfig?.byState?.[seed.status] != null) {
-        statePendingCount[seed.status] = (statePendingCount[seed.status] ?? 0) + 1;
+      if (concurrencyConfig?.byState?.[task.status] != null) {
+        statePendingCount[task.status] = (statePendingCount[task.status] ?? 0) + 1;
       }
 
       // Fetch full issue details (description, labels) for agent context
       // Native-only: uses nativeTaskOps.getTaskById() or store.getTaskById()
-      let seedDetail: { description?: string | null; notes?: string | null; labels?: string[] } | undefined;
+      let taskDetail: { description?: string | null; notes?: string | null; labels?: string[] } | undefined;
       try {
         if (this.overrides?.nativeTaskOps) {
-          const nativeTask = await this.overrides.nativeTaskOps.getTaskById(seed.id);
+          const nativeTask = await this.overrides.nativeTaskOps.getTaskById(task.id);
           if (nativeTask) {
-            seedDetail = {
+            taskDetail = {
               description: nativeTask.description,
               notes: null, // Native tasks do not support notes
               labels: nativeTask.labels ?? undefined,
             };
           }
         } else {
-          // Non-native mode: use store.getTaskById() as primary, not this.seeds
-          const storeTask = await this.store.getTaskById(seed.id);
+          // Non-native mode: use store.getTaskById() as primary, not this.tasks
+          const storeTask = await this.store.getTaskById(task.id);
           if (storeTask) {
-            seedDetail = {
+            taskDetail = {
               description: storeTask.description,
               notes: null,
               labels: storeTask.labels ?? undefined,
@@ -707,7 +707,7 @@ export class Dispatcher {
         }
       } catch {
         // Non-fatal: if fetch fails, proceed without detail context
-        log(`Warning: failed to fetch details for seed ${seed.id}`);
+        log(`Warning: failed to fetch details for task ${task.id}`);
       }
 
       // Fetch task comments (design notes, reviewer feedback, etc.) for agent context.
@@ -716,10 +716,10 @@ export class Dispatcher {
       // This is non-fatal — dispatch proceeds even if comment fetch fails.
       let beadComments: string | null = null;
       try {
-        beadComments = await this.seeds.comments?.(seed.id) ?? null;
+        beadComments = await this.tasks.comments?.(task.id) ?? null;
       } catch (commentErr: unknown) {
         const msg = commentErr instanceof Error ? commentErr.message : String(commentErr);
-        log(`Warning: failed to fetch comments for ${seed.id}: ${msg}`);
+        log(`Warning: failed to fetch comments for ${task.id}: ${msg}`);
       }
 
       // ── Branch label auto-labeling ─────────────────────────────────────────
@@ -727,12 +727,12 @@ export class Dispatcher {
       // add a `branch:<currentBranch>` label to the bead so that refinery merges
       // the work into the correct branch instead of always targeting main/dev.
       //
-      // Inheritance: if the seed has a parent bead with a branch: label, the child
+      // Inheritance: if the task has a parent bead with a branch: label, the child
       // inherits that label (even when the current branch is the default).
       //
       // Only applied when the bead doesn't already have a branch: label.
       if (currentBranch && defaultBranch) {
-        const existingLabels: string[] = seedDetail?.labels ?? seed.labels ?? [];
+        const existingLabels: string[] = taskDetail?.labels ?? task.labels ?? [];
         const existingBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(existingLabels));
 
         if (!existingBranchLabel) {
@@ -742,14 +742,14 @@ export class Dispatcher {
 
           if (!isDefaultBranch(currentBranch, defaultBranch)) {
             labelBranch = currentBranch;
-          } else if (seed.parent) {
+          } else if (task.parent) {
             // Check parent's branch: label for inheritance via native store
             try {
               const parentTask = this.overrides?.nativeTaskOps
-                ? await this.overrides.nativeTaskOps.getTaskByExternalId(seed.parent)
-                  ?? await this.overrides.nativeTaskOps.getTaskById(seed.parent)
-                : await this.store.getTaskByExternalId(seed.parent)
-                  ?? await this.store.getTaskById(seed.parent);
+                ? await this.overrides.nativeTaskOps.getTaskByExternalId(task.parent)
+                  ?? await this.overrides.nativeTaskOps.getTaskById(task.parent)
+                : await this.store.getTaskByExternalId(task.parent)
+                  ?? await this.store.getTaskById(task.parent);
               if (parentTask) {
                 const parentBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(parentTask.labels ?? []));
                 if (parentBranchLabel && !isDefaultBranch(parentBranchLabel, defaultBranch)) {
@@ -766,27 +766,27 @@ export class Dispatcher {
             try {
               // Update labels via native store
               if (this.overrides?.nativeTaskOps?.updateTaskLabels) {
-                await this.overrides.nativeTaskOps.updateTaskLabels(seed.id, updatedLabels);
+                await this.overrides.nativeTaskOps.updateTaskLabels(task.id, updatedLabels);
               } else if (this.store.updateTaskLabels) {
-                await this.store.updateTaskLabels(seed.id, updatedLabels);
+                await this.store.updateTaskLabels(task.id, updatedLabels);
               }
-              log(`[foreman] Auto-labeled ${seed.id} with branch:${labelBranch}`);
-              // Update seedDetail.labels so seedToInfo() sees the updated labels
-              if (seedDetail) {
-                seedDetail = { ...seedDetail, labels: updatedLabels };
+              log(`[foreman] Auto-labeled ${task.id} with branch:${labelBranch}`);
+              // Update taskDetail.labels so taskToInfo() sees the updated labels
+              if (taskDetail) {
+                taskDetail = { ...taskDetail, labels: updatedLabels };
               } else {
-                seedDetail = { labels: updatedLabels };
+                taskDetail = { labels: updatedLabels };
               }
             } catch (labelErr: unknown) {
               // Non-fatal: label failure must not block dispatch
               const msg = labelErr instanceof Error ? labelErr.message : String(labelErr);
-              log(`Warning: failed to add branch label to ${seed.id}: ${msg}`);
+              log(`Warning: failed to add branch label to ${task.id}: ${msg}`);
             }
           }
         }
       }
 
-      const seedInfo = seedToInfo(seed, seedDetail, beadComments);
+      const taskInfo = taskToInfo(task, taskDetail, beadComments);
       const runtime: RuntimeSelection = "claude-code";
       // Pipeline model is now resolved per-phase from the workflow YAML + bead priority.
       // Use opts.model if provided (e.g. --model flag), otherwise fall back to the
@@ -796,39 +796,39 @@ export class Dispatcher {
 
       if (opts?.dryRun) {
         dispatched.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           runtime,
           model,
-          worktreePath: getWorkspacePath(this.projectPath, seed.id),
+          worktreePath: getWorkspacePath(this.projectPath, task.id),
           runId: "(dry-run)",
-          branchName: `foreman/${seed.id}`,
+          branchName: `foreman/${task.id}`,
         });
         continue;
       }
 
       try {
         // Pre-flight guard: re-check the DB just before creating the run.
-        // The activeSeedIds snapshot above is stale by the time we reach this
+        // The activeTaskIds snapshot above is stale by the time we reach this
         // point — a concurrent dispatch cycle may have already created a pending
-        // run for this seed between our getActiveRuns() call and now.  This
+        // run for this task between our getActiveRuns() call and now.  This
         // just-in-time check prevents duplicate runs in that race window.
         const hasCompetingRun = this.overrides?.hasActiveOrPendingRun
-          ? await this.overrides.hasActiveOrPendingRun(seed.id)
-          : this.store.hasActiveOrPendingRun(seed.id, projectId);
+          ? await this.overrides.hasActiveOrPendingRun(task.id)
+          : this.store.hasActiveOrPendingRun(task.id, projectId);
         if (hasCompetingRun) {
           skipped.push({
-            seedId: seed.id,
-            title: seed.title,
+            taskId: task.id,
+            title: task.title,
             reason: "Another run was created concurrently (race guard)",
           });
           continue;
         }
-        const attemptNumber = (await this.getRunsForSeedRecord(seed.id, projectId)).length + 1;
-        if (await this.hasMergedOutcomeWithoutLaterReset(seed.id, projectId)) {
+        const attemptNumber = (await this.getRunsForTaskRecord(task.id, projectId)).length + 1;
+        if (await this.hasMergedOutcomeWithoutLaterReset(task.id, projectId)) {
           skipped.push({
-            seedId: seed.id,
-            title: seed.title,
+            taskId: task.id,
+            title: task.title,
             reason: "Another run merged before dispatch could create a new run (merged guard)",
           });
           continue;
@@ -836,17 +836,17 @@ export class Dispatcher {
 
         // 1. Resolve base branch (may stack on a dependency branch)
         const baseBranch = await resolveBaseBranch(
-          seed.id,
+          task.id,
           this.projectPath,
           {
-            getRunsForSeed: (seedId: string) => this.overrides?.getRunsForSeed
-              ? this.overrides.getRunsForSeed(seedId, projectId)
-              : this.store.getRunsForSeed(seedId, projectId),
+            getRunsForTask: (taskId: string) => this.overrides?.getRunsForTask
+              ? this.overrides.getRunsForTask(taskId, projectId)
+              : this.store.getRunsForTask(taskId, projectId),
           },
           branchBackend,
         );
         if (baseBranch) {
-          log(`[foreman] Stacking ${seed.id} on ${baseBranch}`);
+          log(`[foreman] Stacking ${task.id} on ${baseBranch}`);
         }
 
         // 1a. Load project config and resolve workflow name.
@@ -854,8 +854,8 @@ export class Dispatcher {
         // be silently ignored.
         const projectCfg = loadProjectConfig(this.projectPath);
         const resolvedWorkflow = resolveWorkflowName(
-          seedInfo.type ?? "feature",
-          seedInfo.labels,
+          taskInfo.type ?? "feature",
+          taskInfo.labels,
           projectCfg?.taskTypeWorkflowMap,
           opts?.workflow,
         );
@@ -901,7 +901,7 @@ export class Dispatcher {
         const worktreeManager = new WorktreeManager();
         const worktreeInfo = await worktreeManager.createWorktree({
           projectId,
-          beadId: seed.id,
+          beadId: task.id,
           repoPath: this.projectPath,
           baseBranch: baseBranch ?? defaultBranch,
         });
@@ -911,7 +911,7 @@ export class Dispatcher {
 
         // Run setup steps / install dependencies (not part of VcsBackend interface)
         if (opts?.runtimeMode === "test") {
-          log(`[foreman] Skipping workflow setup/install for ${seed.id} in test runtime`);
+          log(`[foreman] Skipping workflow setup/install for ${task.id} in test runtime`);
         } else if (setupSteps && setupSteps.length > 0) {
           await runSetupWithCache(worktreePath, this.projectPath, setupSteps, setupCache);
         } else {
@@ -923,27 +923,27 @@ export class Dispatcher {
         if (workspaceWasCreated && projectHooks?.afterCreate) {
           const hookEnv: Record<string, string> = {
             FOREMAN_WORKSPACE_PATH: worktreePath,
-            FOREMAN_ISSUE_ID: seed.id,
-            FOREMAN_ISSUE_IDENTIFIER: seed.id,
+            FOREMAN_ISSUE_ID: task.id,
+            FOREMAN_ISSUE_IDENTIFIER: task.id,
             FOREMAN_ATTEMPT: String(attemptNumber),
           };
           try {
             await runWorkspaceHook(projectHooks, "afterCreate", worktreePath, hookEnv);
           } catch (hookErr: unknown) {
             const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
-            throw new Error(`afterCreate hook failed for ${seed.id}: ${hookMsg}`);
+            throw new Error(`afterCreate hook failed for ${task.id}: ${hookMsg}`);
           }
         }
 
         // 3. Write TASK.md in the worktree (not AGENTS.md — avoids overwriting project file on merge)
-        const taskMd = workerAgentMd(seedInfo, worktreePath, model);
+        const taskMd = workerAgentMd(taskInfo, worktreePath, model);
         await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
         // 4. Record run in store (include base_branch for stacking awareness)
         // TRD-007: pass merge_strategy from workflow config
         const run = await this.createRunRecord(
           projectId,
-          seed.id,
+          task.id,
           model,
           worktreePath,
           branchName,
@@ -952,8 +952,8 @@ export class Dispatcher {
 
         // 5. Log dispatch event
         await this.logEventRecord(projectId, "dispatch", {
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           model,
           worktreePath,
           branchName,
@@ -962,8 +962,8 @@ export class Dispatcher {
         // 5a. Send worktree-created mail so inbox shows worktree lifecycle event
         try {
           await this.sendMailRecord(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
-            seedId: seed.id,
-            title: seed.title,
+            taskId: task.id,
+            title: task.title,
             worktreePath,
             branchName,
             model,
@@ -973,20 +973,20 @@ export class Dispatcher {
           // Non-fatal — mail is optional infrastructure
         }
 
-        // 6. Mark seed as in_progress before spawning agent.
+        // 6. Mark task as in_progress before spawning agent.
         // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
         // Native-only: use nativeTaskOps.claimTask() — never use legacy beads claim
         const claimed = this.overrides?.nativeTaskOps
-          ? await this.overrides.nativeTaskOps.claimTask(seed.id, run.id)
+          ? await this.overrides.nativeTaskOps.claimTask(task.id, run.id)
           : typeof this.store.claimTask === "function"
-            ? this.store.claimTask(seed.id, run.id)
+            ? this.store.claimTask(task.id, run.id)
             : false;
         if (!claimed) {
           // Another dispatcher instance claimed this task between our getReadyTasks() query
           // and now — skip it and clean up the run we just created.
           skipped.push({
-            seedId: seed.id,
-            title: seed.title,
+            taskId: task.id,
+            title: task.title,
             reason: "Already claimed by another dispatcher (atomic claim failed)",
           });
           // Best-effort cleanup: mark run as failed so it doesn't appear as active
@@ -1001,8 +1001,8 @@ export class Dispatcher {
         // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
         try {
           await this.sendMailRecord(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
-            seedId: seed.id,
-            title: seed.title,
+            taskId: task.id,
+            title: task.title,
             model,
             runId: run.id,
             timestamp: new Date().toISOString(),
@@ -1012,17 +1012,17 @@ export class Dispatcher {
         }
 
         // 7. Spawn the coding agent
-        // Extract epic context if this seed was marked as an epic dispatch
-        const epicTasksForSeed = (seed as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
-        const epicIdForSeed = epicTasksForSeed ? seed.id : undefined;
+        // Extract epic context if this task was marked as an epic dispatch
+        const epicTasksForTask = (task as unknown as Record<string, unknown>).__epicTasks as EpicTask[] | undefined;
+        const epicIdForTask = epicTasksForTask ? task.id : undefined;
 
         // Run beforeRun hook (before agent launch)
         // Failures are fatal — block agent spawn
         if (projectHooks?.beforeRun) {
           const hookEnv: Record<string, string> = {
             FOREMAN_WORKSPACE_PATH: worktreePath,
-            FOREMAN_ISSUE_ID: seed.id,
-            FOREMAN_ISSUE_IDENTIFIER: seed.id,
+            FOREMAN_ISSUE_ID: task.id,
+            FOREMAN_ISSUE_IDENTIFIER: task.id,
             FOREMAN_ATTEMPT: String(attemptNumber),
           };
           try {
@@ -1032,19 +1032,19 @@ export class Dispatcher {
             const now = new Date().toISOString();
             await this.updateRunRecord(run.id, { status: "failed", completed_at: now });
             try {
-              await this.updateNativeTaskStatus(seed.id, "failed");
+              await this.updateNativeTaskStatus(task.id, "failed");
             } catch (taskErr: unknown) {
               const taskMsg = taskErr instanceof Error ? taskErr.message : String(taskErr);
-              log(`[foreman] Could not mark ${seed.id} failed after beforeRun hook failure — ${taskMsg.slice(0, 200)}`);
+              log(`[foreman] Could not mark ${task.id} failed after beforeRun hook failure — ${taskMsg.slice(0, 200)}`);
             }
-            throw new Error(`beforeRun hook failed for ${seed.id}: ${hookMsg}`);
+            throw new Error(`beforeRun hook failed for ${task.id}: ${hookMsg}`);
           }
         }
 
         const { sessionKey } = await this.spawnAgent(
           model,
           worktreePath,
-          seedInfo,
+          taskInfo,
           run.id,
           opts?.telemetry,
           {
@@ -1055,8 +1055,8 @@ export class Dispatcher {
           vcsBackend,
           opts?.runtimeMode,
           opts?.targetBranch,
-          epicTasksForSeed,
-          epicIdForSeed,
+          epicTasksForTask,
+          epicIdForTask,
           projectHooks,
           attemptNumber,
         );
@@ -1069,8 +1069,8 @@ export class Dispatcher {
         });
 
         dispatched.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           runtime,
           model,
           worktreePath,
@@ -1079,7 +1079,7 @@ export class Dispatcher {
         });
 
         // P1: Apply stagger delay between dispatches to prevent thundering herd on Haiku quotas
-        if (opts?.staggerMs && opts?.staggerMs > 0 && dispatched.length < readySeeds.length) {
+        if (opts?.staggerMs && opts?.staggerMs > 0 && dispatched.length < readyTasks.length) {
           const staggerMsg = `[dispatch] Staggering ${opts.staggerMs / 1000}s before next dispatch...`;
           console.error(staggerMsg);
           await new Promise((resolve) => setTimeout(resolve, opts.staggerMs));
@@ -1087,8 +1087,8 @@ export class Dispatcher {
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         skipped.push({
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           reason: `Dispatch failed: ${message}`,
         });
       }
@@ -1143,8 +1143,8 @@ export class Dispatcher {
     for (const run of resumableRuns) {
       if (resumed.length >= available) {
         skipped.push({
-          seedId: run.seed_id,
-          title: run.seed_id,
+          taskId: run.task_id,
+          title: run.task_id,
           reason: `Agent limit reached (${maxAgents})`,
         });
         continue;
@@ -1155,8 +1155,8 @@ export class Dispatcher {
       const sessionId = extractSessionId(run.session_key);
       if (!sessionId) {
         skipped.push({
-          seedId: run.seed_id,
-          title: run.seed_id,
+          taskId: run.task_id,
+          title: run.task_id,
           reason: "No SDK session ID found — cannot resume (was this a CLI-spawned run?)",
         });
         continue;
@@ -1165,8 +1165,8 @@ export class Dispatcher {
       // Check worktree still exists
       if (!run.worktree_path) {
         skipped.push({
-          seedId: run.seed_id,
-          title: run.seed_id,
+          taskId: run.task_id,
+          title: run.task_id,
           reason: "No worktree path — cannot resume",
         });
         continue;
@@ -1175,20 +1175,20 @@ export class Dispatcher {
       const model = (opts?.model ?? run.agent_type) as ModelSelection;
       const previousStatus = run.status;
 
-      log(`Resuming agent for ${run.seed_id} [${model}] session=${sessionId}`);
+      log(`Resuming agent for ${run.task_id} [${model}] session=${sessionId}`);
 
       // Create a new run record for the resumed attempt
       const newRun = await this.createRunRecord(
         projectId,
-        run.seed_id,
+        run.task_id,
         model,
         run.worktree_path,
-        `foreman/${run.seed_id}`,
+        `foreman/${run.task_id}`,
       );
 
       // Log resume event
       await this.logEventRecord(projectId, "restart", {
-        seedId: run.seed_id,
+        taskId: run.task_id,
         model,
         previousRunId: run.id,
         previousStatus,
@@ -1201,15 +1201,15 @@ export class Dispatcher {
         completed_at: new Date().toISOString(),
       });
 
-      // Mark seed as in_progress before spawning resumed agent
+      // Mark task as in_progress before spawning resumed agent
       // Native-only: use updateNativeTaskStatus which routes through nativeTaskOps
-      await this.updateNativeTaskStatus(run.seed_id, "in-progress");
+      await this.updateNativeTaskStatus(run.task_id, "in-progress");
 
       // Spawn the resumed agent
       const { sessionKey } = await this.resumeAgent(
         model,
         run.worktree_path,
-        { id: run.seed_id, title: run.seed_id },
+        { id: run.task_id, title: run.task_id },
         newRun.id,
         sessionId,
         opts?.telemetry,
@@ -1224,8 +1224,8 @@ export class Dispatcher {
       });
 
       resumed.push({
-        seedId: run.seed_id,
-        title: run.seed_id,
+        taskId: run.task_id,
+        title: run.task_id,
         model,
         runId: newRun.id,
         sessionId,
@@ -1247,7 +1247,7 @@ export class Dispatcher {
    */
   async dispatchPlanStep(
     projectId: string,
-    seed: SeedInfo,
+    task: TaskInfo,
     ensembleCommand: string,
     input: string,
     outputDir: string,
@@ -1255,12 +1255,12 @@ export class Dispatcher {
     this.validateRegisteredRunOps(["createRun", "updateRun", "logEvent"]);
 
     // 1. Record run in store
-    const run = await this.createRunRecord(projectId, seed.id, "claude-code", null, `foreman/${seed.id}`);
+    const run = await this.createRunRecord(projectId, task.id, "claude-code", null, `foreman/${task.id}`);
 
     // 2. Log dispatch event
     await this.logEventRecord(projectId, "dispatch", {
-      seedId: seed.id,
-      title: seed.title,
+      taskId: task.id,
+      title: task.title,
       ensembleCommand,
       outputDir,
       type: "plan-step",
@@ -1279,7 +1279,7 @@ export class Dispatcher {
     try {
       const planResult = await runWithPiSdk({
         prompt,
-        systemPrompt: `You are a planning agent. ${ensembleCommand} for the task: ${seed.title}`,
+        systemPrompt: `You are a planning agent. ${ensembleCommand} for the task: ${task.title}`,
         cwd: this.projectPath,
         model: PLAN_STEP_CONFIG.model,
       });
@@ -1290,8 +1290,8 @@ export class Dispatcher {
           completed_at: new Date().toISOString(),
         });
         await this.logEventRecord(projectId, "complete", {
-          seedId: seed.id,
-          title: seed.title,
+          taskId: task.id,
+          title: task.title,
           costUsd: planResult.costUsd,
           numTurns: planResult.turns,
         }, run.id);
@@ -1302,7 +1302,7 @@ export class Dispatcher {
           completed_at: new Date().toISOString(),
         });
         await this.logEventRecord(projectId, "fail", {
-          seedId: seed.id,
+          taskId: task.id,
           reason,
           costUsd: planResult.costUsd,
         }, run.id);
@@ -1318,7 +1318,7 @@ export class Dispatcher {
           completed_at: new Date().toISOString(),
         });
         await this.logEventRecord(projectId, "fail", {
-          seedId: seed.id,
+          taskId: task.id,
           reason: message,
         }, run.id);
       }
@@ -1326,25 +1326,25 @@ export class Dispatcher {
     }
 
     return {
-      seedId: seed.id,
-      title: seed.title,
+      taskId: task.id,
+      title: task.title,
       runId: run.id,
       sessionKey,
     };
   }
 
   /**
-   * Build the TASK.md content for a seed (exposed for testing).
+   * Build the TASK.md content for a task (exposed for testing).
    *
    * Model selection is now handled per-phase by the workflow YAML `models` map
    * (see resolvePhaseModel in workflow-loader.ts). The TASK.md model field shows
    * the developer-phase default as informational context.
    */
-  generateAgentInstructions(seed: SeedInfo, worktreePath: string): string {
+  generateAgentInstructions(task: TaskInfo, worktreePath: string): string {
     // Use developer-role default for TASK.md informational display.
     // The actual per-phase model is resolved from workflow YAML at runtime.
     const model: ModelSelection = getDefaultModel() as ModelSelection;
-    return workerAgentMd(seed, worktreePath, model);
+    return workerAgentMd(task, worktreePath, model);
   }
 
   // ── Agent Spawning ─────────────────────────────────────────────────────
@@ -1353,7 +1353,7 @@ export class Dispatcher {
    * Build the spawn prompt for an agent (exposed for testing — TRD-012).
    * Returns the multi-line string passed to the worker as its initial prompt.
    */
-  buildSpawnPrompt(seedId: string, seedTitle: string): string {
+  buildSpawnPrompt(taskId: string, taskTitle: string): string {
     return [
       `Read TASK.md and implement the task described.`,
       `Use br (beads_rust) to track your progress.`,
@@ -1361,8 +1361,8 @@ export class Dispatcher {
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
       `  br sync --flush-only`,
       `  git add .`,
-      `  git commit -m "${seedTitle} (${seedId})"`,
-      `  git push -u origin foreman/${seedId}`,
+      `  git commit -m "${taskTitle} (${taskId})"`,
+      `  git push -u origin foreman/${taskId}`,
       `NOTE: Do NOT close the bead manually — it will be closed automatically after the branch merges to main.`,
     ].join("\n");
   }
@@ -1370,7 +1370,7 @@ export class Dispatcher {
   /**
    * Build the resume prompt for an agent (exposed for testing — TRD-012).
    */
-  buildResumePrompt(seedId: string, seedTitle: string): string {
+  buildResumePrompt(taskId: string, taskTitle: string): string {
     return [
       `You were previously working on this task but were interrupted (likely by a rate limit).`,
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
@@ -1378,8 +1378,8 @@ export class Dispatcher {
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
       `  br sync --flush-only`,
       `  git add .`,
-      `  git commit -m "${seedTitle} (${seedId})"`,
-      `  git push -u origin foreman/${seedId}`,
+      `  git commit -m "${taskTitle} (${taskId})"`,
+      `  git push -u origin foreman/${taskId}`,
       `NOTE: Do NOT close the bead manually — it will be closed automatically after the branch merges to main.`,
     ].join("\n");
   }
@@ -1395,7 +1395,7 @@ export class Dispatcher {
   private async spawnAgent(
     model: ModelSelection,
     worktreePath: string,
-    seed: SeedInfo,
+    task: TaskInfo,
     runId: string,
     telemetry?: boolean,
     pipelineOpts?: {
@@ -1411,15 +1411,15 @@ export class Dispatcher {
     hooks?: import("../lib/project-config.js").ProjectHooksConfig,
     attemptNumber = 1,
   ): Promise<{ sessionKey: string }> {
-    const prompt = this.buildSpawnPrompt(seed.id, seed.title);
+    const prompt = this.buildSpawnPrompt(task.id, task.title);
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, vcsBackend, runtimeMode);
+    const env = buildWorkerEnv(telemetry, task.id, runId, model, notifyUrl, vcsBackend, runtimeMode);
     const usePipeline = pipelineOpts?.pipeline ?? true;  // Pipeline by default
 
     const isEpic = epicTasks && epicTasks.length > 0;
-    log(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${seed.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
+    log(`Spawning ${isEpic ? "epic runner" : usePipeline ? "pipeline" : "worker"} for ${task.id} [${model}] in ${worktreePath}${isEpic ? ` (${epicTasks.length} tasks)` : ""}`);
 
-    const seedType = resolveWorkflowType(seed.type ?? "feature", seed.labels);
+    const taskType = resolveWorkflowType(task.type ?? "feature", task.labels);
     const projectId = await this.resolveProjectId();
     const staleWorktreeEventWriter = this.overrides?.externalProjectId
       ? async (eventType: "worktree-rebased" | "worktree-rebase-failed", payload: Record<string, unknown>) => {
@@ -1437,12 +1437,12 @@ export class Dispatcher {
           this.store,
           projectId,
           runId,
-          seed.id,
+          task.id,
           staleWorktreeEventWriter ? { autoRebase: true, failOnConflict: true, eventWriter: staleWorktreeEventWriter } : { autoRebase: true, failOnConflict: true },
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        log(`[dispatch] Stale worktree check failed for ${seed.id}: ${msg}`);
+        log(`[dispatch] Stale worktree check failed for ${task.id}: ${msg}`);
         // Re-throw so the dispatch fails cleanly rather than spawning a broken worker
         throw err;
       }
@@ -1451,10 +1451,10 @@ export class Dispatcher {
       const { pid } = await spawnWorkerProcess({
         runId,
         projectId: this.overrides?.externalProjectId ?? projectId,
-        seedId: seed.id,
-        seedTitle: seed.title,
-        seedDescription: seed.description,
-        seedComments: seed.comments ?? undefined,
+        taskId: task.id,
+        taskTitle: task.title,
+        taskDescription: task.description,
+        taskComments: task.comments ?? undefined,
         model,
         worktreePath,
         projectPath: this.projectPath,
@@ -1463,23 +1463,23 @@ export class Dispatcher {
         pipeline: usePipeline,
         dbPath: join(this.projectPath, ".foreman", "foreman.db"),
         workflowName: pipelineOpts?.workflowName,
-        seedType,
-        seedLabels: seed.labels,
-        seedPriority: seed.priority,
+        taskType,
+        taskLabels: task.labels,
+        taskPriority: task.priority,
         targetBranch,
         attemptNumber,
         epicTasks,
         epicId,
-        taskId: seed.id,
+        nativeTaskId: task.id,
         taskMeta: {
-          id: seed.id,
-          title: seed.title,
-          description: seed.description ?? '',
-          type: seed.type ?? '',
-          priority: typeof seed.priority === 'number' ? seed.priority : 2,
-          projectReportsDir: getRunReportsDir(this.overrides?.externalProjectId ?? projectId, seed.id, runId),
+          id: task.id,
+          title: task.title,
+          description: task.description ?? '',
+          type: task.type ?? '',
+          priority: typeof task.priority === 'number' ? task.priority : 2,
+          projectReportsDir: getRunReportsDir(this.overrides?.externalProjectId ?? projectId, task.id, runId),
         },
-        githubIssueNumber: seed.githubIssueNumber,
+        githubIssueNumber: task.githubIssueNumber,
         // FR-1: Directory guardrail — verify agent cwd matches expected worktree
         guardrailConfig: {
           expectedCwd: worktreePath,
@@ -1503,30 +1503,30 @@ export class Dispatcher {
   private async resumeAgent(
     model: ModelSelection,
     worktreePath: string,
-    seed: SeedInfo,
+    task: TaskInfo,
     runId: string,
     sdkSessionId: string,
     telemetry?: boolean,
     notifyUrl?: string,
     runtimeMode?: RuntimeMode,
   ): Promise<{ sessionKey: string }> {
-    const resumePrompt = this.buildResumePrompt(seed.id, seed.title);
+    const resumePrompt = this.buildResumePrompt(task.id, task.title);
 
-    const env = buildWorkerEnv(telemetry, seed.id, runId, model, notifyUrl, undefined, runtimeMode);
-    log(`Resuming worker for ${seed.id} [${model}] session=${sdkSessionId}`);
+    const env = buildWorkerEnv(telemetry, task.id, runId, model, notifyUrl, undefined, runtimeMode);
+    log(`Resuming worker for ${task.id} [${model}] session=${sdkSessionId}`);
 
     const projectId = await this.resolveProjectId();
     const { pid } = await spawnWorkerProcess({
       runId,
       projectId: this.overrides?.externalProjectId ?? projectId,
-      seedId: seed.id,
-      seedTitle: seed.title,
+      taskId: task.id,
+      taskTitle: task.title,
       model,
       worktreePath,
       prompt: resumePrompt,
       env,
       resume: sdkSessionId,
-      taskId: seed.id,
+      nativeTaskId: task.id,
       dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
@@ -1538,7 +1538,7 @@ export class Dispatcher {
   // ── Private helpers ───────────────────────────────────────────────────
 
   /**
-   * Return recent stuck runs for a seed within the configured time window.
+   * Return recent stuck runs for a task within the configured time window.
    * Ordered by created_at DESC (most recent first).
    *
    * Note: Runs that have a `cooldown_until` timestamp (either expired or in the
@@ -1546,10 +1546,10 @@ export class Dispatcher {
    * The cooldown state is handled separately by checkCooldownState, which
    * takes precedence over stuck backoff.
    */
-  private async getRecentStuckRuns(seedId: string, projectId: string): Promise<Run[]> {
+  private async getRecentStuckRuns(taskId: string, projectId: string): Promise<Run[]> {
     const cutoff = new Date(Date.now() - STUCK_RETRY_CONFIG.windowMs).toISOString();
     const now = Date.now();
-    const allRuns = await this.getRunsForSeedRecord(seedId, projectId);
+    const allRuns = await this.getRunsForTaskRecord(taskId, projectId);
     return allRuns.filter(
       (r) => {
         if (r.status !== "stuck" || r.created_at < cutoff) return false;
@@ -1562,20 +1562,20 @@ export class Dispatcher {
   }
 
   /**
-   * Check whether a seed is currently in exponential backoff due to recent
-   * stuck runs. Returns `{ inBackoff: false }` if the seed may be dispatched,
+   * Check whether a task is currently in exponential backoff due to recent
+   * stuck runs. Returns `{ inBackoff: false }` if the task may be dispatched,
    * or `{ inBackoff: true, reason }` if it must be skipped this cycle.
    */
   private async checkStuckBackoff(
-    seedId: string,
+    taskId: string,
     projectId: string,
   ): Promise<{ inBackoff: boolean; reason?: string }> {
-    const recentStuck = await this.getRecentStuckRuns(seedId, projectId);
+    const recentStuck = await this.getRecentStuckRuns(taskId, projectId);
     const stuckCount = recentStuck.length;
 
     if (stuckCount === 0) return { inBackoff: false };
 
-    // If the seed has hit the hard limit, block it until the window rolls over
+    // If the task has hit the hard limit, block it until the window rolls over
     if (stuckCount >= STUCK_RETRY_CONFIG.maxRetries) {
       return {
         inBackoff: true,
@@ -1604,24 +1604,24 @@ export class Dispatcher {
   }
 
   /**
-   * Check whether a seed is currently in cooldown state after a retryable failure
-   * with retryAfterCooldown enabled. Returns `{ inCooldown: false }` if the seed
+   * Check whether a task is currently in cooldown state after a retryable failure
+   * with retryAfterCooldown enabled. Returns `{ inCooldown: false }` if the task
    * may be dispatched, or `{ inCooldown: true, reason }` if it must be skipped
    * until the cooldown period expires.
    */
   private async checkCooldownState(
-    seedId: string,
+    taskId: string,
     projectId: string,
   ): Promise<{ inCooldown: boolean; reason?: string }> {
     // Get the task to check if it's in cooldown state
     let task: { id: string; status: string } | null = null;
     try {
       if (this.overrides?.nativeTaskOps) {
-        task = await this.overrides.nativeTaskOps.getTaskByExternalId(seedId)
-          ?? await this.overrides.nativeTaskOps.getTaskById(seedId);
+        task = await this.overrides.nativeTaskOps.getTaskByExternalId(taskId)
+          ?? await this.overrides.nativeTaskOps.getTaskById(taskId);
       } else if (typeof this.store.getTaskByExternalId === "function" && typeof this.store.getTaskById === "function") {
-        task = await this.store.getTaskByExternalId(seedId)
-          ?? await this.store.getTaskById(seedId);
+        task = await this.store.getTaskByExternalId(taskId)
+          ?? await this.store.getTaskById(taskId);
       }
     } catch {
       // Task not found — not in cooldown
@@ -1633,8 +1633,8 @@ export class Dispatcher {
       return { inCooldown: false };
     }
 
-    // Get the most recent run for this seed to check cooldown_until
-    const runs = await this.getRunsForSeedRecord(seedId, projectId);
+    // Get the most recent run for this task to check cooldown_until
+    const runs = await this.getRunsForTaskRecord(taskId, projectId);
     if (runs.length === 0) {
       // No runs found — clear cooldown state
       return { inCooldown: false };
@@ -1650,11 +1650,11 @@ export class Dispatcher {
       // No cooldown_until set — task should not be in cooldown state, clear it
       try {
         if (this.overrides?.nativeTaskOps?.updateTaskStatus) {
-          await this.overrides.nativeTaskOps.updateTaskStatus(seedId, "ready");
+          await this.overrides.nativeTaskOps.updateTaskStatus(taskId, "ready");
         } else if (typeof this.store.updateTaskStatus === "function") {
-          this.store.updateTaskStatus(seedId, "ready");
+          this.store.updateTaskStatus(taskId, "ready");
         }
-        log(`[dispatch] Cleared cooldown state for ${seedId} (no cooldown_until)`);
+        log(`[dispatch] Cleared cooldown state for ${taskId} (no cooldown_until)`);
       } catch {
         // Non-fatal
       }
@@ -1669,11 +1669,11 @@ export class Dispatcher {
       // Cooldown period has expired — reset task to ready and allow dispatch
       try {
         if (this.overrides?.nativeTaskOps?.updateTaskStatus) {
-          await this.overrides.nativeTaskOps.updateTaskStatus(seedId, "ready");
+          await this.overrides.nativeTaskOps.updateTaskStatus(taskId, "ready");
         } else if (typeof this.store.updateTaskStatus === "function") {
-          this.store.updateTaskStatus(seedId, "ready");
+          this.store.updateTaskStatus(taskId, "ready");
         }
-        log(`[dispatch] Cooldown expired for ${seedId} — resetting to ready`);
+        log(`[dispatch] Cooldown expired for ${taskId} — resetting to ready`);
       } catch {
         // Non-fatal
       }
@@ -1713,7 +1713,7 @@ export class Dispatcher {
     // Archive the worktree for this run
     if (run.worktree_path) {
       const worktreeManager = new WorktreeManager();
-      await worktreeManager.removeWorktree(run.project_id, run.seed_id, this.projectPath);
+      await worktreeManager.removeWorktree(run.project_id, run.task_id, this.projectPath);
     }
   }
 
@@ -1736,14 +1736,14 @@ export class Dispatcher {
         // Native-only: uses nativeTaskOps or store methods to get task status
         let taskStatus: string | null = null;
         if (this.overrides?.nativeTaskOps) {
-          const task = await this.overrides.nativeTaskOps.getTaskByExternalId(run.seed_id)
-            ?? await this.overrides.nativeTaskOps.getTaskById(run.seed_id);
+          const task = await this.overrides.nativeTaskOps.getTaskByExternalId(run.task_id)
+            ?? await this.overrides.nativeTaskOps.getTaskById(run.task_id);
           if (task) {
             taskStatus = task.status;
           }
         } else if (typeof this.store.getTaskByExternalId === "function" && typeof this.store.getTaskById === "function") {
-          const task = await this.store.getTaskByExternalId(run.seed_id)
-            ?? await this.store.getTaskById(run.seed_id);
+          const task = await this.store.getTaskByExternalId(run.task_id)
+            ?? await this.store.getTaskById(run.task_id);
           if (task) {
             taskStatus = task.status;
           }
@@ -1759,7 +1759,7 @@ export class Dispatcher {
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        log(`[reconcile] Could not fetch native task for run ${run.id} (${run.seed_id}); leaving active for retry: ${message.slice(0, 200)}`);
+        log(`[reconcile] Could not fetch native task for run ${run.id} (${run.task_id}); leaving active for retry: ${message.slice(0, 200)}`);
       }
     }
 
@@ -1804,10 +1804,10 @@ export class Dispatcher {
    * status or delayed queue writes causing accidental redispatch after merge.
    */
   private async hasMergedOutcomeWithoutLaterReset(
-    seedId: string,
+    taskId: string,
     projectId: string,
   ): Promise<boolean> {
-    const runs = await this.getRunsForSeedRecord(seedId, projectId);
+    const runs = await this.getRunsForTaskRecord(taskId, projectId);
     for (const run of runs) {
       if (run.status === "reset") return false;
       if (run.status === "merged" || run.status === "pr-created") return true;
@@ -1832,13 +1832,13 @@ export class Dispatcher {
 // ── Utility ─────────────────────────────────────────────────────────────
 
 /**
- * Resolve the base branch for a seed's worktree.
+ * Resolve the base branch for a task's worktree.
  *
  * For native-only mode: Native tasks do not have dependency information (unlike
  * Beads issues which support `br dep add`). This function returns undefined
  * (no stacking) for native tasks.
  *
- * For Beads mode (when nativeTaskOps is not configured): If any of the seed's
+ * For Beads mode (when nativeTaskOps is not configured): If any of the task's
  * blocking dependencies have an unmerged local branch (i.e. a `foreman/<depId>`
  * branch exists locally and its latest run is "completed" but not yet "merged"),
  * stack the new worktree on top of that dependency branch instead of the default
@@ -1854,7 +1854,7 @@ export class Dispatcher {
  * Stacking is disabled for native tasks since they lack dependency metadata.
  */
 export async function resolveBaseBranch(
-  _seedId: string,
+  _taskId: string,
   _projectPath: string,
   _runLookup: BaseBranchRunLookup,
   _backend?: Pick<VcsBackend, "branchExists">,
@@ -1870,10 +1870,10 @@ export async function resolveBaseBranch(
 export interface WorkerConfig {
   runId: string;
   projectId: string;
-  seedId: string;
-  seedTitle: string;
-  seedDescription?: string;
-  seedComments?: string;
+  taskId: string;
+  taskTitle: string;
+  taskDescription?: string;
+  taskComments?: string;
   model: string;
   worktreePath: string;
   /** Project root directory (contains .beads/). Used as cwd for br commands. */
@@ -1884,7 +1884,7 @@ export interface WorkerConfig {
   pipeline?: boolean;
   /** Legacy local-store path retained for compatibility only. */
   dbPath?: string;
-  /** Explicit workflow name/path for direct task execution. Overrides seed labels/type. */
+  /** Explicit workflow name/path for direct task execution. Overrides task labels/type. */
   workflowName?: string;
   workflowPath?: string;
   /**
@@ -1892,17 +1892,17 @@ export interface WorkerConfig {
    * Derived from label-based override or bead type field.
    * Used for prompt-loader workflow scoping and spawn strategy selection.
    */
-  seedType?: string;
+  taskType?: string;
   /**
    * Labels from the bead. Forwarded to agent-worker so it can resolve
    * `workflow:<name>` label overrides.
    */
-  seedLabels?: string[];
+  taskLabels?: string[];
   /**
    * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
-  seedPriority?: string;
+  taskPriority?: string;
   /**
    * Override target branch for auto-merge after finalize.
    * When set, the agent worker merges into this branch instead of detectDefaultBranch().
@@ -1914,7 +1914,7 @@ export interface WorkerConfig {
    * at each phase transition for phase-level visibility (REQ-012).
    * Null/undefined when no task ID is available — no-op via optional chaining.
    */
-  taskId?: string | null;
+  nativeTaskId?: string | null;
   /**
    * Ordered list of child tasks for epic execution mode (TRD-2026-007).
    * When set, the worker runs the epic pipeline: taskPhases per child task,
@@ -1929,7 +1929,7 @@ export interface WorkerConfig {
   epicId?: string;
   /**
    * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
-   * Populated from the bead/seed that triggered this run.
+   * Populated from the bead/task that triggered this run.
    */
   taskMeta?: TaskMeta;
   /**
@@ -2048,7 +2048,7 @@ export class DetachedSpawnStrategy implements SpawnStrategy {
     await outFd.close();
     await errFd.close();
 
-    log(`  Worker pid=${child.pid} for ${config.seedId}`);
+    log(`  Worker pid=${child.pid} for ${config.taskId}`);
     return { pid: child.pid ?? null };
   }
 }
@@ -2070,7 +2070,7 @@ export async function spawnWorkerProcess(config: WorkerConfig): Promise<SpawnRes
  */
 export function buildWorkerEnv(
   telemetry: boolean | undefined,
-  seedId: string,
+  taskId: string,
   runId: string,
   model: string,
   notifyUrl?: string,
@@ -2113,7 +2113,7 @@ export function buildWorkerEnv(
     env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
     env.OTEL_RESOURCE_ATTRIBUTES = [
       process.env.OTEL_RESOURCE_ATTRIBUTES,
-      `foreman.seed_id=${seedId}`,
+      `foreman.task_id=${taskId}`,
       `foreman.run_id=${runId}`,
       `foreman.model=${model}`,
     ].filter(Boolean).join(",");
@@ -2149,11 +2149,11 @@ function extractSessionId(sessionKey: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function seedToInfo(
-  seed: Issue,
+function taskToInfo(
+  task: Issue,
   detail?: { description?: string | null; notes?: string | null; labels?: string[] },
   beadComments?: string | null,
-): SeedInfo {
+): TaskInfo {
   // Combine notes (from br show) and comments (from br comments) into a single
   // "Additional Context" block so agents receive all annotated context.
   const notesSection = detail?.notes ?? undefined;
@@ -2166,13 +2166,13 @@ function seedToInfo(
   }
 
   return {
-    id: seed.id,
-    title: seed.title,
-    description: detail?.description ?? seed.description ?? undefined,
+    id: task.id,
+    title: task.title,
+    description: detail?.description ?? task.description ?? undefined,
     // Convert numeric priority (0-4) to string with "P" prefix (e.g., 0 → "P0", 2 → "P2")
-    priority: typeof seed.priority === "number" ? `P${seed.priority}` : seed.priority,
-    type: seed.type,
-    labels: detail?.labels ?? seed.labels,
+    priority: typeof task.priority === "number" ? `P${task.priority}` : task.priority,
+    type: task.type,
+    labels: detail?.labels ?? task.labels,
     comments: combinedComments,
   };
 }

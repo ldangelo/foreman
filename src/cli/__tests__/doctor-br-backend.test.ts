@@ -3,7 +3,7 @@
  *
  * Verifies:
  * - Doctor checks for br binary and bv binary (and git)
- * - Doctor does NOT check for the legacy sd (seeds) binary
+ * - Doctor does NOT check for the legacy sd (tasks) binary
  * - checkSystem() returns exactly 5 results (br + bv + git + git-town checks)
  * - Doctor.checkBrRecoveryArtifacts(): detects and optionally removes .br_recovery/ artifacts
  */
@@ -294,7 +294,7 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
     store.close();
   });
 
-  it("checkSystem() does NOT include legacy sd (seeds) check", async () => {
+  it("checkSystem() does NOT include legacy sd (tasks) check", async () => {
     const { Doctor } = await import("../../orchestrator/doctor.js");
     const { ForemanStore } = await import("../../lib/store.js");
 
@@ -306,7 +306,7 @@ describe("TRD-020: Doctor.checkSystem() checks (br backend only)", () => {
     const results = await doctor.checkSystem();
     const names = results.map((r) => r.name);
 
-    expect(names.some((n) => n.toLowerCase().includes("sd (seeds)"))).toBe(false);
+    expect(names.some((n) => n.toLowerCase().includes("sd (tasks)"))).toBe(false);
     store.close();
   });
 

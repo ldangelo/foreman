@@ -17,8 +17,8 @@ import { buildSessionLogPrompt, type SessionLogData } from "../agent-worker-sess
 
 function makeSessionLogData(overrides?: Partial<SessionLogData>): SessionLogData {
   return {
-    seedId: "bd-abc1",
-    seedTitle: "Add rate limiting to API",
+    taskId: "bd-abc1",
+    taskTitle: "Add rate limiting to API",
     status: "completed",
     phases: "explore→dev→qa→review→finalize",
     costUsd: 3.1415,
@@ -45,13 +45,13 @@ describe("buildSessionLogPrompt()", () => {
     expect(prompt).toContain("Save the session log");
   });
 
-  it("embeds the seed ID", () => {
-    const prompt = buildSessionLogPrompt(makeSessionLogData({ seedId: "bd-xyz9" }));
+  it("embeds the task ID", () => {
+    const prompt = buildSessionLogPrompt(makeSessionLogData({ taskId: "bd-xyz9" }));
     expect(prompt).toContain("bd-xyz9");
   });
 
-  it("embeds the seed title", () => {
-    const data = makeSessionLogData({ seedTitle: "Implement webhook delivery" });
+  it("embeds the task title", () => {
+    const data = makeSessionLogData({ taskTitle: "Implement webhook delivery" });
     const prompt = buildSessionLogPrompt(data);
     expect(prompt).toContain("Implement webhook delivery");
   });
@@ -169,8 +169,8 @@ describe("SessionLogData — required fields", () => {
   it("accepts all required fields with no TypeScript error", () => {
     // This test is a compile-time guard: if SessionLogData changes, this breaks
     const data: SessionLogData = {
-      seedId: "bd-t01",
-      seedTitle: "Test task",
+      taskId: "bd-t01",
+      taskTitle: "Test task",
       status: "completed",
       phases: "explore→dev→qa→review→finalize",
       costUsd: 0.5,
@@ -180,7 +180,7 @@ describe("SessionLogData — required fields", () => {
       devRetries: 0,
       qaVerdict: "pass",
     };
-    expect(data.seedId).toBe("bd-t01");
+    expect(data.taskId).toBe("bd-t01");
   });
 
   it("status union accepts 'completed' | 'failed' | 'stuck'", () => {

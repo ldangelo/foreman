@@ -56,7 +56,7 @@ Git status after report write:
     {
       "id": "criterion-4",
       "status": "satisfied",
-      "evidence": "dedupe_state checks whether the projected task exists; if dedupe exists without task it dispatches task.create with recovered: true; test pre-seeds IntegrationCommandIngested without TaskCreated and verifies retry creates the task."
+      "evidence": "dedupe_state checks whether the projected task exists; if dedupe exists without task it dispatches task.create with recovered: true; test pre-tasks IntegrationCommandIngested without TaskCreated and verifies retry creates the task."
     },
     {
       "id": "criterion-5",

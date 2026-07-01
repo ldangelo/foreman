@@ -54,7 +54,7 @@ export interface ProjectRow {
 export interface RunRow {
   id: string;
   project_id: string;
-  seed_id: string;
+  task_id: string;
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
@@ -236,7 +236,7 @@ function runRowSelectSql(): string {
     SELECT
       id,
       project_id,
-      bead_id AS seed_id,
+      bead_id AS task_id,
       COALESCE(agent_type, 'claude-code') AS agent_type,
       session_key,
       worktree_path,
@@ -282,7 +282,7 @@ export interface MergeQueueEntryRow {
   id: number;
   project_id: string;
   branch_name: string;
-  seed_id: string;
+  task_id: string;
   run_id: string;
   operation: MergeQueueOperation;
   agent_name: string | null;
@@ -1208,7 +1208,7 @@ export class PostgresAdapter {
      */
   async createRun(
     projectId: string,
-    seedId: string,
+    taskId: string,
     agentType: string,
     options?: {
       sessionKey?: string;
@@ -1239,7 +1239,7 @@ export class PostgresAdapter {
        RETURNING
          id,
          project_id,
-         bead_id AS seed_id,
+         bead_id AS task_id,
          agent_type,
          session_key,
          worktree_path,
@@ -1252,9 +1252,9 @@ export class PostgresAdapter {
          merge_strategy`,
       [
         projectId,
-        seedId,
-        seedId,
-        options?.worktreePath ?? `foreman/${seedId}`,
+        taskId,
+        taskId,
+        options?.worktreePath ?? `foreman/${taskId}`,
         agentType,
         options?.sessionKey ?? null,
         options?.worktreePath ?? null,
@@ -1374,15 +1374,15 @@ export class PostgresAdapter {
   }
 
   /**
-   * Check if a seed has an active or pending run.
+   * Check if a task has an active or pending run.
      */
   async hasActiveOrPendingRun(
     projectId: string,
-    seedId: string
+    taskId: string
   ): Promise<boolean> {
     const rows = await query<{ found: number }>(
       `SELECT 1 as found FROM runs WHERE project_id = $1 AND bead_id = $2 AND status IN ('pending','running','success') LIMIT 1`,
-      [projectId, seedId],
+      [projectId, taskId],
     );
     return rows.length > 0;
   }
@@ -1626,7 +1626,7 @@ export class PostgresAdapter {
   async enqueueMergeQueueEntry(data: {
     projectId: string;
     branchName: string;
-    seedId: string;
+    taskId: string;
     runId: string;
     operation?: MergeQueueOperation;
     agentName?: string | null;
@@ -1634,7 +1634,7 @@ export class PostgresAdapter {
   }): Promise<MergeQueueEntryRow> {
     const rows = await query<MergeQueueEntryRow>(
       `INSERT INTO merge_queue (
-         project_id, branch_name, seed_id, run_id, operation, agent_name, files_modified
+         project_id, branch_name, task_id, run_id, operation, agent_name, files_modified
        )
        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
        ON CONFLICT (project_id, branch_name, run_id) DO UPDATE
@@ -1643,7 +1643,7 @@ export class PostgresAdapter {
       [
         data.projectId,
         data.branchName,
-        data.seedId,
+        data.taskId,
         data.runId,
         data.operation ?? "auto_merge",
         data.agentName ?? null,
@@ -1701,13 +1701,13 @@ export class PostgresAdapter {
     await execute(`DELETE FROM merge_queue WHERE project_id = $1 AND id = $2`, [projectId, id]);
   }
 
-  async resetMergeQueueForRetry(projectId: string, seedId: string): Promise<boolean> {
+  async resetMergeQueueForRetry(projectId: string, taskId: string): Promise<boolean> {
     const rows = await query<{ id: number }>(
       `UPDATE merge_queue
        SET status = 'pending', error = NULL, started_at = NULL, last_attempted_at = now()
-       WHERE project_id = $1 AND seed_id = $2 AND status IN ('failed','conflict','merging')
+       WHERE project_id = $1 AND task_id = $2 AND status IN ('failed','conflict','merging')
        RETURNING id`,
-      [projectId, seedId],
+      [projectId, taskId],
     );
     return rows.length > 0;
   }
@@ -1733,16 +1733,16 @@ export class PostgresAdapter {
     return rows.length > 0;
   }
 
-  async listMissingFromMergeQueue(projectId: string): Promise<Array<{ run_id: string; seed_id: string }>> {
-    return query<{ run_id: string; seed_id: string }>(
-      `SELECT r.id AS run_id, r.bead_id AS seed_id
+  async listMissingFromMergeQueue(projectId: string): Promise<Array<{ run_id: string; task_id: string }>> {
+    return query<{ run_id: string; task_id: string }>(
+      `SELECT r.id AS run_id, r.bead_id AS task_id
        FROM runs r
        WHERE r.project_id = $1 AND r.status = 'success'
          AND COALESCE(r.merge_strategy, 'auto') <> 'none'
          AND NOT EXISTS (
            SELECT 1 FROM merge_queue mq
            WHERE mq.project_id = $1
-             AND (mq.run_id = r.id OR mq.seed_id = r.bead_id)
+             AND (mq.run_id = r.id OR mq.task_id = r.bead_id)
          )
        ORDER BY r.created_at ASC`,
       [projectId],

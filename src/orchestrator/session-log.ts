@@ -1,5 +1,5 @@
 /**
- * Session log generation for pipeline-executed seeds.
+ * Session log generation for pipeline-executed tasks.
  *
  * The /ensemble:sessionlog skill is only available in interactive Claude Code
  * (human-invoked), not through the Anthropic SDK's query() method. This module
@@ -60,12 +60,12 @@ export interface PhaseRecord {
  * Populated incrementally by runPipeline() as each phase completes.
  */
 export interface SessionLogData {
-  /** Seed ID (e.g., "bd-p4y7") */
-  seedId: string;
-  /** Seed title */
-  seedTitle: string;
-  /** Seed description */
-  seedDescription: string;
+  /** Task ID (e.g., "bd-p4y7") */
+  taskId: string;
+  /** Task title */
+  taskTitle: string;
+  /** Task description */
+  taskDescription: string;
   /** Git branch name (e.g., "foreman/bd-p4y7") */
   branchName: string;
   /** Optional project name (basename of project directory) */
@@ -120,9 +120,9 @@ export function generateSessionLogContent(data: SessionLogData, date: Date): str
   // the caller's preferred date representation if this ever matters.
   const isoDate = date.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
   const {
-    seedId,
-    seedTitle,
-    seedDescription,
+    taskId,
+    taskTitle,
+    taskDescription,
     branchName,
     projectName,
     phases,
@@ -145,22 +145,22 @@ export function generateSessionLogContent(data: SessionLogData, date: Date): str
   }
   lines.push(`branch: ${branchName}`);
   lines.push(`base_branch: main`);
-  lines.push(`seed: ${seedId}`);
+  lines.push(`task: ${taskId}`);
   lines.push("---");
   lines.push("");
 
   // ── Title ────────────────────────────────────────────────────────────────
-  lines.push(`# Session Log: ${seedTitle}`);
+  lines.push(`# Session Log: ${taskTitle}`);
   lines.push("");
 
   // ── Summary ──────────────────────────────────────────────────────────────
   lines.push("## Summary");
   lines.push("");
   lines.push(
-    `Pipeline run for **${seedId}** — ${seedTitle}.`,
+    `Pipeline run for **${taskId}** — ${taskTitle}.`,
   );
 
-  const desc = seedDescription.trim();
+  const desc = taskDescription.trim();
   if (desc && desc !== "(no description provided)") {
     lines.push("");
     const truncated = desc.length > 200 ? `${desc.slice(0, 200)}…` : desc;
@@ -253,7 +253,7 @@ export function generateSessionLogContent(data: SessionLogData, date: Date): str
  * Write a session log to the SessionLogs/ directory.
  *
  * Called just before finalize() in runPipeline() so that `git add -A` picks
- * up the file and includes it in the seed's commit — replacing what the
+ * up the file and includes it in the task's commit — replacing what the
  * human-only /ensemble:sessionlog skill would otherwise produce.
  *
  * @param basePath  Base directory where SessionLogs/ is created (typically

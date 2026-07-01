@@ -48,12 +48,12 @@ function extractReportDir(prompt: string): string | null {
   return null;
 }
 
-function buildArtifactBody(phase: string, seedId: string): string {
+function buildArtifactBody(phase: string, taskId: string): string {
   if (phase === "documentation") {
     return [
       "# Documentation",
       "",
-      `Seed: ${seedId}`,
+      `Task: ${taskId}`,
       "## Verdict: PASS",
       "",
       "## Documentation Updated",
@@ -66,7 +66,7 @@ function buildArtifactBody(phase: string, seedId: string): string {
     return [
       "# QA",
       "",
-      `Seed: ${seedId}`,
+      `Task: ${taskId}`,
       "## Verdict: PASS",
       "",
       "## Test Evidence",
@@ -80,7 +80,7 @@ function buildArtifactBody(phase: string, seedId: string): string {
     return [
       "# Review",
       "",
-      `Seed: ${seedId}`,
+      `Task: ${taskId}`,
       "## Verdict: PASS",
       "",
       "## Issues",
@@ -93,7 +93,7 @@ function buildArtifactBody(phase: string, seedId: string): string {
     return [
       "# Finalize",
       "",
-      `Seed: ${seedId}`,
+      `Task: ${taskId}`,
       "## Verdict: PASS",
       "## Test Validation: SKIPPED",
       "## Target Integration: SKIPPED",
@@ -105,7 +105,7 @@ function buildArtifactBody(phase: string, seedId: string): string {
     return [
       "# Explorer",
       "",
-      `Seed: ${seedId}`,
+      `Task: ${taskId}`,
       "## Verdict: PASS",
       "",
       "Smoke test noop.",
@@ -116,7 +116,7 @@ function buildArtifactBody(phase: string, seedId: string): string {
   return [
     `# ${phase}`,
     "",
-    `Seed: ${seedId}`,
+    `Task: ${taskId}`,
     "## Verdict: PASS",
     "",
   ].join("\n");
@@ -144,7 +144,7 @@ function applyScenario(cwd: string, scenario: DeterministicScenario): string[] {
   return [file];
 }
 
-function commitChanges(cwd: string, seedId: string): void {
+function commitChanges(cwd: string, taskId: string): void {
   execFileSync("git", ["add", "-A"], { cwd, stdio: "pipe" });
   const status = execFileSync("git", ["status", "--short"], {
     cwd,
@@ -152,7 +152,7 @@ function commitChanges(cwd: string, seedId: string): void {
     stdio: "pipe",
   }).trim();
   if (!status) return;
-  execFileSync("git", ["commit", "-m", `Deterministic smoke finalize (${seedId})`], {
+  execFileSync("git", ["commit", "-m", `Deterministic smoke finalize (${taskId})`], {
     cwd,
     stdio: "pipe",
     env: {
@@ -168,7 +168,7 @@ function commitChanges(cwd: string, seedId: string): void {
 export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<PiRunResult> {
   const { context, cwd, onTurnEnd } = opts;
   const phase = context.phaseName;
-  const scenario = parseScenario(context.seedDescription);
+  const scenario = parseScenario(context.taskDescription);
   const artifact = PHASE_ARTIFACTS[phase] ?? `${phase.toUpperCase()}_REPORT.md`;
   const filesChanged: string[] = [];
   const reportDir = extractReportDir(opts.prompt);
@@ -181,17 +181,17 @@ export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<P
     if (!filesChanged.length && scenario.kind) {
       filesChanged.push(...applyScenario(cwd, scenario));
     }
-    commitChanges(cwd, context.seedId);
+    commitChanges(cwd, context.taskId);
   }
 
-  const artifactBody = buildArtifactBody(phase, context.seedId);
+  const artifactBody = buildArtifactBody(phase, context.taskId);
   writeArtifact(cwd, artifact, artifactBody);
   if (reportDir) {
     writeArtifact(cwd, join(reportDir, artifact), artifactBody);
   }
   appendFileSync(
     join(cwd, "RUN_LOG.md"),
-    `${new Date().toISOString()} ${phase} ${context.seedId}\n`,
+    `${new Date().toISOString()} ${phase} ${context.taskId}\n`,
     "utf-8",
   );
 

@@ -89,9 +89,9 @@ src/lib/vcs/types.ts                     (+githubIssueNumber to FinalizeTemplate
 src/lib/vcs/git-backend.ts               (+Fixes #{issueNumber} suffix to commit message)
 src/lib/vcs/jujutsu-backend.ts           (+Fixes #{issueNumber} suffix to jj describe)
 src/orchestrator/agent-worker.ts         (+githubIssueNumber in WorkerConfig +executePipeline)
-src/orchestrator/dispatcher.ts           (+githubIssueNumber in WorkerConfig +SeedInfo +nativeTaskToIssue)
+src/orchestrator/dispatcher.ts           (+githubIssueNumber in WorkerConfig +TaskInfo +nativeTaskToIssue)
 src/orchestrator/pipeline-executor.ts    (+githubIssueNumber in EpicTask +PipelineRunConfig +getFinalizeCommands)
-src/orchestrator/types.ts                (+githubIssueNumber in SeedInfo)
+src/orchestrator/types.ts                (+githubIssueNumber in TaskInfo)
 ```
 
 ## Test Results

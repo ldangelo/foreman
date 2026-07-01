@@ -56,7 +56,7 @@ import { checkBranchMismatch } from "../../cli/commands/run.js";
 function makeIssue(id: string, status: string = "in_progress"): Issue {
   return {
     id,
-    title: `Seed ${id}`,
+    title: `Task ${id}`,
     type: "feature",
     priority: "2",
     status,
@@ -118,10 +118,10 @@ describe("checkBranchMismatch", () => {
   });
 
   it("returns false when in-progress beads have no branch: labels", async () => {
-    const beads = [makeIssue("seed-001"), makeIssue("seed-002")];
+    const beads = [makeIssue("task-001"), makeIssue("task-002")];
     const taskClient = makeTaskClient(beads, {
-      "seed-001": ["workflow:smoke"],
-      "seed-002": [],
+      "task-001": ["workflow:smoke"],
+      "task-002": [],
     });
     const result = await checkBranchMismatch(taskClient, "/tmp");
     expect(result).toBe(false);
@@ -130,8 +130,8 @@ describe("checkBranchMismatch", () => {
 
   it("returns false when branch: label matches current branch", async () => {
     mockGetCurrentBranch.mockResolvedValue("installer");
-    const beads = [makeIssue("seed-001")];
-    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
+    const beads = [makeIssue("task-001")];
+    const taskClient = makeTaskClient(beads, { "task-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
     expect(result).toBe(false);
     expect(createInterface).not.toHaveBeenCalled();
@@ -139,24 +139,24 @@ describe("checkBranchMismatch", () => {
 
   it("does not prompt when the current branch is a decorated jujutsu name matching the target", async () => {
     mockGetCurrentBranch.mockResolvedValue("dev*");
-    const beads = [makeIssue("seed-001")];
-    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:dev"] });
+    const beads = [makeIssue("task-001")];
+    const taskClient = makeTaskClient(beads, { "task-001": ["branch:dev"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
     expect(result).toBe(false);
     expect(createInterface).not.toHaveBeenCalled();
   });
 
   it("prompts when branch: label differs from current branch", async () => {
-    const beads = [makeIssue("seed-001")];
-    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
+    const beads = [makeIssue("task-001")];
+    const taskClient = makeTaskClient(beads, { "task-001": ["branch:installer"] });
     await checkBranchMismatch(taskClient, "/tmp");
     expect(createInterface).toHaveBeenCalled();
   });
 
   it("checks out the target branch when user says yes", async () => {
     mockReadlineAnswer("y");
-    const beads = [makeIssue("seed-001")];
-    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
+    const beads = [makeIssue("task-001")];
+    const taskClient = makeTaskClient(beads, { "task-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
     expect(mockCheckoutBranch).toHaveBeenCalledWith("/tmp", "installer");
     expect(result).toBe(false);
@@ -164,8 +164,8 @@ describe("checkBranchMismatch", () => {
 
   it("checks out the target branch when user presses enter (default yes)", async () => {
     mockReadlineAnswer("");
-    const beads = [makeIssue("seed-001")];
-    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
+    const beads = [makeIssue("task-001")];
+    const taskClient = makeTaskClient(beads, { "task-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
     expect(mockCheckoutBranch).toHaveBeenCalledWith("/tmp", "installer");
     expect(result).toBe(false);
@@ -173,18 +173,18 @@ describe("checkBranchMismatch", () => {
 
   it("returns true (abort) when user says no", async () => {
     mockReadlineAnswer("n");
-    const beads = [makeIssue("seed-001")];
-    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
+    const beads = [makeIssue("task-001")];
+    const taskClient = makeTaskClient(beads, { "task-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
     expect(mockCheckoutBranch).not.toHaveBeenCalled();
     expect(result).toBe(true);
   });
 
   it("groups multiple beads by target branch", async () => {
-    const beads = [makeIssue("seed-001"), makeIssue("seed-002")];
+    const beads = [makeIssue("task-001"), makeIssue("task-002")];
     const taskClient = makeTaskClient(beads, {
-      "seed-001": ["branch:installer"],
-      "seed-002": ["branch:installer"],
+      "task-001": ["branch:installer"],
+      "task-002": ["branch:installer"],
     });
     mockReadlineAnswer("y");
     const result = await checkBranchMismatch(taskClient, "/tmp");
@@ -194,8 +194,8 @@ describe("checkBranchMismatch", () => {
 
   it("returns false when getCurrentBranch fails", async () => {
     mockGetCurrentBranch.mockRejectedValue(new Error("vcs error"));
-    const beads = [makeIssue("seed-001")];
-    const taskClient = makeTaskClient(beads, { "seed-001": ["branch:installer"] });
+    const beads = [makeIssue("task-001")];
+    const taskClient = makeTaskClient(beads, { "task-001": ["branch:installer"] });
     const result = await checkBranchMismatch(taskClient, "/tmp");
     expect(result).toBe(false);
   });

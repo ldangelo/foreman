@@ -323,7 +323,7 @@ Each phase emits detailed observability traces to the worktree:
 {worktree}/
 └── docs/
     └── reports/
-        └── {seedId}/
+        └── {taskId}/
             ├── EXPLORER_TRACE.md   # Markdown trace + JSON
             ├── DEVELOPER_TRACE.md
             ├── QA_TRACE.md

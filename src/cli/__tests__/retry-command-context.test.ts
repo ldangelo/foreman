@@ -36,7 +36,7 @@ const mockTrpcClient = {
 
 const mockLocalStore = {
   getProjectByPath: vi.fn().mockResolvedValue({ id: "local-project", path: "/canonical/project" }),
-  getRunsForSeed: vi.fn().mockResolvedValue([]),
+  getRunsForTask: vi.fn().mockResolvedValue([]),
   updateRun: vi.fn().mockResolvedValue(undefined),
   logEvent: vi.fn().mockResolvedValue(undefined),
   close: vi.fn(),
@@ -44,7 +44,7 @@ const mockLocalStore = {
 
 const mockRegisteredStore = {
   getProjectByPath: vi.fn().mockResolvedValue({ id: "registered-project", path: "/canonical/project" }),
-  getRunsForSeed: vi.fn().mockResolvedValue([]),
+  getRunsForTask: vi.fn().mockResolvedValue([]),
   updateRun: vi.fn().mockResolvedValue(undefined),
   logEvent: vi.fn().mockResolvedValue(undefined),
   close: vi.fn(),

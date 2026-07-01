@@ -153,7 +153,7 @@ foreman run --task task-142
   │
   ├─► Extract GitHub issue number from external_id
   │
-  ├─► WorktreeManager.create(projectId, seedId, branchName) → branch "foreman/task-142"
+  ├─► WorktreeManager.create(projectId, taskId, branchName) → branch "foreman/task-142"
   │
   ├─► GhCli.api("POST /repos/{owner}/{repo}/issues/{number}/links", { ... })
   │    OR: branch naming convention "foreman/{issue_number}" auto-links

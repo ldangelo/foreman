@@ -39,8 +39,8 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
     async getCurrentBranch(): Promise<string> { return "main"; }
     async detectDefaultBranch(): Promise<string> { return "main"; }
     async branchExists(): Promise<boolean> { return false; }
-    async createWorkspace(_repoPath: string, seedId: string): Promise<{ workspacePath: string; branchName: string }> {
-      return { workspacePath: `/tmp/worktrees/${seedId}`, branchName: `foreman/${seedId}` };
+    async createWorkspace(_repoPath: string, taskId: string): Promise<{ workspacePath: string; branchName: string }> {
+      return { workspacePath: `/tmp/worktrees/${taskId}`, branchName: `foreman/${taskId}` };
     }
   },
 }));
@@ -102,9 +102,9 @@ vi.mock("../../lib/beads-rust.js", () => ({
 // Mock task-ordering — returns 3 ordered tasks by default
 vi.mock("../task-ordering.js", () => ({
   getTaskOrder: vi.fn().mockResolvedValue([
-    { seedId: "child-1", seedTitle: "Child Task 1" },
-    { seedId: "child-2", seedTitle: "Child Task 2" },
-    { seedId: "child-3", seedTitle: "Child Task 3" },
+    { taskId: "child-1", taskTitle: "Child Task 1" },
+    { taskId: "child-2", taskTitle: "Child Task 2" },
+    { taskId: "child-3", taskTitle: "Child Task 3" },
   ] as EpicTask[]),
 }));
 
@@ -155,7 +155,7 @@ function makeStore(): ForemanStore {
     getRunsByStatus: vi.fn().mockReturnValue([]),
     getRunsByStatuses: vi.fn().mockReturnValue([]),
     getRunsByStatusesSince: vi.fn().mockReturnValue([]),
-    getRunsForSeed: vi.fn().mockReturnValue([]),
+    getRunsForTask: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
     hasNativeTasks: vi.fn().mockReturnValue(true),
     getReadyTasks: vi.fn(() => currentReadyIssues.map(nativeTaskFromIssue)),
@@ -171,7 +171,7 @@ function makeStore(): ForemanStore {
   } as unknown as ForemanStore;
 }
 
-function makeSeedsClient(overrides: Partial<ITaskClient> = {}): ITaskClient {
+function makeTasksClient(overrides: Partial<ITaskClient> = {}): ITaskClient {
   const ready = overrides.ready as unknown as { getMockImplementation?: () => (() => Promise<Issue[]>) | undefined } | undefined;
   const impl = ready?.getMockImplementation?.();
   if (impl) {
@@ -196,7 +196,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
 
   it("epic task dispatches as a single-agent task without child expansion", async () => {
     const epicIssue = makeIssue("epic-1", "epic");
-    const seedsClient = makeSeedsClient({
+    const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([epicIssue]),
       show: vi.fn().mockResolvedValue({
         ...epicIssue,
@@ -204,7 +204,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
       }),
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
 
     // Spy on spawnAgent to capture the call args without actually spawning
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
@@ -214,7 +214,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
 
     // Should have dispatched (not skipped)
     expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0].seedId).toBe("epic-1");
+    expect(result.dispatched[0].taskId).toBe("epic-1");
     expect(result.skipped).toHaveLength(0);
 
     // Native tasks do not expose child expansion to the worker.
@@ -229,12 +229,12 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
 
   it("task bead dispatches via standard path without epicTasks", async () => {
     const taskIssue = makeIssue("task-1", "task");
-    const seedsClient = makeSeedsClient({
+    const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([taskIssue]),
       show: vi.fn().mockResolvedValue({ ...taskIssue, description: "do the thing" }),
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
 
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
@@ -242,7 +242,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     const result = await dispatcher.dispatch({ pipeline: true });
 
     expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0].seedId).toBe("task-1");
+    expect(result.dispatched[0].taskId).toBe("task-1");
 
     // spawnAgent should have been called WITHOUT epicTasks
     expect(spawnSpy).toHaveBeenCalledOnce();
@@ -257,7 +257,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
   it("epic task with 0 children still dispatches as a normal task", async () => {
     const epicIssue = makeIssue("epic-empty", "epic");
     const closeFn = vi.fn().mockResolvedValue(undefined);
-    const seedsClient = makeSeedsClient({
+    const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([epicIssue]),
       show: vi.fn().mockResolvedValue({
         ...epicIssue,
@@ -266,7 +266,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
       close: closeFn,
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
 
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
@@ -283,7 +283,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     const epicIssue = makeIssue("epic-big", "epic");
     const taskIssue = makeIssue("task-1", "task");
 
-    const seedsClient = makeSeedsClient({
+    const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([epicIssue, taskIssue]),
       show: vi.fn().mockImplementation(async (id: string) => {
         if (id === "epic-big") {
@@ -296,7 +296,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
       }),
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
 
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
@@ -305,8 +305,8 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
 
     // Both should be dispatched — the epic counts as 1 slot, leaving room for the task
     expect(result.dispatched).toHaveLength(2);
-    expect(result.dispatched.map(d => d.seedId)).toContain("epic-big");
-    expect(result.dispatched.map(d => d.seedId)).toContain("task-1");
+    expect(result.dispatched.map(d => d.taskId)).toContain("epic-big");
+    expect(result.dispatched.map(d => d.taskId)).toContain("task-1");
 
     // spawnAgent called twice
     expect(spawnSpy).toHaveBeenCalledTimes(2);
@@ -323,7 +323,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
 
   it("feature task with children dispatches under native task semantics", async () => {
     const featureIssue = makeIssue("feat-1", "feature");
-    const seedsClient = makeSeedsClient({
+    const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([featureIssue]),
       show: vi.fn().mockResolvedValue({
         ...featureIssue,
@@ -332,7 +332,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
       }),
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
 
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
@@ -361,14 +361,14 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
       approved_at: null,
       closed_at: null,
     };
-    const seedsClient = makeSeedsClient();
+    const tasksClient = makeTasksClient();
     const store = {
       ...makeStore(),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([featureIssue]),
       claimTask: vi.fn().mockReturnValue(true),
     } as unknown as ForemanStore;
-    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
 
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
@@ -376,7 +376,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     const result = await dispatcher.dispatch({ pipeline: true });
 
     expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0].seedId).toBe("feat-native");
+    expect(result.dispatched[0].taskId).toBe("feat-native");
     expect(result.skipped).toHaveLength(0);
     expect(spawnSpy).toHaveBeenCalledOnce();
   });
@@ -387,7 +387,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
 
     const epicIssue = makeIssue("epic-containers", "epic");
     const closeFn = vi.fn().mockResolvedValue(undefined);
-    const seedsClient = makeSeedsClient({
+    const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([epicIssue]),
       show: vi.fn().mockResolvedValue({
         ...epicIssue,
@@ -396,7 +396,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
       close: closeFn,
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(seedsClient, store, "/tmp/project");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
 

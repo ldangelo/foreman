@@ -55,8 +55,8 @@ describe('taskMeta propagation (TRD-010)', () => {
       const configWith = {
         runId: 'run-1',
         projectId: 'proj-1',
-        seedId: 'bd-001',
-        seedTitle: 'Fix login timeout',
+        taskId: 'bd-001',
+        taskTitle: 'Fix login timeout',
         model: 'sonnet',
         worktreePath: '/tmp',
         prompt: '',
@@ -76,8 +76,8 @@ describe('taskMeta propagation (TRD-010)', () => {
       const configWithout = {
         runId: 'run-1',
         projectId: 'proj-1',
-        seedId: 'bd-001',
-        seedTitle: 'Legacy task',
+        taskId: 'bd-001',
+        taskTitle: 'Legacy task',
         model: 'sonnet',
         worktreePath: '/tmp',
         prompt: '',

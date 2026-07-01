@@ -28,7 +28,7 @@ The current Foreman merge pipeline has the following deficiencies:
 
 3. **Unsafe branch deletion.** `git.ts:deleteBranch()` unconditionally uses `git branch -D` (force delete), risking loss of unmerged work. There is no merge-status check before deletion.
 
-4. **Incomplete pre-merge state handling.** `mergeWorktree()` stashes uncommitted changes but does not auto-commit known state files (`.seeds/`, `.foreman/`). Uncommitted state file changes cause merge failures or are lost.
+4. **Incomplete pre-merge state handling.** `mergeWorktree()` stashes uncommitted changes but does not auto-commit known state files (`.tasks/`, `.foreman/`). Uncommitted state file changes cause merge failures or are lost.
 
 5. **No dedicated worktree management.** Worktree cleanup is buried in `doctor --fix` and `reset` commands. Users have no first-class way to inspect or clean worktrees.
 
@@ -36,7 +36,7 @@ The current Foreman merge pipeline has the following deficiencies:
 
 7. **No dry-run mode.** Users cannot preview what a merge would do before executing it.
 
-8. **No seed preservation.** When agent branches are not merged (e.g., coordinator/lead branches), seed status changes from those branches are lost.
+8. **No task preservation.** When agent branches are not merged (e.g., coordinator/lead branches), task status changes from those branches are lost.
 
 9. **Untracked file conflicts.** Untracked files in the working tree that overlap with incoming merge files cause git errors and aborts with no recovery.
 
@@ -277,18 +277,18 @@ Each conflicted file independently progresses through the tier cascade. A single
 **Description:** Before any merge attempt, detect and auto-commit uncommitted changes in known state file paths to prevent merge failures caused by dirty state.
 
 **State File Paths:**
-- `.seeds/**` -- Seed/task tracking data
+- `.tasks/**` -- Task/task tracking data
 - `.foreman/**` -- Foreman configuration and reports
 
 **Behavior:**
-1. Before `mergeWorktree()` is called, check for uncommitted changes in state file paths using `git status --porcelain -- .seeds/ .foreman/`
-2. If changes exist, stage them with `git add .seeds/ .foreman/`
+1. Before `mergeWorktree()` is called, check for uncommitted changes in state file paths using `git status --porcelain -- .tasks/ .foreman/`
+2. If changes exist, stage them with `git add .tasks/ .foreman/`
 3. Commit with message: `chore: auto-commit state files before merge`
 4. If no changes exist, skip (no empty commits)
 5. Apply to both the target branch and the feature branch before merge
 
 **Acceptance Criteria:**
-- AC-2.1: Uncommitted `.seeds/` changes are auto-committed before merge attempt
+- AC-2.1: Uncommitted `.tasks/` changes are auto-committed before merge attempt
 - AC-2.2: Uncommitted `.foreman/` changes are auto-committed before merge attempt
 - AC-2.3: No commit is created when state files have no changes
 - AC-2.4: Auto-commit uses a descriptive commit message distinguishable from agent commits
@@ -306,7 +306,7 @@ Each conflicted file independently progresses through the tier cascade. A single
 CREATE TABLE IF NOT EXISTS merge_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   branch_name TEXT NOT NULL,
-  seed_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   agent_name TEXT,
   files_modified TEXT DEFAULT '[]',  -- JSON array of file paths
@@ -335,7 +335,7 @@ CREATE INDEX IF NOT EXISTS idx_merge_queue_status
 
 | Operation | Description |
 |-----------|-------------|
-| `enqueue(branch, seedId, runId, filesModified?)` | Add entry with status=pending, enqueued_at=now. Idempotent: skip if run_id already in queue. |
+| `enqueue(branch, taskId, runId, filesModified?)` | Add entry with status=pending, enqueued_at=now. Idempotent: skip if run_id already in queue. |
 | `dequeue()` | Get oldest pending entry, atomically set status=merging |
 | `peek()` | Get oldest pending entry without changing status |
 | `list(statusFilter?)` | List all entries, optionally filtered by status |
@@ -386,7 +386,7 @@ Instead of strict FIFO ordering, the merge queue uses graph-based conflict clust
 - AC-3.2: Concurrent agents can enqueue without conflicts (WAL mode + busy timeout)
 - AC-3.3: Dequeue is atomic -- two concurrent `foreman merge` processes cannot claim the same entry
 - AC-3.4: Queue entries record which resolution tier was used (`resolved_tier`)
-- AC-3.5: `foreman merge --list` shows queue entries with status, branch, seed, and age
+- AC-3.5: `foreman merge --list` shows queue entries with status, branch, task, and age
 - AC-3.6: Migration adds merge_queue table without affecting existing store data
 - AC-3.7: Agent finalize phase auto-enqueues completed branches (primary enqueue path)
 - AC-3.8: `foreman merge` reconciliation scan detects and enqueues completed runs not in the queue, validating branch existence first
@@ -445,7 +445,7 @@ export async function deleteBranch(
   - Branch name
   - Worktree path
   - Associated agent/run status (from store)
-  - Associated seed ID
+  - Associated task ID
   - Age (time since creation)
 - `--json` flag outputs structured JSON for scripting/CI
 
@@ -462,7 +462,7 @@ export async function deleteBranch(
 - Cross-references worktree branches with run status from store
 
 **Acceptance Criteria:**
-- AC-5.1: `foreman worktree list` shows all foreman/* worktrees with branch, path, agent status, and seed
+- AC-5.1: `foreman worktree list` shows all foreman/* worktrees with branch, path, agent status, and task
 - AC-5.2: `foreman worktree list --json` outputs valid JSON array
 - AC-5.3: `foreman worktree clean` removes only completed/merged/failed worktrees by default
 - AC-5.4: `foreman worktree clean --all` removes all foreman worktrees (with confirmation message)
@@ -471,25 +471,25 @@ export async function deleteBranch(
 
 ### 4.3 P3 -- Nice to Have
 
-#### FR-6: Seeds Preservation for Non-Merged Branches (bd-uba.6)
+#### FR-6: Tasks Preservation for Non-Merged Branches (bd-uba.6)
 
-**Description:** When a branch is not merged (e.g., coordinator/lead branches, or branches abandoned after conflict), preserve any seed status changes from that branch back to the canonical branch.
+**Description:** When a branch is not merged (e.g., coordinator/lead branches, or branches abandoned after conflict), preserve any task status changes from that branch back to the canonical branch.
 
 **Mechanism:**
-1. Use three-dot diff to extract seed changes: `git diff {targetBranch}...{branchName} -- .seeds/`
+1. Use three-dot diff to extract task changes: `git diff {targetBranch}...{branchName} -- .tasks/`
 2. If diff is non-empty, write to temp patch file
 3. Apply patch to target branch: `git apply --index {patchFile}`
-4. Commit: `chore: preserve seed status from {branchName}`
+4. Commit: `chore: preserve task status from {branchName}`
 5. Clean up temp patch file in `finally` block (always, even on error)
 
 **Guard Rails:**
-- Only preserve `.seeds/` changes, not `.foreman/` or code
-- Skip if the branch has no seed-related changes
-- If `git apply` fails (e.g., conflicting seed changes), log warning and skip (do not block branch cleanup)
+- Only preserve `.tasks/` changes, not `.foreman/` or code
+- Skip if the branch has no task-related changes
+- If `git apply` fails (e.g., conflicting task changes), log warning and skip (do not block branch cleanup)
 
 **Acceptance Criteria:**
-- AC-6.1: Seed status changes from non-merged branches are applied to the target branch
-- AC-6.2: Only `.seeds/` directory changes are preserved (no code leakage)
+- AC-6.1: Task status changes from non-merged branches are applied to the target branch
+- AC-6.2: Only `.tasks/` directory changes are preserved (no code leakage)
 - AC-6.3: Failed patch application logs a warning but does not block branch cleanup
 - AC-6.4: Temp patch file is always cleaned up (finally block)
 
@@ -510,7 +510,7 @@ CREATE TABLE IF NOT EXISTS conflict_patterns (
   success INTEGER NOT NULL,  -- 0 or 1
   failure_reason TEXT,  -- 'validation', 'timeout', 'post_merge_test_failure', etc.
   merge_queue_id INTEGER,  -- links to merge_queue entry for cross-referencing
-  seed_id TEXT,
+  task_id TEXT,
   recorded_at TEXT NOT NULL,
   FOREIGN KEY (merge_queue_id) REFERENCES merge_queue(id)
 );
@@ -546,7 +546,7 @@ CREATE INDEX IF NOT EXISTS idx_conflict_patterns_merge
 
 **Output:**
 For each queued/completed branch, show:
-- Branch name and seed ID
+- Branch name and task ID
 - Files changed (from `git diff --stat {targetBranch}...{branchName}`)
 - Potential conflicts detected via `git merge-tree` (or temporary merge + abort)
 - Estimated resolution tier based on conflict pattern history (if FR-7 available)
@@ -559,7 +559,7 @@ For each queued/completed branch, show:
 **Acceptance Criteria:**
 - AC-8.1: `foreman merge --dry-run` shows branch, files changed, and conflict status without modifying the working tree
 - AC-8.2: Potential conflicts are accurately detected (matches what `git merge` would produce)
-- AC-8.3: Dry-run works with `--seed <id>` to preview a single merge
+- AC-8.3: Dry-run works with `--task <id>` to preview a single merge
 - AC-8.4: No git state is modified during dry-run (working tree, index, HEAD unchanged)
 - AC-8.5: When FR-7 (conflict pattern learning) data is available, dry-run shows estimated resolution tier per conflict based on historical pattern data
 - AC-8.6: When FR-7 is not available (not yet implemented or no pattern data exists), dry-run gracefully degrades by omitting the estimated tier column (no errors, no empty/confusing output)
@@ -751,7 +751,7 @@ Recommended implementation sequence based on dependencies and value delivery:
 4. **FR-1** (AI conflict resolution) -- Highest user value; includes per-file tier cascade, Sonnet/Opus tiering, configurable syntax checker map, post-merge tests with pattern learning, auto-revert, cost controls with actual tracking
 5. **FR-5** (Worktree commands) -- Independent, can parallelize with FR-1
 6. **FR-8** (Dry-run mode) -- Benefits from queue but not strictly dependent
-7. **FR-6** (Seeds preservation) -- Independent, lower priority
+7. **FR-6** (Tasks preservation) -- Independent, lower priority
 8. **FR-7** (Conflict patterns) -- Requires FR-1 data; enables running success rate display
 9. **FR-9** (Untracked file prevention) -- Edge case handling
 10. **FR-10** (Queue health checks) -- Requires FR-3, polish item
@@ -763,7 +763,7 @@ Recommended implementation sequence based on dependencies and value delivery:
 | Metric | Current | Target | Measurement |
 |--------|---------|--------|-------------|
 | Auto-resolved code conflicts | 0% | >= 80% | (conflicts resolved by Tier 2-4) / (total code conflicts), displayed as rolling 30-day rate in merge output |
-| Merge failures from state files | Occasional | 0 | Count of merge failures with `.seeds/` or `.foreman/` in error |
+| Merge failures from state files | Occasional | 0 | Count of merge failures with `.tasks/` or `.foreman/` in error |
 | Merge state loss on restart | Always | Never | Queue entries persist in Postgres |
 | Accidental branch deletion | Possible | 0 | Count of `branch -D` on unmerged branches without --force |
 | Time to resolve merge (median) | 5-15 min (manual) | < 2 min (automated) | Time from merge start to completion |
@@ -1016,7 +1016,7 @@ All merge queue failure modes produce structured error codes for consistent logg
 | `MQ-016` | Pattern | File skipped AI resolution due to repeated post-merge test failures |
 | `MQ-017` | Legacy | --legacy flag used after stabilization threshold reached |
 | `MQ-018` | Merge | All tiers exhausted for file; entire merge escalated to PR |
-| `MQ-019` | Seeds | Seed preservation patch failed to apply |
+| `MQ-019` | Tasks | Task preservation patch failed to apply |
 | `MQ-020` | State | Auto-commit of state files failed |
 
 Error codes are structured as `MQ-{NNN}` where the numeric range indicates the category:
@@ -1024,7 +1024,7 @@ Error codes are structured as `MQ-{NNN}` where the numeric range indicates the c
 - 007: Test failure (post-merge)
 - 008-010: Queue health errors (stale, duplicate, orphaned)
 - 011-014: Branch and merge errors
-- 015-020: Pattern learning, legacy, seeds, and state errors
+- 015-020: Pattern learning, legacy, tasks, and state errors
 
 ---
 

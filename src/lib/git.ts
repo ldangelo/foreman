@@ -98,11 +98,11 @@ export async function checkoutBranch(repoPath: string, branchName: string): Prom
 }
 
 /**
- * Create a worktree for a seed.
+ * Create a worktree for a task.
  *
- * - Branch: foreman/<seedId>
+ * - Branch: foreman/<taskId>
  * - Location: Foreman's workspace root for the repo (default: external to the
- *   repo at <repoParent>/.foreman-worktrees/<repoName>/<seedId>)
+ *   repo at <repoParent>/.foreman-worktrees/<repoName>/<taskId>)
  * - Base: current branch (auto-detected if not specified)
  *
  * @deprecated Use `GitBackend.createWorkspace()` from `src/lib/vcs/git-backend.js` instead.
@@ -111,13 +111,13 @@ export async function checkoutBranch(repoPath: string, branchName: string): Prom
  */
 export async function createWorktree(
   repoPath: string,
-  seedId: string,
+  taskId: string,
   baseBranch?: string,
   setupSteps?: WorkflowSetupStep[],
   setupCache?: WorkflowSetupCache,
 ): Promise<{ worktreePath: string; branchName: string }> {
   const backend = new GitBackend(repoPath);
-  const result = await backend.createWorkspace(repoPath, seedId, baseBranch);
+  const result = await backend.createWorkspace(repoPath, taskId, baseBranch);
   const { workspacePath, branchName } = result;
 
   // Handle setup steps (not part of GitBackend.createWorkspace)

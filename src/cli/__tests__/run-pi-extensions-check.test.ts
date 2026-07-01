@@ -150,7 +150,7 @@ vi.mock("../../orchestrator/auto-merge.js", () => ({
   autoMerge: vi.fn().mockResolvedValue({ merged: 0, conflicts: 0, failed: 0 }),
 }));
 vi.mock("../../lib/run-status.js", () => ({
-  mapRunStatusToSeedStatus: vi.fn(),
+  mapRunStatusToTaskStatus: vi.fn(),
 }));
 vi.mock("../../lib/config.js", () => ({
   PIPELINE_TIMEOUTS: {

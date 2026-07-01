@@ -55,7 +55,7 @@ export interface TaskStoreOps {
  *
  * Run operations:
  * - createRun, getRun, updateRun, getActiveRuns, getRunsByStatus,
- *   getRunsForSeed, getRunsByStatusesSince
+ *   getRunsForTask, getRunsByStatusesSince
  *
  * Event/mail operations:
  * - logEvent, sendMessage
@@ -85,7 +85,7 @@ export interface DispatcherStoreDeps {
   /** Create a new run record. */
   createRun(
     projectId: string,
-    seedId: string,
+    taskId: string,
     agentType: string,
     worktreePath?: string | null | undefined,
     opts?: {
@@ -105,8 +105,8 @@ export interface DispatcherStoreDeps {
   getActiveRuns(projectId?: string): Awaitable<Run[]>;
   /** Get runs by status. */
   getRunsByStatus(status: Run["status"], projectId?: string): Awaitable<Run[]>;
-  /** Get runs for a seed. */
-  getRunsForSeed(seedId: string, projectId?: string): Awaitable<Run[]>;
+  /** Get runs for a task. */
+  getRunsForTask(taskId: string, projectId?: string): Awaitable<Run[]>;
   /** Get runs matching any of the given statuses created on or after `since`. */
   getRunsByStatusesSince(
     statuses: Run["status"][],
@@ -142,8 +142,8 @@ export interface DispatcherStoreDeps {
   getProjectByPath(path: string): Awaitable<Project | null>;
 
   // Query operations
-  /** Check if a seed has an active or pending run. */
-  hasActiveOrPendingRun(seedId: string, projectId?: string): Awaitable<boolean>;
+  /** Check if a task has an active or pending run. */
+  hasActiveOrPendingRun(taskId: string, projectId?: string): Awaitable<boolean>;
 }
 
 // ── Run operations interface ───────────────────────────────────────────────
@@ -156,7 +156,7 @@ export interface RunOps {
   createRun(args: {
     runId: string;
     projectId: string;
-    seedId: string;
+    taskId: string;
     agentType: string;
     branchName: string;
     worktreePath: string | null;
@@ -199,17 +199,17 @@ export interface DispatcherOverrides {
   getRecentFailureCount?: (projectId: string, since: string) => Promise<number>;
   /** Custom task store operations. */
   nativeTaskOps?: TaskStoreOps;
-  /** Get active seed IDs. */
-  getActiveSeedIds?: () => Promise<string[]>;
-  /** Check if a seed has an active or pending run. */
-  hasActiveOrPendingRun?: (seedId: string) => Promise<boolean>;
+  /** Get active task IDs. */
+  getActiveTaskIds?: () => Promise<string[]>;
+  /** Check if a task has an active or pending run. */
+  hasActiveOrPendingRun?: (taskId: string) => Promise<boolean>;
   /** Get count of active agents. */
   getActiveAgentCount?: () => Promise<number>;
   /** External project ID when operating in external mode. */
   externalProjectId?: string;
   /** Custom run queries. */
   getRunsByStatus?: (status: string, projectId: string) => Promise<{ status: string }[]>;
-  getRunsForSeed?: (seedId: string, projectId: string) => Promise<{ id: string }[]>;
+  getRunsForTask?: (taskId: string, projectId: string) => Promise<{ id: string }[]>;
   getRun?: (runId: string) => Promise<{ id: string; status: string } | null>;
   getActiveRuns?: (projectId: string) => Promise<{ id: string }[]>;
   /** Custom run write operations (required when externalProjectId is set). */
@@ -223,7 +223,7 @@ export interface DispatcherOverrides {
  * All concrete dependencies are injected through this interface.
  */
 export interface DispatcherDeps {
-  /** Task client for querying seeds/tasks. */
+  /** Task client for querying tasks/tasks. */
   taskClient: ITaskClient;
   /** Read model for accessing run data. */
   storeReadModel: RunStoreReadModel;
@@ -255,7 +255,7 @@ export interface DispatchOptions {
   pipeline?: boolean;
   /** Explicit workflow name override (from `foreman run --workflow <name>`). */
   workflow?: string;
-  seedId?: string;
+  taskId?: string;
   notifyUrl?: string;
   targetBranch?: string;
   staggerMs?: number;
@@ -264,7 +264,7 @@ export interface DispatchOptions {
 /** Result of a dispatch operation. */
 export interface DispatchResult {
   dispatched: Array<{
-    seedId: string;
+    taskId: string;
     title: string;
     runtime: RuntimeSelection;
     model: ModelSelection;
@@ -273,12 +273,12 @@ export interface DispatchResult {
     branchName: string;
   }>;
   skipped: Array<{
-    seedId: string;
+    taskId: string;
     title: string;
     reason: string;
   }>;
   resumed: Array<{
-    seedId: string;
+    taskId: string;
     title: string;
     model: ModelSelection;
     runId: string;

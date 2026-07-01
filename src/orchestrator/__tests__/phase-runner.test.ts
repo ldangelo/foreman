@@ -41,10 +41,10 @@ describe("phase-runner", () => {
       logFile: join(tmpDir, "phase.log"),
       context: {
         phaseName: "developer",
-        seedId: "task-1",
-        seedTitle: "Task 1",
-        seedType: "smoke",
-        seedDescription:
+        taskId: "task-1",
+        taskTitle: "Task 1",
+        taskType: "smoke",
+        taskDescription:
           'FOREMAN_TEST_SCENARIO={"kind":"create","file":"test.txt","content":"hello from deterministic runner\\n"}',
         worktreePath: tmpDir,
       },

@@ -12,8 +12,8 @@ describe("inbox Postgres helper functions", () => {
   it("resolvePostgresRunId resolves latest and task/bead selectors", async () => {
     const adapter = {
       listRuns: vi.fn().mockResolvedValue([
-        { id: "run-2", seed_id: "task-2" },
-        { id: "run-1", seed_id: "task-1" },
+        { id: "run-2", task_id: "task-2" },
+        { id: "run-1", task_id: "task-1" },
       ]),
     } as any;
 

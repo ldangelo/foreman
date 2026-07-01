@@ -2,7 +2,7 @@
  * PR State Service — fetch and summarize GitHub PR state for a task.
  *
  * Provides a unified view of the current PR state by:
- * 1. Determining the branch name for a task (from branch field or foreman/<seedId>)
+ * 1. Determining the branch name for a task (from branch field or foreman/<taskId>)
  * 2. Fetching the PR state from GitHub via `gh pr view`
  * 3. Getting the current branch HEAD SHA
  * 4. Comparing to detect staleness (merged PR but branch head changed)
@@ -43,10 +43,10 @@ export interface PrState {
 export interface GetPrStateOptions {
   /** Project path for running git/gh commands */
   projectPath: string;
-  /** Branch name to check (e.g., "foreman/task-abc123"). Defaults to "foreman/<seedId>" */
+  /** Branch name to check (e.g., "foreman/task-abc123"). Defaults to "foreman/<taskId>" */
   branchName?: string;
-  /** Seed/task ID. Used to construct default branch name if branchName not provided */
-  seedId?: string;
+  /** Task/task ID. Used to construct default branch name if branchName not provided */
+  taskId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,13 +92,13 @@ async function git(args: string[], cwd: string): Promise<{ stdout: string; stder
 /**
  * Resolve the branch name for a task.
  * If branchName is provided, use it directly.
- * Otherwise, construct "foreman/<seedId>" if seedId is provided.
- * Falls back to "foreman/<seedId>" if neither is provided.
+ * Otherwise, construct "foreman/<taskId>" if taskId is provided.
+ * Falls back to "foreman/<taskId>" if neither is provided.
  */
-function resolveBranchName(branchName: string | undefined, seedId: string | undefined): string {
+function resolveBranchName(branchName: string | undefined, taskId: string | undefined): string {
   if (branchName) return branchName;
-  if (seedId) return `foreman/${seedId}`;
-  throw new Error("Either branchName or seedId must be provided");
+  if (taskId) return `foreman/${taskId}`;
+  throw new Error("Either branchName or taskId must be provided");
 }
 
 // ---------------------------------------------------------------------------
@@ -114,15 +114,15 @@ function resolveBranchName(branchName: string | undefined, seedId: string | unde
  * 3. Gets the current branch HEAD SHA via `git rev-parse`
  * 4. Determines if the PR is stale (merged but head changed)
  *
- * @param options - Options including projectPath, branchName, and seedId
+ * @param options - Options including projectPath, branchName, and taskId
  * @returns PrState object with current PR state and staleness info
  */
 export async function getPrState(options: GetPrStateOptions): Promise<PrState> {
-  const { projectPath, branchName: providedBranchName, seedId } = options;
+  const { projectPath, branchName: providedBranchName, taskId } = options;
 
   let branchName: string;
   try {
-    branchName = resolveBranchName(providedBranchName, seedId);
+    branchName = resolveBranchName(providedBranchName, taskId);
   } catch {
     return {
       status: "error",
@@ -131,7 +131,7 @@ export async function getPrState(options: GetPrStateOptions): Promise<PrState> {
       headSha: null,
       currentHeadSha: null,
       isStale: false,
-      error: "Neither branchName nor seedId provided",
+      error: "Neither branchName nor taskId provided",
       summary: "—",
     };
   }
@@ -245,7 +245,7 @@ export async function getPrState(options: GetPrStateOptions): Promise<PrState> {
 /**
  * Get PR states for multiple tasks efficiently.
  *
- * @param tasks - Array of task objects with id, branch, and seedId fields
+ * @param tasks - Array of task objects with id, branch, and taskId fields
  * @param projectPath - Project path for running git/gh commands
  * @returns Map of taskId -> PrState
  */

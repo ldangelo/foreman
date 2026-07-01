@@ -95,7 +95,7 @@
 - Severity: high. Files likely to change:
   - `src/lib/trpc-client.ts`, `src/lib/daemon-manager.ts`, `src/daemon/**`
   - `src/lib/store.ts`, `src/lib/postgres-store.ts`, `src/lib/db/postgres-adapter.ts`, `src/lib/project-registry.ts`
-  - `src/lib/task-client-factory.ts`, `src/lib/native-task-client.ts`, `src/lib/task-store.ts`, `src/lib/beads*.ts`, `src/lib/seeds.ts`
+  - `src/lib/task-client-factory.ts`, `src/lib/native-task-client.ts`, `src/lib/task-store.ts`, `src/lib/beads*.ts`, `src/lib/tasks.ts`
   - `src/orchestrator/dispatcher*.ts`, `task-backend-ops.ts`, `store-read-model-adapter.ts`, merge/finalize helpers only after bridge audit.
 - Do not delete until grep shows no unapproved operator callers. Worker bridge likely still needs parts of orchestrator, VCS, workflow, prompts, artifacts, setup, worker env, Postgres task mirror.
 

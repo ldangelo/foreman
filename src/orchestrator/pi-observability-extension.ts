@@ -117,7 +117,7 @@ export function createPhaseTrace(metadata: PhaseTraceMetadata): PhaseTrace {
   return {
     version: 1,
     runId: metadata.runId,
-    seedId: metadata.seedId,
+    taskId: metadata.taskId,
     phase: metadata.phase,
     phaseType: metadata.phaseType,
     model: metadata.model,
@@ -155,7 +155,7 @@ export function createPiObservabilityExtensionWithEmitter(
       emit?.({
         kind: "start",
         phase: trace.phase,
-        seedId: trace.seedId,
+        taskId: trace.taskId,
         message: `phase=${trace.phase} workflow=${trace.workflowName ?? "unknown"} command=${trace.resolvedCommand ?? trace.rawPrompt}`,
       });
     });
@@ -169,7 +169,7 @@ export function createPiObservabilityExtensionWithEmitter(
       emit?.({
         kind: "warning",
         phase: trace.phase,
-        seedId: trace.seedId,
+        taskId: trace.taskId,
         message: warning,
         toolName: "bash",
         argsPreview: event.input?.command,
@@ -192,7 +192,7 @@ export function createPiObservabilityExtensionWithEmitter(
         emit?.({
           kind: "update",
           phase: trace.phase,
-          seedId: trace.seedId,
+          taskId: trace.taskId,
           toolName: event.toolName,
           argsPreview: summarizeUnknown(event.args),
           message: `tool=${event.toolName}`,

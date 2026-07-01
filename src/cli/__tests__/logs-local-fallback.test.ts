@@ -80,10 +80,10 @@ describe("logs command local fallback", () => {
         return {
           getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: "/tmp/project" }),
           getRun: vi.fn().mockReturnValue(null),
-          getRunsForSeed: vi.fn().mockReturnValue([
+          getRunsForTask: vi.fn().mockReturnValue([
             {
               id: "run-1",
-              seed_id: "task-1",
+              task_id: "task-1",
               status: "completed",
               started_at: "2026-01-01T00:00:00.000Z",
               completed_at: "2026-01-01T00:01:00.000Z",
@@ -119,13 +119,13 @@ describe("logs command local fallback", () => {
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: "/tmp/project" }),
       getRun: vi.fn().mockReturnValue({
         id: runId,
-        seed_id: "task-1",
+        task_id: "task-1",
         status: "completed",
         started_at: null,
         completed_at: null,
         created_at: "2026-01-01T00:00:00.000Z",
       }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunProgress: vi.fn().mockReturnValue(null),
       close: vi.fn(),
     }));
@@ -148,13 +148,13 @@ describe("logs command local fallback", () => {
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: "/tmp/project" }),
       getRun: vi.fn().mockReturnValue({
         id: runId,
-        seed_id: "task-1",
+        task_id: "task-1",
         status: "completed",
         started_at: null,
         completed_at: null,
         created_at: "2026-01-01T00:00:00.000Z",
       }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunProgress: vi.fn().mockReturnValue(null),
       close: vi.fn(),
     }));

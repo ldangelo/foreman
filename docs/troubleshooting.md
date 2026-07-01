@@ -293,7 +293,7 @@ git push
 **Diagnosis:**
 ```bash
 # Check the worktree state
-cd ../.foreman-worktrees/<repo-name>/<seedId>
+cd ../.foreman-worktrees/<repo-name>/<taskId>
 git status
 ```
 
@@ -315,7 +315,7 @@ foreman retry <task-id> --dispatch # Retry through Elixir-backed recovery
 ```bash
 rm -f .git/index.lock
 # Also check worktrees (emergency only — prefer foreman worktree clean):
-rm -f ../.foreman-worktrees/<repo-name>/<seedId>/.git/index.lock 2>/dev/null
+rm -f ../.foreman-worktrees/<repo-name>/<taskId>/.git/index.lock 2>/dev/null
 ```
 
 ### Orphaned worktrees accumulating

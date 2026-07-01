@@ -32,9 +32,9 @@ describe("attach daemon helpers", () => {
     const success = adaptDaemonRun({
       id: "run-1",
       project_id: "proj-1",
-      bead_id: "seed-1",
+      bead_id: "task-1",
       status: "success",
-      branch: "foreman/seed-1",
+      branch: "foreman/task-1",
       agent_type: null,
       session_key: null,
       worktree_path: null,
@@ -49,9 +49,9 @@ describe("attach daemon helpers", () => {
     const cancelled = adaptDaemonRun({
       id: "run-2",
       project_id: "proj-1",
-      bead_id: "seed-2",
+      bead_id: "task-2",
       status: "cancelled",
-      branch: "foreman/seed-2",
+      branch: "foreman/task-2",
       agent_type: "developer",
       session_key: "pid-222",
       worktree_path: "/tmp/wt-2",
@@ -66,9 +66,9 @@ describe("attach daemon helpers", () => {
     const unknown = adaptDaemonRun({
       id: "run-3",
       project_id: "proj-1",
-      bead_id: "seed-3",
+      bead_id: "task-3",
       status: "mystery",
-      branch: "foreman/seed-3",
+      branch: "foreman/task-3",
       agent_type: "qa",
       session_key: null,
       worktree_path: "/tmp/wt-3",
@@ -83,7 +83,7 @@ describe("attach daemon helpers", () => {
 
     expect(success.status).toBe("completed");
     expect(success.agent_type).toBe("daemon");
-    expect(success.worktree_path).toContain("seed-1");
+    expect(success.worktree_path).toContain("task-1");
     expect(cancelled.status).toBe("reset");
     expect(cancelled.worktree_path).toBe("/tmp/wt-2");
     expect(unknown.status).toBe("failed");
@@ -114,9 +114,9 @@ describe("attach daemon helpers", () => {
             {
               id: "run-1111",
               project_id: "proj-1",
-              bead_id: "seed-1",
+              bead_id: "task-1",
               status: "running",
-              branch: "foreman/seed-1",
+              branch: "foreman/task-1",
               agent_type: "developer",
               session_key: null,
               worktree_path: null,
@@ -131,9 +131,9 @@ describe("attach daemon helpers", () => {
             {
               id: "run-2222",
               project_id: "proj-1",
-              bead_id: "seed-2",
+              bead_id: "task-2",
               status: "failure",
-              branch: "foreman/seed-2",
+              branch: "foreman/task-2",
               agent_type: "developer",
               session_key: null,
               worktree_path: null,
@@ -152,9 +152,9 @@ describe("attach daemon helpers", () => {
       projectPath: "/repo",
     } as any;
 
-    await expect(resolveDaemonRun(context, "run-1111")).resolves.toMatchObject({ id: "run-1111", seed_id: "seed-1" });
-    await expect(resolveDaemonRun(context, "run-22")).resolves.toMatchObject({ id: "run-2222", seed_id: "seed-2" });
-    await expect(resolveDaemonRun(context, "seed-2")).resolves.toMatchObject({ id: "run-2222", seed_id: "seed-2" });
+    await expect(resolveDaemonRun(context, "run-1111")).resolves.toMatchObject({ id: "run-1111", task_id: "task-1" });
+    await expect(resolveDaemonRun(context, "run-22")).resolves.toMatchObject({ id: "run-2222", task_id: "task-2" });
+    await expect(resolveDaemonRun(context, "task-2")).resolves.toMatchObject({ id: "run-2222", task_id: "task-2" });
     await expect(resolveDaemonRun(context, "missing")).resolves.toBeNull();
   });
 
@@ -192,9 +192,9 @@ describe("attach daemon helpers", () => {
         runs: { get: vi.fn().mockResolvedValue({
           id: "run-1",
           project_id: "proj-1",
-          bead_id: "seed-1",
+          bead_id: "task-1",
           status: "success",
-          branch: "foreman/seed-1",
+          branch: "foreman/task-1",
           agent_type: "developer",
           session_key: null,
           worktree_path: "/tmp/wt",
@@ -208,7 +208,7 @@ describe("attach daemon helpers", () => {
         }) },
       },
     } as any;
-    const run = { id: "run-1", seed_id: "seed-1", status: "running", worktree_path: "/tmp/wt" } as any;
+    const run = { id: "run-1", task_id: "task-1", status: "running", worktree_path: "/tmp/wt" } as any;
 
     await expect(handleStreamDaemon(run, context)).resolves.toBe(0);
     expect(logSpy.mock.calls.some((call) => String(call[0]).includes("already completed"))).toBe(true);
@@ -228,11 +228,11 @@ describe("attach daemon helpers", () => {
             { id: "msg-2", run_id: "run-1", sender_agent_type: "developer", recipient_agent_type: "qa", subject: "second", body: "plain text", read: 0, created_at: "2026-01-01T00:01:00.000Z", deleted_at: null },
           ]) },
         runs: { get: vi.fn()
-          .mockResolvedValueOnce({ id: "run-1", project_id: "proj-1", bead_id: "seed-1", status: "running", branch: "foreman/seed-1", agent_type: "developer", session_key: null, worktree_path: "/tmp/wt", progress: null, base_branch: null, merge_strategy: null, queued_at: "2026-01-01T00:00:00.000Z", started_at: "2026-01-01T00:01:00.000Z", finished_at: null, created_at: "2026-01-01T00:00:00.000Z" })
-          .mockResolvedValueOnce({ id: "run-1", project_id: "proj-1", bead_id: "seed-1", status: "success", branch: "foreman/seed-1", agent_type: "developer", session_key: null, worktree_path: "/tmp/wt", progress: null, base_branch: null, merge_strategy: null, queued_at: "2026-01-01T00:00:00.000Z", started_at: "2026-01-01T00:01:00.000Z", finished_at: "2026-01-01T00:02:00.000Z", created_at: "2026-01-01T00:00:00.000Z" }) },
+          .mockResolvedValueOnce({ id: "run-1", project_id: "proj-1", bead_id: "task-1", status: "running", branch: "foreman/task-1", agent_type: "developer", session_key: null, worktree_path: "/tmp/wt", progress: null, base_branch: null, merge_strategy: null, queued_at: "2026-01-01T00:00:00.000Z", started_at: "2026-01-01T00:01:00.000Z", finished_at: null, created_at: "2026-01-01T00:00:00.000Z" })
+          .mockResolvedValueOnce({ id: "run-1", project_id: "proj-1", bead_id: "task-1", status: "success", branch: "foreman/task-1", agent_type: "developer", session_key: null, worktree_path: "/tmp/wt", progress: null, base_branch: null, merge_strategy: null, queued_at: "2026-01-01T00:00:00.000Z", started_at: "2026-01-01T00:01:00.000Z", finished_at: "2026-01-01T00:02:00.000Z", created_at: "2026-01-01T00:00:00.000Z" }) },
       },
     } as any;
-    const run = { id: "run-1", seed_id: "seed-1", status: "running", worktree_path: "/tmp/wt" } as any;
+    const run = { id: "run-1", task_id: "task-1", status: "running", worktree_path: "/tmp/wt" } as any;
 
     const promise = handleStreamDaemon(run, context, undefined, 50);
     await vi.advanceTimersByTimeAsync(60);

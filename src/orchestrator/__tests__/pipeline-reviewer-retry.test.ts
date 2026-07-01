@@ -93,18 +93,18 @@ function makePipelineArgs(
     config: {
       runId: "run-reviewer-retry-test",
       projectId: "proj-reviewer-retry",
-      seedId: "seed-reviewer-retry",
-      seedTitle: "Reviewer retry regression test",
+      taskId: "task-reviewer-retry",
+      taskTitle: "Reviewer retry regression test",
       model: "anthropic/claude-sonnet-4-6",
       worktreePath: tmpDir,
       env: {},
       taskMeta: {
-        id: "seed-reviewer-retry",
+        id: "task-reviewer-retry",
         title: "Reviewer retry regression test",
         description: "",
         type: "feature",
         priority: 2,
-        projectReportsDir: ".foreman/reports/proj-reviewer-retry/seed-reviewer-retry/run-reviewer-retry-test",
+        projectReportsDir: ".foreman/reports/proj-reviewer-retry/task-reviewer-retry/run-reviewer-retry-test",
       },
     },
     workflowConfig: { name: workflowName } as never,
@@ -137,7 +137,7 @@ function writePhaseArtifact(tmpDir: string, phaseName: string, content: string):
   const artifact = phaseArtifacts[phaseName];
   if (!artifact) return;
   writeFileSync(join(tmpDir, artifact), content);
-  const reportDir = join(tmpDir, ".foreman", "reports", "proj-reviewer-retry", "seed-reviewer-retry", "run-reviewer-retry-test");
+  const reportDir = join(tmpDir, ".foreman", "reports", "proj-reviewer-retry", "task-reviewer-retry", "run-reviewer-retry-test");
   mkdirSync(reportDir, { recursive: true });
   writeFileSync(join(reportDir, artifact), content);
 }
@@ -221,7 +221,7 @@ describe("executePipeline(): reviewer FAIL loops back to developer (regression)"
     mkdirSync(tmpDir, { recursive: true });
     process.env.HOME = tmpDir;
     // Create stub prompt files so buildPhasePrompt doesn't throw
-    mkdirSync(join(tmpDir, ".foreman", "reports", "proj-reviewer-retry", "seed-reviewer-retry", "run-reviewer-retry-test"), { recursive: true });
+    mkdirSync(join(tmpDir, ".foreman", "reports", "proj-reviewer-retry", "task-reviewer-retry", "run-reviewer-retry-test"), { recursive: true });
     const promptDir = join(tmpDir, ".foreman", "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
     for (const phase of [
@@ -292,7 +292,7 @@ describe("executePipeline(): reviewer FAIL loops back to developer (regression)"
       builtinOrder.push(phase.name);
       if (phase.name === "cli-review") {
         writeFileSync(
-          join(tmpDir, ".foreman/reports/proj-reviewer-retry/seed-reviewer-retry/run-reviewer-retry-test/CR_CLI_REPORT.md"),
+          join(tmpDir, ".foreman/reports/proj-reviewer-retry/task-reviewer-retry/run-reviewer-retry-test/CR_CLI_REPORT.md"),
           "# CodeRabbit CLI Report\n\n## Verdict: PASS\n",
         );
       }
@@ -349,7 +349,7 @@ describe("executePipeline(): reviewer FAIL loops back to developer (regression)"
       builtinOrder.push(phase.name);
       if (phase.name === "cli-review") {
         writeFileSync(
-          join(tmpDir, ".foreman/reports/proj-reviewer-retry/seed-reviewer-retry/run-reviewer-retry-test/CR_CLI_REPORT.md"),
+          join(tmpDir, ".foreman/reports/proj-reviewer-retry/task-reviewer-retry/run-reviewer-retry-test/CR_CLI_REPORT.md"),
           "# CodeRabbit CLI Report\n\n## Verdict: PASS\n",
         );
       }

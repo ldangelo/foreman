@@ -34,12 +34,12 @@ export class ConflictPatterns {
     success: boolean,
     failureReason?: string,
     mergeQueueId?: number,
-    seedId?: string,
+    taskId?: string,
   ): void {
     this.db
       .prepare(
         `INSERT INTO conflict_patterns
-           (file_path, file_extension, tier, success, failure_reason, merge_queue_id, seed_id, recorded_at)
+           (file_path, file_extension, tier, success, failure_reason, merge_queue_id, task_id, recorded_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
@@ -49,7 +49,7 @@ export class ConflictPatterns {
         success ? 1 : 0,
         failureReason ?? null,
         mergeQueueId ?? null,
-        seedId ?? null,
+        taskId ?? null,
         new Date().toISOString(),
       );
   }
@@ -99,7 +99,7 @@ export class ConflictPatterns {
     const now = new Date().toISOString();
     const stmt = this.db.prepare(
       `INSERT INTO conflict_patterns
-         (file_path, file_extension, tier, success, failure_reason, merge_queue_id, seed_id, recorded_at)
+         (file_path, file_extension, tier, success, failure_reason, merge_queue_id, task_id, recorded_at)
        VALUES (?, ?, 0, 0, 'post_merge_test_failure', ?, NULL, ?)`,
     );
 

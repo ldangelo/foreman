@@ -97,7 +97,7 @@ export interface RunStoreReadModel {
   getRun(runId: string): Promise<RunSummary | null>;
 
   /** Fetch all runs for a given task. */
-  getRunsForSeed(taskId: string, projectId?: string): Promise<RunSummary[]>;
+  getRunsForTask(taskId: string, projectId?: string): Promise<RunSummary[]>;
 
   /** Fetch all active runs (pending or running). */
   getActiveRuns(projectId?: string): Promise<RunSummary[]>;

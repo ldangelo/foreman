@@ -4,7 +4,7 @@
  * Unit tests for Doctor.checkBeadStatusSync() — the doctor check that
  * detects and optionally fixes bead status drift between Postgres and br.
  *
- * Seed: bd-8ctu
+ * Task: bd-8ctu
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -43,7 +43,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 type MinimalRun = {
   id: string;
-  seed_id: string;
+  task_id: string;
   status: string;
   created_at: string;
   project_id: string;
@@ -57,7 +57,7 @@ function makeRun(overrides: Partial<MinimalRun> = {}): MinimalRun {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seed-abc",
+    task_id: "task-abc",
     status: "completed",
     created_at: new Date().toISOString(),
     agent_type: "developer",
@@ -93,12 +93,12 @@ function makeStore(opts: {
 
 /**
  * Create a minimal mock taskClient.
- * `statusBySeeds` maps seed IDs to their current br status.
+ * `statusByTasks` maps task IDs to their current br status.
  */
-function makeTaskClient(statusBySeeds: Record<string, string> = {}) {
+function makeTaskClient(statusByTasks: Record<string, string> = {}) {
   return {
     show: vi.fn(async (id: string) => {
-      const status = statusBySeeds[id] ?? "in_progress";
+      const status = statusByTasks[id] ?? "in_progress";
       return { id, status, title: `Task ${id}` };
     }),
     list: vi.fn(async () => []),
@@ -168,7 +168,7 @@ describe("Doctor.checkBeadStatusSync()", () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
     const store = makeStore({ projectPath: tmp, runs: [makeRun({ status: "completed" })] });
-    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+    const taskClient = makeTaskClient({ "task-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any, undefined, undefined, undefined, "native");
 
@@ -189,9 +189,9 @@ describe("Doctor.checkBeadStatusSync()", () => {
       throw new Error("local getRunsByStatuses should not be used");
     });
 
-    const registeredRuns = [makeRun({ seed_id: "seed-abc", status: "completed" })];
+    const registeredRuns = [makeRun({ task_id: "task-abc", status: "completed" })];
     const registeredStore = makeStore({ projectPath: tmp, runs: registeredRuns });
-    const taskClient = makeTaskClient({ "seed-abc": "review" });
+    const taskClient = makeTaskClient({ "task-abc": "review" });
 
     const doctor = new Doctor(localStore as any, tmp, undefined, taskClient as any, undefined, undefined, registeredStore as any);
 
@@ -212,10 +212,10 @@ describe("Doctor.checkBeadStatusSync()", () => {
   it("returns pass when there are no bead status mismatches", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
-    // completed run with seed already at 'review' (correct expected status)
-    const runs = [makeRun({ seed_id: "seed-abc", status: "completed" })];
+    // completed run with task already at 'review' (correct expected status)
+    const runs = [makeRun({ task_id: "task-abc", status: "completed" })];
     const store = makeStore({ projectPath: tmp, runs });
-    const taskClient = makeTaskClient({ "seed-abc": "review" });
+    const taskClient = makeTaskClient({ "task-abc": "review" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
 
@@ -249,10 +249,10 @@ describe("Doctor.checkBeadStatusSync()", () => {
   it("returns warn when mismatches detected (no flags)", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
-    // completed run but seed is still at 'in_progress' in br (drift!)
-    const runs = [makeRun({ seed_id: "seed-abc", status: "completed" })];
+    // completed run but task is still at 'in_progress' in br (drift!)
+    const runs = [makeRun({ task_id: "task-abc", status: "completed" })];
     const store = makeStore({ projectPath: tmp, runs });
-    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+    const taskClient = makeTaskClient({ "task-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
 
@@ -271,17 +271,17 @@ describe("Doctor.checkBeadStatusSync()", () => {
   it("returns warn with mismatch details in message", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
-    const runs = [makeRun({ seed_id: "seed-abc", status: "failed" })];
+    const runs = [makeRun({ task_id: "task-abc", status: "failed" })];
     const store = makeStore({ projectPath: tmp, runs });
-    // seed is 'in_progress' but should be 'failed' after pipeline failure
-    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+    // task is 'in_progress' but should be 'failed' after pipeline failure
+    const taskClient = makeTaskClient({ "task-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
 
     const result = await doctor.checkBeadStatusSync({ projectPath: tmp });
 
     expect(result.status).toBe("warn");
-    expect(result.message).toContain("seed-abc");
+    expect(result.message).toContain("task-abc");
     expect(result.message).toContain("in_progress");
     expect(result.message).toContain("failed");
   });
@@ -289,9 +289,9 @@ describe("Doctor.checkBeadStatusSync()", () => {
   it("returns warn in dry-run mode even with fix=true", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
-    const runs = [makeRun({ seed_id: "seed-abc", status: "completed" })];
+    const runs = [makeRun({ task_id: "task-abc", status: "completed" })];
     const store = makeStore({ projectPath: tmp, runs });
-    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+    const taskClient = makeTaskClient({ "task-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
 
@@ -303,7 +303,7 @@ describe("Doctor.checkBeadStatusSync()", () => {
     // No br update calls made
     expect(mockExecFileSync).not.toHaveBeenCalledWith(
       expect.any(String),
-      ["update", "seed-abc", "--status", "review"],
+      ["update", "task-abc", "--status", "review"],
       expect.anything(),
     );
   });
@@ -311,9 +311,9 @@ describe("Doctor.checkBeadStatusSync()", () => {
   it("includes --fix hint in warn message (no flags)", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
-    const runs = [makeRun({ seed_id: "seed-abc", status: "completed" })];
+    const runs = [makeRun({ task_id: "task-abc", status: "completed" })];
     const store = makeStore({ projectPath: tmp, runs });
-    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+    const taskClient = makeTaskClient({ "task-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
 
@@ -328,9 +328,9 @@ describe("Doctor.checkBeadStatusSync()", () => {
   it("returns fixed and calls br update when fix=true (no dryRun)", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
-    const runs = [makeRun({ seed_id: "seed-abc", status: "completed" })];
+    const runs = [makeRun({ task_id: "task-abc", status: "completed" })];
     const store = makeStore({ projectPath: tmp, runs });
-    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+    const taskClient = makeTaskClient({ "task-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
 
@@ -341,22 +341,22 @@ describe("Doctor.checkBeadStatusSync()", () => {
     // br update should have been called to fix the mismatch
     expect(mockExecFileSync).toHaveBeenCalledWith(
       expect.any(String),
-      ["update", "seed-abc", "--status", "review"],
+      ["update", "task-abc", "--status", "review"],
       expect.anything(),
     );
   });
 
-  it("fixApplied message reports how many seeds were fixed", async () => {
+  it("fixApplied message reports how many tasks were fixed", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
     const runs = [
-      makeRun({ id: "run-1", seed_id: "seed-abc", status: "completed" }),
-      makeRun({ id: "run-2", seed_id: "seed-xyz", status: "failed" }),
+      makeRun({ id: "run-1", task_id: "task-abc", status: "completed" }),
+      makeRun({ id: "run-2", task_id: "task-xyz", status: "failed" }),
     ];
     const store = makeStore({ projectPath: tmp, runs });
     const taskClient = makeTaskClient({
-      "seed-abc": "in_progress", // mismatch: completed → review
-      "seed-xyz": "in_progress", // mismatch: failed → failed
+      "task-abc": "in_progress", // mismatch: completed → review
+      "task-xyz": "in_progress", // mismatch: failed → failed
     });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
@@ -364,23 +364,23 @@ describe("Doctor.checkBeadStatusSync()", () => {
     const result = await doctor.checkBeadStatusSync({ fix: true, projectPath: tmp });
 
     expect(result.status).toBe("fixed");
-    expect(result.fixApplied).toMatch(/2/); // "Fixed 2 seed status(es)"
+    expect(result.fixApplied).toMatch(/2/); // "Fixed 2 task status(es)"
   });
 
-  it("returns warn when fix mode syncs one seed but collects an error", async () => {
+  it("returns warn when fix mode syncs one task but collects an error", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
     const runs = [
-      makeRun({ id: "run-1", seed_id: "seed-abc", status: "completed" }),
-      makeRun({ id: "run-2", seed_id: "seed-err", status: "completed" }),
+      makeRun({ id: "run-1", task_id: "task-abc", status: "completed" }),
+      makeRun({ id: "run-2", task_id: "task-err", status: "completed" }),
     ];
     const store = makeStore({ projectPath: tmp, runs });
     const taskClient = makeTaskClient({
-      "seed-abc": "in_progress",
-      "seed-err": "in_progress",
+      "task-abc": "in_progress",
+      "task-err": "in_progress",
     });
     taskClient.show.mockImplementation(async (id: string) => {
-      if (id === "seed-err") {
+      if (id === "task-err") {
         throw new Error("br daemon crashed");
       }
       return { id, status: "in_progress", title: `Task ${id}` };
@@ -392,24 +392,24 @@ describe("Doctor.checkBeadStatusSync()", () => {
 
     expect(result.status).toBe("warn");
     expect(result.message).toContain("1 bead status mismatch(es) detected");
-    expect(result.fixApplied).toContain("Fixed 1 seed status(es) in br");
+    expect(result.fixApplied).toContain("Fixed 1 task status(es) in br");
     expect(result.fixApplied).toContain("1 error(s)");
-    expect(result.details).toContain("seed-abc");
+    expect(result.details).toContain("task-abc");
   });
 
   it("br update is called with correct status for each mismatch type", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
     const runs = [
-      makeRun({ id: "run-1", seed_id: "seed-comp", status: "completed" }),
-      makeRun({ id: "run-2", seed_id: "seed-fail", status: "failed" }),
-      makeRun({ id: "run-3", seed_id: "seed-merged", status: "merged" }),
+      makeRun({ id: "run-1", task_id: "task-comp", status: "completed" }),
+      makeRun({ id: "run-2", task_id: "task-fail", status: "failed" }),
+      makeRun({ id: "run-3", task_id: "task-merged", status: "merged" }),
     ];
     const store = makeStore({ projectPath: tmp, runs });
     const taskClient = makeTaskClient({
-      "seed-comp": "in_progress",   // completed → review
-      "seed-fail": "in_progress",   // failed → failed
-      "seed-merged": "in_progress", // merged → closed
+      "task-comp": "in_progress",   // completed → review
+      "task-fail": "in_progress",   // failed → failed
+      "task-merged": "in_progress", // merged → closed
     });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
@@ -423,9 +423,9 @@ describe("Doctor.checkBeadStatusSync()", () => {
       updateCalls.map((c) => [c[1][1] as string, c[1][3] as string]),
     );
 
-    expect(updateMap["seed-comp"]).toBe("review");
-    expect(updateMap["seed-fail"]).toBe("failed");
-    expect(updateMap["seed-merged"]).toBe("closed");
+    expect(updateMap["task-comp"]).toBe("review");
+    expect(updateMap["task-fail"]).toBe("failed");
+    expect(updateMap["task-merged"]).toBe("closed");
   });
 
   // ── Fail condition ───────────────────────────────────────────────────
@@ -455,16 +455,16 @@ describe("Doctor.checkBeadStatusSync()", () => {
   it("populates details field on warn/fixed results", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
-    const runs = [makeRun({ seed_id: "seed-abc", status: "completed" })];
+    const runs = [makeRun({ task_id: "task-abc", status: "completed" })];
     const store = makeStore({ projectPath: tmp, runs });
-    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+    const taskClient = makeTaskClient({ "task-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
 
     const warnResult = await doctor.checkBeadStatusSync({ projectPath: tmp });
     expect(warnResult.status).toBe("warn");
     expect(warnResult.details).toBeDefined();
-    expect(warnResult.details).toContain("seed-abc");
+    expect(warnResult.details).toContain("task-abc");
   });
 
   // ── Integration: checkDataIntegrity includes the check ───────────────
@@ -498,12 +498,12 @@ describe("Doctor.checkBeadStatusSync()", () => {
     expect(syncResult!.status).toBe("pass");
   });
 
-  it("checkDataIntegrity() with fix=true calls br update for mismatched seeds", async () => {
+  it("checkDataIntegrity() with fix=true calls br update for mismatched tasks", async () => {
     const { Doctor } = await import("../doctor.js");
     const tmp = makeTempDir();
-    const runs = [makeRun({ seed_id: "seed-abc", status: "stuck" })];
+    const runs = [makeRun({ task_id: "task-abc", status: "stuck" })];
     const store = makeStore({ projectPath: tmp, runs });
-    const taskClient = makeTaskClient({ "seed-abc": "in_progress" });
+    const taskClient = makeTaskClient({ "task-abc": "in_progress" });
 
     const doctor = new Doctor(store as any, tmp, undefined, taskClient as any);
 
@@ -514,7 +514,7 @@ describe("Doctor.checkBeadStatusSync()", () => {
     expect(syncResult!.status).toBe("fixed");
     expect(mockExecFileSync).toHaveBeenCalledWith(
       expect.any(String),
-      ["update", "seed-abc", "--status", "open"],
+      ["update", "task-abc", "--status", "open"],
       expect.anything(),
     );
   });

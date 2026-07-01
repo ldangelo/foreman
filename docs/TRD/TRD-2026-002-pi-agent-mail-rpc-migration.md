@@ -106,15 +106,15 @@ packages/foreman-pi-extensions/ [NEW]
 ```
 Foreman Dispatcher
   |
-  |-- 1. createWorktree(projectPath, seedId)
-  |-- 2. workerAgentMd(seed, worktreePath) -> TASK.md
-  |-- 3. store.createRun(projectId, seedId, model, worktreePath)
+  |-- 1. createWorktree(projectPath, taskId)
+  |-- 2. workerAgentMd(task, worktreePath) -> TASK.md
+  |-- 3. store.createRun(projectId, taskId, model, worktreePath)
   |-- 4. PiRpcSpawnStrategy.spawn(config)
   |       |
   |       |-- spawn('pi', ['--mode', 'rpc', '--extensions', extensionPath])
   |       |     cwd: worktreePath
   |       |     env: FOREMAN_PHASE, FOREMAN_ALLOWED_TOOLS, FOREMAN_MAX_TURNS,
-  |       |          FOREMAN_MAX_TOKENS, FOREMAN_RUN_ID, FOREMAN_SEED_ID,
+  |       |          FOREMAN_MAX_TOKENS, FOREMAN_RUN_ID, FOREMAN_TASK_ID,
   |       |          FOREMAN_BASH_BLOCKLIST
   |       |
   |       |-- stdin << { cmd: "prompt", text: explorerPrompt(...) }
@@ -141,7 +141,7 @@ Foreman Dispatcher
   |       |-- On complete: git add/commit/push, br close, enqueue merge
   |
   |-- 5. Agent Mail sends (fire-and-forget):
-  |       |-> register_agent("{role}-{seedId}")
+  |       |-> register_agent("{role}-{taskId}")
   |       |-> send_message(report content, to: next-phase inbox)
   |       |-> send_message("branch-ready", to: "merge-agent")
   |
@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS merge_agent_configs (
 CREATE TABLE IF NOT EXISTS audit_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL,
-  seed_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
   phase TEXT NOT NULL,
   event_type TEXT NOT NULL,
   tool_name TEXT,
@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS audit_entries (
   FOREIGN KEY (run_id) REFERENCES runs(id)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_entries (run_id, timestamp);
-CREATE INDEX IF NOT EXISTS idx_audit_seed ON audit_entries (seed_id, phase);
+CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_entries (task_id, phase);
 ```
 
 ### 3.2 Modified Types
@@ -235,7 +235,7 @@ type ModelSelection = string;  // Was: "claude-opus-4-6" | "claude-sonnet-4-6" |
 | `FOREMAN_MAX_TURNS` | Dispatcher (from ROLE_CONFIGS) | foreman-budget | `30` |
 | `FOREMAN_MAX_TOKENS` | Dispatcher (from ROLE_CONFIGS) | foreman-budget | `100000` |
 | `FOREMAN_RUN_ID` | Dispatcher | foreman-audit | `uuid` |
-| `FOREMAN_SEED_ID` | Dispatcher | foreman-audit | `bd-1234` |
+| `FOREMAN_TASK_ID` | Dispatcher | foreman-audit | `bd-1234` |
 | `FOREMAN_BASH_BLOCKLIST` | Operator (optional) | foreman-tool-gate | `rm -rf /,git push --force` |
 | `FOREMAN_PI_SESSION_STRATEGY` | Operator (optional) | PiRpcSpawnStrategy | `reuse\|resume\|fork` |
 | `FOREMAN_SPAWN_STRATEGY` | Operator (optional) | spawnWorkerProcess | `pi-rpc\|tmux\|detached` |
@@ -247,7 +247,7 @@ type ModelSelection = string;  // Was: "claude-opus-4-6" | "claude-sonnet-4-6" |
 interface PhaseHandoffMessage {
   type: "phase-report";
   runId: string;
-  seedId: string;
+  taskId: string;
   fromPhase: AgentRole;
   toPhase: AgentRole;
   subject: string;       // e.g. "Explorer Report"
@@ -262,7 +262,7 @@ interface PhaseHandoffMessage {
 interface BranchReadyMessage {
   type: "branch-ready";
   runId: string;
-  seedId: string;
+  taskId: string;
   branchName: string;
   commitHash: string;
 }
@@ -271,7 +271,7 @@ interface BranchReadyMessage {
 interface AuditEntryMessage {
   type: "audit-entry";
   runId: string;
-  seedId: string;
+  taskId: string;
   phase: string;
   eventType: string;
   toolName?: string;
@@ -383,7 +383,7 @@ Implement the `foreman-audit` Pi extension that hooks all Pi events (`tool_call`
 **Validates PRD ACs:** AC-005-1, AC-005-2, AC-005-4, AC-005-5, AC-020-1, AC-020-4
 **Implementation AC:**
 - [ ] Given any Pi event, when the hook fires, then a structured JSONL line is appended to `~/.foreman/audit/{FOREMAN_RUN_ID}.jsonl`
-- [ ] Given an audit entry, when written, then it includes: timestamp, runId (from `FOREMAN_RUN_ID`), seedId (from `FOREMAN_SEED_ID`), phase (from `FOREMAN_PHASE`), event type, tool name (if applicable), and event-specific details
+- [ ] Given an audit entry, when written, then it includes: timestamp, runId (from `FOREMAN_RUN_ID`), taskId (from `FOREMAN_TASK_ID`), phase (from `FOREMAN_PHASE`), event type, tool name (if applicable), and event-specific details
 - [ ] Given a tool_call event that was blocked by foreman-tool-gate, when the audit hook fires, then the entry includes `blocked: true` and the `blockReason`
 - [ ] Given a complete pipeline run, when all phases complete, then the JSONL file contains a contiguous record from explorer start to finalize completion
 - [ ] Given the `session_shutdown` hook, when Pi shuts down, then the audit extension flushes any buffered entries and writes a final shutdown entry
@@ -428,11 +428,11 @@ Verify extension exports and loading interface.
 ---
 
 #### TRD-007: Phase 1 Audit JSONL Reader for CLI (3h) [satisfies REQ-022]
-Implement local JSONL audit reader that powers `foreman audit` in Phase 1 (before Agent Mail). Supports filtering by seed, phase, event-type, and time range. Supports basic grep-based full-text search over JSONL files.
+Implement local JSONL audit reader that powers `foreman audit` in Phase 1 (before Agent Mail). Supports filtering by task, phase, event-type, and time range. Supports basic grep-based full-text search over JSONL files.
 
 **Validates PRD ACs:** AC-022-1, AC-022-3, AC-022-4, AC-022-5
 **Implementation AC:**
-- [ ] Given audit JSONL files in `~/.foreman/audit/`, when `readAuditEntries(seedId)` is called, then it finds the run ID for the seed and reads the corresponding JSONL file
+- [ ] Given audit JSONL files in `~/.foreman/audit/`, when `readAuditEntries(taskId)` is called, then it finds the run ID for the task and reads the corresponding JSONL file
 - [ ] Given the `--phase` filter, when applied, then only entries matching the phase are returned
 - [ ] Given the `--event-type` filter, when applied, then only entries matching the event type are returned
 - [ ] Given `--since` and `--until` timestamps, when applied, then only entries within the range are returned
@@ -451,14 +451,14 @@ Unit tests for JSONL reader: filtering, searching, time ranges.
 ---
 
 #### TRD-008: `foreman audit` CLI Command (Phase 1 -- Local JSONL) (3h) [satisfies REQ-016] [satisfies REQ-022]
-Implement the `foreman audit` CLI command that reads local JSONL audit files. Flags: `--seed`, `--search`, `--phase`, `--event-type`, `--since`, `--until`. Outputs chronological list of events with formatted display.
+Implement the `foreman audit` CLI command that reads local JSONL audit files. Flags: `--task`, `--search`, `--phase`, `--event-type`, `--since`, `--until`. Outputs chronological list of events with formatted display.
 
 **Validates PRD ACs:** AC-016-2, AC-022-1, AC-022-2, AC-022-3, AC-022-4, AC-022-5
 **Implementation AC:**
-- [ ] Given `foreman audit --seed bd-1234`, when invoked, then it displays a chronological list of all audit events for that seed's most recent run
+- [ ] Given `foreman audit --task bd-1234`, when invoked, then it displays a chronological list of all audit events for that task's most recent run
 - [ ] Given `foreman audit --search "Bash rm"`, when invoked, then it performs text search across all audit JSONL files
-- [ ] Given `foreman audit --seed bd-1234 --phase explorer`, when invoked, then only explorer phase events are displayed
-- [ ] Given `foreman audit --seed bd-1234 --event-type tool_call`, when invoked, then only tool_call events are displayed
+- [ ] Given `foreman audit --task bd-1234 --phase explorer`, when invoked, then only explorer phase events are displayed
+- [ ] Given `foreman audit --task bd-1234 --event-type tool_call`, when invoked, then only tool_call events are displayed
 - [ ] Given `foreman audit --since 2026-03-19T00:00:00Z --until 2026-03-19T23:59:59Z`, when invoked, then only events in range are returned
 
 [depends: TRD-007]
@@ -555,7 +555,7 @@ Implement `PiRpcSpawnStrategy` class that implements the `SpawnStrategy` interfa
 - [ ] Given the Pi process crashes, when stdin/stdout pipe breaks, then Foreman detects it within 5 seconds, marks run as "stuck", and stores session ID for resume
 - [ ] Given operator cancellation, when Foreman closes stdin, then Pi performs clean shutdown via `session_shutdown` hook
 - [ ] Given `PiRpcSpawnStrategy.spawn()` fails, when the error is caught, then Foreman falls back to `DetachedSpawnStrategy` and logs a warning
-- [ ] Given env vars `FOREMAN_PHASE`, `FOREMAN_ALLOWED_TOOLS`, `FOREMAN_MAX_TURNS`, `FOREMAN_MAX_TOKENS`, `FOREMAN_RUN_ID`, `FOREMAN_SEED_ID`, when the Pi process is spawned, then all env vars are set in the child process environment
+- [ ] Given env vars `FOREMAN_PHASE`, `FOREMAN_ALLOWED_TOOLS`, `FOREMAN_MAX_TURNS`, `FOREMAN_MAX_TOKENS`, `FOREMAN_RUN_ID`, `FOREMAN_TASK_ID`, when the Pi process is spawned, then all env vars are set in the child process environment
 - [ ] Given a `budget_exceeded` event from foreman-budget extension, when the RPC event loop receives it, then the run is marked 'stuck' with reason 'BUDGET_EXCEEDED' in Postgres (AC-004-3)
 - [ ] Given a Pi session is started, when the session ID is available, then it is stored in `runs.session_key` (existing TEXT column, no migration needed) (AC-019-2)
 - [ ] Given a `tool_execution_start` or `tool_execution_end` event, when received in the RPC event loop, then `RunProgress` is updated immediately in Postgres (per-event, not batched)
@@ -801,12 +801,12 @@ Tests for Agent Mail sends at each phase transition with failure scenarios.
 ---
 
 #### TRD-023: Branch-Ready Signal via Agent Mail (2h) [satisfies REQ-006]
-Modify `agent-worker-finalize.ts` to send a "branch-ready" message to the `merge-agent` Agent Mail inbox after successful git push. Message contains: seedId, branchName, runId, commitHash.
+Modify `agent-worker-finalize.ts` to send a "branch-ready" message to the `merge-agent` Agent Mail inbox after successful git push. Message contains: taskId, branchName, runId, commitHash.
 
 **Validates PRD ACs:** AC-006-4
 **Implementation AC:**
 - [ ] Given Finalize phase completing (git push succeeds), when the branch is ready, then a "branch-ready" message is sent to the `merge-agent` inbox
-- [ ] Given the message, when sent, then it contains seedId, branchName, runId, and commitHash
+- [ ] Given the message, when sent, then it contains taskId, branchName, runId, and commitHash
 - [ ] Given Agent Mail is down, when the send fails, then the finalize continues normally (fire-and-forget)
 
 [depends: TRD-020]

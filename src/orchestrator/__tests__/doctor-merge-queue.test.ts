@@ -7,7 +7,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "foreman-001",
+    task_id: "foreman-001",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: "/tmp/wt",
@@ -23,7 +23,7 @@ function makeMqEntry(overrides: Partial<MergeQueueEntry> = {}): MergeQueueEntry 
   return {
     id: 1,
     branch_name: "foreman/test-001",
-    seed_id: "test-001",
+    task_id: "test-001",
     run_id: "run-1",
     operation: "auto_merge",
     agent_name: null,
@@ -45,7 +45,7 @@ function makeStore(projectPath = "/tmp/project") {
     getProjectByPath: vi.fn(() => ({ id: "proj-1", name: "test", status: "active", path: projectPath, created_at: "", updated_at: "" })),
     getDb: vi.fn(() => ({ kind: "postgres-db" })),
     getRunsByStatus: vi.fn(() => [] as Run[]),
-    getRunsForSeed: vi.fn(() => [] as Run[]),
+    getRunsForTask: vi.fn(() => [] as Run[]),
     getActiveRuns: vi.fn(() => [] as Run[]),
     updateRun: vi.fn(),
     deleteRun: vi.fn(() => true),
@@ -60,9 +60,9 @@ function makeLocalQueue() {
     list: vi.fn(() => [] as MergeQueueEntry[]),
     remove: vi.fn(),
     updateStatus: vi.fn(),
-    missingFromQueue: vi.fn(() => [] as Array<{ run_id: string; seed_id: string }>),
+    missingFromQueue: vi.fn(() => [] as Array<{ run_id: string; task_id: string }>),
     reEnqueue: vi.fn(),
-    reconcile: vi.fn(() => ({ enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] as Array<{ run_id: string; seed_id: string; reason: string }> })),
+    reconcile: vi.fn(() => ({ enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] as Array<{ run_id: string; task_id: string; reason: string }> })),
   };
   return mergeQueue;
 }
@@ -80,14 +80,14 @@ function makeAsyncQueue() {
     updateStatus: vi.fn(async (_id: number, _status: MergeQueueEntry["status"], _extra?: Record<string, unknown>) => {
       await Promise.resolve();
     }),
-    missingFromQueue: vi.fn(async () => [] as Array<{ run_id: string; seed_id: string }>),
+    missingFromQueue: vi.fn(async () => [] as Array<{ run_id: string; task_id: string }>),
     reEnqueue: vi.fn(async (_id: number) => {
       await Promise.resolve();
       return true;
     }),
     reconcile: vi.fn(async (_repoPath: string) => {
       await Promise.resolve();
-      return { enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] as Array<{ run_id: string; seed_id: string; reason: string }> };
+      return { enqueued: 0, skipped: 0, invalidBranch: 0, failedToEnqueue: [] as Array<{ run_id: string; task_id: string; reason: string }> };
     }),
     entries,
   };
@@ -359,8 +359,8 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
     it("warns when merge queue entry points at an already merged run", async () => {
       const { doctor, mergeQueue, store } = makeMocks();
-      mergeQueue.list.mockReturnValue([makeMqEntry({ id: 7, seed_id: "foreman-56b46", status: "conflict" })]);
-      store.getRun.mockReturnValue(makeRun({ id: "run-1", seed_id: "foreman-56b46", status: "merged" }));
+      mergeQueue.list.mockReturnValue([makeMqEntry({ id: 7, task_id: "foreman-56b46", status: "conflict" })]);
+      store.getRun.mockReturnValue(makeRun({ id: "run-1", task_id: "foreman-56b46", status: "merged" }));
 
       const result = await doctor.checkResolvedMergeQueueEntries();
 
@@ -371,8 +371,8 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
     it("does not treat a completed run as already resolved by itself", async () => {
       const { doctor, mergeQueue, store } = makeMocks();
-      mergeQueue.list.mockReturnValue([makeMqEntry({ id: 7, seed_id: "foreman-56b46", status: "conflict" })]);
-      store.getRun.mockReturnValue(makeRun({ id: "run-1", seed_id: "foreman-56b46", status: "completed" }));
+      mergeQueue.list.mockReturnValue([makeMqEntry({ id: 7, task_id: "foreman-56b46", status: "conflict" })]);
+      store.getRun.mockReturnValue(makeRun({ id: "run-1", task_id: "foreman-56b46", status: "completed" }));
 
       const result = await doctor.checkResolvedMergeQueueEntries();
 
@@ -382,8 +382,8 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
     it("uses registered run lookup instead of local store.getRun when active", async () => {
       const { doctor, registeredQueue, runLookup, store } = makeRegisteredMocks();
-      registeredQueue.entries.push(makeMqEntry({ id: 7, seed_id: "foreman-56b46", status: "conflict" }));
-      runLookup.getRun.mockResolvedValue(makeRun({ id: "run-1", seed_id: "foreman-56b46", status: "merged" }));
+      registeredQueue.entries.push(makeMqEntry({ id: 7, task_id: "foreman-56b46", status: "conflict" }));
+      runLookup.getRun.mockResolvedValue(makeRun({ id: "run-1", task_id: "foreman-56b46", status: "merged" }));
 
       const result = await doctor.checkResolvedMergeQueueEntries();
 
@@ -395,9 +395,9 @@ describe("Doctor - Merge Queue Health Checks", () => {
     it("fixes already resolved queue entries by removing them", async () => {
       const { doctor, mergeQueue, store } = makeMocks();
       mergeQueue.list.mockReturnValue([
-        makeMqEntry({ id: 7, seed_id: "foreman-56b46", status: "conflict" }),
+        makeMqEntry({ id: 7, task_id: "foreman-56b46", status: "conflict" }),
       ]);
-      store.getRun.mockReturnValue(makeRun({ id: "run-1", seed_id: "foreman-56b46", status: "merged" }));
+      store.getRun.mockReturnValue(makeRun({ id: "run-1", task_id: "foreman-56b46", status: "merged" }));
 
       const result = await doctor.checkResolvedMergeQueueEntries({ fix: true });
 
@@ -409,7 +409,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
   describe("checkCompletedRunsNotQueued", () => {
     it("uses local reconcile signature when no registered run lookup is active", async () => {
       const { doctor, mergeQueue, store } = makeMocks();
-      mergeQueue.missingFromQueue.mockReturnValue([{ run_id: "run-1", seed_id: "seed-1" }]);
+      mergeQueue.missingFromQueue.mockReturnValue([{ run_id: "run-1", task_id: "task-1" }]);
       mergeQueue.reconcile.mockResolvedValue({ enqueued: 1, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
 
       const result = await doctor.checkCompletedRunsNotQueued({ fix: true, projectPath: "/tmp/project" });
@@ -420,7 +420,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
     it("uses registered reconcile signature when registered run lookup is active", async () => {
       const { doctor, registeredQueue, runLookup, store } = makeRegisteredMocks();
-      registeredQueue.missingFromQueue.mockResolvedValue([{ run_id: "run-1", seed_id: "seed-1" }]);
+      registeredQueue.missingFromQueue.mockResolvedValue([{ run_id: "run-1", task_id: "task-1" }]);
       registeredQueue.reconcile.mockResolvedValue({ enqueued: 1, skipped: 0, invalidBranch: 0, failedToEnqueue: [] });
       runLookup.getRun.mockResolvedValue(makeRun({ id: "run-1", status: "completed" }));
 
@@ -433,7 +433,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
 
     it("does not report fixed when reconcile enqueues nothing", async () => {
       const { doctor, mergeQueue } = makeMocks();
-      mergeQueue.missingFromQueue.mockReturnValue([{ run_id: "run-1", seed_id: "seed-1" }]);
+      mergeQueue.missingFromQueue.mockReturnValue([{ run_id: "run-1", task_id: "task-1" }]);
       mergeQueue.reconcile.mockResolvedValue({ enqueued: 0, skipped: 1, invalidBranch: 1, failedToEnqueue: [] });
 
       const result = await doctor.checkCompletedRunsNotQueued({ fix: true, projectPath: "/tmp/project" });
@@ -493,7 +493,7 @@ describe("Doctor - Merge Queue Health Checks", () => {
       const store = {
         getProjectByPath: vi.fn(() => null),
         getRunsByStatus: vi.fn(() => []),
-        getRunsForSeed: vi.fn(() => []),
+        getRunsForTask: vi.fn(() => []),
         getActiveRuns: vi.fn(() => []),
         updateRun: vi.fn(),
         logEvent: vi.fn(),
@@ -573,14 +573,14 @@ describe("Doctor - Merge Queue Health Checks", () => {
     it("fix deletes aged failed/stuck run records when the store supports deletion", async () => {
       const { doctor, store } = makeMocks();
       const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
-      const failed = makeRun({ id: "failed-1", seed_id: "task-1", status: "failed", created_at: old });
-      const stuck = makeRun({ id: "stuck-1", seed_id: "task-2", status: "stuck", created_at: old });
+      const failed = makeRun({ id: "failed-1", task_id: "task-1", status: "failed", created_at: old });
+      const stuck = makeRun({ id: "stuck-1", task_id: "task-2", status: "stuck", created_at: old });
       store.getRunsByStatus.mockImplementation(((status: Run["status"]) => {
         if (status === "failed") return [failed];
         if (status === "stuck") return [stuck];
         return [];
       }) as never);
-      store.getRunsForSeed.mockReturnValue([]);
+      store.getRunsForTask.mockReturnValue([]);
 
       const results = await doctor.checkFailedStuckRuns({ fix: true });
 
@@ -598,14 +598,14 @@ describe("Doctor - Merge Queue Health Checks", () => {
       };
       const doctor = new Doctor(store as any, "/tmp/project", makeLocalQueue() as any, taskClient as any, undefined, undefined, undefined, "native");
       const recent = new Date().toISOString();
-      const failed = makeRun({ id: "failed-1", seed_id: "task-1", status: "failed", created_at: recent });
-      const stuck = makeRun({ id: "stuck-1", seed_id: "task-2", status: "stuck", created_at: recent });
+      const failed = makeRun({ id: "failed-1", task_id: "task-1", status: "failed", created_at: recent });
+      const stuck = makeRun({ id: "stuck-1", task_id: "task-2", status: "stuck", created_at: recent });
       store.getRunsByStatus.mockImplementation(((status: Run["status"]) => {
         if (status === "failed") return [failed];
         if (status === "stuck") return [stuck];
         return [];
       }) as never);
-      store.getRunsForSeed.mockReturnValue([]);
+      store.getRunsForTask.mockReturnValue([]);
 
       const results = await doctor.checkFailedStuckRuns({ fix: true });
 

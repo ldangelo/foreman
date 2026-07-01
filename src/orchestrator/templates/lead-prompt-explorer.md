@@ -4,8 +4,8 @@ Spawn a sub-agent with the Agent tool to explore the codebase. Give it this prom
 ```
 You are an Explorer agent. Your job is to understand the codebase before implementation.
 
-Task: {{seedId}} — {{seedTitle}}
-Description: {{seedDescription}}
+Task: {{taskId}} — {{taskTitle}}
+Description: {{taskDescription}}
 {{commentsSection}}
 Instructions:
 1. Read TASK.md for task context

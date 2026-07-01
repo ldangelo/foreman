@@ -21,7 +21,7 @@ The `foreman inbox` command currently renders messages in a free-form text style
 Current inbox output (screenshot style):
 
 ```
-[2024-01-01 12:00:00] explorer → developer  |  phase=developer, status=running, seedId=abc123
+[2024-01-01 12:00:00] explorer → developer  |  phase=developer, status=running, taskId=abc123
 
 [2024-01-01 12:00:05] developer → qa  |  verdict=PASS, message=All checks passed, currentPhase=qa
 ```
@@ -30,7 +30,7 @@ Current inbox output (screenshot style):
 - Messages render vertically, taking many lines per message
 - Hard to compare fields across messages (e.g., which agent sent what to whom)
 - No column alignment — scanning requires reading each line start-to-end
-- Ticket ID (seed/run context) is buried in parsed JSON body
+- Ticket ID (task/run context) is buried in parsed JSON body
 - Long args overflow without truncation
 
 **Target experience (tabular):**
@@ -76,7 +76,7 @@ DATE/TIME          TICKET       FROM      TO        KIND    TOOL     ARGS
 ### Goals
 - Default inbox output uses a readable table layout for message rows
 - date/time is shown in a compact sortable format (YYYY-MM-DD HH:MM)
-- ticket ID/run context is visible per row (from `seedId` in body or run_id)
+- ticket ID/run context is visible per row (from `taskId` in body or run_id)
 - kind, tool, and args are extracted from structured payloads when present
 - Graceful degradation when payload lacks structured fields
 - Long args are truncated safely for table display (max ~40 chars visible)
@@ -98,7 +98,7 @@ DATE/TIME          TICKET       FROM      TO        KIND    TOOL     ARGS
 | Column | Source | Width | Notes |
 |--------|--------|-------|-------|
 | DATE/TIME | `created_at` | 16 chars | Format: `YYYY-MM-DD HH:MM` (compact, sortable) |
-| TICKET | `seedId` from body or `run_id` | 12 chars | Fallback to `run_id` prefix if no `seedId` |
+| TICKET | `taskId` from body or `run_id` | 12 chars | Fallback to `run_id` prefix if no `taskId` |
 | FROM | `sender_agent_type` | 10 chars | Truncate if longer |
 | TO | `recipient_agent_type` | 10 chars | Truncate if longer |
 | KIND | `kind` from body JSON | 8 chars | Fallback to `-` if absent |
@@ -124,7 +124,7 @@ When a message body is not structured JSON or lacks the expected fields:
 
 | Missing Field | Display Value |
 |--------------|---------------|
-| `seedId` in body | Use `run_id` first 8 chars + `…` |
+| `taskId` in body | Use `run_id` first 8 chars + `…` |
 | `kind` | `-` |
 | `tool` | `-` |
 | `argsPreview`/`args` | `-` |
@@ -177,7 +177,7 @@ Add `--raw` flag for minimal processing (shows raw body, no JSON parsing):
 |---|-----------|---------------|
 | AC1 | Default inbox output uses a readable table layout for message rows | Run `foreman inbox` with 5+ messages → output contains header row + separator + data rows |
 | AC2 | date/time is shown in a compact sortable format | Message timestamps render as `YYYY-MM-DD HH:MM` |
-| AC3 | ticket ID/run context is visible per row | Row shows seedId (from body) or run_id prefix when seedId absent |
+| AC3 | ticket ID/run context is visible per row | Row shows taskId (from body) or run_id prefix when taskId absent |
 | AC4 | kind, tool, and args are extracted from structured payloads when present | Send message with `{"kind":"update","tool":"bash","argsPreview":"cd /repo"}` → table shows `update`, `bash`, `cd /repo` |
 | AC5 | Degrades gracefully when fields are absent | Send message with plain text body → table shows `-` for missing fields |
 | AC6 | Long args are truncated safely for table display | Send message with args > 40 chars → visible portion ends with `…` |
@@ -208,7 +208,7 @@ function formatMessageTable(messages: Message[]): string {
 ```typescript
 interface ParsedMessage {
   dateTime: string;    // YYYY-MM-DD HH:MM from created_at
-  ticket: string;      // seedId from body or run_id prefix
+  ticket: string;      // taskId from body or run_id prefix
   from: string;        // sender_agent_type
   to: string;          // recipient_agent_type
   kind: string;         // from body.kind or '-'
@@ -224,10 +224,10 @@ function parseMessageForTable(msg: Message): ParsedMessage {
     // not JSON — use raw body truncated
   }
 
-  const seedId = typeof body.seedId === 'string' ? body.seedId : null;
+  const taskId = typeof body.taskId === 'string' ? body.taskId : null;
   return {
     dateTime: formatTimestampCompact(msg.created_at),
-    ticket: seedId ?? msg.run_id.slice(0, 8) + '…',
+    ticket: taskId ?? msg.run_id.slice(0, 8) + '…',
     from: truncate(msg.sender_agent_type, 10),
     to: truncate(msg.recipient_agent_type, 10),
     kind: typeof body.kind === 'string' ? body.kind : '-',

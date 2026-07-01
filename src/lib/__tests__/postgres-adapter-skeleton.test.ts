@@ -496,7 +496,7 @@ describe("PostgresAdapter run operations", () => {
         rows: [{
           id: "run-1",
           project_id: PROJECT_ID,
-          seed_id: "seed-1",
+          task_id: "task-1",
           agent_type: "developer",
           session_key: null,
           worktree_path: "/tmp/worktree",
@@ -510,7 +510,7 @@ describe("PostgresAdapter run operations", () => {
     ]);
     await initPool({ poolOverride: mockPool });
     try {
-      const result = await adapter.createRun(PROJECT_ID, "seed-1", "developer", {
+      const result = await adapter.createRun(PROJECT_ID, "task-1", "developer", {
         worktreePath: "/tmp/worktree",
       });
       expect(result.id).toBe("run-1");
@@ -527,7 +527,7 @@ describe("PostgresAdapter run operations", () => {
         rows: [{
           id: "run-1",
           project_id: PROJECT_ID,
-          seed_id: "seed-1",
+          task_id: "task-1",
           agent_type: "developer",
           session_key: null,
           worktree_path: null,
@@ -558,7 +558,7 @@ describe("PostgresAdapter run operations", () => {
         rows: [{
           id: "run-1",
           project_id: PROJECT_ID,
-          seed_id: "seed-1",
+          task_id: "task-1",
           agent_type: "developer",
           session_key: null,
           worktree_path: null,
@@ -647,7 +647,7 @@ describe("PostgresAdapter run operations", () => {
         rows: [{
           id: "run-1",
           project_id: PROJECT_ID,
-          seed_id: "seed-1",
+          task_id: "task-1",
           agent_type: "developer",
           session_key: null,
           worktree_path: null,
@@ -682,7 +682,7 @@ describe("PostgresAdapter run operations", () => {
     ]);
     await initPool({ poolOverride: mockPool });
     try {
-      await expect(adapter.hasActiveOrPendingRun(PROJECT_ID, "seed-1")).resolves.toBe(true);
+      await expect(adapter.hasActiveOrPendingRun(PROJECT_ID, "task-1")).resolves.toBe(true);
     } finally {
       await destroyPool();
     }
@@ -696,7 +696,7 @@ describe("PostgresAdapter run operations", () => {
         rows: [{
           id: "run-1",
           project_id: PROJECT_ID,
-          seed_id: "seed-1",
+          task_id: "task-1",
           agent_type: "developer",
           session_key: null,
           worktree_path: null,
@@ -718,7 +718,7 @@ describe("PostgresAdapter run operations", () => {
           rows: [{
             id: "run-1",
             project_id: PROJECT_ID,
-            seed_id: "seed-1",
+            task_id: "task-1",
             agent_type: "developer",
             session_key: null,
             worktree_path: null,

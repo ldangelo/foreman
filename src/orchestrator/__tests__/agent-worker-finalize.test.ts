@@ -107,8 +107,8 @@ function makeConfig(overrides: Partial<FinalizeConfig> = {}): FinalizeConfig {
   // filesystem must supply a real tmpDir via overrides to ensure isolation.
   return {
     runId: "run-test-001",
-    seedId: "bd-test-001",
-    seedTitle: "Fix the test bug",
+    taskId: "bd-test-001",
+    taskTitle: "Fix the test bug",
     projectPath: "/tmp/fake-project",
     ...overrides,
   } as FinalizeConfig;
@@ -182,7 +182,7 @@ describe("finalize() — push succeeds", () => {
   });
 
   it("sets bead to 'review' status after successful push (not closing it)", async () => {
-    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001" }), logFile, mockVcs);
+    await finalize(makeConfig({ worktreePath: tmpDir, taskId: "bd-test-001" }), logFile, mockVcs);
     expect(mockUpdateTaskStatus).toHaveBeenCalledWith("bd-test-001", "review");
   });
 
@@ -197,7 +197,7 @@ describe("finalize() — push succeeds", () => {
 
   it("calls vcs.push with correct branch name", async () => {
     const vcs = makeMockVcs();
-    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-xyz-999" }), logFile, vcs);
+    await finalize(makeConfig({ worktreePath: tmpDir, taskId: "bd-xyz-999" }), logFile, vcs);
     expect(vcs.push).toHaveBeenCalledWith(tmpDir, "foreman/bd-xyz-999");
   });
 
@@ -206,7 +206,7 @@ describe("finalize() — push succeeds", () => {
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     expect(existsSync(reportPath)).toBe(true);
     const content = readFileSync(reportPath, "utf-8");
-    expect(content).toContain("## Seed Status");
+    expect(content).toContain("## Task Status");
     expect(content).toContain("AWAITING_MERGE");
   });
 
@@ -225,7 +225,7 @@ describe("finalize() — push succeeds", () => {
 
   it("uses vcs.stageAll and vcs.commit for the commit step", async () => {
     const vcs = makeMockVcs();
-    await finalize(makeConfig({ worktreePath: tmpDir, seedId: "bd-test-001", seedTitle: "My fix" }), logFile, vcs);
+    await finalize(makeConfig({ worktreePath: tmpDir, taskId: "bd-test-001", taskTitle: "My fix" }), logFile, vcs);
     expect(vcs.stageAll).toHaveBeenCalledWith(tmpDir);
     expect(vcs.commit).toHaveBeenCalledWith(tmpDir, "My fix (bd-test-001)");
   });
@@ -293,14 +293,14 @@ describe("finalize() — push FAILS", () => {
     expect(mockEnqueueToMergeQueue).toHaveBeenCalledOnce();
   });
 
-  it("writes FINALIZE_REPORT.md with FAILED push and PUSH_FAILED seed status", async () => {
+  it("writes FINALIZE_REPORT.md with FAILED push and PUSH_FAILED task status", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     const reportPath = join(tmpDir, "FINALIZE_REPORT.md");
     expect(existsSync(reportPath)).toBe(true);
     const content = readFileSync(reportPath, "utf-8");
     expect(content).toContain("## Push");
     expect(content).toContain("Status: FAILED");
-    expect(content).toContain("## Seed Status");
+    expect(content).toContain("## Task Status");
     expect(content).toContain("PUSH_FAILED");
   });
 
@@ -887,7 +887,7 @@ describe("finalize() — branch verification", () => {
     expect(content).toContain("Status: FAILED");
     expect(content).toContain("## Push");
     expect(content).toContain("Status: SKIPPED (branch verification failed)");
-    expect(content).toContain("## Seed Status");
+    expect(content).toContain("## Task Status");
     expect(content).toContain("Status: PUSH_FAILED");
   });
 

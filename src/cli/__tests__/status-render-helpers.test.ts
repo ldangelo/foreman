@@ -50,7 +50,7 @@ describe("status render helpers", () => {
 
     const run = {
       id: "run-1",
-      seed_id: "seed-1",
+      task_id: "task-1",
       status: "running",
       project_id: "proj-1",
       agent_type: "developer",
@@ -63,7 +63,7 @@ describe("status render helpers", () => {
     };
     const previousRun = {
       id: "run-0",
-      seed_id: "seed-1",
+      task_id: "task-1",
       status: "failed",
       project_id: "proj-1",
       agent_type: "developer",
@@ -77,14 +77,14 @@ describe("status render helpers", () => {
     const store = {
       getActiveRuns: () => [run],
       getRunProgress: () => ({ currentPhase: "developer", toolCalls: 3, toolBreakdown: { Bash: 3 }, filesChanged: [], costUsd: 1.25, turns: 2, tokensIn: 10, tokensOut: 20, lastToolCall: "Bash", lastActivity: new Date().toISOString() }),
-      getRunsForSeed: () => [run, previousRun],
+      getRunsForTask: () => [run, previousRun],
       getMetrics: () => ({ totalCost: 4.5, totalTokens: 1500 }),
     } as any;
 
     await renderActiveAgents(store, "proj-1");
 
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("seed-1");
+    expect(rendered).toContain("task-1");
     expect(rendered).toContain("Last tool");
     expect(rendered).toContain("bash(npm test)");
     expect(rendered).toContain("Costs");

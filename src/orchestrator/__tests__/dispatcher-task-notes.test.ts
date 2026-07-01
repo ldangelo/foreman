@@ -7,7 +7,7 @@ describe("dispatcher task note wiring", () => {
     const sourcePath = fileURLToPath(new URL("../dispatcher.ts", import.meta.url));
     const source = readFileSync(sourcePath, "utf8");
 
-    expect(source).toContain("taskId: seed.id,");
+    expect(source).toContain("taskId: task.id,");
     expect(source).toContain("await spawnWorkerProcess({");
     expect(source).toContain("taskMeta: {");
   });
@@ -25,6 +25,6 @@ describe("dispatcher task note wiring", () => {
     const source = readFileSync(sourcePath, "utf8");
     const resumeBlock = source.slice(source.indexOf("private async resumeAgent"));
 
-    expect(resumeBlock).toContain("taskId: seed.id,");
+    expect(resumeBlock).toContain("taskId: task.id,");
   });
 });

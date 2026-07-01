@@ -31,7 +31,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Path relative to docs/ root (e.g. 'migration-seeds-to-br.md' or 'TRD/trd-2026-004.md')"
+            "description": "Path relative to docs/ root (e.g. 'migration-tasks-to-br.md' or 'TRD/trd-2026-004.md')"
           },
           "variant": {
             "type": "string",

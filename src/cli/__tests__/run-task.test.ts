@@ -32,7 +32,7 @@ const {
 
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.getProjectByPath = vi.fn().mockReturnValue({ id: "proj-1", path: "/test/project" });
-    this.getRunsForSeed = vi.fn().mockResolvedValue([]);
+    this.getRunsForTask = vi.fn().mockResolvedValue([]);
     this.createRun = vi.fn().mockReturnValue({ id: "local-run-1" });
     this.getRun = vi.fn().mockResolvedValue(null);
     this.close = vi.fn();
@@ -40,7 +40,7 @@ const {
   (MockForemanStore as any).forProject = vi.fn(() => new MockForemanStore());
 
   const mockPostgresStoreForProject = vi.fn(() => ({
-    getRunsForSeed: vi.fn().mockResolvedValue([]),
+    getRunsForTask: vi.fn().mockResolvedValue([]),
     getRun: vi.fn().mockResolvedValue(null),
     close: vi.fn(),
   }));
@@ -224,10 +224,10 @@ phases:
       expect(client.update).toHaveBeenCalledWith("task-123", { status: "in-progress" });
       expect(mockSpawnWorkerProcess).toHaveBeenCalledWith(expect.objectContaining({
         runId: "local-run-1",
-        seedId: "task-123",
-        seedTitle: "Direct task run",
-        seedType: "feature",
-        seedPriority: 1,
+        taskId: "task-123",
+        taskTitle: "Direct task run",
+        taskType: "feature",
+        taskPriority: 1,
         worktreePath: "/tmp/worktrees/proj-1/task-1",
         pipeline: true,
         workflowName: "default",
@@ -266,7 +266,7 @@ phases:
     it("fails closed when worktree lock lookup fails", async () => {
       (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
         getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
-        getRunsForSeed: vi.fn().mockRejectedValue(new Error("store unavailable")),
+        getRunsForTask: vi.fn().mockRejectedValue(new Error("store unavailable")),
         close: vi.fn(),
       });
 
@@ -314,7 +314,7 @@ phases:
     it("blocks when an active run already owns the task worktree", async () => {
       (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
         getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
-        getRunsForSeed: vi.fn().mockResolvedValue([{ id: "run-active", status: "running" }]),
+        getRunsForTask: vi.fn().mockResolvedValue([{ id: "run-active", status: "running" }]),
         close: vi.fn(),
       });
 
@@ -429,7 +429,7 @@ phases:
     it("returns an error when local run record creation fails", async () => {
       (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
         getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
-        getRunsForSeed: vi.fn().mockResolvedValue([]),
+        getRunsForTask: vi.fn().mockResolvedValue([]),
         createRun: vi.fn().mockImplementation(() => { throw new Error("create run failed"); }),
         close: vi.fn(),
       });
@@ -497,7 +497,7 @@ phases:
       mockWatchRunsInk.mockResolvedValueOnce({ detached: false });
       (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
         getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
-        getRunsForSeed: vi.fn().mockResolvedValue([]),
+        getRunsForTask: vi.fn().mockResolvedValue([]),
         createRun: vi.fn().mockReturnValue({ id: "local-run-1" }),
         getRun: vi.fn().mockResolvedValue({ id: "local-run-1", status: "completed" }),
         close: vi.fn(),

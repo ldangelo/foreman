@@ -21,7 +21,7 @@ import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
 import { GhCli } from "../lib/gh-cli.js";
 import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 import { JiraApiClient } from "../daemon/jira-api-client.js";
-import { getSeedRetryTargetStatus } from "../lib/run-status.js";
+import { getTaskRetryTargetStatus } from "../lib/run-status.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,7 +32,7 @@ type MergeQueueUpdateExtra = Parameters<MergeQueue["updateStatus"]>[2];
 
 interface MergeQueueLike {
   list(status?: MergeQueueListStatus): MaybePromise<MergeQueueEntry[]>;
-  missingFromQueue(): MaybePromise<Array<{ run_id: string; seed_id: string }>>;
+  missingFromQueue(): MaybePromise<Array<{ run_id: string; task_id: string }>>;
   updateStatus(
     id: number,
     status: MergeQueueUpdateStatus,
@@ -51,7 +51,7 @@ interface RunLookupLike {
   ): MaybePromise<ReturnType<ForemanStore["getRunsByStatuses"]>>;
   getRunsByStatus(status: Run["status"], projectId?: string): MaybePromise<Run[]>;
   getActiveRuns(projectId?: string): MaybePromise<Run[]>;
-  getRunsForSeed(seedId: string, projectId?: string): MaybePromise<Run[]>;
+  getRunsForTask(taskId: string, projectId?: string): MaybePromise<Run[]>;
   updateRun(runId: string, updates: Partial<Pick<Run, "status" | "worktree_path" | "session_key" | "started_at" | "completed_at">>): MaybePromise<void>;
   logEvent?(projectId: string, eventType: "restart", data: Record<string, unknown>, runId?: string): MaybePromise<void>;
   deleteRun?(runId: string): MaybePromise<boolean>;
@@ -1185,10 +1185,10 @@ export class Doctor {
     }
 
     for (const wt of foremanWorktrees) {
-      const seedId = wt.branch.slice("foreman/".length);
+      const taskId = wt.branch.slice("foreman/".length);
       const runs = project?.id
-        ? await Promise.resolve(runStore.getRunsForSeed(seedId, project.id))
-        : await Promise.resolve(runStore.getRunsForSeed(seedId));
+        ? await Promise.resolve(runStore.getRunsForTask(taskId, project.id))
+        : await Promise.resolve(runStore.getRunsForTask(taskId));
       const activeRun = runs.find((r: Run) =>
         ["pending", "running"].includes(r.status) && r.worktree_path === wt.path,
       );
@@ -1204,9 +1204,9 @@ export class Doctor {
           if (isSDKBasedRun(activeRun.session_key)) {
             // Pi-based workers don't have a PID — liveness is checked via stale timeouts.
             results.push({
-              name: `worktree: ${seedId}`,
+              name: `worktree: ${taskId}`,
               status: "pass",
-              message: `Active run (${activeRun.status}) for seed ${seedId} — SDK-based worker`,
+              message: `Active run (${activeRun.status}) for task ${taskId} — SDK-based worker`,
             });
           } else {
             // For traditional PID-based runs, verify the process is actually alive
@@ -1214,13 +1214,13 @@ export class Doctor {
             const alive = pid !== null && isProcessAlive(pid);
             if (alive) {
               results.push({
-                name: `worktree: ${seedId}`,
+                name: `worktree: ${taskId}`,
                 status: "pass",
-                message: `Active run (${activeRun.status}) for seed ${seedId}`,
+                message: `Active run (${activeRun.status}) for task ${taskId}`,
               });
             } else {
               results.push({
-                name: `worktree: ${seedId}`,
+                name: `worktree: ${taskId}`,
                 status: "warn",
                 message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Run 'foreman doctor --fix' to clean up.`,
               });
@@ -1229,25 +1229,25 @@ export class Doctor {
         } else {
           // pending runs don't have a process to check
           results.push({
-            name: `worktree: ${seedId}`,
+            name: `worktree: ${taskId}`,
             status: "pass",
-            message: `Active run (${activeRun.status}) for seed ${seedId}`,
+            message: `Active run (${activeRun.status}) for task ${taskId}`,
           });
         }
       } else if (mergedRun) {
         if (dryRun) {
           results.push({
-            name: `worktree: ${seedId}`,
+            name: `worktree: ${taskId}`,
             status: "warn",
             message: `Already merged — stale worktree at ${wt.path}. Would remove (dry-run).`,
           });
         } else if (fix) {
           try {
-            await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
+            await archiveWorktreeReports(this.projectPath, wt.path, taskId).catch(() => {});
             await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
-              name: `worktree: ${seedId}`,
+              name: `worktree: ${taskId}`,
               status: "fixed",
               message: `Already merged — stale worktree`,
               fixApplied: `Removed worktree at ${wt.path}`,
@@ -1255,27 +1255,27 @@ export class Doctor {
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             results.push({
-              name: `worktree: ${seedId}`,
+              name: `worktree: ${taskId}`,
               status: "warn",
               message: `Already merged but could not auto-remove: ${msg}`,
             });
           }
         } else {
           results.push({
-            name: `worktree: ${seedId}`,
+            name: `worktree: ${taskId}`,
             status: "warn",
             message: `Already merged — stale worktree. Use --fix to remove.`,
           });
         }
       } else if (completedRun) {
         results.push({
-          name: `worktree: ${seedId}`,
+          name: `worktree: ${taskId}`,
           status: "warn",
-          message: `Needs merge. Run: foreman merge --seed ${seedId}`,
+          message: `Needs merge. Run: foreman merge --task ${taskId}`,
         });
       } else if (prCreatedRun) {
         results.push({
-          name: `worktree: ${seedId}`,
+          name: `worktree: ${taskId}`,
           status: "warn",
           message: `PR open — awaiting manual review/merge (run ${prCreatedRun.id.slice(0, 8)})`,
         });
@@ -1290,21 +1290,21 @@ export class Doctor {
         } catch {
           defaultBranch = "main";
         }
-        const alreadyMerged = await this.isBranchMerged(seedId, defaultBranch);
+        const alreadyMerged = await this.isBranchMerged(taskId, defaultBranch);
         if (alreadyMerged && dryRun) {
           results.push({
-            name: `worktree: ${seedId}`,
+            name: `worktree: ${taskId}`,
             status: "warn",
             message: `Run is '${failableRun.status}' but branch is already merged. Would mark run merged and remove worktree (dry-run).`,
           });
         } else if (alreadyMerged && fix) {
           try {
             await Promise.resolve(runStore.updateRun(failableRun.id, { status: "merged", completed_at: new Date().toISOString() }));
-            await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
+            await archiveWorktreeReports(this.projectPath, wt.path, taskId).catch(() => {});
             await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
-              name: `worktree: ${seedId}`,
+              name: `worktree: ${taskId}`,
               status: "fixed",
               message: `Run was '${failableRun.status}' but branch is already merged`,
               fixApplied: `Marked run merged and removed worktree at ${wt.path}`,
@@ -1312,7 +1312,7 @@ export class Doctor {
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             results.push({
-              name: `worktree: ${seedId}`,
+              name: `worktree: ${taskId}`,
               status: "warn",
               message: `Already merged but could not auto-clean failed worktree: ${msg}`,
             });
@@ -1322,7 +1322,7 @@ export class Doctor {
             ? "use 'foreman retry <task-id>' to retry; stale records are cleaned by 'foreman doctor --fix'"
             : "resolve merge conflict manually";
           results.push({
-            name: `worktree: ${seedId}`,
+            name: `worktree: ${taskId}`,
             status: "warn",
             message: `Run in '${failableRun.status}' state — ${hint}`,
           });
@@ -1336,23 +1336,23 @@ export class Doctor {
           // Branch exists on origin — never auto-remove regardless of fix/dryRun.
           const dryRunSuffix = dryRun ? " (dry-run: would not remove either way)" : "";
           results.push({
-            name: `worktree: ${seedId}`,
+            name: `worktree: ${taskId}`,
             status: "warn",
             message: `Orphaned worktree at ${wt.path} (no runs) but branch exists on origin — skipping auto-removal${dryRunSuffix}. Verify and remove manually if safe.`,
           });
         } else if (dryRun) {
           results.push({
-            name: `worktree: ${seedId}`,
+            name: `worktree: ${taskId}`,
             status: "warn",
             message: `Orphaned worktree at ${wt.path} (no runs, not on origin). Would remove (dry-run).`,
           });
         } else if (fix) {
           try {
-            await archiveWorktreeReports(this.projectPath, wt.path, seedId).catch(() => {});
+            await archiveWorktreeReports(this.projectPath, wt.path, taskId).catch(() => {});
             await (await this.getVcsBackend()).removeWorkspace(this.projectPath, wt.path);
             try { await execFileAsync("git", ["worktree", "prune"], { cwd: this.projectPath }); } catch { /* */ }
             results.push({
-              name: `worktree: ${seedId}`,
+              name: `worktree: ${taskId}`,
               status: "fixed",
               message: `Orphaned worktree (no runs, not on origin)`,
               fixApplied: `Removed worktree at ${wt.path}`,
@@ -1360,14 +1360,14 @@ export class Doctor {
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             results.push({
-              name: `worktree: ${seedId}`,
+              name: `worktree: ${taskId}`,
               status: "warn",
               message: `Orphaned worktree — could not auto-remove: ${msg}`,
             });
           }
         } else {
           results.push({
-            name: `worktree: ${seedId}`,
+            name: `worktree: ${taskId}`,
             status: "warn",
             message: `Orphaned worktree at ${wt.path} (no runs, not on origin). Use --fix to remove.`,
           });
@@ -1402,7 +1402,7 @@ export class Doctor {
         : null;
       if (currentRun && (currentRun.status === "merged" || currentRun.status === "pr-created")) {
         results.push({
-          name: `run: ${run.seed_id} [${run.agent_type}]`,
+          name: `run: ${run.task_id} [${run.agent_type}]`,
           status: "pass",
           message: `Run already reached terminal success (${currentRun.status})`,
         });
@@ -1412,7 +1412,7 @@ export class Doctor {
       // Liveness is detected only by stale timeouts, not PID checks.
       if (isSDKBasedRun(run.session_key)) {
         results.push({
-          name: `run: ${run.seed_id} [${run.agent_type}]`,
+          name: `run: ${run.task_id} [${run.agent_type}]`,
           status: "pass",
           message: `Pi-based worker — liveness checked via timeout, not PID`,
         });
@@ -1424,14 +1424,14 @@ export class Doctor {
 
       if (isAlive) {
         results.push({
-          name: `run: ${run.seed_id} [${run.agent_type}]`,
+          name: `run: ${run.task_id} [${run.agent_type}]`,
           status: "pass",
           message: `Process pid ${pid} is alive`,
         });
       } else {
         if (dryRun) {
           results.push({
-            name: `run: ${run.seed_id} [${run.agent_type}]`,
+            name: `run: ${run.task_id} [${run.agent_type}]`,
             status: "warn",
             message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Would mark failed (dry-run).`,
           });
@@ -1441,14 +1441,14 @@ export class Doctor {
             completed_at: new Date().toISOString(),
           }));
           results.push({
-            name: `run: ${run.seed_id} [${run.agent_type}]`,
+            name: `run: ${run.task_id} [${run.agent_type}]`,
             status: "fixed",
             message: `Zombie run (status=running, no live process${pid ? ` for pid ${pid}` : ""})`,
             fixApplied: "Marked as failed",
           });
         } else {
           results.push({
-            name: `run: ${run.seed_id} [${run.agent_type}]`,
+            name: `run: ${run.task_id} [${run.agent_type}]`,
             status: "warn",
             message: `Zombie run: status=running but no live process${pid ? ` (pid ${pid})` : ""}. Use --fix to mark failed.`,
           });
@@ -1519,10 +1519,10 @@ export class Doctor {
   }
 
   /**
-   * Read the beads JSONL and return a Set of seed IDs that are closed.
+   * Read the beads JSONL and return a Set of task IDs that are closed.
    * Falls back to an empty set on any read/parse error (non-fatal).
    */
-  private async getClosedSeedIds(): Promise<Set<string>> {
+  private async getClosedTaskIds(): Promise<Set<string>> {
     const jsonlPath = join(this.projectPath, ".beads", "issues.jsonl");
     const closed = new Set<string>();
     try {
@@ -1546,14 +1546,14 @@ export class Doctor {
   }
 
   /**
-   * Check whether `foreman/<seedId>` has already been merged into `defaultBranch`.
+   * Check whether `foreman/<taskId>` has already been merged into `defaultBranch`.
    *
    * Uses `git merge-base --is-ancestor` which exits 0 if the branch tip is an
    * ancestor of the default branch (i.e. fully merged).  Returns false on any
    * git error so the caller treats the run as still problematic.
    */
-  private async isBranchMerged(seedId: string, defaultBranch: string): Promise<boolean> {
-    const branchName = `foreman/${seedId}`;
+  private async isBranchMerged(taskId: string, defaultBranch: string): Promise<boolean> {
+    const branchName = `foreman/${taskId}`;
     try {
       await this.execFn(
         "git",
@@ -1572,35 +1572,35 @@ export class Doctor {
     projectId: string,
     dryRun: boolean,
   ): Promise<{ resetTasks: number; resetRuns: number; skipped: string[] }> {
-    const resetSeeds = new Set<string>();
+    const resetTaskIds = new Set<string>();
     let resetTasks = 0;
     let resetRuns = 0;
     const skipped: string[] = [];
 
     for (const run of runs) {
-      if (!resetSeeds.has(run.seed_id) && this.taskClient) {
-        resetSeeds.add(run.seed_id);
+      if (!resetTaskIds.has(run.task_id) && this.taskClient) {
+        resetTaskIds.add(run.task_id);
         try {
-          const task = await this.taskClient.show(run.seed_id);
-          const target = getSeedRetryTargetStatus(task.status, {
+          const task = await this.taskClient.show(run.task_id);
+          const target = getTaskRetryTargetStatus(task.status, {
             command: "retry",
             backendType: this.backendType ?? "native",
           });
           if (target && target !== task.status && !dryRun) {
             if (target === "ready" && typeof this.taskClient.resetToReady === "function") {
-              await this.taskClient.resetToReady(run.seed_id, "foreman doctor --fix");
+              await this.taskClient.resetToReady(run.task_id, "foreman doctor --fix");
             } else {
-              await this.taskClient.update(run.seed_id, { status: target });
+              await this.taskClient.update(run.task_id, { status: target });
             }
             resetTasks++;
           } else if (target && target === task.status) {
             resetTasks++;
           } else if (!target) {
-            skipped.push(`${run.seed_id}: task status ${task.status} is terminal`);
+            skipped.push(`${run.task_id}: task status ${task.status} is terminal`);
           }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          skipped.push(`${run.seed_id}: ${msg}`);
+          skipped.push(`${run.task_id}: ${msg}`);
         }
       }
 
@@ -1616,7 +1616,7 @@ export class Doctor {
           await Promise.resolve(runStore.logEvent(
             projectId,
             "restart",
-            { reason: "foreman doctor --fix", seedId: run.seed_id, previousRunStatus: run.status },
+            { reason: "foreman doctor --fix", taskId: run.task_id, previousRunStatus: run.status },
             run.id,
           ));
         }
@@ -1647,13 +1647,13 @@ export class Doctor {
       defaultBranch = "main";
     }
 
-    // Collect seed IDs that are already closed in beads so we can auto-resolve
+    // Collect task IDs that are already closed in beads so we can auto-resolve
     // stale run records without hitting git at all.
-    const closedSeeds = await this.getClosedSeedIds();
+    const closedTasks = await this.getClosedTaskIds();
 
     /**
      * For a set of runs (all failed or all stuck), filter out those that are
-     * already resolved (seed closed or branch merged) and auto-mark them as
+     * already resolved (task closed or branch merged) and auto-mark them as
      * merged in the store when fixing.  Returns the subset that still needs
      * attention.
      */
@@ -1664,8 +1664,8 @@ export class Doctor {
       const unresolved: import("../lib/store.js").Run[] = [];
 
       for (const run of runs) {
-        // If the bead/seed is already closed, the run record is stale.
-        if (closedSeeds.has(run.seed_id)) {
+        // If the bead/task is already closed, the run record is stale.
+        if (closedTasks.has(run.task_id)) {
           if (fix && !dryRun) {
             await Promise.resolve(runStore.updateRun(run.id, { status: "merged" }));
           }
@@ -1674,7 +1674,7 @@ export class Doctor {
         }
 
         // If the branch has already been merged, the run is done.
-        const merged = await this.isBranchMerged(run.seed_id, defaultBranch);
+        const merged = await this.isBranchMerged(run.task_id, defaultBranch);
         if (merged) {
           if (fix && !dryRun) {
             await Promise.resolve(runStore.updateRun(run.id, { status: "merged" }));
@@ -1703,20 +1703,20 @@ export class Doctor {
         results.push({
           name: "failed/stuck runs (auto-resolved)",
           status: "fixed",
-          message: `Auto-resolved ${totalResolved} run(s) whose branch was already merged or seed was already closed`,
+          message: `Auto-resolved ${totalResolved} run(s) whose branch was already merged or task was already closed`,
           fixApplied: `Marked ${totalResolved} run(s) as merged`,
         });
       } else {
         results.push({
           name: "failed/stuck runs (auto-resolved)",
           status: "warn",
-          message: `Found ${totalResolved} run(s) eligible for auto-resolution because their branch was already merged or seed was already closed${dryRun ? " (dry-run)" : ""}. Re-run with --fix to apply.`,
+          message: `Found ${totalResolved} run(s) eligible for auto-resolution because their branch was already merged or task was already closed${dryRun ? " (dry-run)" : ""}. Re-run with --fix to apply.`,
         });
       }
     }
 
     // ── Distinguish actionable vs. noise failures ─────────────────────────────
-    // A failed run is "noise" (historical retry) if the same seed has a later
+    // A failed run is "noise" (historical retry) if the same task has a later
     // successful run (completed or merged).  These are not actionable.
     const { actionable: actionableFailed, historical: historicalFailed } =
       await this.partitionByHistoricalRetry(unresolvedFailed, runStore, project.id);
@@ -1797,7 +1797,7 @@ export class Doctor {
       results.push({
         name: `failed runs (historical retries)`,
         status: "warn",
-        message: `${recentHistoricalFailed.length} failed run(s) are historical retries (seed later completed): ${recentHistoricalFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentHistoricalFailed.length > 5 ? "..." : ""}. These will be auto-cleaned after ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s).`,
+        message: `${recentHistoricalFailed.length} failed run(s) are historical retries (task later completed): ${recentHistoricalFailed.slice(0, 5).map((r) => r.task_id).join(", ")}${recentHistoricalFailed.length > 5 ? "..." : ""}. These will be auto-cleaned after ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s).`,
       });
     }
 
@@ -1808,7 +1808,7 @@ export class Doctor {
       results.push({
         name: "failed/stuck runs (retry reset, dry-run)",
         status: "warn",
-        message: `${retryableRecent.length} failed/stuck run(s) would be reset for retry: ${retryableRecent.slice(0, 5).map((r) => r.seed_id).join(", ")}${retryableRecent.length > 5 ? "..." : ""}.`,
+        message: `${retryableRecent.length} failed/stuck run(s) would be reset for retry: ${retryableRecent.slice(0, 5).map((r) => r.task_id).join(", ")}${retryableRecent.length > 5 ? "..." : ""}.`,
       });
     } else if (retryableRecent.length > 0 && fix) {
       const fixResult = await this.applyRetryFixForRuns(retryableRecent, runStore, project.id, false);
@@ -1820,12 +1820,12 @@ export class Doctor {
         fixApplied: fixResult.resetRuns > 0 ? `Reset ${fixResult.resetRuns} run(s) and ${fixResult.resetTasks} task(s) to retryable state` : undefined,
       });
     } else {
-      // Actionable failures: seeds with ONLY failed runs — need attention
+      // Actionable failures: tasks with ONLY failed runs — need attention
       if (recentActionableFailed.length > 0) {
         results.push({
           name: `failed runs`,
           status: "warn",
-          message: `${recentActionableFailed.length} failed run(s): ${recentActionableFailed.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentActionableFailed.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry, or 'foreman doctor --fix' to reset retryable runs in bulk.`,
+          message: `${recentActionableFailed.length} failed run(s): ${recentActionableFailed.slice(0, 5).map((r) => r.task_id).join(", ")}${recentActionableFailed.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry, or 'foreman doctor --fix' to reset retryable runs in bulk.`,
         });
       }
 
@@ -1834,7 +1834,7 @@ export class Doctor {
         results.push({
           name: `stuck runs`,
           status: "warn",
-          message: `${recentStuck.length} stuck run(s): ${recentStuck.slice(0, 5).map((r) => r.seed_id).join(", ")}${recentStuck.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry, 'foreman attach <task-id>' to inspect, or 'foreman doctor --fix' to reset retryable runs in bulk.`,
+          message: `${recentStuck.length} stuck run(s): ${recentStuck.slice(0, 5).map((r) => r.task_id).join(", ")}${recentStuck.length > 5 ? "..." : ""}. Use 'foreman retry <task-id>' to retry, 'foreman attach <task-id>' to inspect, or 'foreman doctor --fix' to reset retryable runs in bulk.`,
         });
       }
     }
@@ -1858,8 +1858,8 @@ export class Doctor {
   }
 
   /**
-   * Partition unresolved failed runs into "actionable" (seed has only failed runs)
-   * and "historical" (seed has a later completed or merged run — noise from retries).
+   * Partition unresolved failed runs into "actionable" (task has only failed runs)
+   * and "historical" (task has a later completed or merged run — noise from retries).
    */
   private async partitionByHistoricalRetry(
     runs: import("../lib/store.js").Run[],
@@ -1870,8 +1870,8 @@ export class Doctor {
     const historical: import("../lib/store.js").Run[] = [];
 
     for (const run of runs) {
-      const allSeedRuns = await Promise.resolve(runStore.getRunsForSeed(run.seed_id, projectId));
-      const hasLaterSuccess = allSeedRuns.some(
+      const allTaskRuns = await Promise.resolve(runStore.getRunsForTask(run.task_id, projectId));
+      const hasLaterSuccess = allTaskRuns.some(
         (r) =>
           ["completed", "merged"].includes(r.status) &&
           new Date(r.created_at).getTime() > new Date(run.created_at).getTime(),
@@ -1911,21 +1911,21 @@ export class Doctor {
       for (const run of inconsistentRuns) {
         if (dryRun) {
           results.push({
-            name: `run state: ${run.seed_id} [${run.agent_type}]`,
+            name: `run state: ${run.task_id} [${run.agent_type}]`,
             status: "warn",
             message: `Run has completed_at set but status="${run.status}". Would mark as failed (dry-run).`,
           });
         } else if (fix) {
           await Promise.resolve(runStore.updateRun(run.id, { status: "failed" }));
           results.push({
-            name: `run state: ${run.seed_id} [${run.agent_type}]`,
+            name: `run state: ${run.task_id} [${run.agent_type}]`,
             status: "fixed",
             message: `Inconsistent state: completed_at set but status was "${run.status}"`,
             fixApplied: "Marked as failed",
           });
         } else {
           results.push({
-            name: `run state: ${run.seed_id} [${run.agent_type}]`,
+            name: `run state: ${run.task_id} [${run.agent_type}]`,
             status: "warn",
             message: `Inconsistent run state: completed_at set but status="${run.status}". Use --fix to repair.`,
           });
@@ -1940,7 +1940,7 @@ export class Doctor {
    * Check for bead status drift between Postgres and the br backend.
    *
    * Calls syncBeadStatusOnStartup() to detect (and optionally fix) mismatches
-   * between the run status recorded in Postgres and the corresponding seed status
+   * between the run status recorded in Postgres and the corresponding task status
    * in br.  Drift occurs when foreman was interrupted before a br update could
    * complete (e.g. after a crash, token exhaustion, or manual reset).
    *
@@ -2012,7 +2012,7 @@ export class Doctor {
 
     const mismatchList = result.mismatches
       .slice(0, 5)
-      .map((m) => `${m.seedId}: br=${m.actualSeedStatus} → expected=${m.expectedSeedStatus}`)
+      .map((m) => `${m.taskId}: br=${m.actualTaskStatus} → expected=${m.expectedTaskStatus}`)
       .join("; ");
     const truncated = result.mismatches.length > 5 ? ` … +${result.mismatches.length - 5} more` : "";
 
@@ -2050,7 +2050,7 @@ export class Doctor {
         name: "bead status sync (Postgres ↔ br)",
         status: fixResult.errors.length > 0 ? "warn" : "fixed",
         message: `${fixResult.mismatches.length} bead status mismatch(es) detected`,
-        fixApplied: `Fixed ${fixResult.synced} seed status(es) in br${errSuffix}`,
+        fixApplied: `Fixed ${fixResult.synced} task status(es) in br${errSuffix}`,
         details: mismatchList + truncated,
       };
     }
@@ -2114,46 +2114,46 @@ export class Doctor {
     }
   }
 
-  async checkBlockedSeeds(): Promise<CheckResult> {
+  async checkBlockedTasks(): Promise<CheckResult> {
     if (!this.taskClient) {
       return {
-        name: "blocked seeds",
+        name: "blocked tasks",
         status: "skip",
         message: "No task client configured",
       };
     }
 
-    let openSeeds: Awaited<ReturnType<typeof this.taskClient.list>>;
-    let readySeeds: Awaited<ReturnType<typeof this.taskClient.ready>>;
+    let openTasks: Awaited<ReturnType<typeof this.taskClient.list>>;
+    let readyTasks: Awaited<ReturnType<typeof this.taskClient.ready>>;
     try {
-      [openSeeds, readySeeds] = await Promise.all([
+      [openTasks, readyTasks] = await Promise.all([
         this.taskClient.list({ status: "open" }),
         this.taskClient.ready(),
       ]);
     } catch {
       return {
-        name: "blocked seeds",
+        name: "blocked tasks",
         status: "warn",
-        message: "Could not list seeds (skipping check)",
+        message: "Could not list tasks (skipping check)",
       };
     }
 
-    const readyIds = new Set(readySeeds.map((s) => s.id));
-    const blockedSeeds = openSeeds.filter((s) => !readyIds.has(s.id));
+    const readyIds = new Set(readyTasks.map((s) => s.id));
+    const blockedTasks = openTasks.filter((s) => !readyIds.has(s.id));
 
-    if (blockedSeeds.length === 0) {
+    if (blockedTasks.length === 0) {
       return {
-        name: "blocked seeds",
+        name: "blocked tasks",
         status: "pass",
-        message: "No blocked seeds",
+        message: "No blocked tasks",
       };
     }
 
-    const list = blockedSeeds.map((s) => `${s.id} (${s.title})`).join(", ");
+    const list = blockedTasks.map((s) => `${s.id} (${s.title})`).join(", ");
     return {
-      name: "blocked seeds",
+      name: "blocked tasks",
       status: "warn",
-      message: `${blockedSeeds.length} blocked seed(s): ${list}`,
+      message: `${blockedTasks.length} blocked task(s): ${list}`,
     };
   }
 
@@ -2366,7 +2366,7 @@ export class Doctor {
       };
     }
 
-    const details = missing.map((r) => `${r.seed_id} (run ${r.run_id})`).join(", ");
+    const details = missing.map((r) => `${r.task_id} (run ${r.run_id})`).join(", ");
 
     if (dryRun) {
       return {
@@ -2445,7 +2445,7 @@ export class Doctor {
         continue;
       }
 
-      if (await this.isBranchMerged(entry.seed_id, defaultBranch)) {
+      if (await this.isBranchMerged(entry.task_id, defaultBranch)) {
         resolvedEntries.push(entry);
       }
     }
@@ -2456,7 +2456,7 @@ export class Doctor {
 
     const details = resolvedEntries
       .slice(0, 5)
-      .map((entry) => `${entry.seed_id} (${entry.status})`)
+      .map((entry) => `${entry.task_id} (${entry.status})`)
       .join(", ");
     const truncated = resolvedEntries.length > 5 ? ` … +${resolvedEntries.length - 5} more` : "";
 
@@ -2539,11 +2539,11 @@ export class Doctor {
       };
     }
 
-    const seedIds = stuckEntries.map((e) => e.seed_id).join(", ");
+    const taskIds = stuckEntries.map((e) => e.task_id).join(", ");
     return {
       name: "stuck conflict/failed entries (>1h)",
       status: "warn",
-      message: `MQ-012: ${stuckEntries.length} entry(ies) stuck in conflict/failed >1h (${seedIds}). Use --fix to retry or 'foreman merge --auto-retry'.`,
+      message: `MQ-012: ${stuckEntries.length} entry(ies) stuck in conflict/failed >1h (${taskIds}). Use --fix to retry or 'foreman merge --auto-retry'.`,
     };
   }
 
@@ -2667,7 +2667,7 @@ export class Doctor {
 
       if (dryRun) {
         const details = orphaned
-          .map((o) => `  ${o.run.id} (seed: ${o.run.seed_id}, project: ${o.projectName})`)
+          .map((o) => `  ${o.run.id} (task: ${o.run.task_id}, project: ${o.projectName})`)
           .join("\n");
         return {
           name: checkName,
@@ -2724,14 +2724,14 @@ export class Doctor {
           localDb
             .prepare(
               `INSERT OR IGNORE INTO runs
-                 (id, project_id, seed_id, agent_type, session_key, worktree_path,
+                 (id, project_id, task_id, agent_type, session_key, worktree_path,
                   status, started_at, completed_at, created_at, base_branch, tmux_session, progress)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             )
             .run(
               run.id,
               effectiveProjectId,
-              run.seed_id,
+              run.task_id,
               run.agent_type,
               run.session_key,
               run.worktree_path,
@@ -2846,7 +2846,7 @@ export class Doctor {
         this.checkStalePendingRuns(opts),
         this.checkFailedStuckRuns(opts),
         this.checkRunStateConsistency(opts),
-        this.checkBlockedSeeds(),
+        this.checkBlockedTasks(),
         this.checkBrRecoveryArtifacts(opts),
         this.checkOrphanedGlobalStoreRuns(opts),
         this.checkBeadStatusSync(opts),

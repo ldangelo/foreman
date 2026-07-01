@@ -644,14 +644,14 @@ describe("resolveWorkflowName", () => {
   });
 
   it("uses a workflow file installed in the global foreman home", () => {
-    writeWorkflowFile(tmpDir, "custom-seed", `
-name: custom-seed
+    writeWorkflowFile(tmpDir, "custom-task", `
+name: custom-task
 phases:
   - name: finalize
     builtin: true
 `);
 
-    expect(resolveWorkflowName("custom-seed")).toBe("custom-seed");
+    expect(resolveWorkflowName("custom-task")).toBe("custom-task");
   });
 
   it("ignores optional routing hints — uses type-based workflow when no workflow label", () => {

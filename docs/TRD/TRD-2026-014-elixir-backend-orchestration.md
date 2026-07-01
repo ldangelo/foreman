@@ -292,7 +292,7 @@ Merge orchestration must revalidate `stable_ready` immediately before appending 
 
 | Quality Attribute | Requirement | Verification |
 |-------------------|-------------|--------------|
-| Projection latency | `status`, `task list`, and `run show` projection reads return in <250ms for 100 active/recent tasks locally | Integration benchmark with seeded projection rows |
+| Projection latency | `status`, `task list`, and `run show` projection reads return in <250ms for 100 active/recent tasks locally | Integration benchmark with tasked projection rows |
 | Event append throughput | Event append path supports >=100 events/sec locally for bursty worker logs/tool events | Event-store load test with ordered stream assertions |
 | Worker liveness | Worker heartbeat interval defaults to 10s; worker is stale after 60s without matching heartbeat metadata | Recovery fixture and fake worker tests |
 | API error handling | Command API returns structured `{ok:false,error:{code,message,details,retryable,correlation_id}}` envelope for validation, auth, conflict, unsupported, and internal errors | API contract tests |

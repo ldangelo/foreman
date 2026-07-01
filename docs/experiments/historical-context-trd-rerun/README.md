@@ -16,7 +16,7 @@ Decompose PRD-2026-008 into actionable tasks for implementing the Historical Con
 - T9: Directory exclusion validation enhancement
 - T10: Documentation
 
-## Seed Issues
+## Task Issues
 
 | ID | Title | Priority | Status |
 |----|-------|----------|--------|

@@ -15,7 +15,7 @@ import type { WorkflowPhaseConfig } from "../../lib/workflow-loader.js";
 // ── resolvePhaseModel unit tests ──────────────────────────────────────────────
 
 describe("resolvePhaseModel — model resolution priority", () => {
-  it("uses phase.models[P0] when seedPriority is P0", () => {
+  it("uses phase.models[P0] when taskPriority is P0", () => {
     const phase: WorkflowPhaseConfig = {
       name: "developer",
       models: { default: "sonnet", P0: "opus" },
@@ -24,7 +24,7 @@ describe("resolvePhaseModel — model resolution priority", () => {
     expect(result).toBe("anthropic/claude-opus-4-6");
   });
 
-  it("uses phase.models.default when seedPriority has no override", () => {
+  it("uses phase.models.default when taskPriority has no override", () => {
     const phase: WorkflowPhaseConfig = {
       name: "developer",
       models: { default: "sonnet", P0: "opus" },
@@ -33,7 +33,7 @@ describe("resolvePhaseModel — model resolution priority", () => {
     expect(result).toBe("anthropic/claude-sonnet-4-6");
   });
 
-  it("uses phase.models.default when seedPriority is undefined", () => {
+  it("uses phase.models.default when taskPriority is undefined", () => {
     const phase: WorkflowPhaseConfig = {
       name: "qa",
       models: { default: "haiku" },
@@ -107,15 +107,15 @@ describe("pipeline-executor.ts — resolvePhaseModel integration", () => {
     expect(src).not.toContain('import { resolveWorkflowModel }');
   });
 
-  it("pipeline-executor passes config.seedPriority to resolvePhaseModel", async () => {
+  it("pipeline-executor passes config.taskPriority to resolvePhaseModel", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const src = readFileSync(
       join(import.meta.dirname, "..", "pipeline-executor.ts"),
       "utf-8",
     );
-    expect(src).toContain("config.seedPriority");
-    expect(src).toContain("resolvePhaseModel(phase, config.seedPriority");
+    expect(src).toContain("config.taskPriority");
+    expect(src).toContain("resolvePhaseModel(phase, config.taskPriority");
   });
 
   it("pipeline-executor passes resolved model to runPhase (not hardcoded)", async () => {
@@ -167,14 +167,14 @@ describe("dispatcher.ts — selectModel removed", () => {
     expect(src).not.toContain("this.selectModel(");
   });
 
-  it("dispatcher passes seedPriority to worker config", async () => {
+  it("dispatcher passes taskPriority to worker config", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const src = readFileSync(
       join(import.meta.dirname, "..", "dispatcher.ts"),
       "utf-8",
     );
-    expect(src).toContain("seedPriority: seed.priority");
+    expect(src).toContain("taskPriority: task.priority");
   });
 });
 

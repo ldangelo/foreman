@@ -51,8 +51,8 @@ function makeBasePipelineArgs(
     config: {
       runId: "run-verdict-001",
       projectId: "proj-001",
-      seedId: "seed-verdict",
-      seedTitle: "Verdict retry test",
+      taskId: "task-verdict",
+      taskTitle: "Verdict retry test",
       model: "anthropic/claude-sonnet-4-6",
       worktreePath: tmpDir,
       env: {},
@@ -308,7 +308,7 @@ describe("verdict-triggered retry", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("TEST] FAIL — looping back to fix"));
     expect(ctx.sendMailText).toHaveBeenCalledWith(
       null,
-      "fix-seed-verdict",
+      "fix-task-verdict",
       "Test Feedback - Retry 1",
       expect.stringContaining("## Verdict: FAIL"),
     );
@@ -535,10 +535,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };
@@ -607,10 +607,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };
@@ -661,10 +661,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };
@@ -719,10 +719,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };
@@ -775,10 +775,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };

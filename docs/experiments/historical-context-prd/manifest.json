@@ -5,7 +5,7 @@
   "description": "Canonical list of archival documents requiring historical context banners. Maintained manually — see PRD-2026-008 for process.",
   "documents": [
     {
-      "path": "migration-seeds-to-br.md",
+      "path": "migration-tasks-to-br.md",
       "variant": "migration",
       "rationale": "Migration guide; describes sd → br transition; pre-native-task-management era",
       "lastReviewed": "2026-04-15",
@@ -28,7 +28,7 @@
     {
       "path": "mail-transport-plan.md",
       "variant": "standard",
-      "rationale": "Draft plan from 2026-03-21; references seeds CLI; no native task store mentions",
+      "rationale": "Draft plan from 2026-03-21; references tasks CLI; no native task store mentions",
       "lastReviewed": "2026-04-15",
       "status": "archived"
     },
@@ -68,7 +68,7 @@
       "status": "archived"
     },
     {
-      "path": "TRD/seeds-to-br-bv-migration.md",
+      "path": "TRD/tasks-to-br-bv-migration.md",
       "variant": "comparison",
       "rationale": "See OQ-3: depends on whether it describes beads-first as end state (archived) or baseline for native task management (needs reclassification). Status: review until OQ-3 resolved.",
       "lastReviewed": "2026-04-15",

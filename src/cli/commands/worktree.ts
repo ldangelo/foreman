@@ -15,7 +15,7 @@ export interface WorktreeInfo {
   path: string;
   branch: string;
   head: string;
-  seedId: string;
+  taskId: string;
   runStatus: Run["status"] | null;
   runId: string | null;
   createdAt: string | null;
@@ -41,10 +41,10 @@ const CLEANABLE_STATUSES = new Set<string>([
 ]);
 
 /**
- * Extract seed ID from a foreman branch name.
- * "foreman/seed-abc" -> "seed-abc"
+ * Extract task ID from a foreman branch name.
+ * "foreman/task-abc" -> "task-abc"
  */
-function seedIdFromBranch(branch: string): string {
+function taskIdFromBranch(branch: string): string {
   return branch.replace(/^foreman\//, "");
 }
 
@@ -55,7 +55,7 @@ function seedIdFromBranch(branch: string): string {
  */
 export async function listForemanWorktrees(
   projectPath: string,
-  store: Pick<PostgresStore, "getRunsForSeed"> | Pick<ForemanStore, "getRunsForSeed">,
+  store: Pick<PostgresStore, "getRunsForTask"> | Pick<ForemanStore, "getRunsForTask">,
 ): Promise<WorktreeInfo[]> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const worktrees = await vcs.listWorkspaces(projectPath);
@@ -66,15 +66,15 @@ export async function listForemanWorktrees(
 
   const results: WorktreeInfo[] = [];
   for (const wt of foremanWorktrees) {
-    const seedId = seedIdFromBranch(wt.branch);
-    const runs = await store.getRunsForSeed(seedId);
+    const taskId = taskIdFromBranch(wt.branch);
+    const runs = await store.getRunsForTask(taskId);
     const latestRun = runs.length > 0 ? runs[0] : null;
 
     results.push({
       path: wt.path,
       branch: wt.branch,
       head: wt.head,
-      seedId,
+      taskId,
       runStatus: latestRun?.status ?? null,
       runId: latestRun?.id ?? null,
       createdAt: latestRun?.created_at ?? null,
@@ -114,7 +114,7 @@ export async function cleanWorktrees(
     }
 
     try {
-      await archiveWorktreeReports(projectPath, wt.path, wt.seedId);
+      await archiveWorktreeReports(projectPath, wt.path, wt.taskId);
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       await vcs.removeWorkspace(projectPath, wt.path);
       await vcs.deleteBranch(projectPath, wt.branch, {
@@ -123,7 +123,7 @@ export async function cleanWorktrees(
       removed++;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`${wt.seedId}: ${msg}`);
+      errors.push(`${wt.taskId}: ${msg}`);
     }
   }
 
@@ -183,7 +183,7 @@ export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise
         : chalk.dim("no run");
 
       console.log(
-        `  ${chalk.cyan(wt.seedId)} ${status} ${chalk.dim(wt.path)} ${chalk.dim(`(${age})`)}`,
+        `  ${chalk.cyan(wt.taskId)} ${status} ${chalk.dim(wt.path)} ${chalk.dim(`(${age})`)}`,
       );
     }
 
@@ -225,7 +225,7 @@ export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promi
     if (dryRun && result.wouldRemove && result.wouldRemove.length > 0) {
       console.log(chalk.dim("Worktrees that would be removed:"));
       for (const wt of result.wouldRemove) {
-        console.log(`  ${chalk.cyan(wt.seedId)}  ${chalk.dim(wt.path)}`);
+        console.log(`  ${chalk.cyan(wt.taskId)}  ${chalk.dim(wt.path)}`);
       }
     }
 

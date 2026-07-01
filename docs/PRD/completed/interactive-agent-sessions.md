@@ -27,7 +27,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 - **Interactivity**: Users can intervene, answer questions, or guide agents when they get stuck -- reducing wasted compute and failed runs
 - **Debuggability**: When an agent fails, users can attach and see the full Claude Code UI with conversation history, tool call results, and error context
 - **Resume**: `claude --resume <sessionId>` provides native session resume, replacing the current fragile SDK session ID extraction
-- **Alignment with Overstory**: Matches the tmux + interactive CLI pattern used by Overstory (the reference implementation from the seeds ecosystem)
+- **Alignment with Overstory**: Matches the tmux + interactive CLI pattern used by Overstory (the reference implementation from the tasks ecosystem)
 
 ---
 
@@ -74,7 +74,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 7. User notices the agent taking a questionable approach, types a correction directly into the session
 8. Developer phase completes, QA phase starts automatically
 9. QA finds test failures, pipeline sends feedback back to Developer for retry
-10. After all phases complete, Finalize commits, pushes, and closes the seed
+10. After all phases complete, Finalize commits, pushes, and closes the task
 11. If the agent hits a rate limit mid-session, user can later `foreman run --resume` which invokes `claude --resume <sessionId>`
 
 ---
@@ -298,7 +298,7 @@ Replace the SDK `query()` invocation with spawning the `claude` CLI binary direc
 ### Scenario 1: Basic Interactive Run
 
 ```
-Given: A seed "abc123" is ready
+Given: A task "abc123" is ready
 When: User runs `foreman run --bead abc123`
 Then: A tmux session "foreman-abc123" is created
   And: The tmux pane shows a live Claude Code session (Explorer phase)
@@ -335,7 +335,7 @@ Then: Foreman identifies the stuck run and its last session ID
 ### Scenario 4: Multi-Agent Concurrent Dispatch
 
 ```
-Given: 3 seeds are ready and max-agents is 5
+Given: 3 tasks are ready and max-agents is 5
 When: User runs `foreman run`
 Then: 3 tmux sessions are created, each running independent pipelines
   And: `foreman attach --list` shows all 3 sessions with status
@@ -408,7 +408,7 @@ Then: The claude process receives the user's input
 | tmux 3.x | Required | MVP requires tmux; no detached fallback |
 | `@anthropic-ai/claude-agent-sdk` | Retained (planning only) | Still used for `dispatchPlanStep()` (PRD/TRD generation). Removed from agent worker pipeline |
 | ForemanStore (Postgres) | Required | No schema changes expected; same progress/run tracking |
-| Seeds CLI (`sd`) | Required | Used in Finalize phase; no changes needed |
+| Tasks CLI (`sd`) | Required | Used in Finalize phase; no changes needed |
 
 ### 8.2 Verified Claude CLI Flags
 

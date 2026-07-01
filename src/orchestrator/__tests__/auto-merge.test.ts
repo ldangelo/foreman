@@ -85,7 +85,7 @@ const {
   });
   const mockRefineryEnsurePullRequest = vi.fn().mockResolvedValue({
     runId: "run-001",
-    seedId: "bd-test-001",
+    taskId: "bd-test-001",
     branchName: "foreman/bd-test-001",
     prUrl: "https://github.com/x/y/pull/1",
   });
@@ -240,7 +240,7 @@ function resetMocks(): void {
   });
   mockRefineryEnsurePullRequest.mockResolvedValue({
     runId: "run-001",
-    seedId: "bd-test-001",
+    taskId: "bd-test-001",
     branchName: "foreman/bd-test-001",
     prUrl: "https://github.com/x/y/pull/1",
   });
@@ -362,12 +362,12 @@ describe("autoMerge() — registered read seam", () => {
   });
 
   it("uses the injected read lookup for registered retry counting instead of local store reads", async () => {
-    const entry = { id: 1, seed_id: "bd-test-001", run_id: "run-001" };
+    const entry = { id: 1, task_id: "bd-test-001", run_id: "run-001" };
     const readLookup = {
-      getRun: vi.fn().mockResolvedValue({ id: "run-001", seed_id: "bd-test-001", project_id: "proj-1", merge_strategy: "auto" }),
+      getRun: vi.fn().mockResolvedValue({ id: "run-001", task_id: "bd-test-001", project_id: "proj-1", merge_strategy: "auto" }),
       getRunsByStatus: vi.fn().mockResolvedValue([]),
       getRunsByStatuses: vi.fn().mockResolvedValue([
-        { id: "run-old", seed_id: "bd-test-001", status: "test-failed" },
+        { id: "run-old", task_id: "bd-test-001", status: "test-failed" },
       ]),
       getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
     };
@@ -385,7 +385,7 @@ describe("autoMerge() — registered read seam", () => {
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "failed" }],
+      testFailures: [{ taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "failed" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -410,13 +410,13 @@ describe("autoMerge() — merge outcomes", () => {
   });
 
   function makeEntry(id: number = 1) {
-    return { id, seed_id: `bd-test-00${id}`, run_id: `run-00${id}` };
+    return { id, task_id: `bd-test-00${id}`, run_id: `run-00${id}` };
   }
 
   it("increments mergedCount when report.merged is non-empty", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
-      merged: [{ seedId: "bd-test-001" }],
+      merged: [{ taskId: "bd-test-001" }],
       conflicts: [],
       testFailures: [],
       unexpectedErrors: [],
@@ -442,7 +442,7 @@ describe("autoMerge() — merge outcomes", () => {
       .mockReturnValue(null);
     mockRefineryMergeCompleted
       .mockResolvedValueOnce({
-        merged: [{ seedId: targetEntry.seed_id }],
+        merged: [{ taskId: targetEntry.task_id }],
         conflicts: [],
         testFailures: [],
         unexpectedErrors: [],
@@ -452,7 +452,7 @@ describe("autoMerge() — merge outcomes", () => {
         merged: [],
         conflicts: [],
         testFailures: [],
-        unexpectedErrors: [{ seedId: staleEntry.seed_id, error: "stale PR create failure" }],
+        unexpectedErrors: [{ taskId: staleEntry.task_id, error: "stale PR create failure" }],
         prsCreated: [],
       });
 
@@ -469,7 +469,7 @@ describe("autoMerge() — merge outcomes", () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
-      conflicts: [{ seedId: "bd-test-001" }],
+      conflicts: [{ taskId: "bd-test-001" }],
       testFailures: [],
       unexpectedErrors: [],
       prsCreated: [],
@@ -489,7 +489,7 @@ describe("autoMerge() — merge outcomes", () => {
       .mockReturnValue(null);
 
     const result = await autoMerge(makeOpts({
-      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", seed_id: "bd-test-001", project_id: "proj-1" }) }) as never,
+      store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", task_id: "bd-test-001", project_id: "proj-1" }) }) as never,
     }));
 
     expect(result.conflicts).toBe(1);
@@ -502,7 +502,7 @@ describe("autoMerge() — merge outcomes", () => {
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ seedId: "bd-test-001" }],
+      testFailures: [{ taskId: "bd-test-001" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -543,11 +543,11 @@ describe("autoMerge() — merge outcomes", () => {
 
     it("passes runId to mergeCompleted to fetch by ID (no status filter)", async () => {
       const entry = makeEntry(1);
-      const mockRun = { id: entry.run_id, seed_id: entry.seed_id, status: "completed" };
+      const mockRun = { id: entry.run_id, task_id: entry.task_id, status: "completed" };
       mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
       mockGetRun.mockReturnValueOnce(mockRun);
       mockRefineryMergeCompleted.mockResolvedValueOnce({
-        merged: [{ seedId: "bd-test-001" }],
+        merged: [{ taskId: "bd-test-001" }],
         conflicts: [],
         testFailures: [],
         unexpectedErrors: [],
@@ -585,7 +585,7 @@ describe("autoMerge() — merge outcomes", () => {
       // query that might fail due to Postgres WAL timing issues.
       const completedRun = {
         id: entry.run_id,
-        seed_id: entry.seed_id,
+        task_id: entry.task_id,
         status: "completed" as const,
         project_id: "proj-1",
         agent_type: "worker",
@@ -598,7 +598,7 @@ describe("autoMerge() — merge outcomes", () => {
       } as import("../../lib/store.js").Run;
       mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
       mockRefineryMergeCompleted.mockResolvedValueOnce({
-        merged: [{ seedId: entry.seed_id }],
+        merged: [{ taskId: entry.task_id }],
         conflicts: [],
         testFailures: [],
         unexpectedErrors: [],
@@ -621,7 +621,7 @@ describe("autoMerge() — merge outcomes", () => {
       const entry = makeEntry(1);
       const completedRun = {
         id: entry.run_id,
-        seed_id: entry.seed_id,
+        task_id: entry.task_id,
         status: "completed" as const,
         project_id: "proj-1",
         agent_type: "worker",
@@ -634,7 +634,7 @@ describe("autoMerge() — merge outcomes", () => {
       } as import("../../lib/store.js").Run;
       mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
       mockRefineryMergeCompleted.mockResolvedValueOnce({
-        merged: [{ seedId: entry.seed_id }],
+        merged: [{ taskId: entry.task_id }],
         conflicts: [],
         testFailures: [],
         unexpectedErrors: [],
@@ -657,7 +657,7 @@ describe("autoMerge() — merge outcomes", () => {
       const entry = makeEntry(1);
       const completedRun = {
         id: entry.run_id,
-        seed_id: entry.seed_id,
+        task_id: entry.task_id,
         status: "completed" as const,
         project_id: "proj-1",
         agent_type: "worker",
@@ -670,7 +670,7 @@ describe("autoMerge() — merge outcomes", () => {
       } as import("../../lib/store.js").Run;
       mockMergeQueueDequeue.mockReturnValueOnce(entry).mockReturnValue(null);
       mockRefineryMergeCompleted.mockResolvedValueOnce({
-        merged: [{ seedId: entry.seed_id }],
+        merged: [{ taskId: entry.task_id }],
         conflicts: [],
         testFailures: [],
         unexpectedErrors: [],
@@ -693,7 +693,7 @@ describe("autoMerge() — merge outcomes", () => {
       const entry = makeEntry(1);
       const matchingRun = {
         id: entry.run_id,
-        seed_id: entry.seed_id,
+        task_id: entry.task_id,
         status: "completed" as const,
         project_id: "proj-1",
         agent_type: "worker",
@@ -708,7 +708,7 @@ describe("autoMerge() — merge outcomes", () => {
       // First call is for merge strategy check, second is the fallback
       mockGetRun.mockReturnValueOnce(matchingRun);
       mockRefineryMergeCompleted.mockResolvedValueOnce({
-        merged: [{ seedId: entry.seed_id }],
+        merged: [{ taskId: entry.task_id }],
         conflicts: [],
         testFailures: [],
         unexpectedErrors: [],
@@ -731,7 +731,7 @@ describe("autoMerge() — merge outcomes", () => {
       const secondEntry = makeEntry(2);
       const firstRun = {
         id: firstEntry.run_id,
-        seed_id: firstEntry.seed_id,
+        task_id: firstEntry.task_id,
         status: "completed" as const,
         project_id: "proj-1",
         agent_type: "worker",
@@ -744,7 +744,7 @@ describe("autoMerge() — merge outcomes", () => {
       } as import("../../lib/store.js").Run;
       const secondRun = {
         id: secondEntry.run_id,
-        seed_id: secondEntry.seed_id,
+        task_id: secondEntry.task_id,
         status: "completed" as const,
         project_id: "proj-1",
         agent_type: "worker",
@@ -762,8 +762,8 @@ describe("autoMerge() — merge outcomes", () => {
         .mockReturnValue(null);
       mockGetRun.mockImplementation((id: string) => (id === secondRun.id ? secondRun : null));
       mockRefineryMergeCompleted
-        .mockResolvedValueOnce({ merged: [{ seedId: firstEntry.seed_id }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] })
-        .mockResolvedValueOnce({ merged: [{ seedId: secondEntry.seed_id }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] });
+        .mockResolvedValueOnce({ merged: [{ taskId: firstEntry.task_id }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] })
+        .mockResolvedValueOnce({ merged: [{ taskId: secondEntry.task_id }], conflicts: [], testFailures: [], unexpectedErrors: [], prsCreated: [] });
       MockRefinery.mockImplementationOnce(function (this: Record<string, unknown>) {
         this.mergeCompleted = mockRefineryMergeCompleted;
         this.ensurePullRequestForRun = mockRefineryEnsurePullRequest;
@@ -817,7 +817,7 @@ describe("autoMerge() — refinery errors are non-fatal", () => {
 
   it("catches refinery.mergeCompleted() throw and increments failedCount", async () => {
     mockMergeQueueDequeue
-      .mockReturnValueOnce({ id: 1, seed_id: "bd-x", run_id: "run-x" })
+      .mockReturnValueOnce({ id: 1, task_id: "bd-x", run_id: "run-x" })
       .mockReturnValue(null);
     mockRefineryMergeCompleted.mockRejectedValueOnce(new Error("git rebase failed"));
 
@@ -831,7 +831,7 @@ describe("autoMerge() — refinery errors are non-fatal", () => {
 
   it("does not throw to caller when refinery throws", async () => {
     mockMergeQueueDequeue
-      .mockReturnValueOnce({ id: 1, seed_id: "bd-x", run_id: "run-x" })
+      .mockReturnValueOnce({ id: 1, task_id: "bd-x", run_id: "run-x" })
       .mockReturnValue(null);
     mockRefineryMergeCompleted.mockRejectedValue(new Error("boom"));
 
@@ -842,8 +842,8 @@ describe("autoMerge() — refinery errors are non-fatal", () => {
 
   it("continues processing subsequent queue entries after a refinery error", async () => {
     mockMergeQueueDequeue
-      .mockReturnValueOnce({ id: 1, seed_id: "bd-1", run_id: "run-1" })
-      .mockReturnValueOnce({ id: 2, seed_id: "bd-2", run_id: "run-2" })
+      .mockReturnValueOnce({ id: 1, task_id: "bd-1", run_id: "run-1" })
+      .mockReturnValueOnce({ id: 2, task_id: "bd-2", run_id: "run-2" })
       .mockReturnValue(null);
     mockRefineryMergeCompleted
       .mockRejectedValueOnce(new Error("first entry fails"))
@@ -1003,14 +1003,14 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
   });
 
   function makeEntry(id: number = 1) {
-    return { id, seed_id: `bd-test-00${id}`, run_id: `run-00${id}`, branch_name: `foreman/bd-test-00${id}` };
+    return { id, task_id: `bd-test-00${id}`, run_id: `run-00${id}`, branch_name: `foreman/bd-test-00${id}` };
   }
 
   it("calls addNotesToBead with conflict files when merge conflict occurs", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
-      conflicts: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", conflictFiles: ["src/foo.ts", "src/bar.ts"] }],
+      conflicts: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", conflictFiles: ["src/foo.ts", "src/bar.ts"] }],
       testFailures: [],
       unexpectedErrors: [],
       prsCreated: [],
@@ -1034,7 +1034,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       .mockReturnValue(null);
     mockRefineryEnsurePullRequest.mockResolvedValueOnce({
       runId: "run-001",
-      seedId: "bd-test-001",
+      taskId: "bd-test-001",
       branchName: "foreman/bd-test-001",
       prUrl: "https://github.com/x/y/pull/42",
     });
@@ -1056,7 +1056,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL src/foo.test.ts\n  ✕ should work (50ms)" }],
+      testFailures: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL src/foo.test.ts\n  ✕ should work (50ms)" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -1075,7 +1075,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
 
   it("calls addNotesToBead with exception message when refinery throws", async () => {
     mockMergeQueueDequeue
-      .mockReturnValueOnce({ id: 1, seed_id: "bd-err-001", run_id: "run-001", branch_name: "foreman/bd-err-001" })
+      .mockReturnValueOnce({ id: 1, task_id: "bd-err-001", run_id: "run-001", branch_name: "foreman/bd-err-001" })
       .mockReturnValue(null);
     mockRefineryMergeCompleted.mockRejectedValueOnce(new Error("git rebase failed: conflict in HEAD"));
     mockGetRun.mockReturnValue({ id: "run-001", status: "failed" });
@@ -1095,7 +1095,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
   it("does NOT call addNotesToBead when merge succeeds", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
-      merged: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001" }],
+      merged: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001" }],
       conflicts: [],
       testFailures: [],
       unexpectedErrors: [],
@@ -1119,19 +1119,19 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
   });
 
   function makeEntry(id: number = 1) {
-    return { id, seed_id: `bd-test-00${id}`, run_id: `run-00${id}`, branch_name: `foreman/bd-test-00${id}` };
+    return { id, task_id: `bd-test-00${id}`, run_id: `run-00${id}`, branch_name: `foreman/bd-test-00${id}` };
   }
 
   it("does NOT call markBeadFailed when test-failed count is below the retry limit", async () => {
     // Only 1 test-failed run (first attempt) — under the limit of 3
     mockGetRunsByStatuses.mockReturnValue([
-      { seed_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
     ]);
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      testFailures: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -1148,17 +1148,17 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
   });
 
   it("calls markBeadFailed when test-failed count reaches RETRY_CONFIG.maxRetries (3)", async () => {
-    // 3 test-failed runs for this seed — at the retry limit
+    // 3 test-failed runs for this task — at the retry limit
     mockGetRunsByStatuses.mockReturnValue([
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
     ]);
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      testFailures: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -1177,17 +1177,17 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
   it("calls markBeadFailed when test-failed count exceeds RETRY_CONFIG.maxRetries", async () => {
     // 5 test-failed runs — well over the limit
     mockGetRunsByStatuses.mockReturnValue([
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
     ]);
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed" }],
+      testFailures: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -1202,18 +1202,18 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
     expect(mockMarkBeadFailed).toHaveBeenCalledWith(expect.anything(), "bd-test-001", "auto-merge");
   });
 
-  it("only counts test-failed runs for the specific seed — not other seeds", async () => {
-    // 3 test-failed runs but for a different seed — should not trigger retry exhaustion
+  it("only counts test-failed runs for the specific task — not other tasks", async () => {
+    // 3 test-failed runs but for a different task — should not trigger retry exhaustion
     mockGetRunsByStatuses.mockReturnValue([
-      { seed_id: "bd-other-001", status: "test-failed" },
-      { seed_id: "bd-other-001", status: "test-failed" },
-      { seed_id: "bd-other-001", status: "test-failed" },
+      { task_id: "bd-other-001", status: "test-failed" },
+      { task_id: "bd-other-001", status: "test-failed" },
+      { task_id: "bd-other-001", status: "test-failed" },
     ]);
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      testFailures: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -1225,21 +1225,21 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       }) as never,
     }));
 
-    // Other seed's failures should not affect this seed
+    // Other task's failures should not affect this task
     expect(mockMarkBeadFailed).not.toHaveBeenCalled();
   });
 
   it("includes retry exhaustion context in the failure message when limit is reached", async () => {
     mockGetRunsByStatuses.mockReturnValue([
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
     ]);
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      testFailures: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -1262,13 +1262,13 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
 
   it("includes attempt count in the failure message when under retry limit", async () => {
     mockGetRunsByStatuses.mockReturnValue([
-      { seed_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
     ]);
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
+      testFailures: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "FAIL test.ts" }],
       unexpectedErrors: [],
       prsCreated: [],
     });
@@ -1292,15 +1292,15 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
   it("still marks the MQ entry as failed regardless of retry exhaustion", async () => {
     // At retry limit
     mockGetRunsByStatuses.mockReturnValue([
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
-      { seed_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
+      { task_id: "bd-test-001", status: "test-failed" },
     ]);
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
       conflicts: [],
-      testFailures: [{ runId: "run-001", seedId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed" }],
+      testFailures: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001", error: "Tests failed" }],
       unexpectedErrors: [],
       prsCreated: [],
     });

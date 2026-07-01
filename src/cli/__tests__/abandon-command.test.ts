@@ -16,7 +16,7 @@ const {
     getDb: vi.fn(() => ({})),
     close: vi.fn(),
     getRun: vi.fn(),
-    getRunsForSeed: vi.fn(),
+    getRunsForTask: vi.fn(),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     updateTaskStatus: vi.fn(),
@@ -25,7 +25,7 @@ const {
   const mockPostgresStore = {
     close: vi.fn(),
     getRun: vi.fn(),
-    getRunsForSeed: vi.fn(),
+    getRunsForTask: vi.fn(),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     updateTaskStatus: vi.fn(),
@@ -94,7 +94,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "task-1",
+    task_id: "task-1",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: "/tmp/wt/task-1",
@@ -112,11 +112,11 @@ describe("abandonAction", () => {
     vi.clearAllMocks();
     mockResolveProjectContext.mockResolvedValue({ projectPath: "/tmp/project", registered: { id: "proj-1" } });
     mockPostgresStore.getRun.mockResolvedValue(makeRun());
-    mockPostgresStore.getRunsForSeed.mockResolvedValue([]);
+    mockPostgresStore.getRunsForTask.mockResolvedValue([]);
     mockPostgresStore.getRunsByStatus.mockResolvedValue([]);
     mockBranchExists.mockResolvedValue(false);
     mockMergeQueueList.mockResolvedValue([
-      { id: 7, run_id: "run-1", seed_id: "task-1", branch_name: "foreman/task-1" },
+      { id: 7, run_id: "run-1", task_id: "task-1", branch_name: "foreman/task-1" },
     ] as never);
   });
 
@@ -148,8 +148,8 @@ describe("abandonAction", () => {
 
   it("bulk-abandons completed runs with missing branches", async () => {
     mockPostgresStore.getRunsByStatus.mockResolvedValue([
-      makeRun({ id: "run-1", seed_id: "task-1" }),
-      makeRun({ id: "run-2", seed_id: "task-2", worktree_path: "/tmp/wt/task-2" }),
+      makeRun({ id: "run-1", task_id: "task-1" }),
+      makeRun({ id: "run-2", task_id: "task-2", worktree_path: "/tmp/wt/task-2" }),
     ]);
     mockBranchExists.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 

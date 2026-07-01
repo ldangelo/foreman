@@ -420,7 +420,7 @@ describe("autoMerge() unit tests", () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
-      id: 1, branch_name: "foreman/s1", seed_id: "s1", run_id: "r1",
+      id: 1, branch_name: "foreman/s1", task_id: "s1", run_id: "r1",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -430,7 +430,7 @@ describe("autoMerge() unit tests", () => {
       .mockReturnValue(null);
 
     mockRefineryMergeCompleted.mockResolvedValue({
-      merged: [{ runId: "r1", seedId: "s1", branchName: "foreman/s1" }],
+      merged: [{ runId: "r1", taskId: "s1", branchName: "foreman/s1" }],
       conflicts: [],
       testFailures: [],
       prsCreated: [],
@@ -449,7 +449,7 @@ describe("autoMerge() unit tests", () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
-      id: 2, branch_name: "foreman/s2", seed_id: "s2", run_id: "r2",
+      id: 2, branch_name: "foreman/s2", task_id: "s2", run_id: "r2",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -460,7 +460,7 @@ describe("autoMerge() unit tests", () => {
 
     mockRefineryMergeCompleted.mockResolvedValue({
       merged: [],
-      conflicts: [{ runId: "r2", seedId: "s2", branchName: "foreman/s2", conflictFiles: ["src/a.ts"] }],
+      conflicts: [{ runId: "r2", taskId: "s2", branchName: "foreman/s2", conflictFiles: ["src/a.ts"] }],
       testFailures: [],
       prsCreated: [],
     });
@@ -478,7 +478,7 @@ describe("autoMerge() unit tests", () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
-      id: 3, branch_name: "foreman/s3", seed_id: "s3", run_id: "r3",
+      id: 3, branch_name: "foreman/s3", task_id: "s3", run_id: "r3",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -502,7 +502,7 @@ describe("autoMerge() unit tests", () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
-      id: 4, branch_name: "foreman/s4", seed_id: "s4", run_id: "r4",
+      id: 4, branch_name: "foreman/s4", task_id: "s4", run_id: "r4",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -529,9 +529,9 @@ describe("autoMerge() unit tests", () => {
   it("processes multiple queue entries and accumulates counts", async () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
-    const entryA = { id: 10, branch_name: "foreman/a", seed_id: "a", run_id: "ra", agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(), started_at: null, completed_at: null, status: "merging" as const, resolved_tier: null, error: null };
-    const entryB = { id: 11, branch_name: "foreman/b", seed_id: "b", run_id: "rb", agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(), started_at: null, completed_at: null, status: "merging" as const, resolved_tier: null, error: null };
-    const entryC = { id: 12, branch_name: "foreman/c", seed_id: "c", run_id: "rc", agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(), started_at: null, completed_at: null, status: "merging" as const, resolved_tier: null, error: null };
+    const entryA = { id: 10, branch_name: "foreman/a", task_id: "a", run_id: "ra", agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(), started_at: null, completed_at: null, status: "merging" as const, resolved_tier: null, error: null };
+    const entryB = { id: 11, branch_name: "foreman/b", task_id: "b", run_id: "rb", agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(), started_at: null, completed_at: null, status: "merging" as const, resolved_tier: null, error: null };
+    const entryC = { id: 12, branch_name: "foreman/c", task_id: "c", run_id: "rc", agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(), started_at: null, completed_at: null, status: "merging" as const, resolved_tier: null, error: null };
 
     mockMergeQueueDequeue
       .mockReturnValueOnce(entryA)
@@ -540,8 +540,8 @@ describe("autoMerge() unit tests", () => {
       .mockReturnValue(null);
 
     mockRefineryMergeCompleted
-      .mockResolvedValueOnce({ merged: [{ runId: "ra", seedId: "a", branchName: "foreman/a" }], conflicts: [], testFailures: [], prsCreated: [] })
-      .mockResolvedValueOnce({ merged: [], conflicts: [{ runId: "rb", seedId: "b", branchName: "foreman/b", conflictFiles: [] }], testFailures: [], prsCreated: [] })
+      .mockResolvedValueOnce({ merged: [{ runId: "ra", taskId: "a", branchName: "foreman/a" }], conflicts: [], testFailures: [], prsCreated: [] })
+      .mockResolvedValueOnce({ merged: [], conflicts: [{ runId: "rb", taskId: "b", branchName: "foreman/b", conflictFiles: [] }], testFailures: [], prsCreated: [] })
       .mockRejectedValueOnce(new Error("boom"));
 
     const store = makeStore();
@@ -567,7 +567,7 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "s-1", runId: "run-111", title: "Task 1",
+          taskId: "s-1", runId: "run-111", title: "Task 1",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/s-1", runtime: "claude-code",
         },
@@ -601,7 +601,7 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "s-3", runId: "run-333", title: "Task 3",
+          taskId: "s-3", runId: "run-333", title: "Task 3",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/s-3", runtime: "claude-code",
         },
@@ -633,7 +633,7 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "s-4", runId: "run-444", title: "Task 4",
+          taskId: "s-4", runId: "run-444", title: "Task 4",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/s-4", runtime: "claude-code",
         },
@@ -655,7 +655,7 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
 
     // Return 2 merged entries from the queue
     const fakeEntry = {
-      id: 20, branch_name: "foreman/sx", seed_id: "sx", run_id: "rx",
+      id: 20, branch_name: "foreman/sx", task_id: "sx", run_id: "rx",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -666,8 +666,8 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
       .mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValue({
       merged: [
-        { runId: "rx", seedId: "sx", branchName: "foreman/sx" },
-        { runId: "rx2", seedId: "sx2", branchName: "foreman/sx2" },
+        { runId: "rx", taskId: "sx", branchName: "foreman/sx" },
+        { runId: "rx2", taskId: "sx2", branchName: "foreman/sx2" },
       ],
       conflicts: [],
       testFailures: [],
@@ -677,7 +677,7 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "sx", runId: "run-x", title: "Task X",
+          taskId: "sx", runId: "run-x", title: "Task X",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/sx", runtime: "claude-code",
         },
@@ -707,7 +707,7 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const fakeEntry = {
-      id: 30, branch_name: "foreman/sy", seed_id: "sy", run_id: "ry",
+      id: 30, branch_name: "foreman/sy", task_id: "sy", run_id: "ry",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -718,7 +718,7 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
       .mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValue({
       merged: [],
-      conflicts: [{ runId: "ry", seedId: "sy", branchName: "foreman/sy", conflictFiles: ["x.ts"] }],
+      conflicts: [{ runId: "ry", taskId: "sy", branchName: "foreman/sy", conflictFiles: ["x.ts"] }],
       testFailures: [],
       prsCreated: [],
     });
@@ -726,7 +726,7 @@ describe.skip("dispatch loop: auto-merge after each batch", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "sy", runId: "run-y", title: "Task Y",
+          taskId: "sy", runId: "run-y", title: "Task Y",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/sy", runtime: "claude-code",
         },
@@ -793,7 +793,7 @@ describe.skip("call ordering: autoMerge fires BEFORE watchRunsInk", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "s-ord", runId: "run-ord", title: "Order Test",
+          taskId: "s-ord", runId: "run-ord", title: "Order Test",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/s-ord", runtime: "claude-code",
         },
@@ -836,7 +836,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const lateEntry = {
-      id: 99, branch_name: "foreman/late", seed_id: "late", run_id: "r-late",
+      id: 99, branch_name: "foreman/late", task_id: "late", run_id: "r-late",
       operation: "auto_merge" as const,
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
@@ -849,7 +849,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
       .mockReturnValue(null);
 
     mockRefineryMergeCompleted.mockResolvedValue({
-      merged: [{ runId: "r-late", seedId: "late", branchName: "foreman/late" }],
+      merged: [{ runId: "r-late", taskId: "late", branchName: "foreman/late" }],
       conflicts: [],
       testFailures: [],
       prsCreated: [],
@@ -858,7 +858,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "s-10", runId: "run-1010", title: "Task 10",
+          taskId: "s-10", runId: "run-1010", title: "Task 10",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/s-10", runtime: "claude-code",
         },
@@ -878,7 +878,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const lateEntry = {
-      id: 100, branch_name: "foreman/z", seed_id: "z", run_id: "r-z",
+      id: 100, branch_name: "foreman/z", task_id: "z", run_id: "r-z",
       operation: "auto_merge" as const,
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
@@ -891,14 +891,14 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
       .mockReturnValue(null);
 
     mockRefineryMergeCompleted.mockResolvedValue({
-      merged: [{ runId: "r-z", seedId: "z", branchName: "foreman/z" }],
+      merged: [{ runId: "r-z", taskId: "z", branchName: "foreman/z" }],
       conflicts: [],
       testFailures: [],
       prsCreated: [],
     });
 
     mockDispatch.mockResolvedValueOnce({
-      dispatched: [{ seedId: "s-z", runId: "run-z", title: "Z", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/z", runtime: "claude-code" }],
+      dispatched: [{ taskId: "s-z", runId: "run-z", title: "Z", model: "claude-sonnet-4-6", worktreePath: "/tmp/wt", branchName: "foreman/z", runtime: "claude-code" }],
       skipped: [],
       activeAgents: 1,
     });
@@ -921,7 +921,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "s-det", runId: "run-det", title: "Detach Task",
+          taskId: "s-det", runId: "run-det", title: "Detach Task",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/s-det", runtime: "claude-code",
         },
@@ -948,7 +948,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
     mockGetProjectByPath.mockReturnValue({ id: "p1", path: "/mock/project" });
 
     const pendingEntry = {
-      id: 200, branch_name: "foreman/prev", seed_id: "prev", run_id: "r-prev",
+      id: 200, branch_name: "foreman/prev", task_id: "prev", run_id: "r-prev",
       operation: "auto_merge" as const,
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
@@ -961,7 +961,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
       .mockReturnValue(null);
 
     mockRefineryMergeCompleted.mockResolvedValue({
-      merged: [{ runId: "r-prev", seedId: "prev", branchName: "foreman/prev" }],
+      merged: [{ runId: "r-prev", taskId: "prev", branchName: "foreman/prev" }],
       conflicts: [],
       testFailures: [],
       prsCreated: [],
@@ -970,7 +970,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "s-nw", runId: "run-nw", title: "No Watch Task",
+          taskId: "s-nw", runId: "run-nw", title: "No Watch Task",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/s-nw", runtime: "claude-code",
         },
@@ -993,7 +993,7 @@ describe.skip("merge draining no longer runs after the dispatch loop", () => {
     mockDispatch.mockResolvedValueOnce({
       dispatched: [
         {
-          seedId: "s-fe", runId: "run-fe", title: "Fatal Error Task",
+          taskId: "s-fe", runId: "run-fe", title: "Fatal Error Task",
           model: "claude-sonnet-4-6", worktreePath: "/tmp/wt",
           branchName: "foreman/s-fe", runtime: "claude-code",
         },
@@ -1026,7 +1026,7 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
     mockEnqueueSetBeadStatus.mockClear();
 
     const fakeEntry = {
-      id: 1, branch_name: "foreman/s1", seed_id: "s1", run_id: "r1",
+      id: 1, branch_name: "foreman/s1", task_id: "s1", run_id: "r1",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -1037,12 +1037,12 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
 
     // Refinery reports a successful merge
     mockRefineryMergeCompleted.mockResolvedValue({
-      merged: [{ runId: "r1", seedId: "s1", branchName: "foreman/s1" }],
+      merged: [{ runId: "r1", taskId: "s1", branchName: "foreman/s1" }],
       conflicts: [], testFailures: [], prsCreated: [],
     });
 
     // Store returns the run with status 'merged' after refinery completes
-    mockGetRun.mockReturnValue({ id: "r1", seed_id: "s1", status: "merged" });
+    mockGetRun.mockReturnValue({ id: "r1", task_id: "s1", status: "merged" });
 
     const store = makeStore();
     const result = await autoMerge({
@@ -1061,7 +1061,7 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
     mockEnqueueSetBeadStatus.mockClear();
 
     const fakeEntry = {
-      id: 2, branch_name: "foreman/s2", seed_id: "s2", run_id: "r2",
+      id: 2, branch_name: "foreman/s2", task_id: "s2", run_id: "r2",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -1072,12 +1072,12 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
 
     mockRefineryMergeCompleted.mockResolvedValue({
       merged: [],
-      conflicts: [{ runId: "r2", seedId: "s2", branchName: "foreman/s2", conflictFiles: ["x.ts"] }],
+      conflicts: [{ runId: "r2", taskId: "s2", branchName: "foreman/s2", conflictFiles: ["x.ts"] }],
       testFailures: [], prsCreated: [],
     });
 
     // Run status after refinery is 'conflict'
-    mockGetRun.mockReturnValue({ id: "r2", seed_id: "s2", status: "conflict" });
+    mockGetRun.mockReturnValue({ id: "r2", task_id: "s2", status: "conflict" });
 
     const store = makeStore();
     await autoMerge({
@@ -1094,7 +1094,7 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
     mockEnqueueSetBeadStatus.mockClear();
 
     const fakeEntry = {
-      id: 3, branch_name: "foreman/s3", seed_id: "s3", run_id: "r3",
+      id: 3, branch_name: "foreman/s3", task_id: "s3", run_id: "r3",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -1105,11 +1105,11 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
 
     mockRefineryMergeCompleted.mockResolvedValue({
       merged: [], conflicts: [],
-      testFailures: [{ runId: "r3", seedId: "s3", branchName: "foreman/s3", error: "Tests failed" }],
+      testFailures: [{ runId: "r3", taskId: "s3", branchName: "foreman/s3", error: "Tests failed" }],
       prsCreated: [],
     });
 
-    mockGetRun.mockReturnValue({ id: "r3", seed_id: "s3", status: "test-failed" });
+    mockGetRun.mockReturnValue({ id: "r3", task_id: "s3", status: "test-failed" });
 
     const store = makeStore();
     await autoMerge({
@@ -1126,7 +1126,7 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
     mockEnqueueSetBeadStatus.mockClear();
 
     const fakeEntry = {
-      id: 4, branch_name: "foreman/s4", seed_id: "s4", run_id: "r4",
+      id: 4, branch_name: "foreman/s4", task_id: "s4", run_id: "r4",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -1138,7 +1138,7 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
     mockRefineryMergeCompleted.mockRejectedValue(new Error("git exploded"));
 
     // Run has status 'failed' (set by refinery exception handler in refinery.ts)
-    mockGetRun.mockReturnValue({ id: "r4", seed_id: "s4", status: "failed" });
+    mockGetRun.mockReturnValue({ id: "r4", task_id: "s4", status: "failed" });
 
     const store = makeStore();
     const result = await autoMerge({
@@ -1156,7 +1156,7 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
     mockEnqueueSetBeadStatus.mockClear();
 
     const fakeEntry = {
-      id: 5, branch_name: "foreman/s5", seed_id: "s5", run_id: "r5",
+      id: 5, branch_name: "foreman/s5", task_id: "s5", run_id: "r5",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -1166,7 +1166,7 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
       .mockReturnValue(null);
 
     mockRefineryMergeCompleted.mockResolvedValue({
-      merged: [{ runId: "r5", seedId: "s5", branchName: "foreman/s5" }],
+      merged: [{ runId: "r5", taskId: "s5", branchName: "foreman/s5" }],
       conflicts: [], testFailures: [], prsCreated: [],
     });
 
@@ -1189,7 +1189,7 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
     mockEnqueueSetBeadStatus.mockClear();
 
     const fakeEntry = {
-      id: 6, branch_name: "foreman/s6", seed_id: "s6", run_id: "r6",
+      id: 6, branch_name: "foreman/s6", task_id: "s6", run_id: "r6",
       agent_name: null, files_modified: [], enqueued_at: new Date().toISOString(),
       started_at: null, completed_at: null, status: "merging" as const,
       resolved_tier: null, error: null,
@@ -1199,11 +1199,11 @@ describe.skip("autoMerge() — immediate bead status sync", () => {
       .mockReturnValue(null);
 
     mockRefineryMergeCompleted.mockResolvedValue({
-      merged: [{ runId: "r6", seedId: "s6", branchName: "foreman/s6" }],
+      merged: [{ runId: "r6", taskId: "s6", branchName: "foreman/s6" }],
       conflicts: [], testFailures: [], prsCreated: [],
     });
 
-    mockGetRun.mockReturnValue({ id: "r6", seed_id: "s6", status: "merged" });
+    mockGetRun.mockReturnValue({ id: "r6", task_id: "s6", status: "merged" });
 
     const store = makeStore();
 

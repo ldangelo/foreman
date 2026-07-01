@@ -1186,11 +1186,11 @@ export class ConflictResolver {
 
   /**
    * Archive report files after a successful merge.
-   * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
+   * Moves report files from the working tree into .foreman/reports/<name>-<taskId>.md
    * and creates a follow-up commit. Called after mergeWorktree() succeeds so we
    * don't need to checkout branches or deal with dirty working trees.
    */
-  async archiveReportsPostMerge(seedId: string): Promise<void> {
+  async archiveReportsPostMerge(taskId: string): Promise<void> {
     const reportsDir = path.join(this.projectPath, ".foreman", "reports");
     mkdirSync(reportsDir, { recursive: true });
 
@@ -1199,7 +1199,7 @@ export class ConflictResolver {
       const src = path.join(this.projectPath, report);
       if (existsSync(src)) {
         const baseName = report.replace(".md", "");
-        const dest = path.join(reportsDir, `${baseName}-${seedId}.md`);
+        const dest = path.join(reportsDir, `${baseName}-${taskId}.md`);
         renameSync(src, dest);
         await this.gitStageFileForce(dest);
         await this.gitRemoveFromIndex(report);
@@ -1208,7 +1208,7 @@ export class ConflictResolver {
     }
 
     if (moved) {
-      await this.gitCommit(`Archive reports for ${seedId}`);
+      await this.gitCommit(`Archive reports for ${taskId}`);
     }
   }
 

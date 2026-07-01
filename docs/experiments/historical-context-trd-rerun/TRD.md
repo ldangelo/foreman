@@ -219,7 +219,7 @@ All files live in `/Users/ldangelo/Development/Fortium/foreman/docs/experiments/
 | File | Purpose |
 |------|---------|
 | `TRD.md` | This document |
-| `TASKS.md` | Detailed task specifications (future: generated from seeds) |
+| `TASKS.md` | Detailed task specifications (future: generated from tasks) |
 
 **Artifacts from PRD-rerun (reference only, do not modify):**
 - `../historical-context-prd-rerun/manifest.json` — archival document list

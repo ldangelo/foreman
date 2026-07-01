@@ -438,8 +438,8 @@ export const planCommand = new Command("plan")
         return;
       }
       const store = ForemanStore.forProject(projectPath);
-      const seeds = createPlanClient(projectPath);
-      const dispatcher = new Dispatcher(seeds, store, projectPath, null, { externalProjectId: project.id });
+      const tasks = createPlanClient(projectPath);
+      const dispatcher = new Dispatcher(tasks, store, projectPath, null, { externalProjectId: project.id });
 
       try {
         // Validate --from-prd path
@@ -497,9 +497,9 @@ export const planCommand = new Command("plan")
           return;
         }
 
-        // Create epic seed
+        // Create epic task
         const epicTitle = `Plan: ${productDescription.slice(0, 80)}${productDescription.length > 80 ? "..." : ""}`;
-        const epic = await seeds.create(epicTitle, {
+        const epic = await tasks.create(epicTitle, {
           type: "epic",
           priority: "P1",
           description: `Planning pipeline for: ${productDescription.slice(0, 200)}`,
@@ -508,52 +508,52 @@ export const planCommand = new Command("plan")
           chalk.dim(`\nEpic task: ${epic.id} — ${epicTitle}`),
         );
 
-        // Create child seeds with sequential dependencies
-        const seedIds: string[] = [];
+        // Create child tasks with sequential dependencies
+        const taskIds: string[] = [];
         for (let i = 0; i < steps.length; i++) {
           const step = steps[i];
-          const child = await seeds.create(step.name, {
+          const child = await tasks.create(step.name, {
             type: "task",
             priority: "P1",
             parent: epic.id,
             description: `${step.command} ${step.input}`,
           });
 
-          // Add dependency on the previous seed (sequential chain)
+          // Add dependency on the previous task (sequential chain)
           if (i > 0) {
-            await seeds.addDependency(child.id, seedIds[i - 1]);
+            await tasks.addDependency(child.id, taskIds[i - 1]);
           }
 
-          seedIds.push(child.id);
+          taskIds.push(child.id);
           console.log(
             chalk.dim(
-              `  Task ${child.id}: ${step.name}${i > 0 ? ` (depends on ${seedIds[i - 1]})` : " (ready)"}`,
+              `  Task ${child.id}: ${step.name}${i > 0 ? ` (depends on ${taskIds[i - 1]})` : " (ready)"}`,
             ),
           );
         }
 
         // Sequential dispatch loop
         console.log(chalk.bold("\n Starting pipeline...\n"));
-        const seedIdSet = new Set(seedIds);
+        const taskIdSet = new Set(taskIds);
         let completedCount = 0;
 
-        while (completedCount < seedIds.length) {
-          // Find ready seeds that belong to our epic
-          const readySeeds = await seeds.ready();
-          const epicReady = readySeeds.filter((b) => seedIdSet.has(b.id));
+        while (completedCount < taskIds.length) {
+          // Find ready tasks that belong to our epic
+          const readyTasks = await tasks.ready();
+          const epicReady = readyTasks.filter((b) => taskIdSet.has(b.id));
 
           if (epicReady.length === 0) {
-            // No ready seeds yet — poll until one becomes ready
+            // No ready tasks yet — poll until one becomes ready
             await sleep(10_000);
             continue;
           }
 
-          for (const readySeed of epicReady) {
-            const stepIndex = seedIds.indexOf(readySeed.id);
+          for (const readyTask of epicReady) {
+            const stepIndex = taskIds.indexOf(readyTask.id);
             const step = steps[stepIndex];
             console.log(
               chalk.bold(
-                `\n[${completedCount + 1}/${seedIds.length}] ${step.name}...`,
+                `\n[${completedCount + 1}/${taskIds.length}] ${step.name}...`,
               ),
             );
 
@@ -561,18 +561,18 @@ export const planCommand = new Command("plan")
               const result = await dispatcher.dispatchPlanStep(
                 project.id,
                 {
-                  id: readySeed.id,
-                  title: readySeed.title,
-                  type: readySeed.type,
-                  priority: readySeed.priority,
+                  id: readyTask.id,
+                  title: readyTask.title,
+                  type: readyTask.type,
+                  priority: readyTask.priority,
                 },
                 step.command,
                 step.input,
                 outputDir,
               );
 
-              // Close the seed on success
-              await seeds.close(readySeed.id, "Completed");
+              // Close the task on success
+              await tasks.close(readyTask.id, "Completed");
               console.log(
                 chalk.green(
                   `  ${step.name} complete (run: ${result.runId})`,
@@ -596,7 +596,7 @@ export const planCommand = new Command("plan")
         }
 
         // All done — close the epic
-        await seeds.close(epic.id, "All planning steps completed");
+        await tasks.close(epic.id, "All planning steps completed");
         console.log(chalk.bold.green("\n Planning pipeline complete!"));
         console.log(chalk.dim(`\nOutputs in: ${outputDir}`));
         console.log(chalk.dim(`Epic: ${epic.id}`));

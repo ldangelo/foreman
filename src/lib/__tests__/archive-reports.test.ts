@@ -40,20 +40,20 @@ function makeDirs(): { projectPath: string; worktreePath: string } {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("archiveWorktreeReports", () => {
-  it("copies report files from worktree to .foreman/reports/<seedId>/", async () => {
+  it("copies report files from worktree to .foreman/reports/<taskId>/", async () => {
     const { projectPath, worktreePath } = makeDirs();
-    const seedId = "seed-abc";
+    const taskId = "task-abc";
 
     // Create some report files in the worktree
     writeFileSync(join(worktreePath, "EXPLORER_REPORT.md"), "# Explorer");
     writeFileSync(join(worktreePath, "DEVELOPER_REPORT.md"), "# Developer");
     writeFileSync(join(worktreePath, "TASK.md"), "# Task");
 
-    const count = await archiveWorktreeReports(projectPath, worktreePath, seedId);
+    const count = await archiveWorktreeReports(projectPath, worktreePath, taskId);
 
     expect(count).toBe(3);
 
-    const destDir = join(projectPath, ".foreman", "reports", seedId);
+    const destDir = join(projectPath, ".foreman", "reports", taskId);
     expect(existsSync(destDir)).toBe(true);
     expect(existsSync(join(destDir, "EXPLORER_REPORT.md"))).toBe(true);
     expect(existsSync(join(destDir, "DEVELOPER_REPORT.md"))).toBe(true);
@@ -62,47 +62,47 @@ describe("archiveWorktreeReports", () => {
 
   it("preserves file contents when copying", async () => {
     const { projectPath, worktreePath } = makeDirs();
-    const seedId = "seed-xyz";
+    const taskId = "task-xyz";
 
     const content = "# QA Report\n\nAll tests pass!\n";
     writeFileSync(join(worktreePath, "QA_REPORT.md"), content);
 
-    await archiveWorktreeReports(projectPath, worktreePath, seedId);
+    await archiveWorktreeReports(projectPath, worktreePath, taskId);
 
-    const destDir = join(projectPath, ".foreman", "reports", seedId);
+    const destDir = join(projectPath, ".foreman", "reports", taskId);
     const archived = readFileSync(join(destDir, "QA_REPORT.md"), "utf-8");
     expect(archived).toBe(content);
   });
 
   it("returns 0 and skips missing report files", async () => {
     const { projectPath, worktreePath } = makeDirs();
-    const seedId = "seed-empty";
+    const taskId = "task-empty";
 
     // No report files in worktree
-    const count = await archiveWorktreeReports(projectPath, worktreePath, seedId);
+    const count = await archiveWorktreeReports(projectPath, worktreePath, taskId);
 
     expect(count).toBe(0);
   });
 
   it("creates the archive directory if it does not exist", async () => {
     const { projectPath, worktreePath } = makeDirs();
-    const seedId = "seed-newdir";
+    const taskId = "task-newdir";
 
     writeFileSync(join(worktreePath, "REVIEW.md"), "# Review");
 
-    const destDir = join(projectPath, ".foreman", "reports", seedId);
+    const destDir = join(projectPath, ".foreman", "reports", taskId);
     expect(existsSync(destDir)).toBe(false);
 
-    await archiveWorktreeReports(projectPath, worktreePath, seedId);
+    await archiveWorktreeReports(projectPath, worktreePath, taskId);
 
     expect(existsSync(destDir)).toBe(true);
   });
 
   it("overwrites existing archive files (idempotent)", async () => {
     const { projectPath, worktreePath } = makeDirs();
-    const seedId = "seed-idempotent";
+    const taskId = "task-idempotent";
 
-    const destDir = join(projectPath, ".foreman", "reports", seedId);
+    const destDir = join(projectPath, ".foreman", "reports", taskId);
     mkdirSync(destDir, { recursive: true });
 
     // Write old content to archive
@@ -111,7 +111,7 @@ describe("archiveWorktreeReports", () => {
     // Write new content to worktree
     writeFileSync(join(worktreePath, "EXPLORER_REPORT.md"), "new content");
 
-    await archiveWorktreeReports(projectPath, worktreePath, seedId);
+    await archiveWorktreeReports(projectPath, worktreePath, taskId);
 
     const result = readFileSync(join(destDir, "EXPLORER_REPORT.md"), "utf-8");
     expect(result).toBe("new content");
@@ -119,14 +119,14 @@ describe("archiveWorktreeReports", () => {
 
   it("archives BLOCKED.md if present", async () => {
     const { projectPath, worktreePath } = makeDirs();
-    const seedId = "seed-blocked";
+    const taskId = "task-blocked";
 
     writeFileSync(join(worktreePath, "BLOCKED.md"), "# Blocked\n\nCannot proceed.");
 
-    const count = await archiveWorktreeReports(projectPath, worktreePath, seedId);
+    const count = await archiveWorktreeReports(projectPath, worktreePath, taskId);
 
     expect(count).toBe(1);
-    const destDir = join(projectPath, ".foreman", "reports", seedId);
+    const destDir = join(projectPath, ".foreman", "reports", taskId);
     expect(existsSync(join(destDir, "BLOCKED.md"))).toBe(true);
   });
 
@@ -134,10 +134,10 @@ describe("archiveWorktreeReports", () => {
     const projectPath = makeTempDir();
     tempDirs.push(projectPath);
     const missingWorktree = join(projectPath, "nonexistent-worktree");
-    const seedId = "seed-missing";
+    const taskId = "task-missing";
 
     // Should not throw even if worktree doesn't exist (no files to copy)
-    const count = await archiveWorktreeReports(projectPath, missingWorktree, seedId);
+    const count = await archiveWorktreeReports(projectPath, missingWorktree, taskId);
 
     expect(count).toBe(0);
   });
@@ -161,15 +161,15 @@ describe("archiveWorktreeReports", () => {
 
   it("archives SESSION_LOG.md if present", async () => {
     const { projectPath, worktreePath } = makeDirs();
-    const seedId = "seed-session-log";
+    const taskId = "task-session-log";
 
     const content = "# Session Log\n\n## Phase: developer\n";
     writeFileSync(join(worktreePath, "SESSION_LOG.md"), content);
 
-    const count = await archiveWorktreeReports(projectPath, worktreePath, seedId);
+    const count = await archiveWorktreeReports(projectPath, worktreePath, taskId);
 
     expect(count).toBe(1);
-    const destDir = join(projectPath, ".foreman", "reports", seedId);
+    const destDir = join(projectPath, ".foreman", "reports", taskId);
     expect(existsSync(join(destDir, "SESSION_LOG.md"))).toBe(true);
     const archived = readFileSync(join(destDir, "SESSION_LOG.md"), "utf-8");
     expect(archived).toBe(content);

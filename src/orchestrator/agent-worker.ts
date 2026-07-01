@@ -31,7 +31,7 @@ import {
   getDisallowedTools,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { enqueueResetSeedToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead, enqueueCloseSeed } from "./task-backend-ops.js";
+import { enqueueResetTaskToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead, enqueueCloseTask } from "./task-backend-ops.js";
 import { updateFatalRunStatus } from "./agent-worker-fatal-path.js";
 import { updateTerminalRunStatus } from "./agent-worker-run-status.js";
 import { createDualWriteStore } from "./rate-limit-dual-write.js";
@@ -195,7 +195,7 @@ function compactTraceValue(value: string, maxLength = 160): string {
 function buildTraceMailPayload(event: {
   kind: "start" | "update" | "warning" | "complete";
   phase: string;
-  seedId: string;
+  taskId: string;
   message: string;
   toolName?: string;
   argsPreview?: string;
@@ -204,7 +204,7 @@ function buildTraceMailPayload(event: {
   commandHonored?: boolean;
 }): Record<string, unknown> {
   return {
-    seedId: event.seedId,
+    taskId: event.taskId,
     phase: event.phase,
     kind: event.kind,
     message: compactTraceValue(event.message),
@@ -221,7 +221,7 @@ function sendTraceMail(
   event: {
     kind: "start" | "update" | "warning" | "complete";
     phase: string;
-    seedId: string;
+    taskId: string;
     message: string;
     toolName?: string;
     argsPreview?: string;
@@ -303,10 +303,10 @@ let currentPhase = "startup";
 interface WorkerConfig {
   runId: string;
   projectId: string;
-  seedId: string;
-  seedTitle: string;
-  seedDescription?: string;
-  seedComments?: string;
+  taskId: string;
+  taskTitle: string;
+  taskDescription?: string;
+  taskComments?: string;
   model: string;
   /** Workflow phase maxTurns limit for the current phase. */
   maxTurns?: number;
@@ -318,24 +318,24 @@ interface WorkerConfig {
   env: Record<string, string>;
   resume?: string;  // SDK session ID to resume
   pipeline?: boolean;  // Run as lead pipeline (explorer → developer → qa → reviewer)
-  /** Explicit workflow name/path for direct task execution. Overrides seed labels/type. */
+  /** Explicit workflow name/path for direct task execution. Overrides task labels/type. */
   workflowName?: string;
   workflowPath?: string;
   /**
    * Bead type field (e.g. "feature", "bug", "task", "smoke").
    * Used to resolve the workflow name when no `workflow:<name>` label is set.
    */
-  seedType?: string;
+  taskType?: string;
   /**
    * Labels from the bead. Used to resolve `workflow:<name>` overrides.
    * e.g. ["phase:explorer", "workflow:smoke"]
    */
-  seedLabels?: string[];
+  taskLabels?: string[];
   /**
    * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
-  seedPriority?: string;
+  taskPriority?: string;
   /**
    * Override target branch for auto-merge after finalize.
    * When set, merges into this branch instead of detectDefaultBranch().
@@ -352,7 +352,7 @@ interface WorkerConfig {
    */
   epicId?: string;
   /** Optional native task ID used to attach phase notes/status updates. */
-  taskId?: string | null;
+  nativeTaskId?: string | null;
   /**
    * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
    */
@@ -403,8 +403,8 @@ let logContext: LogContext | null = null;
  */
 function initLogContext(config: WorkerConfig): void {
   logContext = {
-    issueId: config.seedId,
-    issueIdentifier: config.seedId,
+    issueId: config.taskId,
+    issueIdentifier: config.taskId,
     // sessionId comes from config.resume (SDK session ID) when resuming an existing session
     sessionId: config.resume ?? null,
     runId: config.runId,
@@ -443,8 +443,8 @@ async function runAfterRunHook(config: WorkerConfig): Promise<void> {
 
   const hookEnv: Record<string, string> = {
     FOREMAN_WORKSPACE_PATH: config.worktreePath,
-    FOREMAN_ISSUE_ID: config.seedId,
-    FOREMAN_ISSUE_IDENTIFIER: config.seedId,
+    FOREMAN_ISSUE_ID: config.taskId,
+    FOREMAN_ISSUE_IDENTIFIER: config.taskId,
     FOREMAN_ATTEMPT: String(config.attemptNumber ?? 1),
   };
 
@@ -471,7 +471,7 @@ async function main(): Promise<void> {
   // Initialize structured logging context for JSON-formatted log output
   initLogContext(config);
 
-  const { runId, projectId, seedId, seedTitle, model, worktreePath, projectPath: configProjectPath, prompt, resume, pipeline } = config;
+  const { runId, projectId, taskId, taskTitle, model, worktreePath, projectPath: configProjectPath, prompt, resume, pipeline } = config;
 
   // Change process cwd to the worktree so agent file operations (read, write,
   // edit, bash) target the correct directory. The spawn cwd is the project root
@@ -490,7 +490,7 @@ async function main(): Promise<void> {
   const mode = pipeline ? "pipeline" : (resume ? "resume" : "worker");
   const header = [
     `[foreman-worker] Agent ${mode.toUpperCase()} at ${new Date().toISOString()}`,
-    `  seed:      ${seedId} — ${seedTitle}`,
+    `  task:      ${taskId} — ${taskTitle}`,
     `  model:     ${model}`,
     `  run:       ${runId}`,
     `  worktree:  ${worktreePath}`,
@@ -502,7 +502,7 @@ async function main(): Promise<void> {
   ].filter(Boolean).join("\n");
   await appendFile(logFile, header);
 
-  log(`Worker started for ${seedId} [${model}] pid=${process.pid} mode=${mode}`);
+  log(`Worker started for ${taskId} [${model}] pid=${process.pid} mode=${mode}`);
   currentPhase = "init";
 
   // Open local store and mirror key runtime writes into Postgres-backed store.
@@ -554,7 +554,7 @@ async function main(): Promise<void> {
   if (pipeline) {
     try {
       await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);
-      log(`Pipeline worker exiting for ${seedId}`);
+      log(`Pipeline worker exiting for ${taskId}`);
     } finally {
       await runAfterRunHook(config);
       store.close();
@@ -593,29 +593,29 @@ async function main(): Promise<void> {
     // Build clean env for Pi (strip CLAUDECODE, convert to string-only map)
     const piResult = await runPhaseSession({
       prompt,
-      systemPrompt: `You are an agent working on task: ${seedTitle}`,
+      systemPrompt: `You are an agent working on task: ${taskTitle}`,
       cwd: worktreePath,
       model,
       logFile,
       context: {
         phaseName: "worker",
         runId,
-        seedId,
-        seedTitle,
-        seedType: config.seedType,
-        seedDescription: config.seedDescription,
+        taskId,
+        taskTitle,
+        taskType: config.taskType,
+        taskDescription: config.taskDescription,
         worktreePath,
         targetBranch: config.targetBranch,
       },
       observability: {
         runId,
-        seedId,
+        taskId,
         phase: "worker",
         phaseType: "prompt",
         model,
         worktreePath,
         rawPrompt: prompt,
-        systemPrompt: `You are an agent working on task: ${seedTitle}`,
+        systemPrompt: `You are an agent working on task: ${taskTitle}`,
       },
       onToolCall: (name: string, input: Record<string, unknown>) => {
         progress.toolCalls++;
@@ -659,8 +659,8 @@ async function main(): Promise<void> {
       });
       notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
       await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, "complete", {
-        seedId,
-        title: seedTitle,
+        taskId,
+        title: taskTitle,
         costUsd: progress.costUsd,
         numTurns: progress.turns,
         toolCalls: progress.toolCalls,
@@ -678,7 +678,7 @@ async function main(): Promise<void> {
       });
       notifyClient.send({ type: "status", runId, status: "failed", timestamp: now, details: { reason } });
       await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, "fail", {
-        seedId,
+        taskId,
         reason,
         costUsd: progress.costUsd,
         numTurns: progress.turns,
@@ -686,7 +686,7 @@ async function main(): Promise<void> {
       }, log);
       log(`FAILED: ${reason.slice(0, 300)}`);
       // Permanent failure — mark bead as 'failed' so it is NOT auto-retried.
-      enqueueMarkBeadFailed(store, seedId, "agent-worker");
+      enqueueMarkBeadFailed(store, taskId, "agent-worker");
     }
   } catch (err: unknown) {
     clearInterval(progressTimer);
@@ -709,7 +709,7 @@ async function main(): Promise<void> {
     });
     notifyClient.send({ type: "status", runId, status: catchStatus, timestamp: now, details: { reason } });
     await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {
-      seedId,
+      taskId,
       reason,
       costUsd: progress.costUsd,
       numTurns: progress.turns,
@@ -720,15 +720,15 @@ async function main(): Promise<void> {
     await appendFile(logFile, `\n[foreman-worker] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
     // Transient (rate limit) → reset to 'open' for retry; permanent → mark 'failed'.
     if (isRateLimit) {
-      enqueueResetSeedToOpen(store, seedId, "agent-worker");
+      enqueueResetTaskToOpen(store, taskId, "agent-worker");
     } else {
-      enqueueMarkBeadFailed(store, seedId, "agent-worker");
+      enqueueMarkBeadFailed(store, taskId, "agent-worker");
     }
   }
 
   await runAfterRunHook(config);
   store.close();
-  log(`Worker exiting for ${seedId}`);
+  log(`Worker exiting for ${taskId}`);
 }
 
 // ── Pipeline orchestration ───────────────────────────────────────────────────
@@ -779,18 +779,18 @@ async function runPhase(
   const disallowedTools = getDisallowedTools(roleConfig);
   const allowedSummary = roleConfig.allowedTools.join(", ");
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${resolvedModel}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
-  log(`[${role.toUpperCase()}] Starting phase for ${config.seedId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
+  log(`[${role.toUpperCase()}] Starting phase for ${config.taskId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
   // Build custom tools for this phase (e.g. send_mail).
   const customTools = [];
   if (agentMailClient) {
-    customTools.push(createSendMailTool(agentMailClient, `${role}-${config.seedId}`));
+    customTools.push(createSendMailTool(agentMailClient, `${role}-${config.taskId}`));
   }
 
   try {
     const phaseResult = await runPhaseSession({
       prompt,
-      systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
+      systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.taskTitle}`,
       cwd: config.worktreePath,
       model: resolvedModel,
       maxTurns: config.maxTurns,
@@ -800,22 +800,22 @@ async function runPhase(
       context: {
         phaseName: role,
         runId: config.runId,
-        seedId: config.seedId,
-        seedTitle: config.seedTitle,
-        seedType: config.seedType,
-        seedDescription: config.seedDescription,
+        taskId: config.taskId,
+        taskTitle: config.taskTitle,
+        taskType: config.taskType,
+        taskDescription: config.taskDescription,
         worktreePath: config.worktreePath,
         targetBranch: config.targetBranch,
       },
       observability: {
         runId: config.runId,
-        seedId: config.seedId,
+        taskId: config.taskId,
         phase: role,
         phaseType: observability?.phaseType ?? "prompt",
         model: resolvedModel,
         worktreePath: config.worktreePath,
         rawPrompt: prompt,
-        systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.seedTitle}`,
+        systemPrompt: `You are the ${role} agent in the Foreman pipeline for task: ${config.taskTitle}`,
         expectedArtifact: observability?.expectedArtifact,
         resolvedCommand: observability?.resolvedCommand,
         workflowName: observability?.workflowName,
@@ -946,7 +946,7 @@ async function runTroubleshooterPhase(
   const onFailure = workflowConfig.onFailure;
   if (!onFailure) return false;
 
-  const { runId, seedId: beadId, seedTitle: beadTitle } = config;
+  const { runId, taskId: beadId, taskTitle: beadTitle } = config;
   log(`[TROUBLESHOOTER] Activating for ${beadId} — failure context: ${failureContext.slice(0, 120)}`);
 
   // Build a basic troubleshooter prompt with failure context injected
@@ -984,16 +984,16 @@ async function runTroubleshooterPhase(
       context: {
         phaseName: "troubleshooter",
         runId,
-        seedId: beadId,
-        seedTitle: beadTitle,
-        seedType: config.seedType,
-        seedDescription: config.seedDescription,
+        taskId: beadId,
+        taskTitle: beadTitle,
+        taskType: config.taskType,
+        taskDescription: config.taskDescription,
         worktreePath: config.worktreePath,
         targetBranch: config.targetBranch,
       },
       observability: {
         runId,
-        seedId: beadId,
+        taskId: beadId,
         phase: "troubleshooter",
         phaseType: "prompt",
         model: resolvedModel,
@@ -1090,7 +1090,7 @@ function parsePrNumber(prUrl: string): number | undefined {
 }
 
 function workerReportDir(config: WorkerConfig): string {
-  return config.taskMeta?.projectReportsDir || getRunReportsDir(config.projectId, config.seedId, config.runId);
+  return config.taskMeta?.projectReportsDir || getRunReportsDir(config.projectId, config.taskId, config.runId);
 }
 
 async function hasChangesAgainstBase(vcsBackend: VcsBackend | undefined, repoPath: string, baseBranch: string, branchName: string): Promise<boolean> {
@@ -1132,7 +1132,7 @@ async function runCreatePrBuiltinPhase(args: {
     registeredRefineryOptions,
   );
   const baseBranch = config.targetBranch ?? await vcsBackend?.detectDefaultBranch(pipelineProjectPath).catch(() => "main") ?? "main";
-  const branchName = `foreman/${config.seedId}`;
+  const branchName = `foreman/${config.taskId}`;
   const branchHasChanges = await hasChangesAgainstBase(vcsBackend, pipelineProjectPath, baseBranch, branchName).catch(() => true);
   if (!branchHasChanges) {
     const metadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
@@ -1143,12 +1143,12 @@ async function runCreatePrBuiltinPhase(args: {
       branchName,
       baseBranch,
     }, null, 2) + "\n", "utf8");
-    await runtimeTaskClient.close(config.seedId, "No changes against target branch; acceptance already satisfied.").catch((err: unknown) => {
+    await runtimeTaskClient.close(config.taskId, "No changes against target branch; acceptance already satisfied.").catch((err: unknown) => {
       log(`[CREATE-PR] no-change task close failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     });
     log(`[CREATE-PR] No changes between ${baseBranch} and ${branchName}; skipping PR and closing task.`);
     sendMail(agentMailClient, "foreman", "phase-complete", {
-      seedId: config.seedId,
+      taskId: config.taskId,
       runId: config.runId,
       phase: "create-pr",
       status: "skipped",
@@ -1177,7 +1177,7 @@ async function runCreatePrBuiltinPhase(args: {
   }, null, 2) + "\n", "utf8");
   log(`[CREATE-PR] PR ready: ${pr.prUrl}`);
   sendMail(agentMailClient, "foreman", "pr-created", {
-    seedId: config.seedId,
+    taskId: config.taskId,
     runId: config.runId,
     branchName: pr.branchName,
     prUrl: pr.prUrl,
@@ -1321,8 +1321,8 @@ function truncateFinalizeOutput(output: string): string {
 }
 
 function isVerificationTask(config: WorkerConfig): boolean {
-  const type = (config.seedType ?? "").toLowerCase();
-  const title = config.seedTitle.toLowerCase();
+  const type = (config.taskType ?? "").toLowerCase();
+  const title = config.taskTitle.toLowerCase();
   return type === "test" || /\b(verify|validate|test)\b/.test(title);
 }
 
@@ -1339,8 +1339,8 @@ async function writeFinalizeValidation(args: {
 }): Promise<void> {
   const reportDir = resolveArtifactPath(args.config.worktreePath, workerReportDir(args.config));
   await mkdir(reportDir, { recursive: true });
-  await writeFile(join(reportDir, "FINALIZE_VALIDATION.md"), `# Finalize Validation: ${args.config.seedTitle}\n\n` +
-    `## Seed: ${args.config.seedId}\n` +
+  await writeFile(join(reportDir, "FINALIZE_VALIDATION.md"), `# Finalize Validation: ${args.config.taskTitle}\n\n` +
+    `## Task: ${args.config.taskId}\n` +
     `## Run: ${args.config.runId}\n` +
     `## Timestamp: ${new Date().toISOString()}\n\n` +
     `## Target Integration\n` +
@@ -1366,8 +1366,8 @@ async function writeFinalizeReport(args: {
 }): Promise<void> {
   const reportDir = resolveArtifactPath(args.config.worktreePath, workerReportDir(args.config));
   await mkdir(reportDir, { recursive: true });
-  await writeFile(join(reportDir, "FINALIZE_REPORT.md"), `# Finalize Report: ${args.config.seedTitle}\n\n` +
-    `## Seed: ${args.config.seedId}\n` +
+  await writeFile(join(reportDir, "FINALIZE_REPORT.md"), `# Finalize Report: ${args.config.taskTitle}\n\n` +
+    `## Task: ${args.config.taskId}\n` +
     `## Run: ${args.config.runId}\n` +
     `## Timestamp: ${new Date().toISOString()}\n\n` +
     `## Dependency Install\n- Status: ${args.install.ok ? "SUCCESS" : "FAILED"}\n- Details: ${truncateFinalizeOutput(args.install.output) || "(none)"}\n\n` +
@@ -1386,7 +1386,7 @@ async function runFinalizeBuiltinPhase(args: {
   const { config, pipelineProjectPath, log } = args;
   const vcsBackend = args.vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, config.worktreePath);
   const baseBranch = config.targetBranch || await vcsBackend.detectDefaultBranch(pipelineProjectPath).catch(() => "main");
-  const branchName = `foreman/${config.seedId}`;
+  const branchName = `foreman/${config.taskId}`;
   const reportDir = workerReportDir(config);
 
   log(`[FINALIZE] deterministic builtin starting for ${branchName}`);
@@ -1394,8 +1394,8 @@ async function runFinalizeBuiltinPhase(args: {
   const typecheck = await runShellForFinalize("npx tsc --noEmit", config.worktreePath, 5 * 60_000);
 
   const commands = vcsBackend.getFinalizeCommands({
-    seedId: config.seedId,
-    seedTitle: config.seedTitle,
+    taskId: config.taskId,
+    taskTitle: config.taskTitle,
     baseBranch,
     worktreePath: config.worktreePath,
     githubIssueNumber: config.githubIssueNumber,
@@ -1409,7 +1409,7 @@ async function runFinalizeBuiltinPhase(args: {
   if (statusBeforeCommit.trim()) {
     try {
       const suffix = config.githubIssueNumber ? `\n\nFixes #${config.githubIssueNumber}` : "";
-      await vcsBackend.commit(config.worktreePath, `chore: finalize ${config.seedId}\n\n${config.seedTitle}${suffix}`);
+      await vcsBackend.commit(config.worktreePath, `chore: finalize ${config.taskId}\n\n${config.taskTitle}${suffix}`);
       commitHash = await vcsBackend.getHeadId(config.worktreePath).catch(() => commitHash);
     } catch (err: unknown) {
       const changedAgainstBase = await vcsBackend.getChangedFiles(config.worktreePath, `origin/${baseBranch}`, "HEAD").catch(() => []);
@@ -1532,8 +1532,8 @@ async function writeMergeReport(args: {
 }): Promise<void> {
   const reportPath = resolveArtifactPath(args.config.worktreePath, join(workerReportDir(args.config), "MERGE_REPORT.md"));
   await mkdir(dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, `# Merge Report: ${args.config.seedTitle}\n\n` +
-    `## Seed: ${args.config.seedId}\n` +
+  await writeFile(reportPath, `# Merge Report: ${args.config.taskTitle}\n\n` +
+    `## Task: ${args.config.taskId}\n` +
     `## Run: ${args.config.runId}\n` +
     `## Status: ${args.status}\n\n` +
     `## PR\n` +
@@ -1592,7 +1592,7 @@ async function runMergeBuiltinPhase(args: {
 
   const enqueueResult = await enqueueToMergeQueue({
     projectId: config.projectId,
-    seedId: config.seedId,
+    taskId: config.taskId,
     runId: config.runId,
     operation: "auto_merge",
     worktreePath: config.worktreePath,
@@ -1605,9 +1605,9 @@ async function runMergeBuiltinPhase(args: {
   }
 
   sendMail(agentMailClient, "refinery", "branch-ready", {
-    seedId: config.seedId,
+    taskId: config.taskId,
     runId: config.runId,
-    branch: `foreman/${config.seedId}`,
+    branch: `foreman/${config.taskId}`,
     worktreePath: config.worktreePath,
   });
 
@@ -1684,8 +1684,8 @@ async function runPipeline(
   const projectTaskTypeWorkflowMap = projectCfg?.taskTypeWorkflowMap;
 
   const resolvedWorkflow = config.workflowName ?? resolveWorkflowName(
-    config.seedType ?? "feature",
-    config.seedLabels,
+    config.taskType ?? "feature",
+    config.taskLabels,
     projectTaskTypeWorkflowMap,
   );
   const workflowLookup = config.workflowPath ?? resolvedWorkflow;
@@ -1776,7 +1776,7 @@ async function runPipeline(
           await new PostgresAdapter().addTaskNote(registeredProjectId, taskId, {
             runId: config.runId,
             phase: phaseName,
-            author: `${phaseName}-${config.seedId}`,
+            author: `${phaseName}-${config.taskId}`,
             kind,
             body,
             metadata,
@@ -1840,14 +1840,14 @@ async function runPipeline(
       sendMailText,
       reserveFiles,
       releaseFiles,
-      markStuck: async (storeArg, runIdArg, projectIdArg, seedIdArg, seedTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) =>
+      markStuck: async (storeArg, runIdArg, projectIdArg, taskIdArg, taskTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) =>
         markStuck(
           storeArg,
           localStore,
           runIdArg,
           projectIdArg,
-          seedIdArg,
-          seedTitleArg,
+          taskIdArg,
+          taskTitleArg,
           progressArg,
           phaseArg,
           reasonArg,
@@ -1860,21 +1860,21 @@ async function runPipeline(
       taskMeta: config.taskMeta,
 
     // Epic mode: sync child task bead status into br as the pipeline progresses.
-    async onTaskStatusChange(taskSeedId, status) {
+    async onTaskStatusChange(taskTaskId, status) {
       if (status === "in_progress") {
-        await runtimeTaskClient.update(taskSeedId, { status: "in_progress" });
-        log(`[EPIC] br update ${taskSeedId} → in_progress`);
+        await runtimeTaskClient.update(taskTaskId, { status: "in_progress" });
+        log(`[EPIC] br update ${taskTaskId} → in_progress`);
       } else if (status === "completed") {
-        await runtimeTaskClient.close(taskSeedId, "Completed via epic pipeline");
-        log(`[EPIC] br close ${taskSeedId} (completed)`);
+        await runtimeTaskClient.close(taskTaskId, "Completed via epic pipeline");
+        log(`[EPIC] br close ${taskTaskId} (completed)`);
       } else if (status === "failed") {
-        await runtimeTaskClient.update(taskSeedId, { status: "failed" });
-        log(`[EPIC] br update ${taskSeedId} → failed`);
+        await runtimeTaskClient.update(taskTaskId, { status: "failed" });
+        log(`[EPIC] br update ${taskTaskId} → failed`);
       }
     },
 
     // Epic mode: create a bug bead when QA fails on a child task.
-    async onTaskQaFailure(taskSeedId, taskTitle, epicId) {
+    async onTaskQaFailure(taskTaskId, taskTitle, epicId) {
       if (!runtimeTaskClient.create) {
         throw new Error("Runtime task client does not support create");
       }
@@ -1883,9 +1883,9 @@ async function runPipeline(
         type: "bug",
         priority: "1",
         parent: epicId,
-        description: `QA failed for task ${taskSeedId} (${taskTitle}) during epic pipeline run.`,
+        description: `QA failed for task ${taskTaskId} (${taskTitle}) during epic pipeline run.`,
       });
-      log(`[EPIC] Created bug bead ${bug.id} for QA failure on ${taskSeedId}`);
+      log(`[EPIC] Created bug bead ${bug.id} for QA failure on ${taskTaskId}`);
       return bug.id;
     },
 
@@ -1906,7 +1906,7 @@ async function runPipeline(
 
       // Also send agent-error mail for visibility
       sendMail(agentMailClient, "foreman", "rate-limit-alert", {
-        seedId: config.seedId,
+        taskId: config.taskId,
         phase,
         model,
         error,
@@ -1925,14 +1925,14 @@ async function runPipeline(
       }
       const hasExplicitMergePhase = workflowConfig.phases.some((phase) => phase.name === "merge");
       const hasCreatePrPhase = workflowConfig.phases.some((phase) => phase.name === "create-pr");
-      const { runId, projectId, seedId, seedTitle, worktreePath } = config;
+      const { runId, projectId, taskId, taskTitle, worktreePath } = config;
 
       if (hasExplicitMergePhase) {
         const completedPhases = workflowConfig.phases.map((p) => p.name).join("→");
         const eventType = success ? "complete" : "fail";
         const eventData = {
-          seedId,
-          title: seedTitle,
+          taskId,
+          title: taskTitle,
           costUsd: progress.costUsd,
           numTurns: progress.turns,
           toolCalls: progress.toolCalls,
@@ -1951,10 +1951,10 @@ async function runPipeline(
           store.logEvent(projectId, eventType, eventData, runId);
         }
         if (success) {
-          log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
+          log(`PIPELINE COMPLETED for ${taskId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
           await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
         } else {
-          log(`PIPELINE FAILED for ${seedId} with explicit merge workflow ($${progress.costUsd.toFixed(4)})`);
+          log(`PIPELINE FAILED for ${taskId} with explicit merge workflow ($${progress.costUsd.toFixed(4)})`);
           await appendFile(logFile, `\n[PIPELINE] FAILED ($${progress.costUsd.toFixed(4)})\n`);
         }
         return;
@@ -1969,7 +1969,7 @@ async function runPipeline(
       let finalizeFailureReason = success ? "" : `${failedPhase}_failed`;
       if (agentMailClient) {
         const foremanMsgs = await agentMailClient.fetchInbox("foreman");
-        const finalizeSender = `finalize-${seedId}`;
+        const finalizeSender = `finalize-${taskId}`;
         const finalizeMsgs = foremanMsgs.filter(
           (m) => (m.subject === "phase-complete" || m.subject === "agent-error") &&
                   (m.from === finalizeSender || m.from === "finalize"),
@@ -2014,8 +2014,8 @@ async function runPipeline(
             log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
 
             if (errorDetail === "nothing_to_commit") {
-              const beadType = config.seedType ?? "";
-              const beadTitle = config.seedTitle ?? "";
+              const beadType = config.taskType ?? "";
+              const beadTitle = config.taskTitle ?? "";
               const isVerificationBead = beadType === "test" ||
                 /verify|validate|test/i.test(beadTitle);
 
@@ -2145,7 +2145,7 @@ async function runPipeline(
             prCreated = true;
             log(`[FINALIZE] PR ready: ${pr.prUrl}`);
             sendMail(agentMailClient, "foreman", "pr-created", {
-              seedId,
+              taskId,
               runId,
               branchName: pr.branchName,
               prUrl: pr.prUrl,
@@ -2176,7 +2176,7 @@ async function runPipeline(
             if (changedAgainstTarget.length === 0) {
               skipMergeQueue = true;
               log(`[FINALIZE] Branch already matches ${completionTargetBranch} after troubleshooter recovery — skipping branch-ready/merge queue`);
-              enqueueCloseSeed(store, seedId, "agent-worker-finalize");
+              enqueueCloseTask(store, taskId, "agent-worker-finalize");
             }
           } catch (alreadyMergedErr: unknown) {
             const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
@@ -2199,7 +2199,7 @@ async function runPipeline(
             }
             const enqueueResult = await enqueueToMergeQueue({
               projectId: config.projectId,
-              seedId,
+              taskId,
               runId,
               operation: "auto_merge",
               worktreePath,
@@ -2210,7 +2210,7 @@ async function runPipeline(
               // Guard: Only send branch-ready after successful finalize push (double-check).
               // Primary guard is at function entry, this is defense-in-depth.
               sendMail(agentMailClient, "refinery", "branch-ready", {
-                seedId, runId, branch: `foreman/${seedId}`, worktreePath,
+                taskId, runId, branch: `foreman/${taskId}`, worktreePath,
               });
 
               try {
@@ -2264,7 +2264,7 @@ async function runPipeline(
           });
           log(`[FINALIZE] Failure PR ready: ${pr.prUrl}`);
           sendMail(agentMailClient, "foreman", "pr-created", {
-            seedId,
+            taskId,
             runId,
             branchName: pr.branchName,
             prUrl: pr.prUrl,
@@ -2290,7 +2290,7 @@ async function runPipeline(
                 updates: { status: "merged", completed_at: now },
               });
               notifyClient.send({ type: "status", runId, status: "merged", timestamp: now });
-              enqueueCloseSeed(store, seedId, "agent-worker-finalize");
+              enqueueCloseTask(store, taskId, "agent-worker-finalize");
               log(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating bead as merged`);
             }
           } catch (alreadyMergedErr: unknown) {
@@ -2309,16 +2309,16 @@ async function runPipeline(
           });
           notifyClient.send({ type: "status", runId, status: terminalStatus, timestamp: now });
           sendMail(agentMailClient, "foreman", "agent-error", {
-            seedId,
+            taskId,
             phase: failedPhase,
             error: finalizeFailureReason || `${failedPhase} failed`,
             retryable: finalizeRetryable,
           });
           if (finalizeRetryable) {
-            enqueueResetSeedToOpen(store, seedId, "agent-worker-finalize");
+            enqueueResetTaskToOpen(store, taskId, "agent-worker-finalize");
           } else {
-            enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize");
-            log(`[PIPELINE] Deterministic finalize failure for ${seedId} — marking failed without retry`);
+            enqueueMarkBeadFailed(store, taskId, "agent-worker-finalize");
+            log(`[PIPELINE] Deterministic finalize failure for ${taskId} — marking failed without retry`);
           }
         }
       }
@@ -2343,8 +2343,8 @@ async function runPipeline(
       // Log terminal event
       const completedPhases = workflowConfig.phases.map((p) => p.name).join("→");
       await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), {
-        seedId,
-        title: seedTitle,
+        taskId,
+        title: taskTitle,
         costUsd: progress.costUsd,
         numTurns: progress.turns,
         toolCalls: progress.toolCalls,
@@ -2353,7 +2353,7 @@ async function runPipeline(
       });
 
       if (finalizeSucceeded) {
-        log(`PIPELINE COMPLETED for ${seedId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
+        log(`PIPELINE COMPLETED for ${taskId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
         await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
 
         // ── Continuation Retry: re-check issue state before considering done ──
@@ -2361,20 +2361,20 @@ async function runPipeline(
         // remain active (e.g. backlog items that were updated while the agent ran).
         const continuationCheck = async (
           checkRunId: string,
-          checkSeedId: string,
+          checkTaskId: string,
           checkProjectPath: string,
           checkRegisteredProjectId?: string,
         ): Promise<void> => {
           try {
             const runtimeTaskClient = await createRuntimeTaskClient(checkProjectPath, checkRegisteredProjectId);
-            const issueDetail = await runtimeTaskClient.show(checkSeedId);
+            const issueDetail = await runtimeTaskClient.show(checkTaskId);
             // Issue is inactive (terminal) if status is null/undefined, "closed", or "completed".
             // Treat null/undefined as terminal: issue was deleted or unreachable.
             const isTerminal = !issueDetail.status ||
               issueDetail.status === "closed" ||
               issueDetail.status === "completed";
             if (isTerminal) {
-              log(`[CONTINUATION] Issue ${checkSeedId} transitioned to ${issueDetail.status ?? "null/undefined"} — marking completed`);
+              log(`[CONTINUATION] Issue ${checkTaskId} transitioned to ${issueDetail.status ?? "null/undefined"} — marking completed`);
               await updateTerminalRunStatus({
                 runId: checkRunId,
                 projectId: config.projectId,
@@ -2382,7 +2382,7 @@ async function runPipeline(
                 updates: { status: "completed", completed_at: new Date().toISOString() },
               });
             } else {
-              log(`[CONTINUATION] Issue ${checkSeedId} remains active (status=${issueDetail.status}) — keeping run as running for potential continuation`);
+              log(`[CONTINUATION] Issue ${checkTaskId} remains active (status=${issueDetail.status}) — keeping run as running for potential continuation`);
               // Keep as "running" so dispatcher can re-dispatch if needed
               await updateTerminalRunStatus({
                 runId: checkRunId,
@@ -2393,7 +2393,7 @@ async function runPipeline(
             }
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            log(`[CONTINUATION] Failed to re-check issue ${checkSeedId}: ${msg} — marking completed as safe default`);
+            log(`[CONTINUATION] Failed to re-check issue ${checkTaskId}: ${msg} — marking completed as safe default`);
             // On error, mark as completed to avoid leaving run in limbo
             await updateTerminalRunStatus({
               runId: checkRunId,
@@ -2403,9 +2403,9 @@ async function runPipeline(
             });
           }
         };
-        setTimeout(() => continuationCheck(runId, seedId, pipelineProjectPath, registeredProjectId), 1000);
+        setTimeout(() => continuationCheck(runId, taskId, pipelineProjectPath, registeredProjectId), 1000);
       } else {
-        log(`PIPELINE STUCK for ${seedId} — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})`);
+        log(`PIPELINE STUCK for ${taskId} — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})`);
         await appendFile(logFile, `\n[PIPELINE] STUCK — ${failedPhase} failed ($${progress.costUsd.toFixed(4)})\n`);
       }
     },
@@ -2421,8 +2421,8 @@ async function markStuck(
   localStore: ForemanStore,
   runId: string,
   projectId: string,
-  seedId: string,
-  seedTitle: string,
+  taskId: string,
+  taskTitle: string,
   progress: RunProgress,
   phase: string,
   reason: string,
@@ -2443,8 +2443,8 @@ async function markStuck(
   });
   notifyClient?.send({ type: "status", runId, status: stuckStatus, timestamp: now, details: { phase, reason } });
   await writeMarkStuckEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {
-    seedId,
-    title: seedTitle,
+    taskId,
+    title: taskTitle,
     phase,
     reason,
     costUsd: progress.costUsd,
@@ -2458,11 +2458,11 @@ async function markStuck(
   // Enqueue via the bead write queue instead of calling br directly — the
   // dispatcher drains the queue sequentially, preventing Postgres contention.
   if (isRateLimit) {
-    enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");
-    log(`Enqueued reset-seed for ${seedId} (rate limited — will retry on next dispatch)`);
+    enqueueResetTaskToOpen(store, taskId, "agent-worker-markStuck");
+    log(`Enqueued reset-task for ${taskId} (rate limited — will retry on next dispatch)`);
   } else {
-    enqueueMarkBeadFailed(store, seedId, "agent-worker-markStuck");
-    log(`Enqueued mark-failed for ${seedId} (permanent failure — manual intervention required)`);
+    enqueueMarkBeadFailed(store, taskId, "agent-worker-markStuck");
+    log(`Enqueued mark-failed for ${taskId} (permanent failure — manual intervention required)`);
   }
 
   // Add failure reason as a note on the bead for visibility.
@@ -2470,10 +2470,10 @@ async function markStuck(
   // having to dig into log files or Postgres.
   const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
   const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;
-  enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");
-  if (projectId && seedId) {
+  enqueueAddNotesToBead(store, taskId, failureNote, "agent-worker-markStuck");
+  if (projectId && taskId) {
     try {
-      await new PostgresAdapter().addTaskNote(projectId, seedId, {
+      await new PostgresAdapter().addTaskNote(projectId, taskId, {
         runId,
         phase,
         author: "agent-worker-markStuck",
@@ -2481,13 +2481,13 @@ async function markStuck(
         body: failureNote,
         metadata: { rateLimit: isRateLimit, costUsd: progress.costUsd },
       });
-      log(`Added native failure note for seed ${seedId}`);
+      log(`Added native failure note for task ${taskId}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log(`[task-note] failure note append failed (non-fatal): ${msg}`);
     }
   }
-  log(`Enqueued add-notes for seed ${seedId}`);
+  log(`Enqueued add-notes for task ${taskId}`);
   // Note: do NOT close store here — the caller (main()) owns the store lifecycle.
 }
 
@@ -2531,7 +2531,7 @@ function log(msg: string): void {
  *
  * The config is re-read from argv[2] if it still exists on disk (worker
  * crashed before unlinking it), or parsed from what we can infer.  We attempt
- * to load runId/seedId from the config so we can target the correct DB row.
+ * to load runId/taskId from the config so we can target the correct DB row.
  */
 async function fatalHandler(err: unknown): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err);
@@ -2544,7 +2544,7 @@ async function fatalHandler(err: unknown): Promise<void> {
   }
 
   let runId: string | undefined;
-  let seedId: string | undefined;
+  let taskId: string | undefined;
   let projectId: string | undefined;
   let projectPath: string | undefined;
 
@@ -2553,7 +2553,7 @@ async function fatalHandler(err: unknown): Promise<void> {
     const raw = readFileSync(configPath, "utf-8");
     const cfg = JSON.parse(raw) as Partial<WorkerConfig>;
     runId = cfg.runId;
-    seedId = cfg.seedId;
+    taskId = cfg.taskId;
     projectId = cfg.projectId;
     projectPath = cfg.projectPath ?? (cfg.worktreePath ? inferProjectPathFromWorkspacePath(cfg.worktreePath) : undefined);
   } catch {
@@ -2578,7 +2578,7 @@ async function fatalHandler(err: unknown): Promise<void> {
 
     // Send Postgres mail notification so the run record reflects the fatal error.
     // agentMailClient is not in scope here — create a fresh one.
-    if (seedId && runId) {
+    if (taskId && runId) {
       try {
         const mailCandidate = await createProjectMailClient(projectPath);
         mailCandidate.setRunId(runId);
@@ -2587,7 +2587,7 @@ async function fatalHandler(err: unknown): Promise<void> {
           "worker-error",
           JSON.stringify({
             runId,
-            seedId,
+            taskId,
             error: msg,
             phase: currentPhase,
           }),

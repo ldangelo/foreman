@@ -43,7 +43,7 @@ function makeRun(overrides?: Partial<Run>): Run {
   return {
     id: "run-001",
     project_id: "proj-1",
-    seed_id: "foreman-1a",
+    task_id: "foreman-1a",
     agent_type: "claude-sonnet-4-6",
     session_key: null,
     worktree_path: null,
@@ -86,7 +86,7 @@ function makeEvent(overrides?: Partial<Event>): Event {
     project_id: "proj-1",
     run_id: "run-001",
     event_type: "dispatch",
-    details: JSON.stringify({ seedId: "foreman-1a", title: "Fix auth bug" }),
+    details: JSON.stringify({ taskId: "foreman-1a", title: "Fix auth bug" }),
     created_at: new Date(Date.now() - 5 * 60_000).toISOString(),
     ...overrides,
   };
@@ -151,15 +151,15 @@ function makeMockStore(opts: {
 // ── renderEventLine() ─────────────────────────────────────────────────────
 
 describe("renderEventLine", () => {
-  it("renders a dispatch event with seedId", () => {
-    const event = makeEvent({ event_type: "dispatch", details: JSON.stringify({ seedId: "foreman-1a" }) });
+  it("renders a dispatch event with taskId", () => {
+    const event = makeEvent({ event_type: "dispatch", details: JSON.stringify({ taskId: "foreman-1a" }) });
     const output = renderEventLine(event);
     expect(output).toContain("dispatch");
     expect(output).toContain("foreman-1a");
   });
 
   it("renders a complete event", () => {
-    const event = makeEvent({ event_type: "complete", details: JSON.stringify({ seedId: "foreman-1a", phase: "developer" }) });
+    const event = makeEvent({ event_type: "complete", details: JSON.stringify({ taskId: "foreman-1a", phase: "developer" }) });
     const output = renderEventLine(event);
     expect(output).toContain("complete");
     expect(output).toContain("foreman-1a");
@@ -167,7 +167,7 @@ describe("renderEventLine", () => {
   });
 
   it("renders a fail event", () => {
-    const event = makeEvent({ event_type: "fail", details: JSON.stringify({ seedId: "foreman-2b", reason: "Build failed" }) });
+    const event = makeEvent({ event_type: "fail", details: JSON.stringify({ taskId: "foreman-2b", reason: "Build failed" }) });
     const output = renderEventLine(event);
     expect(output).toContain("fail");
     expect(output).toContain("Build failed");
@@ -254,7 +254,7 @@ describe("renderDashboard", () => {
     expect(output).toContain("my-project");
   });
 
-  it("shows active seed_id in output", () => {
+  it("shows active task_id in output", () => {
     const state = makeDashboardState();
     const output = renderDashboard(state);
     expect(output).toContain("foreman-1a");
@@ -306,7 +306,7 @@ describe("renderDashboard", () => {
       id: "run-completed",
       status: "completed",
       completed_at: new Date(Date.now() - 300_000).toISOString(),
-      seed_id: "foreman-done",
+      task_id: "foreman-done",
     });
     const state = makeDashboardState({
       activeRuns: new Map([[project.id, []]]),

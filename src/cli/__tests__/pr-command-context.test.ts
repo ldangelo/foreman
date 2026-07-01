@@ -133,10 +133,10 @@ describe("pr command registered context", () => {
   it("prints created and failed PR summaries", async () => {
     mockCreatePRs.mockResolvedValue({
       created: [
-        { seedId: "task-1", branchName: "foreman/task-1", prUrl: "https://example.test/pr/1" },
+        { taskId: "task-1", branchName: "foreman/task-1", prUrl: "https://example.test/pr/1" },
       ],
       failed: [
-        { seedId: "task-2", branchName: "foreman/task-2", error: "first line\nstack" },
+        { taskId: "task-2", branchName: "foreman/task-2", error: "first line\nstack" },
       ],
     });
 

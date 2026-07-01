@@ -65,15 +65,15 @@ interface RefineryQueue {
   list(status?: "pending" | "merging" | "merged" | "conflict" | "failed"): Promise<MergeQueueEntry[]>;
   dequeue(): Promise<MergeQueueEntry | null>;
   updateStatus(id: number, status: "pending" | "merging" | "merged" | "conflict" | "failed", extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }): Promise<void>;
-  resetForRetry(seedId: string): Promise<boolean>;
+  resetForRetry(taskId: string): Promise<boolean>;
 }
 
-export function wrapLocalRefineryQueue(queue: { list: (status?: "pending" | "merging" | "merged" | "conflict" | "failed") => MergeQueueEntry[]; dequeue: () => MergeQueueEntry | null; updateStatus: (id: number, status: "pending" | "merging" | "merged" | "conflict" | "failed", extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }) => void; resetForRetry: (seedId: string) => boolean; }): RefineryQueue {
+export function wrapLocalRefineryQueue(queue: { list: (status?: "pending" | "merging" | "merged" | "conflict" | "failed") => MergeQueueEntry[]; dequeue: () => MergeQueueEntry | null; updateStatus: (id: number, status: "pending" | "merging" | "merged" | "conflict" | "failed", extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }) => void; resetForRetry: (taskId: string) => boolean; }): RefineryQueue {
   return {
     list: async (status) => queue.list(status),
     dequeue: async () => queue.dequeue(),
     updateStatus: async (id, status, extra) => queue.updateStatus(id, status, extra),
-    resetForRetry: async (seedId) => queue.resetForRetry(seedId),
+    resetForRetry: async (taskId) => queue.resetForRetry(taskId),
   };
 }
 
@@ -227,13 +227,13 @@ export class RefineryAgent {
       const ciPassed = await this.checkCiStatus(entry);
       if (!ciPassed) {
         this.logAction(entry.id, "CI not yet passing, will retry on next poll");
-        await this.mergeQueue.resetForRetry(entry.seed_id);
+        await this.mergeQueue.resetForRetry(entry.task_id);
         return { success: false, action: "skipped", logPath, message: "CI not passing" };
       }
 
       // Get the worktree path from the run record
       const run = await this.runLookup.getRun(entry.run_id);
-      const worktreePath = run?.worktree_path ?? join(this.projectPath, "worktrees", entry.seed_id);
+      const worktreePath = run?.worktree_path ?? join(this.projectPath, "worktrees", entry.task_id);
 
       // Run agent to fix and merge
       const result = await this.runAgent(entry, prState, worktreePath);
@@ -327,7 +327,7 @@ export class RefineryAgent {
     // Build tools
     const tools = this.buildTools(worktreePath);
     const customTools: ToolDefinition[] = [
-      createSendMailTool(this.mailClient, `refinery-${entry.seed_id}`),
+      createSendMailTool(this.mailClient, `refinery-${entry.task_id}`),
     ];
 
     let lastResult: PiRunResult | null = null;
@@ -459,7 +459,7 @@ export class RefineryAgent {
       "# Refinery Agent -- Fix Task",
       "",
       "## Context",
-      "You are processing a merge queue entry for branch " + entry.branch_name + " (seed: " + entry.seed_id + ").",
+      "You are processing a merge queue entry for branch " + entry.branch_name + " (task: " + entry.task_id + ").",
       "",
       "## Your Mission",
       "Fix mechanical failures (type errors, missing imports, wiring gaps) in the branch, then build and test. If all pass, merge. If not fixable after " + maxIter + " attempts, escalate.",
@@ -631,7 +631,7 @@ export class RefineryAgent {
         "gh",
         [
           "pr", "create",
-          "--title", `[ESCALATED] ${prData.title ?? entry.seed_id}`,
+          "--title", `[ESCALATED] ${prData.title ?? entry.task_id}`,
           "--body", `## Escalated from Merge Queue\n\n**Queue Entry:** ${entry.id}\n**Branch:** ${entry.branch_name}\n**Reason:** ${reason}\n\n**Original PR:** ${prData.url ?? "N/A"}\n\n---\n\n*This PR was escalated because the Refinery Agent could not auto-fix within ${this.config.maxFixIterations} attempts.*`,
           "--base", "dev",
         ],

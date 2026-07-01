@@ -1,5 +1,5 @@
 /**
- * Tests for per-seed branch: label support in Refinery.mergeCompleted().
+ * Tests for per-task branch: label support in Refinery.mergeCompleted().
  *
  * Verifies that:
  * 1. When a bead has branch:installer, it merges into installer, not main
@@ -18,8 +18,8 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("../task-backend-ops.js", () => ({
-  enqueueResetSeedToOpen: vi.fn().mockResolvedValue(undefined),
-  enqueueCloseSeed: vi.fn().mockResolvedValue(undefined),
+  enqueueResetTaskToOpen: vi.fn().mockResolvedValue(undefined),
+  enqueueCloseTask: vi.fn().mockResolvedValue(undefined),
   enqueueAddNotesToBead: vi.fn().mockResolvedValue(undefined),
   enqueueSetBeadStatus: vi.fn(),
 }));
@@ -42,10 +42,10 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seed-abc",
+    task_id: "task-abc",
     agent_type: "claude-code",
     session_key: null,
-    worktree_path: "/tmp/worktrees/seed-abc",
+    worktree_path: "/tmp/worktrees/task-abc",
     status: "completed",
     started_at: new Date().toISOString(),
     completed_at: null,
@@ -82,7 +82,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     branchExists: vi.fn().mockResolvedValue(false),
     branchExistsOnRemote: vi.fn().mockResolvedValue(false),
     deleteBranch: vi.fn().mockResolvedValue({ deleted: true }),
-    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/workspace", branchName: "foreman/seed-abc" }),
+    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/workspace", branchName: "foreman/task-abc" }),
     removeWorkspace: vi.fn().mockResolvedValue(undefined),
     listWorkspaces: vi.fn().mockResolvedValue([]),
     stageAll: vi.fn().mockResolvedValue(undefined),
@@ -113,7 +113,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
   } as VcsBackend;
 }
 
-function makeMocks(seedLabels: string[] = []) {
+function makeMocks(taskLabels: string[] = []) {
   const mockDb = {
     prepare: vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn() })),
   };
@@ -127,17 +127,17 @@ function makeMocks(seedLabels: string[] = []) {
     sendMessage: vi.fn(),
     getDb: vi.fn(() => mockDb),
   };
-  const seeds = {
+  const tasks = {
     getGraph: vi.fn().mockResolvedValue({ edges: [] }),
     show: vi.fn().mockResolvedValue({
       status: "open",
-      title: "Test Seed",
+      title: "Test Task",
       description: "A test",
-      labels: seedLabels,
+      labels: taskLabels,
     }),
     update: vi.fn().mockResolvedValue(undefined),
   };
-  return { store, seeds };
+  return { store, tasks };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -150,26 +150,26 @@ describe("Refinery — branch label targeting", () => {
 
   it("uses branch: label as merge target instead of default", async () => {
     const run = makeRun();
-    const { store, seeds } = makeMocks(["branch:installer"]);
+    const { store, tasks } = makeMocks(["branch:installer"]);
     store.getRunsByStatus = vi.fn().mockReturnValue([run]);
 
     const vcs = makeMockVcs();
-    const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
+    const refinery = new Refinery(store as never, tasks as never, "/tmp", vcs);
     await refinery.mergeCompleted({ targetBranch: "main", runTests: false });
 
     // checkoutBranch should be called with "installer" (from branch: label), not "main"
     expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "installer");
     // Squash-merge flow is now backend-driven; verify the branch merge targeted installer.
-    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "installer");
+    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith("/tmp", "foreman/task-abc", "installer");
   });
 
   it("falls back to default target when no branch: label exists", async () => {
     const run = makeRun();
-    const { store, seeds } = makeMocks([]); // no branch: label
+    const { store, tasks } = makeMocks([]); // no branch: label
     store.getRunsByStatus = vi.fn().mockReturnValue([run]);
 
     const vcs = makeMockVcs();
-    const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
+    const refinery = new Refinery(store as never, tasks as never, "/tmp", vcs);
     await refinery.mergeCompleted({ targetBranch: "main", runTests: false });
 
     // checkoutBranch should be called with "main" (the default)
@@ -180,14 +180,14 @@ describe("Refinery — branch label targeting", () => {
     // Refinery uses vcsBackend.detectDefaultBranch(). Pass a mock VcsBackend
     // that returns "develop" to verify the correct branch is used.
     const run = makeRun();
-    const { store, seeds } = makeMocks([]); // no branch: label
+    const { store, tasks } = makeMocks([]); // no branch: label
     store.getRunsByStatus = vi.fn().mockReturnValue([run]);
 
     const vcs = makeMockVcs({
       detectDefaultBranch: vi.fn().mockResolvedValue("develop"),
     });
 
-    const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
+    const refinery = new Refinery(store as never, tasks as never, "/tmp", vcs);
     await refinery.mergeCompleted({ runTests: false }); // no targetBranch
 
     expect(vcs.detectDefaultBranch).toHaveBeenCalledWith("/tmp");
@@ -197,42 +197,42 @@ describe("Refinery — branch label targeting", () => {
 
   it("ignores invalid branch label HEAD and falls back to default target", async () => {
     const run = makeRun();
-    const { store, seeds } = makeMocks(["branch:HEAD"]);
+    const { store, tasks } = makeMocks(["branch:HEAD"]);
     store.getRunsByStatus = vi.fn().mockReturnValue([run]);
 
     const vcs = makeMockVcs();
-    const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
+    const refinery = new Refinery(store as never, tasks as never, "/tmp", vcs);
     await refinery.mergeCompleted({ targetBranch: "dev", runTests: false });
 
     expect(vcs.checkoutBranch).toHaveBeenCalledWith("/tmp", "dev");
-    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith("/tmp", "foreman/seed-abc", "dev");
+    expect(vcs.mergeWithoutCommit).toHaveBeenCalledWith("/tmp", "foreman/task-abc", "dev");
   });
 
   it("each run can target a different branch when multiple runs are merged", async () => {
-    const run1 = makeRun({ id: "run-1", seed_id: "seed-aaa" });
-    const run2 = makeRun({ id: "run-2", seed_id: "seed-bbb" });
+    const run1 = makeRun({ id: "run-1", task_id: "task-aaa" });
+    const run2 = makeRun({ id: "run-2", task_id: "task-bbb" });
 
     const { store } = makeMocks();
     store.getRunsByStatus = vi.fn().mockReturnValue([run1, run2]);
 
-    // seed-aaa has branch:installer, seed-bbb has no label -> targets main
-    const seeds = {
+    // task-aaa has branch:installer, task-bbb has no label -> targets main
+    const tasks = {
       getGraph: vi.fn().mockResolvedValue({ edges: [] }),
       show: vi.fn().mockImplementation(async (id: string) => ({
         status: "open",
-        title: `Seed ${id}`,
+        title: `Task ${id}`,
         description: null,
-        labels: id === "seed-aaa" ? ["branch:installer"] : [],
+        labels: id === "task-aaa" ? ["branch:installer"] : [],
       })),
       update: vi.fn().mockResolvedValue(undefined),
     };
 
     const vcs = makeMockVcs();
-    const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
+    const refinery = new Refinery(store as never, tasks as never, "/tmp", vcs);
     await refinery.mergeCompleted({ targetBranch: "main", runTests: false });
 
-    // run1 (seed-aaa) -> checkoutBranch with installer
-    // run2 (seed-bbb) -> checkoutBranch with main
+    // run1 (task-aaa) -> checkoutBranch with installer
+    // run2 (task-bbb) -> checkoutBranch with main
     const checkoutCalls = (vcs.checkoutBranch as ReturnType<typeof vi.fn>).mock.calls;
     // Filter to only the squash-merge checkout calls (not rebase-return checkouts)
     // The pattern is: checkout target -> squash merge -> commit -> ... -> checkout target (for next run)
@@ -245,14 +245,14 @@ describe("Refinery — branch label targeting", () => {
     const { store } = makeMocks();
     store.getRunsByStatus = vi.fn().mockReturnValue([run]);
 
-    const seeds = {
+    const tasks = {
       getGraph: vi.fn().mockResolvedValue({ edges: [] }),
       show: vi.fn().mockRejectedValue(new Error("br not available")), // lookup fails
       update: vi.fn().mockResolvedValue(undefined),
     };
 
     const vcs = makeMockVcs();
-    const refinery = new Refinery(store as never, seeds as never, "/tmp", vcs);
+    const refinery = new Refinery(store as never, tasks as never, "/tmp", vcs);
     // Should not throw; falls back to default target
     await expect(
       refinery.mergeCompleted({ targetBranch: "main", runTests: false }),

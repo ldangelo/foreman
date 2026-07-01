@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
-import type { SeedInfo, ModelSelection } from "./types.js";
+import type { TaskInfo, ModelSelection } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,20 +24,20 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
  * when worktree branches are merged back to main.
  */
 export function workerAgentMd(
-  seed: SeedInfo,
+  task: TaskInfo,
   worktreePath: string,
   model: ModelSelection,
 ): string {
   const templatePath = join(__dirname, "../templates/worker-agent.md");
   const template = readFileSync(templatePath, "utf8");
-  const description = seed.description ?? "(no description provided)";
-  const commentsSection = seed.comments
-    ? `\n## Additional Context\n${seed.comments}\n`
+  const description = task.description ?? "(no description provided)";
+  const commentsSection = task.comments
+    ? `\n## Additional Context\n${task.comments}\n`
     : "";
 
   return renderTemplate(template, {
-    seedId: seed.id,
-    title: seed.title,
+    taskId: task.id,
+    title: task.title,
     description,
     model,
     worktreePath,

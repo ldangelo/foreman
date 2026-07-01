@@ -14,7 +14,7 @@ import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedP
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
-import { enqueueCloseSeed, enqueueResetSeedToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
+import { enqueueCloseTask, enqueueResetTaskToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
 
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
@@ -155,7 +155,7 @@ export class Refinery {
 
   constructor(
     private store: ForemanStore,
-    private seeds: IRefineryTaskClient,
+    private tasks: IRefineryTaskClient,
     private projectPath: string,
     vcsBackend?: VcsBackend,
     opts: RefineryOptions = {},
@@ -307,7 +307,7 @@ export class Refinery {
   }
 
   /**
-   * Detect uncommitted changes in `.seeds/` and `.foreman/` and commit them
+   * Detect uncommitted changes in `.tasks/` and `.foreman/` and commit them
    * so that merge operations start from a clean state for state files.
    * No-op when there are no dirty state files.
    */
@@ -322,7 +322,7 @@ export class Refinery {
       if (modifiedFiles.length === 0) return;
 
       const stateFiles = modifiedFiles.filter(
-        (path) => path.startsWith(".seeds/") || path.startsWith(".foreman/"),
+        (path) => path.startsWith(".tasks/") || path.startsWith(".foreman/"),
       );
 
       if (stateFiles.length === 0) return;
@@ -350,16 +350,16 @@ export class Refinery {
 
   /**
    * Archive report files after a successful merge.
-   * Moves report files from the working tree into .foreman/reports/<name>-<seedId>.md
+   * Moves report files from the working tree into .foreman/reports/<name>-<taskId>.md
    * and creates a follow-up commit. Called after a successful squash merge so we
    * don't need to checkout branches or deal with dirty working trees.
    * Delegates to ConflictResolver.archiveReportsPostMerge().
    */
-  private async archiveReportsPostMerge(seedId: string, workspacePath = this.projectPath): Promise<void> {
+  private async archiveReportsPostMerge(taskId: string, workspacePath = this.projectPath): Promise<void> {
     const resolver = workspacePath === this.projectPath
       ? this.conflictResolver
       : new ConflictResolver(workspacePath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
-    return resolver.archiveReportsPostMerge(seedId);
+    return resolver.archiveReportsPostMerge(taskId);
   }
 
   /**
@@ -387,7 +387,7 @@ export class Refinery {
    * Load workspace hooks from project config and run the beforeRemove hook.
    * Failures are logged but ignored — non-blocking.
    */
-  private async runBeforeRemoveHook(workspacePath: string, seedId: string): Promise<void> {
+  private async runBeforeRemoveHook(workspacePath: string, taskId: string): Promise<void> {
     try {
       const projectCfg = loadProjectConfig(this.projectPath);
       const hooks = projectCfg?.hooks;
@@ -395,8 +395,8 @@ export class Refinery {
 
       const hookEnv: Record<string, string> = {
         FOREMAN_WORKSPACE_PATH: workspacePath,
-        FOREMAN_ISSUE_ID: seedId,
-        FOREMAN_ISSUE_IDENTIFIER: seedId,
+        FOREMAN_ISSUE_ID: taskId,
+        FOREMAN_ISSUE_IDENTIFIER: taskId,
         FOREMAN_ATTEMPT: "1",
       };
 
@@ -404,23 +404,23 @@ export class Refinery {
     } catch (hookErr: unknown) {
       // Non-fatal — log and continue with worktree removal
       const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
-      console.error(`[Refinery] beforeRemove hook failed for ${seedId}: ${hookMsg.slice(0, 300)}`);
+      console.error(`[Refinery] beforeRemove hook failed for ${taskId}: ${hookMsg.slice(0, 300)}`);
     }
   }
 
-  private async getSeedContext(seedId: string): Promise<{ title: string; description: string }> {
-    let seedTitle = seedId;
-    let seedDescription = "";
+  private async getTaskContext(taskId: string): Promise<{ title: string; description: string }> {
+    let taskTitle = taskId;
+    let taskDescription = "";
     try {
-      const seedInfo = await this.seeds.show(seedId);
-      if (seedInfo) {
-        seedTitle = seedInfo.title ?? seedId;
-        seedDescription = seedInfo.description ?? "";
+      const taskInfo = await this.tasks.show(taskId);
+      if (taskInfo) {
+        taskTitle = taskInfo.title ?? taskId;
+        taskDescription = taskInfo.description ?? "";
       }
     } catch {
       // Non-fatal — use defaults
     }
-    return { title: seedTitle, description: seedDescription };
+    return { title: taskTitle, description: taskDescription };
   }
 
   private async getExistingPrUrl(branchName: string): Promise<string | null> {
@@ -452,13 +452,13 @@ export class Refinery {
   private async finalizeSuccessfulMerge(run: import("../lib/store.js").Run, branchName: string, targetBranch: string): Promise<void> {
     if (run.worktree_path) {
       try {
-        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.task_id);
       } catch {
         // Archive is best-effort — don't block worktree removal
       }
 
       // Run beforeRemove hook (non-fatal — failures are logged but ignored)
-      await this.runBeforeRemoveHook(run.worktree_path, run.seed_id);
+      await this.runBeforeRemoveHook(run.worktree_path, run.task_id);
 
       try {
         await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
@@ -474,20 +474,20 @@ export class Refinery {
     await this.persistRunEvent(
       run,
       "merge",
-      { seedId: run.seed_id, branchName, targetBranch },
+      { taskId: run.task_id, branchName, targetBranch },
     );
 
     this.sendMail(run.id, "merge-complete", {
-      seedId: run.seed_id,
+      taskId: run.task_id,
       branchName,
       targetBranch,
     });
 
-    enqueueCloseSeed(this.store, run.seed_id, "refinery");
-    await this.closeNativeTaskPostMerge(run.id, run.seed_id);
+    enqueueCloseTask(this.store, run.task_id, "refinery");
+    await this.closeNativeTaskPostMerge(run.id, run.task_id);
 
     this.sendMail(run.id, "bead-closed", {
-      seedId: run.seed_id,
+      taskId: run.task_id,
       branchName,
       targetBranch,
     });
@@ -507,7 +507,7 @@ export class Refinery {
     if (!run) throw new Error(`Run ${opts.runId} not found`);
 
     const baseBranch = opts.baseBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
-    const branchName = `foreman/${run.seed_id}`;
+    const branchName = `foreman/${run.task_id}`;
 
     if (!this.isTestRuntime()) {
       await this.vcsBackend.push(this.projectPath, branchName);
@@ -532,7 +532,7 @@ export class Refinery {
             run,
             "pr-created",
             {
-              seedId: run.seed_id,
+              taskId: run.task_id,
               branchName,
               baseBranch,
               prUrl: existingPr.url,
@@ -549,7 +549,7 @@ export class Refinery {
             pr_state: prState,
             pr_head_sha: currentBranchHead ?? existingPr.headRefOid ?? null,
           });
-          return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
+          return { runId: run.id, taskId: run.task_id, branchName, prUrl: existingPr.url };
         }
 
         if (
@@ -560,7 +560,7 @@ export class Refinery {
           // Non-open PRs with a different SHA are stale; create fresh PR below.
           // Log this mismatch so it's visible in run events.
           await this.persistRunEvent(run, "pr-stale", {
-            seedId: run.seed_id,
+            taskId: run.task_id,
             branchName,
             stalePrUrl: existingPr.url,
             staleHead: existingPr.headRefOid,
@@ -584,7 +584,7 @@ export class Refinery {
               run,
               "pr-created",
               {
-                seedId: run.seed_id,
+                taskId: run.task_id,
                 branchName,
                 baseBranch,
                 prUrl: existingPr.url,
@@ -601,13 +601,13 @@ export class Refinery {
               pr_state: prState,
               pr_head_sha: currentBranchHead ?? null,
             });
-            return { runId: run.id, seedId: run.seed_id, branchName, prUrl: existingPr.url };
+            return { runId: run.id, taskId: run.task_id, branchName, prUrl: existingPr.url };
           }
         }
       }
     }
 
-    const { title: seedTitle, description: seedDescription } = await this.getSeedContext(run.seed_id);
+    const { title: taskTitle, description: taskDescription } = await this.getTaskContext(run.task_id);
     let commitLog = "";
     try {
       commitLog = await gitSpecial(
@@ -618,10 +618,10 @@ export class Refinery {
       // Non-fatal
     }
 
-    const prTitle = `${seedTitle} (${run.seed_id})`;
+    const prTitle = `${taskTitle} (${run.task_id})`;
     const body = [
       "## Summary",
-      seedDescription || `Agent work for ${run.seed_id}`,
+      taskDescription || `Agent work for ${run.task_id}`,
       opts.bodyNote ? `\n> ${opts.bodyNote}` : "",
       "",
       "## Commits",
@@ -631,7 +631,7 @@ export class Refinery {
     ].join("\n");
 
     const prUrl = this.isTestRuntime()
-      ? `foreman://pr/${run.seed_id}`
+      ? `foreman://pr/${run.task_id}`
       : await gh((() => {
         const ghArgs = [
           "pr", "create",
@@ -647,7 +647,7 @@ export class Refinery {
     await this.persistRunEvent(
       run,
       "pr-created",
-      { seedId: run.seed_id, branchName, baseBranch, prUrl, draft: opts.draft ?? false, existing: false },
+      { taskId: run.task_id, branchName, baseBranch, prUrl, draft: opts.draft ?? false, existing: false },
     );
     if (opts.updateRunStatus) {
       await this.persistRunUpdate(run, { status: "pr-created" });
@@ -667,7 +667,7 @@ export class Refinery {
     // Link PR back to GitHub issue (TRD-032)
     await this.#linkPrToGithubIssue(run.id, prUrl);
 
-    return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
+    return { runId: run.id, taskId: run.task_id, branchName, prUrl };
   }
 
   /**
@@ -705,7 +705,7 @@ export class Refinery {
     if (!run) {
       unexpectedErrors.push({
         runId: opts.runId,
-        seedId: "(unknown)",
+        taskId: "(unknown)",
         branchName: "(unknown)",
         error: "Run not found",
       });
@@ -713,7 +713,7 @@ export class Refinery {
     }
 
     const targetBranch = opts.targetBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
-    const branchName = `foreman/${run.seed_id}`;
+    const branchName = `foreman/${run.task_id}`;
 
     try {
       const pr = await this.ensurePullRequestForRun({
@@ -728,7 +728,7 @@ export class Refinery {
           targetBranch,
           runTests: false,
           projectId: run.project_id,
-          seedId: run.seed_id,
+          taskId: run.task_id,
           runId: run.id,
         });
         merged.push(...report.merged);
@@ -742,7 +742,7 @@ export class Refinery {
 
         merged.push({
           runId: run.id,
-          seedId: run.seed_id,
+          taskId: run.task_id,
           branchName,
         });
       }
@@ -754,11 +754,11 @@ export class Refinery {
           ? await this.vcsBackend.resolveRef(this.projectPath, branchName).catch(() => null)
           : null;
         if (existingPr?.state === "MERGED" && currentBranchHead === existingPr.headRefOid) {
-          await this.persistRunEvent(run, "merge-cleanup-fallback", { seedId: run.seed_id, branchName, error: message.slice(0, 400) });
+          await this.persistRunEvent(run, "merge-cleanup-fallback", { taskId: run.task_id, branchName, error: message.slice(0, 400) });
           await this.finalizeSuccessfulMerge(run, branchName, targetBranch);
           merged.push({
             runId: run.id,
-            seedId: run.seed_id,
+            taskId: run.task_id,
             branchName,
           });
           return { merged, conflicts, testFailures, unexpectedErrors, prsCreated };
@@ -768,17 +768,17 @@ export class Refinery {
       await this.persistRunEvent(
         run,
         "fail",
-        { seedId: run.seed_id, branchName, error: message },
+        { taskId: run.task_id, branchName, error: message },
       );
       this.sendMail(run.id, "merge-failed", {
-        seedId: run.seed_id,
+        taskId: run.task_id,
         branchName,
         reason: "unexpected-error",
         error: message.slice(0, 400),
       });
       unexpectedErrors.push({
         runId: run.id,
-        seedId: run.seed_id,
+        taskId: run.task_id,
         branchName,
         error: message,
       });
@@ -793,7 +793,7 @@ export class Refinery {
    * Implements REQ-018: updateStatus(taskId, 'merged') on success.
    * Non-fatal — failures are silently ignored so they don't block the merge flow.
    */
-  private async closeNativeTaskPostMerge(runId: string, _seedId: string): Promise<void> {
+  private async closeNativeTaskPostMerge(runId: string, _taskId: string): Promise<void> {
     try {
       if (this.registeredProjectId && this.postgresAdapter) {
         const [task] = await this.postgresAdapter.listTasks(this.registeredProjectId, {
@@ -827,21 +827,21 @@ export class Refinery {
    * Attempt to add a note to a bead explaining what went wrong.
    * Non-fatal — a failure to annotate the bead must not mask the original error.
    */
-  private async addFailureNote(seedId: string, note: string): Promise<void> {
+  private async addFailureNote(taskId: string, note: string): Promise<void> {
     // Enqueue instead of calling br directly — multiple agent workers run
     // refinery concurrently, and direct calls can contend on beads backend locks.
     try {
-      enqueueAddNotesToBead(this.store, seedId, note.slice(0, 500), "refinery");
+      enqueueAddNotesToBead(this.store, taskId, note.slice(0, 500), "refinery");
     } catch (err: unknown) {
       // Non-fatal: best-effort annotation
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[Refinery] Failed to enqueue failure note for bead ${seedId}: ${message}`);
+      console.warn(`[Refinery] Failed to enqueue failure note for bead ${taskId}: ${message}`);
     }
   }
 
   /**
    * After a successful merge of `mergedBranch` into `targetBranch`, find all
-   * stacked branches (seeds whose worktree was branched from `mergedBranch`)
+   * stacked branches (tasks whose worktree was branched from `mergedBranch`)
    * and rebase them onto `targetBranch` so they pick up the latest code.
    *
    * Non-fatal: failures are logged as warnings; they do not abort the merge.
@@ -860,7 +860,7 @@ export class Refinery {
         const activeStatuses: import("../lib/store.js").Run["status"][] = ["pending", "running", "completed"];
         if (!activeStatuses.includes(stackedRun.status)) continue;
 
-        const stackedBranch = `foreman/${stackedRun.seed_id}`;
+        const stackedBranch = `foreman/${stackedRun.task_id}`;
         const branchExists = await this.vcsBackend.branchExists(this.projectPath, stackedBranch);
         if (!branchExists) continue;
 
@@ -909,21 +909,21 @@ export class Refinery {
       // Push branch to origin (force-push since rebase may have rewritten history)
       await this.vcsBackend.push(this.projectPath, branchName, { force: true });
 
-      // Get seed info for PR title/body
-      let seedTitle = run.seed_id;
-      let seedDescription = "";
+      // Get task info for PR title/body
+      let taskTitle = run.task_id;
+      let taskDescription = "";
       try {
-        const seedInfo = await this.seeds.show(run.seed_id);
-        if (seedInfo) {
-          seedTitle = seedInfo.title ?? run.seed_id;
-          seedDescription = seedInfo.description ?? "";
+        const taskInfo = await this.tasks.show(run.task_id);
+        if (taskInfo) {
+          taskTitle = taskInfo.title ?? run.task_id;
+          taskDescription = taskInfo.description ?? "";
         }
       } catch { /* use defaults */ }
 
-      const prTitle = `${seedTitle} (${run.seed_id})`;
+      const prTitle = `${taskTitle} (${run.task_id})`;
       const body = [
         "## Summary",
-        seedDescription || `Agent work for ${run.seed_id}`,
+        taskDescription || `Agent work for ${run.task_id}`,
         "",
         "## Conflicts",
         `This branch has conflicts with \`${baseBranch}\` that need manual resolution:`,
@@ -941,34 +941,34 @@ export class Refinery {
        await this.persistRunEvent(
          run,
          "pr-created",
-         { seedId: run.seed_id, branchName, baseBranch, prUrl, conflictNote },
+         { taskId: run.task_id, branchName, baseBranch, prUrl, conflictNote },
        );
-      return { runId: run.id, seedId: run.seed_id, branchName, prUrl };
+      return { runId: run.id, taskId: run.task_id, branchName, prUrl };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
        await this.persistRunUpdate(run, { status: "conflict" });
        await this.persistRunEvent(
          run,
          "fail",
-         { seedId: run.seed_id, branchName, error: `PR creation failed: ${message}` },
+         { taskId: run.task_id, branchName, error: `PR creation failed: ${message}` },
        );
       return null;
     }
   }
 
   /**
-   * Get all completed runs that are ready to merge, optionally filtered to a single seed.
+   * Get all completed runs that are ready to merge, optionally filtered to a single task.
    *
-   * When a seedId filter is active (i.e. `foreman merge --seed <id>`), we also
+   * When a taskId filter is active (i.e. `foreman merge --task <id>`), we also
    * include runs in terminal failure states ("test-failed", "conflict", "failed")
    * so that a previously-failed merge can be retried without the user having to
    * manually reset the run's status back to "completed".
    *
-   * Without a seedId filter we only return "completed" runs to avoid accidentally
+   * Without a taskId filter we only return "completed" runs to avoid accidentally
    * re-attempting bulk merges of runs that failed for unrelated reasons.
    */
-  async getCompletedRuns(projectId?: string, seedId?: string): Promise<import("../lib/store.js").Run[]> {
-    if (seedId) {
+  async getCompletedRuns(projectId?: string, taskId?: string): Promise<import("../lib/store.js").Run[]> {
+    if (taskId) {
       // For targeted retries, look in completed AND terminal failure states.
       const retryStatuses: import("../lib/store.js").Run["status"][] = [
         "completed",
@@ -977,8 +977,8 @@ export class Refinery {
         "failed",
       ];
       const runs = await this.lookupRunsByStatuses(retryStatuses, projectId);
-      const matching = runs.filter((r) => r.seed_id === seedId);
-      // Prefer a completed run over newer stuck/failed runs for the same seed.
+      const matching = runs.filter((r) => r.task_id === taskId);
+      // Prefer a completed run over newer stuck/failed runs for the same task.
       // Postgres returns rows ordered by created_at DESC so stuck/failed may appear
       // first even though a completed run exists from an earlier attempt.
       const completedRun = matching.find((r) => r.status === "completed");
@@ -988,16 +988,16 @@ export class Refinery {
   }
 
   /**
-   * Order runs by seed dependency graph so that dependencies merge before dependents.
+   * Order runs by task dependency graph so that dependencies merge before dependents.
    * Falls back to insertion order if dependency info is unavailable.
    */
   async orderByDependencies(runs: import("../lib/store.js").Run[]): Promise<import("../lib/store.js").Run[]> {
     if (runs.length <= 1) return runs;
 
     try {
-      if (!this.seeds.getGraph) return runs; // br backend has no getGraph
-      const graph = await this.seeds.getGraph();
-      // Build a map of seed_id → set of dependency seed_ids
+      if (!this.tasks.getGraph) return runs; // br backend has no getGraph
+      const graph = await this.tasks.getGraph();
+      // Build a map of task_id → set of dependency task_ids
       const depMap = new Map<string, Set<string>>();
       for (const edge of graph.edges) {
         if (!depMap.has(edge.from)) depMap.set(edge.from, new Set());
@@ -1005,21 +1005,21 @@ export class Refinery {
       }
 
       // Topological sort (Kahn's algorithm)
-      const runMap = new Map(runs.map((r) => [r.seed_id, r]));
-      const seedIds = new Set(runs.map((r) => r.seed_id));
+      const runMap = new Map(runs.map((r) => [r.task_id, r]));
+      const taskIds = new Set(runs.map((r) => r.task_id));
 
       // Only consider deps within our run set
       const inDegree = new Map<string, number>();
       const adj = new Map<string, string[]>();
-      for (const id of seedIds) {
+      for (const id of taskIds) {
         inDegree.set(id, 0);
         adj.set(id, []);
       }
-      for (const id of seedIds) {
+      for (const id of taskIds) {
         const deps = depMap.get(id);
         if (!deps) continue;
         for (const dep of deps) {
-          if (seedIds.has(dep)) {
+          if (taskIds.has(dep)) {
             adj.get(dep)!.push(id);
             inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
           }
@@ -1068,7 +1068,7 @@ export class Refinery {
     runTests?: boolean;
     testCommand?: string;
     projectId?: string;
-    seedId?: string;
+    taskId?: string;
     /**
      * Optional pre-fetched run to bypass the getCompletedRuns() query entirely.
      * When provided (e.g. from autoMerge's queue entry), this run is used directly
@@ -1105,7 +1105,7 @@ export class Refinery {
      } else if (opts?.overrideRun) {
        rawRuns = [opts.overrideRun];
      } else {
-       rawRuns = await this.getCompletedRuns(opts?.projectId, opts?.seedId);
+       rawRuns = await this.getCompletedRuns(opts?.projectId, opts?.taskId);
      }
 
     const completedRuns = await this.orderByDependencies(rawRuns);
@@ -1132,14 +1132,14 @@ export class Refinery {
 
     try {
       for (const run of completedRuns) {
-        const branchName = `foreman/${run.seed_id}`;
+        const branchName = `foreman/${run.task_id}`;
 
-        // Resolve per-seed target branch: prefer branch: label on the bead,
+        // Resolve per-task target branch: prefer branch: label on the bead,
         // fall back to the caller-supplied or auto-detected default.
         let targetBranch = defaultTargetBranch;
         try {
-          const seedDetail = await this.seeds.show(run.seed_id);
-          const branchLabel = normalizeBranchLabel(extractBranchLabel(seedDetail.labels));
+          const taskDetail = await this.tasks.show(run.task_id);
+          const branchLabel = normalizeBranchLabel(extractBranchLabel(taskDetail.labels));
           if (branchLabel) {
             targetBranch = branchLabel;
           }
@@ -1163,15 +1163,15 @@ export class Refinery {
           const branchCommits = await gitSpecial(["log", "--oneline", `${targetBranch}..${branchName}`], this.projectPath).catch(() => "");
           if (!branchCommits.trim()) {
             console.warn(`[Refinery] Branch ${branchName} has no commits beyond ${targetBranch} — agent may not have committed work`);
-            await this.addFailureNote(run.seed_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
+            await this.addFailureNote(run.task_id, `Branch ${branchName} has no unique commits beyond ${targetBranch}. The agent may not have committed its work. Manual intervention required — do not auto-reset.`);
               await this.persistRunUpdate(run, { status: "conflict" });
             this.sendMail(run.id, "merge-failed", {
-              seedId: run.seed_id,
+              taskId: run.task_id,
               branchName,
               reason: "no-commits",
               detail: `Branch ${branchName} has no unique commits beyond ${targetBranch}`,
             });
-            conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
+            conflicts.push({ runId: run.id, taskId: run.task_id, branchName, conflictFiles: [] });
             continue;
           }
 
@@ -1182,7 +1182,7 @@ export class Refinery {
             const markedFiles = await this.scanForConflictMarkers(branchName, targetBranch);
             if (markedFiles.length > 0) {
               this.sendMail(run.id, "merge-failed", {
-                seedId: run.seed_id,
+                taskId: run.task_id,
                 branchName,
                 reason: "conflict-markers",
                 conflictFiles: markedFiles,
@@ -1196,14 +1196,14 @@ export class Refinery {
               if (pr) {
                 prsCreated.push(pr);
               } else {
-                await this.addFailureNote(run.seed_id, `Merge skipped: unresolved conflict markers in ${markedFiles.join(", ")}. PR creation also failed — manual intervention required.`);
-                conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: markedFiles });
+                await this.addFailureNote(run.task_id, `Merge skipped: unresolved conflict markers in ${markedFiles.join(", ")}. PR creation also failed — manual intervention required.`);
+                conflicts.push({ runId: run.id, taskId: run.task_id, branchName, conflictFiles: markedFiles });
               }
               continue;
             }
           }
 
-          // Commit any dirty state files (.seeds/, .foreman/) before merge
+          // Commit any dirty state files (.tasks/, .foreman/) before merge
           await this.autoCommitStateFiles(mergeWorkspacePath);
 
           // Remove report files so they can't cause merge conflicts
@@ -1296,11 +1296,11 @@ export class Refinery {
 
             if (!rebaseOk) {
               await this.addFailureNote(
-                run.seed_id,
+                run.task_id,
                 `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — manual retry required. Rebase conflicts detected.`,
               );
               this.sendMail(run.id, "merge-failed", {
-                seedId: run.seed_id,
+                taskId: run.task_id,
                 branchName,
                 reason: "rebase-conflict",
               });
@@ -1308,7 +1308,7 @@ export class Refinery {
               if (pr) {
                 prsCreated.push(pr);
               } else {
-                conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: [] });
+                conflicts.push({ runId: run.id, taskId: run.task_id, branchName, conflictFiles: [] });
               }
               continue;
             }
@@ -1365,11 +1365,11 @@ export class Refinery {
                 }
 
                 await this.addFailureNote(
-                  run.seed_id,
+                  run.task_id,
                   `Merge failed: conflict on ${new Date().toISOString().slice(0, 10)} — manual retry required. Conflicting files: ${codeConflicts.join(", ")}`,
                 );
                 this.sendMail(run.id, "merge-failed", {
-                  seedId: run.seed_id,
+                  taskId: run.task_id,
                   branchName,
                   reason: "merge-conflict",
                   conflictFiles: codeConflicts,
@@ -1380,7 +1380,7 @@ export class Refinery {
                 if (pr) {
                   prsCreated.push(pr);
                 } else {
-                  conflicts.push({ runId: run.id, seedId: run.seed_id, branchName, conflictFiles: codeConflicts });
+                  conflicts.push({ runId: run.id, taskId: run.task_id, branchName, conflictFiles: codeConflicts });
                 }
                 continue;
               }
@@ -1398,12 +1398,12 @@ export class Refinery {
 
           // Commit the squash merge (git merge --squash stages but does not commit)
           if (squashMergeOk) {
-            // Build a concise squash commit message with seed info
+            // Build a concise squash commit message with task info
             let squashMsg = `${branchName}: squash merge`;
             try {
-              const seedDetail = await this.seeds.show(run.seed_id);
-              if (seedDetail?.title) {
-                squashMsg = `${seedDetail.title} (${run.seed_id})`;
+              const taskDetail = await this.tasks.show(run.task_id);
+              if (taskDetail?.title) {
+                squashMsg = `${taskDetail.title} (${run.task_id})`;
               }
             } catch {
               // Non-fatal — use default message
@@ -1420,7 +1420,7 @@ export class Refinery {
           }
 
           // Merge succeeded — archive report files so they don't conflict with next merge
-          await this.archiveReportsPostMerge(run.seed_id, mergeWorkspacePath);
+          await this.archiveReportsPostMerge(run.task_id, mergeWorkspacePath);
 
           // Optionally run tests
           if (runTests) {
@@ -1432,7 +1432,7 @@ export class Refinery {
 
               // Add failure note before resetting so the bead records why it was reset
               await this.addFailureNote(
-                run.seed_id,
+                run.task_id,
                 `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — manual retry required. ${testResult.output.slice(0, 300)}`,
               );
 
@@ -1440,17 +1440,17 @@ export class Refinery {
               await this.persistRunEvent(
                 run,
                 "test-fail",
-                { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) },
+                { taskId: run.task_id, branchName, output: testResult.output.slice(0, 2000) },
               );
               this.sendMail(run.id, "merge-failed", {
-                seedId: run.seed_id,
+                taskId: run.task_id,
                 branchName,
                 reason: "test-failure",
                 output: testResult.output.slice(0, 500),
               });
               testFailures.push({
                 runId: run.id,
-                seedId: run.seed_id,
+                taskId: run.task_id,
                 branchName,
                 error: testResult.output.slice(0, 500),
               });
@@ -1465,13 +1465,13 @@ export class Refinery {
           // All good — clean up worktree and mark as merged
           if (run.worktree_path) {
             try {
-              await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+              await archiveWorktreeReports(this.projectPath, run.worktree_path, run.task_id);
             } catch {
               // Archive is best-effort — don't block worktree removal
             }
 
             // Run beforeRemove hook (non-fatal — failures are logged but ignored)
-            await this.runBeforeRemoveHook(run.worktree_path, run.seed_id);
+            await this.runBeforeRemoveHook(run.worktree_path, run.task_id);
 
             try {
               await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
@@ -1487,36 +1487,36 @@ export class Refinery {
           await this.persistRunEvent(
             run,
             "merge",
-            { seedId: run.seed_id, branchName, targetBranch },
+            { taskId: run.task_id, branchName, targetBranch },
           );
 
           // Send merge-complete mail so inbox shows a successful merge event
           this.sendMail(run.id, "merge-complete", {
-            seedId: run.seed_id,
+            taskId: run.task_id,
             branchName,
             targetBranch,
           });
 
           // Close the bead NOW — after the code has actually landed in main.
           // projectPath (repo root) is where .beads/ lives; not the worktree dir.
-          enqueueCloseSeed(this.store, run.seed_id, "refinery");
+          enqueueCloseTask(this.store, run.task_id, "refinery");
 
           // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
-          await this.closeNativeTaskPostMerge(run.id, run.seed_id);
+          await this.closeNativeTaskPostMerge(run.id, run.task_id);
 
           // Send bead-closed mail so inbox shows bead lifecycle completion
           this.sendMail(run.id, "bead-closed", {
-            seedId: run.seed_id,
+            taskId: run.task_id,
             branchName,
             targetBranch,
           });
 
-          // Rebase any stacked branches (seeds that branched from this one) onto target.
+          // Rebase any stacked branches (tasks that branched from this one) onto target.
           await this.rebaseStackedBranches(branchName, targetBranch);
 
           merged.push({
             runId: run.id,
-            seedId: run.seed_id,
+            taskId: run.task_id,
             branchName,
           });
         } catch (err: unknown) {
@@ -1527,20 +1527,20 @@ export class Refinery {
           await this.persistRunEvent(
             run,
             "fail",
-            { seedId: run.seed_id, branchName, error: message },
+            { taskId: run.task_id, branchName, error: message },
           );
           this.sendMail(run.id, "merge-failed", {
-            seedId: run.seed_id,
+            taskId: run.task_id,
             branchName,
             reason: "unexpected-error",
             error: message.slice(0, 400),
           });
-          await this.addFailureNote(run.seed_id, `Merge failed: ${message.slice(0, 400)}`);
+          await this.addFailureNote(run.task_id, `Merge failed: ${message.slice(0, 400)}`);
           // Push to unexpectedErrors (not testFailures) so auto-merge reports
           // reason "unexpected-error" instead of "test-failure" (Fix 3).
           unexpectedErrors.push({
             runId: run.id,
-            seedId: run.seed_id,
+            taskId: run.task_id,
             branchName,
             error: message,
           });
@@ -1600,15 +1600,15 @@ export class Refinery {
     const run = await this.lookupRun(runId);
     if (!run) throw new Error(`Run ${runId} not found`);
 
-    const branchName = `foreman/${run.seed_id}`;
+    const branchName = `foreman/${run.task_id}`;
 
     if (strategy === "abort") {
       await this.persistRunUpdate(run, {
         status: "failed",
         completed_at: new Date().toISOString(),
       });
-      await this.persistRunEvent(run, "fail", { seedId: run.seed_id, reason: "Conflict resolution aborted by user" });
-      await this.addFailureNote(run.seed_id, "Merge conflict resolution aborted by user.");
+      await this.persistRunEvent(run, "fail", { taskId: run.task_id, reason: "Conflict resolution aborted by user" });
+      await this.addFailureNote(run.task_id, "Merge conflict resolution aborted by user.");
       return false;
     }
 
@@ -1647,9 +1647,9 @@ export class Refinery {
         await this.persistRunEvent(
           run,
           "fail",
-          { seedId: run.seed_id, error: message },
+          { taskId: run.task_id, error: message },
         );
-      await this.addFailureNote(run.seed_id, `Merge failed (theirs strategy): ${message.slice(0, 400)}. Manual retry required.`);
+      await this.addFailureNote(run.task_id, `Merge failed (theirs strategy): ${message.slice(0, 400)}. Manual retry required.`);
       return false;
     }
 
@@ -1665,21 +1665,21 @@ export class Refinery {
           status: "test-failed",
           completed_at: new Date().toISOString(),
         });
-        await this.persistRunEvent(run, "test-fail", { seedId: run.seed_id, branchName, output: testResult.output.slice(0, 2000) });
-        await this.addFailureNote(run.seed_id, `Merge failed: tests failed after conflict resolution. Manual retry required. ${testResult.output.slice(0, 300)}`);
+        await this.persistRunEvent(run, "test-fail", { taskId: run.task_id, branchName, output: testResult.output.slice(0, 2000) });
+        await this.addFailureNote(run.task_id, `Merge failed: tests failed after conflict resolution. Manual retry required. ${testResult.output.slice(0, 300)}`);
         return false;
       }
     }
 
     if (run.worktree_path) {
       try {
-        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.seed_id);
+        await archiveWorktreeReports(this.projectPath, run.worktree_path, run.task_id);
       } catch {
         // Archive is best-effort — don't block worktree removal
       }
 
       // Run beforeRemove hook (non-fatal — failures are logged but ignored)
-      await this.runBeforeRemoveHook(run.worktree_path, run.seed_id);
+      await this.runBeforeRemoveHook(run.worktree_path, run.task_id);
 
       try {
         await this.vcsBackend.removeWorkspace(this.projectPath, run.worktree_path);
@@ -1695,14 +1695,14 @@ export class Refinery {
     await this.persistRunEvent(
       run,
       "merge",
-      { seedId: run.seed_id, branchName, strategy: "theirs", targetBranch },
+      { taskId: run.task_id, branchName, strategy: "theirs", targetBranch },
     );
 
     // Close the bead after successful conflict-resolution merge.
-    enqueueCloseSeed(this.store, run.seed_id, "refinery");
+    enqueueCloseTask(this.store, run.task_id, "refinery");
 
     // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
-    await this.closeNativeTaskPostMerge(run.id, run.seed_id);
+    await this.closeNativeTaskPostMerge(run.id, run.task_id);
 
     return true;
   }
@@ -1745,23 +1745,23 @@ export class Refinery {
     const failed: FailedRun[] = [];
 
     for (const run of completedRuns) {
-      const branchName = `foreman/${run.seed_id}`;
+      const branchName = `foreman/${run.task_id}`;
 
       try {
         // Push branch to origin
         await this.vcsBackend.push(this.projectPath, branchName);
 
         // Build PR title and body
-        const title = `${run.seed_id}: ${branchName.replace("foreman/", "")}`;
+        const title = `${run.task_id}: ${branchName.replace("foreman/", "")}`;
 
-        // Try to get seed info for a better title/body
-        let seedTitle = run.seed_id;
-        let seedDescription = "";
+        // Try to get task info for a better title/body
+        let taskTitle = run.task_id;
+        let taskDescription = "";
         try {
-          const seedInfo = await this.seeds.show(run.seed_id);
-          if (seedInfo) {
-            seedTitle = seedInfo.title ?? run.seed_id;
-            seedDescription = seedInfo.description ?? "";
+          const taskInfo = await this.tasks.show(run.task_id);
+          if (taskInfo) {
+            taskTitle = taskInfo.title ?? run.task_id;
+            taskDescription = taskInfo.description ?? "";
           }
         } catch {
           // Non-fatal — use defaults
@@ -1778,10 +1778,10 @@ export class Refinery {
           // Non-fatal
         }
 
-        const prTitle = `${seedTitle} (${run.seed_id})`;
+        const prTitle = `${taskTitle} (${run.task_id})`;
         const body = [
           "## Summary",
-          seedDescription || `Agent work for ${run.seed_id}`,
+          taskDescription || `Agent work for ${run.task_id}`,
           "",
           "## Commits",
           commitLog ? `\`\`\`\n${commitLog}\n\`\`\`` : "(no commits)",
@@ -1805,11 +1805,11 @@ export class Refinery {
         await this.persistRunEvent(
           run,
           "pr-created",
-          { seedId: run.seed_id, branchName, baseBranch, prUrl, draft },
+          { taskId: run.task_id, branchName, baseBranch, prUrl, draft },
         );
         created.push({
           runId: run.id,
-          seedId: run.seed_id,
+          taskId: run.task_id,
           branchName,
           prUrl,
         });
@@ -1821,11 +1821,11 @@ export class Refinery {
         await this.persistRunEvent(
           run,
           "fail",
-          { seedId: run.seed_id, branchName, error: message },
+          { taskId: run.task_id, branchName, error: message },
         );
         failed.push({
           runId: run.id,
-          seedId: run.seed_id,
+          taskId: run.task_id,
           branchName,
           error: message,
         });
@@ -1839,7 +1839,7 @@ export class Refinery {
 // ── Dry-run merge ─────────────────────────────────────────────────────────────
 
 export interface DryRunEntry {
-  seedId: string;
+  taskId: string;
   branchName: string;
   diffStat: string;
   hasConflicts: boolean;
@@ -1855,23 +1855,23 @@ export interface DryRunEntry {
  * @param projectPath   Repository root
  * @param targetBranch  Branch to merge into (e.g. "main")
  * @param branches      List of branches to check
- * @param filterSeedId  If set, only process this seed
+ * @param filterTaskId  If set, only process this task
  * @param conflictPatterns  Optional map of file -> resolution tier for estimated tier column
  */
 export async function dryRunMerge(
   projectPath: string,
   targetBranch: string,
-  branches: Array<{ branchName: string; seedId: string }>,
-  filterSeedId?: string,
+  branches: Array<{ branchName: string; taskId: string }>,
+  filterTaskId?: string,
   conflictPatterns?: Map<string, number>,
 ): Promise<DryRunEntry[]> {
   const results: DryRunEntry[] = [];
 
-  const filtered = filterSeedId
-    ? branches.filter((b) => b.seedId === filterSeedId)
+  const filtered = filterTaskId
+    ? branches.filter((b) => b.taskId === filterTaskId)
     : branches;
 
-  for (const { branchName, seedId } of filtered) {
+  for (const { branchName, taskId } of filtered) {
     try {
       // Get merge base
       const mergeBase = await gitReadOnly(
@@ -1904,11 +1904,11 @@ export async function dryRunMerge(
         }
       }
 
-      results.push({ seedId, branchName, diffStat, hasConflicts, estimatedTier });
+      results.push({ taskId, branchName, diffStat, hasConflicts, estimatedTier });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       results.push({
-        seedId,
+        taskId,
         branchName,
         diffStat: "",
         hasConflicts: false,
@@ -1937,14 +1937,14 @@ export interface BeadPreservationResult {
 }
 
 /**
- * Preserve `.seeds/` changes from a branch before it is deleted.
- * Extracts `.seeds/` changes via `git diff`, writes a temp patch file,
+ * Preserve `.tasks/` changes from a branch before it is deleted.
+ * Extracts `.tasks/` changes via `git diff`, writes a temp patch file,
  * applies it to the current index, and commits with a descriptive message.
  *
  * Error code MQ-019 on patch failure.
  *
  * @param projectPath   Repository root
- * @param branchName    Source branch containing seed changes
+ * @param branchName    Source branch containing task changes
  * @param targetBranch  Target branch to apply changes to
  */
 export async function preserveBeadChanges(
@@ -1953,12 +1953,12 @@ export async function preserveBeadChanges(
   targetBranch: string,
   vcsBackend?: Pick<VcsBackend, "applyPatchToIndex" | "commit">,
 ): Promise<BeadPreservationResult> {
-  const tmpPatchPath = join(projectPath, `.foreman-seed-patch-${Date.now()}.patch`);
+  const tmpPatchPath = join(projectPath, `.foreman-task-patch-${Date.now()}.patch`);
 
   try {
-    // Extract .seeds/ changes
+    // Extract .tasks/ changes
     const patchContent = await gitReadOnly(
-      ["diff", `${targetBranch}...${branchName}`, "--", ".seeds/"],
+      ["diff", `${targetBranch}...${branchName}`, "--", ".tasks/"],
       projectPath,
     );
 
@@ -1979,9 +1979,9 @@ export async function preserveBeadChanges(
       return { preserved: false, error: `MQ-019: ${message}` };
     }
 
-    // Commit the seed changes with a descriptive message.
-    const seedId = branchName.replace(/^foreman\//, "");
-    await backend.commit(projectPath, `chore: preserve seed changes from ${seedId}`);
+    // Commit the task changes with a descriptive message.
+    const taskId = branchName.replace(/^foreman\//, "");
+    await backend.commit(projectPath, `chore: preserve task changes from ${taskId}`);
 
     return { preserved: true };
   } catch (err: unknown) {

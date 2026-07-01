@@ -29,14 +29,14 @@ describe("parseMessageBody", () => {
       kind: "agent-error",
       tool: "send_mail",
       argsPreview: "--run-id abc123 --to foreman --subject agent-error",
-      seedId: "foreman-c3845",
+      taskId: "foreman-c3845",
       runId: "run-xyz",
     });
     const result = parseMessageBody(body);
     expect(result.kind).toBe("agent-error");
     expect(result.tool).toBe("send_mail");
     expect(result.argsPreview).toBe("--run-id abc123 --to foreman --subject agent-error");
-    expect(result.seedId).toBe("foreman-c3845");
+    expect(result.taskId).toBe("foreman-c3845");
     expect(result.runId).toBe("run-xyz");
   });
 
@@ -46,7 +46,7 @@ describe("parseMessageBody", () => {
     expect(result.kind).toBeUndefined();
     expect(result.tool).toBeUndefined();
     expect(result.argsPreview).toBeUndefined();
-    expect(result.seedId).toBeUndefined();
+    expect(result.taskId).toBeUndefined();
     expect(result.runId).toBeUndefined();
   });
 
@@ -55,7 +55,7 @@ describe("parseMessageBody", () => {
     expect(result.kind).toBeUndefined();
     expect(result.tool).toBeUndefined();
     expect(result.argsPreview).toBeUndefined();
-    expect(result.seedId).toBeUndefined();
+    expect(result.taskId).toBeUndefined();
     expect(result.runId).toBeUndefined();
   });
 
@@ -68,7 +68,7 @@ describe("parseMessageBody", () => {
   it("gracefully handles malformed JSON", () => {
     const result = parseMessageBody('{"phase": "developer", broken');
     expect(result.kind).toBeUndefined();
-    expect(result.seedId).toBeUndefined();
+    expect(result.taskId).toBeUndefined();
   });
 });
 
@@ -223,11 +223,11 @@ describe("pipeline event formatting", () => {
 
   it("falls back through known event detail keys and raw event type", () => {
     expect(formatEventSummary("pr-created", { pr_number: 42 })).toBe("PR #42 created");
-    expect(formatEventSummary("stuck", { seedId: "task-9" })).toBe("Stuck: task-9");
+    expect(formatEventSummary("stuck", { taskId: "task-9" })).toBe("Stuck: task-9");
     expect(formatEventSummary("merge-queue-fallback", { bead_id: "task-8" })).toBe("merge-queue-fallback: task-8");
     expect(formatEventSummary("merge-cleanup-fallback", { bead_id: "task-7" })).toBe("merge-cleanup-fallback: task-7");
     expect(formatEventSummary("unknown-event", { bead_id: "task-2" })).toBe("unknown-event: task-2");
-    expect(formatEventSummary("unknown-event", { seedId: "task-3" })).toBe("unknown-event: task-3");
+    expect(formatEventSummary("unknown-event", { taskId: "task-3" })).toBe("unknown-event: task-3");
     expect(formatEventSummary("unknown-event", null)).toBe("unknown-event");
   });
 
@@ -250,7 +250,7 @@ describe("pipeline event formatting", () => {
       id: "evt-unknown",
       runId: "run-1",
       eventType: "unknown-event",
-      details: { seedId: "task-3" },
+      details: { taskId: "task-3" },
       createdAt: "2026-01-01T00:00:00.000Z",
     });
 
@@ -262,7 +262,7 @@ describe("pipeline event formatting", () => {
       id: "evt-2",
       run_id: "run-2",
       event_type: "fail",
-      payload: JSON.stringify({ seedId: "task-7" }),
+      payload: JSON.stringify({ taskId: "task-7" }),
       created_at: "2026-01-01T00:00:00.000Z",
     });
     const fromObject = adaptPostgresEvent({
@@ -280,7 +280,7 @@ describe("pipeline event formatting", () => {
       created_at: "2026-01-01T00:02:00.000Z",
     });
 
-    expect(fromString).toMatchObject({ runId: "run-2", eventType: "fail", details: { seedId: "task-7" } });
+    expect(fromString).toMatchObject({ runId: "run-2", eventType: "fail", details: { taskId: "task-7" } });
     expect(fromObject).toMatchObject({ runId: null, eventType: "phase-complete", details: { phase: "reviewer" } });
     expect(fromObject.createdAt).toBe("2026-01-01T00:01:00.000Z");
     expect(fromScalar).toMatchObject({ runId: "run-4", eventType: "dispatch", details: null });
@@ -310,7 +310,7 @@ describe("formatMessageTable", () => {
         kind: "agent-error",
         tool: "send_mail",
         argsPreview: "--run-id abc123 --to foreman",
-        seedId: "foreman-c3845",
+        taskId: "foreman-c3845",
         runId: "run-abc",
       }),
       read: 0,
@@ -385,7 +385,7 @@ describe("formatMessageTable", () => {
         kind: "agent-error",
         tool: "send_mail",
         argsPreview: longArgs,
-        seedId: "foreman-c3845",
+        taskId: "foreman-c3845",
         runId: "run-abc",
       }),
       read: 0,
@@ -398,7 +398,7 @@ describe("formatMessageTable", () => {
     expect(row.args?.endsWith("…")).toBe(true);
   });
 
-  it("uses seedId as ticket when available", () => {
+  it("uses taskId as ticket when available", () => {
     const msg = {
       id: "msg-005",
       run_id: "run-abc",
@@ -406,7 +406,7 @@ describe("formatMessageTable", () => {
       recipient_agent_type: "foreman",
       subject: "agent-error",
       body: JSON.stringify({
-        seedId: "foreman-c3845",
+        taskId: "foreman-c3845",
         runId: "run-abc",
         kind: "agent-error",
         tool: "bash",
@@ -420,7 +420,7 @@ describe("formatMessageTable", () => {
     expect(row.ticket).toBe("foreman-c3845");
   });
 
-  it("falls back to run_id when seedId is absent", () => {
+  it("falls back to run_id when taskId is absent", () => {
     const msg = {
       id: "msg-006",
       run_id: "run-abc",
@@ -454,7 +454,7 @@ describe("renderMessageTable", () => {
 
   const makeRow = (overrides: Partial<TableRow> & { id: string; created_at: string }): TableRow => ({
     date: localTs(overrides.created_at),
-    ticket: overrides.ticket ?? "seed-001",
+    ticket: overrides.ticket ?? "task-001",
     sender: overrides.sender ?? "developer",
     receiver: overrides.receiver ?? "foreman",
     kind: overrides.kind,

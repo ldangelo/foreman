@@ -91,18 +91,18 @@ describe("PostgresAdapter live integration", { timeout: 30_000 }, () => {
     });
     projectIds.push(project.id);
 
-    const seedId = `bd-live-${suffix}`;
-    const run1 = await adapter.createRun(project.id, seedId, "developer", {
+    const taskId = `bd-live-${suffix}`;
+    const run1 = await adapter.createRun(project.id, taskId, "developer", {
       worktreePath: `/tmp/pg-live-${suffix}/wt1`,
       mergeStrategy: "auto",
     });
-    const run2 = await adapter.createRun(project.id, seedId, "developer", {
+    const run2 = await adapter.createRun(project.id, taskId, "developer", {
       worktreePath: `/tmp/pg-live-${suffix}/wt2`,
       mergeStrategy: "auto",
     });
 
-    expect(run1.seed_id).toBe(seedId);
-    expect(run2.seed_id).toBe(seedId);
+    expect(run1.task_id).toBe(taskId);
+    expect(run2.task_id).toBe(taskId);
 
     await adapter.updateRun(project.id, run1.id, {
       status: "running",
@@ -157,7 +157,7 @@ describe("PostgresAdapter live integration", { timeout: 30_000 }, () => {
 
     const runs = await adapter.listRuns(project.id);
     expect(runs).toHaveLength(2);
-    expect(runs.every((run) => run.seed_id === seedId || run.seed_id === `bd-old-${suffix}`)).toBe(true);
+    expect(runs.every((run) => run.task_id === taskId || run.task_id === `bd-old-${suffix}`)).toBe(true);
 
     const refreshed = await adapter.getRun(project.id, run1.id);
     expect(refreshed).not.toBeNull();

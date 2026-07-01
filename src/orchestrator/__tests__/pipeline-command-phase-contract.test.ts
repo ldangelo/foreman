@@ -40,8 +40,8 @@ describe("executePipeline command phase contract enforcement", () => {
       config: {
         runId: "run-contract-1",
         projectId: "proj-contract-1",
-        seedId: "seed-contract-1",
-        seedTitle: "Command contract",
+        taskId: "task-contract-1",
+        taskTitle: "Command contract",
         model: "anthropic/claude-sonnet-4-6",
         worktreePath: tmpDir,
         env: {},
@@ -96,8 +96,8 @@ describe("executePipeline command phase contract enforcement", () => {
       config: {
         runId: "run-contract-2",
         projectId: "proj-contract-2",
-        seedId: "seed-contract-2",
-        seedTitle: "Command contract",
+        taskId: "task-contract-2",
+        taskTitle: "Command contract",
         model: "anthropic/claude-sonnet-4-6",
         worktreePath: tmpDir,
         env: {},

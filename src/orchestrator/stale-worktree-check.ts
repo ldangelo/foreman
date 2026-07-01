@@ -110,7 +110,7 @@ async function logStaleWorktreeEvent(
  * @param store - ForemanStore for event logging
  * @param projectId - Foreman project ID
  * @param runId - Current run ID
- * @param seedId - Seed identifier
+ * @param taskId - Task identifier
  * @param opts - Options: autoRebase (default: true), failOnConflict (default: true)
  * @returns StaleWorktreeCheckResult
  */
@@ -121,7 +121,7 @@ export async function checkAndRebaseStaleWorktree(
   store: StaleWorktreeEventStore,
   projectId: string,
   runId: string,
-  seedId: string,
+  taskId: string,
   opts?: StaleWorktreeCheckOptions,
 ): Promise<StaleWorktreeCheckResult> {
   const autoRebase = opts?.autoRebase ?? true;
@@ -173,7 +173,7 @@ export async function checkAndRebaseStaleWorktree(
   // Worktree is behind — check if auto-rebase is enabled
   if (!autoRebase) {
     console.warn(
-      `[StaleWorktreeCheck] Worktree for ${seedId} is stale (behind origin/${targetBranch}) but auto-rebase is disabled`,
+      `[StaleWorktreeCheck] Worktree for ${taskId} is stale (behind origin/${targetBranch}) but auto-rebase is disabled`,
     );
     return {
       rebased: false,
@@ -184,7 +184,7 @@ export async function checkAndRebaseStaleWorktree(
 
   // ── Step 5: Attempt rebase ────────────────────────────────────────────
   console.log(
-    `[StaleWorktreeCheck] Worktree for ${seedId} is stale — auto-rebasing onto origin/${targetBranch}`,
+    `[StaleWorktreeCheck] Worktree for ${taskId} is stale — auto-rebasing onto origin/${targetBranch}`,
   );
 
   try {
@@ -193,7 +193,7 @@ export async function checkAndRebaseStaleWorktree(
     if (rebaseResult.success) {
       // Rebase succeeded
       await logStaleWorktreeEvent(store, projectId, runId, "worktree-rebased", {
-        seedId,
+        taskId,
         runId,
         reason: "pre-dispatch",
         from: localHead,
@@ -208,7 +208,7 @@ export async function checkAndRebaseStaleWorktree(
       const errorMsg = `Rebase failed with conflicts: ${conflictList.join(", ") || "unknown conflicts"}`;
 
       await logStaleWorktreeEvent(store, projectId, runId, "worktree-rebase-failed", {
-        seedId,
+        taskId,
         runId,
         reason: "pre-dispatch",
         from: localHead,
@@ -247,7 +247,7 @@ export async function checkAndRebaseStaleWorktree(
 
     // Log the failure event
     await logStaleWorktreeEvent(store, projectId, runId, "worktree-rebase-failed", {
-      seedId,
+      taskId,
       runId,
       reason: "pre-dispatch",
       from: localHead,

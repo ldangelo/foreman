@@ -44,7 +44,7 @@ describe("PostgresStore", { timeout: 120_000 }, () => {
 
     expect(await store.getRun(run1.id)).toEqual(expect.objectContaining({ id: run1.id, status: "running" }));
     expect(await store.getActiveRuns(project.id)).toEqual([expect.objectContaining({ id: run1.id })]);
-    expect(await store.getRunsForSeed("bd-a1", project.id)).toHaveLength(2);
+    expect(await store.getRunsForTask("bd-a1", project.id)).toHaveLength(2);
     expect(await store.hasActiveOrPendingRun("bd-a1", project.id)).toBe(true);
     expect(await store.getRunsByBaseBranch("main", project.id)).toEqual([expect.objectContaining({ id: run1.id })]);
 
@@ -71,7 +71,7 @@ describe("PostgresStore", { timeout: 120_000 }, () => {
       lastToolCall: "edit",
       lastActivity: "2026-01-01T00:00:00.000Z",
     });
-    await store.logEvent(project.id, "phase-start", { seedId: "bd-obs", phase: "developer" }, run.id);
+    await store.logEvent(project.id, "phase-start", { taskId: "bd-obs", phase: "developer" }, run.id);
     await store.recordCost(run.id, 10, 20, 5, 0.02);
     await store.updateRun(run.id, { status: "merged" });
 

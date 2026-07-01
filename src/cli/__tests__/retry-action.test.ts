@@ -5,7 +5,7 @@ import { retryAction } from "../commands/retry.js";
 function makeStore(overrides: Record<string, unknown> = {}) {
   return {
     getProjectByPath: vi.fn().mockResolvedValue({ id: "proj-1", path: "/repo" }),
-    getRunsForSeed: vi.fn().mockResolvedValue([]),
+    getRunsForTask: vi.fn().mockResolvedValue([]),
     updateRun: vi.fn().mockResolvedValue(undefined),
     logEvent: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -48,12 +48,12 @@ describe("retryAction", () => {
     const exitCode = await retryAction("bead-1", {}, beadsClient, store as never, "/repo");
 
     expect(exitCode).toBe(1);
-    expect(store.getRunsForSeed).not.toHaveBeenCalled();
+    expect(store.getRunsForTask).not.toHaveBeenCalled();
   });
 
   it("resets retryable bead status to ready via resetToReady and marks failed runs failed", async () => {
     const latestRun = { id: "run-1", status: "failed" };
-    const store = makeStore({ getRunsForSeed: vi.fn().mockResolvedValue([latestRun]) });
+    const store = makeStore({ getRunsForTask: vi.fn().mockResolvedValue([latestRun]) });
     const beadsClient = makeTaskClient({ show: vi.fn().mockResolvedValue({ status: "failed", title: "Retry me" }) });
 
     const exitCode = await retryAction("bead-1", {}, beadsClient, store as never, "/repo");
@@ -67,7 +67,7 @@ describe("retryAction", () => {
 
   it("resets native stuck beads to ready and marks terminal runs reset", async () => {
     const latestRun = { id: "run-2", status: "completed" };
-    const store = makeStore({ getRunsForSeed: vi.fn().mockResolvedValue([latestRun]) });
+    const store = makeStore({ getRunsForTask: vi.fn().mockResolvedValue([latestRun]) });
     const beadsClient = makeTaskClient({ show: vi.fn().mockResolvedValue({ status: "stuck", title: "Retry me" }) });
 
     const exitCode = await retryAction("bead-2", {}, beadsClient, store as never, "/repo");
@@ -80,7 +80,7 @@ describe("retryAction", () => {
 
   it("describes dry-run actions without mutating task or run state", async () => {
     const latestRun = { id: "run-3", status: "conflict" };
-    const store = makeStore({ getRunsForSeed: vi.fn().mockResolvedValue([latestRun]) });
+    const store = makeStore({ getRunsForTask: vi.fn().mockResolvedValue([latestRun]) });
     const beadsClient = makeTaskClient({ show: vi.fn().mockResolvedValue({ status: "stuck", title: "Retry me" }) });
 
     const exitCode = await retryAction("bead-3", { dryRun: true }, beadsClient, store as never, "/repo");
@@ -100,7 +100,7 @@ describe("retryAction", () => {
     const beadsClient = makeTaskClient({ show: vi.fn().mockResolvedValue({ status: "ready", title: "Retry me" }) });
     const dispatcher = {
       dispatch: vi.fn().mockResolvedValue({
-        dispatched: [{ seedId: "bead-1", worktreePath: "/tmp/wt-1" }],
+        dispatched: [{ taskId: "bead-1", worktreePath: "/tmp/wt-1" }],
         skipped: [],
       }),
     };
@@ -108,7 +108,7 @@ describe("retryAction", () => {
     const exitCode = await retryAction("bead-1", { dispatch: true, model: "claude-test" as never }, beadsClient, store as never, "/repo", dispatcher as never);
 
     expect(exitCode).toBe(0);
-    expect(dispatcher.dispatch).toHaveBeenCalledWith({ maxAgents: 1, model: "claude-test", seedId: "bead-1", dryRun: false });
+    expect(dispatcher.dispatch).toHaveBeenCalledWith({ maxAgents: 1, model: "claude-test", taskId: "bead-1", dryRun: false });
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("dispatched");
     expect(rendered).toContain("/tmp/wt-1");
@@ -120,7 +120,7 @@ describe("retryAction", () => {
     const dispatcher = {
       dispatch: vi.fn().mockResolvedValue({
         dispatched: [],
-        skipped: [{ seedId: "bead-1", reason: "already running" }],
+        skipped: [{ taskId: "bead-1", reason: "already running" }],
       }),
     };
 

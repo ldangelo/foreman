@@ -16,7 +16,7 @@ function makeMockCtx(totalTokens = 0): ExtensionContext {
   return {
     phase: 'explorer',
     runId: 'test-run',
-    seedId: 'test-seed',
+    taskId: 'test-task',
     getContextUsage: () => ({ totalTokens, inputTokens: 0, outputTokens: 0 }),
     log: vi.fn(),
   };

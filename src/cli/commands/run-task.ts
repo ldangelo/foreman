@@ -37,7 +37,7 @@ import type { ModelSelection } from "../../orchestrator/types.js";
 import { buildWorkerEnv, spawnWorkerProcess } from "../../orchestrator/dispatcher.js";
 import { getRunReportsDir } from "../../lib/report-paths.js";
 import { normalizeBranchLabel } from "../../lib/branch-label.js";
-import type { SeedInfo } from "../../orchestrator/types.js";
+import type { TaskInfo } from "../../orchestrator/types.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
@@ -85,16 +85,16 @@ export function skipFlagsDeprecationWarning(
 }
 
 /**
- * Convert an Issue to SeedInfo format for the worker.
+ * Convert an Issue to TaskInfo format for the worker.
  */
-function issueToSeedInfo(seed: Issue): SeedInfo {
+function issueToTaskInfo(task: Issue): TaskInfo {
   return {
-    id: seed.id,
-    title: seed.title,
-    description: seed.description ?? undefined,
-    priority: seed.priority,
-    type: seed.type,
-    labels: seed.labels,
+    id: task.id,
+    title: task.title,
+    description: task.description ?? undefined,
+    priority: task.priority,
+    type: task.type,
+    labels: task.labels,
   };
 }
 
@@ -184,7 +184,7 @@ async function checkWorktreeLock(
   taskId: string,
   projectId: string,
 ): Promise<string | null> {
-  const runs = await store.getRunsForSeed(taskId, projectId);
+  const runs = await store.getRunsForTask(taskId, projectId);
   const activeRun = runs.find(
     (r) => r.status === "running" || r.status === "pending",
   );
@@ -418,7 +418,7 @@ export async function runTaskAction(
   try {
     if (daemonStore && registered) {
       const pg = new PostgresAdapter();
-      const existingRuns = await daemonStore.getRunsForSeed(taskId, projectId);
+      const existingRuns = await daemonStore.getRunsForTask(taskId, projectId);
       const runNumber = existingRuns.length + 1;
 
       await pg.createPipelineRun({
@@ -471,7 +471,7 @@ export async function runTaskAction(
 
   // ── Spawn worker ──────────────────────────────────────────────────────
   const selectedModel: ModelSelection = (model as ModelSelection) ?? "anthropic/claude-sonnet-4-6";
-  const seedInfo: SeedInfo = issueToSeedInfo(task);
+  const taskInfo: TaskInfo = issueToTaskInfo(task);
 
   const env = buildWorkerEnv(false, taskId, runId, selectedModel, notifyUrl, vcsBackend);
 
@@ -479,10 +479,10 @@ export async function runTaskAction(
     const { pid } = await spawnWorkerProcess({
       runId,
       projectId,
-      seedId: taskId,
-      seedTitle: task.title,
-      seedDescription: taskDescription,
-      seedComments: undefined,
+      taskId: taskId,
+      taskTitle: task.title,
+      taskDescription: taskDescription,
+      taskComments: undefined,
       model: selectedModel,
       worktreePath,
       projectPath: resolvedProjectPath,
@@ -491,12 +491,12 @@ export async function runTaskAction(
       pipeline: true,
       workflowName: workflowConfig.name,
       workflowPath,
-      seedType: task.type ?? "task",
-      seedLabels: taskLabels,
-      seedPriority: task.priority,
+      taskType: task.type ?? "task",
+      taskLabels: taskLabels,
+      taskPriority: task.priority,
       targetBranch: targetBranch ?? baseBranch,
       attemptNumber,
-      taskId,
+      nativeTaskId: taskId,
       taskMeta: {
         id: taskId,
         title: task.title,

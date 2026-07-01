@@ -7,7 +7,7 @@ import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 
 interface EnqueueInput {
   branchName: string;
-  seedId: string;
+  taskId: string;
   runId: string;
   operation?: MergeQueueOperation;
   agentName?: string;
@@ -24,7 +24,7 @@ export class PostgresMergeQueue {
     return this.adapter.enqueueMergeQueueEntry({
       projectId: this.projectId,
       branchName: input.branchName,
-      seedId: input.seedId,
+      taskId: input.taskId,
       runId: input.runId,
       operation: input.operation,
       agentName: input.agentName ?? null,
@@ -61,8 +61,8 @@ export class PostgresMergeQueue {
     await this.adapter.removeMergeQueueEntry(this.projectId, id);
   }
 
-  async resetForRetry(seedId: string): Promise<boolean> {
-    return await this.adapter.resetMergeQueueForRetry(this.projectId, seedId);
+  async resetForRetry(taskId: string): Promise<boolean> {
+    return await this.adapter.resetMergeQueueForRetry(this.projectId, taskId);
   }
 
   async getRetryableEntries(): Promise<MergeQueueEntry[]> {
@@ -82,20 +82,20 @@ export class PostgresMergeQueue {
     const completedRuns = await this.adapter.listPipelineRuns(this.projectId, { status: "success", limit: 1000 });
     const mqRows = await this.list();
     const existingRunIds = new Set(mqRows.map((r) => r.run_id));
-    const existingSeedIds = new Set(mqRows.map((r) => r.seed_id));
+    const existingTaskIds = new Set(mqRows.map((r) => r.task_id));
     const defaultBranch = await vcs.detectDefaultBranch(repoPath);
 
     let enqueued = 0;
     let skipped = 0;
     let invalidBranch = 0;
-    const failedToEnqueue: Array<{ run_id: string; seed_id: string; reason: string }> = [];
+    const failedToEnqueue: Array<{ run_id: string; task_id: string; reason: string }> = [];
 
     for (const run of completedRuns) {
       if (run.merge_strategy === "none") {
         skipped++;
         continue;
       }
-      if (existingRunIds.has(run.id) || existingSeedIds.has(run.bead_id)) {
+      if (existingRunIds.has(run.id) || existingTaskIds.has(run.bead_id)) {
         skipped++;
         continue;
       }
@@ -103,18 +103,18 @@ export class PostgresMergeQueue {
       const exists = await vcs.branchExists(repoPath, branchName);
       if (!exists) {
         invalidBranch++;
-        failedToEnqueue.push({ run_id: run.id, seed_id: run.bead_id, reason: `branch '${branchName}' not found` });
+        failedToEnqueue.push({ run_id: run.id, task_id: run.bead_id, reason: `branch '${branchName}' not found` });
         continue;
       }
       const filesModified = await vcs.getChangedFiles(repoPath, defaultBranch, branchName);
       await this.enqueue({
         branchName,
-        seedId: run.bead_id,
+        taskId: run.bead_id,
         runId: run.id,
         operation: run.merge_strategy === "pr" ? "create_pr" : "auto_merge",
         filesModified,
       });
-      existingSeedIds.add(run.bead_id);
+      existingTaskIds.add(run.bead_id);
       enqueued++;
     }
 

@@ -7,7 +7,7 @@
  * 3. "issue not found" error is treated as transient — run stays active, no failure
  * 4. "404" error is treated as transient — run stays active, no failure
  * 5. other errors (network, auth) still cause run to fail
- * 6. SeedsClient-shaped show() still works (backwards compat)
+ * 6. TasksClient-shaped show() still works (backwards compat)
  */
 import { describe, it, expect, vi } from "vitest";
 import { Monitor } from "../monitor.js";
@@ -17,7 +17,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "bd-abc123",
+    task_id: "bd-abc123",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: "/tmp/wt",
@@ -202,16 +202,16 @@ describe("TRD-009: Monitor with ITaskClient (BeadsRust backend path)", () => {
     });
   });
 
-  describe("backwards compatibility: SeedsClient-shaped show()", () => {
-    it("works with SeedsClient-shaped show() returning SeedDetail", async () => {
+  describe("backwards compatibility: TasksClient-shaped show()", () => {
+    it("works with TasksClient-shaped show() returning TaskDetail", async () => {
       const store = makeStore();
-      const seedsTaskClient = {
+      const tasksTaskClient = {
         ready: vi.fn(async () => []),
         update: vi.fn(async () => undefined),
         close: vi.fn(async () => undefined),
         show: vi.fn(async () => ({
-          id: "seeds-001",
-          title: "My seed",
+          id: "tasks-001",
+          title: "My task",
           type: "task",
           priority: "P2",
           status: "closed",
@@ -227,10 +227,10 @@ describe("TRD-009: Monitor with ITaskClient (BeadsRust backend path)", () => {
           children: [],
         })),
       };
-      const run = makeRun({ seed_id: "seeds-001" });
+      const run = makeRun({ task_id: "tasks-001" });
       store.getActiveRuns.mockReturnValue([run]);
 
-      const monitor = new Monitor(store as any, seedsTaskClient as any, "/tmp/proj");
+      const monitor = new Monitor(store as any, tasksTaskClient as any, "/tmp/proj");
       const report = await monitor.checkAll();
 
       expect(report.completed).toHaveLength(1);

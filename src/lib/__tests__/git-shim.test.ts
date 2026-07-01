@@ -158,12 +158,12 @@ describe("AC-T-011-1: Existing function behaviour is preserved", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const result = await createWorktree(repo, "shim-seed-001");
+    const result = await createWorktree(repo, "shim-task-001");
 
     expect(result).toHaveProperty("worktreePath");
     expect(result).toHaveProperty("branchName");
-    expect(result.branchName).toBe("foreman/shim-seed-001");
-    expect(result.worktreePath).toBe(getWorkspacePath(repo, "shim-seed-001"));
+    expect(result.branchName).toBe("foreman/shim-task-001");
+    expect(result.worktreePath).toBe(getWorkspacePath(repo, "shim-task-001"));
     expect(existsSync(result.worktreePath)).toBe(true);
   });
 
@@ -171,7 +171,7 @@ describe("AC-T-011-1: Existing function behaviour is preserved", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath } = await createWorktree(repo, "shim-seed-002");
+    const { worktreePath } = await createWorktree(repo, "shim-task-002");
     expect(existsSync(worktreePath)).toBe(true);
 
     await removeWorktree(repo, worktreePath);
@@ -182,13 +182,13 @@ describe("AC-T-011-1: Existing function behaviour is preserved", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    await createWorktree(repo, "shim-seed-003");
+    await createWorktree(repo, "shim-task-003");
 
     const worktrees = await listWorktrees(repo);
     expect(Array.isArray(worktrees)).toBe(true);
     expect(worktrees.length).toBeGreaterThanOrEqual(2);
 
-    const wt = worktrees.find((w) => w.branch === "foreman/shim-seed-003");
+    const wt = worktrees.find((w) => w.branch === "foreman/shim-task-003");
     expect(wt).toBeDefined();
     // Verify all required fields of the Worktree interface are present
     expect(typeof wt!.path).toBe("string");
@@ -209,8 +209,8 @@ describe("AC-T-011-1: Existing function behaviour is preserved", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    await createWorktree(repo, "shim-seed-004");
-    const exists = await gitBranchExists(repo, "foreman/shim-seed-004");
+    await createWorktree(repo, "shim-task-004");
+    const exists = await gitBranchExists(repo, "foreman/shim-task-004");
     expect(exists).toBe(true);
   });
 
@@ -303,7 +303,7 @@ describe("AC-T-011-2: Function delegation to GitBackend", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const result = await createWorktree(repo, "delegation-seed-001");
+    const result = await createWorktree(repo, "delegation-task-001");
     // The shim MUST rename workspacePath → worktreePath for backward compatibility
     expect(result).toHaveProperty("worktreePath");
     expect(result).not.toHaveProperty("workspacePath"); // old API must NOT expose workspacePath
@@ -334,10 +334,10 @@ describe("AC-T-011-2: Function delegation to GitBackend", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    await createWorktree(repo, "delegation-seed-002");
+    await createWorktree(repo, "delegation-task-002");
 
     // Both old name (gitBranchExists) and branchExists-like behavior must work
-    const exists = await gitBranchExists(repo, "foreman/delegation-seed-002");
+    const exists = await gitBranchExists(repo, "foreman/delegation-task-002");
     expect(exists).toBe(true);
 
     const notExists = await gitBranchExists(repo, "no-such-branch");
@@ -492,12 +492,12 @@ describe("AC-T-011-2: GitBackend delegation (mock-based, requires TRD-011 shim)"
    */
 
   it("createWorktree() delegates to GitBackend.createWorkspace() and maps workspacePath → worktreePath", async () => {
-    const mockResult = { workspacePath: "/fake/.foreman-worktrees/seed-x", branchName: "foreman/seed-x" };
+    const mockResult = { workspacePath: "/fake/.foreman-worktrees/task-x", branchName: "foreman/task-x" };
     const spy = vi.spyOn(GitBackend.prototype, "createWorkspace").mockResolvedValue(mockResult);
 
-    const result = await createWorktree("/fake/repo", "seed-x");
+    const result = await createWorktree("/fake/repo", "task-x");
 
-    expect(spy).toHaveBeenCalledWith("/fake/repo", "seed-x", undefined);
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "task-x", undefined);
     // Shim must rename workspacePath → worktreePath
     expect(result.worktreePath).toBe(mockResult.workspacePath);
     expect(result.branchName).toBe(mockResult.branchName);
@@ -507,15 +507,15 @@ describe("AC-T-011-2: GitBackend delegation (mock-based, requires TRD-011 shim)"
   it("removeWorktree() delegates to GitBackend.removeWorkspace()", async () => {
     const spy = vi.spyOn(GitBackend.prototype, "removeWorkspace").mockResolvedValue(undefined);
 
-    await removeWorktree("/fake/repo", "/fake/repo/.foreman-worktrees/seed-y");
+    await removeWorktree("/fake/repo", "/fake/repo/.foreman-worktrees/task-y");
 
-    expect(spy).toHaveBeenCalledWith("/fake/repo", "/fake/repo/.foreman-worktrees/seed-y");
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "/fake/repo/.foreman-worktrees/task-y");
   });
 
   it("listWorktrees() delegates to GitBackend.listWorkspaces() and returns Worktree[]", async () => {
     const mockWorkspaces: Workspace[] = [
       { path: "/fake/repo", branch: "main", head: "abc123", bare: false },
-      { path: "/fake/repo/.foreman-worktrees/seed-z", branch: "foreman/seed-z", head: "def456", bare: false },
+      { path: "/fake/repo/.foreman-worktrees/task-z", branch: "foreman/task-z", head: "def456", bare: false },
     ];
     const spy = vi.spyOn(GitBackend.prototype, "listWorkspaces").mockResolvedValue(mockWorkspaces);
 
@@ -536,18 +536,18 @@ describe("AC-T-011-2: GitBackend delegation (mock-based, requires TRD-011 shim)"
     const mockResult: MergeResult = { success: true };
     const spy = vi.spyOn(GitBackend.prototype, "merge").mockResolvedValue(mockResult);
 
-    const result = await mergeWorktree("/fake/repo", "foreman/seed-m", "main");
+    const result = await mergeWorktree("/fake/repo", "foreman/task-m", "main");
 
-    expect(spy).toHaveBeenCalledWith("/fake/repo", "foreman/seed-m", "main");
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "foreman/task-m", "main");
     expect(result).toEqual(mockResult);
   });
 
   it("gitBranchExists() delegates to GitBackend.branchExists()", async () => {
     const spy = vi.spyOn(GitBackend.prototype, "branchExists").mockResolvedValue(true);
 
-    const result = await gitBranchExists("/fake/repo", "foreman/seed-b");
+    const result = await gitBranchExists("/fake/repo", "foreman/task-b");
 
-    expect(spy).toHaveBeenCalledWith("/fake/repo", "foreman/seed-b");
+    expect(spy).toHaveBeenCalledWith("/fake/repo", "foreman/task-b");
     expect(result).toBe(true);
   });
 

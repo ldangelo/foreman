@@ -99,7 +99,7 @@ interface ProjectStats {
 
 export interface DaemonRunSummary {
   id: string;
-  seed_id?: string;
+  task_id?: string;
   bead_id?: string;
   status: string;
   branch?: string | null;
@@ -124,7 +124,7 @@ function resolveRegisteredProject(projects: Array<{ path: string; id: string }>,
 function renderableRunFromElixir(run: ElixirRun): DaemonRunSummary {
   return {
     id: String(run.run_id ?? run.id ?? ""),
-    seed_id: typeof run.task_id === "string" ? run.task_id : undefined,
+    task_id: typeof run.task_id === "string" ? run.task_id : undefined,
     status: String(run.status ?? "unknown"),
     branch: typeof run.branch === "string" ? run.branch : null,
     started_at: typeof run.started_at === "string" ? run.started_at : null,
@@ -206,7 +206,7 @@ export async function fetchDaemonStatusSnapshot(projectPath: string): Promise<Da
 export function renderDaemonRunCard(run: DaemonRunSummary): string {
   const since = run.started_at ?? run.queued_at ?? run.created_at;
   const time = since ? elapsed(since) : "—";
-  const taskId = run.seed_id ?? run.bead_id ?? run.id;
+  const taskId = run.task_id ?? run.bead_id ?? run.id;
   const branch = run.branch ?? (taskId !== run.id ? `foreman/${taskId}` : "—");
   return `${chalk.dim("▶")} ${chalk.cyan.bold(taskId)} ${chalk.yellow(run.status.toUpperCase())} ${chalk.dim(time)}  ${chalk.dim(branch)}`;
 }
@@ -278,7 +278,7 @@ export async function renderActiveAgents(store: StatusReadStore, projectId: stri
   for (let i = 0; i < activeRuns.length; i++) {
     const run = activeRuns[i];
     const progress = store.getRunProgress(run.id);
-    const allRuns = store.getRunsForSeed(run.seed_id, projectId);
+    const allRuns = store.getRunsForTask(run.task_id, projectId);
     const attemptNumber = allRuns.length > 1 ? allRuns.length : undefined;
     const previousRun = allRuns.length > 1 ? allRuns[1] : null;
     const previousStatus = previousRun?.status;

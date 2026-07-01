@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { workerAgentMd } from "../templates.js";
-import type { SeedInfo, ModelSelection } from "../types.js";
+import type { TaskInfo, ModelSelection } from "../types.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const fakeSeed: SeedInfo = {
-  id: "seeds-abc123",
+const fakeTask: TaskInfo = {
+  id: "tasks-abc123",
   title: "Implement auth module",
   description: "Add JWT-based authentication",
 };
@@ -14,23 +14,23 @@ const fakeSeed: SeedInfo = {
 // ── workerAgentMd function ────────────────────────────────────────────────
 
 describe("workerAgentMd", () => {
-  it("contains the seed ID", () => {
-    const md = workerAgentMd(fakeSeed, "/tmp/wt", "anthropic/claude-sonnet-4-6");
-    expect(md).toContain("seeds-abc123");
+  it("contains the task ID", () => {
+    const md = workerAgentMd(fakeTask, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+    expect(md).toContain("tasks-abc123");
   });
 
-  it("contains the seed title", () => {
-    const md = workerAgentMd(fakeSeed, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+  it("contains the task title", () => {
+    const md = workerAgentMd(fakeTask, "/tmp/wt", "anthropic/claude-sonnet-4-6");
     expect(md).toContain("Implement auth module");
   });
 
-  it("contains the seed description", () => {
-    const md = workerAgentMd(fakeSeed, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+  it("contains the task description", () => {
+    const md = workerAgentMd(fakeTask, "/tmp/wt", "anthropic/claude-sonnet-4-6");
     expect(md).toContain("Add JWT-based authentication");
   });
 
   it("describes the agent team roles", () => {
-    const md = workerAgentMd(fakeSeed, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+    const md = workerAgentMd(fakeTask, "/tmp/wt", "anthropic/claude-sonnet-4-6");
     expect(md).toContain("Explorer");
     expect(md).toContain("Developer");
     expect(md).toContain("QA");
@@ -39,7 +39,7 @@ describe("workerAgentMd", () => {
   });
 
   it("contains session logging instructions", () => {
-    const md = workerAgentMd(fakeSeed, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+    const md = workerAgentMd(fakeTask, "/tmp/wt", "anthropic/claude-sonnet-4-6");
     expect(md).toContain("Session Logging");
     expect(md).toContain("SessionLogs/session-");
   });
@@ -47,7 +47,7 @@ describe("workerAgentMd", () => {
   it("produces valid non-empty output for all models", () => {
     const models: ModelSelection[] = ["anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6", "anthropic/claude-haiku-4-5"];
     for (const model of models) {
-      const md = workerAgentMd(fakeSeed, "/tmp/wt", model);
+      const md = workerAgentMd(fakeTask, "/tmp/wt", model);
       expect(md.length).toBeGreaterThan(0);
       expect(md).toContain(model);
     }
@@ -65,31 +65,31 @@ describe("workerAgentMd", () => {
   });
 
   it("no unresolved placeholders remain in output", () => {
-    const md = workerAgentMd(fakeSeed, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+    const md = workerAgentMd(fakeTask, "/tmp/wt", "anthropic/claude-sonnet-4-6");
     expect(md).not.toMatch(/\{\{\w+\}\}/);
   });
 
-  it("includes Additional Context section when seed.comments is present", () => {
-    const seedWithComments: SeedInfo = {
-      ...fakeSeed,
+  it("includes Additional Context section when task.comments is present", () => {
+    const taskWithComments: TaskInfo = {
+      ...fakeTask,
       comments: "Please also add rate limiting to the auth endpoints.",
     };
-    const md = workerAgentMd(seedWithComments, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+    const md = workerAgentMd(taskWithComments, "/tmp/wt", "anthropic/claude-sonnet-4-6");
     expect(md).toContain("## Additional Context");
     expect(md).toContain("Please also add rate limiting to the auth endpoints.");
   });
 
-  it("does NOT include Additional Context section when seed.comments is undefined", () => {
-    const md = workerAgentMd(fakeSeed, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+  it("does NOT include Additional Context section when task.comments is undefined", () => {
+    const md = workerAgentMd(fakeTask, "/tmp/wt", "anthropic/claude-sonnet-4-6");
     expect(md).not.toContain("## Additional Context");
   });
 
-  it("does NOT include Additional Context section when seed.comments is null", () => {
-    const seedWithNullComments: SeedInfo = {
-      ...fakeSeed,
+  it("does NOT include Additional Context section when task.comments is null", () => {
+    const taskWithNullComments: TaskInfo = {
+      ...fakeTask,
       comments: null,
     };
-    const md = workerAgentMd(seedWithNullComments, "/tmp/wt", "anthropic/claude-sonnet-4-6");
+    const md = workerAgentMd(taskWithNullComments, "/tmp/wt", "anthropic/claude-sonnet-4-6");
     expect(md).not.toContain("## Additional Context");
   });
 });

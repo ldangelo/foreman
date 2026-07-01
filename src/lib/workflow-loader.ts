@@ -1065,25 +1065,25 @@ export function findStaleWorkflows(_projectRoot: string): string[] {
 }
 
 /**
- * Resolve the effective workflow name for a seed.
+ * Resolve the effective workflow name for a task.
  *
  * Resolution order:
  *   1. First `workflow:<name>` label on the bead
  *   2. Bead type field mapped: "smoke" → "smoke", everything else → "default"
  *
- * @param seedType - The bead's type field (e.g. "feature", "smoke").
+ * @param taskType - The bead's type field (e.g. "feature", "smoke").
  * @param labels   - Optional list of labels on the bead.
  * @returns The resolved workflow name to use.
  */
 /**
- * Resolve the workflow name for a seed/bead.
+ * Resolve the workflow name for a task/bead.
  *
  * Resolution order:
  *  1. `workflowOverride` — explicit override (e.g. `foreman run --workflow <name>`)
  *  2. `workflow:<name>` label on the task
- *  3. `taskTypeWorkflowMap[seedType]` — explicit config mapping
+ *  3. `taskTypeWorkflowMap[taskType]` — explicit config mapping
  *  4. `taskTypeWorkflowMap["default"]` — fallback for unknown types
- *  5. `{seedType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
+ *  5. `{taskType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
  *  6. "default" (hard fallback)
  *
  * When `taskTypeWorkflowMap` is not provided (undefined), steps 3–4 are skipped
@@ -1093,7 +1093,7 @@ export function findStaleWorkflows(_projectRoot: string): string[] {
  * against loadable workflows before dispatch.
  */
 export function resolveWorkflowName(
-  seedType: string,
+  taskType: string,
   labels?: string[],
   taskTypeWorkflowMap?: Record<string, string>,
   workflowOverride?: string,
@@ -1115,7 +1115,7 @@ export function resolveWorkflowName(
 
   // 2. Explicit taskTypeWorkflowMap mapping
   if (taskTypeWorkflowMap) {
-    const mappedWorkflow = taskTypeWorkflowMap[seedType];
+    const mappedWorkflow = taskTypeWorkflowMap[taskType];
     if (mappedWorkflow && hasWorkflowConfig(mappedWorkflow)) {
       return mappedWorkflow;
     }
@@ -1127,14 +1127,14 @@ export function resolveWorkflowName(
   }
 
   // 4. File-existence fallback (backward compatible with pre-config behavior)
-  if (seedType) {
-    const globalPath = getForemanHomePath("workflows", `${seedType}.yaml`);
+  if (taskType) {
+    const globalPath = getForemanHomePath("workflows", `${taskType}.yaml`);
     if (existsSync(globalPath)) {
-      return seedType;
+      return taskType;
     }
-    const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${seedType}.yaml`);
+    const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${taskType}.yaml`);
     if (existsSync(bundledPath)) {
-      return seedType;
+      return taskType;
     }
   }
 

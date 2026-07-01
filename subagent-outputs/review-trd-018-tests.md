@@ -12,7 +12,7 @@ REJECTED for test/validation sufficiency. No edits made. Output file not written
   - `npx tsc --noEmit`
 - AC-015-2 has useful coverage:
   - `packages/foreman_server/test/inbox_test.exs:44-78`
-  - Seeds `RunStarted`, sends operator msg, asserts `queued`, updates to `delivered`.
+  - Tasks `RunStarted`, sends operator msg, asserts `queued`, updates to `delivered`.
 - AC-015-3 has useful in-process watch coverage:
   - `packages/foreman_server/test/inbox_test.exs:81-110`
   - `assert_receive {:inbox_update, ...}` proves Registry push path.

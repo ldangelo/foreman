@@ -95,8 +95,8 @@ export interface CommitInfo {
  * Written to ACTIVITY_LOG.json and committed with every branch.
  */
 export interface ActivityLog {
-  /** Seed/bead ID (e.g., "bd-ytzv") */
-  seedId: string;
+  /** Task/bead ID (e.g., "bd-ytzv") */
+  taskId: string;
   /** Run ID (e.g., UUID) */
   runId: string;
   /** Phase execution records in order */
@@ -131,8 +131,8 @@ export interface GenerateActivityLogOptions {
   worktreePath: string;
   /** Run ID */
   runId: string;
-  /** Seed/bead ID */
-  seedId: string;
+  /** Task/bead ID */
+  taskId: string;
   /** Phase records accumulated during pipeline execution */
   phases: PhaseRecord[];
   /** VCS backend for computing git diff and commit info */
@@ -332,7 +332,7 @@ export async function generateActivityLog(
   const {
     worktreePath,
     runId,
-    seedId,
+    taskId,
     phases,
     vcs,
     targetBranch,
@@ -368,7 +368,7 @@ export async function generateActivityLog(
 
   // Build activity log
   const activityLog: ActivityLog = {
-    seedId,
+    taskId,
     runId,
     phases: phases.map((p) => ({
       name: p.name,
@@ -409,7 +409,7 @@ export async function generateActivityLog(
   };
 
   // Write to Foreman's report store, not the agent worktree.
-  const reportsDir = getForemanHomePath("reports", "runs", runId, seedId);
+  const reportsDir = getForemanHomePath("reports", "runs", runId, taskId);
   await mkdir(reportsDir, { recursive: true });
   const filePath = join(reportsDir, "ACTIVITY_LOG.json");
   const content = JSON.stringify(activityLog, null, 2);
@@ -509,14 +509,14 @@ export function finalizePhaseRecord(
  */
 export async function writeIncrementalPipelineReport(opts: {
   worktreePath: string;
-  seedId: string;
+  taskId: string;
   runId: string;
   completedPhases: PhaseRecord[];
   targetBranch?: string;
   vcsBranchName?: string;
 }): Promise<void> {
-  const { worktreePath, seedId, runId, completedPhases, targetBranch, vcsBranchName } = opts;
-  const reportsDir = getForemanHomePath("reports", "runs", runId, seedId);
+  const { worktreePath, taskId, runId, completedPhases, targetBranch, vcsBranchName } = opts;
+  const reportsDir = getForemanHomePath("reports", "runs", runId, taskId);
 
   await mkdir(reportsDir, { recursive: true });
 
@@ -553,7 +553,7 @@ export async function writeIncrementalPipelineReport(opts: {
     : [];
 
   const report = [
-    "# Pipeline Report — " + seedId,
+    "# Pipeline Report — " + taskId,
     "",
     "**Run ID:** `" + runId + "`",
     "**Workflow:** `" + (currentPhase?.workflowName ?? "—") + "`",

@@ -103,8 +103,8 @@ export function createGetRunStatusTool(store: RunStatusReader): ToolDefinition {
         const progress = store.getRunProgress(params.runId);
         const info = {
           runId: run.id,
-          beadId: run.seed_id,
-          seedId: run.seed_id,
+          beadId: run.task_id,
+          taskId: run.task_id,
           status: run.status,
           startedAt: run.started_at,
           completedAt: run.completed_at,
@@ -134,7 +134,7 @@ export function createGetRunStatusTool(store: RunStatusReader): ToolDefinition {
 
 const CloseBeadParams = Type.Object({
   beadId: Type.Optional(Type.String({ description: "The bead ID to close (e.g. 'bd-abc')" })),
-  seedId: Type.Optional(Type.String({ description: "Legacy alias for beadId" })),
+  taskId: Type.Optional(Type.String({ description: "Legacy alias for beadId" })),
   reason: Type.String({ description: "Brief reason for closing (e.g. 'Work already merged into dev')" }),
 });
 
@@ -158,7 +158,7 @@ export function createCloseBeadTool(projectPath: string): ToolDefinition {
       _toolCallId: string,
       params: Static<typeof CloseBeadParams>,
     ) {
-      const beadId = params.beadId ?? params.seedId;
+      const beadId = params.beadId ?? params.taskId;
       if (!beadId) {
         return {
           content: [{ type: "text" as const, text: "Failed to close bead: missing beadId" }],

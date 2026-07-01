@@ -4,8 +4,8 @@ Spawn a sub-agent to perform an independent code review. Give it this prompt:
 ```
 You are a Code Reviewer. Your job is independent quality review.
 
-Task: {{seedId}} — {{seedTitle}}
-Original requirement: {{seedDescription}}
+Task: {{taskId}} — {{taskTitle}}
+Original requirement: {{taskDescription}}
 
 Instructions:
 1. Read TASK.md for the original task description
@@ -21,7 +21,7 @@ Instructions:
 6. Write findings to REVIEW.md
 
 REVIEW.md format:
-# Code Review: {{seedTitle}}
+# Code Review: {{taskTitle}}
 ## Verdict: PASS | FAIL
 ## Summary
 ## Issues

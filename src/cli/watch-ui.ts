@@ -96,7 +96,7 @@ export function readLastErrorLines(runId: string, n = 5): string[] {
 
 /**
  * Render a single-line summary card for a collapsed agent.
- * Shows: indicator, status icon, seed ID, status, elapsed, model, and key
+ * Shows: indicator, status icon, task ID, status, elapsed, model, and key
  * progress metrics on one line.
  */
 export function renderAgentCardSummary(run: Run, progress: RunProgress | null, index?: number, attemptNumber?: number, previousStatus?: string): string {
@@ -114,7 +114,7 @@ export function renderAgentCardSummary(run: Run, progress: RunProgress | null, i
     ? chalk.dim(` (attempt ${attemptNumber}${previousStatus ? ", prev: " + previousStatus : ""})`)
     : "";
 
-  let line = `${indexPrefix}${expandIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}${attemptInfo}  ${chalk.magenta(shortModel(run.agent_type))}`;
+  let line = `${indexPrefix}${expandIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.task_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}${attemptInfo}  ${chalk.magenta(shortModel(run.agent_type))}`;
 
   if (progress && progress.toolCalls > 0) {
     const activity = progress.currentPhase
@@ -155,14 +155,14 @@ export function renderAgentCard(run: Run, progress: RunProgress | null, isExpand
 
   const lines: string[] = [];
 
-  // Header: collapse indicator + index prefix + icon + seed ID + status + elapsed
+  // Header: collapse indicator + index prefix + icon + task ID + status + elapsed
   const collapseIndicator = chalk.dim("▼");
   const indexPrefix = index !== undefined ? chalk.dim(`${index + 1}.`) + " " : "";
   const attemptInfo = attemptNumber && attemptNumber > 1
     ? chalk.dim(` (attempt ${attemptNumber}${previousStatus ? ", prev: " + previousStatus : ""})`)
     : "";
   lines.push(
-    `${indexPrefix}${collapseIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.seed_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}${attemptInfo}`,
+    `${indexPrefix}${collapseIndicator} ${statusColor(run.status, icon)} ${chalk.cyan.bold(run.task_id)} ${statusColor(run.status, run.status.toUpperCase())} ${chalk.dim(time)}${attemptInfo}`,
   );
   lines.push(`  ${chalk.dim("Model     ")} ${chalk.magenta(shortModel(run.agent_type))}`);
 
@@ -301,19 +301,19 @@ export async function poll(store: WatchStore, runIds: string[]): Promise<WatchSt
     entries.push({ run, progress });
   }
 
-  const latestBySeed = new Map<string, Run>();
+  const latestByTask = new Map<string, Run>();
   for (const entry of entries) {
-    const current = latestBySeed.get(entry.run.seed_id);
+    const current = latestByTask.get(entry.run.task_id);
     if (!current) {
-      latestBySeed.set(entry.run.seed_id, entry.run);
+      latestByTask.set(entry.run.task_id, entry.run);
       continue;
     }
     if (entry.run.created_at > current.created_at || (entry.run.created_at === current.created_at && entry.run.id > current.id)) {
-      latestBySeed.set(entry.run.seed_id, entry.run);
+      latestByTask.set(entry.run.task_id, entry.run);
     }
   }
 
-  const latestRuns = Array.from(latestBySeed.values());
+  const latestRuns = Array.from(latestByTask.values());
   const completedCount = latestRuns.filter((run) => run.status === "completed").length;
   const failedCount = latestRuns.filter(
     (run) => run.status === "failed" || run.status === "test-failed",

@@ -85,7 +85,7 @@ function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    seed_id: row.bead_id,
+    task_id: row.bead_id,
     agent_type: row.agent_type ?? "daemon",
     session_key: row.session_key,
     worktree_path: row.worktree_path,
@@ -154,7 +154,7 @@ function adaptElixirRun(row: ElixirRun): Run {
   return {
     id: runId,
     project_id: String(row.project_id ?? ""),
-    seed_id: String(row.task_id ?? ""),
+    task_id: String(row.task_id ?? ""),
     agent_type: "elixir",
     session_key: null,
     worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : null,
@@ -188,7 +188,7 @@ type RecoveryReason = "test-failed" | "stuck" | "stale-blocked" | "finalize-conf
 type RecommendedRecovery = "clean-replay-from-main";
 
 interface CleanReplayWorkspace {
-  seedId: string;
+  taskId: string;
   branchName: string;
   workspacePath: string;
   baseBranch: string;
@@ -266,7 +266,7 @@ function formatMessages(messages: Message[]): string {
 function formatRunSummary(run: Run, progress: Record<string, unknown> | null): string {
   const lines = [
     `Run ID: ${run.id}`,
-    `Seed: ${run.seed_id}`,
+    `Task: ${run.task_id}`,
     `Status: ${run.status}`,
     `Agent Type: ${run.agent_type}`,
     `Started: ${run.started_at ?? "unknown"}`,
@@ -424,10 +424,10 @@ async function pushCleanReplayWorkspace(projectPath: string, workspace: CleanRep
 async function prepareCleanReplayWorkspace(projectPath: string, beadId: string): Promise<CleanReplayWorkspace> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const baseBranch = await vcs.detectDefaultBranch(projectPath);
-  const replaySeedId = `${beadId}-clean-replay`;
-  const { workspacePath, branchName } = await vcs.createWorkspace(projectPath, replaySeedId, baseBranch);
+  const replayTaskId = `${beadId}-clean-replay`;
+  const { workspacePath, branchName } = await vcs.createWorkspace(projectPath, replayTaskId, baseBranch);
   return {
-    seedId: replaySeedId,
+    taskId: replayTaskId,
     branchName,
     workspacePath,
     baseBranch,
@@ -530,14 +530,14 @@ export const recoverCommand = new Command("recover")
     const daemon = isElixir ? null : await resolveDaemonRecoverContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 
-    // Find runs for this seed
+    // Find runs for this task
     const runs = elixir
       ? ((await elixir.client.listRuns({ projectId: elixir.projectId })).filter((row) => row.task_id === beadId).map(adaptElixirRun))
       : daemon
         ? ((await daemon.client.runs.list({ projectId: daemon.projectId, beadId, limit: 50 }) as DaemonRunRow[]).map(adaptDaemonRun))
-        : store.getRunsForSeed(beadId);
+        : store.getRunsForTask(beadId);
     if (runs.length === 0) {
-      console.error(chalk.red(`No runs found for seed ${beadId}`));
+      console.error(chalk.red(`No runs found for task ${beadId}`));
       process.exit(1);
     }
 
@@ -547,7 +547,7 @@ export const recoverCommand = new Command("recover")
       : runs[0]; // latest
 
     if (!run) {
-      console.error(chalk.red(`Run ${opts.runId} not found for seed ${beadId}`));
+      console.error(chalk.red(`Run ${opts.runId} not found for task ${beadId}`));
       console.error(`Available runs: ${runs.map((r) => `${r.id.slice(0, 8)} (${r.status})`).join(", ")}`);
       process.exit(1);
     }
@@ -694,7 +694,7 @@ export const recoverCommand = new Command("recover")
       console.log(recoveryRecommendation);
       if (cleanReplayWorkspace) {
         console.log(chalk.bold("\n─── Clean Replay Workspace ───"));
-        console.log(`Seed: ${cleanReplayWorkspace.seedId}`);
+        console.log(`Task: ${cleanReplayWorkspace.taskId}`);
         console.log(`Base: ${cleanReplayWorkspace.baseBranch}`);
         console.log(`Branch: ${cleanReplayWorkspace.branchName}`);
         console.log(`Path: ${cleanReplayWorkspace.workspacePath}`);

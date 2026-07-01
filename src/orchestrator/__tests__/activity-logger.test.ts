@@ -189,7 +189,7 @@ describe("activity logger observability", () => {
 
       await writeIncrementalPipelineReport({
         worktreePath: "/tmp/worktree",
-        seedId: "foreman-abc",
+        taskId: "foreman-abc",
         runId: "run-testBuiltin",
         completedPhases: [explorerPhase, developerPhase, createPrPhase, prWaitPhase],
         targetBranch: "main",

@@ -1,8 +1,8 @@
-/ensemble:fix-issue {{seedTitle}} {{seedDescription}}
+/ensemble:fix-issue {{taskTitle}} {{taskDescription}}
 
 # Foreman Fix-Issue Contract
 
-You are running inside Foreman's `task` workflow for task **{{seedId}}**: **{{seedTitle}}**.
+You are running inside Foreman's `task` workflow for task **{{taskId}}**: **{{taskTitle}}**.
 
 {{commentsSection}}
 {{feedbackSection}}
@@ -28,7 +28,7 @@ mkdir -p "{{reportDir}}"
 Use this structure:
 
 ```markdown
-# Developer Report: {{seedTitle}}
+# Developer Report: {{taskTitle}}
 
 ## Approach
 - What changed and why.

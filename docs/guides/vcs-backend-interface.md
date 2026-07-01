@@ -29,7 +29,7 @@ This scatters VCS knowledge throughout the codebase. `VcsBackend` collects all s
 
 ```ts
 // Dispatcher (VCS-agnostic)
-const workspace = await vcs.createWorkspace(projectPath, seedId, baseBranch);
+const workspace = await vcs.createWorkspace(projectPath, taskId, baseBranch);
 ```
 
 ---
@@ -168,28 +168,39 @@ Deletes a local branch or bookmark.
 
 ---
 
+#### `deleteRemoteBranch(repoPath: string, branchName: string): Promise<void>`
+
+Deletes a branch/bookmark from the `origin` remote. This is intentionally separate from `deleteBranch()` because remote deletion is destructive and should only happen after explicit operator opt-in.
+
+| Backend | Equivalent |
+|---------|-----------|
+| Git | `git push origin --delete <branchName>` |
+| Jujutsu | colocated git remote delete via `git push origin --delete <branchName>` |
+
+---
+
 ### Workspace / Worktree Operations
 
 "Workspaces" map to git worktrees on git backends and `jj workspace` on Jujutsu.
 
-#### `createWorkspace(repoPath, seedId, baseBranch?): Promise<WorkspaceResult>`
+#### `createWorkspace(repoPath, taskId, baseBranch?): Promise<WorkspaceResult>`
 
-Creates an isolated workspace for a seed.
+Creates an isolated workspace for a task.
 
-- **Branch name:** `foreman/<seedId>` (both backends)
-- **Location:** Foreman's workspace root for the repo (default: `<repoParent>/.foreman-worktrees/<repoName>/<seedId>`; override with `FOREMAN_WORKTREE_ROOT`)
+- **Branch name:** `foreman/<taskId>` (both backends)
+- **Location:** Foreman's workspace root for the repo (default: `<repoParent>/.foreman-worktrees/<repoName>/<taskId>`; override with `FOREMAN_WORKTREE_ROOT`)
 
 | Backend | Equivalent |
 |---------|-----------|
-| Git | `git worktree add -b foreman/<seedId> <path> <baseBranch>` |
-| Jujutsu | `jj workspace add <path>` + `jj bookmark create foreman/<seedId>` |
+| Git | `git worktree add -b foreman/<taskId> <path> <baseBranch>` |
+| Jujutsu | `jj workspace add <path>` + `jj bookmark create foreman/<taskId>` |
 
 **Returns (`WorkspaceResult`):**
 
 ```ts
 interface WorkspaceResult {
   workspacePath: string;  // Absolute path to the created workspace
-  branchName: string;     // 'foreman/<seedId>'
+  branchName: string;     // 'foreman/<taskId>'
 }
 ```
 
@@ -454,8 +465,8 @@ Returns pre-computed shell commands for the Finalize agent prompt. This is the *
 
 ```ts
 interface FinalizeTemplateVars {
-  seedId: string;       // e.g. 'bd-deoi'
-  seedTitle: string;    // Human-readable title
+  taskId: string;       // e.g. 'bd-deoi'
+  taskTitle: string;    // Human-readable title
   baseBranch: string;   // e.g. 'dev' or 'main'
   worktreePath: string; // Absolute path to the worktree
 }
@@ -505,10 +516,10 @@ export class MercurialBackend implements VcsBackend {
   async getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
     return {
       stageCommand: 'hg add',
-      commitCommand: `hg commit -m "${vars.seedTitle}"`,
+      commitCommand: `hg commit -m "${vars.taskTitle}"`,
       pushCommand: 'hg push',
       rebaseCommand: `hg rebase -d ${vars.baseBranch}`,
-      branchVerifyCommand: `hg branches | grep foreman/${vars.seedId}`,
+      branchVerifyCommand: `hg branches | grep foreman/${vars.taskId}`,
       cleanCommand: 'hg revert --all && hg purge',
     };
   }

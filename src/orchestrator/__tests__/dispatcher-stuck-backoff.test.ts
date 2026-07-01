@@ -48,7 +48,7 @@ function makeRun(overrides?: Partial<Run>): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seed-1",
+    task_id: "task-1",
     agent_type: "claude-sonnet-4-6",
     session_key: null,
     worktree_path: "/tmp/worktree",
@@ -65,11 +65,11 @@ function makeStuckRun(minsAgo: number, id: string = "run-1"): Run {
   return makeRun({ id, status: "stuck", created_at: ts, completed_at: ts });
 }
 
-function makeStore(runsForSeed: Run[] = []): ForemanStore {
+function makeStore(runsForTask: Run[] = []): ForemanStore {
   return {
     getActiveRuns: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-    getRunsForSeed: vi.fn((seedId: string) => runsForSeed.filter((run) => run.seed_id === seedId || run.seed_id === "seed-1")),
+    getRunsForTask: vi.fn((taskId: string) => runsForTask.filter((run) => run.task_id === taskId || run.task_id === "task-1")),
     getRunsByStatus: vi.fn().mockReturnValue([]),
     createRun: vi.fn().mockReturnValue({ id: "new-run" }),
     updateRun: vi.fn(),
@@ -82,7 +82,7 @@ function makeStore(runsForSeed: Run[] = []): ForemanStore {
   } as unknown as ForemanStore;
 }
 
-function makeSeeds(issues: Issue[]): ITaskClient {
+function makeTasks(issues: Issue[]): ITaskClient {
   currentReadyIssues = issues;
   return {
     ready: vi.fn().mockResolvedValue(issues),
@@ -129,20 +129,20 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
     vi.useRealTimers();
   });
 
-  it("dispatches a seed with no prior stuck runs normally", async () => {
-    const seed = makeIssue("bd-001");
+  it("dispatches a task with no prior stuck runs normally", async () => {
+    const task = makeIssue("bd-001");
     const store = makeStore([]); // no stuck runs
-    const seeds = makeSeeds([seed]);
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks([task]);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.map((d) => d.seedId)).toContain("bd-001");
+    expect(result.dispatched.map((d) => d.taskId)).toContain("bd-001");
     expect(result.skipped).toHaveLength(0);
   });
 
-  it("skips a seed in backoff after 1 recent stuck run", async () => {
-    const seed = makeIssue("bd-001");
+  it("skips a task in backoff after 1 recent stuck run", async () => {
+    const task = makeIssue("bd-001");
     // Stuck 30 seconds ago → required backoff = initialDelayMs (60s default) → still in backoff
     // (30s elapsed < 60s required → in backoff)
     const stuckRun = makeRun({
@@ -152,33 +152,33 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
       completed_at: new Date(Date.now() - 30_000).toISOString(),
     });
     const store = makeStore([stuckRun]);
-    const seeds = makeSeeds([seed]);
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks([task]);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
     expect(result.dispatched).toHaveLength(0);
     expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0].seedId).toBe("bd-001");
+    expect(result.skipped[0].taskId).toBe("bd-001");
     expect(result.skipped[0].reason).toMatch(/backoff/i);
   });
 
-  it("dispatches a seed once backoff period has elapsed after 1 stuck run", async () => {
-    const seed = makeIssue("bd-001");
+  it("dispatches a task once backoff period has elapsed after 1 stuck run", async () => {
+    const task = makeIssue("bd-001");
     // Stuck 2 hours ago → required backoff = 60s → elapsed (7200s) > 60s → should dispatch
     const stuckRun = makeStuckRun(120 /* minutes ago */);
     const store = makeStore([stuckRun]);
-    const seeds = makeSeeds([seed]);
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks([task]);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.map((d) => d.seedId)).toContain("bd-001");
+    expect(result.dispatched.map((d) => d.taskId)).toContain("bd-001");
     expect(result.skipped).toHaveLength(0);
   });
 
   it("applies longer backoff after 2 recent stuck runs", async () => {
-    const seed = makeIssue("bd-001");
+    const task = makeIssue("bd-001");
     // 2 stuck runs, most recent 90 seconds ago
     // Required backoff = initialDelayMs * 2^1 = 120s (default)
     // Elapsed = 90s → still in backoff
@@ -195,10 +195,10 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
       created_at: new Date(now - 90 * 1000).toISOString(),
       completed_at: new Date(now - 90 * 1000).toISOString(),
     });
-    // getRunsForSeed returns DESC (most recent first)
+    // getRunsForTask returns DESC (most recent first)
     const store = makeStore([run2, run1]);
-    const seeds = makeSeeds([seed]);
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks([task]);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
@@ -206,8 +206,8 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
     expect(result.skipped[0].reason).toMatch(/backoff/i);
   });
 
-  it("blocks a seed at max retries regardless of elapsed time", async () => {
-    const seed = makeIssue("bd-001");
+  it("blocks a task at max retries regardless of elapsed time", async () => {
+    const task = makeIssue("bd-001");
     // maxRetries stuck runs (default: 3), all very old so backoff would have elapsed
     const stuckRuns = [
       makeStuckRun(300, "run-3"), // most recent
@@ -215,8 +215,8 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
       makeStuckRun(500, "run-1"),
     ];
     const store = makeStore(stuckRuns);
-    const seeds = makeSeeds([seed]);
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks([task]);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
@@ -225,22 +225,22 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
   });
 
   it("does not count stuck runs outside the time window", async () => {
-    const seed = makeIssue("bd-001");
+    const task = makeIssue("bd-001");
     // Stuck 25 hours ago — outside the 24h window → should not count
     const windowHours = STUCK_RETRY_CONFIG.windowMs / (60 * 60 * 1000);
     const oldRun = makeStuckRun((windowHours + 1) * 60 /* minutes */);
     const store = makeStore([oldRun]);
-    const seeds = makeSeeds([seed]);
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks([task]);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.map((d) => d.seedId)).toContain("bd-001");
+    expect(result.dispatched.map((d) => d.taskId)).toContain("bd-001");
     expect(result.skipped).toHaveLength(0);
   });
 
   it("includes retry count and remaining time in skip reason", async () => {
-    const seed = makeIssue("bd-001");
+    const task = makeIssue("bd-001");
     // 1 stuck run 30 seconds ago, backoff = 60s, 30s remaining
     const stuckRun = makeRun({
       id: "run-1",
@@ -249,8 +249,8 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
       completed_at: new Date(Date.now() - 30_000).toISOString(),
     });
     const store = makeStore([stuckRun]);
-    const seeds = makeSeeds([seed]);
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks([task]);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
@@ -258,9 +258,9 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
     expect(result.skipped[0].reason).toMatch(/1\//);   // includes attempt count
   });
 
-  it("only applies backoff to seeds with stuck runs — other seeds dispatch normally", async () => {
-    const stuckSeed = makeIssue("bd-001");
-    const cleanSeed = makeIssue("bd-002");
+  it("only applies backoff to tasks with stuck runs — other tasks dispatch normally", async () => {
+    const stuckTask = makeIssue("bd-001");
+    const cleanTask = makeIssue("bd-002");
 
     // bd-001 has a recent stuck run (30s ago, well within 60s backoff); bd-002 has none
     const stuckRun = makeRun({
@@ -272,8 +272,8 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockImplementation((seedId: string) => {
-        return seedId === "bd-001" ? [stuckRun] : [];
+      getRunsForTask: vi.fn().mockImplementation((taskId: string) => {
+        return taskId === "bd-001" ? [stuckRun] : [];
       }),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
@@ -283,13 +283,13 @@ describe("Dispatcher.dispatch — stuck backoff", () => {
       claimTask: vi.fn().mockReturnValue(true),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds([stuckSeed, cleanSeed]);
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks([stuckTask, cleanTask]);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.map((d) => d.seedId)).toContain("bd-002");
-    expect(result.dispatched.map((d) => d.seedId)).not.toContain("bd-001");
-    expect(result.skipped.map((s) => s.seedId)).toContain("bd-001");
+    expect(result.dispatched.map((d) => d.taskId)).toContain("bd-002");
+    expect(result.dispatched.map((d) => d.taskId)).not.toContain("bd-001");
+    expect(result.skipped.map((s) => s.taskId)).toContain("bd-001");
   });
 });

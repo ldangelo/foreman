@@ -33,7 +33,7 @@ function makeExecSync(): MockInstance & typeof ExecFileSyncType {
   return vi.fn(() => Buffer.from("")) as unknown as MockInstance & typeof ExecFileSyncType;
 }
 
-// Build a mock checkExists that returns false by default (neither .seeds nor .beads exist)
+// Build a mock checkExists that returns false by default (neither .tasks nor .beads exist)
 function makeCheckExists(existingPaths: string[] = []) {
   return vi.fn((p: string) => existingPaths.some((ep) => p.includes(ep)));
 }

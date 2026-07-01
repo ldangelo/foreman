@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { Command } from "commander";
 import chalk from "chalk";
 
@@ -10,8 +8,6 @@ import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { MergeQueue, type MergeQueueEntry } from "../../orchestrator/merge-queue.js";
 import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { resolveProjectContext } from "./project-context.js";
-
-const execFileAsync = promisify(execFile);
 
 type RunStore = ForemanStore | PostgresStore;
 type Queue = MergeQueue | PostgresMergeQueue;
@@ -26,11 +22,11 @@ export interface CleanStateOpts {
   projectPath?: string;
 }
 
-function branchForSeed(seedId: string): string {
-  return seedId.startsWith("foreman/") ? seedId : `foreman/${seedId}`;
+function branchForTask(taskId: string): string {
+  return taskId.startsWith("foreman/") ? taskId : `foreman/${taskId}`;
 }
 
-function seedFromBranch(branch: string): string {
+function taskFromBranch(branch: string): string {
   return branch.replace(/^foreman\//, "");
 }
 
@@ -49,19 +45,15 @@ async function markRunDropped(store: RunStore, run: Run, reason: string, keepTas
     merge_strategy: "none",
   }));
   await Promise.resolve(store.logEvent(run.project_id, "fail", {
-    seedId: run.seed_id,
+    taskId: run.task_id,
     reason,
     abandoned: true,
     cleanState: true,
-    branchName: branchForSeed(run.seed_id),
+    branchName: branchForTask(run.task_id),
   }, run.id));
   if (!keepTasks && "updateTaskStatus" in store) {
-    await Promise.resolve(store.updateTaskStatus(run.seed_id, "blocked"));
+    await Promise.resolve(store.updateTaskStatus(run.task_id, "blocked"));
   }
-}
-
-async function deleteOriginBranch(repoPath: string, branchName: string): Promise<void> {
-  await execFileAsync("git", ["push", "origin", "--delete", branchName], { cwd: repoPath });
 }
 
 export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<number> {
@@ -100,28 +92,28 @@ export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<numbe
     const runsToDrop = new Map<string, Run>();
     const branchesToDelete = new Set<string>();
     for (const entry of staleQueueEntries) {
-      branchesToDelete.add(branchForSeed(entry.seed_id));
+      branchesToDelete.add(branchForTask(entry.task_id));
       const run = await Promise.resolve(store.getRun(entry.run_id));
       if (run && isDroppableRun(run)) runsToDrop.set(run.id, run);
-      const seedRuns = await Promise.resolve(store.getRunsForSeed(entry.seed_id));
-      for (const seedRun of seedRuns) {
-        if (isDroppableRun(seedRun)) runsToDrop.set(seedRun.id, seedRun);
+      const taskRuns = await Promise.resolve(store.getRunsForTask(entry.task_id));
+      for (const taskRun of taskRuns) {
+        if (isDroppableRun(taskRun)) runsToDrop.set(taskRun.id, taskRun);
       }
     }
 
     const workspaces = await vcs.listWorkspaces(projectPath);
     const foremanWorkspaces = workspaces.filter((wt) => wt.branch?.startsWith("foreman/"));
-    const worktreesToRemove = new Map<string, { path: string; branch: string; seedId: string }>();
+    const worktreesToRemove = new Map<string, { path: string; branch: string; taskId: string }>();
 
     for (const wt of foremanWorkspaces) {
-      const seedId = seedFromBranch(wt.branch);
-      const runs = await Promise.resolve(store.getRunsForSeed(seedId));
+      const taskId = taskFromBranch(wt.branch);
+      const runs = await Promise.resolve(store.getRunsForTask(taskId));
       const active = runs.some(isActiveRun);
       if (active) continue;
       const shouldDropRuns = runs.some(isDroppableRun);
       const orphan = runs.length === 0;
       if (shouldDropRuns || orphan) {
-        worktreesToRemove.set(wt.path, { path: wt.path, branch: wt.branch, seedId });
+        worktreesToRemove.set(wt.path, { path: wt.path, branch: wt.branch, taskId });
         branchesToDelete.add(wt.branch);
         for (const run of runs) {
           if (isDroppableRun(run)) runsToDrop.set(run.id, run);
@@ -130,7 +122,7 @@ export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<numbe
     }
 
     console.log(`  ${dryRun ? "would remove" : "removing"} ${staleQueueEntries.length} stale/conflict merge queue entr${staleQueueEntries.length === 1 ? "y" : "ies"}`);
-    for (const run of runsToDrop.values()) branchesToDelete.add(branchForSeed(run.seed_id));
+    for (const run of runsToDrop.values()) branchesToDelete.add(branchForTask(run.task_id));
 
     console.log(`  ${dryRun ? "would mark" : "marking"} ${runsToDrop.size} run(s) abandoned`);
     console.log(`  ${dryRun ? "would remove" : "removing"} ${worktreesToRemove.size} foreman worktree(s)`);
@@ -138,9 +130,9 @@ export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<numbe
     if (opts.deleteOriginBranches) console.log(`  ${dryRun ? "would delete" : "deleting"} ${branchesToDelete.size} origin branch(es)`);
 
     if (dryRun) {
-      for (const entry of staleQueueEntries) console.log(`  queue: ${entry.seed_id} (${entry.status})`);
-      for (const run of runsToDrop.values()) console.log(`  run: ${run.seed_id} (${run.status}) ${run.id}`);
-      for (const wt of worktreesToRemove.values()) console.log(`  worktree: ${wt.seedId} ${wt.path}`);
+      for (const entry of staleQueueEntries) console.log(`  queue: ${entry.task_id} (${entry.status})`);
+      for (const run of runsToDrop.values()) console.log(`  run: ${run.task_id} (${run.status}) ${run.id}`);
+      for (const wt of worktreesToRemove.values()) console.log(`  worktree: ${wt.taskId} ${wt.path}`);
       console.log(chalk.yellow("Dry run complete — no changes were made. Re-run with --force to apply."));
       return 0;
     }
@@ -152,7 +144,7 @@ export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<numbe
       await markRunDropped(store, run, reason, opts.keepTasks ?? false);
     }
     for (const wt of worktreesToRemove.values()) {
-      await archiveWorktreeReports(projectPath, wt.path, wt.seedId).catch(() => {});
+      await archiveWorktreeReports(projectPath, wt.path, wt.taskId).catch(() => {});
       await vcs.removeWorkspace(projectPath, wt.path);
     }
     if (opts.deleteBranches) {
@@ -162,7 +154,7 @@ export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<numbe
     }
     if (opts.deleteOriginBranches) {
       for (const branchName of branchesToDelete) {
-        await deleteOriginBranch(projectPath, branchName).catch(() => undefined);
+        await vcs.deleteRemoteBranch(projectPath, branchName).catch(() => undefined);
       }
     }
 

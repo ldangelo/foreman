@@ -44,9 +44,9 @@
 
 Foreman's agent pipeline already sends inter-phase reports as Agent Mail messages (Explorer report to Developer inbox, QA feedback to Developer inbox, QA report to Reviewer inbox). However, the pipeline still **reads** phase outputs exclusively from disk files (`EXPLORER_REPORT.md`, `QA_REPORT.md`, `REVIEW.md`). This PRD closes that gap: Agent Mail inbox reads become the primary transport for inter-phase report content, with disk files retained as an automatic fallback when Agent Mail is unavailable.
 
-Additionally, Foreman's phase system prompts are hardcoded as TypeScript template literals in `roles.ts`, and the pipeline phase sequence is hardcoded in `agent-worker.ts`. This PRD externalizes both: prompts move to user-editable markdown files in `~/.foreman/prompts/`, phase mechanical config (model, budget, tools) moves to `~/.foreman/phases.json`, and pipeline phase sequences move to `~/.foreman/workflows.json` keyed by seed type (feature, bug, chore, docs). This enables prompt engineers to tune agent behavior and team leads to define custom workflows without rebuilding TypeScript.
+Additionally, Foreman's phase system prompts are hardcoded as TypeScript template literals in `roles.ts`, and the pipeline phase sequence is hardcoded in `agent-worker.ts`. This PRD externalizes both: prompts move to user-editable markdown files in `~/.foreman/prompts/`, phase mechanical config (model, budget, tools) moves to `~/.foreman/phases.json`, and pipeline phase sequences move to `~/.foreman/workflows.json` keyed by task type (feature, bug, chore, docs). This enables prompt engineers to tune agent behavior and team leads to define custom workflows without rebuilding TypeScript.
 
-The two parts are independently shippable. Part 1 requires approximately 60 lines of new code plus targeted modifications. Part 2 introduces three new loader modules and a config seeding step in `foreman init`.
+The two parts are independently shippable. Part 1 requires approximately 60 lines of new code plus targeted modifications. Part 2 introduces three new loader modules and a config tasking step in `foreman init`.
 
 ---
 
@@ -70,7 +70,7 @@ Phase system prompts are TypeScript template literals in `roles.ts` (`explorerPr
 
 ### 2.5 Hardcoded Pipeline Sequence
 
-The phase sequence (Explorer -> Developer <-> QA -> Reviewer -> Finalize) is hardcoded in `agent-worker.ts`. All seed types follow the same sequence regardless of their nature. Bugs run through Explorer (unnecessary for known issues), chores run through QA and Reviewer (unnecessary for configuration changes), and there is no way to define a Reproducer phase for bugs without modifying TypeScript source.
+The phase sequence (Explorer -> Developer <-> QA -> Reviewer -> Finalize) is hardcoded in `agent-worker.ts`. All task types follow the same sequence regardless of their nature. Bugs run through Explorer (unnecessary for known issues), chores run through QA and Reviewer (unnecessary for configuration changes), and there is no way to define a Reproducer phase for bugs without modifying TypeScript source.
 
 ### 2.6 Hardcoded Phase Mechanical Config
 
@@ -87,8 +87,8 @@ Phase configuration (model, budget, allowed tools) is defined in `ROLE_CONFIGS` 
 3. **Fix `acknowledgeMessage()` registry resolution** so it matches `fetchInbox()` behavior, enabling reliable message acknowledgment.
 4. **Externalize phase prompts** to user-editable markdown files in `~/.foreman/prompts/` with `{{variable}}` and `{{#if var}}...{{/if}}` template syntax.
 5. **Externalize phase config** (model, budget, tools) to `~/.foreman/phases.json`.
-6. **Externalize pipeline phase sequences** to `~/.foreman/workflows.json`, keyed by seed type, enabling different workflows for bugs vs features vs chores.
-7. **Seed defaults on `foreman init`** so operators have working config files to customize from day one.
+6. **Externalize pipeline phase sequences** to `~/.foreman/workflows.json`, keyed by task type, enabling different workflows for bugs vs features vs chores.
+7. **Task defaults on `foreman init`** so operators have working config files to customize from day one.
 8. **Maintain full backward compatibility** -- absent config files fall back to built-in TypeScript defaults; absent or down Agent Mail falls back to disk reads.
 
 ### 3.2 Non-Goals
@@ -125,9 +125,9 @@ Defines custom workflows in `~/.foreman/workflows.json` to match team processes.
 
 | Phase Transition | Subject | From -> To | Status |
 |---|---|---|---|
-| Explorer -> Developer | `"Explorer Report"` | worker -> `developer-{seedId}` | Sends only; Developer reads from disk |
-| QA -> Developer (fail) | `"QA Feedback - Retry N"` | worker -> `developer-{seedId}` | Sends only; Developer reads from disk |
-| QA -> Reviewer (pass) | `"QA Report"` | worker -> `reviewer-{seedId}` | Sends only; Reviewer reads from disk |
+| Explorer -> Developer | `"Explorer Report"` | worker -> `developer-{taskId}` | Sends only; Developer reads from disk |
+| QA -> Developer (fail) | `"QA Feedback - Retry N"` | worker -> `developer-{taskId}` | Sends only; Developer reads from disk |
+| QA -> Reviewer (pass) | `"QA Report"` | worker -> `reviewer-{taskId}` | Sends only; Reviewer reads from disk |
 | Phase completion | `"phase-complete"` | worker -> `foreman` | Working end-to-end |
 | Reviewer -> Developer | *(not implemented)* | *(local variable only)* | Gap -- no send at all |
 
@@ -177,24 +177,24 @@ Four architectural options were evaluated for Part 1:
 
 ```
 Explorer --- sdk.query() -------------------------------------------------->
-  +-- sendMailText -> "developer-{seedId}"  "Explorer Report"        [already done]
+  +-- sendMailText -> "developer-{taskId}"  "Explorer Report"        [already done]
   +-- writes EXPLORER_REPORT.md                                       [kept as fallback]
 
 Developer <-- feedbackContext from prior QA or Review message (or null on first run)
   +-- writes implementation files
 
 QA --- sdk.query() -------------------------------------------------------->
-  [FAIL] +-- sendMailText -> "developer-{seedId}"  "QA Feedback - Retry N"  [already done]
-  [PASS] +-- sendMailText -> "reviewer-{seedId}"   "QA Report"              [already done]
+  [FAIL] +-- sendMailText -> "developer-{taskId}"  "QA Feedback - Retry N"  [already done]
+  [PASS] +-- sendMailText -> "reviewer-{taskId}"   "QA Report"              [already done]
 
-Developer (retry) <-- fetchLatestPhaseMessage("developer-{seedId}", "QA Feedback")   [NEW read]
+Developer (retry) <-- fetchLatestPhaseMessage("developer-{taskId}", "QA Feedback")   [NEW read]
                   <-- fallback: QA_REPORT.md on disk
 
 Reviewer --- sdk.query() -------------------------------------------------->
-  [issues] +-- sendMailText -> "developer-{seedId}"  "Review Findings"      [NEW send]
+  [issues] +-- sendMailText -> "developer-{taskId}"  "Review Findings"      [NEW send]
   +-- sendMailText -> "foreman"  "Review Complete"                           [already done]
 
-Developer (retry) <-- fetchLatestPhaseMessage("developer-{seedId}", "Review Findings") [NEW read]
+Developer (retry) <-- fetchLatestPhaseMessage("developer-{taskId}", "Review Findings") [NEW read]
                   <-- fallback: local reviewFeedback variable
 
 Finalize --> sends "branch-ready" to refinery                               [already done]
@@ -211,7 +211,7 @@ Finalize --> sends "branch-ready" to refinery                               [alr
     reviewer.md       <-- system prompt for Reviewer phase
     reproducer.md     <-- system prompt for Reproducer phase (bug workflow)
   phases.json         <-- model, budget, tools per phase
-  workflows.json      <-- phase sequence per seed type
+  workflows.json      <-- phase sequence per task type
 ```
 
 ### 6.4 Template Variable System
@@ -220,10 +220,10 @@ Prompt markdown files use `{{variableName}}` placeholders. Missing variables ren
 
 | Variable | Available in phases | Description |
 |---|---|---|
-| `{{seedId}}` | all | Bead/seed ID (e.g. `bd-abc1`) |
-| `{{seedTitle}}` | all | One-line title of the task |
-| `{{seedDescription}}` | explorer, developer, reviewer | Full task description |
-| `{{seedComments}}` | explorer, developer, reviewer | Comments from the bead |
+| `{{taskId}}` | all | Bead/task ID (e.g. `bd-abc1`) |
+| `{{taskTitle}}` | all | One-line title of the task |
+| `{{taskDescription}}` | explorer, developer, reviewer | Full task description |
+| `{{taskComments}}` | explorer, developer, reviewer | Comments from the bead |
 | `{{feedbackContext}}` | developer | QA or Reviewer findings injected on retry |
 | `{{hasExplorerReport}}` | developer | `"true"` or `"false"` |
 
@@ -239,7 +239,7 @@ Conditional blocks use `{{#if variable}}...{{/if}}` (simple truthy check, no nes
 
 ### 6.5 Workflow Configuration
 
-Defines which phases run for each seed type. Unknown types fall back to `"feature"`.
+Defines which phases run for each task type. Unknown types fall back to `"feature"`.
 
 ```json
 {
@@ -331,7 +331,7 @@ Update the Dev<->QA retry loop in `runPipeline()` so that after `runPhase("qa")`
 
 When the Reviewer triggers a Developer retry, send the extracted review findings to the Developer's Agent Mail inbox as a `"Review Findings"` message. This closes the only phase transition that lacks a corresponding Agent Mail send.
 
-- AC-004-1: Given the Reviewer verdict is FAIL (or PASS with issues) and `devRetries < MAX_DEV_RETRIES`, when the retry block executes, then `sendMailText(agentMailClient, "developer-{seedId}", "Review Findings", reviewFeedback)` is called.
+- AC-004-1: Given the Reviewer verdict is FAIL (or PASS with issues) and `devRetries < MAX_DEV_RETRIES`, when the retry block executes, then `sendMailText(agentMailClient, "developer-{taskId}", "Review Findings", reviewFeedback)` is called.
 - AC-004-2: Given `reviewReport` is null or empty, when the retry block executes, then no Agent Mail message is sent (guard against sending empty content).
 - AC-004-3: Given Agent Mail is unavailable, when the send fails silently (fire-and-forget), then the pipeline continues using the local `reviewFeedback` variable as before.
 
@@ -365,7 +365,7 @@ Comprehensive unit tests for `fetchLatestPhaseMessage()` covering all edge cases
 
 ### REQ-023: Explorer Report Read Path via Agent Mail (P0)
 
-Read the Explorer report from the Developer's Agent Mail inbox first, falling back to `EXPLORER_REPORT.md` on disk when Agent Mail is unavailable or the message is missing. The Explorer report is already sent to `developer-{seedId}` with subject `"Explorer Report"` — this requirement adds the corresponding read path.
+Read the Explorer report from the Developer's Agent Mail inbox first, falling back to `EXPLORER_REPORT.md` on disk when Agent Mail is unavailable or the message is missing. The Explorer report is already sent to `developer-{taskId}` with subject `"Explorer Report"` — this requirement adds the corresponding read path.
 
 - AC-023-1: Given Agent Mail is available and an `"Explorer Report"` message exists in the Developer inbox, when the Developer phase is about to start, then `fetchLatestPhaseMessage()` reads the message body and it is used as the Explorer report context for the Developer.
 - AC-023-2: Given Agent Mail is unavailable (client is null or server is down), when the Developer phase is about to start, then `readReport(worktreePath, "EXPLORER_REPORT.md")` is used as the fallback, and the pipeline continues without error.
@@ -380,7 +380,7 @@ Read the Explorer report from the Developer's Agent Mail inbox first, falling ba
 
 Implement `src/lib/prompt-loader.ts` that loads a phase prompt from `~/.foreman/prompts/{phase}.md`, falling back to the built-in default from `roles.ts` if the file is absent. The loader substitutes `{{variable}}` placeholders and processes `{{#if var}}...{{/if}}` conditional blocks.
 
-- AC-008-1: Given `~/.foreman/prompts/explorer.md` exists with `{{seedId}}` and `{{seedTitle}}` placeholders, when `loadPrompt("explorer", { seedId: "bd-abc1", seedTitle: "Fix login" }, fallback)` is called, then the returned string has all placeholders replaced with their values.
+- AC-008-1: Given `~/.foreman/prompts/explorer.md` exists with `{{taskId}}` and `{{taskTitle}}` placeholders, when `loadPrompt("explorer", { taskId: "bd-abc1", taskTitle: "Fix login" }, fallback)` is called, then the returned string has all placeholders replaced with their values.
 - AC-008-2: Given a prompt file containing `{{#if feedbackContext}}...{{/if}}`, when `feedbackContext` is undefined or empty string, then the entire conditional block (including content) is omitted from the output.
 - AC-008-3: Given a prompt file containing `{{#if feedbackContext}}...{{/if}}`, when `feedbackContext` is a non-empty string, then the block content is included with the `{{#if}}` and `{{/if}}` markers removed.
 - AC-008-4: Given `~/.foreman/prompts/explorer.md` does NOT exist, when `loadPrompt("explorer", vars, fallback)` is called, then the `fallback` string is used as the template and variable substitution is still applied.
@@ -409,29 +409,29 @@ Implement `validatePhaseConfig()` within the phase config loader that validates 
 
 ### REQ-011: Workflow Config Loader (P1)
 
-Implement `src/lib/workflow-config-loader.ts` that reads `~/.foreman/workflows.json` and provides `getWorkflow(seedType)` to return the phase sequence for a given seed type. Falls back to built-in defaults when the file is absent or invalid.
+Implement `src/lib/workflow-config-loader.ts` that reads `~/.foreman/workflows.json` and provides `getWorkflow(taskType)` to return the phase sequence for a given task type. Falls back to built-in defaults when the file is absent or invalid.
 
 - AC-011-1: Given `~/.foreman/workflows.json` exists with valid JSON, when `loadWorkflows()` is called, then it returns the parsed workflow map.
 - AC-011-2: Given `~/.foreman/workflows.json` does NOT exist, when `loadWorkflows()` is called, then it returns the built-in `DEFAULT_WORKFLOWS` map.
 - AC-011-3: Given `~/.foreman/workflows.json` contains invalid JSON, when `loadWorkflows()` is called, then it logs a warning and returns `DEFAULT_WORKFLOWS`.
-- AC-011-4: Given a seed with `type = "bug"`, when `getWorkflow("bug")` is called, then it returns `["reproducer", "developer", "qa", "finalize"]`.
-- AC-011-5: Given a seed with `type = "unknown"` (not in workflows), when `getWorkflow("unknown")` is called, then it falls back to the `"feature"` workflow: `["explorer", "developer", "qa", "reviewer", "finalize"]`.
+- AC-011-4: Given a task with `type = "bug"`, when `getWorkflow("bug")` is called, then it returns `["reproducer", "developer", "qa", "finalize"]`.
+- AC-011-5: Given a task with `type = "unknown"` (not in workflows), when `getWorkflow("unknown")` is called, then it falls back to the `"feature"` workflow: `["explorer", "developer", "qa", "reviewer", "finalize"]`.
 - AC-011-6: Given a custom workflow file with a user-defined type `"spike": ["explorer", "finalize"]`, when `getWorkflow("spike")` is called, then it returns `["explorer", "finalize"]`.
 
 ### REQ-012: Wire Loaders into `runPipeline()` (P1)
 
 Replace the hardcoded phase sequence and `ROLE_CONFIGS` reference in `agent-worker.ts` with the loaded configs from the three loader modules.
 
-- AC-012-1: Given a seed with `type = "feature"`, when `runPipeline()` executes, then it runs phases `["explorer", "developer", "qa", "reviewer", "finalize"]` from the workflow config.
-- AC-012-2: Given a seed with `type = "bug"`, when `runPipeline()` executes, then it runs phases `["reproducer", "developer", "qa", "finalize"]` -- skipping Explorer and Reviewer.
-- AC-012-3: Given a seed with `type = "chore"`, when `runPipeline()` executes, then it runs phases `["developer", "finalize"]` -- skipping Explorer, QA, and Reviewer.
+- AC-012-1: Given a task with `type = "feature"`, when `runPipeline()` executes, then it runs phases `["explorer", "developer", "qa", "reviewer", "finalize"]` from the workflow config.
+- AC-012-2: Given a task with `type = "bug"`, when `runPipeline()` executes, then it runs phases `["reproducer", "developer", "qa", "finalize"]` -- skipping Explorer and Reviewer.
+- AC-012-3: Given a task with `type = "chore"`, when `runPipeline()` executes, then it runs phases `["developer", "finalize"]` -- skipping Explorer, QA, and Reviewer.
 - AC-012-4: Given `~/.foreman/prompts/explorer.md` exists, when the Explorer phase runs, then `loadPrompt("explorer", vars, explorerPrompt(...))` provides the external prompt with the built-in `explorerPrompt()` as fallback.
 - AC-012-5: Given `~/.foreman/phases.json` exists with a custom model for the Explorer phase, when the Explorer phase runs, then the custom model from `phases.json` is used (subject to env var override).
 - AC-012-6: Given no external config files exist (`~/.foreman/prompts/`, `phases.json`, `workflows.json` all absent), when `runPipeline()` executes, then the pipeline behaves identically to the current hardcoded implementation.
 - AC-012-7: Given a workflow that includes `"qa"` but omits `"reviewer"` (e.g., bug workflow), when QA passes, then the pipeline proceeds to the next phase in the workflow sequence (typically `"finalize"`). The Dev↔QA retry loop still runs on QA FAIL up to `MAX_DEV_RETRIES`.
 - AC-012-8: Given a workflow that omits both `"qa"` and `"reviewer"` (e.g., chore workflow: `["developer", "finalize"]`), when the Developer phase completes, then the pipeline proceeds directly to Finalize with no retry loop.
 
-### REQ-013: `foreman init` Config Seeding (P2)
+### REQ-013: `foreman init` Config Tasking (P2)
 
 Extend `foreman init` to copy bundled default configuration files to `~/.foreman/` if they do not already exist, giving operators a starting point for customization.
 
@@ -453,12 +453,12 @@ Create the canonical default configuration files that serve as both the bundled 
 
 ### REQ-015: Reproducer Phase for Bug Workflow (P3)
 
-Support a Reproducer phase that runs instead of Explorer for bug-type seeds, validating that the reported bug is reproducible before Developer begins fixing it.
+Support a Reproducer phase that runs instead of Explorer for bug-type tasks, validating that the reported bug is reproducible before Developer begins fixing it.
 
-- AC-015-1: Given a seed with `type = "bug"`, when the workflow config maps bugs to `["reproducer", "developer", "qa", "finalize"]`, then the Reproducer phase runs first using `~/.foreman/prompts/reproducer.md` and the `reproducer` entry from `phases.json`.
+- AC-015-1: Given a task with `type = "bug"`, when the workflow config maps bugs to `["reproducer", "developer", "qa", "finalize"]`, then the Reproducer phase runs first using `~/.foreman/prompts/reproducer.md` and the `reproducer` entry from `phases.json`.
 - AC-015-2: Given the Reproducer phase, when it completes, then it writes `REPRODUCER_REPORT.md` to the worktree and sends the report to the Developer inbox via Agent Mail.
-- AC-015-3: Given the Reproducer prompt template, when it is rendered, then it includes `{{seedId}}`, `{{seedTitle}}`, and `{{seedDescription}}` for context about the bug to reproduce.
-- AC-015-4: Given the Reproducer phase fails to reproduce the bug (agent reports inability to reproduce or the phase errors), when the failure is detected, then the pipeline stops and the seed is marked as stuck with a note indicating reproduction failed. The seed does NOT proceed to Developer and does NOT auto-reset to open.
+- AC-015-3: Given the Reproducer prompt template, when it is rendered, then it includes `{{taskId}}`, `{{taskTitle}}`, and `{{taskDescription}}` for context about the bug to reproduce.
+- AC-015-4: Given the Reproducer phase fails to reproduce the bug (agent reports inability to reproduce or the phase errors), when the failure is detected, then the pipeline stops and the task is marked as stuck with a note indicating reproduction failed. The task does NOT proceed to Developer and does NOT auto-reset to open.
 
 ### REQ-016: Part 2 Unit Tests (P1)
 
@@ -482,7 +482,7 @@ When `runPipeline()` loads workflow and phase configs, it must cross-validate th
 - AC-024-1: Given `workflows.json` contains a phase name `"reproducer"` and `phases.json` has a `"reproducer"` entry, when `runPipeline()` starts, then validation passes and the pipeline proceeds.
 - AC-024-2: Given `workflows.json` contains a phase name `"reproducer"` but `phases.json` has NO `"reproducer"` entry AND the phase has no built-in fallback in `ROLE_CONFIGS`, when `runPipeline()` starts, then a validation error is raised before any agent is spawned. The error message identifies the unknown phase name and the workflow it appears in.
 - AC-024-3: Given the special phase name `"finalize"`, when cross-validation runs, then `"finalize"` is always considered valid (it is implemented directly in `runPipeline()` and does not require a `phases.json` entry).
-- AC-024-4: Given cross-validation fails, when the error is raised, then the seed is marked as failed with a descriptive error message and no agent phases are executed.
+- AC-024-4: Given cross-validation fails, when the error is raised, then the task is marked as failed with a descriptive error message and no agent phases are executed.
 
 ### REQ-025: Finalize Phase Enforcement (P1)
 
@@ -510,14 +510,14 @@ Messages sent between pipeline phases must include the `runId` to prevent a new 
 
 When the Agent Mail server is unavailable (not running, network unreachable, or `agentMailClient` is null), the pipeline must complete identically to the current disk-based implementation.
 
-- AC-017-1: Given Agent Mail is not configured, when the full pipeline runs for a feature seed, then all phases complete successfully using disk-file reads, with zero errors or warnings related to Agent Mail.
+- AC-017-1: Given Agent Mail is not configured, when the full pipeline runs for a feature task, then all phases complete successfully using disk-file reads, with zero errors or warnings related to Agent Mail.
 - AC-017-2: Given Agent Mail goes down after Explorer sends its report but before Developer reads it, when the Developer phase starts, then `fetchLatestPhaseMessage()` returns `null` and the disk file `EXPLORER_REPORT.md` is read instead.
 
 ### REQ-018: Zero Regression Without Config Files (P0)
 
 When `~/.foreman/prompts/`, `~/.foreman/phases.json`, or `~/.foreman/workflows.json` are absent, the pipeline must behave identically to the current hardcoded implementation.
 
-- AC-018-1: Given no external config files exist in `~/.foreman/`, when `runPipeline()` executes for a feature seed, then the pipeline uses built-in TypeScript defaults and produces identical behavior to the current implementation.
+- AC-018-1: Given no external config files exist in `~/.foreman/`, when `runPipeline()` executes for a feature task, then the pipeline uses built-in TypeScript defaults and produces identical behavior to the current implementation.
 - AC-018-2: Given `~/.foreman/prompts/developer.md` exists but `~/.foreman/prompts/explorer.md` does not, when the pipeline runs, then the Developer phase uses the external prompt and the Explorer phase uses the built-in fallback -- mixing is supported per-phase.
 
 ### REQ-019: Invalid Config Resilience (P0)
@@ -575,7 +575,7 @@ The Agent Mail read path and config loading must not introduce meaningful latenc
 | 8 | Phase config loader | `src/lib/phase-config-loader.ts` | Create |
 | 9 | Workflow config loader | `src/lib/workflow-config-loader.ts` | Create |
 | 10 | Wire loaders into `runPipeline()` | `src/orchestrator/agent-worker.ts` | Modify |
-| 11 | `foreman init` config seeding | `src/cli/commands/init.ts` | Modify |
+| 11 | `foreman init` config tasking | `src/cli/commands/init.ts` | Modify |
 | 12 | Startup validation | `src/lib/phase-config-loader.ts` | Part of step 8 |
 | 13 | Bundled default files | `src/defaults/phases.json`, `src/defaults/workflows.json`, `src/defaults/prompts/*.md` | Create |
 | 14 | Unit tests for loaders | `src/lib/__tests__/prompt-loader.test.ts`, `src/lib/__tests__/workflow-config-loader.test.ts`, `src/lib/__tests__/phase-config-loader.test.ts` | Create |
@@ -598,16 +598,16 @@ npm test -- prompt-loader workflow-config-loader phase-config-loader
 npm test
 
 # Part 1: Integration smoke test (requires Agent Mail server)
-foreman run --bead <seed-id>
+foreman run --bead <task-id>
 # Watch logs for:
-#   [agent-mail] Fetched "QA Feedback - Retry 1" from inbox "developer-{seedId}"
-#   [agent-mail] Fetched "Review Findings" from inbox "developer-{seedId}"
+#   [agent-mail] Fetched "QA Feedback - Retry 1" from inbox "developer-{taskId}"
+#   [agent-mail] Fetched "Review Findings" from inbox "developer-{taskId}"
 
 # Part 1: Backward compat test (stop Agent Mail server)
-foreman run --bead <seed-id>
+foreman run --bead <task-id>
 # Pipeline completes normally using disk fallback -- no errors
 
-# Part 2: Seed defaults
+# Part 2: Task defaults
 foreman init
 # Verify: ~/.foreman/phases.json, workflows.json, prompts/*.md created
 
@@ -615,7 +615,7 @@ foreman init
 # Edit ~/.foreman/prompts/explorer.md, re-run, verify custom text in session log
 
 # Part 2: Bug workflow test
-foreman run --bead <bug-seed-id>
+foreman run --bead <bug-task-id>
 # Verify: logs show ["reproducer", "developer", "qa", "finalize"]
 
 # Part 2: Validation test
@@ -631,8 +631,8 @@ foreman run --bead <bug-seed-id>
 |------|-----------|--------|------------|
 | Agent Mail messages lost or delayed | Low | Medium | Disk fallback is automatic; `fetchLatestPhaseMessage()` returns `null` on any failure |
 | Unacknowledged messages accumulate | Low | Low | REQ-001 fixes acknowledge; messages are fetched with `limit: 20` and filtered by subject |
-| Custom prompts produce worse agent output | Medium | Medium | Built-in defaults remain the fallback; `foreman init` seeds known-good prompts; operators can reset by deleting prompt files |
-| `workflows.json` misconfiguration skips critical phases | Medium | High | Built-in defaults for unknown seed types; documentation warns about omitting QA/Reviewer; future validation could enforce required phases |
+| Custom prompts produce worse agent output | Medium | Medium | Built-in defaults remain the fallback; `foreman init` tasks known-good prompts; operators can reset by deleting prompt files |
+| `workflows.json` misconfiguration skips critical phases | Medium | High | Built-in defaults for unknown task types; documentation warns about omitting QA/Reviewer; future validation could enforce required phases |
 | Template rendering produces unexpected output | Low | Medium | Simple `{{var}}` and `{{#if}}` only -- no complex engine; missing vars render as empty string; fallback to built-in prompt on any issue |
 | `phases.json` sets dangerously high budgets | Low | Medium | Env var overrides still take precedence; operators must explicitly edit the file; default values match current `ROLE_CONFIGS` |
 | Race condition between Agent Mail send and read | Low | Low | Sends happen during the previous phase; reads happen at the start of the next phase; sequential `await`-chain guarantees ordering |
@@ -656,7 +656,7 @@ foreman run --bead <bug-seed-id>
 | REQ-010 | Phase config schema validation | 4 | P2 |
 | REQ-011 | Workflow config loader | 6 | P1 |
 | REQ-012 | Wire loaders into `runPipeline()` | 8 | P1 |
-| REQ-013 | `foreman init` config seeding | 5 | P2 |
+| REQ-013 | `foreman init` config tasking | 5 | P2 |
 | REQ-014 | Bundled default files | 5 | P1 |
 | REQ-015 | Reproducer phase for bug workflow | 4 | P3 |
 | REQ-016 | Part 2 unit tests | 10 | P1 |
@@ -683,7 +683,7 @@ foreman run --bead <bug-seed-id>
 | Prompt customization adoption | 0% (no external prompts) | 30% of operators customize at least one prompt | Survey of active Foreman installations |
 | Custom workflow adoption | 0% (hardcoded sequence) | 50% of operators define at least one custom workflow | Presence of `~/.foreman/workflows.json` in installations |
 | Pipeline configuration time | N/A (requires code change) | <5 minutes to customize prompts/workflows | Time from editing config to seeing effect in next `foreman run` |
-| Bug workflow efficiency | All bugs run full 5-phase pipeline | Bugs run 4-phase pipeline (skip Explorer) | Average phase count for bug seeds |
+| Bug workflow efficiency | All bugs run full 5-phase pipeline | Bugs run 4-phase pipeline (skip Explorer) | Average phase count for bug tasks |
 | Zero regression rate | N/A | 100% backward compat when config absent | Pipeline success rate without any `~/.foreman/` config files |
 
 ---
@@ -704,10 +704,10 @@ foreman run --bead <bug-seed-id>
 **Dependencies:** Phase 1 not required (independent)
 **Gate:** All loader unit tests pass; pipeline runs identically without any `~/.foreman/` config files; pipeline uses external config when files are present; invalid config logs warning and falls back
 
-### Phase 3: Init Seeding and Validation (Part 2 UX)
+### Phase 3: Init Tasking and Validation (Part 2 UX)
 
 **Timeline:** 1 day
-**Scope:** Steps 11-12 (foreman init config seeding, startup validation)
+**Scope:** Steps 11-12 (foreman init config tasking, startup validation)
 **Dependencies:** Phase 2 complete
 **Gate:** `foreman init` creates all config files; existing files are not overwritten; validation catches malformed `phases.json`
 
@@ -716,13 +716,13 @@ foreman run --bead <bug-seed-id>
 **Timeline:** 1 day
 **Scope:** Step 15 (Reproducer phase prompt, phase config entry, integration with bug workflow)
 **Dependencies:** Phase 2 complete
-**Gate:** Bug seeds run through Reproducer -> Developer -> QA -> Finalize; Reproducer writes report and sends to Developer inbox
+**Gate:** Bug tasks run through Reproducer -> Developer -> QA -> Finalize; Reproducer writes report and sends to Developer inbox
 
 ### Rollout Strategy
 
 1. **Alpha:** Ship Part 1 first -- Agent Mail read transport with disk fallback. Zero config changes required by operators.
 2. **Beta:** Ship Part 2 core -- loaders are active but all behavior defaults to built-in when no config files exist. Zero visible change for operators who have not run `foreman init`.
-3. **GA:** Ship Part 2 UX -- `foreman init` seeds config files. Document customization in README. Announce custom workflows for bugs/chores.
+3. **GA:** Ship Part 2 UX -- `foreman init` tasks config files. Document customization in README. Announce custom workflows for bugs/chores.
 
 ---
 

@@ -423,7 +423,7 @@ export class NativeTaskStore {
             this.db
               .prepare(
                 `UPDATE runs
-                    SET seed_id = ?,
+                    SET task_id = ?,
                         worktree_path = CASE
                           WHEN worktree_path IS NULL THEN NULL
                           ELSE REPLACE(worktree_path, ?, ?)
@@ -432,19 +432,19 @@ export class NativeTaskStore {
                           WHEN tmux_session IS NULL THEN NULL
                           ELSE REPLACE(tmux_session, ?, ?)
                         END
-                  WHERE seed_id = ?`,
+                  WHERE task_id = ?`,
               )
               .run(newId, oldId, newId, oldId, newId, oldId);
           } else {
             this.db
               .prepare(
                 `UPDATE runs
-                    SET seed_id = ?,
+                    SET task_id = ?,
                         worktree_path = CASE
                           WHEN worktree_path IS NULL THEN NULL
                           ELSE REPLACE(worktree_path, ?, ?)
                         END
-                  WHERE seed_id = ?`,
+                  WHERE task_id = ?`,
               )
               .run(newId, oldId, newId, oldId);
           }
@@ -453,9 +453,9 @@ export class NativeTaskStore {
             this.db
               .prepare(
                 `UPDATE merge_queue
-                    SET seed_id = ?,
+                    SET task_id = ?,
                         branch_name = REPLACE(branch_name, ?, ?)
-                  WHERE seed_id = ? OR branch_name LIKE ?`,
+                  WHERE task_id = ? OR branch_name LIKE ?`,
               )
               .run(newId, `foreman/${oldId}`, `foreman/${newId}`, oldId, `%${oldId}%`);
           }
@@ -464,8 +464,8 @@ export class NativeTaskStore {
             this.db
               .prepare(
                 `UPDATE conflict_patterns
-                    SET seed_id = ?
-                  WHERE seed_id = ?`,
+                    SET task_id = ?
+                  WHERE task_id = ?`,
               )
               .run(newId, oldId);
           }

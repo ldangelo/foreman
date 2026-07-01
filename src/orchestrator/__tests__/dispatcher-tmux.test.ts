@@ -55,10 +55,10 @@ import type { SpawnStrategy, WorkerConfig } from "../dispatcher.js";
 const baseConfig: WorkerConfig = {
   runId: "run-001",
   projectId: "proj-001",
-  seedId: "seed-abc",
-  seedTitle: "Test Task",
+  taskId: "task-abc",
+  taskTitle: "Test Task",
   model: "claude-sonnet-4-6",
-  worktreePath: "/tmp/wt/seed-abc",
+  worktreePath: "/tmp/wt/task-abc",
   prompt: "Read TASK.md and implement the task.",
   env: { PATH: "/usr/bin", HOME: "/tmp" },
 };
@@ -101,13 +101,13 @@ describe("spawnWorkerProcess strategy selection", () => {
     expect(opts?.detached).toBe(true);
   });
 
-  it("smoke seeds dispatch through DetachedSpawnStrategy", async () => {
-    const smokeConfig: WorkerConfig = { ...baseConfig, seedType: "smoke" };
+  it("smoke tasks dispatch through DetachedSpawnStrategy", async () => {
+    const smokeConfig: WorkerConfig = { ...baseConfig, taskType: "smoke" };
 
     await spawnWorkerProcess(smokeConfig);
 
-    // Smoke seeds use the same dispatch path — no special env injection needed
-    // (the smoke workflow is selected via seedType → resolvedWorkflow in agent-worker)
+    // Smoke tasks use the same dispatch path — no special env injection needed
+    // (the smoke workflow is selected via taskType → resolvedWorkflow in agent-worker)
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const opts = (mockSpawn.mock.calls[0] as unknown[])[2] as { env?: Record<string, string> } | undefined;
     // FOREMAN_SMOKE_TEST must NOT be injected (bypass was removed)

@@ -30,7 +30,7 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "Pi SDK worker attach endpoint opens interactive attach mode" do
-    seed_pi_worker("run-attach", "worker-1")
+    task_pi_worker("run-attach", "worker-1")
 
     conn = get_json("/api/v1/runs/run-attach/attach")
     body = Jason.decode!(conn.resp_body)
@@ -47,14 +47,14 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "recently completed Pi SDK worker can attach but stale metadata is rejected" do
-    seed_pi_worker("run-completed", "worker-1")
+    task_pi_worker("run-completed", "worker-1")
     complete_run("run-completed")
 
     assert {:ok, %{result: recent}} = AttachBridge.request_attach(%{run_id: "run-completed"})
     assert recent.status == "ready"
     assert recent.session_id == "session-run-completed"
 
-    seed_worker_events(%{
+    task_worker_events(%{
       run_id: "run-stale",
       phase_id: "developer",
       worker_id: "worker-stale",
@@ -70,7 +70,7 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "repeated attach GET is idempotent for same run worker" do
-    seed_pi_worker("run-idempotent", "worker-1")
+    task_pi_worker("run-idempotent", "worker-1")
 
     first = get_json("/api/v1/runs/run-idempotent/attach")
     second = get_json("/api/v1/runs/run-idempotent/attach")
@@ -87,8 +87,8 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "duplicate attach returns original matching worker after interleaved attach results" do
-    seed_pi_worker("run-idempotent-workers", "worker-1")
-    seed_pi_worker("run-idempotent-workers", "worker-2")
+    task_pi_worker("run-idempotent-workers", "worker-1")
+    task_pi_worker("run-idempotent-workers", "worker-2")
 
     first = get_json("/api/v1/runs/run-idempotent-workers/attach?worker_id=worker-1")
     second = get_json("/api/v1/runs/run-idempotent-workers/attach?worker_id=worker-2")
@@ -110,7 +110,7 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "unsupported duplicate attach returns original unsupported result after ready interleaving" do
-    seed_pi_worker("run-idempotent-unsupported", "worker-1")
+    task_pi_worker("run-idempotent-unsupported", "worker-1")
 
     first_missing =
       get_json("/api/v1/runs/run-idempotent-unsupported/attach?worker_id=missing-worker")
@@ -127,7 +127,7 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "unsupported provider records reason and alternative commands" do
-    seed_worker_events(%{
+    task_worker_events(%{
       run_id: "run-unsupported",
       phase_id: "developer",
       worker_id: "worker-unsupported",
@@ -147,7 +147,7 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "HTTP attach boundary covers auth unsupported provider and worker selection" do
-    seed_pi_worker("run-worker-select", "worker-selected")
+    task_pi_worker("run-worker-select", "worker-selected")
 
     unauthorized =
       :get
@@ -164,7 +164,7 @@ defmodule ForemanServer.AttachBridgeTest do
     assert missing.status == 200
     assert Jason.decode!(missing.resp_body)["attach"]["reason"] =~ "no worker heartbeat"
 
-    seed_worker_events(%{
+    task_worker_events(%{
       run_id: "run-http-unsupported",
       phase_id: "developer",
       worker_id: "worker-unsupported",
@@ -179,7 +179,7 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "operator interrupt and resume records next recovery action" do
-    seed_pi_worker("run-interrupt", "worker-1")
+    task_pi_worker("run-interrupt", "worker-1")
 
     interrupt =
       post_json("/api/v1/runs/run-interrupt/interrupt", %{
@@ -217,7 +217,7 @@ defmodule ForemanServer.AttachBridgeTest do
 
     assert EventStore.all() == before_events
 
-    seed_pi_worker("run-invalid", "worker-1")
+    task_pi_worker("run-invalid", "worker-1")
 
     assert {:error, {:not_found, :phase}} =
              AttachBridge.interrupt_phase(%{run_id: "run-invalid", phase_id: "reviewer"})
@@ -247,7 +247,7 @@ defmodule ForemanServer.AttachBridgeTest do
   test "resume rejects terminal runs before side effects" do
     for status <- ["completed", "failed", "blocked"] do
       run_id = "run-terminal-#{status}"
-      seed_pi_worker(run_id, "worker-1")
+      task_pi_worker(run_id, "worker-1")
 
       assert {:ok, _} =
                AttachBridge.interrupt_phase(%{run_id: run_id, phase_id: "developer"})
@@ -272,7 +272,7 @@ defmodule ForemanServer.AttachBridgeTest do
   test "HTTP resume rejects terminal runs before side effects" do
     for status <- ["completed", "failed", "blocked"] do
       run_id = "run-http-terminal-#{status}"
-      seed_pi_worker(run_id, "worker-1")
+      task_pi_worker(run_id, "worker-1")
 
       interrupt = post_json("/api/v1/runs/#{run_id}/interrupt", %{phase_id: "developer"})
       assert interrupt.status == 202
@@ -293,7 +293,7 @@ defmodule ForemanServer.AttachBridgeTest do
   end
 
   test "attach and recovery projections replay after server restart", %{tmp_dir: tmp_dir} do
-    seed_pi_worker("run-rebuild", "worker-1")
+    task_pi_worker("run-rebuild", "worker-1")
     assert {:ok, _} = AttachBridge.request_attach(%{run_id: "run-rebuild"})
 
     assert {:ok, _} =
@@ -315,7 +315,7 @@ defmodule ForemanServer.AttachBridgeTest do
              "continue_stream"
   end
 
-  defp seed_pi_worker(run_id, worker_id) do
+  defp task_pi_worker(run_id, worker_id) do
     assert {:ok, _} =
              WorkerProtocol.start_phase("developer", %{
                run_id: run_id,
@@ -334,7 +334,7 @@ defmodule ForemanServer.AttachBridgeTest do
              })
   end
 
-  defp seed_worker_events(attrs) do
+  defp task_worker_events(attrs) do
     now = Map.get(attrs, :observed_at, DateTime.utc_now())
 
     assert {:ok, _} =

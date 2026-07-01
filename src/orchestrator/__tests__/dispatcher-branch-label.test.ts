@@ -31,8 +31,8 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
     async getCurrentBranch(path: string): Promise<string> { return mockGetCurrentBranch(path); }
     async detectDefaultBranch(path: string): Promise<string> { return mockDetectDefaultBranch(path); }
     async branchExists(_path: string, _branch: string): Promise<boolean> { return false; }
-    async createWorkspace(_repoPath: string, seedId: string): Promise<{ workspacePath: string; branchName: string }> {
-      return { workspacePath: `/tmp/worktrees/${seedId}`, branchName: `foreman/${seedId}` };
+    async createWorkspace(_repoPath: string, taskId: string): Promise<{ workspacePath: string; branchName: string }> {
+      return { workspacePath: `/tmp/worktrees/${taskId}`, branchName: `foreman/${taskId}` };
     }
   },
 }));
@@ -78,7 +78,7 @@ import { Dispatcher } from "../dispatcher.js";
 function makeIssue(id: string, parent?: string, labels?: string[]): Issue {
   return {
     id,
-    title: `Seed ${id}`,
+    title: `Task ${id}`,
     type: "task",
     priority: "2",
     status: "open",
@@ -123,7 +123,7 @@ function makeStore(overrides: Partial<ForemanStore> = {}): ForemanStore {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
-    getRunsForSeed: vi.fn().mockReturnValue([]),
+    getRunsForTask: vi.fn().mockReturnValue([]),
     hasNativeTasks: vi.fn().mockReturnValue(true),
     getReadyTasks: vi.fn(() => currentReadyIssues.map(nativeTaskFromIssue)),
     getTaskByExternalId: vi.fn().mockReturnValue(null),
@@ -171,23 +171,23 @@ describe("Dispatcher — branch label auto-labeling", () => {
   });
 
   it("adds branch:installer label when on non-default branch", async () => {
-    const seed = makeIssue("seed-001");
-    const taskClient = makeTaskClient([seed]);
+    const task = makeIssue("task-001");
+    const taskClient = makeTaskClient([task]);
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
     await dispatcher.dispatch({ dryRun: true });
 
     // update() should have been called with branch:installer label
-    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("seed-001", ["branch:installer"]);
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("task-001", ["branch:installer"]);
   });
 
   it("does NOT add branch label when on default branch (main)", async () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("main");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
-    const seed = makeIssue("seed-001");
-    const taskClient = makeTaskClient([seed]);
+    const task = makeIssue("task-001");
+    const taskClient = makeTaskClient([task]);
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
@@ -205,8 +205,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("dev");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("dev");
 
-    const seed = makeIssue("seed-001");
-    const taskClient = makeTaskClient([seed]);
+    const task = makeIssue("task-001");
+    const taskClient = makeTaskClient([task]);
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
@@ -223,8 +223,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("HEAD");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("dev");
 
-    const seed = makeIssue("seed-001");
-    const taskClient = makeTaskClient([seed]);
+    const task = makeIssue("task-001");
+    const taskClient = makeTaskClient([task]);
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
@@ -239,8 +239,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
 
   it("does NOT add branch label when current jujutsu branch name is only an anonymous change id", async () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("wzplklnookuz");
-    const seed = makeIssue("seed-001");
-    const taskClient = makeTaskClient([seed]);
+    const task = makeIssue("task-001");
+    const taskClient = makeTaskClient([task]);
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
@@ -254,9 +254,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
   });
 
   it("does NOT re-label a bead that already has a branch: label", async () => {
-    const seed = makeIssue("seed-001");
+    const task = makeIssue("task-001");
     // Bead already has branch:another-branch label
-    const taskClient = makeTaskClient([seed], { "seed-001": ["branch:another-branch"] });
+    const taskClient = makeTaskClient([task], { "task-001": ["branch:another-branch"] });
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
@@ -274,9 +274,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("main");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
-    const parentSeed = makeIssue("parent-001");
-    const childSeed = makeIssue("child-001", "parent-001");
-    const taskClient = makeTaskClient([childSeed], {
+    const parentTask = makeIssue("parent-001");
+    const childTask = makeIssue("child-001", "parent-001");
+    const taskClient = makeTaskClient([childTask], {
       "parent-001": ["branch:feature-x"],
       "child-001": [],
     });
@@ -293,9 +293,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("main");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
-    const parentSeed = makeIssue("parent-001");
-    const childSeed = makeIssue("child-001", "parent-001");
-    const taskClient = makeTaskClient([childSeed], {
+    const parentTask = makeIssue("parent-001");
+    const childTask = makeIssue("child-001", "parent-001");
+    const taskClient = makeTaskClient([childTask], {
       "parent-001": ["branch:main"],
       "child-001": [],
     });
@@ -312,14 +312,14 @@ describe("Dispatcher — branch label auto-labeling", () => {
   });
 
   it("preserves existing non-branch labels when adding branch label", async () => {
-    const seed = makeIssue("seed-001", undefined, ["workflow:smoke"]);
-    const taskClient = makeTaskClient([seed], { "seed-001": ["workflow:smoke"] });
+    const task = makeIssue("task-001", undefined, ["workflow:smoke"]);
+    const taskClient = makeTaskClient([task], { "task-001": ["workflow:smoke"] });
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
     await dispatcher.dispatch({ dryRun: true });
 
-    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("seed-001", expect.arrayContaining(["workflow:smoke", "branch:installer"]));
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("task-001", expect.arrayContaining(["workflow:smoke", "branch:installer"]));
   });
 
   // ── assumeDefaultBranch (daemon background dispatch) ─────────────────────────
@@ -330,8 +330,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
-    const seed = makeIssue("seed-001");
-    const taskClient = makeTaskClient([seed]);
+    const task = makeIssue("task-001");
+    const taskClient = makeTaskClient([task]);
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
@@ -350,14 +350,14 @@ describe("Dispatcher — branch label auto-labeling", () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
-    const seed = makeIssue("seed-001");
-    const taskClient = makeTaskClient([seed]);
+    const task = makeIssue("task-001");
+    const taskClient = makeTaskClient([task]);
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
 
     await dispatcher.dispatch({ dryRun: true });
 
-    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("seed-001", ["branch:installer"]);
+    expect((store.updateTaskLabels as any)).toHaveBeenCalledWith("task-001", ["branch:installer"]);
   });
 
   it("still inherits parent branch label when assumeDefaultBranch is set", async () => {
@@ -366,8 +366,8 @@ describe("Dispatcher — branch label auto-labeling", () => {
     mockGetCurrentBranch = vi.fn().mockResolvedValue("installer");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");
 
-    const childSeed = makeIssue("child-001", "parent-001");
-    const taskClient = makeTaskClient([childSeed], {
+    const childTask = makeIssue("child-001", "parent-001");
+    const taskClient = makeTaskClient([childTask], {
       "parent-001": ["branch:feature-x"],
       "child-001": [],
     });

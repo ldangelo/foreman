@@ -656,8 +656,8 @@ for (const msg of messages) {
 
 const taskToRun = new Map<string, string>();
 for (const run of runs) {
-  if (run.seed_id) {
-    taskToRun.set(run.seed_id, run.id);
+  if (run.task_id) {
+    taskToRun.set(run.task_id, run.id);
   }
 }
 
@@ -689,7 +689,7 @@ const state: DashboardState = {
         preview: msg.body.slice(0, 100),
         isRead: msg.read === 1,
         runId: msg.run_id,
-        beadId: run?.seed_id,
+        beadId: run?.task_id,
       })),
       unreadCount: messages.filter(m => m.read === 0).length,
       totalCount: messages.length,

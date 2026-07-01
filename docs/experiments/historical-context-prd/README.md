@@ -20,7 +20,7 @@ This directory contains the complete PRD and implementation artifacts for **PRD-
 |---------|---------|
 | `standard` | Default archival docs (PRD drafts, older TRDs) |
 | `comparison` | Feature comparison docs (Overstory, Flywheel) |
-| `migration` | Migration guides (seeds → br) |
+| `migration` | Migration guides (tasks → br) |
 | `beads-rust-only` | Docs describing deprecated BeadsRustClient era |
 
 Canonical banner text:
@@ -36,7 +36,7 @@ Canonical banner text:
 ## Archival Document List (from manifest)
 
 **Requires banners (status: archived):**
-- `docs/migration-seeds-to-br.md` — Migration
+- `docs/migration-tasks-to-br.md` — Migration
 - `docs/Overstory_comparison.md` — Comparison
 - `docs/flywheel_comparison.md` — Comparison
 - `docs/mail-transport-plan.md` — Standard
@@ -47,7 +47,7 @@ Canonical banner text:
 
 **Review needed (status: review) — do not banner yet:**
 - `docs/PRD/PRD-2026-006-multi-project-native-task-management.md` — Standard (borderline; describes target state)
-- `docs/TRD/seeds-to-br-bv-migration.md` — Comparison (OQ-3 unresolved)
+- `docs/TRD/tasks-to-br-bv-migration.md` — Comparison (OQ-3 unresolved)
 
 **Explicitly excluded (active docs, zero banners):**
 - All of `docs/guides/`
@@ -71,7 +71,7 @@ Exit codes: `0` = pass, `1` = fail, `2` = manifest/variants not found.
 
 ## Next Steps
 
-1. **Human review** — Resolve OQ-3 (`docs/TRD/seeds-to-br-bv-migration.md`)
+1. **Human review** — Resolve OQ-3 (`docs/TRD/tasks-to-br-bv-migration.md`)
 2. **Decision** — Decide on PRD-2026-006 status: banner it as `review` or move to exclusions
 3. **Install** — Wire validation into CI; add to pre-commit hook
 4. **Inject** — Run `--fix` to add banners to all archived documents
@@ -83,6 +83,6 @@ Exit codes: `0` = pass, `1` = fail, `2` = manifest/variants not found.
 |----|----------|-------------|
 | OQ-1 | Manual vs. auto-generated manifest? | Manual |
 | OQ-2 | Does PRD-2026-006's doc get a banner? | No — describe target state |
-| OQ-3 | Does `docs/TRD/seeds-to-br-bv-migration.md` get a banner? | Review needed |
+| OQ-3 | Does `docs/TRD/tasks-to-br-bv-migration.md` get a banner? | Review needed |
 | OQ-4 | Banners on `PRD/completed/` docs when moved? | Yes |
 | OQ-5 | Pre-commit hook: block or warn? | Warn locally; fail CI |

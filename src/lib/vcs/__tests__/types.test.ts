@@ -171,12 +171,12 @@ describe('PushOptions type', () => {
 describe('FinalizeTemplateVars type', () => {
   it('has all required fields', () => {
     const vars: FinalizeTemplateVars = {
-      seedId: 'bd-deoi',
-      seedTitle: 'Define Shared VCS Types',
+      taskId: 'bd-deoi',
+      taskTitle: 'Define Shared VCS Types',
       baseBranch: 'dev',
       worktreePath: '/tmp/worktrees/bd-deoi',
     };
-    expect(vars.seedId).toBe('bd-deoi');
+    expect(vars.taskId).toBe('bd-deoi');
     expect(vars.baseBranch).toBe('dev');
   });
 });

@@ -1,7 +1,7 @@
 # Agent Task
 
 ## Task Details
-**Seed ID:** {{seedId}}
+**Task ID:** {{taskId}}
 **Title:** {{title}}
 **Description:** {{description}}
 **Model:** {{model}}

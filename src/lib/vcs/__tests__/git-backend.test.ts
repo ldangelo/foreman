@@ -237,8 +237,8 @@ describe("GitBackend.getFinalizeCommands", () => {
   it("returns all 6 required fields", () => {
     const backend = new GitBackend("/tmp");
     const cmds = backend.getFinalizeCommands({
-      seedId: "bd-test",
-      seedTitle: "My Task",
+      taskId: "bd-test",
+      taskTitle: "My Task",
       baseBranch: "dev",
       worktreePath: "/tmp/worktrees/bd-test",
     });
@@ -253,19 +253,19 @@ describe("GitBackend.getFinalizeCommands", () => {
   it("stageCommand is 'git add -A'", () => {
     const backend = new GitBackend("/tmp");
     const cmds = backend.getFinalizeCommands({
-      seedId: "bd-abc",
-      seedTitle: "Title",
+      taskId: "bd-abc",
+      taskTitle: "Title",
       baseBranch: "main",
       worktreePath: "/tmp",
     });
     expect(cmds.stageCommand).toBe("git add -A");
   });
 
-  it("commitCommand includes seedId and seedTitle", () => {
+  it("commitCommand includes taskId and taskTitle", () => {
     const backend = new GitBackend("/tmp");
     const cmds = backend.getFinalizeCommands({
-      seedId: "bd-abc",
-      seedTitle: "My Feature",
+      taskId: "bd-abc",
+      taskTitle: "My Feature",
       baseBranch: "main",
       worktreePath: "/tmp",
     });
@@ -276,8 +276,8 @@ describe("GitBackend.getFinalizeCommands", () => {
   it("pushCommand references the correct branch", () => {
     const backend = new GitBackend("/tmp");
     const cmds = backend.getFinalizeCommands({
-      seedId: "bd-xyz",
-      seedTitle: "Feat",
+      taskId: "bd-xyz",
+      taskTitle: "Feat",
       baseBranch: "dev",
       worktreePath: "/tmp",
     });
@@ -288,8 +288,8 @@ describe("GitBackend.getFinalizeCommands", () => {
   it("integrateTargetCommand references the base branch", () => {
     const backend = new GitBackend("/tmp");
     const cmds = backend.getFinalizeCommands({
-      seedId: "bd-xyz",
-      seedTitle: "Feat",
+      taskId: "bd-xyz",
+      taskTitle: "Feat",
       baseBranch: "develop",
       worktreePath: "/tmp",
     });
@@ -717,10 +717,10 @@ describe("GitBackend.createWorkspace", () => {
     tempDirs.push(repo);
     const backend = new GitBackend(repo);
 
-    const result = await backend.createWorkspace(repo, "seed-abc");
+    const result = await backend.createWorkspace(repo, "task-abc");
 
-    expect(result.branchName).toBe("foreman/seed-abc");
-    expect(result.workspacePath).toBe(getWorkspacePath(repo, "seed-abc"));
+    expect(result.branchName).toBe("foreman/task-abc");
+    expect(result.workspacePath).toBe(getWorkspacePath(repo, "task-abc"));
     // The directory should exist
     const { existsSync } = await import("node:fs");
     expect(existsSync(result.workspacePath)).toBe(true);
@@ -734,13 +734,13 @@ describe("GitBackend.createWorkspace", () => {
     tempDirs.push(repo);
     const backend = new GitBackend(repo);
 
-    await backend.createWorkspace(repo, "seed-reuse");
+    await backend.createWorkspace(repo, "task-reuse");
     // Second call should not throw
-    await expect(backend.createWorkspace(repo, "seed-reuse")).resolves.toMatchObject({
-      branchName: "foreman/seed-reuse",
+    await expect(backend.createWorkspace(repo, "task-reuse")).resolves.toMatchObject({
+      branchName: "foreman/task-reuse",
     });
 
-    await backend.removeWorkspace(repo, getWorkspacePath(repo, "seed-reuse"));
+    await backend.removeWorkspace(repo, getWorkspacePath(repo, "task-reuse"));
   });
 });
 
@@ -751,7 +751,7 @@ describe("GitBackend.removeWorkspace", () => {
     tempDirs.push(repo);
     const backend = new GitBackend(repo);
 
-    const { workspacePath } = await backend.createWorkspace(repo, "seed-rm");
+    const { workspacePath } = await backend.createWorkspace(repo, "task-rm");
     await backend.removeWorkspace(repo, workspacePath);
 
     const { existsSync } = await import("node:fs");
@@ -1174,18 +1174,18 @@ function makeRemoteAndClone(branch = "main"): { remote: string; clone: string } 
   execFileSync("git", ["init", "--bare", `--initial-branch=${branch}`], { cwd: remote });
 
   // Push an initial commit from a temp repo so the bare repo has content
-  const seed = realpathSync(
-    mkdtempSync(join(tmpdir(), "foreman-git-backend-seed-")),
+  const task = realpathSync(
+    mkdtempSync(join(tmpdir(), "foreman-git-backend-task-")),
   );
-  execFileSync("git", ["init", `--initial-branch=${branch}`], { cwd: seed });
-  execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: seed });
-  execFileSync("git", ["config", "user.name", "Test"], { cwd: seed });
-  writeFileSync(join(seed, "README.md"), "# init\n");
-  execFileSync("git", ["add", "."], { cwd: seed });
-  execFileSync("git", ["commit", "-m", "initial commit"], { cwd: seed });
-  execFileSync("git", ["remote", "add", "origin", remote], { cwd: seed });
-  execFileSync("git", ["push", "-u", "origin", branch], { cwd: seed });
-  rmSync(seed, { recursive: true, force: true });
+  execFileSync("git", ["init", `--initial-branch=${branch}`], { cwd: task });
+  execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: task });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: task });
+  writeFileSync(join(task, "README.md"), "# init\n");
+  execFileSync("git", ["add", "."], { cwd: task });
+  execFileSync("git", ["commit", "-m", "initial commit"], { cwd: task });
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: task });
+  execFileSync("git", ["push", "-u", "origin", branch], { cwd: task });
+  rmSync(task, { recursive: true, force: true });
 
   const clone = realpathSync(
     mkdtempSync(join(tmpdir(), "foreman-git-backend-clone-")),

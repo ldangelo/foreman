@@ -54,7 +54,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       expect(manager.getConfig().enabled).toBe(true);
@@ -68,7 +68,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       expect(manager.getConfig().enabled).toBe(true);
@@ -82,7 +82,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       expect(manager.getConfig().enabled).toBe(false);
@@ -97,12 +97,12 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("developer");
 
-      expect(mockVcsInstance.getHeadId).toHaveBeenCalledWith("/worktrees/project/seed-abc");
+      expect(mockVcsInstance.getHeadId).toHaveBeenCalledWith("/worktrees/project/task-abc");
     });
 
     it("should not start when disabled", async () => {
@@ -112,7 +112,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("developer");
@@ -127,7 +127,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("qa");
@@ -144,7 +144,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("developer");
@@ -163,7 +163,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("developer");
@@ -211,19 +211,19 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
         heartbeatWriter,
       );
 
       await manager.start("developer");
-      manager.setSeedId("seed-123");
+      manager.setTaskId("task-123");
 
       await manager.fireHeartbeat();
 
       expect(heartbeatWriter.logEvent).toHaveBeenCalledWith(
         "heartbeat",
         expect.objectContaining({
-          seedId: "seed-123",
+          taskId: "task-123",
           phase: "developer",
           turns: expect.any(Number),
           toolCalls: expect.any(Number),
@@ -239,11 +239,11 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("developer");
-      manager.setSeedId("seed-123");
+      manager.setTaskId("task-123");
 
       await manager.fireHeartbeat();
 
@@ -251,7 +251,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "heartbeat",
         expect.objectContaining({
-          seedId: "seed-123",
+          taskId: "task-123",
           phase: "developer",
           turns: expect.any(Number),
           toolCalls: expect.any(Number),
@@ -273,7 +273,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("developer");
@@ -303,7 +303,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("developer");
@@ -321,7 +321,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
       );
 
       await manager.start("developer");
@@ -342,7 +342,7 @@ describe("HeartbeatManager", () => {
         "proj-123",
         "run-456",
         mockVcsInstance,
-        "/worktrees/project/seed-abc",
+        "/worktrees/project/task-abc",
         heartbeatWriter,
       );
 
@@ -363,7 +363,7 @@ describe("createHeartbeatManager", () => {
       "proj-123",
       "run-456",
       {} as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
     );
 
     expect(manager).toBeNull();
@@ -376,7 +376,7 @@ describe("createHeartbeatManager", () => {
       "proj-123",
       "run-456",
       {} as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
     );
 
     expect(manager).not.toBeNull();
@@ -391,7 +391,7 @@ describe("createHeartbeatManager", () => {
       "proj-123",
       "run-456",
       {} as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
     );
 
     expect(manager).not.toBeNull();
@@ -407,7 +407,7 @@ describe("shouldFire()", () => {
       "proj-123",
       "run-456",
       {} as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
     );
 
     await manager.start("developer");
@@ -422,7 +422,7 @@ describe("shouldFire()", () => {
       "proj-123",
       "run-456",
       {} as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
     );
 
     expect(manager.shouldFire()).toBe(false);
@@ -435,7 +435,7 @@ describe("shouldFire()", () => {
       "proj-123",
       "run-456",
       {} as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
     );
 
     await manager.start("developer");

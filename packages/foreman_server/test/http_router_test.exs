@@ -69,7 +69,7 @@ defmodule ForemanServer.Http.RouterTest do
   end
 
   test "run log/report/debug endpoints require bearer token" do
-    seed_debug_http_run()
+    task_debug_http_run()
 
     for path <- [
           "/api/v1/runs/run-http-debug/logs",
@@ -87,7 +87,7 @@ defmodule ForemanServer.Http.RouterTest do
   end
 
   test "authorized run log endpoint returns compact and raw views and rejects invalid view" do
-    seed_debug_http_run()
+    task_debug_http_run()
 
     compact_conn =
       :get
@@ -190,7 +190,7 @@ defmodule ForemanServer.Http.RouterTest do
   end
 
   test "authorized doctor and metrics endpoints expose operational status" do
-    seed_debug_http_run()
+    task_debug_http_run()
 
     doctor_conn =
       :get
@@ -220,7 +220,7 @@ defmodule ForemanServer.Http.RouterTest do
   end
 
   test "authorized run report and debug endpoints return event-backed summaries" do
-    seed_debug_http_run()
+    task_debug_http_run()
 
     report_conn =
       :get
@@ -353,7 +353,7 @@ defmodule ForemanServer.Http.RouterTest do
     assert body["error"]["code"] == "VALIDATION_FAILED"
   end
 
-  defp seed_debug_http_run do
+  defp task_debug_http_run do
     append_run_event("RunStarted", %{run_id: "run-http-debug", phase_order: ["developer"]})
 
     append_worker_event("WorkerStdout", %{

@@ -74,7 +74,7 @@ describe("full-run test runtime e2e", () => {
       process.env.FOREMAN_RUNTIME_MODE = "test";
       process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
 
-      const taskId = await harness.seedTask({
+      const taskId = await harness.taskTask({
         title: "Full run deterministic happy path",
         scenario: {
           kind: "create",

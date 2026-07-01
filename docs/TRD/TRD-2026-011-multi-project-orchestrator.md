@@ -121,8 +121,8 @@ foreman run --project <name>
   │
   ├─► TrpcClient.runs.create({ projectId, ... })
   │
-  ├─► WorktreeManager.create(projectId, seedId)
-  │    → git worktree add ~/.foreman/worktrees/<project-id>/<seed-id> <branch>
+  ├─► WorktreeManager.create(projectId, taskId)
+  │    → git worktree add ~/.foreman/worktrees/<project-id>/<task-id> <branch>
   │
   ├─► AgentWorker.spawn(runId, worktreePath)
   │
@@ -402,7 +402,7 @@ For every user-facing implementation task, a corresponding TEST task is generate
 ### Sprint 3: Runs, Events, Messages (18 days, 22h)
 - TRD-032 through TRD-039
 - Goal: Runs/events/messages via tRPC. Worktrees created at correct path.
-- **Critical path gate:** `foreman run --project <name>` creates worktree at `~/.foreman/worktrees/<project-id>/<seed-id>`.
+- **Critical path gate:** `foreman run --project <name>` creates worktree at `~/.foreman/worktrees/<project-id>/<task-id>`.
 
 ### Sprint 4: Project-Aware CLI (12 days, 16h)
 - TRD-040 through TRD-048
