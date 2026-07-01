@@ -75,20 +75,24 @@ defmodule ForemanServer.WorkerProtocol do
          :ok <- validate_sequence(run_id, worker_id, sequence) do
       event_type = worker_event_type(type)
 
+      details = Map.get(payload, :details, %{})
+
       append_worker_event(event_type, %{
         run_id: run_id,
+        project_id: Map.get(payload, :project_id) || Map.get(details, "project_id"),
+        task_id: Map.get(payload, :task_id) || Map.get(details, "task_id") || Map.get(details, "taskId"),
         phase_id: phase_id,
         worker_id: worker_id,
         sequence: sequence,
         tool_call_id: Map.get(payload, :tool_call_id),
         tool_name: Map.get(payload, :tool_name),
-        status: Map.get(payload, :status),
+        status: Map.get(payload, :status) || Map.get(details, "status"),
         output: Map.get(payload, :output),
         message: Map.get(payload, :message),
         artifact_paths: Map.get(payload, :artifact_paths, []),
         report_paths: Map.get(payload, :report_paths, []),
         exit_code: Map.get(payload, :exit_code),
-        details: Map.get(payload, :details, %{})
+        details: details
       })
     end
   end
@@ -141,6 +145,9 @@ defmodule ForemanServer.WorkerProtocol do
   defp worker_event_type("phase_skipped"), do: "PhaseSkipped"
   defp worker_event_type("phase_verdict"), do: "PhaseVerdict"
   defp worker_event_type("phase_nudge"), do: "PhaseNudged"
+  defp worker_event_type("run_completed"), do: "RunCompleted"
+  defp worker_event_type("run_failed"), do: "RunFailed"
+  defp worker_event_type("task_updated"), do: "TaskUpdated"
   defp worker_event_type(type), do: Macro.camelize(type)
 
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
@@ -191,6 +198,7 @@ defmodule ForemanServer.WorkerProtocol do
       :sequence,
       :session_id,
       :status,
+      :task_id,
       :tool_call_id,
       :tool_name,
       :tool_names,

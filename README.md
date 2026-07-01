@@ -57,7 +57,7 @@ TRD-2026-014 adds an Elixir/OTP orchestration server alongside the existing Node
 
 - **Node CLI**: parses operator commands, starts or locates the Elixir server, sends authenticated JSON commands/reads, renders projection responses, and keeps deprecated aliases pointing at replacements.
 - **Elixir server**: owns durable commands, append-only events, CQRS projections, run/phase actors, scheduler capacity, automatic 5-second scheduler ticks that claim dispatchable `ready` tasks and launch the Node/Pi worker bridge, VCS/PR state machines, inbox/debug/attach views, recovery, doctor/metrics, and authorization audit events.
-- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/logs/artifacts back to Elixir, sends phase-specific overwatch nudges when a phase appears idle, and receives scoped project/run environment metadata.
+- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/logs/artifacts back to Elixir, sends phase-specific overwatch nudges when a phase appears idle, and emits authoritative terminal run/task events. The Elixir launcher records process-exit facts only; it does not infer success/failure from stdout.
 
 See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) for the migration architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
 

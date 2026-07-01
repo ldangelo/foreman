@@ -1668,7 +1668,7 @@ async function runMergeBuiltinPhase(args: {
   };
 }
 
-function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge"): string {
+function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "run-completed" | "run-failed" | "task-updated"): string {
   if (eventType === "phase-start") return "phase_started";
   if (eventType === "complete") return "phase_completed";
   if (eventType === "phase-failed") return "phase_failed";
@@ -1676,6 +1676,9 @@ function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbea
   if (eventType === "phase-skipped") return "phase_skipped";
   if (eventType === "phase-verdict") return "phase_verdict";
   if (eventType === "phase-nudge") return "phase_nudge";
+  if (eventType === "run-completed") return "run_completed";
+  if (eventType === "run-failed") return "run_failed";
+  if (eventType === "task-updated") return "task_updated";
   return "heartbeat";
 }
 
@@ -2398,17 +2401,30 @@ async function runPipeline(
         store.logEvent(projectId, eventType, data, runId);
       };
 
-      // Log terminal event
+      // Authoritative terminal domain events come from the worker, not the launcher.
       const completedPhases = workflowConfig.phases.map((p) => p.name).join("→");
-      await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), {
+      const terminalPayload = {
         taskId,
+        task_id: taskId,
         title: taskTitle,
         costUsd: progress.costUsd,
         numTurns: progress.turns,
         toolCalls: progress.toolCalls,
         filesChanged: progress.filesChanged.length,
         phases: completedPhases,
-      });
+        phase_id: finalizeSucceeded ? undefined : failedPhase,
+        failure_reason: finalizeSucceeded ? undefined : (finalizeFailureReason || `${failedPhase} failed`),
+      };
+      if (registeredProjectId && elixirWorkerObservabilityWriter?.logEvent) {
+        await elixirWorkerObservabilityWriter.logEvent(finalizeSucceeded ? "run-completed" : "run-failed", terminalPayload);
+        await elixirWorkerObservabilityWriter.logEvent("task-updated", {
+          ...terminalPayload,
+          status: finalizeSucceeded ? "completed" : "failed",
+        });
+      }
+
+      // Compatibility read-model event for legacy Postgres/local surfaces.
+      await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), terminalPayload);
 
       if (finalizeSucceeded) {
         log(`PIPELINE COMPLETED for ${taskId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);

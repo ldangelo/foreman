@@ -27,28 +27,11 @@ defmodule ForemanServer.WorkerLauncher do
               env: worker_env()
             )
 
-          if worker_succeeded?(status, output) do
-            append("WorkerLaunchCompleted", task, run_id, %{workflow: workflow, output: output})
-            append_run("RunCompleted", task, run_id, %{workflow: workflow})
-            append_task_status(task, run_id, "completed", nil, nil)
-          else
-            reason = worker_failure_reason(status, output)
-
-            append("WorkerLaunchFailed", task, run_id, %{
-              workflow: workflow,
-              exit_code: status,
-              failure_reason: reason,
-              output: output
-            })
-
-            append_run("RunFailed", task, run_id, %{
-              workflow: workflow,
-              failure_reason: reason,
-              failure_output: String.slice(output, 0, 2_000)
-            })
-
-            append_task_status(task, run_id, "failed", reason, output)
-          end
+          append("WorkerProcessExited", task, run_id, %{
+            workflow: workflow,
+            exit_code: status,
+            output: output
+          })
         end)
 
       {:ok, %{pid: pid, workflow: workflow}}
@@ -114,20 +97,6 @@ defmodule ForemanServer.WorkerLauncher do
     Map.get(task, :workflow) || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
   end
 
-  defp worker_succeeded?(0, output) do
-    not String.contains?(output, ["[PIPELINE] FAILED", "PIPELINE FAILED", "Phase exceeded maxTurns"])
-  end
-
-  defp worker_succeeded?(_status, _output), do: false
-
-  defp worker_failure_reason(_status, output) do
-    cond do
-      String.contains?(output, "Phase exceeded maxTurns") -> "max_turns"
-      String.contains?(output, ["overloaded_error", "529", "rate limit", "429"]) -> "provider_transient"
-      true -> "worker_failed"
-    end
-  end
-
   defp append(event_type, task, run_id, payload) do
     EventStore.append(%{
       stream_id: "worker-launch:#{run_id}",
@@ -143,33 +112,4 @@ defmodule ForemanServer.WorkerLauncher do
     })
   end
 
-  defp append_run(event_type, task, run_id, payload) do
-    EventStore.append(%{
-      stream_id: "run:#{run_id}",
-      event_type: event_type,
-      payload:
-        Map.merge(payload, %{
-          run_id: run_id,
-          task_id: task.task_id,
-          project_id: Map.get(task, :project_id),
-          observed_at: DateTime.utc_now()
-        }),
-      metadata: %{correlation_id: run_id}
-    })
-  end
-
-  defp append_task_status(task, run_id, status, failure_reason, output) do
-    EventStore.append(%{
-      stream_id: "task:#{task.task_id}",
-      event_type: "TaskUpdated",
-      payload: %{
-        task_id: task.task_id,
-        status: status,
-        run_id: run_id,
-        failure_reason: failure_reason,
-        failure_output: if(output, do: String.slice(output, 0, 2_000), else: nil)
-      },
-      metadata: %{correlation_id: run_id}
-    })
-  end
 end

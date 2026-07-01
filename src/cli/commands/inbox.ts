@@ -95,6 +95,7 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "fail":                  "✗",
   "RunFailed":             "✗",
   "WorkerLaunchFailed":    "✗",
+  "WorkerProcessExited":   "◼",
   "merge":                 "⚡",
   "pr-created":            "⎇",
   "merge-queue-enqueue":   "⏳",
@@ -187,6 +188,10 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     }
     case "WorkerLaunchFailed":
       return `Worker launch failed${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}`;
+    case "WorkerProcessExited": {
+      const exitCode = detailString(details, ["exit_code", "exitCode"]);
+      return `Worker process exited${target ? ` for ${target}` : ""}${exitCode ? ` (exit ${exitCode})` : ""}`;
+    }
     case "RunFailed":
       return `Failed${target ? ` ${target}` : ""}${phase ? ` at ${phase}` : ""}${error ? `: ${error}` : ""}`;
     case "dispatch":

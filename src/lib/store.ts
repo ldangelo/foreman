@@ -174,6 +174,9 @@ export type EventType =
   | "phase-skipped"
   | "phase-verdict"
   | "phase-nudge"
+  | "run-completed"
+  | "run-failed"
+  | "task-updated"
   | "cooldown";
 
 export interface Event {

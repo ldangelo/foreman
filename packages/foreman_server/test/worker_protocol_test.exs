@@ -74,6 +74,46 @@ defmodule ForemanServer.WorkerProtocolTest do
     assert snapshot.runs["run-worker-fixture"].artifact_paths == ["docs/reports/worker.md"]
   end
 
+  test "worker terminal events authoritatively update run and task projections", %{fixture: fixture} do
+    assert post_json("/worker/v1/phases/developer/start", fixture["start"]).status == 202
+
+    run_failed = %{
+      "run_id" => "run-worker-fixture",
+      "project_id" => "proj-1",
+      "phase_id" => "developer",
+      "worker_id" => "worker-1",
+      "type" => "run_failed",
+      "sequence" => 1,
+      "status" => "failed",
+      "message" => "max turns",
+      "details" => %{"task_id" => "task-1", "phase_id" => "developer", "failure_reason" => "max_turns"}
+    }
+
+    task_failed = %{
+      "run_id" => "run-worker-fixture",
+      "project_id" => "proj-1",
+      "phase_id" => "developer",
+      "worker_id" => "worker-1",
+      "type" => "task_updated",
+      "sequence" => 2,
+      "status" => "failed",
+      "details" => %{"task_id" => "task-1", "status" => "failed", "failure_reason" => "max_turns"}
+    }
+
+    assert post_json("/worker/v1/events", run_failed).status == 202
+    assert post_json("/worker/v1/events", task_failed).status == 202
+
+    event_types =
+      ForemanServer.EventStore.stream("worker:run-worker-fixture:worker-1")
+      |> Enum.map(& &1.event_type)
+
+    assert event_types == ["WorkerStarted", "RunFailed", "TaskUpdated"]
+
+    snapshot = ForemanServer.ProjectionStore.snapshot()
+    assert snapshot.runs["run-worker-fixture"].status == "failed"
+    assert snapshot.tasks["task-1"].status == "failed"
+  end
+
   test "out-of-order worker sequence is rejected before projection mutation", %{fixture: fixture} do
     assert post_json("/worker/v1/phases/developer/start", fixture["start"]).status == 202
 

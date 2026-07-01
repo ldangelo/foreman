@@ -279,7 +279,9 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.drop([:task_id])
       |> clear_failure_fields_for_active_status()
 
-    put_in(projection, [:tasks, task_id], Map.merge(existing, updates))
+    projection
+    |> put_worker_sequence(payload)
+    |> put_in([:tasks, task_id], Map.merge(existing, updates))
   end
 
   defp apply_domain_event(
@@ -343,8 +345,9 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:runs, run_id], run)
   end
 
-  defp apply_domain_event(projection, %{type: "RunCompleted", payload: %{run_id: run_id}}, _mode) do
+  defp apply_domain_event(projection, %{type: "RunCompleted", payload: %{run_id: run_id} = payload}, _mode) do
     projection
+    |> put_worker_sequence(payload)
     |> update_run_status(run_id, "completed")
     |> update_run(run_id, &Map.put(&1, :current_phase, nil))
   end
@@ -355,6 +358,7 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     projection
+    |> put_worker_sequence(payload)
     |> update_run_status(run_id, "failed")
     |> update_run(run_id, fn run ->
       run
@@ -418,7 +422,9 @@ defmodule ForemanServer.ProjectionStore do
        when type in ["PhaseFailed", "PhaseTimedOut"] do
     status = if type == "PhaseTimedOut", do: "timed_out", else: "failed"
 
-    update_run(projection, run_id, fn run ->
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
       run
       |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, status))
       |> Map.put(
@@ -436,7 +442,9 @@ defmodule ForemanServer.ProjectionStore do
          },
          _mode
        ) do
-    update_run(projection, run_id, fn run ->
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
       run
       |> Map.put(:current_phase, phase_id)
       |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "retrying"))

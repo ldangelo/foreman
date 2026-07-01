@@ -55,6 +55,9 @@ export type EventType =
   | "phase-skipped"
   | "phase-verdict"
   | "phase-nudge"
+  | "run-completed"
+  | "run-failed"
+  | "task-updated"
   | "heartbeat";
 
 /**

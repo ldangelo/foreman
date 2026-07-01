@@ -67,7 +67,7 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 
 TRD-2026-014 Elixir migration split:
 
-**Event-sourced orchestration invariant:** domain events are the source of truth and operational trigger. Projections are read models only. Scheduler/run loop, inbox/watch surfaces, and recovery flows must consume or reconcile from events, then read projections to decide action; do not rely on projection polling as the primary signal.
+**Event-sourced orchestration invariant:** domain events are the source of truth and operational trigger. Projections are read models only. Scheduler/run loop, inbox/watch surfaces, and recovery flows must consume or reconcile from events, then read projections to decide action; do not rely on projection polling as the primary signal. Node/Pi workers emit authoritative terminal run/task events; launchers only record process-exit facts and must not infer success/failure from stdout.
 
 ```
 Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker
