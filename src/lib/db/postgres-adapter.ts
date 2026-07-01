@@ -1739,7 +1739,11 @@ export class PostgresAdapter {
        FROM runs r
        WHERE r.project_id = $1 AND r.status = 'success'
          AND COALESCE(r.merge_strategy, 'auto') <> 'none'
-         AND r.id NOT IN (SELECT run_id FROM merge_queue WHERE project_id = $1)
+         AND NOT EXISTS (
+           SELECT 1 FROM merge_queue mq
+           WHERE mq.project_id = $1
+             AND (mq.run_id = r.id OR mq.seed_id = r.bead_id)
+         )
        ORDER BY r.created_at ASC`,
       [projectId],
     );

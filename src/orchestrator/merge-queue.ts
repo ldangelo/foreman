@@ -371,7 +371,10 @@ export class MergeQueue {
          FROM runs r
          WHERE r.status = 'completed'
          AND COALESCE(r.merge_strategy, 'auto') <> 'none'
-         AND r.id NOT IN (SELECT run_id FROM merge_queue)
+         AND NOT EXISTS (
+           SELECT 1 FROM merge_queue mq
+           WHERE mq.run_id = r.id OR mq.seed_id = r.seed_id
+         )
          ORDER BY r.created_at ASC`
       )
       .all() as MissingFromQueueEntry[];
