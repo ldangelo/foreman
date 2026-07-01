@@ -246,7 +246,7 @@ foreman purge runs     # Remove stale failed run records
 
 # Mail inspection
 foreman inbox --all --watch  # Live stream all mail across all runs
-foreman inbox --bead X       # Mail for a specific bead
+foreman inbox --task X       # Mail/events for a specific task
 
 # Worktree cleanup
 foreman worktree list   # See all active worktrees

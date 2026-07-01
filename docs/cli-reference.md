@@ -97,14 +97,7 @@ Operator use of `foreman run task` was removed after the Elixir cutover. The hid
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--model <model>` | workflow default | Override the model used by spawned worker phases |
-| `--dry-run` | — | Resolve task, workflow, and worktree without creating a run |
-| `--no-watch` | — | Spawn the worker and return immediately |
-| `--target-branch <branch>` | detected default | Override base/target branch for finalization and merge |
-| `--project <name>` | current project | Registered project name |
-| `--project-path <absolute-path>` | current project | Absolute project path for advanced/scripted use |
-
-> **Deprecated:** `--skip-explore` and `--skip-review` are hidden no-ops here too — pick a workflow without those phases instead (e.g. `foreman run task <task-id> quick`).
+This command remains registered only so operator invocations receive an explicit removal message. The internal `--run-id` bridge is hidden and reserved for Elixir scheduler launches.
 
 ---
 
