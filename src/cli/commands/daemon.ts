@@ -1,11 +1,11 @@
 /**
- * `foreman daemon` CLI commands — manage the ForemanDaemon lifecycle.
+ * `foreman daemon` CLI commands — inspect/stop stray legacy daemon processes.
  *
  * Sub-commands:
- *   foreman daemon start     — Start the daemon in the background
- *   foreman daemon stop      — Stop the running daemon
- *   foreman daemon status    — Show daemon status
- *   foreman daemon restart   — Stop then start
+ *   foreman daemon start     — Removed after Elixir cutover
+ *   foreman daemon stop      — Stop a running stray legacy daemon
+ *   foreman daemon status    — Show legacy daemon status
+ *   foreman daemon restart   — Removed after Elixir cutover
  *
  * @module src/cli/commands/daemon
  */
@@ -57,7 +57,7 @@ const startCommand = new Command("start")
 // ── foreman daemon stop ──────────────────────────────────────────────────────
 
 const stopCommand = new Command("stop")
-  .description("Stop the running ForemanDaemon")
+  .description("Stop a running stray legacy ForemanDaemon")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {

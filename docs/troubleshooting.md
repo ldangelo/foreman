@@ -61,12 +61,12 @@ Deprecated aliases are hidden from help and print replacements when used:
 | Deprecated | Use instead |
 |------------|-------------|
 | `foreman dashboard` | `foreman watch` |
-| `foreman bead` | `foreman task create --from-text` |
+| `foreman bead` | Removed; use structured `foreman task create --title ...` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `--skip-explore` / `--skip-review` | `--workflow quick` or a custom workflow |
 
-During incomplete migration, `FOREMAN_LEGACY_COMPATIBILITY_MODE=1` and `FOREMAN_LEGACY_TS_BIN=/path/to/legacy/foreman` delegate supported commands to the legacy TypeScript binary. Set `FOREMAN_MIGRATION_COMPLETE=true` to stop delegation.
+Legacy TypeScript delegation was removed after the Elixir cutover. Operator commands now either use Elixir-backed workflows or report removal with replacement guidance.
 
 ---
 

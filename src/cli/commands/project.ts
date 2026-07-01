@@ -1,12 +1,10 @@
 /**
- * `foreman project` CLI commands — manage projects via ForemanDaemon.
+ * `foreman project` CLI commands — manage projects via the Elixir backend.
  *
  * Sub-commands:
  *   foreman project add <path> [--name <name>] [--force]
  *   foreman project list [--status <active|paused|archived>]
  *   foreman project remove <id> [--force]
- *
- * All commands connect to the daemon via TrpcClient (Unix socket).
  *
  * @module src/cli/commands/project
  */
@@ -127,8 +125,8 @@ function handleDaemonError(err: unknown): never {
     combined.includes("connect")
   ) {
     console.error(
-      chalk.red("Error: Cannot connect to the Foreman daemon.") +
-        chalk.dim("\n  Make sure the daemon is running: foreman daemon start") +
+      chalk.red("Error: Cannot connect to the Foreman Elixir server.") +
+        chalk.dim("\n  Make sure the server is running: foreman server start") +
         (message
           ? chalk.dim(`\n  Underlying error: ${message}`)
           : ""),
