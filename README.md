@@ -499,7 +499,7 @@ foreman doctor --fix                    # Auto-fix safe cleanup: retryable/zombi
 ```
 
 ### `foreman inbox`
-View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. Message contents appear in the default table preview; use `--full` for complete bodies.
+View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. Message contents appear in the default table preview; use `--full` for complete bodies. Add `--events` to include phase completions, retries, verdicts, worktree creation, dispatch, and merge/refinery lifecycle events.
 
 ```bash
 foreman inbox                            # Latest run's messages

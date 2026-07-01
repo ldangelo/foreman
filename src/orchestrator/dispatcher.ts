@@ -42,6 +42,7 @@ import type {
 } from "./types.js";
 import type { RuntimeMode } from "../cli/commands/run.js";
 import { RunLifecycleService, type RunOpsOverrides, type MailSendStore } from "./run-lifecycle-service.js";
+import { writeElixirOrchestrationEvent } from "./elixir-event-bridge.js";
 
 interface DispatcherDependencyRef {
   id: string;
@@ -249,7 +250,10 @@ export class Dispatcher {
     payload: Record<string, unknown>,
     runId: string,
   ): Promise<void> {
-    return this.runLifecycleService.logEventRecord(projectId, eventType, payload, runId);
+    await this.runLifecycleService.logEventRecord(projectId, eventType, payload, runId);
+    if (this.overrides?.externalProjectId) {
+      await writeElixirOrchestrationEvent({ runId, projectId, eventType, payload }).catch(() => undefined);
+    }
   }
 
   private async getActiveRunsRecord(projectId: string): Promise<Run[]> {
@@ -959,7 +963,14 @@ export class Dispatcher {
           branchName,
         }, run.id);
 
-        // 5a. Send worktree-created mail so inbox shows worktree lifecycle event
+        // 5a. Emit worktree-created event/mail so inbox shows worktree lifecycle.
+        await this.logEventRecord(projectId, "worktree-created", {
+          taskId: task.id,
+          title: task.title,
+          worktreePath,
+          branchName,
+          model,
+        }, run.id);
         try {
           await this.sendMailRecord(run.id, "foreman", "foreman", "worktree-created", JSON.stringify({
             taskId: task.id,

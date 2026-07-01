@@ -25,6 +25,7 @@ import { NativeTaskStore } from "../lib/task-store.js";
 import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import type { Run, EventType } from "../lib/store.js";
 import { closeLinkedGithubIssue, linkPrToGithubIssue } from "../daemon/github-poller.js";
+import { writeElixirOrchestrationEvent } from "./elixir-event-bridge.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -242,6 +243,7 @@ export class Refinery {
     if (this.registeredProjectId && this.postgresAdapter) {
       try {
         await this.postgresAdapter.logEvent(this.registeredProjectId, run.id, eventType, JSON.stringify(data));
+        await writeElixirOrchestrationEvent({ runId: run.id, projectId: this.registeredProjectId, eventType, payload: data }).catch(() => undefined);
         return;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -83,6 +83,10 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "PhaseStarted":          "▶",
   "phase-complete":        "✓",
   "PhaseCompleted":        "✓",
+  "PhaseFailed":           "✗",
+  "PhaseRetried":          "↻",
+  "PhaseSkipped":          "↷",
+  "PhaseVerdict":          "◆",
   "dispatch":              "→",
   "claim":                 "◈",
   "complete":              "✓",
@@ -96,6 +100,8 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "merge-queue-resolve":   "✓",
   "merge-queue-fallback":  "⚠",
   "merge-cleanup-fallback":"⚠",
+  "WorktreeCreated":       "▣",
+  "worktree-created":      "▣",
   "conflict":              "⚠",
   "test-fail":             "✗",
   "stuck":                 "⚠",
@@ -140,7 +146,22 @@ export function formatEventSummary(eventType: string, details: Record<string, un
       return phase ? `Start ${phase}${target ? ` for ${target}` : ""}` : target ? `Start phase for ${target}` : eventType;
     case "phase-complete":
     case "PhaseCompleted":
-      return phase ? `Complete ${phase}${target ? ` for ${target}` : ""}` : target ? `Complete phase for ${target}` : eventType;
+      return phase ? `Complete ${phase}${target ? ` for ${target}` : ""}${status ? ` → ${status}` : ""}` : target ? `Complete phase for ${target}` : eventType;
+    case "PhaseFailed":
+      return phase ? `Failed ${phase}${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}` : target ? `Failed phase for ${target}` : eventType;
+    case "PhaseRetried": {
+      const retryTarget = detailString(details, ["retry_target", "retryTarget"]);
+      const attempt = detailString(details, ["attempt"]);
+      const max = detailString(details, ["max_retries", "maxRetries"]);
+      const retryText = attempt && max ? ` (${attempt}/${max})` : "";
+      return phase ? `Retry ${phase}${retryTarget ? ` via ${retryTarget}` : ""}${retryText}${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}` : eventType;
+    }
+    case "PhaseSkipped":
+      return phase ? `Skipped ${phase}${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}` : eventType;
+    case "PhaseVerdict": {
+      const verdict = detailString(details, ["verdict"]);
+      return phase ? `${phase} verdict${verdict ? `: ${verdict}` : ""}${target ? ` for ${target}` : ""}` : eventType;
+    }
     case "RunStarted":
       return `Started${target ? ` ${target}` : ""}${workflow ? ` (${workflow})` : ""}`;
     case "TaskCreated":
@@ -151,6 +172,12 @@ export function formatEventSummary(eventType: string, details: Record<string, un
       return `Note added${target ? ` to ${target}` : ""}`;
     case "WorkerLaunchRequested":
       return `Worker launch requested${target ? ` for ${target}` : ""}${workflow ? ` (${workflow})` : ""}${runId ? ` (run ${runId})` : ""}`;
+    case "WorktreeCreated":
+    case "worktree-created": {
+      const branch = detailString(details, ["branchName", "branch_name"]);
+      const path = detailString(details, ["worktreePath", "worktree_path"]);
+      return `Worktree created${target ? ` for ${target}` : ""}${branch ? ` (${branch})` : ""}${path ? ` at ${path}` : ""}`;
+    }
     case "WorkerLaunchFailed":
       return `Worker launch failed${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}`;
     case "RunFailed":
@@ -162,6 +189,7 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "fail":
       return taskId ? `Failed: ${taskId}` : "Failed";
     case "merge":
+    case "Merge":
       return taskId ? `Merged: ${taskId}` : "Merged";
     case "pr-created":
       return details.pr_number ? `PR #${details.pr_number} created` : "PR created";
@@ -228,15 +256,19 @@ export async function fetchDaemonEvents(
       limit: 1000,
     });
     return rows
-      .map((row) => ({
-        id: String(row.event_id ?? `${row.run_id ?? "run"}-${row.event_type ?? row.type ?? "event"}`),
-        runId: row.run_id ? String(row.run_id) : null,
-        taskId: row.task_id ? String(row.task_id) : null,
-        projectId: row.project_id ? String(row.project_id) : null,
-        eventType: String(row.event_type ?? row.type ?? "event"),
-        details: row.payload && typeof row.payload === "object" ? row.payload as Record<string, unknown> : null,
-        createdAt: String(row.occurred_at ?? row.created_at ?? new Date().toISOString()),
-      }))
+      .map((row) => {
+        const payload = row.payload && typeof row.payload === "object" ? row.payload as Record<string, unknown> : null;
+        const nestedDetails = payload?.details && typeof payload.details === "object" ? payload.details as Record<string, unknown> : null;
+        return {
+          id: String(row.event_id ?? `${row.run_id ?? "run"}-${row.event_type ?? row.type ?? "event"}`),
+          runId: row.run_id ? String(row.run_id) : null,
+          taskId: row.task_id ? String(row.task_id) : null,
+          projectId: row.project_id ? String(row.project_id) : null,
+          eventType: String(row.event_type ?? row.type ?? "event"),
+          details: payload ? { ...payload, ...(nestedDetails ?? {}) } : null,
+          createdAt: String(row.occurred_at ?? row.created_at ?? new Date().toISOString()),
+        };
+      })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, options.limit);
   }

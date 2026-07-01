@@ -117,7 +117,7 @@ export interface PhaseObservabilityInput {
 
 export interface PipelineObservabilityWriter {
   updateProgress?: (progress: RunProgress) => Promise<void> | void;
-  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat", data: Record<string, unknown>) => Promise<void> | void;
+  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict", data: Record<string, unknown>) => Promise<void> | void;
 }
 
 /** A child task within an epic pipeline run. */
@@ -426,7 +426,7 @@ async function writeNormalPhaseEvent(
   store: ForemanStore,
   projectId: string,
   runId: string,
-  eventType: "phase-start" | "complete",
+  eventType: "phase-start" | "complete" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict",
   data: Record<string, unknown>,
   observabilityWriter?: PipelineObservabilityWriter,
 ): Promise<void> {
@@ -1150,6 +1150,7 @@ async function runPhaseSequence(
     if (phase.retryOnly && !retryOnlyActivations.has(phaseName)) {
       ctx.log(`[${phaseName.toUpperCase()}] Skipping — retryOnly phase not activated by retryWith`);
       await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (retryOnly)\n`);
+      await writeNormalPhaseEvent(store, projectId, runId, "phase-skipped", { taskId, phase: phaseName, reason: "retryOnly phase not activated by retryWith" }, observabilityWriter);
       phaseRecords.push({ name: phaseName, skipped: true });
       i++;
       continue;
@@ -1171,6 +1172,7 @@ async function runPhaseSequence(
       if (existsSync(artifactPath)) {
         ctx.log(`[${phaseName.toUpperCase()}] Skipping — ${phase.skipIfArtifact} already exists at ${artifactPath}`);
         await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] SKIPPED (artifact already present: ${artifactPath})\n`);
+        await writeNormalPhaseEvent(store, projectId, runId, "phase-skipped", { taskId, phase: phaseName, reason: "artifact already present", artifactPath }, observabilityWriter);
         phaseRecords.push({ name: phaseName, skipped: true });
         i++;
         continue;
@@ -1463,6 +1465,7 @@ async function runPhaseSequence(
             });
             ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
+            await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", { taskId, phase: phaseName, retryTarget, attempt: currentRetries + 1, maxRetries, reason: errorMsg }, observabilityWriter);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
               retryOnlyActivations.add(retryTarget);
@@ -1574,6 +1577,7 @@ async function runPhaseSequence(
             });
             ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
+            await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", { taskId, phase: phaseName, retryTarget, attempt: currentRetries + 1, maxRetries, reason: errorMsg }, observabilityWriter);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
               retryOnlyActivations.add(retryTarget);
@@ -2101,6 +2105,8 @@ async function runPhaseSequence(
         }
       }
 
+      await writeNormalPhaseEvent(store, config.projectId, runId, "phase-verdict", { taskId, phase: phaseName, verdict, artifact: interpolatedArtifact }, observabilityWriter);
+
       if (verdict === "fail" && phase.retryWith) {
         const retryTarget = phase.retryWith;
         const maxRetries = phase.retryOnFail ?? 0;
@@ -2127,6 +2133,7 @@ async function runPhaseSequence(
 
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
+          await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", { taskId, phase: phaseName, retryTarget, attempt: currentRetries + 1, maxRetries, reason: feedbackContext ?? `${phaseName} verdict failed` }, observabilityWriter);
 
           const targetIdx = phaseIndex.get(retryTarget);
           if (targetIdx !== undefined) {

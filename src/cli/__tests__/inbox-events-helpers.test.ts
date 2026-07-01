@@ -112,6 +112,14 @@ describe("inbox event helpers", () => {
       .toBe("Start developer for task foreman-1");
     expect(formatEventSummary("WorkerLaunchRequested", { task_id: "foreman-1", workflow: "bug" }))
       .toBe("Worker launch requested for task foreman-1 (bug)");
+    expect(formatEventSummary("PhaseCompleted", { task_id: "foreman-1", phase_id: "qa", status: "completed" }))
+      .toBe("Complete qa for task foreman-1 → completed");
+    expect(formatEventSummary("PhaseRetried", { task_id: "foreman-1", phase_id: "qa", retryTarget: "developer", attempt: 1, maxRetries: 2, reason: "FAIL verdict" }))
+      .toBe("Retry qa via developer (1/2) for task foreman-1: FAIL verdict");
+    expect(formatEventSummary("PhaseSkipped", { task_id: "foreman-1", phase_id: "developer", reason: "retryOnly" }))
+      .toBe("Skipped developer for task foreman-1: retryOnly");
+    expect(formatEventSummary("PhaseVerdict", { task_id: "foreman-1", phase_id: "qa", verdict: "fail" }))
+      .toBe("qa verdict: fail for task foreman-1");
     expect(formatPipelineEvent({ id: "evt-1", runId: "run-1", taskId: "foreman-1", eventType: "RunFailed", details: { phase_id: "qa" }, createdAt: "2026-01-01T00:00:00.000Z" }))
       .toContain("RunFailed — Failed task foreman-1 at qa");
   });

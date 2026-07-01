@@ -166,8 +166,13 @@ export type EventType =
   | "guardrail-corrected"
   | "worktree-rebased"
   | "worktree-rebase-failed"
+  | "worktree-created"
   | "phase-start"
   | "phase-complete"
+  | "phase-failed"
+  | "phase-retry"
+  | "phase-skipped"
+  | "phase-verdict"
   | "cooldown";
 
 export interface Event {

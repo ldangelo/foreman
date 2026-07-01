@@ -47,7 +47,13 @@ export type EventType =
   | "sentinel-start"
   | "sentinel-pass"
   | "sentinel-fail"
+  | "worktree-created"
   | "phase-start"
+  | "phase-complete"
+  | "phase-failed"
+  | "phase-retry"
+  | "phase-skipped"
+  | "phase-verdict"
   | "heartbeat";
 
 /**
