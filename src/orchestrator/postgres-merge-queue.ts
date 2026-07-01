@@ -91,6 +91,10 @@ export class PostgresMergeQueue {
     const failedToEnqueue: Array<{ run_id: string; seed_id: string; reason: string }> = [];
 
     for (const run of completedRuns) {
+      if (run.merge_strategy === "none") {
+        skipped++;
+        continue;
+      }
       if (existingRunIds.has(run.id) || existingSeedIds.has(run.bead_id)) {
         skipped++;
         continue;

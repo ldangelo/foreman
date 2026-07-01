@@ -127,7 +127,7 @@ describe("abandonAction", () => {
     expect(mockMergeQueueRemove).toHaveBeenCalledWith(7);
     expect(mockRemoveWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/wt/task-1");
     expect(mockPostgresStore.updateTaskStatus).toHaveBeenCalledWith("task-1", "blocked");
-    expect(mockPostgresStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "failed" }));
+    expect(mockPostgresStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "failed", merge_strategy: "none" }));
   });
 
   it("dry-run does not mutate", async () => {
@@ -157,7 +157,7 @@ describe("abandonAction", () => {
 
     expect(code).toBe(0);
     expect(mockPostgresStore.updateRun).toHaveBeenCalledTimes(1);
-    expect(mockPostgresStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "failed" }));
+    expect(mockPostgresStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "failed", merge_strategy: "none" }));
     expect(mockRemoveWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/wt/task-1");
   });
 });

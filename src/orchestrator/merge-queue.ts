@@ -370,6 +370,7 @@ export class MergeQueue {
         `SELECT r.id AS run_id, r.seed_id
          FROM runs r
          WHERE r.status = 'completed'
+         AND COALESCE(r.merge_strategy, 'auto') <> 'none'
          AND r.id NOT IN (SELECT run_id FROM merge_queue)
          ORDER BY r.created_at ASC`
       )
@@ -389,7 +390,7 @@ export class MergeQueue {
     const vcs = backend ?? await VcsBackendFactory.create({ backend: "auto" }, repoPath);
     // Get all completed runs
     const completedRuns = db
-      .prepare("SELECT * FROM runs WHERE status = 'completed' ORDER BY created_at ASC")
+      .prepare("SELECT * FROM runs WHERE status = 'completed' AND COALESCE(merge_strategy, 'auto') <> 'none' ORDER BY created_at ASC")
       .all() as Array<{ id: string; seed_id: string; merge_strategy?: "auto" | "pr" | "none" | null }>;
 
     // Get all run_ids AND seed_ids already in merge_queue.

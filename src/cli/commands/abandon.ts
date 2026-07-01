@@ -104,7 +104,7 @@ async function abandonRun(
   }
 
   if (!dryRun) {
-    await Promise.resolve(deps.store.updateRun(run.id, { status: "failed", completed_at: new Date().toISOString() }));
+    await Promise.resolve(deps.store.updateRun(run.id, { status: "failed", completed_at: new Date().toISOString(), merge_strategy: "none" }));
     await Promise.resolve(deps.store.logEvent(run.project_id, "fail", {
       seedId: run.seed_id,
       reason,
