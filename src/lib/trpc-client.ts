@@ -438,7 +438,7 @@ export function createTrpcClient(
 ): TrpcClient {
   if (!options.httpUrl && !options.socketPath && foremanBackendMode() === "elixir") {
     throw new Error(
-      "Elixir backend parity gap: this command still uses the legacy Node daemon tRPC API. Use an Elixir-routed command or set FOREMAN_BACKEND=node for explicit legacy operation.",
+      "Elixir backend parity gap: this command still uses the removed legacy Node daemon tRPC API. Use an Elixir-routed command.",
     );
   }
 
