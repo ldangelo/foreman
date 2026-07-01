@@ -378,11 +378,13 @@ defmodule ForemanServer.ProjectionStore do
          projection,
          %{
            type: "PhaseStarted",
-           payload: %{run_id: run_id, phase_id: phase_id}
+           payload: %{run_id: run_id, phase_id: phase_id} = payload
          },
          _mode
        ) do
-    update_run(projection, run_id, fn run ->
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
       run
       |> Map.put(:current_phase, phase_id)
       |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "in_progress"))

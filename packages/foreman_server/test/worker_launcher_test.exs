@@ -1,7 +1,7 @@
 defmodule ForemanServer.WorkerLauncherTest do
   use ExUnit.Case
 
-  alias ForemanServer.{ProjectionStore, WorkerLauncher}
+  alias ForemanServer.{EventStore, ProjectionStore, WorkerLauncher}
 
   setup do
     tmp_dir = Path.join(System.tmp_dir!(), "foreman-worker-launcher-test-#{System.unique_integer([:positive])}")
@@ -28,7 +28,34 @@ defmodule ForemanServer.WorkerLauncherTest do
     {:ok, bin_dir: bin_dir, project_dir: project_dir}
   end
 
-  test "zero-exit worker output with pipeline failure marks task failed", %{bin_dir: bin_dir, project_dir: project_dir} do
+  test "worker launch disables nested HTTP server and passes operator server URL", %{bin_dir: bin_dir, project_dir: project_dir} do
+    foreman = Path.join(bin_dir, "foreman")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    echo "server_url=$FOREMAN_SERVER_URL"
+    echo "http_enabled=$FOREMAN_SERVER_HTTP_ENABLED"
+    echo "http_port=$FOREMAN_SERVER_HTTP_PORT"
+    exit 0
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{task_id: "task-env", project_id: "project-a", project_path: project_dir, task_type: "feature"}
+
+    assert {:ok, _} = WorkerLauncher.launch(task, "00000000-0000-0000-0000-000000000002", ["developer"])
+
+    assert_eventually(fn -> EventStore.stream("worker-launch:00000000-0000-0000-0000-000000000002") end, fn events ->
+      Enum.any?(events, fn event ->
+        event.event_type == "WorkerProcessExited" &&
+          String.contains?(event.payload.output, "server_url=http://127.0.0.1:4766") &&
+          String.contains?(event.payload.output, "http_enabled=false") &&
+          String.contains?(event.payload.output, "http_port=0")
+      end)
+    end)
+  end
+
+  test "zero-exit worker output records process exit without inferring task failure", %{bin_dir: bin_dir, project_dir: project_dir} do
     foreman = Path.join(bin_dir, "foreman")
 
     File.write!(foreman, """
@@ -44,9 +71,15 @@ defmodule ForemanServer.WorkerLauncherTest do
 
     assert {:ok, _} = WorkerLauncher.launch(task, "00000000-0000-0000-0000-000000000001", ["developer"])
 
-    assert_eventually(fn -> ProjectionStore.task("task-a") end, fn task ->
-      task && task.status == "failed" && task.failure_reason == "max_turns"
+    assert_eventually(fn -> EventStore.stream("worker-launch:00000000-0000-0000-0000-000000000001") end, fn events ->
+      Enum.any?(events, fn event ->
+        event.event_type == "WorkerProcessExited" &&
+          event.payload.exit_code == 0 &&
+          String.contains?(event.payload.output, "[PIPELINE] FAILED")
+      end)
     end)
+
+    assert ProjectionStore.task("task-a") == nil
   end
 
   defp assert_eventually(fun, predicate, attempts \\ 20)

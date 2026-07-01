@@ -117,7 +117,7 @@ export interface PhaseObservabilityInput {
 
 export interface PipelineObservabilityWriter {
   updateProgress?: (progress: RunProgress) => Promise<void> | void;
-  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "run-completed" | "run-failed" | "task-updated", data: Record<string, unknown>) => Promise<void> | void;
+  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "assistant-message" | "tool-call-finished" | "run-completed" | "run-failed" | "task-updated", data: Record<string, unknown>) => Promise<void> | void;
 }
 
 /** A child task within an epic pipeline run. */

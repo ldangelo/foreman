@@ -174,6 +174,8 @@ export type EventType =
   | "phase-skipped"
   | "phase-verdict"
   | "phase-nudge"
+  | "assistant-message"
+  | "tool-call-finished"
   | "run-completed"
   | "run-failed"
   | "task-updated"

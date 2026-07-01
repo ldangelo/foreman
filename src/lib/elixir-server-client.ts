@@ -162,6 +162,8 @@ export class ElixirServerClient {
     exit_code?: number;
     artifact_paths?: string[];
     report_paths?: string[];
+    tool_call_id?: string;
+    tool_name?: string;
     details?: Record<string, unknown>;
   }): Promise<ForemanServerOk> {
     const response = await fetch(new URL("/worker/v1/events", this.baseUrl), {

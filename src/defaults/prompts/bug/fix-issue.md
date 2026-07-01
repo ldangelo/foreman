@@ -8,6 +8,7 @@ You are running inside Foreman's `bug` workflow for bug **{{taskId}}**: **{{task
 {{feedbackSection}}
 
 ## Fast-Path Triage
+- Read `{{reportDir}}/EXPLORER_REPORT.md` first when present; use it as the primary handoff before doing any extra discovery.
 - If retry feedback cites a specific report, failing phase, file, or command, read that artifact first and fix that cited area before broader investigation.
 - Start with one `git status --short` and one focused diff/list command; avoid repeated broad `ls`, `git log --all`, or directory walks unless they answer a specific question.
 - Do not edit workflow or prompt files unless the task explicitly targets workflow/prompt behavior.

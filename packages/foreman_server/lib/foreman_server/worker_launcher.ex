@@ -64,12 +64,29 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp worker_env do
-    env = [{"FOREMAN_BACKEND", "node"}]
+    env = [
+      {"FOREMAN_BACKEND", "node"},
+      {"FOREMAN_SERVER_URL", server_url()},
+      {"FOREMAN_SERVER_HTTP_ENABLED", "false"},
+      {"FOREMAN_SERVER_HTTP_PORT", "0"}
+    ]
+    env =
+      case ForemanServer.Security.auth_token() do
+        token when is_binary(token) and token != "" -> [{"FOREMAN_WORKER_EVENT_TOKEN", token} | env]
+        _ -> env
+      end
 
     case database_url() do
       nil -> env
       url -> [{"DATABASE_URL", url} | env]
     end
+  end
+
+  defp server_url do
+    port = Application.get_env(:foreman_server, :http_port) ||
+      String.to_integer(System.get_env("FOREMAN_SERVER_HTTP_PORT") || "4766")
+
+    "http://127.0.0.1:#{port}"
   end
 
   defp database_url do

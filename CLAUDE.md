@@ -67,7 +67,7 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 
 TRD-2026-014 Elixir migration split:
 
-**Event-sourced orchestration invariant:** domain events are the source of truth and operational trigger. Projections are read models only. Scheduler/run loop, inbox/watch surfaces, and recovery flows must consume or reconcile from events, then read projections to decide action; do not rely on projection polling as the primary signal. Node/Pi workers emit authoritative terminal run/task events; launchers only record process-exit facts and must not infer success/failure from stdout.
+**Event-sourced orchestration invariant:** domain events are the source of truth and operational trigger. Projections are read models only. Scheduler/run loop, inbox/watch surfaces, and recovery flows must consume or reconcile from events, then read projections to decide action; do not rely on projection polling as the primary signal. Node/Pi workers emit authoritative terminal run/task events plus Pi SDK tool-call/assistant-message trace events; raw logs are compatibility/debug projections and must not contain unique operational truth. Launchers only record process-exit facts and must not infer success/failure from stdout.
 
 ```
 Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker
@@ -84,7 +84,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - `src/cli/commands/` — 26 CLI commands (including `debug` for AI-powered analysis)
 - `src/orchestrator/pipeline-executor.ts` — generic workflow YAML-driven phase executor
 - `src/orchestrator/pi-sdk-runner.ts` — Pi SDK wrapper (`createAgentSession` + `session.prompt()`)
-- `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (native `send_mail` tool)
+- `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (`send_mail`, `mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`)
 - `src/orchestrator/agent-worker.ts` — detached worker process, pipeline orchestration
 - `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
 - `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution

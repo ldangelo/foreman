@@ -1,6 +1,7 @@
-# Bug fix workflow: fix prompt → QA validation → developer remediation on failure → finalize → PR checks → auto-merge
+# Bug fix workflow: explicit exploration → fix prompt → QA validation → developer remediation on failure → finalize → PR checks → auto-merge
 #
 # Lean bug-fix pipeline:
+#   - explorer prompt — read-only developer handoff, no nested delegation
 #   - fix prompt — workflow-scoped issue fixing prompt
 #   - qa phase — validates the fix and writes QA_REPORT.md
 #   - developer prompt — retry-only target for QA/review/finalize findings
@@ -20,13 +21,32 @@ setupCache:
   path: node_modules
 
 phases:
-  # ── Phase 1: fix ────────────────────────────────────────────────────────
+  # ── Phase 1: explorer ───────────────────────────────────────────────────
+  # Explicit read-only exploration avoids hidden discovery inside the editing
+  # phase and produces a durable handoff artifact.
+  - name: explorer
+    prompt: explorer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 12
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: EXPLORER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: fix
+
+  # ── Phase 2: fix ────────────────────────────────────────────────────────
   # Uses the workflow-scoped fix-issue prompt so the artifact contract is
-  # explicit and isolated from other workflows.
+  # explicit and isolated from other workflows. Nested delegation tools are
+  # intentionally omitted; exploration is the prior explicit phase.
   - name: fix
     prompt: fix-issue.md
     tools:
-      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -45,7 +65,7 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -59,7 +79,7 @@ phases:
       reserve: true
       leaseSecs: 600
 
-  # ── Phase 3: QA validation ──────────────────────────────────────────────
+  # ── Phase 3: documentation ──────────────────────────────────────────────
   - name: documentation
     prompt: documentation.md
     tools:

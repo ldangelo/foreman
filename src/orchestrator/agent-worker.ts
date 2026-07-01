@@ -16,7 +16,21 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, basename } from "node:path";
 import { request as httpRequest } from "node:http";
 import { runPhaseSession } from "./phase-runner.js";
-import { createSendMailTool, createGetRunStatusTool, createCloseBeadTool } from "./pi-sdk-tools.js";
+import type { StreamEvent } from "./pi-sdk-runner.js";
+import {
+  createArtifactWriteTool,
+  createCloseBeadTool,
+  createGetRunStatusTool,
+  createMailReadTool,
+  createMailSendTool,
+  createPhaseHandoffTool,
+  createProgressUpdateTool,
+  createSafeCommandRunTool,
+  createSendMailTool,
+  createTaskBlockTool,
+  createValidationResultTool,
+  type ForemanToolContext,
+} from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
@@ -781,13 +795,34 @@ async function runPhase(
   const disallowedTools = getDisallowedTools(roleConfig);
   const allowedSummary = roleConfig.allowedTools.join(", ");
   await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${resolvedModel}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
+  const streamForwarder = createWorkerStreamEventForwarder(role, observabilityWriter, log);
   log(`[${role.toUpperCase()}] Starting phase for ${config.taskId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
-  // Build custom tools for this phase (e.g. send_mail).
+  // Build custom Foreman workflow tools for this phase.
   const customTools = [];
+  const agentName = `${role}-${config.taskId}`;
+  const foremanToolContext: ForemanToolContext = {
+    phase: role,
+    runId: config.runId,
+    taskId: config.taskId,
+    taskTitle: config.taskTitle,
+    taskType: config.taskType,
+    taskDescription: config.taskDescription,
+    worktreePath: config.worktreePath,
+    reportDir: resolveArtifactPath(config.worktreePath, workerReportDir(config)),
+    logFile,
+  };
   if (agentMailClient) {
-    customTools.push(createSendMailTool(agentMailClient, `${role}-${config.taskId}`));
+    customTools.push(createSendMailTool(agentMailClient, agentName));
+    customTools.push(createMailSendTool(agentMailClient, foremanToolContext));
+    customTools.push(createMailReadTool(agentMailClient, agentName, foremanToolContext));
   }
+  customTools.push(createPhaseHandoffTool(agentMailClient ?? null, foremanToolContext));
+  customTools.push(createArtifactWriteTool(foremanToolContext));
+  customTools.push(createValidationResultTool(foremanToolContext));
+  customTools.push(createTaskBlockTool(agentMailClient ?? null, foremanToolContext));
+  customTools.push(createProgressUpdateTool(agentMailClient ?? null, foremanToolContext));
+  customTools.push(createSafeCommandRunTool(foremanToolContext));
 
   try {
     const phaseResult = await runPhaseSession({
@@ -825,6 +860,9 @@ async function runPhase(
       },
       onTraceEvent: (event) => {
         sendTraceMail(agentMailClient ?? null, event);
+      },
+      onStreamEvent: (event) => {
+        streamForwarder?.(event);
       },
       onToolCall: (name, input) => {
         progress.toolCalls++;
@@ -1668,7 +1706,7 @@ async function runMergeBuiltinPhase(args: {
   };
 }
 
-function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "run-completed" | "run-failed" | "task-updated"): string {
+function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "assistant-message" | "tool-call-finished" | "run-completed" | "run-failed" | "task-updated"): string {
   if (eventType === "phase-start") return "phase_started";
   if (eventType === "complete") return "phase_completed";
   if (eventType === "phase-failed") return "phase_failed";
@@ -1676,10 +1714,84 @@ function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbea
   if (eventType === "phase-skipped") return "phase_skipped";
   if (eventType === "phase-verdict") return "phase_verdict";
   if (eventType === "phase-nudge") return "phase_nudge";
+  if (eventType === "assistant-message") return "assistant_message";
+  if (eventType === "tool-call-finished") return "tool_call_finished";
   if (eventType === "run-completed") return "run_completed";
   if (eventType === "run-failed") return "run_failed";
   if (eventType === "task-updated") return "task_updated";
   return "heartbeat";
+}
+
+function truncateForEvent(value: unknown, max = 4_000): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  let text: string;
+  if (typeof value === "string") {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  }
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max)}… [truncated ${text.length - max} chars]` : text;
+}
+
+function createWorkerStreamEventForwarder(
+  phase: string,
+  observabilityWriter?: PipelineObservabilityWriter,
+  logFailure?: (message: string) => void,
+): ((event: StreamEvent) => void) | undefined {
+  if (!observabilityWriter?.logEvent) return undefined;
+  const reportFailure = (kind: string, err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    logFailure?.(`[pipeline-observability] ${kind} stream event append failed: ${msg}`);
+  };
+  let assistantBuffer = "";
+
+  const flushAssistant = (timestamp: string, iteration: number) => {
+    const message = assistantBuffer.trim();
+    assistantBuffer = "";
+    if (!message) return;
+    void Promise.resolve(observabilityWriter.logEvent?.("assistant-message", {
+      phase,
+      phase_id: phase,
+      message: truncateForEvent(message),
+      output: truncateForEvent(message),
+      iteration,
+      timestamp,
+    })).catch((err: unknown) => reportFailure("assistant-message", err));
+  };
+
+  return (event: StreamEvent) => {
+    if (event.type === "text") {
+      assistantBuffer += event.delta;
+      return;
+    }
+    if (event.type === "turnEnd") {
+      flushAssistant(event.timestamp, event.iteration);
+      return;
+    }
+    if (event.type === "toolCallFinished") {
+      void Promise.resolve(observabilityWriter.logEvent?.("tool-call-finished", {
+        phase,
+        phase_id: phase,
+        tool_call_id: event.toolCallId,
+        tool_name: event.toolName,
+        status: event.isError ? "error" : "finished",
+        args: event.args,
+        output: truncateForEvent(event.result),
+        result: truncateForEvent(event.result),
+        iteration: event.iteration,
+        timestamp: event.timestamp,
+      })).catch((err: unknown) => reportFailure("tool-call-finished", err));
+      return;
+    }
+    if (event.type === "agentEnd") {
+      flushAssistant(event.timestamp, event.iteration);
+    }
+  };
 }
 
 function createElixirWorkerObservabilityWriter(
@@ -1688,31 +1800,40 @@ function createElixirWorkerObservabilityWriter(
 ): PipelineObservabilityWriter | undefined {
   let clientPromise: Promise<ElixirServerClient> | undefined;
   let sequence = 0;
+  let eventTail: Promise<void> = Promise.resolve();
   const workerId = `node-pipeline:${config.taskId}`;
 
   const client = (): Promise<ElixirServerClient> => {
-    clientPromise ??= new ElixirServerManager().ensureRunning().then((status) => (
-      new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN)
-    ));
+    clientPromise ??= (process.env.FOREMAN_SERVER_URL
+      ? Promise.resolve(new ElixirServerClient(process.env.FOREMAN_SERVER_URL, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN))
+      : new ElixirServerManager().ensureRunning().then((status) => (
+        new ElixirServerClient(status.url, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN)
+      )));
     return clientPromise;
   };
 
   return {
     async logEvent(eventType, data) {
-      const phaseId = typeof data.phase === "string" ? data.phase : typeof data.phase_id === "string" ? data.phase_id : "pipeline";
-      const nextSequence = sequence + 1;
-      await (await client()).sendWorkerEvent({
-        run_id: config.runId,
-        project_id: registeredProjectId,
-        phase_id: phaseId,
-        worker_id: workerId,
-        type: elixirWorkerEventType(eventType),
-        sequence: nextSequence,
-        status: typeof data.status === "string" ? data.status : undefined,
-        message: typeof data.message === "string" ? data.message : undefined,
-        details: { ...data, task_id: config.taskId },
+      eventTail = eventTail.catch(() => { /* keep later worker events flowing after a failed append */ }).then(async () => {
+        const phaseId = typeof data.phase === "string" ? data.phase : typeof data.phase_id === "string" ? data.phase_id : "pipeline";
+        const nextSequence = sequence + 1;
+        await (await client()).sendWorkerEvent({
+          run_id: config.runId,
+          project_id: registeredProjectId,
+          phase_id: phaseId,
+          worker_id: workerId,
+          type: elixirWorkerEventType(eventType),
+          sequence: nextSequence,
+          status: typeof data.status === "string" ? data.status : undefined,
+          message: typeof data.message === "string" ? data.message : undefined,
+          output: typeof data.output === "string" ? data.output : undefined,
+          tool_call_id: typeof data.tool_call_id === "string" ? data.tool_call_id : undefined,
+          tool_name: typeof data.tool_name === "string" ? data.tool_name : undefined,
+          details: { ...data, task_id: config.taskId },
+        });
+        sequence = nextSequence;
       });
-      sequence = nextSequence;
+      await eventTail;
     },
   };
 }
@@ -1756,12 +1877,15 @@ async function runPipeline(
       registeredProjectId,
     },
   );
-  const elixirWorkerObservabilityWriter = registeredProjectId
-    ? createElixirWorkerObservabilityWriter(config, registeredProjectId)
+  const eventProjectId = registeredProjectId ?? config.projectId;
+  const elixirWorkerObservabilityWriter = eventProjectId
+    ? createElixirWorkerObservabilityWriter(config, eventProjectId)
     : undefined;
-  const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = registeredReadStore
+  log(`[pipeline-observability] worker event bridge ${elixirWorkerObservabilityWriter ? "enabled" : "disabled"}${eventProjectId ? ` project=${eventProjectId}` : ""}`);
+  const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = (registeredReadStore || elixirWorkerObservabilityWriter)
     ? {
         async updateProgress(progress) {
+          if (!registeredReadStore) return;
           try {
             await registeredReadStore.updateRunProgress(config.runId, progress);
           } catch (err: unknown) {
@@ -1777,8 +1901,9 @@ async function runPipeline(
             log(`[pipeline-observability] ${eventType} event append failed (non-fatal): ${msg}`);
           }
 
+          if (!registeredReadStore || !registeredProjectId) return;
           try {
-            await registeredReadStore.logEvent(registeredProjectId!, eventType, data, config.runId);
+            await registeredReadStore.logEvent(registeredProjectId, eventType, data, config.runId);
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             log(`[pipeline-observability] ${eventType} projection write failed (non-fatal): ${msg}`);

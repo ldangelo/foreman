@@ -9,7 +9,7 @@ Foreman runs AI engineering work through a managed pipeline:
 1. Tasks enter the native PostgreSQL-backed task store.
 2. `foreman run` dispatches ready tasks to isolated git worktrees.
 3. Workflow phases run in order: exploration, implementation, verification, review, documentation, finalization, PR review, and merge where configured.
-4. Foreman records progress, phase reports, logs, mail, and merge status. In the Elixir backend, domain events are the source of truth and trigger scheduler/watch behavior; projections/read views, including status/log displays, are read models used for display and decisions after events are observed. During long phases, overwatch monitors heartbeat movement and sends phase-targeted Agent Mail nudges when an agent appears idle.
+4. Foreman records progress, phase reports, logs, mail, and merge status. In the Elixir backend, domain events are the source of truth and trigger scheduler/watch behavior; projections/read views, including status/log displays, are read models used for display and decisions after events are observed. Worker/Pi SDK tool calls and assistant messages are emitted as ordered worker events before being mirrored into raw logs. During long phases, overwatch monitors heartbeat movement and sends phase-targeted Agent Mail nudges when an agent appears idle.
 5. Completed work is finalized and merged through the configured workflow.
 
 Use Foreman when you want multiple AI agents working safely on one repository without sharing a dirty working tree.
@@ -56,7 +56,7 @@ Important phase reports:
 | PR wait/review | `PR_WAIT_REPORT.md`, `PR_REVIEW_REPORT.md` |
 | Merge | `MERGE_REPORT.md` |
 
-Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
+Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase and omits nested delegation tools from fix/remediation phases. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
 
 ### Worktrees
 
@@ -68,7 +68,7 @@ During the TRD-2026-014 migration, Foreman has three runtime responsibilities:
 
 - **Node CLI**: operator-facing commands, server auto-start, bearer-authenticated JSON requests, projection rendering, and legacy alias/deprecation warnings.
 - **Elixir server**: durable command validation, append-only events, rebuildable projections, run/phase actors, scheduler capacity, VCS/PR gates, inbox/debug/attach views, recovery, metrics, and authorization audit events.
-- **Node/Pi workers**: Pi SDK-backed agent execution, worker HTTP protocol starts, ordered event/heartbeat/log/artifact streaming, authoritative terminal run/task events, and scoped project/run environment metadata. The Elixir launcher records process-exit facts but does not decide run success from stdout.
+- **Node/Pi workers**: Pi SDK-backed agent execution, worker HTTP protocol starts, ordered event/heartbeat/tool-call/assistant-message/artifact streaming, Foreman-specific typed tools for mail/handoffs/artifacts/validation/blockers/progress/safe commands, authoritative terminal run/task events, and scoped project/run environment metadata. The Elixir launcher records process-exit facts but does not decide run success from stdout; raw logs mirror worker events for compatibility/debugging.
 
 For architecture details, deprecated command mappings, and troubleshooting examples, see [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 

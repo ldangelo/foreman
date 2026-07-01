@@ -96,6 +96,8 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "RunFailed":             "✗",
   "WorkerLaunchFailed":    "✗",
   "WorkerProcessExited":   "◼",
+  "AssistantMessage":      "✎",
+  "ToolCallFinished":      "⚙",
   "merge":                 "⚡",
   "pr-created":            "⎇",
   "merge-queue-enqueue":   "⏳",
@@ -191,6 +193,17 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "WorkerProcessExited": {
       const exitCode = detailString(details, ["exit_code", "exitCode"]);
       return `Worker process exited${target ? ` for ${target}` : ""}${exitCode ? ` (exit ${exitCode})` : ""}`;
+    }
+    case "AssistantMessage": {
+      const phase = detailString(details, ["phase", "phase_id"]);
+      const body = detailString(details, ["message", "output"]);
+      return `Assistant message${phase ? ` in ${phase}` : ""}${body ? `: ${body.slice(0, 120)}${body.length > 120 ? "…" : ""}` : ""}`;
+    }
+    case "ToolCallFinished": {
+      const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
+      const status = detailString(details, ["status"]);
+      const phase = detailString(details, ["phase", "phase_id"]);
+      return `Tool ${tool}${status ? ` ${status}` : " finished"}${phase ? ` in ${phase}` : ""}`;
     }
     case "RunFailed":
       return `Failed${target ? ` ${target}` : ""}${phase ? ` at ${phase}` : ""}${error ? `: ${error}` : ""}`;

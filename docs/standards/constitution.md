@@ -22,7 +22,7 @@ No feature is considered started until a failing test exists. No feature is cons
 3. **Tests accompany features** - No feature is complete without tests
 4. **Strict TypeScript** - `strict: true` in tsconfig, no `any` escape hatches without justification
 5. **ESM only** - All modules use ES module syntax (`import`/`export`)
-6. **Event-sourced orchestration invariant** - Domain events are the source of truth and trigger operational behavior. Projections are read models only. The scheduler, run loop, inbox/watch surfaces, and recovery logic must consume or reconcile from events, using projections only to make decisions after an event signal or explicit reconciliation.
+6. **Event-sourced orchestration invariant** - Domain events are the source of truth and trigger operational behavior. Projections are read models only. The scheduler, run loop, inbox/watch surfaces, and recovery logic must consume or reconcile from events, using projections only to make decisions after an event signal or explicit reconciliation. Worker/Pi SDK tool calls, assistant messages, and execution trace facts must be emitted as ordered worker events first; raw log files may mirror those facts for compatibility/debugging but must not contain unique operational truth.
 
 ---
 
