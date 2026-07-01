@@ -23,7 +23,7 @@ describe("Foreman backend mode", () => {
     const oldBackend = process.env.FOREMAN_BACKEND;
     process.env.FOREMAN_BACKEND = "node";
     try {
-      expect(() => createTrpcClient()).toThrow(/removed legacy Node daemon tRPC API/);
+      expect(() => createTrpcClient()).toThrow(/legacy Node daemon tRPC API was removed/);
     } finally {
       if (oldBackend === undefined) delete process.env.FOREMAN_BACKEND;
       else process.env.FOREMAN_BACKEND = oldBackend;
