@@ -583,7 +583,7 @@ export function extractBodyFields(body: string): {
   return {
     kind: parsed.kind ?? null,
     tool: parsed.tool ?? null,
-    args: parsed.argsPreview ?? parsed.message ?? parsed.body ?? null,
+    args: parsed.argsPreview ?? parsed.message ?? parsed.body ?? (body ? body : null),
   };
 }
 
@@ -1012,9 +1012,9 @@ export async function fetchDaemonMessages(
       .map((row) => ({
         id: String(row.message_id ?? `${row.run_id ?? "run"}-${row.subject ?? randomUUID()}`),
         run_id: String(row.run_id ?? ""),
-        sender_agent_type: String(row.sender_agent_type ?? row.sender ?? "agent"),
-        recipient_agent_type: String(row.recipient_agent_type ?? row.recipient ?? "run"),
-        subject: String(row.subject ?? "message"),
+        sender_agent_type: String(row.sender_agent_type ?? row.sender ?? row.from ?? "agent"),
+        recipient_agent_type: String(row.recipient_agent_type ?? row.recipient ?? row.to ?? "run"),
+        subject: String(row.subject ?? row.hook ?? "message"),
         body: typeof row.body === "string" ? row.body : JSON.stringify(row.body ?? {}),
         read: row.unread === false ? 1 : 0,
         created_at: String(row.created_at ?? new Date().toISOString()),

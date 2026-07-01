@@ -3,7 +3,7 @@ defmodule ForemanServer.Http.RouterTest do
   import Plug.Conn
   import Plug.Test
 
-  alias ForemanServer.ProjectionStore
+  alias ForemanServer.{Inbox, ProjectionStore}
 
   @opts ForemanServer.Http.Router.init([])
 
@@ -339,6 +339,50 @@ defmodule ForemanServer.Http.RouterTest do
     assert Jason.decode!(conn.resp_body)["error"]["message"] == "missing or invalid external_link"
   end
 
+  test "inbox endpoint returns event-projected message contents by project" do
+    append_event("ProjectRegistered", "project:proj-inbox-http", %{
+      project_id: "proj-inbox-http",
+      path: "/tmp/proj-inbox-http"
+    })
+
+    append_event("TaskCreated", "task:task-inbox-http", %{
+      task_id: "task-inbox-http",
+      project_id: "proj-inbox-http",
+      title: "Inbox HTTP"
+    })
+
+    append_event("RunStarted", "run:run-inbox-http", %{
+      run_id: "run-inbox-http",
+      task_id: "task-inbox-http",
+      phase_order: ["developer"]
+    })
+
+    assert {:ok, _} =
+             Inbox.send_operator_message(%{
+               message_id: "msg-inbox-http",
+               run_id: "run-inbox-http",
+               from: "developer",
+               to: "qa",
+               subject: "review-needed",
+               body: ~s({"message":"please inspect"})
+             })
+
+    conn =
+      :get
+      |> conn("/api/v1/inbox?project_id=proj-inbox-http&run_id=run-inbox-http")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    assert %{"ok" => true, "inbox" => [message]} = Jason.decode!(conn.resp_body)
+    assert message["message_id"] == "msg-inbox-http"
+    assert message["project_id"] == "proj-inbox-http"
+    assert message["sender_agent_type"] == "developer"
+    assert message["recipient_agent_type"] == "qa"
+    assert message["subject"] == "review-needed"
+    assert message["body"] == ~s({"message":"please inspect"})
+  end
+
   test "invalid JSON command returns validation error" do
     conn =
       :post
@@ -367,12 +411,16 @@ defmodule ForemanServer.Http.RouterTest do
   end
 
   defp append_run_event(event_type, payload) do
+    append_event(event_type, "run:#{payload.run_id}", payload)
+  end
+
+  defp append_event(event_type, stream_id, payload) do
     ForemanServer.EventStore.append(%{
-      stream_id: "run:#{payload.run_id}",
+      stream_id: stream_id,
       event_type: event_type,
       payload: payload,
       metadata: %{
-        correlation_id: payload.run_id,
+        correlation_id: Map.get(payload, :run_id) || Map.get(payload, :task_id) || stream_id,
         idempotency_key: "#{event_type}:#{System.unique_integer([:positive])}"
       }
     })

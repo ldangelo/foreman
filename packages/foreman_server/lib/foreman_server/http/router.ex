@@ -146,11 +146,12 @@ defmodule ForemanServer.Http.Router do
         snapshot.inbox_messages
         |> Map.values()
         |> Enum.map(fn message ->
-          Map.put(
-            message,
-            :project_id,
-            get_in(snapshot, [:tasks, Map.get(message, :task_id), :project_id])
-          )
+          run = get_in(snapshot, [:runs, Map.get(message, :run_id)])
+          task_id = Map.get(message, :task_id) || Map.get(run || %{}, :task_id)
+
+          message
+          |> Map.put_new(:task_id, task_id)
+          |> Map.put(:project_id, get_in(snapshot, [:tasks, task_id, :project_id]))
         end)
         |> Enum.filter(fn message -> is_nil(run_id) or Map.get(message, :run_id) == run_id end)
         |> Enum.filter(fn message ->

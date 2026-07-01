@@ -462,7 +462,7 @@ Initial tools include one-call smoke status, health, scheduler status/tick, proj
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator. In Elixir/default backend mode, inbox reads the shared Postgres run/message/event tables directly and does not require the Node daemon socket. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project.
+View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. Message contents appear in the table preview by default; use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project.
 
 ```bash
 foreman inbox                     # Show latest run's messages
@@ -484,7 +484,8 @@ foreman inbox --ack               # Mark shown messages as read
 | `--watch` | — | Poll every 2 seconds for new messages |
 | `--unread` | — | Show only unread messages |
 | `--limit <n>` | `50` | Maximum messages to show |
-| `--ack` | — | Mark shown messages as read |
+| `--ack` | — | Mark shown messages as read where supported |
+| `--full` | — | Show full message bodies instead of table previews |
 | `--events` | — | Show an expanded pipeline event section |
 | `--events-limit <n>` | `50` | Maximum lifecycle events to show |
 

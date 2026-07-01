@@ -1,7 +1,7 @@
 defmodule ForemanServer.InboxTest do
   use ExUnit.Case
 
-  alias ForemanServer.{EventStore, Inbox, ProjectionStore, RunActor, WorkflowInterpreter}
+  alias ForemanServer.{CommandRouter, EventStore, Inbox, ProjectionStore, RunActor, WorkflowInterpreter}
 
   setup do
     tmp_dir =
@@ -130,6 +130,33 @@ defmodule ForemanServer.InboxTest do
 
     assert ProjectionStore.snapshot().inbox_messages["msg-operator-1"].delivery_status ==
              "delivered"
+  end
+
+  test "inbox.send command appends event-backed message with agent fields" do
+    start_run_event("run-command-inbox")
+
+    assert {:ok, %{event: event, inbox: message}} =
+             CommandRouter.handle(%{
+               command_id: "msg-command-1",
+               command_type: "inbox.send",
+               payload: %{
+                 run_id: "run-command-inbox",
+                 sender_agent_type: "developer",
+                 recipient_agent_type: "qa",
+                 subject: "handoff",
+                 body: ~s({"message":"please review"}),
+                 worker_supports_receiving: true
+               }
+             })
+
+    assert event.event_type == "InboxMessageAppended"
+    assert message.message_id == "msg-command-1"
+    assert message.sender_agent_type == "developer"
+    assert message.recipient_agent_type == "qa"
+    assert message.subject == "handoff"
+
+    assert [%{body: ~s({"message":"please review"}), subject: "handoff"}] =
+             Inbox.list("run-command-inbox")
   end
 
   test "inbox watch streams new messages without polling full history" do

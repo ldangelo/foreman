@@ -59,12 +59,18 @@ defmodule ForemanServer.Inbox do
       supports_delivery? = fetch(input, :worker_supports_receiving, false)
       status = if supports_delivery?, do: "queued", else: "unsupported"
 
+      from = fetch(input, :from, fetch(input, :sender_agent_type, "operator"))
+      to = fetch(input, :to, fetch(input, :recipient_agent_type, "worker"))
+
       append_message(%{
         message_id: fetch(input, :message_id, "msg-#{System.unique_integer([:positive])}"),
         run_id: run_id,
         phase_id: fetch(input, :phase_id),
-        from: fetch(input, :from, "operator"),
-        to: fetch(input, :to, "worker"),
+        from: from,
+        to: to,
+        sender_agent_type: from,
+        recipient_agent_type: to,
+        subject: fetch(input, :subject, "message"),
         body: body,
         direction: "operator_to_worker",
         delivery_status: status,
@@ -110,6 +116,9 @@ defmodule ForemanServer.Inbox do
           phase_id: phase_id,
           from: fetch(config, :from, "foreman"),
           to: fetch(config, :to, "agent"),
+          sender_agent_type: fetch(config, :from, "foreman"),
+          recipient_agent_type: fetch(config, :to, "agent"),
+          subject: fetch(config, :subject, @phase_events[event_type] || event_type),
           body: render_body(config, event_type, payload),
           direction: "system_to_agent",
           hook: @phase_events[event_type] || event_type,

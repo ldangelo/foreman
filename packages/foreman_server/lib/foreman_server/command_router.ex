@@ -3,6 +3,7 @@ defmodule ForemanServer.CommandRouter do
 
   alias ForemanServer.{
     EventStore,
+    Inbox,
     IntegrationIngestion,
     MigrationImporter,
     PlanningFlow,
@@ -73,6 +74,22 @@ defmodule ForemanServer.CommandRouter do
     |> Map.put_new(:command_id, command_id)
     |> Map.put_new(:migration_id, command_id)
     |> handle_migration_import(metadata)
+  end
+
+  def handle(%{command_type: "inbox.send"} = command) do
+    command_id = Map.get(command, :command_id) || external_command_id(command)
+
+    command
+    |> external_trigger_payload()
+    |> Map.put_new(:message_id, command_id)
+    |> Inbox.send_operator_message()
+    |> case do
+      {:ok, %{event: event, projection: projection, result: result}} ->
+        {:ok, %{event: event, projection: projection, inbox: result}}
+
+      error ->
+        error
+    end
   end
 
   def handle(%{command_type: command_type} = command)
@@ -419,7 +436,14 @@ defmodule ForemanServer.CommandRouter do
       :adapter,
       :compatibility_mode,
       :from_prd,
-      :provider
+      :provider,
+      :from,
+      :to,
+      :subject,
+      :message_id,
+      :sender_agent_type,
+      :recipient_agent_type,
+      :worker_supports_receiving
     ]
   end
 end

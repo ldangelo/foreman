@@ -67,19 +67,18 @@ describe("extractBodyFields", () => {
   });
 
   it("falls back to raw body when no recognized args fields", () => {
-    const result = extractBodyFields(
-      JSON.stringify({ phase: "developer", status: "running" }),
-    );
+    const body = JSON.stringify({ phase: "developer", status: "running" });
+    const result = extractBodyFields(body);
     expect(result.kind).toBeNull();
     expect(result.tool).toBeNull();
-    expect(result.args).toBeNull();
+    expect(result.args).toBe(body);
   });
 
-  it("returns nulls for all fields when body is not JSON", () => {
+  it("returns raw body content when body is not JSON", () => {
     const result = extractBodyFields("plain text body with no JSON");
     expect(result.kind).toBeNull();
     expect(result.tool).toBeNull();
-    expect(result.args).toBeNull();
+    expect(result.args).toBe("plain text body with no JSON");
   });
 
   it("returns nulls for all fields when body is empty string", () => {
@@ -89,20 +88,19 @@ describe("extractBodyFields", () => {
     expect(result.args).toBeNull();
   });
 
-  it("returns nulls for all fields when JSON is malformed", () => {
+  it("returns malformed JSON as raw body content", () => {
     const result = extractBodyFields('{"broken": json}');
     expect(result.kind).toBeNull();
     expect(result.tool).toBeNull();
-    expect(result.args).toBeNull();
+    expect(result.args).toBe('{"broken": json}');
   });
 
-  it("returns nulls when kind/tool/args are non-string types", () => {
-    const result = extractBodyFields(
-      JSON.stringify({ kind: 123, tool: { name: "bash" }, args: ["list", "of", "things"] }),
-    );
+  it("returns raw body when kind/tool/args are non-string types", () => {
+    const body = JSON.stringify({ kind: 123, tool: { name: "bash" }, args: ["list", "of", "things"] });
+    const result = extractBodyFields(body);
     expect(result.kind).toBeNull();
     expect(result.tool).toBeNull();
-    expect(result.args).toBeNull();
+    expect(result.args).toBe(body);
   });
 });
 
@@ -200,20 +198,19 @@ describe("TableFormatter.formatRow", () => {
     expect(row.columns.args).toBe("cd /tmp");
   });
 
-  it("shows `—` for missing kind and tool", () => {
+  it("shows body content when kind and tool are missing", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
-    const msg = makeMockMessage({
-      body: JSON.stringify({ phase: "developer" }),
-    });
+    const body = JSON.stringify({ phase: "developer" });
+    const msg = makeMockMessage({ body });
 
     const row = tf.formatRow(msg);
 
     expect(row.columns.kind).toBe("—");
     expect(row.columns.tool).toBe("—");
-    expect(row.columns.args).toBe("—");
+    expect(row.columns.args).toBe(body);
   });
 
-  it("shows `—` for all payload fields when body is not JSON", () => {
+  it("shows body content when body is not JSON", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
     const msg = makeMockMessage({ body: "plain text body" });
 
@@ -221,7 +218,7 @@ describe("TableFormatter.formatRow", () => {
 
     expect(row.columns.kind).toBe("—");
     expect(row.columns.tool).toBe("—");
-    expect(row.columns.args).toBe("—");
+    expect(row.columns.args).toBe("plain text body");
   });
 
   it("truncates ARGS column to column maxWidth", () => {
@@ -396,7 +393,8 @@ describe("TableFormatter.formatTable", () => {
     expect(table).toContain("run-plain");
     expect(table).toContain("update");
     expect(table).toContain("bash");
-    // Plain text row shows `—` for kind/tool/args
+    // Plain text bodies are visible in ARGS so inbox shows message contents by default.
+    expect(table).toContain("plain text message");
     expect(table).toContain("—");
   });
 
