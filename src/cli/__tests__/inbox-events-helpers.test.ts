@@ -120,9 +120,14 @@ describe("inbox event helpers", () => {
       .toBe("Skipped developer for task foreman-1: retryOnly");
     expect(formatEventSummary("PhaseVerdict", { task_id: "foreman-1", phase_id: "qa", verdict: "fail" }))
       .toBe("qa verdict: fail for task foreman-1");
+    expect(formatEventSummary("PhaseReportProduced", { task_id: "foreman-1", phase_id: "qa", outcome: "retry", verdict: "FAIL", retryTarget: "developer" }))
+      .toBe("Report qa for task foreman-1 → retry (FAIL); steer developer");
     const formatted = formatPipelineEvent({ id: "evt-1", runId: "run-1", taskId: "foreman-1", eventType: "RunFailed", details: { phase_id: "qa" }, createdAt: "2026-01-01T00:00:00.000Z" });
     expect(formatted).toContain("] foreman-1 ✗ RunFailed");
     expect(formatted).toContain("RunFailed — Failed task foreman-1 at qa");
+    const report = formatPipelineEvent({ id: "evt-2", runId: "run-1", taskId: "foreman-1", eventType: "PhaseReportProduced", details: { phase_id: "qa", outcome: "retry", retryTarget: "developer" }, createdAt: "2026-01-01T00:00:01.000Z" });
+    expect(report).toContain("☰ PhaseReportProduced");
+    expect(report).toContain("Report qa for task foreman-1 → retry; steer developer");
   });
 
   it("sortEventsChronologically returns a new oldest-to-newest array", () => {

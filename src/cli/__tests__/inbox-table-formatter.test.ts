@@ -22,6 +22,7 @@ import {
   TableFormatter,
   truncate,
   extractBodyFields,
+  formatCompactInboxSummary,
   formatInboxMessageLine,
   formatMessageTable,
 } from "../commands/inbox.js";
@@ -63,6 +64,59 @@ describe("formatMessageTable", () => {
     expect(row.tool).toBe("read");
     expect(row.args).toContain("Tool read denied");
     expect(formatInboxMessageLine(msg)).toContain("Mail denied read — overwatch → explorer");
+  });
+});
+
+// ── extractBodyFields ───────────────────────────────────────────────────────
+
+describe("formatCompactInboxSummary", () => {
+  it("shows task id and grouped phase/tool/denial counts", () => {
+    const msg = makeMockMessage({
+      run_id: "run-1",
+      sender_agent_type: "overwatch",
+      recipient_agent_type: "fix",
+      body: "Tool read denied: stale path. Rediscover.",
+    }) as Message & { task_id?: string };
+    msg.task_id = "foreman-ecd62";
+
+    const output = formatCompactInboxSummary({
+      runId: "run-1",
+      taskId: "foreman-ecd62",
+      status: "running",
+      messages: [msg],
+      events: [
+        {
+          id: "evt-1",
+          runId: "run-1",
+          taskId: "foreman-ecd62",
+          eventType: "PhaseStarted",
+          details: { task_id: "foreman-ecd62", phase_id: "fix" },
+          createdAt: "2024-01-01T12:00:00.000Z",
+        },
+        {
+          id: "evt-2",
+          runId: "run-1",
+          taskId: "foreman-ecd62",
+          eventType: "ToolCallRequested",
+          details: { task_id: "foreman-ecd62", phase_id: "fix", tool_name: "read" },
+          createdAt: "2024-01-01T12:00:01.000Z",
+        },
+        {
+          id: "evt-3",
+          runId: "run-1",
+          taskId: "foreman-ecd62",
+          eventType: "ToolCallDenied",
+          details: { task_id: "foreman-ecd62", phase_id: "fix", tool_name: "read", reason: "stale" },
+          createdAt: "2024-01-01T12:00:02.000Z",
+        },
+      ],
+    });
+
+    expect(output).toContain("task=foreman-ecd62");
+    expect(output).toContain("fix: active");
+    expect(output).toContain("tools=read×1");
+    expect(output).toContain("denied=read×1");
+    expect(output).toContain("denials=fix:read×1");
   });
 });
 

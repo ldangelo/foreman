@@ -462,7 +462,7 @@ Initial tools include one-call smoke status, health, scheduler status/tick, proj
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. Message contents appear in the table preview by default; use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `--events` includes phase starts/completions, structured phase-report steering, retries, verdicts, skips, overwatch nudges, worktree creation, dispatch, and merge/refinery events that have been bridged into the Elixir event store, grouped as workflow → phase → message/tool-call lines. Tool calls and assistant message events are persisted for debug/log projections; inbox keeps them compact or filtered so operator narrative remains readable. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project.
+View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. Message contents appear in the table preview by default; use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `--events` includes phase starts/completions, structured phase-report steering, retries, verdicts, skips, overwatch nudges, worktree creation, dispatch, and merge/refinery events that have been bridged into the Elixir event store, grouped as workflow → phase → message/tool-call lines. Use `--compact` for a single operator summary of task/run status, phases, tool counts, denials, and notable failure/overwatch lines without raw mail/event spam. Tool calls and assistant message events are persisted for debug/log projections; inbox keeps them compact or filtered so operator narrative remains readable. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project.
 
 ```bash
 foreman inbox                     # Show latest run's messages
@@ -471,6 +471,7 @@ foreman inbox --all --watch       # Live stream ALL messages across all runs
 foreman inbox --watch             # Live stream latest run's messages
 foreman inbox --unread            # Show only unread messages
 foreman inbox --limit 100         # Show more messages
+foreman inbox --compact           # Summarize task/run, phases, tools, denials, notable events
 foreman inbox --ack               # Mark shown messages as read
 ```
 

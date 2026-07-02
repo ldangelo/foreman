@@ -89,6 +89,7 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "PhaseVerdict":          "◆",
   "PhaseNudged":           "!",
   "phase-nudge":           "!",
+  "PhaseReportProduced":   "☰",
   "dispatch":              "→",
   "claim":                 "◈",
   "complete":              "✓",
@@ -166,6 +167,132 @@ export function formatPipelineEventsGrouped(events: PipelineEvent[]): string[] {
   return lines;
 }
 
+interface CompactPhaseSummary {
+  started?: string;
+  completed?: string;
+  failed?: string;
+  retryCount: number;
+  denials: Map<string, number>;
+  tools: Map<string, number>;
+}
+
+function compactTaskId(events: PipelineEvent[], messages: Message[], fallback?: string): string {
+  for (const event of events) {
+    const details = normalizedEventDetails(event);
+    const taskId = details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : event.taskId ?? undefined;
+    if (taskId) return taskId;
+  }
+  for (const msg of messages) {
+    const taskId = messageTask(msg);
+    if (taskId && taskId !== msg.run_id) return taskId;
+  }
+  return fallback ?? "unknown";
+}
+
+function compactPhaseKey(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {
+  return details ? detailString(details, ["phase_id", "phase", "current_phase"]) : undefined;
+}
+
+function incrementMap(map: Map<string, number>, key: string): void {
+  map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+function compactMap(map: Map<string, number>): string {
+  return [...map.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([key, count]) => `${key}×${count}`)
+    .join(", ");
+}
+
+export function formatCompactInboxSummary(input: {
+  runId: string;
+  taskId?: string | null;
+  status?: string | null;
+  messages?: Message[];
+  events?: PipelineEvent[];
+}): string {
+  const messages = input.messages ?? [];
+  const events = sortEventsChronologically(input.events ?? []);
+  const taskId = input.taskId ?? compactTaskId(events, messages, input.runId);
+  const phases = new Map<string, CompactPhaseSummary>();
+  const notable: string[] = [];
+  const notableKeys = new Set<string>();
+  const pushNotable = (key: string, line: string): void => {
+    if (notableKeys.has(key)) return;
+    notableKeys.add(key);
+    notable.push(line);
+  };
+
+  const phaseSummary = (phase: string): CompactPhaseSummary => {
+    const existing = phases.get(phase);
+    if (existing) return existing;
+    const created: CompactPhaseSummary = { retryCount: 0, denials: new Map(), tools: new Map() };
+    phases.set(phase, created);
+    return created;
+  };
+
+  for (const event of events) {
+    const details = normalizedEventDetails(event);
+    const phase = compactPhaseKey(event, details);
+    const tool = details ? detailString(details, ["tool_name", "toolName"]) : undefined;
+    const at = formatTimestamp(event.createdAt);
+
+    if (phase) {
+      const summary = phaseSummary(phase);
+      if (event.eventType === "PhaseStarted") summary.started = at;
+      if (event.eventType === "PhaseCompleted") summary.completed = at;
+      if (event.eventType === "PhaseFailed") summary.failed = at;
+      if (event.eventType === "PhaseRetried") summary.retryCount += 1;
+      if (event.eventType === "ToolCallRequested" && tool) incrementMap(summary.tools, tool);
+      if (event.eventType === "ToolCallDenied" && tool) incrementMap(summary.denials, tool);
+    }
+
+    if (["RunFailed", "WorkerLaunchFailed", "PhaseFailed", "PhaseNudged", "ToolCallDenied"].includes(event.eventType)) {
+      const reason = details ? detailString(details, ["reason", "message", "error"]) : undefined;
+      pushNotable(`${event.eventType}:${phase ?? "run"}:${tool ?? ""}:${reason ?? ""}`, formatPipelineEvent(event));
+    }
+  }
+
+  const mailDenials = new Map<string, number>();
+  for (const msg of messages) {
+    const row = formatMessageTable(msg, 120);
+    if (row.kind === "denied" || row.kind === "error") {
+      const key = `${row.receiver}:${row.tool ?? row.kind}`;
+      incrementMap(mailDenials, key);
+      pushNotable(`mail:${key}:${row.args ?? msg.subject}`, formatInboxMessageLine(msg));
+    }
+  }
+
+  const lines: string[] = [
+    chalk.bold("Compact Inbox"),
+    `task=${taskId}  run=${input.runId}  status=${input.status ?? "unknown"}`,
+  ];
+
+  if (phases.size > 0) {
+    lines.push(chalk.bold("Phases"));
+    for (const [phase, summary] of phases) {
+      const state = summary.failed ? "failed" : summary.completed ? "done" : summary.started ? "active" : "seen";
+      const bits = [`${phase}: ${state}`];
+      if (summary.retryCount > 0) bits.push(`retries=${summary.retryCount}`);
+      if (summary.tools.size > 0) bits.push(`tools=${compactMap(summary.tools)}`);
+      if (summary.denials.size > 0) bits.push(chalk.yellow(`denied=${compactMap(summary.denials)}`));
+      lines.push(`- ${bits.join("  ")}`);
+    }
+  }
+
+  if (mailDenials.size > 0) {
+    lines.push(chalk.bold("Mail/Overwatch"));
+    lines.push(`- denials=${compactMap(mailDenials)}`);
+  }
+
+  if (notable.length > 0) {
+    lines.push(chalk.bold("Notable"));
+    for (const line of notable.slice(-10)) lines.push(`- ${line}`);
+  }
+
+  return lines.join("\n");
+}
+
 function detailString(details: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = details[key];
@@ -212,6 +339,12 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "phase-nudge": {
       const recipient = detailString(details, ["recipient"]);
       return phase ? `Overwatch nudged ${phase}${target ? ` for ${target}` : ""}${recipient ? ` → ${recipient}` : ""}${error ? `: ${error}` : ""}` : eventType;
+    }
+    case "PhaseReportProduced": {
+      const outcome = detailString(details, ["outcome", "status"]);
+      const nextPhase = detailString(details, ["next_phase", "nextPhase", "retry_target", "retryTarget"]);
+      const verdict = detailString(details, ["verdict"]);
+      return phase ? `Report ${phase}${target ? ` for ${target}` : ""}${outcome ? ` → ${outcome}` : ""}${verdict ? ` (${verdict})` : ""}${nextPhase ? `; steer ${nextPhase}` : ""}` : eventType;
     }
     case "RunStarted":
       return `Started${target ? ` ${target}` : ""}${workflow ? ` (${workflow})` : ""}`;
@@ -1402,6 +1535,7 @@ export const inboxCommand = new Command("inbox")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .option("--events", "Also show pipeline events (phase transitions, PR status, merge queue)")
+  .option("--compact", "Show compact task/run summary instead of raw event/mail spam")
   .option("--events-limit <n>", "Max pipeline events to show (default: 50)", "50")
   .action(async (options: {
     agent?: string;
@@ -1417,12 +1551,14 @@ export const inboxCommand = new Command("inbox")
     project?: string;
     projectPath?: string;
     events?: boolean;
+    compact?: boolean;
     "events-limit"?: string;
   }) => {
     const fullPayload = options.full ?? false;
     const limit = parseInt(options.limit ?? "50", 10);
     const eventsLimit = parseInt(options["events-limit"] ?? "50", 10);
     const showEvents = options.events ?? false;
+    const compactOutput = options.compact ?? false;
     const taskFilter = options.task ?? options.bead;
 
     // Require --project or --all in multi-project mode
@@ -1649,7 +1785,7 @@ export const inboxCommand = new Command("inbox")
             ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
           );
       const thisRun = allRuns.find((r) => r.id === runId);
-      const taskLabel = thisRun?.task_id ? `  bead: ${thisRun.task_id}` : "";
+      const taskLabel = thisRun?.task_id ? `  task: ${thisRun.task_id}` : "";
 
       if (!options.watch) {
         // One-shot: show current run lifecycle status then fetch and display messages
@@ -1670,9 +1806,13 @@ export const inboxCommand = new Command("inbox")
             ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: options.unread, limit })
             : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
         if (messages.length === 0) {
-          console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${taskLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+          if (!compactOutput) {
+            console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${taskLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+          }
         } else {
-          if (fullPayload) {
+          if (compactOutput) {
+            // Summarized with events below.
+          } else if (fullPayload) {
             console.log(`\nInbox — run: ${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
             for (const msg of messages) {
               console.log(formatMessage(msg, true));
@@ -1718,25 +1858,38 @@ export const inboxCommand = new Command("inbox")
           console.log(`Marked ${messages.length} message(s) as read.`);
         }
 
-        // ── Pipeline events section (--events) ─────────────────────────────
-        if (showEvents) {
+        // ── Pipeline events / compact section (--events, --compact) ────────
+        if (showEvents || compactOutput) {
           console.log("");
+          const eventFetchLimit = compactOutput ? Math.max(eventsLimit, 500) : eventsLimit;
           const events = postgres
-            ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: eventsLimit })
+            ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: eventFetchLimit })
             : daemon
-              ? await fetchDaemonEvents(daemon, { runId, limit: eventsLimit })
-              : fetchEventsFromStoreForRun(store!, runId, eventsLimit);
+              ? await fetchDaemonEvents(daemon, { runId, limit: eventFetchLimit })
+              : fetchEventsFromStoreForRun(store!, runId, eventFetchLimit);
 
-          if (events.length === 0) {
-            console.log("No pipeline events found.");
-          } else {
-            console.log(chalk.bold("\nPipeline Events — run: ") + runId);
-            console.log("─".repeat(70));
-            for (const line of formatPipelineEventsGrouped(events)) {
-              console.log(line);
+          if (compactOutput) {
+            console.log(formatCompactInboxSummary({
+              runId,
+              taskId: thisRun?.task_id,
+              status: currentRun?.status ?? thisRun?.status,
+              messages,
+              events,
+            }));
+          }
+
+          if (!compactOutput) {
+            if (events.length === 0) {
+              console.log("\nNo pipeline events found.");
+            } else {
+              console.log(chalk.bold("\nPipeline Events — run: ") + `${runId}${taskLabel}`);
+              console.log("─".repeat(70));
+              for (const line of formatPipelineEventsGrouped(events)) {
+                console.log(line);
+              }
+              console.log("─".repeat(70));
+              console.log(`${events.length} event(s) shown.`);
             }
-            console.log("─".repeat(70));
-            console.log(`${events.length} event(s) shown.`);
           }
         }
         return;
