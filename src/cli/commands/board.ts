@@ -413,7 +413,7 @@ export async function pollRecentlyUpdatedTasks(
   const sinceTime = new Date(new Date(lastPollTime).getTime() - 1000).toISOString();
 
   if (context.backend === "elixir") {
-    const rows = await context.client.listTasks();
+    const rows = await context.client.listTasks({ since: sinceTime });
     const taskIds = rows
       .filter((task) => !task.project_id || task.project_id === context.projectId)
       .filter((task) => task.updated_at && task.updated_at > sinceTime)

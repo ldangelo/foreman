@@ -394,6 +394,61 @@ defmodule ForemanServer.Http.RouterTest do
     end
   end
 
+  test "GET /api/v1/tasks supports since filter for updated_at" do
+    # Create two tasks
+    append_event("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Task 1",
+      status: "open"
+    })
+
+    {:ok, _update_event} = append_event("task:task-1", "TaskUpdated", %{
+      task_id: "task-1",
+      status: "ready"
+    })
+
+    append_event("task:task-2", "TaskCreated", %{
+      task_id: "task-2",
+      title: "Task 2",
+      status: "open"
+    })
+
+    {:ok, _update_event_2} = append_event("task:task-2", "TaskUpdated", %{
+      task_id: "task-2",
+      status: "ready"
+    })
+
+    # Verify tasks have updated_at set
+    task_1 = ProjectionStore.task("task-1")
+    task_2 = ProjectionStore.task("task-2")
+    assert task_1.updated_at != nil
+    assert task_2.updated_at != nil
+
+    # Without since filter, both tasks should be returned
+    conn =
+      :get
+      |> conn("/api/v1/tasks")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert length(body["tasks"]) == 2
+
+    # With since filter set to a future time, no tasks should be returned
+    future_since = DateTime.add(DateTime.utc_now(), 1, :hour) |> DateTime.to_iso8601()
+
+    conn =
+      :get
+      |> conn("/api/v1/tasks?since=#{future_since}")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert length(body["tasks"]) == 0
+  end
+
   test "authorized doctor and metrics endpoints expose operational status" do
     seed_debug_http_run()
 
