@@ -69,6 +69,7 @@ export type ElixirRun = Record<string, unknown> & {
 export type ElixirInboxMessage = Record<string, unknown> & {
   message_id?: string;
   run_id?: string;
+  task_id?: string;
   project_id?: string;
   unread?: boolean;
 };

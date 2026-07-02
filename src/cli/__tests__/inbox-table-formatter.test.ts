@@ -9,7 +9,7 @@
  *   - truncate() respects max length and adds `…`
  *   - truncate() stops at word boundary when possible
  *   - truncate() handles empty string
- *   - Long run_id gets middle-cut treatment
+ *   - Long task/run id gets middle-cut treatment
  *   - formatTable() renders header + rows with proper alignment
  *   - Mixed payloads (some with JSON, some without) render correctly
  *   - ARGS column truncation shows `…` for long values
@@ -22,6 +22,7 @@ import {
   TableFormatter,
   truncate,
   extractBodyFields,
+  formatMessageTable,
 } from "../commands/inbox.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -40,6 +41,25 @@ function makeMockMessage(overrides: Partial<Message> = {}): Message {
     ...overrides,
   };
 }
+
+// ── extractBodyFields ───────────────────────────────────────────────────────
+
+describe("formatMessageTable", () => {
+  it("prefers projected task_id over run_id for operator-facing identity", () => {
+    const msg = makeMockMessage({ run_id: "run-uuid" } as Partial<Message>) as Message & { task_id?: string };
+    msg.task_id = "foreman-ecd62";
+    expect(formatMessageTable(msg).ticket).toBe("foreman-ecd62");
+  });
+
+  it("shows plain-text overwatch mail body in args preview", () => {
+    const row = formatMessageTable(makeMockMessage({
+      sender_agent_type: "overwatch",
+      recipient_agent_type: "explorer",
+      body: "Tool read denied: stale path. Rediscover.",
+    }));
+    expect(row.args).toContain("Tool read denied");
+  });
+});
 
 // ── extractBodyFields ───────────────────────────────────────────────────────
 
@@ -165,7 +185,7 @@ describe("TableFormatter.formatHeader", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
     const header = tf.formatHeader();
     expect(header).toContain("DATETIME");
-    expect(header).toContain("TICKET");
+    expect(header).toContain("TASK");
     expect(header).toContain("SENDER");
     expect(header).toContain("RECEIVER");
     expect(header).toContain("KIND");
@@ -235,7 +255,7 @@ describe("TableFormatter.formatRow", () => {
     expect(row.columns.args.endsWith("…")).toBe(true);
   });
 
-  it("truncates TICKET column with middle-cut when run_id > 20 chars", () => {
+  it("truncates TASK column with middle-cut when run_id > 20 chars", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
     const msg = makeMockMessage({
       run_id: "run-very-long-id-that-exceeds-twenty-chars",
@@ -282,7 +302,7 @@ describe("TableFormatter.calcWidths", () => {
     expect(widths.args).toBeGreaterThanOrEqual(1);
   });
 
-  it("clamps TICKET column to max 20", () => {
+  it("clamps TASK column to max 20", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
     const msg = makeMockMessage({
       run_id: "run-very-long-id-that-exceeds-twenty-chars",
@@ -322,7 +342,7 @@ describe("TableFormatter.formatTable", () => {
     const table = tf.formatTable([msg]);
 
     expect(table).toContain("DATETIME");
-    expect(table).toContain("TICKET");
+    expect(table).toContain("TASK");
     expect(table).toContain("SENDER");
     expect(table).toContain("RECEIVER");
     expect(table).toContain("KIND");
@@ -403,7 +423,7 @@ describe("TableFormatter.formatTable", () => {
     const table = tf.formatTable([]);
 
     expect(table).toContain("DATETIME");
-    expect(table).toContain("TICKET");
+    expect(table).toContain("TASK");
     expect(table).toContain("ARGS");
   });
 

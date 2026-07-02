@@ -238,6 +238,25 @@ export function formatEventSummary(eventType: string, details: Record<string, un
       const body = detailString(details, ["message", "output"]);
       return `Assistant message${phase ? ` in ${phase}` : ""}${body ? `: ${body.slice(0, 120)}${body.length > 120 ? "…" : ""}` : ""}`;
     }
+    case "ToolCallRequested": {
+      const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
+      const phase = detailString(details, ["phase", "phase_id"]);
+      const path = detailString(details, ["path", "file_path", "filePath"]);
+      const args = details.args && typeof details.args === "object" ? details.args as Record<string, unknown> : undefined;
+      const argPath = args ? detailString(args, ["path", "file_path", "filePath", "command", "query"]) : undefined;
+      return `Tool ${tool} requested${phase ? ` in ${phase}` : ""}${path || argPath ? `: ${truncate(path || argPath || "", 80)}` : ""}`;
+    }
+    case "ToolCallApproved": {
+      const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
+      const phase = detailString(details, ["phase", "phase_id"]);
+      return `Tool ${tool} approved${phase ? ` in ${phase}` : ""}`;
+    }
+    case "ToolCallDenied": {
+      const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
+      const phase = detailString(details, ["phase", "phase_id"]);
+      const reason = detailString(details, ["reason", "message", "error"]);
+      return `Tool ${tool} denied${phase ? ` in ${phase}` : ""}${reason ? `: ${reason}` : ""}`;
+    }
     case "ToolCallFinished": {
       const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
       const status = detailString(details, ["status"]);
@@ -567,14 +586,15 @@ const DEFAULT_ARGS_WIDTH = 40;
  */
 export function formatMessageTable(msg: Message, argsMaxLen = DEFAULT_ARGS_WIDTH): TableRow {
   const parsed = parseMessageBody(msg.body);
+  const argsPreview = parsed.argsPreview ?? parsed.message ?? parsed.body ?? (msg.body ? msg.body.replace(/\n/g, " ") : undefined);
   return {
     date: formatTimestamp(msg.created_at),
-    ticket: parsed.taskId ?? msg.run_id,
+    ticket: messageTask(msg),
     sender: msg.sender_agent_type,
     receiver: msg.recipient_agent_type,
     kind: parsed.kind,
     tool: parsed.tool,
-    args: parsed.argsPreview ? truncate(parsed.argsPreview, argsMaxLen) : undefined,
+    args: argsPreview ? truncate(argsPreview, argsMaxLen) : undefined,
     runId: msg.run_id,
     isRead: msg.read === 1,
   };
@@ -584,7 +604,7 @@ export function formatMessageTable(msg: Message, argsMaxLen = DEFAULT_ARGS_WIDTH
 
 /**
  * Column widths for the inbox table.
- * Compact sortable datetime | ticket | sender | receiver | kind | tool | args
+ * Compact sortable datetime | run/task | sender | receiver | kind | tool | args
  */
 const COL_WIDTHS = {
   date: 19,    // "2026-04-30 14:23:45"
@@ -632,7 +652,7 @@ export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): 
 
   const header = [
     pad("DATE", sizes.date),
-    pad("TICKET", sizes.ticket),
+    pad("TASK", sizes.ticket),
     pad("SENDER", sizes.sender),
     pad("RECEIVER", sizes.receiver),
     pad("KIND", sizes.kind),
@@ -700,7 +720,7 @@ interface FormattedRow {
 
 /**
  * Formats inbox messages as a space-aligned table with columns:
- * DATETIME | TICKET | SENDER | RECEIVER | KIND | TOOL | ARGS
+ * DATETIME | TASK | SENDER | RECEIVER | KIND | TOOL | ARGS
  */
 export class TableFormatter {
   private readonly terminalWidth: number;
@@ -729,7 +749,7 @@ export class TableFormatter {
     return {
       columns: {
         datetime: this.formatDatetime(msg.created_at),
-        ticket: this.middleCutTicket(msg.run_id),
+        ticket: this.middleCutTicket(messageTask(msg)),
         sender: msg.sender_agent_type,
         receiver: msg.recipient_agent_type,
         kind: kind ?? dash,
@@ -784,7 +804,7 @@ export class TableFormatter {
   }
 
   formatHeader(): string {
-    return "DATETIME          TICKET       SENDER     RECEIVER   KIND       TOOL       ARGS";
+    return "DATETIME          TASK        SENDER     RECEIVER   KIND       TOOL       ARGS";
   }
 
   private formatSeparator(widths: ReturnType<typeof this.calcWidths>): string {
@@ -879,7 +899,8 @@ function messagePhase(msg: Message): string | undefined {
 }
 
 function messageTask(msg: Message): string {
-  return parseMessageBody(msg.body).taskId ?? msg.run_id;
+  const projectedTaskId = (msg as Message & { task_id?: string | null }).task_id;
+  return parseMessageBody(msg.body).taskId ?? projectedTaskId ?? msg.run_id;
 }
 
 function messageActivity(msg: Message): string {
@@ -1118,6 +1139,7 @@ export async function fetchDaemonMessages(
       .map((row) => ({
         id: String(row.message_id ?? `${row.run_id ?? "run"}-${row.subject ?? randomUUID()}`),
         run_id: String(row.run_id ?? ""),
+        task_id: typeof row.task_id === "string" ? row.task_id : undefined,
         sender_agent_type: String(row.sender_agent_type ?? row.sender ?? row.from ?? "agent"),
         recipient_agent_type: String(row.recipient_agent_type ?? row.recipient ?? row.to ?? "run"),
         subject: String(row.subject ?? row.hook ?? "message"),
