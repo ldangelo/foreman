@@ -5,7 +5,7 @@
 #
 # When epic has no children (native mode): runs skill phases directly as a
 # single-agent pipeline:
-#   prd → trd → implement → developer → qa → finalize → create-pr → pr-wait → prepare-pr-review → pr-review → merge
+#   prd → trd → implement → developer → qa → finalize → create-pr → pr-wait → merge
 #
 # Skill invocation: `command:` sends /ensemble:<skill-name> as the agent prompt.
 # The Pi SDK agent recognizes skill invocations and loads the SKILL.md.
@@ -172,36 +172,16 @@ phases:
       onComplete: true
       onFail: developer
 
-  - name: prepare-pr-review
-    builtin: true
-    artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
-    mail:
-      onStart: true
-      onComplete: true
-
-  - name: pr-review
-    prompt: pr-review.md
-    tools:
-      allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
-    models:
-      default: MiniMax
-    maxTurns: 500
-    artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
-    verdict: true
-    retryWith: developer
-    retryOnFail: 3
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: developer
-      forwardArtifactTo: foreman
 
   - name: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    retryWith: developer
+    retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
+      onFail: developer
 
 onFailure:
   name: troubleshooter

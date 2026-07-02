@@ -82,12 +82,12 @@ phases:
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 500
     verdict: true
-    retryWith: developer
+    retryWith: fix
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: fix
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
@@ -106,33 +106,13 @@ phases:
       onComplete: true
       onFail: fix
 
-  - name: prepare-pr-review
-    builtin: true
-    artifact: "{task.projectReportsDir}/PR_REVIEW_FINDINGS.md"
-    mail:
-      onStart: true
-      onComplete: true
-
-  - name: pr-review
-    prompt: pr-review.md
-    tools:
-      allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
-    models:
-      default: MiniMax
-    maxTurns: 500
-    artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
-    verdict: true
-    retryWith: fix
-    retryOnFail: 3
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: fix
-      forwardArtifactTo: foreman
 
   - name: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    retryWith: fix
+    retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
+      onFail: fix

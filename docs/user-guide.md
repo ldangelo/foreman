@@ -8,7 +8,7 @@ Foreman runs AI engineering work through a managed pipeline:
 
 1. Tasks enter the native PostgreSQL-backed task store.
 2. `foreman run` dispatches ready tasks to isolated git worktrees.
-3. Workflow phases run in order: exploration, implementation, verification, review, documentation, finalization, PR review, and merge where configured.
+3. Workflow phases run in order: exploration, implementation, verification, review, documentation, finalization, PR wait, and merge where configured.
 4. Foreman records progress, phase reports, logs, mail, and merge status. In the Elixir backend, domain events are the source of truth and trigger scheduler/watch behavior; projections/read views, including status/log displays, are read models used for display and decisions after events are observed. Worker/Pi SDK tool calls and assistant messages are emitted as ordered worker events before being mirrored into raw logs. Phase reports also emit structured report events so Elixir Overwatch can send compact next-phase Agent Mail steering without depending on report filenames. Elixir overwatch records tool requests/approvals/denials and sends phase-targeted Agent Mail steering nudges when a worker drifts from policy.
 5. Completed work is finalized and merged through the configured workflow.
 
@@ -53,7 +53,7 @@ Important phase reports:
 | Reviewer | `REVIEW.md` |
 | Documentation | `DOCUMENTATION_REPORT.md` |
 | Finalize | `FINALIZE_VALIDATION.md`, `FINALIZE_REPORT.md` |
-| PR wait/review | `PR_WAIT_REPORT.md`, `PR_REVIEW_REPORT.md` |
+| PR wait | `PR_WAIT_REPORT.md` |
 | Merge | `MERGE_REPORT.md` |
 
 Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase, uses Graphify for semantic discovery before exact-file reads, and omits nested delegation tools from fix/remediation phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before dispatch. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
@@ -223,7 +223,7 @@ Avoid mass retrying unless failures are known transient and the root cause is ex
 
 ### 9. Review and Merge
 
-Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate also waits again if GitHub surfaces a late pending check. If merge fails, inspect `MERGE_REPORT.md` and any PR review artifacts.
+Auto-merge workflows create PRs, wait for PR checks/review, require the ready state to remain stable briefly, and merge through the configured merge phase. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If merge fails, inspect `MERGE_REPORT.md`; configured workflows route merge failures back to the developer/fix phase when retryable.
 
 ```bash
 foreman merge

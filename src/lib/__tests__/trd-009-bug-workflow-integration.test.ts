@@ -133,11 +133,12 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   });
 
   describe('phase ordering and finalize', () => {
-    it('phases are in order: explorer → fix → developer remediation (retryOnly) → documentation → qa → finalize → PR review → merge', () => {
+    it('phases are in order: explorer → fix → developer remediation (retryOnly) → documentation → qa → finalize → PR wait → merge', () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      expect(names).toEqual(['explorer', 'fix', 'developer', 'documentation', 'qa', 'finalize', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
+      expect(names).toEqual(['explorer', 'fix', 'developer', 'documentation', 'qa', 'finalize', 'create-pr', 'pr-wait', 'merge']);
       expect(bugWorkflow.phases.find((p) => p.name === 'developer')?.retryOnly).toBe(true);
       expect(bugWorkflow.phases.find((p) => p.name === 'cli-review')).toBeUndefined();
+      expect(bugWorkflow.phases.find((p) => p.name === 'pr-review')).toBeUndefined();
     });
 
     it('finalize phase uses the deterministic builtin finalizer', () => {

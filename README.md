@@ -712,7 +712,7 @@ jobs:
           foreman task create "Review PR: ${{ github.event.pull_request.title }}" \
             --type task \
             --priority 1 \
-            --labels "pr-review,github-automation"
+            --labels "code-review,github-automation"
 ```
 
 Foreman can also post pipeline status back to GitHub checks:
@@ -771,8 +771,8 @@ Workflows define:
 - **Setup cache** — symlink dependency directories from a shared cache
 - **Phase sequence** — which agents run in what order
 - **Model selection** — per-phase models with priority-based overrides
-- **Retry loops** — QA/Reviewer/PR-review failure → Developer retry with feedback
-- **PR gates** — create-pr, pr-wait, prepare-pr-review, pr-review, and merge phases for review-aware workflows; PR readiness must remain stable briefly and merge re-waits on late pending checks
+- **Retry loops** — QA/Reviewer/merge failure → Developer retry with feedback
+- **PR gates** — create-pr, pr-wait, and merge phases for review-aware workflows; PR readiness must remain stable briefly and merge re-waits on late pending checks
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 ```yaml
@@ -825,7 +825,7 @@ Operator direct task execution was removed after the Elixir cutover; use schedul
 # Dry run to preview
 ```
 
-The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.
+The bundled `epic` workflow uses the same post-finalize PR gates as task/feature workflows (`create-pr → pr-wait → merge`) so epic PRs wait for CI/review instead of being created by finalize fallback logic.
 
 ### Environment variables
 
