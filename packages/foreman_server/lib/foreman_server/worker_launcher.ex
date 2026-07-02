@@ -32,6 +32,8 @@ defmodule ForemanServer.WorkerLauncher do
             exit_code: status,
             output: output
           })
+
+          append_missing_terminal_event(task, run_id, workflow, status)
         end)
 
       {:ok, %{pid: pid, workflow: workflow}}
@@ -112,6 +114,19 @@ defmodule ForemanServer.WorkerLauncher do
 
   defp workflow_name(task) do
     Map.get(task, :workflow) || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
+  end
+
+  defp append_missing_terminal_event(task, run_id, workflow, exit_code) do
+    run = get_in(ForemanServer.ProjectionStore.snapshot(), [:runs, run_id]) || %{}
+
+    unless Map.get(run, :status) in ["completed", "failed", "blocked"] do
+      append("RunFailed", task, run_id, %{
+        workflow: workflow,
+        exit_code: exit_code,
+        phase_id: Map.get(run, :current_phase),
+        reason: "worker_exited_without_terminal_event"
+      })
+    end
   end
 
   defp append(event_type, task, run_id, payload) do
