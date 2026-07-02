@@ -33,7 +33,7 @@ defmodule ForemanServer.ProjectionStoreTest do
       status: "open"
     })
 
-    append!("task:task-1", "TaskUpdated", %{task_id: "task-1", status: "in_progress"})
+    update_event = append!("task:task-1", "TaskUpdated", %{task_id: "task-1", status: "in_progress"})
 
     append!("task:task-2", "TaskCreated", %{
       task_id: "task-2",
@@ -41,11 +41,12 @@ defmodule ForemanServer.ProjectionStoreTest do
       status: "open"
     })
 
+    # updated_at should be set from the TaskUpdated event's occurred_at
     assert ProjectionStore.task("task-1") == %{
              task_id: "task-1",
              title: "Implement server",
              status: "in_progress",
-             updated_at: nil,
+             updated_at: update_event.occurred_at,
              failure_reason: nil,
              failure_output: nil
            }
@@ -69,9 +70,51 @@ defmodule ForemanServer.ProjectionStoreTest do
 
     append!("task:task-1", "TaskUpdated", %{task_id: "task-1", status: "ready"})
 
-    assert ProjectionStore.task("task-1").status == "ready"
-    assert ProjectionStore.task("task-1").failure_reason == nil
-    assert ProjectionStore.task("task-1").failure_output == nil
+    task = ProjectionStore.task("task-1")
+    assert task.status == "ready"
+    assert task.failure_reason == nil
+    assert task.failure_output == nil
+    # updated_at should be set from the last TaskUpdated event
+    assert task.updated_at != nil
+  end
+
+  test "TaskDependencyAdded sets updated_at from event occurred_at" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "open"
+    })
+
+    dep_event = append!("task:task-1", "TaskDependencyAdded", %{
+      task_id: "task-1",
+      depends_on: "task-0"
+    })
+
+    task = ProjectionStore.task("task-1")
+    assert task.updated_at == dep_event.occurred_at
+    assert task.dependencies == ["task-0"]
+  end
+
+  test "TaskDependencyRemoved sets updated_at from event occurred_at" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "open"
+    })
+
+    append!("task:task-1", "TaskDependencyAdded", %{
+      task_id: "task-1",
+      depends_on: "task-0"
+    })
+
+    dep_remove_event = append!("task:task-1", "TaskDependencyRemoved", %{
+      task_id: "task-1",
+      depends_on: "task-0"
+    })
+
+    task = ProjectionStore.task("task-1")
+    assert task.updated_at == dep_remove_event.occurred_at
+    assert task.dependencies == []
   end
 
   test "terminal run events update the associated active task" do

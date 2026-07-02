@@ -113,11 +113,39 @@ defmodule ForemanServer.Http.Router do
   end
 
   get "/api/v1/tasks" do
+    conn = fetch_query_params(conn)
+
     with :ok <- authorize(conn) do
-      send_json(conn, 200, %{ok: true, tasks: ForemanServer.ProjectionStore.task_list()})
+      tasks =
+        ForemanServer.ProjectionStore.task_list()
+        |> maybe_filter_by_since(conn.query_params["since"])
+
+      send_json(conn, 200, %{ok: true, tasks: tasks})
     else
       {:error, :unauthorized} ->
         send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
+  defp maybe_filter_by_since(tasks, nil), do: tasks
+  defp maybe_filter_by_since(tasks, since) when is_binary(since) do
+    case DateTime.from_iso8601(since) do
+      {:ok, since_dt, _} ->
+        Enum.filter(tasks, fn task ->
+          case Map.get(task, :updated_at) do
+            nil -> false
+            updated_at when is_binary(updated_at) ->
+              case DateTime.from_iso8601(updated_at) do
+                {:ok, updated_dt, _} -> DateTime.compare(updated_dt, since_dt) == :gt
+                _ -> false
+              end
+            updated_at when is_struct(updated_at, DateTime) ->
+              DateTime.compare(updated_at, since_dt) == :gt
+            _ -> false
+          end
+        end)
+      _ ->
+        tasks
     end
   end
 

@@ -324,17 +324,22 @@ defmodule ForemanServer.ProjectionStore do
          projection,
          %{
            type: "TaskUpdated",
-           payload: %{task_id: task_id} = payload
+           payload: %{task_id: task_id} = payload,
+           occurred_at: event_occurred_at
          },
          mode
        ) do
     existing = empty_task(task_id)
     existing = get_in(projection, [:tasks, task_id]) || existing
 
+    # Use the event's occurred_at as updated_at, falling back to payload's updated_at
+    timestamp = Map.get(payload, :updated_at) || event_occurred_at
+
     updates =
       payload
       |> Map.drop([:task_id])
       |> clear_failure_fields_for_active_status()
+      |> Map.put(:updated_at, timestamp)
 
     updated_task = Map.merge(existing, updates)
     run_id = Map.get(payload, :run_id)
@@ -389,7 +394,8 @@ defmodule ForemanServer.ProjectionStore do
          projection,
          %{
            type: "TaskDependencyAdded",
-           payload: %{task_id: task_id, depends_on: depends_on} = payload
+           payload: %{task_id: task_id, depends_on: depends_on} = payload,
+           occurred_at: event_occurred_at
          },
          _mode
        ) do
@@ -398,7 +404,7 @@ defmodule ForemanServer.ProjectionStore do
     task =
       existing
       |> Map.update(:dependencies, [depends_on], fn deps -> Enum.uniq(deps ++ [depends_on]) end)
-      |> Map.put(:updated_at, Map.get(payload, :updated_at))
+      |> Map.put(:updated_at, Map.get(payload, :updated_at) || event_occurred_at)
 
     put_in(projection, [:tasks, task_id], task)
   end
@@ -407,7 +413,8 @@ defmodule ForemanServer.ProjectionStore do
          projection,
          %{
            type: "TaskDependencyRemoved",
-           payload: %{task_id: task_id, depends_on: depends_on} = payload
+           payload: %{task_id: task_id, depends_on: depends_on} = payload,
+           occurred_at: event_occurred_at
          },
          _mode
        ) do
@@ -416,7 +423,7 @@ defmodule ForemanServer.ProjectionStore do
     task =
       existing
       |> Map.update(:dependencies, [], fn deps -> Enum.reject(deps, &(&1 == depends_on)) end)
-      |> Map.put(:updated_at, Map.get(payload, :updated_at))
+      |> Map.put(:updated_at, Map.get(payload, :updated_at) || event_occurred_at)
 
     put_in(projection, [:tasks, task_id], task)
   end

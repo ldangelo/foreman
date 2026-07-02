@@ -145,8 +145,11 @@ export class ElixirServerClient {
     return body.projects;
   }
 
-  async listTasks(): Promise<ElixirTask[]> {
-    const body = await this.getJson<{ ok: true; tasks: ElixirTask[] }>("/api/v1/tasks");
+  async listTasks(opts: { since?: string } = {}): Promise<ElixirTask[]> {
+    const params = new URLSearchParams();
+    if (opts.since) params.set("since", opts.since);
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; tasks: ElixirTask[] }>(`/api/v1/tasks${query ? `?${query}` : ""}`);
     return body.tasks;
   }
 
