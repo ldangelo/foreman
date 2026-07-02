@@ -22,6 +22,7 @@ import {
   TableFormatter,
   truncate,
   extractBodyFields,
+  formatInboxMessageLine,
   formatMessageTable,
 } from "../commands/inbox.js";
 
@@ -52,14 +53,16 @@ describe("formatMessageTable", () => {
   });
 
   it("shows plain-text overwatch mail body and infers tool fields", () => {
-    const row = formatMessageTable(makeMockMessage({
+    const msg = makeMockMessage({
       sender_agent_type: "overwatch",
       recipient_agent_type: "explorer",
       body: "Tool read denied: stale path. Rediscover.",
-    }));
+    });
+    const row = formatMessageTable(msg);
     expect(row.kind).toBe("denied");
     expect(row.tool).toBe("read");
     expect(row.args).toContain("Tool read denied");
+    expect(formatInboxMessageLine(msg)).toContain("Mail denied read — overwatch → explorer");
   });
 });
 

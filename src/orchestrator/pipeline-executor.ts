@@ -1824,6 +1824,15 @@ async function runPhaseSequence(
       }
     }
 
+    if (!phaseSucceeded && !phase.verdict && !commandPhaseContractError && interpolatedArtifact && artifactPresent) {
+      const interruptedAfterReport = /terminated|aborted|exceeded maxTurns/i.test(phaseError ?? "");
+      if (interruptedAfterReport) {
+        phaseSucceeded = true;
+        phaseError = undefined;
+        ctx.log(`[${phaseName.toUpperCase()}] SDK interrupted after artifact write; accepting ${phaseName} evidence`);
+      }
+    }
+
     if (!phaseSucceeded && phase.verdict && !commandPhaseContractError && interpolatedArtifact && artifactPresent) {
       const verdictReport = readReport(worktreePath, interpolatedArtifact);
       const artifactVerdict = verdictReport ? parseVerdict(verdictReport) : "unknown";

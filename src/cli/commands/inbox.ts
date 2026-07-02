@@ -604,6 +604,16 @@ export function formatMessageTable(msg: Message, argsMaxLen = DEFAULT_ARGS_WIDTH
   };
 }
 
+export function formatInboxMessageLine(msg: Message): string {
+  const row = formatMessageTable(msg, 140);
+  const icon = row.kind === "denied" || row.kind === "error" ? "!" : "✉";
+  const route = `${msg.sender_agent_type} → ${msg.recipient_agent_type}`;
+  const tool = row.tool ? ` ${row.tool}` : "";
+  const kind = row.kind ? ` ${row.kind}` : "";
+  const summary = row.args ?? msg.subject;
+  return `[${row.date}] ${row.ticket} ${icon} Mail${kind}${tool} — ${route}: ${summary}`;
+}
+
 // ── ASCII table renderer ───────────────────────────────────────────────────────
 
 /**
@@ -1669,6 +1679,12 @@ export const inboxCommand = new Command("inbox")
               console.log("");
             }
             console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
+          } else if (showEvents) {
+            console.log(chalk.bold(`\nInbox Messages — run: `) + `${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
+            console.log("─".repeat(70));
+            for (const msg of messages) console.log(formatInboxMessageLine(msg));
+            console.log("─".repeat(70));
+            console.log(`${messages.length} message(s) shown.`);
           } else {
             const rows = messages.map((msg) => formatMessageTable(msg));
             console.log(`\nInbox — run: ${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
@@ -1742,6 +1758,9 @@ export const inboxCommand = new Command("inbox")
         if (fullPayload) {
           for (const m of initial) { console.log(formatMessage(m, true)); console.log(""); seenIds.add(m.id); }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+        } else if (showEvents) {
+          for (const m of initial) { console.log(formatInboxMessageLine(m)); seenIds.add(m.id); }
+          console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         } else {
           const rows = initial.map((m) => formatMessageTable(m));
           console.log(renderMessageTable(rows));
@@ -1784,6 +1803,9 @@ export const inboxCommand = new Command("inbox")
             seenIds.add(msg.id);
             if (fullPayload) {
               console.log(formatMessage(msg, true));
+              console.log("");
+            } else if (showEvents) {
+              console.log(formatInboxMessageLine(msg));
               console.log("");
             } else {
               const rows = [formatMessageTable(msg)];

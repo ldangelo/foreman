@@ -426,6 +426,61 @@ export async function refreshBoardTasksById(
   return next;
 }
 
+export interface BoardTaskSnapshotUpdateResult {
+  taskIds: string[];
+  tasks: Map<BoardStatus, BoardTask[]>;
+}
+
+function boardTaskSignature(task: BoardTask): string {
+  return [
+    task.id,
+    task.status,
+    task.updated_at,
+    task.title,
+    task.priority,
+    task.run_id ?? "",
+  ].join("\u0000");
+}
+
+function flattenBoardTasks(taskMap: Map<BoardStatus, BoardTask[]>): Map<string, BoardTask> {
+  const flattened = new Map<string, BoardTask>();
+  for (const rows of taskMap.values()) {
+    for (const task of rows) flattened.set(task.id, task);
+  }
+  return flattened;
+}
+
+export function diffBoardTaskSnapshots(
+  previousTasks: Map<BoardStatus, BoardTask[]>,
+  nextTasks: Map<BoardStatus, BoardTask[]>,
+): string[] {
+  const previous = flattenBoardTasks(previousTasks);
+  const next = flattenBoardTasks(nextTasks);
+  const changed = new Set<string>();
+
+  for (const [taskId, task] of next) {
+    const prior = previous.get(taskId);
+    if (!prior || boardTaskSignature(prior) !== boardTaskSignature(task)) {
+      changed.add(taskId);
+    }
+  }
+
+  for (const taskId of previous.keys()) {
+    if (!next.has(taskId)) changed.add(taskId);
+  }
+
+  return [...changed];
+}
+
+export async function pollBoardTaskSnapshotUpdates(
+  projectPath: string,
+  currentTasks: Map<BoardStatus, BoardTask[]>,
+  sortMode: SortMode,
+): Promise<BoardTaskSnapshotUpdateResult> {
+  const loaded = sortBoardColumns(await loadBoardTasks(projectPath), sortMode);
+  return { taskIds: diffBoardTaskSnapshots(currentTasks, loaded), tasks: loaded };
+}
+
 export async function loadBoardTaskNotes(projectPath: string, taskId: string): Promise<BoardTaskNote[]> {
   const context = await resolveBoardContext(projectPath);
   if (context.backend === "elixir") {
@@ -1947,34 +2002,43 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     if (quit || inboxUpdateInFlight) return;
     inboxUpdateInFlight = true;
     try {
-      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorTasked);
-      if (update.taskIds.length === 0) {
+      let updatedTaskIds: string[] = [];
+
+      if (foremanBackendMode() === "elixir") {
+        const update = await pollBoardTaskSnapshotUpdates(projectPath, tasks, sortMode);
+        updatedTaskIds = update.taskIds;
+        if (updatedTaskIds.length > 0) {
+          tasks = update.tasks;
+        }
+      } else {
+        const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorTasked);
         if (update.newestId) {
           boardInboxLastSeenId = update.newestId;
         }
-        return;
+        if (update.taskIds.length > 0) {
+          const refreshedTasks = await Promise.all(
+            update.taskIds.map(async (taskId) => ({ taskId, task: await loadBoardTask(projectPath, taskId) })),
+          );
+          let nextTasks = tasks;
+          for (const { taskId, task } of refreshedTasks) {
+            nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
+          }
+          tasks = nextTasks;
+          updatedTaskIds = update.taskIds;
+        }
       }
 
-      const refreshedTasks = await Promise.all(
-        update.taskIds.map(async (taskId) => ({ taskId, task: await loadBoardTask(projectPath, taskId) })),
-      );
-      let nextTasks = tasks;
-      for (const { taskId, task } of refreshedTasks) {
-        nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
-      }
-      tasks = nextTasks;
-      if (update.newestId) {
-        boardInboxLastSeenId = update.newestId;
-      }
+      if (updatedTaskIds.length === 0) return;
+
       normalizeNavRowIndex(nav, tasks);
-      flashTaskId = update.taskIds[0] ?? null;
+      flashTaskId = updatedTaskIds[0] ?? null;
       refreshedAt = new Date().toLocaleTimeString();
       refreshStatus = "refreshed";
 
-      if (detailTask && update.taskIds.includes(detailTask.id)) {
+      if (detailTask && updatedTaskIds.includes(detailTask.id)) {
         const refreshedDetail = getHighlightedTask(nav, tasks)?.id === detailTask.id
           ? getHighlightedTask(nav, tasks)
-          : update.taskIds.includes(detailTask.id)
+          : updatedTaskIds.includes(detailTask.id)
             ? await loadBoardTask(projectPath, detailTask.id)
             : null;
         if (refreshedDetail) {
@@ -1984,7 +2048,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
 
       renderCurrentBoard();
     } catch (err) {
-      errorMessage = `Inbox monitor failed: ${err instanceof Error ? err.message : String(err)}`;
+      errorMessage = `Board monitor failed: ${err instanceof Error ? err.message : String(err)}`;
       renderCurrentBoard();
     } finally {
       inboxUpdateInFlight = false;

@@ -797,7 +797,7 @@ async function runPhase(
 
   const disallowedTools = getDisallowedTools(roleConfig);
   const allowedSummary = roleConfig.allowedTools.join(", ");
-  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${resolvedModel}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
+  await appendFile(logFile, `\n${"─".repeat(40)}\n[PHASE: ${role.toUpperCase()}] Starting (model=${resolvedModel}, maxTurns=${config.maxTurns ?? "none"}, maxBudgetUsd=${roleConfig.maxBudgetUsd}, allowedTools=[${allowedSummary}])\n`);
   const streamForwarder = createWorkerStreamEventForwarder(role, observabilityWriter, log);
   log(`[${role.toUpperCase()}] Starting phase for ${config.taskId} (${roleConfig.allowedTools.length} allowed tools, ${disallowedTools.length} disallowed)`);
 
@@ -1917,6 +1917,13 @@ async function runPipeline(
     log(`[PIPELINE] Failed to load workflow config '${resolvedWorkflow}': ${msg}`);
     throw err;
   }
+
+  const phaseSummary = workflowConfig.phases
+    .map((phase) => `${phase.name}:maxTurns=${phase.maxTurns ?? "none"}`)
+    .join(", ");
+  const workflowSource = workflowConfig.sourcePath ?? "<unknown>";
+  log(`[PIPELINE] Workflow loaded name=${workflowConfig.name} source=${workflowSource} phases=[${phaseSummary}]`);
+  await appendFile(logFile, `[PIPELINE] Workflow loaded name=${workflowConfig.name} source=${workflowSource} phases=[${phaseSummary}]\n`);
 
   const { taskClient: runtimeTaskClient, backendType: runtimeTaskBackend } = await createTaskClient(
     pipelineProjectPath,
