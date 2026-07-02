@@ -13,15 +13,21 @@ If you hit an unrecoverable error, invoke:
 ```
 
 ## Instructions
-1. Read TASK.md for task context
-2. Use `graphify_query` first for semantic codebase discovery. Use `graphify_explain` for key nodes returned by Graphify. Use `Grep` only after Graphify for exact symbol/string verification or if Graphify says context is missing.
-3. Explore only enough to produce a developer handoff:
+1. Use the Task/Description section above as the authoritative task context. If TASK.md exists, you may read it; if it is missing, continue without error.
+2. Discover with this exact loop. Do not skip steps unless the answer is already known from the task context:
+   - Query Graphify with the task's domain words, UI labels, command names, error text, or suspected component names.
+   - Explain 2–4 promising Graphify nodes to get neighboring files, symbols, and rationale.
+   - Use `Glob` only to list candidate files after Graphify points to a directory/name pattern.
+   - Use `Read` only with an explicit regular file path returned by Graphify/Glob or already named in the task context. Never call `Read` without `path`. Never call `Read` on a directory; use `Glob` for directories.
+   - If Graphify returns concepts but no paths, query again using one returned symbol/component name plus the task symptom.
+3. Your available discovery tools are only `GraphifyQuery`, `GraphifyExplain`, `Glob`, `Read`, and `Write`. Do not plan around Grep, shell commands, or broad text search.
+4. Explore only enough to produce a developer handoff:
    - Identify the 1–3 most likely edit files and exact functions/types to inspect
    - Identify nearby tests/verification owners, but do not design a full test plan
    - Note the smallest implementation path and any hard blockers
    - Avoid broad architecture mapping unless the task explicitly requires it
-4. Write **EXPLORER_REPORT.md** with a concise handoff using `artifact_write`; stop as soon as the developer can edit without re-discovery
-5. Write **SESSION_LOG.md** using `artifact_write` documenting your session (see CLAUDE.md Session Logging section)
+5. Write **EXPLORER_REPORT.md** with a concise handoff using `Write`; stop as soon as the developer can edit without re-discovery.
+6. Write **SESSION_LOG.md** using `Write` documenting your session (see CLAUDE.md Session Logging section).
 
 ## EXPLORER_REPORT.md Format
 ```markdown
@@ -52,6 +58,7 @@ If you hit an unrecoverable error, invoke:
 - Be specific — reference actual file paths and line numbers
 - Keep the report under ~80 lines unless the task is genuinely cross-cutting
 - Start narrow. Use the task title/description to form an initial Graphify query before reading broadly
+- Treat missing optional context files, directory paths, and stale Graphify paths as normal discovery misses; recover with `Glob` or another `GraphifyQuery`
 - Do not map generic architecture, dependency graphs, or test strategy unless needed to identify the edit target
 - Stop after you can name likely edit files, nearby verification targets, and one concrete implementation sketch
 - Make the handoff concrete enough that Developer can start editing after reading TASK.md plus EXPLORER_REPORT.md
