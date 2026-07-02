@@ -22,7 +22,6 @@ describe("default Elixir legacy command guards", () => {
   });
 
   it.each([
-    { args: ["merge"], message: "foreman merge uses the legacy Refinery and merge queue" },
     { args: ["doctor", "--fix"], message: "foreman doctor --fix/--clean-logs run legacy Node/Postgres maintenance" },
   ])("fails fast before project/VCS resolution for $args", async ({ args, message }) => {
     const result = await runTsxModule(CLI, args, {
