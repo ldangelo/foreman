@@ -132,6 +132,124 @@ function normalizedEventDetails(event: PipelineEvent): Record<string, unknown> |
   } : null;
 }
 
+function eventPhase(details: Record<string, unknown> | null): string | undefined {
+  return details ? detailString(details, ["phase_id", "phase", "current_phase"]) : undefined;
+}
+
+function eventTurns(details: Record<string, unknown> | null): string | undefined {
+  return details ? detailString(details, ["numTurns", "num_turns", "turns", "totalTurns", "total_turns"]) : undefined;
+}
+
+function eventTask(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {
+  return details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : event.taskId ?? undefined;
+}
+
+function eventKind(eventType: string): string {
+  switch (eventType) {
+    case "RunStarted":
+    case "TaskCreated":
+    case "WorkerLaunchRequested":
+    case "WorktreeCreated":
+    case "worktree-created":
+    case "PhaseStarted":
+    case "phase-start":
+    case "dispatch":
+    case "claim":
+    case "merge-queue-dequeue":
+      return "start";
+    case "RunCompleted":
+    case "TaskUpdated":
+    case "PhaseCompleted":
+    case "phase-complete":
+    case "PhaseReportProduced":
+    case "PhaseVerdict":
+    case "WorkerProcessExited":
+    case "complete":
+    case "merge":
+    case "Merge":
+    case "pr-created":
+    case "merge-queue-resolve":
+      return "stop";
+    case "RunFailed":
+    case "WorkerLaunchFailed":
+    case "PhaseFailed":
+    case "fail":
+    case "test-fail":
+    case "conflict":
+    case "stuck":
+      return "error";
+    case "PhaseRetried":
+      return "retry";
+    case "PhaseSkipped":
+      return "skip";
+    case "ToolCallRequested":
+    case "ToolCallApproved":
+    case "ToolCallDenied":
+    case "ToolCallFinished":
+      return "tool";
+    case "InboxMessageAppended":
+    case "AssistantMessage":
+    case "PhaseNudged":
+    case "phase-nudge":
+      return "mail";
+    default:
+      return eventType;
+  }
+}
+
+interface PipelineEventTableRow {
+  time: string;
+  task: string;
+  phase: string;
+  turns: string;
+  event: string;
+  message: string;
+}
+
+export function formatPipelineEventTableRow(event: PipelineEvent, messageWidth = 90): PipelineEventTableRow {
+  const details = normalizedEventDetails(event);
+  return {
+    time: formatTimestamp(event.createdAt),
+    task: eventTask(event, details) ?? "-",
+    phase: eventPhase(details) ?? "-",
+    turns: eventTurns(details) ?? "-",
+    event: eventKind(event.eventType),
+    message: truncate(formatEventSummary(event.eventType, details), messageWidth),
+  };
+}
+
+export function renderPipelineEventsTable(events: PipelineEvent[], messageWidth = 90): string {
+  const rows = sortEventsChronologically(events).map((event) => formatPipelineEventTableRow(event, messageWidth));
+  if (rows.length === 0) return "";
+  const widths = {
+    time: 19,
+    task: Math.max(12, ...rows.map((row) => row.task.length)),
+    phase: Math.max(10, ...rows.map((row) => row.phase.length)),
+    turns: Math.max(5, ...rows.map((row) => row.turns.length)),
+    event: Math.max(5, ...rows.map((row) => row.event.length)),
+    message: messageWidth,
+  };
+  const header = [
+    pad("TIME", widths.time),
+    pad("TASK", widths.task),
+    pad("PHASE", widths.phase),
+    pad("TURNS", widths.turns),
+    pad("EVENT", widths.event),
+    pad("MESSAGE", widths.message),
+  ].join(" │ ");
+  const totalWidth = widths.time + widths.task + widths.phase + widths.turns + widths.event + widths.message + 15;
+  const hr = "─".repeat(totalWidth);
+  const lines = rows.map((row) => [
+    pad(row.time, widths.time),
+    pad(row.task, widths.task),
+    pad(row.phase, widths.phase),
+    pad(row.turns, widths.turns),
+    pad(row.event, widths.event),
+    pad(row.message, widths.message),
+  ].join(" │ "));
+  return [hr, header, hr, ...lines, hr].join("\n");
+}
+
 export function formatPipelineEventsGrouped(events: PipelineEvent[]): string[] {
   const lines: string[] = [];
   let currentWorkflow = "workflow";
@@ -140,7 +258,7 @@ export function formatPipelineEventsGrouped(events: PipelineEvent[]): string[] {
   for (const event of sortEventsChronologically(events)) {
     const details = normalizedEventDetails(event);
     const workflow = details ? detailString(details, ["workflow"]) : undefined;
-    const phase = details ? detailString(details, ["phase_id", "phase", "current_phase"]) : undefined;
+    const phase = eventPhase(details);
 
     if (event.eventType === "RunStarted") {
       currentWorkflow = workflow ?? currentWorkflow;
@@ -1534,8 +1652,9 @@ export const inboxCommand = new Command("inbox")
   .option("--full", "Show full message payloads (no truncation, JSON pretty-printed)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .option("--events", "Also show pipeline events (phase transitions, PR status, merge queue)")
+  .option("--events", "Also show pipeline events as a columnar table (time, task, phase, turns, event, message)")
   .option("--compact", "Show compact task/run summary instead of raw event/mail spam")
+  .option("--grouped", "Group pipeline events by workflow/phase instead of the default event table")
   .option("--events-limit <n>", "Max pipeline events to show (default: 50)", "50")
   .action(async (options: {
     agent?: string;
@@ -1552,13 +1671,16 @@ export const inboxCommand = new Command("inbox")
     projectPath?: string;
     events?: boolean;
     compact?: boolean;
+    grouped?: boolean;
+    eventsLimit?: string;
     "events-limit"?: string;
   }) => {
     const fullPayload = options.full ?? false;
     const limit = parseInt(options.limit ?? "50", 10);
-    const eventsLimit = parseInt(options["events-limit"] ?? "50", 10);
+    const eventsLimit = parseInt(options.eventsLimit ?? options["events-limit"] ?? "50", 10);
     const showEvents = options.events ?? false;
     const compactOutput = options.compact ?? false;
+    const groupedEvents = options.grouped ?? false;
     const taskFilter = options.task ?? options.bead;
 
     // Require --project or --all in multi-project mode
@@ -1654,11 +1776,15 @@ export const inboxCommand = new Command("inbox")
             console.log("No pipeline events found.");
           } else {
             console.log(chalk.bold("\nPipeline Events — all runs"));
-            console.log("─".repeat(70));
-            for (const line of formatPipelineEventsGrouped(events)) {
-              console.log(line);
+            if (groupedEvents) {
+              console.log("─".repeat(70));
+              for (const line of formatPipelineEventsGrouped(events)) {
+                console.log(line);
+              }
+              console.log("─".repeat(70));
+            } else {
+              console.log(renderPipelineEventsTable(events));
             }
-            console.log("─".repeat(70));
             console.log(`${events.length} event(s) shown.`);
           }
         }
@@ -1704,9 +1830,12 @@ export const inboxCommand = new Command("inbox")
 
           if (initialEvents.length > 0) {
             console.log(`── past events ${"─".repeat(55)}`);
-            for (const event of sortEventsChronologically(initialEvents)) {
-              seenEventIds.add(event.id);
-              console.log(formatPipelineEvent(event));
+            const sortedEvents = sortEventsChronologically(initialEvents);
+            for (const event of sortedEvents) seenEventIds.add(event.id);
+            if (groupedEvents) {
+              for (const event of sortedEvents) console.log(formatPipelineEvent(event));
+            } else {
+              console.log(renderPipelineEventsTable(sortedEvents));
             }
             console.log(`── live ${"─".repeat(62)}\n`);
           } else {
@@ -1735,9 +1864,14 @@ export const inboxCommand = new Command("inbox")
                 : daemon
                   ? await fetchDaemonEvents(daemon, { all: true, limit: eventsLimit })
                   : fetchEventsFromStore(store!, eventsLimit);
-              for (const event of selectUnseenEvents(events, seenEventIds)) {
-                seenEventIds.add(event.id);
-                console.log(formatPipelineEvent(event));
+              const unseenEvents = selectUnseenEvents(events, seenEventIds);
+              if (unseenEvents.length > 0) {
+                for (const event of unseenEvents) seenEventIds.add(event.id);
+                if (groupedEvents) {
+                  for (const event of unseenEvents) console.log(formatPipelineEvent(event));
+                } else {
+                  console.log(renderPipelineEventsTable(unseenEvents));
+                }
               }
             }
             const msgs = postgres
@@ -1883,11 +2017,15 @@ export const inboxCommand = new Command("inbox")
               console.log("\nNo pipeline events found.");
             } else {
               console.log(chalk.bold("\nPipeline Events — run: ") + `${runId}${taskLabel}`);
-              console.log("─".repeat(70));
-              for (const line of formatPipelineEventsGrouped(events)) {
-                console.log(line);
+              if (groupedEvents) {
+                console.log("─".repeat(70));
+                for (const line of formatPipelineEventsGrouped(events)) {
+                  console.log(line);
+                }
+                console.log("─".repeat(70));
+              } else {
+                console.log(renderPipelineEventsTable(events));
               }
-              console.log("─".repeat(70));
               console.log(`${events.length} event(s) shown.`);
             }
           }

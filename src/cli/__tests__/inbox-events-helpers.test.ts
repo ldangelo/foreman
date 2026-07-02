@@ -31,6 +31,8 @@ import {
   fetchPostgresEvents,
   formatEventSummary,
   formatPipelineEvent,
+  formatPipelineEventTableRow,
+  renderPipelineEventsTable,
   resolvePostgresInboxProject,
   selectUnseenEvents,
   sortEventsChronologically,
@@ -128,6 +130,51 @@ describe("inbox event helpers", () => {
     const report = formatPipelineEvent({ id: "evt-2", runId: "run-1", taskId: "foreman-1", eventType: "PhaseReportProduced", details: { phase_id: "qa", outcome: "retry", retryTarget: "developer" }, createdAt: "2026-01-01T00:00:01.000Z" });
     expect(report).toContain("☰ PhaseReportProduced");
     expect(report).toContain("Report qa for task foreman-1 → retry; steer developer");
+  });
+
+  it("renders pipeline events as an operator-friendly table", () => {
+    const events = [
+      {
+        id: "evt-2",
+        runId: "run-1",
+        taskId: "foreman-1",
+        eventType: "PhaseCompleted",
+        details: { phase_id: "qa", turns: 12, status: "completed" },
+        createdAt: "2026-01-01T00:02:00.000Z",
+      },
+      {
+        id: "evt-1",
+        runId: "run-1",
+        taskId: "foreman-1",
+        eventType: "PhaseStarted",
+        details: { phase_id: "qa" },
+        createdAt: "2026-01-01T00:01:00.000Z",
+      },
+      {
+        id: "evt-3",
+        runId: "run-1",
+        taskId: "foreman-1",
+        eventType: "RunFailed",
+        details: { phase_id: "qa", reason: "bad" },
+        createdAt: "2026-01-01T00:03:00.000Z",
+      },
+    ];
+
+    expect(formatPipelineEventTableRow(events[0] as any)).toMatchObject({
+      task: "foreman-1",
+      phase: "qa",
+      turns: "12",
+      event: "stop",
+    });
+    const table = renderPipelineEventsTable(events as any, 60);
+    expect(table).toContain("TIME");
+    expect(table).toContain("TASK");
+    expect(table).toContain("PHASE");
+    expect(table).toContain("TURNS");
+    expect(table).toContain("EVENT");
+    expect(table).toContain("MESSAGE");
+    expect(table.indexOf("Start qa")).toBeLessThan(table.indexOf("Complete qa"));
+    expect(table).toContain("error");
   });
 
   it("sortEventsChronologically returns a new oldest-to-newest array", () => {
