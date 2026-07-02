@@ -176,6 +176,26 @@ export class ElixirServerClient {
     throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
   }
 
+  async checkToolPolicy(payload: {
+    run_id: string;
+    task_id?: string;
+    phase_id: string;
+    worker_id?: string;
+    sequence?: number;
+    tool_call_id?: string;
+    tool_name: string;
+    args?: Record<string, unknown>;
+  }): Promise<{ allowed: boolean; action: string; reason: string; message?: string | null }> {
+    const response = await fetch(new URL("/worker/v1/tool-policy", this.baseUrl), {
+      method: "POST",
+      headers: this.headers({ command_id: `tool-policy-${payload.run_id}-${payload.tool_call_id ?? payload.tool_name}`, command_type: "worker.tool_policy" }),
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json() as { ok: true; decision: { allowed: boolean; action: string; reason: string; message?: string | null } } | ForemanServerError;
+    if (response.ok && body.ok) return body.decision;
+    throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
+  }
+
   async listInbox(opts: { runId?: string; projectId?: string; limit?: number; unread?: boolean } = {}): Promise<ElixirInboxMessage[]> {
     const params = new URLSearchParams();
     if (opts.runId) params.set("run_id", opts.runId);

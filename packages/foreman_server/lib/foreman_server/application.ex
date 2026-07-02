@@ -3,7 +3,7 @@ defmodule ForemanServer.Application do
 
   use Application
 
-  alias ForemanServer.{EventStore, ProjectionStore, ProjectRegistry, Scheduler}
+  alias ForemanServer.{EventStore, Overwatch, ProjectionStore, ProjectRegistry, Scheduler}
 
   @impl true
   def start(_type, _args) do
@@ -11,6 +11,7 @@ defmodule ForemanServer.Application do
       [
         {Registry, keys: :duplicate, name: ForemanServer.InboxRegistry},
         {ProjectionStore, []},
+        {Overwatch, []},
         {EventStore, []},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},

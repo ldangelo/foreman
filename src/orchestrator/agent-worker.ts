@@ -843,6 +843,32 @@ async function runPhase(
     customTools.push(createSafeCommandRunTool(foremanToolContext));
   }
 
+  let policySequence = 0;
+  const toolPolicy = process.env.FOREMAN_SERVER_URL
+    ? {
+        context: {
+          runId: config.runId,
+          taskId: config.taskId,
+          phaseId: role,
+          workerId: `node-pipeline:${config.taskId}`,
+        },
+        check: async (toolCallId: string, toolName: string, args: Record<string, unknown>) => {
+          policySequence += 1;
+          const client = new ElixirServerClient(process.env.FOREMAN_SERVER_URL!, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN);
+          return client.checkToolPolicy({
+            run_id: config.runId,
+            task_id: config.taskId,
+            phase_id: role,
+            worker_id: `node-pipeline:${config.taskId}`,
+            sequence: policySequence,
+            tool_call_id: toolCallId,
+            tool_name: toolName,
+            args,
+          });
+        },
+      }
+    : undefined;
+
   try {
     const phaseResult = await runPhaseSession({
       prompt,
@@ -852,6 +878,7 @@ async function runPhase(
       maxTurns: config.maxTurns,
       allowedTools: roleConfig.allowedTools,
       customTools,
+      toolPolicy,
       logFile,
       context: {
         phaseName: role,
@@ -1793,12 +1820,13 @@ function createWorkerStreamEventForwarder(
       return;
     }
     if (event.type === "toolCallFinished") {
+      const resultIsError = typeof event.result === "object" && event.result !== null && (event.result as { isError?: unknown }).isError === true;
       void Promise.resolve(observabilityWriter.logEvent?.("tool-call-finished", {
         phase,
         phase_id: phase,
         tool_call_id: event.toolCallId,
         tool_name: event.toolName,
-        status: event.isError ? "error" : "finished",
+        status: event.isError || resultIsError ? "error" : "finished",
         args: event.args,
         output: truncateForEvent(event.result),
         result: truncateForEvent(event.result),

@@ -24,7 +24,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 12
+    maxTurns: 500
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
@@ -53,7 +53,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 60
+    maxTurns: 500
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -69,7 +69,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 40
+    maxTurns: 500
     artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
     mail:
       onStart: true
@@ -83,7 +83,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 30
+    maxTurns: 500
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
@@ -100,7 +100,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 40
+    maxTurns: 500
     artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
     retryWith: developer
@@ -126,7 +126,7 @@ phases:
   - name: finalize
     builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
-    maxTurns: 30
+    maxTurns: 500
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -165,7 +165,7 @@ phases:
       allowed: [Bash, Glob, Grep, Read, TodoWrite, Write]
     models:
       default: MiniMax
-    maxTurns: 40
+    maxTurns: 500
     artifact: "{task.projectReportsDir}/PR_REVIEW_REPORT.md"
     verdict: true
     retryWith: developer
@@ -189,5 +189,5 @@ onFailure:
   models:
     default: MiniMax
     P0: MiniMax-highspeed
-  maxTurns: 20
+  maxTurns: 500
   artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

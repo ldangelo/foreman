@@ -20,7 +20,7 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Native task storage** — Elixir-backed tasks/events/projections
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
 - **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
-- **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections; phase overwatch sends Agent Mail nudges when heartbeat stats stop moving
+- **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections; Elixir overwatch records tool policy decisions and sends Agent Mail steering nudges when workers drift
 
 > **Note:** Foreman uses the Elixir backend for operator workflows after cutover. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
 
@@ -57,7 +57,7 @@ TRD-2026-014 adds an Elixir/OTP orchestration server alongside the existing Node
 
 - **Node CLI**: parses operator commands, starts or locates the Elixir server, sends authenticated JSON commands/reads, renders projection responses, and keeps deprecated aliases pointing at replacements.
 - **Elixir server**: owns durable commands, append-only events, CQRS projections, run/phase actors, scheduler capacity, automatic 5-second scheduler ticks that claim dispatchable `ready` tasks and launch the Node/Pi worker bridge, VCS/PR state machines, inbox/debug/attach views, recovery, doctor/metrics, and authorization audit events.
-- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/tool calls/assistant messages/artifacts back to Elixir, exposes Foreman-specific Pi tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`) for typed workflow behavior, sends phase-specific overwatch nudges when a phase appears idle, and emits authoritative terminal run/task events. Raw worker log files are compatibility/debug projections of that stream; the Elixir launcher records process-exit facts only and does not infer success/failure from stdout.
+- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/tool calls/assistant messages/artifacts back to Elixir, exposes Foreman-specific Pi tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`) for typed workflow behavior, asks Elixir overwatch for tool policy decisions before execution, and emits authoritative terminal run/task events. Raw worker log files are compatibility/debug projections of that stream; the Elixir launcher records process-exit facts only and does not infer success/failure from stdout.
 
 See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) for the migration architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
 

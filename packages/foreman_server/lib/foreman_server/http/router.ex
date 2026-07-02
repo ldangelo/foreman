@@ -399,6 +399,22 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  post "/worker/v1/tool-policy" do
+    with :ok <- authorize(conn),
+         {:ok, decision} <- ForemanServer.Overwatch.check_tool(conn.body_params) do
+      send_json(conn, 200, %{ok: true, decision: decision})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      {:error, {:missing_or_invalid, key}} ->
+        send_error(conn, 400, "VALIDATION_FAILED", "missing or invalid #{key}", false)
+
+      {:error, reason} ->
+        send_error(conn, 500, "INTERNAL", inspect(reason), true)
+    end
+  end
+
   post "/api/v1/commands" do
     with :ok <- authorize(conn),
          {:ok, command} <- normalize_command(conn.body_params),

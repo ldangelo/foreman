@@ -99,6 +99,20 @@ export type StreamEvent =
   | { type: "turnEnd"; iteration: number; timestamp: string; tokensIn?: number; tokensOut?: number }
   | { type: "agentEnd"; iteration: number; timestamp: string; success: boolean; message?: string };
 
+export interface ToolPolicyDecision {
+  allowed: boolean;
+  action: string;
+  reason: string;
+  message?: string | null;
+}
+
+export interface ToolPolicyContext {
+  runId: string;
+  taskId?: string;
+  phaseId: string;
+  workerId?: string;
+}
+
 export interface PiRunOptions {
   prompt: string;
   systemPrompt: string;
@@ -122,6 +136,11 @@ export interface PiRunOptions {
   guardrailConfig?: GuardrailConfig;
   /** Optional phase-level observability metadata used to emit Pi hook traces. */
   observability?: PhaseTraceMetadata;
+  /** Backend-owned policy gate called before each tool executes. */
+  toolPolicy?: {
+    context: ToolPolicyContext;
+    check: (toolCallId: string, toolName: string, args: Record<string, unknown>) => Promise<ToolPolicyDecision>;
+  };
   /** Live observability callback fired from Pi extension hooks. */
   onTraceEvent?: (event: PhaseTraceLiveEvent) => void;
   /** Optional structured output extraction. When provided, the runner will extract and validate JSON from outputText. */
@@ -181,10 +200,35 @@ const TOOL_FACTORIES: Record<string, ToolFactory> = {
  * Build the tool array from allowed tool names.
  * Unknown names are silently skipped (they may be custom tools registered separately).
  */
+function wrapToolWithPolicy<T extends { name: string; execute: (...args: any[]) => Promise<unknown> }>(tool: T, policy: NonNullable<PiRunOptions["toolPolicy"]>): T {
+  const originalExecute = tool.execute.bind(tool);
+  return {
+    ...tool,
+    async execute(toolCallId: string, params: Record<string, unknown>, ...rest: unknown[]) {
+      const decision = await policy.check(toolCallId, tool.name, params ?? {});
+      if (!decision.allowed) {
+        const message = `Foreman overwatch denied ${tool.name}: ${decision.reason}`;
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: { deniedByOverwatch: true, reason: decision.reason, action: decision.action },
+          isError: true,
+        };
+      }
+      return originalExecute(toolCallId, params ?? {}, ...rest);
+    },
+  } as T;
+}
+
+function applyToolPolicy<T extends { name: string; execute: (...args: any[]) => Promise<unknown> }>(tools: T[], policy?: PiRunOptions["toolPolicy"]): T[] {
+  if (!policy) return tools;
+  return tools.map((tool) => wrapToolWithPolicy(tool, policy));
+}
+
 function buildTools(
   allowedNames: readonly string[],
   cwd: string,
   guardrailConfig?: GuardrailConfig,
+  toolPolicy?: PiRunOptions["toolPolicy"],
 ) {
   const tools = [];
 
@@ -216,7 +260,7 @@ function buildTools(
       tools.push(factory(cwd));
     }
   }
-  return tools;
+  return applyToolPolicy(tools, toolPolicy);
 }
 
 // ── Model resolution ────────────────────────────────────────────────────
@@ -401,9 +445,13 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   const model = getModel(provider as never, modelId as never);
 
   // Build tool set from allowed names
-  const tools = opts.allowedTools
-    ? buildTools(opts.allowedTools, opts.cwd, opts.guardrailConfig)
-    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd, opts.guardrailConfig);
+  const builtInTools = opts.allowedTools
+    ? buildTools(opts.allowedTools, opts.cwd, opts.guardrailConfig, opts.toolPolicy)
+    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd, opts.guardrailConfig, opts.toolPolicy);
+  // Register built-ins as custom tool definitions so the policy-wrapped execute()
+  // path is authoritative for every tool, including Read/Bash/Edit/Write.
+  const tools = [] as never[];
+  const customTools = [...builtInTools, ...applyToolPolicy(opts.customTools ?? [], opts.toolPolicy)];
 
   // Accumulators
   let totalTurns = 0;
@@ -461,7 +509,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       model,
       thinkingLevel: "medium",
       tools,
-      customTools: opts.customTools,
+      customTools,
       resourceLoader,
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.create(opts.cwd, agentDir),

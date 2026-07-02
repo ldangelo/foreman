@@ -154,6 +154,8 @@ defmodule ForemanServer.EventStore do
       ForemanServer.Scheduler.handle_event(event)
     end
 
+    ForemanServer.Overwatch.handle_event(event)
+
     :ok
   end
 

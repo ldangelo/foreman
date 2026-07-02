@@ -73,7 +73,7 @@ TRD-2026-014 Elixir migration split:
 ```
 Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker
    |                              |                                  |
-   |                              |                                  └─ Pi SDK phases, ordered events/heartbeats/logs/artifacts + overwatch nudges
+   |                              |                                  └─ Pi SDK phases, ordered events/heartbeats/logs/artifacts + Elixir overwatch policy/nudges
    |                              └─ commands, events, projections, run/phase actors, recovery, VCS/PR, doctor/metrics, audits
    └─ command parsing, auto-start, projection rendering, legacy alias/deprecation warnings
 ```
