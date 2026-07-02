@@ -444,7 +444,9 @@ export class GitBackend implements VcsBackend {
     options?: PushOptions,
   ): Promise<void> {
     const args = ["push", "-u", "origin", branchName];
-    if (options?.force) {
+    if (options?.forceWithLease) {
+      args.splice(1, 0, "--force-with-lease");
+    } else if (options?.force) {
       args.splice(1, 0, "-f");
     }
     await this.git(args, workspacePath);

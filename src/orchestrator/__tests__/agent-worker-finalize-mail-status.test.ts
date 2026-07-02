@@ -61,7 +61,7 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('await registeredReadStore.logEvent(registeredProjectId, eventType, data, runId);');
     expect(source).toContain('Registered terminal event write failed (non-fatal); falling back to local store');
     expect(source).toContain('store.logEvent(projectId, eventType, data, runId);');
-    expect(source).toContain('await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), {');
+    expect(source).toContain('await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), terminalPayload);');
   });
 
   it("threads registered project context into Refinery during finalize PR creation", () => {

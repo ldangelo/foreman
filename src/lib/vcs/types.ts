@@ -67,6 +67,8 @@ export interface DeleteBranchResult {
 export interface PushOptions {
   /** If true, force-push (overwrite remote history). Use with caution. */
   force?: boolean;
+  /** If true, use a safer force-with-lease push when supported. */
+  forceWithLease?: boolean;
   /**
    * Jujutsu-specific compatibility hint: older jj versions needed
    * `--allow-new` for first push of a new bookmark. GitBackend ignores it.

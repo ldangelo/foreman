@@ -123,6 +123,57 @@ defmodule ForemanServer.WorkerLauncherTest do
     end)
   end
 
+  test "worker fallback failure uses the last failed phase when logs include earlier retries", %{
+    bin_dir: bin_dir,
+    project_dir: project_dir
+  } do
+    foreman = Path.join(bin_dir, "foreman")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    echo '[PIPELINE] qa failed after 2 retries, continuing'
+    echo '[PIPELINE] finalize FAIL: push_failed: git push failed: non-fast-forward'
+    echo '[PIPELINE] finalize failed after 1 retries'
+    echo '[PIPELINE] FAILED ($6.0212)'
+    exit 0
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{
+      task_id: "foreman-ecd62",
+      project_id: "project-a",
+      project_path: project_dir,
+      task_type: "bug"
+    }
+
+    run_id = "00000000-0000-0000-0000-000000000004"
+
+    {:ok, _} =
+      EventStore.append(%{
+        event_type: "RunStarted",
+        stream_id: "run:#{run_id}",
+        payload: %{run_id: run_id, task_id: "foreman-ecd62", current_phase: "explorer"}
+      })
+
+    {:ok, _} =
+      EventStore.append(%{
+        event_type: "PhaseStarted",
+        stream_id: "run:#{run_id}",
+        payload: %{run_id: run_id, task_id: "foreman-ecd62", phase_id: "explorer"}
+      })
+
+    assert {:ok, _} = WorkerLauncher.launch(task, run_id, ["explorer", "qa", "finalize"])
+
+    assert_eventually(fn -> EventStore.stream("worker-launch:#{run_id}") end, fn events ->
+      Enum.any?(events, fn event ->
+        event.event_type == "RunFailed" &&
+          event.payload.phase_id == "finalize" &&
+          event.payload.reason == "finalize_failed"
+      end)
+    end)
+  end
+
   test "zero-exit failed worker output records diagnostic fallback failure", %{
     bin_dir: bin_dir,
     project_dir: project_dir

@@ -275,6 +275,8 @@ export interface PipelineContext {
     phaseRecords: PhaseRecord[];
     retryCounts: Record<string, number>;
     success: boolean;
+    failedPhase?: string;
+    failureReason?: string;
   }) => Promise<void>;
   /**
    * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
@@ -551,6 +553,10 @@ interface PhaseSequenceResult {
   retriesExhausted?: boolean;
   /** Set when a retryable failure was handled via cooldown retry (task in cooldown state). */
   cooldownUntil?: string;
+  /** Actual failed phase for terminal events; avoids stale projection/currentPhase fallback. */
+  failedPhase?: string;
+  /** Concrete failure reason for terminal events. */
+  failureReason?: string;
 }
 
 function isGeneratedWorkflowArtifact(filePath: string): boolean {
@@ -801,8 +807,8 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
           if (!info.success && !terminalFailureEmitted) {
             terminalFailureEmitted = true;
             const failedPhase = [...info.phaseRecords].reverse().find((phase) => phase.success === false);
-            const phaseName = failedPhase?.name ?? info.progress.currentPhase ?? "pipeline";
-            const reason = failedPhase?.error ?? `${phaseName}_failed`;
+            const phaseName = info.failedPhase ?? failedPhase?.name ?? info.progress.currentPhase ?? "pipeline";
+            const reason = info.failureReason ?? failedPhase?.error ?? `${phaseName}_failed`;
             await emitPipelineTerminalFailureEvents(ctx, [
               ctx.store,
               config.runId,
@@ -1224,6 +1230,8 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
       phaseRecords: result.phaseRecords,
       retryCounts: result.retryCounts,
       success: result.success,
+      failedPhase: result.failedPhase,
+      failureReason: result.failureReason,
     });
   }
 }
@@ -1302,7 +1310,7 @@ async function runPhaseSequence(
       ctx.log(`[PIPELINE] Budget stop before ${phaseName}: ${prePhaseBudgetReason}`);
       await writeTaskPhaseNote(phaseName, "failure", prePhaseBudgetReason, { retryable: false, budget: true });
       await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, prePhaseBudgetReason, config.projectPath, notifyClient);
-      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: prePhaseBudgetReason };
     }
     const agentName = `${phaseName}-${taskId}`;
     const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
@@ -1524,7 +1532,7 @@ async function runPhaseSequence(
         });
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
       }
     }
 
@@ -1548,7 +1556,7 @@ async function runPhaseSequence(
         ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${errorMsg}`);
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
       }
 
       const result = await ctx.runBuiltinPhase(phase, progress);
@@ -1619,7 +1627,7 @@ async function runPhaseSequence(
           });
           await writeTaskPhaseNote(phaseName, "failure", `${phaseName} rate limited: ${errorMsg}`, { retryable: true });
           await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
         }
 
         if (phase.retryWith) {
@@ -1671,7 +1679,7 @@ async function runPhaseSequence(
         });
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
       }
 
       if (phase.mail?.onComplete !== false) {
@@ -1749,7 +1757,7 @@ async function runPhaseSequence(
           });
           await writeTaskPhaseNote(phaseName, "failure", `${phaseName} rate limited: ${errorMsg}`, { retryable: true });
           await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
         }
 
         if (phase.retryWith) {
@@ -1799,7 +1807,7 @@ async function runPhaseSequence(
         });
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
       }
       // Handle verdict if configured
       if (phase.verdict && result.outputText) {
@@ -2033,7 +2041,7 @@ async function runPhaseSequence(
       ctx.log(`[PIPELINE] Budget stop after ${phaseName}: ${postPhaseBudgetReason}`);
       await writeTaskPhaseNote(phaseName, "failure", postPhaseBudgetReason, { retryable: false, budget: true });
       await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, postPhaseBudgetReason, config.projectPath, notifyClient);
-      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: postPhaseBudgetReason };
     }
 
     // 7. Handle failure
@@ -2052,7 +2060,7 @@ async function runPhaseSequence(
         });
         await writeTaskPhaseNote(phaseName, "failure", `${phaseName} agent-error: ${errorMsg}`, { retryable: false });
         await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
       }
 
       // P1: Rate limit handling with smarter backoff
@@ -2221,7 +2229,7 @@ async function runPhaseSequence(
             cooldownUntil, cooldownSeconds,
           });
           await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg} — cooldown until ${cooldownUntil}`, { retryable: true, cooldownUntil });
-          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, cooldownUntil };
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, cooldownUntil, failedPhase: phaseName, failureReason: errorMsg };
         }
       }
 
@@ -2232,7 +2240,7 @@ async function runPhaseSequence(
       });
       await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${errorMsg}`, { retryable, failureKind: kind });
       await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, errorMsg, config.projectPath, notifyClient);
-      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
     }
 
     // 8. Verdict handling: parse PASS/FAIL, retry if needed.
@@ -2341,7 +2349,7 @@ async function runPhaseSequence(
         if (phaseName === "finalize" && finalizeFailureScope === "unrelated_files") {
           ctx.log(`[FINALIZE] FAIL — unrelated/pre-existing test failures detected, skipping developer retry`);
           await appendFile(logFile, `\n[PIPELINE] finalize failed due to unrelated/pre-existing test failures — no developer retry\n`);
-          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress };
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: "tests_failed_pre_existing_issues" };
         }
 
         if (currentRetries < maxRetries) {
@@ -2381,7 +2389,7 @@ async function runPhaseSequence(
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed after ${maxRetries} retries${failOnRetriesExhausted || terminalFinalizeFailure ? "" : ", continuing"}\n`);
           feedbackContext = undefined;
           if (failOnRetriesExhausted || terminalFinalizeFailure) {
-            return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true };
+            return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, retriesExhausted: true, failedPhase: phaseName, failureReason: feedbackContext ?? `${phaseName}_failed` };
           }
         }
       } else {

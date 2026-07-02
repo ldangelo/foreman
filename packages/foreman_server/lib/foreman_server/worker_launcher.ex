@@ -159,40 +159,62 @@ defmodule ForemanServer.WorkerLauncher do
   defp infer_terminal_failure(_output), do: %{phase_id: nil, reason: nil}
 
   defp infer_failed_phase(output) do
-    cond do
-      match = Regex.run(~r/FAILED\s+[—-]\s+\s*\S+\s+\[([^\]]+)\]/, output) ->
-        Enum.at(match, 1)
+    patterns = [
+      ~r/FAILED\s+[—-]\s+\s*\S+\s+\[([^\]]+)\]/,
+      ~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i,
+      ~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+FAIL:/i,
+      ~r/\[PHASE:\s*([^\]]+)\]\s+FAILED/i
+    ]
 
-      match = Regex.run(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i, output) ->
-        match |> Enum.at(1) |> String.downcase()
-
-      match = Regex.run(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+FAIL:/i, output) ->
-        match |> Enum.at(1) |> String.downcase()
-
-      match = Regex.run(~r/\[PHASE:\s*([^\]]+)\]\s+FAILED/i, output) ->
-        match |> Enum.at(1) |> String.trim() |> String.downcase()
-
-      true ->
-        nil
-    end
+    patterns
+    |> Enum.flat_map(fn pattern -> Regex.scan(pattern, output, return: :index) end)
+    |> Enum.map(fn [{start, _} | captures] ->
+      {capture_text(output, captures), start}
+    end)
+    |> Enum.reject(fn {phase, _start} -> is_nil(phase) or phase == "" end)
+    |> Enum.max_by(fn {_phase, start} -> start end, fn -> {nil, nil} end)
+    |> elem(0)
+    |> normalize_phase()
   end
 
   defp infer_failure_reason(output) do
-    cond do
-      match = Regex.run(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i, output) ->
-        "#{match |> Enum.at(1) |> String.downcase()}_failed"
+    reasons =
+      Regex.scan(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i, output, return: :index)
+      |> Enum.map(fn [{start, _}, phase_capture] ->
+        phase = capture_text(output, [phase_capture]) |> normalize_phase()
+        {"#{phase}_failed", start}
+      end)
 
-      match = Regex.run(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+FAIL:\s*([^\n]+)/i, output) ->
-        match |> Enum.at(2) |> String.trim()
+    fail_reasons =
+      Regex.scan(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+FAIL:\s*([^\n]+)/i, output, return: :index)
+      |> Enum.map(fn [{start, _}, _phase_capture, reason_capture] ->
+        {capture_text(output, [reason_capture]) |> String.trim(), start}
+      end)
 
-      String.contains?(output, "Run completed: failed") or
-          String.contains?(output, "[PIPELINE] FAILED") ->
-        "pipeline_failed"
+    case Enum.max_by(reasons ++ fail_reasons, fn {_reason, start} -> start end, fn -> {nil, nil} end) do
+      {reason, _start} when is_binary(reason) and reason != "" ->
+        reason
 
-      true ->
-        nil
+      _ ->
+        if String.contains?(output, "Run completed: failed") or String.contains?(output, "[PIPELINE] FAILED") do
+          "pipeline_failed"
+        end
     end
   end
+
+  defp capture_text(output, [{start, length} | _]) do
+    binary_part(output, start, length)
+  end
+
+  defp capture_text(_output, _captures), do: nil
+
+  defp normalize_phase(phase) when is_binary(phase) do
+    phase
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_phase(_phase), do: nil
 
   defp append(event_type, task, run_id, payload) do
     EventStore.append(%{

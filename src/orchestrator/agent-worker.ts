@@ -1546,8 +1546,21 @@ async function runFinalizeBuiltinPhase(args: {
   try {
     await vcsBackend.push(config.worktreePath, branchName, { allowNew: true });
   } catch (err: unknown) {
-    await writeFinalizeReport({ config, install, typecheck, commitHash, pushStatus: "FAILED", branchName });
-    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `push_failed: ${err instanceof Error ? err.message : String(err)}` };
+    const firstPushError = err instanceof Error ? err.message : String(err);
+    const canRetryWithLease = /non-fast-forward|fetch first|Updates were rejected|behind its remote/i.test(firstPushError);
+    if (canRetryWithLease) {
+      log(`[FINALIZE] normal push rejected as non-fast-forward; retrying with force-with-lease for ${branchName}`);
+      try {
+        await vcsBackend.push(config.worktreePath, branchName, { allowNew: true, forceWithLease: true });
+      } catch (leaseErr: unknown) {
+        const leaseMsg = leaseErr instanceof Error ? leaseErr.message : String(leaseErr);
+        await writeFinalizeReport({ config, install, typecheck, commitHash, pushStatus: "FAILED", branchName });
+        return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `push_failed: ${leaseMsg}` };
+      }
+    } else {
+      await writeFinalizeReport({ config, install, typecheck, commitHash, pushStatus: "FAILED", branchName });
+      return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `push_failed: ${firstPushError}` };
+    }
   }
 
   await writeFinalizeReport({ config, install, typecheck, commitHash, pushStatus: "SUCCESS", branchName });
@@ -2159,7 +2172,7 @@ async function runPipeline(
 
     // Pipeline post-processing: determine finalize push success, then enqueue merge after
     // any post-finalize phases (for example create-pr/pr-review) complete.
-    async onPipelineComplete({ progress, success }) {
+    async onPipelineComplete({ progress, success, failedPhase: reportedFailedPhase, failureReason: reportedFailureReason }) {
 
       const hasFinalizePhase = workflowConfig.phases.some((phase) => phase.name === "finalize");
       if (!hasFinalizePhase) {
@@ -2211,13 +2224,15 @@ async function runPipeline(
           log(`PIPELINE COMPLETED for ${taskId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
           await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
         } else {
+          const terminalFailedPhase = reportedFailedPhase ?? progress.currentPhase ?? "pipeline";
           await Promise.resolve(registeredObservabilityWriter?.logEvent?.("run-failed", {
             run_id: runId,
             task_id: taskId,
             status: "failed",
             failed_at: now,
-            phase: progress.currentPhase ?? "pipeline",
-            reason: `${progress.currentPhase ?? "pipeline"}_failed`,
+            phase: terminalFailedPhase,
+            phase_id: terminalFailedPhase,
+            reason: reportedFailureReason ?? `${terminalFailedPhase}_failed`,
           }));
           await updateTerminalRunStatus({
             runId,
@@ -2235,10 +2250,10 @@ async function runPipeline(
       // Read finalize outcome from agent mail. If a later post-finalize phase failed,
       // preserve the actual phase name instead of reporting every pipeline failure
       // as finalize_validation_failed.
-      const failedPhase = success ? "finalize" : (progress.currentPhase ?? "finalize");
+      const failedPhase = success ? "finalize" : (reportedFailedPhase ?? progress.currentPhase ?? "finalize");
       let finalizeSucceeded = success;
       let finalizeRetryable = true;
-      let finalizeFailureReason = success ? "" : `${failedPhase}_failed`;
+      let finalizeFailureReason = success ? "" : (reportedFailureReason ?? `${failedPhase}_failed`);
       if (agentMailClient) {
         const foremanMsgs = await agentMailClient.fetchInbox("foreman");
         const finalizeSender = `finalize-${taskId}`;

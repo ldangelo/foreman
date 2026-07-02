@@ -164,6 +164,11 @@ describe('PushOptions type', () => {
     const opts: PushOptions = { force: true };
     expect(opts.force).toBe(true);
   });
+
+  it('accepts force-with-lease push', () => {
+    const opts: PushOptions = { forceWithLease: true };
+    expect(opts.forceWithLease).toBe(true);
+  });
 });
 
 // ── FinalizeTemplateVars ────────────────────────────────────────────────

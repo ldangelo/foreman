@@ -554,7 +554,7 @@ export class JujutsuBackend implements VcsBackend {
     options?: PushOptions,
   ): Promise<void> {
     const baseArgs = ["git", "push", "--bookmark", branchName];
-    if (options?.force) {
+    if (options?.force || options?.forceWithLease) {
       baseArgs.push("--force");
     }
 
