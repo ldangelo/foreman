@@ -56,7 +56,7 @@ Important phase reports:
 | PR wait/review | `PR_WAIT_REPORT.md`, `PR_REVIEW_REPORT.md` |
 | Merge | `MERGE_REPORT.md` |
 
-Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase and omits nested delegation tools from fix/remediation phases. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
+Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase and omits nested delegation tools from fix/remediation phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before dispatch. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
 
 ### Worktrees
 
@@ -200,7 +200,7 @@ foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for event-projected agent messages (including message contents) plus current lifecycle/terminal events; add `--events` to see phase completions, retries, verdicts, and overwatch nudges. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. For stuck runs, use `foreman retry` or Elixir recovery workflows.
+Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for event-projected agent messages (including message contents) plus current lifecycle/terminal events; add `--events` to see workflow → phase → message/tool-call grouping with phase completions, retries, verdicts, and overwatch nudges. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. For stuck runs, use `foreman retry` or Elixir recovery workflows.
 
 ### 8. Triage Failures
 

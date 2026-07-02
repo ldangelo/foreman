@@ -36,6 +36,7 @@ foreman worktree       # Git worktree management
 foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
 foreman purge runs     # Remove stale failed run records
 foreman inbox          # Agent mail + selected-run lifecycle events
+foreman inbox --task X --events  # Grouped workflow→phase→message/tool timeline
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
 foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
@@ -168,7 +169,7 @@ vcs:
 
 ## Workflow YAML Configuration
 
-Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides).
+Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before `foreman run`; `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults.
 
 ```yaml
 # Example: src/defaults/workflows/default.yaml

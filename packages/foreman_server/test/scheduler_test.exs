@@ -5,7 +5,7 @@ end
 defmodule ForemanServer.SchedulerTest do
   use ExUnit.Case
 
-  alias ForemanServer.{ProjectionStore, RunActor, Scheduler}
+  alias ForemanServer.{EventStore, ProjectionStore, Scheduler}
 
   setup do
     tmp_dir =
@@ -35,15 +35,18 @@ defmodule ForemanServer.SchedulerTest do
     :ok
   end
 
-  test "tick claims ready tasks and starts run actors when capacity exists" do
+  test "tick claims ready tasks and records run start without synthetic phases" do
     create_task("task-a", %{project_id: "alpha", status: "ready"})
 
     assert {:ok, %{claimed: [%{task_id: "task-a", run_id: run_id}], skipped: []}} =
              Scheduler.tick(max_concurrent: 2, default_phases: ["dev", "qa"])
 
     assert run_id =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-    assert %{current_phase: "dev", phase_order: ["dev", "qa"]} = RunActor.state(run_id)
     assert ProjectionStore.snapshot().tasks["task-a"].status == "in_progress"
+
+    assert [%{event_type: "RunStarted", payload: payload}] = EventStore.stream("run:#{run_id}")
+    assert payload.phase_order == ["dev", "qa"]
+    refute Enum.any?(EventStore.stream("run:#{run_id}"), &(&1.event_type == "PhaseStarted"))
   end
 
   test "global capacity leaves extra ready tasks queued and records skip reason" do
@@ -92,7 +95,7 @@ defmodule ForemanServer.SchedulerTest do
 
     assert_receive_tick(fn -> ProjectionStore.snapshot().tasks["task-auto"].status end)
     run_id = ProjectionStore.snapshot().tasks["task-auto"].run_id
-    assert %{current_phase: "developer"} = RunActor.state(run_id)
+    assert [%{event_type: "RunStarted"}] = EventStore.stream("run:#{run_id}")
   end
 
   test "event appended to ready task stream triggers scheduler without projection polling tick" do
@@ -121,7 +124,7 @@ defmodule ForemanServer.SchedulerTest do
 
     assert_receive_tick(fn -> ProjectionStore.snapshot().tasks["task-event"].status end)
     assert run_id = ProjectionStore.snapshot().tasks["task-event"].run_id
-    assert %{current_phase: "developer"} = RunActor.state(run_id)
+    assert [%{event_type: "RunStarted"}] = EventStore.stream("run:#{run_id}")
     assert Scheduler.state().last_event_id
   end
 

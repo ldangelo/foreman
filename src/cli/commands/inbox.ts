@@ -115,14 +115,53 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
 export function formatPipelineEvent(event: PipelineEvent): string {
   const ts = formatTimestamp(event.createdAt);
   const icon = PIPELINE_EVENT_ICONS[event.eventType] ?? "·";
-  const details = event.details ? {
+  const details = normalizedEventDetails(event);
+  const summary = formatEventSummary(event.eventType, details);
+  return `[${ts}] ${icon} ${event.eventType} — ${summary}`;
+}
+
+function normalizedEventDetails(event: PipelineEvent): Record<string, unknown> | null {
+  return event.details ? {
     ...event.details,
     task_id: event.details.task_id ?? event.taskId,
     run_id: event.details.run_id ?? event.runId,
     project_id: event.details.project_id ?? event.projectId,
   } : null;
-  const summary = formatEventSummary(event.eventType, details);
-  return `[${ts}] ${icon} ${event.eventType} — ${summary}`;
+}
+
+export function formatPipelineEventsGrouped(events: PipelineEvent[]): string[] {
+  const lines: string[] = [];
+  let currentWorkflow = "workflow";
+  let currentPhase: string | null = null;
+
+  for (const event of sortEventsChronologically(events)) {
+    const details = normalizedEventDetails(event);
+    const workflow = details ? detailString(details, ["workflow"]) : undefined;
+    const phase = details ? detailString(details, ["phase_id", "phase", "current_phase"]) : undefined;
+
+    if (event.eventType === "RunStarted") {
+      currentWorkflow = workflow ?? currentWorkflow;
+      lines.push(chalk.bold(`workflow: ${currentWorkflow}`));
+      continue;
+    }
+
+    if (event.eventType === "PhaseStarted" && phase) {
+      currentPhase = phase;
+      lines.push(chalk.bold(`  phase: ${phase}`));
+      lines.push(`    ${formatPipelineEvent(event)}`);
+      continue;
+    }
+
+    const effectivePhase: string | null = phase ?? currentPhase;
+    if (effectivePhase && effectivePhase !== currentPhase) {
+      currentPhase = effectivePhase;
+      lines.push(chalk.bold(`  phase: ${effectivePhase}`));
+    }
+
+    lines.push(`${currentPhase ? "    " : "  "}${formatPipelineEvent(event)}`);
+  }
+
+  return lines;
 }
 
 function detailString(details: Record<string, unknown>, keys: string[]): string | undefined {
@@ -148,10 +187,10 @@ export function formatEventSummary(eventType: string, details: Record<string, un
   switch (eventType) {
     case "phase-start":
     case "PhaseStarted":
-      return phase ? `Start ${phase}${target ? ` for ${target}` : ""}` : target ? `Start phase for ${target}` : eventType;
+      return phase ? (target ? `Start ${phase} for ${target}` : `Start: ${phase}`) : target ? `Start phase for ${target}` : eventType;
     case "phase-complete":
     case "PhaseCompleted":
-      return phase ? `Complete ${phase}${target ? ` for ${target}` : ""}${status ? ` → ${status}` : ""}` : target ? `Complete phase for ${target}` : eventType;
+      return phase ? (target ? `Complete ${phase} for ${target}${status ? ` → ${status}` : ""}` : `Complete: ${phase}${status ? ` → ${status}` : ""}`) : target ? `Complete phase for ${target}` : eventType;
     case "PhaseFailed":
       return phase ? `Failed ${phase}${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}` : target ? `Failed phase for ${target}` : eventType;
     case "PhaseRetried": {
@@ -230,7 +269,7 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "stuck":
       return taskId ? `Stuck: ${taskId}` : "Stuck";
     default:
-      return target ? `${eventType}: ${target}` : eventType;
+      return taskId ? `${eventType}: ${taskId}` : runId ? `${eventType}: ${runId}` : eventType;
   }
 }
 
@@ -979,9 +1018,14 @@ export async function resolvePostgresRunId(
   options: { run?: string; task?: string; bead?: string },
 ): Promise<string | null> {
   if (options.run) return options.run;
-  const runs = await adapter.listRuns(projectId, { limit: 100 });
   const taskFilter = options.task ?? options.bead;
-  if (taskFilter) return runs.find((run) => run.task_id === taskFilter)?.id ?? null;
+  if (taskFilter) {
+    const task = await adapter.getTask(projectId, taskFilter);
+    if (task?.run_id) return task.run_id;
+    const runs = await adapter.listRuns(projectId, { limit: 100 });
+    return runs.find((run) => run.task_id === taskFilter)?.id ?? null;
+  }
+  const runs = await adapter.listRuns(projectId, { limit: 100 });
   return runs[0]?.id ?? null;
 }
 
@@ -1031,14 +1075,19 @@ export async function resolveDaemonRunId(
 ): Promise<string | null> {
   if (options.run) return options.run;
   if (daemon.backend === "elixir") {
-    const runs = await daemon.client.listRuns();
-    const filtered = runs.filter((run) => run.project_id === daemon.projectId);
     const taskFilter = options.task ?? options.bead;
     if (taskFilter) {
-      const match = filtered.find((run) => String(run.task_id ?? "") === taskFilter);
+      const task = await daemon.client.getTask(taskFilter).catch(() => null);
+      const taskRunId = task && typeof task.run_id === "string" ? task.run_id : null;
+      if (taskRunId) return taskRunId;
+    }
+
+    const runs = await daemon.client.listRuns({ projectId: daemon.projectId });
+    if (taskFilter) {
+      const match = runs.find((run) => String(run.task_id ?? "") === taskFilter);
       return match?.run_id ? String(match.run_id) : match?.id ? String(match.id) : null;
     }
-    const first = filtered[0];
+    const first = runs[0];
     return first?.run_id ? String(first.run_id) : first?.id ? String(first.id) : null;
   }
   const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[];
@@ -1433,8 +1482,8 @@ export const inboxCommand = new Command("inbox")
           } else {
             console.log(chalk.bold("\nPipeline Events — all runs"));
             console.log("─".repeat(70));
-            for (const event of sortEventsChronologically(events)) {
-              console.log(formatPipelineEvent(event));
+            for (const line of formatPipelineEventsGrouped(events)) {
+              console.log(line);
             }
             console.log("─".repeat(70));
             console.log(`${events.length} event(s) shown.`);
@@ -1640,8 +1689,8 @@ export const inboxCommand = new Command("inbox")
           } else {
             console.log(chalk.bold("\nPipeline Events — run: ") + runId);
             console.log("─".repeat(70));
-            for (const event of events) {
-              console.log(formatPipelineEvent(event));
+            for (const line of formatPipelineEventsGrouped(events)) {
+              console.log(line);
             }
             console.log("─".repeat(70));
             console.log(`${events.length} event(s) shown.`);

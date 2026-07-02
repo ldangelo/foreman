@@ -499,11 +499,11 @@ foreman doctor --fix                    # Auto-fix safe cleanup: retryable/zombi
 ```
 
 ### `foreman inbox`
-View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. Message contents appear in the default table preview; use `--full` for complete bodies. Add `--events` to include phase completions, retries, verdicts, overwatch nudges, worktree creation, dispatch, and merge/refinery lifecycle events.
+View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. Message contents appear in the default table preview; use `--full` for complete bodies. Add `--events` to include workflow → phase → message/tool-call grouping with phase completions, retries, verdicts, overwatch nudges, worktree creation, dispatch, and merge/refinery lifecycle events.
 
 ```bash
 foreman inbox                            # Latest run's messages
-foreman inbox --task task-abc           # Messages for a specific task
+foreman inbox --task task-abc           # Messages/events for a specific task
 foreman inbox --all                     # All runs
 foreman inbox --all --watch             # Live stream across all runs
 foreman inbox send --from qa --to developer --subject fix-needed  # Send a message (--run-id or FOREMAN_RUN_ID)
@@ -762,7 +762,7 @@ Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (back
 
 ### Workflow YAML
 
-Foreman pipelines are configured via workflow YAML files. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
+Foreman pipelines are configured via workflow YAML files. After editing bundled source workflows or prompts, run `foreman init --force` before dispatch so installed runtime copies are refreshed; `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
 
 Workflows define:
 - **Setup steps** — dependency installation, build commands (stack-agnostic)

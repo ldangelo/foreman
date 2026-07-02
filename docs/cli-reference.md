@@ -47,14 +47,14 @@ Initialize Foreman in a project. Applies pending packaged Postgres migrations, c
 ```bash
 foreman init                      # Initialize with auto-detected name
 foreman init -n my-project        # Initialize with explicit name
-foreman init --force              # Overwrite existing prompt files
+foreman init --force              # Reinstall prompt and workflow files after source edits
 foreman init --wizard             # Interactive setup wizard that writes .foreman/config.yaml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-n, --name <name>` | Project name (default: directory name) |
-| `--force` | Overwrite existing prompt and workflow files |
+| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`beads`, `jira`, or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
 ---
@@ -282,7 +282,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, workflow configs, stale run records, zombie runs, and stale/orphaned worktrees.
+Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, workflow configs, stale run records, zombie runs, and stale/orphaned worktrees. Installed workflow YAML is compared to bundled defaults; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
 
 ```bash
 foreman doctor                    # Run all health checks
@@ -462,7 +462,7 @@ Initial tools include one-call smoke status, health, scheduler status/tick, proj
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. Message contents appear in the table preview by default; use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `--events` includes phase starts/completions, retries, verdicts, skips, overwatch nudges, worktree creation, dispatch, and merge/refinery events that have been bridged into the Elixir event store. Tool calls and assistant message events are persisted for debug/log projections; inbox keeps them compact or filtered so operator narrative remains readable. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project.
+View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. Message contents appear in the table preview by default; use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `--events` includes phase starts/completions, retries, verdicts, skips, overwatch nudges, worktree creation, dispatch, and merge/refinery events that have been bridged into the Elixir event store, grouped as workflow → phase → message/tool-call lines. Tool calls and assistant message events are persisted for debug/log projections; inbox keeps them compact or filtered so operator narrative remains readable. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project.
 
 ```bash
 foreman inbox                     # Show latest run's messages

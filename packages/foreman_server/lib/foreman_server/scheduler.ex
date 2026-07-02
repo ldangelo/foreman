@@ -3,9 +3,9 @@ defmodule ForemanServer.Scheduler do
 
   use GenServer
 
-  alias ForemanServer.{EventStore, ProjectionStore, RunActor}
+  alias ForemanServer.{EventStore, ProjectionStore}
 
-  @default_phases ["developer"]
+  @default_phases []
   @default_tick_interval_ms 5_000
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -182,11 +182,20 @@ defmodule ForemanServer.Scheduler do
                idempotency_key: "claim:#{task.task_id}:#{run_id}"
              }
            }),
-         {:ok, _pid} <-
-           RunActor.start_run(%{
-             run_id: run_id,
-             task_id: task.task_id,
-             phases: effective_phases
+         {:ok, _event} <-
+           EventStore.append(%{
+             stream_id: "run:#{run_id}",
+             event_type: "RunStarted",
+             payload: %{
+               run_id: run_id,
+               task_id: task.task_id,
+               phase_order: effective_phases,
+               workflow: Map.get(task, :workflow) || Map.get(task, :task_type)
+             },
+             metadata: %{
+               correlation_id: run_id,
+               idempotency_key: "run-start:#{run_id}"
+             }
            }),
          {:ok, _launch} <- worker_launcher.launch(task, run_id, effective_phases) do
       {:ok, run_id}
