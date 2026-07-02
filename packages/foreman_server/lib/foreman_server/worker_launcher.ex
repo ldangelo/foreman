@@ -10,7 +10,18 @@ defmodule ForemanServer.WorkerLauncher do
     with {:ok, project_path} <- project_path(task),
          {:ok, foreman} <- foreman_executable() do
       workflow = workflow_name(task)
-      args = ["run", "task", task_id, workflow, "--project-path", project_path, "--no-watch", "--run-id", run_id]
+
+      args = [
+        "run",
+        "task",
+        task_id,
+        workflow,
+        "--project-path",
+        project_path,
+        "--no-watch",
+        "--run-id",
+        run_id
+      ]
 
       {:ok, pid} =
         Task.start(fn ->
@@ -33,7 +44,7 @@ defmodule ForemanServer.WorkerLauncher do
             output: output
           })
 
-          append_missing_terminal_event(task, run_id, workflow, status)
+          append_missing_terminal_event(task, run_id, workflow, status, output)
         end)
 
       {:ok, %{pid: pid, workflow: workflow}}
@@ -72,10 +83,14 @@ defmodule ForemanServer.WorkerLauncher do
       {"FOREMAN_SERVER_HTTP_ENABLED", "false"},
       {"FOREMAN_SERVER_HTTP_PORT", "0"}
     ]
+
     env =
       case ForemanServer.Security.auth_token() do
-        token when is_binary(token) and token != "" -> [{"FOREMAN_WORKER_EVENT_TOKEN", token} | env]
-        _ -> env
+        token when is_binary(token) and token != "" ->
+          [{"FOREMAN_WORKER_EVENT_TOKEN", token} | env]
+
+        _ ->
+          env
       end
 
     case database_url() do
@@ -85,8 +100,9 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp server_url do
-    port = Application.get_env(:foreman_server, :http_port) ||
-      String.to_integer(System.get_env("FOREMAN_SERVER_HTTP_PORT") || "4766")
+    port =
+      Application.get_env(:foreman_server, :http_port) ||
+        String.to_integer(System.get_env("FOREMAN_SERVER_HTTP_PORT") || "4766")
 
     "http://127.0.0.1:#{port}"
   end
@@ -116,16 +132,65 @@ defmodule ForemanServer.WorkerLauncher do
     Map.get(task, :workflow) || Map.get(task, :task_type) || Map.get(task, :type) || "feature"
   end
 
-  defp append_missing_terminal_event(task, run_id, workflow, exit_code) do
+  defp append_missing_terminal_event(task, run_id, workflow, exit_code, output) do
     run = get_in(ForemanServer.ProjectionStore.snapshot(), [:runs, run_id]) || %{}
 
     unless Map.get(run, :status) in ["completed", "failed", "blocked"] do
+      inferred = infer_terminal_failure(output)
+      phase_id = inferred.phase_id || Map.get(run, :current_phase)
+
       append("RunFailed", task, run_id, %{
         workflow: workflow,
         exit_code: exit_code,
-        phase_id: Map.get(run, :current_phase),
-        reason: "worker_exited_without_terminal_event"
+        phase_id: phase_id,
+        reason: inferred.reason || "worker_exited_without_terminal_event",
+        diagnostic_reason: "worker_exited_without_terminal_event"
       })
+    end
+  end
+
+  defp infer_terminal_failure(output) when is_binary(output) do
+    %{
+      phase_id: infer_failed_phase(output),
+      reason: infer_failure_reason(output)
+    }
+  end
+
+  defp infer_terminal_failure(_output), do: %{phase_id: nil, reason: nil}
+
+  defp infer_failed_phase(output) do
+    cond do
+      match = Regex.run(~r/FAILED\s+[—-]\s+\s*\S+\s+\[([^\]]+)\]/, output) ->
+        Enum.at(match, 1)
+
+      match = Regex.run(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i, output) ->
+        match |> Enum.at(1) |> String.downcase()
+
+      match = Regex.run(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+FAIL:/i, output) ->
+        match |> Enum.at(1) |> String.downcase()
+
+      match = Regex.run(~r/\[PHASE:\s*([^\]]+)\]\s+FAILED/i, output) ->
+        match |> Enum.at(1) |> String.trim() |> String.downcase()
+
+      true ->
+        nil
+    end
+  end
+
+  defp infer_failure_reason(output) do
+    cond do
+      match = Regex.run(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i, output) ->
+        "#{match |> Enum.at(1) |> String.downcase()}_failed"
+
+      match = Regex.run(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+FAIL:\s*([^\n]+)/i, output) ->
+        match |> Enum.at(2) |> String.trim()
+
+      String.contains?(output, "Run completed: failed") or
+          String.contains?(output, "[PIPELINE] FAILED") ->
+        "pipeline_failed"
+
+      true ->
+        nil
     end
   end
 
@@ -143,5 +208,4 @@ defmodule ForemanServer.WorkerLauncher do
       metadata: %{correlation_id: run_id}
     })
   end
-
 end

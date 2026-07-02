@@ -68,7 +68,7 @@ During the TRD-2026-014 migration, Foreman has three runtime responsibilities:
 
 - **Node CLI**: operator-facing commands, server auto-start, bearer-authenticated JSON requests, projection rendering, and legacy alias/deprecation warnings.
 - **Elixir server**: durable command validation, append-only events, rebuildable projections, run/phase actors, scheduler capacity, VCS/PR gates, inbox/debug/attach views, recovery, metrics, and authorization audit events.
-- **Node/Pi workers**: Pi SDK-backed agent execution, worker HTTP protocol starts, ordered event/heartbeat/tool-call/assistant-message/artifact streaming, Foreman-specific typed tools for mail/handoffs/artifacts/validation/blockers/progress/safe commands, authoritative terminal run/task events, and scoped project/run environment metadata. The Elixir launcher records process-exit facts but does not decide run success from stdout; raw logs mirror worker events for compatibility/debugging.
+- **Node/Pi workers**: Pi SDK-backed agent execution, worker HTTP protocol starts, ordered event/heartbeat/tool-call/assistant-message/artifact streaming, Foreman-specific typed tools for mail/handoffs/artifacts/validation/blockers/progress/safe commands, authoritative terminal run/task events, and scoped project/run environment metadata. The Elixir launcher records process-exit facts and emits a diagnostic fallback failure only when a worker exits without an authoritative terminal event; raw logs mirror worker events for compatibility/debugging.
 
 For architecture details, deprecated command mappings, and troubleshooting examples, see [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 

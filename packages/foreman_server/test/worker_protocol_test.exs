@@ -74,7 +74,9 @@ defmodule ForemanServer.WorkerProtocolTest do
     assert snapshot.runs["run-worker-fixture"].artifact_paths == ["docs/reports/worker.md"]
   end
 
-  test "worker terminal events authoritatively update run and task projections", %{fixture: fixture} do
+  test "worker terminal events authoritatively update run and task projections", %{
+    fixture: fixture
+  } do
     assert post_json("/worker/v1/phases/developer/start", fixture["start"]).status == 202
 
     run_failed = %{
@@ -86,7 +88,11 @@ defmodule ForemanServer.WorkerProtocolTest do
       "sequence" => 1,
       "status" => "failed",
       "message" => "max turns",
-      "details" => %{"task_id" => "task-1", "phase_id" => "developer", "failure_reason" => "max_turns"}
+      "details" => %{
+        "task_id" => "task-1",
+        "phase_id" => "developer",
+        "failure_reason" => "max_turns"
+      }
     }
 
     task_failed = %{
@@ -112,6 +118,40 @@ defmodule ForemanServer.WorkerProtocolTest do
     snapshot = ForemanServer.ProjectionStore.snapshot()
     assert snapshot.runs["run-worker-fixture"].status == "failed"
     assert snapshot.tasks["task-1"].status == "failed"
+  end
+
+  test "unprojected worker event advances sequence for following terminal events", %{
+    fixture: fixture
+  } do
+    assert post_json("/worker/v1/phases/developer/start", fixture["start"]).status == 202
+
+    report = %{
+      "run_id" => "run-worker-fixture",
+      "project_id" => "proj-1",
+      "phase_id" => "developer",
+      "worker_id" => "worker-1",
+      "type" => "phase_report_produced",
+      "sequence" => 1,
+      "details" => %{"task_id" => "task-1", "phase_id" => "developer", "outcome" => "completed"}
+    }
+
+    completed = %{
+      "run_id" => "run-worker-fixture",
+      "project_id" => "proj-1",
+      "phase_id" => "developer",
+      "worker_id" => "worker-1",
+      "type" => "phase_completed",
+      "sequence" => 2,
+      "status" => "completed",
+      "details" => %{"task_id" => "task-1", "phase_id" => "developer"}
+    }
+
+    assert post_json("/worker/v1/events", report).status == 202
+    assert post_json("/worker/v1/events", completed).status == 202
+
+    snapshot = ForemanServer.ProjectionStore.snapshot()
+    assert snapshot.worker_sequences["run-worker-fixture:worker-1"] == 2
+    assert snapshot.runs["run-worker-fixture"].phase_status["developer"] == "completed"
   end
 
   test "out-of-order worker sequence is rejected before projection mutation", %{fixture: fixture} do
