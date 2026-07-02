@@ -51,12 +51,14 @@ describe("formatMessageTable", () => {
     expect(formatMessageTable(msg).ticket).toBe("foreman-ecd62");
   });
 
-  it("shows plain-text overwatch mail body in args preview", () => {
+  it("shows plain-text overwatch mail body and infers tool fields", () => {
     const row = formatMessageTable(makeMockMessage({
       sender_agent_type: "overwatch",
       recipient_agent_type: "explorer",
       body: "Tool read denied: stale path. Rediscover.",
     }));
+    expect(row.kind).toBe("denied");
+    expect(row.tool).toBe("read");
     expect(row.args).toContain("Tool read denied");
   });
 });

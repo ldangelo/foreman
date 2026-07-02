@@ -116,8 +116,10 @@ export function formatPipelineEvent(event: PipelineEvent): string {
   const ts = formatTimestamp(event.createdAt);
   const icon = PIPELINE_EVENT_ICONS[event.eventType] ?? "·";
   const details = normalizedEventDetails(event);
+  const taskId = details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : undefined;
+  const taskPrefix = taskId ? ` ${taskId}` : "";
   const summary = formatEventSummary(event.eventType, details);
-  return `[${ts}] ${icon} ${event.eventType} — ${summary}`;
+  return `[${ts}]${taskPrefix} ${icon} ${event.eventType} — ${summary}`;
 }
 
 function normalizedEventDetails(event: PipelineEvent): Record<string, unknown> | null {
@@ -586,14 +588,16 @@ const DEFAULT_ARGS_WIDTH = 40;
  */
 export function formatMessageTable(msg: Message, argsMaxLen = DEFAULT_ARGS_WIDTH): TableRow {
   const parsed = parseMessageBody(msg.body);
-  const argsPreview = parsed.argsPreview ?? parsed.message ?? parsed.body ?? (msg.body ? msg.body.replace(/\n/g, " ") : undefined);
+  const bodyPreview = msg.body ? msg.body.replace(/\n/g, " ") : undefined;
+  const plainToolMatch = bodyPreview?.match(/^Tool\s+(\S+)\s+(denied|approved|requested|finished|error)\b/i);
+  const argsPreview = parsed.argsPreview ?? parsed.message ?? parsed.body ?? bodyPreview;
   return {
     date: formatTimestamp(msg.created_at),
     ticket: messageTask(msg),
     sender: msg.sender_agent_type,
     receiver: msg.recipient_agent_type,
-    kind: parsed.kind,
-    tool: parsed.tool,
+    kind: parsed.kind ?? plainToolMatch?.[2]?.toLowerCase(),
+    tool: parsed.tool ?? plainToolMatch?.[1]?.toLowerCase(),
     args: argsPreview ? truncate(argsPreview, argsMaxLen) : undefined,
     runId: msg.run_id,
     isRead: msg.read === 1,
@@ -696,9 +700,10 @@ export function extractBodyFields(body: string): {
   args: string | null;
 } {
   const parsed = parseMessageBody(body);
+  const plainToolMatch = body.match(/^Tool\s+(\S+)\s+(denied|approved|requested|finished|error)\b/i);
   return {
-    kind: parsed.kind ?? null,
-    tool: parsed.tool ?? null,
+    kind: parsed.kind ?? plainToolMatch?.[2]?.toLowerCase() ?? null,
+    tool: parsed.tool ?? plainToolMatch?.[1]?.toLowerCase() ?? null,
     args: parsed.argsPreview ?? parsed.message ?? parsed.body ?? (body ? body : null),
   };
 }

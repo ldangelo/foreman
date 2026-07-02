@@ -86,8 +86,8 @@ describe("inbox event helpers", () => {
 
   it.each([
     ["phase-start", {}, "phase-start"],
-    ["phase-start", { phase: "developer" }, "Start developer"],
-    ["phase-complete", { phase: "qa" }, "Complete qa"],
+    ["phase-start", { phase: "developer" }, "Start: developer"],
+    ["phase-complete", { phase: "qa" }, "Complete: qa"],
     ["dispatch", {}, "Dispatch"],
     ["complete", {}, "Complete"],
     ["fail", {}, "Failed"],
@@ -98,7 +98,7 @@ describe("inbox event helpers", () => {
     ["conflict", { bead_id: "bd-2" }, "conflict: bd-2"],
     ["test-fail", {}, "test-fail"],
     ["stuck", {}, "Stuck"],
-    ["custom", { taskId: "task-1" }, "custom: task task-1"],
+    ["custom", { taskId: "task-1" }, "custom: task-1"],
     ["custom", {}, "custom"],
     ["anything", null, "anything"],
   ])("formatEventSummary covers %s fallback branches", (eventType, details, expected) => {
@@ -120,8 +120,9 @@ describe("inbox event helpers", () => {
       .toBe("Skipped developer for task foreman-1: retryOnly");
     expect(formatEventSummary("PhaseVerdict", { task_id: "foreman-1", phase_id: "qa", verdict: "fail" }))
       .toBe("qa verdict: fail for task foreman-1");
-    expect(formatPipelineEvent({ id: "evt-1", runId: "run-1", taskId: "foreman-1", eventType: "RunFailed", details: { phase_id: "qa" }, createdAt: "2026-01-01T00:00:00.000Z" }))
-      .toContain("RunFailed — Failed task foreman-1 at qa");
+    const formatted = formatPipelineEvent({ id: "evt-1", runId: "run-1", taskId: "foreman-1", eventType: "RunFailed", details: { phase_id: "qa" }, createdAt: "2026-01-01T00:00:00.000Z" });
+    expect(formatted).toContain("] foreman-1 ✗ RunFailed");
+    expect(formatted).toContain("RunFailed — Failed task foreman-1 at qa");
   });
 
   it("sortEventsChronologically returns a new oldest-to-newest array", () => {
