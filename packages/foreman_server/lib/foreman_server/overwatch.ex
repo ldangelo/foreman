@@ -24,7 +24,7 @@ defmodule ForemanServer.Overwatch do
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
-  def init(_opts), do: {:ok, %{phases: %{}}}
+  def init(_opts), do: {:ok, %{phases: %{}, steering: %{}}}
 
   @spec handle_event(Event.t()) :: :ok
   def handle_event(%Event{} = event) do
@@ -59,8 +59,22 @@ defmodule ForemanServer.Overwatch do
     put_phase(state, key, fresh_phase(payload))
   end
 
+  defp observe_event(%Event{event_type: "PhaseReportProduced", payload: payload}, state) do
+    maybe_send_report_steering(state, payload)
+  end
+
+  defp observe_event(%Event{event_type: "PhaseCompleted", payload: payload}, state) do
+    update_in(state.phases, &Map.delete(&1, phase_key(payload)))
+  end
+
+  defp observe_event(%Event{event_type: "PhaseRetried"}, state), do: state
+
+  defp observe_event(%Event{event_type: "PhaseFailed", payload: payload}, state) do
+    update_in(state.phases, &Map.delete(&1, phase_key(payload)))
+  end
+
   defp observe_event(%Event{event_type: terminal, payload: payload}, state)
-       when terminal in ["PhaseCompleted", "PhaseFailed", "RunCompleted", "RunFailed"] do
+       when terminal in ["RunCompleted", "RunFailed"] do
     update_in(state.phases, &Map.delete(&1, phase_key(payload)))
   end
 
@@ -76,10 +90,25 @@ defmodule ForemanServer.Overwatch do
 
         if stale_count >= @stale_intervals and phase.nudge_count < @max_nudges do
           nudge_count = phase.nudge_count + 1
-          reason = "No new assistant/tool activity for #{@stale_intervals} heartbeat intervals. Summarize current state, choose the next concrete action, and avoid repeating failed tool calls."
-          send_overwatch_nudge(phase.run_id, phase.phase_id, "overwatch nudge: stale phase", reason)
+
+          reason =
+            "No new assistant/tool activity for #{@stale_intervals} heartbeat intervals. Summarize current state, choose the next concrete action, and avoid repeating failed tool calls."
+
+          send_overwatch_nudge(
+            phase.run_id,
+            phase.phase_id,
+            "overwatch nudge: stale phase",
+            reason
+          )
+
           append_phase_nudge(phase.run_id, phase.phase_id, reason, nudge_count)
-          put_phase(state, key, %{phase | stale_count: 0, nudge_count: nudge_count, last_signature: signature})
+
+          put_phase(state, key, %{
+            phase
+            | stale_count: 0,
+              nudge_count: nudge_count,
+              last_signature: signature
+          })
         else
           put_phase(state, key, phase)
         end
@@ -90,16 +119,29 @@ defmodule ForemanServer.Overwatch do
   end
 
   defp observe_event(%Event{event_type: event_type, payload: payload}, state)
-       when event_type in ["AssistantMessage", "ToolCallFinished", "ToolCallRequested", "ToolCallApproved", "ToolCallDenied"] do
+       when event_type in [
+              "AssistantMessage",
+              "ToolCallFinished",
+              "ToolCallRequested",
+              "ToolCallApproved",
+              "ToolCallDenied"
+            ] do
     key = phase_key(payload)
     phase = Map.get(state.phases, key, fresh_phase(payload))
 
     phase =
       case event_type do
-        "AssistantMessage" -> %{phase | assistant_count: phase.assistant_count + 1, stale_count: 0}
-        "ToolCallFinished" -> %{phase | tool_count: phase.tool_count + 1, stale_count: 0}
-        "ToolCallDenied" -> %{phase | denied_count: phase.denied_count + 1, stale_count: 0}
-        _ -> phase
+        "AssistantMessage" ->
+          %{phase | assistant_count: phase.assistant_count + 1, stale_count: 0}
+
+        "ToolCallFinished" ->
+          %{phase | tool_count: phase.tool_count + 1, stale_count: 0}
+
+        "ToolCallDenied" ->
+          %{phase | denied_count: phase.denied_count + 1, stale_count: 0}
+
+        _ ->
+          phase
       end
 
     put_phase(state, key, phase)
@@ -120,9 +162,127 @@ defmodule ForemanServer.Overwatch do
     }
   end
 
-  defp phase_key(payload), do: {fetch(payload, :run_id), fetch(payload, :phase_id) || fetch(payload, :phase) || "pipeline"}
+  defp phase_key(payload),
+    do:
+      {fetch(payload, :run_id), fetch(payload, :phase_id) || fetch(payload, :phase) || "pipeline"}
+
   defp put_phase(state, key, phase), do: put_in(state.phases[key], phase)
-  defp activity_signature(phase), do: {phase.assistant_count, phase.tool_count, phase.denied_count}
+
+  defp activity_signature(phase),
+    do: {phase.assistant_count, phase.tool_count, phase.denied_count}
+
+  defp maybe_send_report_steering(state, payload) do
+    report_payload = report_payload(payload)
+
+    with {:ok, run_id} <- required_binary(fetch(report_payload, :run_id), :run_id),
+         {:ok, phase_id} <-
+           required_binary(
+             fetch(report_payload, :phase_id) || fetch(report_payload, :phase),
+             :phase_id
+           ),
+         target when is_binary(target) <- steering_target(report_payload, phase_id) do
+      outcome = fetch(report_payload, :outcome) || fetch(report_payload, :status) || "completed"
+      key = {run_id, phase_id, target, outcome}
+      count = Map.get(state.steering, key, 0) + 1
+
+      send_report_steering(
+        run_id,
+        fetch(report_payload, :task_id),
+        phase_id,
+        target,
+        outcome,
+        report_payload,
+        count
+      )
+
+      put_in(state.steering[key], count)
+    else
+      _ -> state
+    end
+  end
+
+  defp report_payload(payload) do
+    details = fetch(payload, :details)
+    if is_map(details), do: Map.merge(details, payload), else: payload
+  end
+
+  defp steering_target(payload, phase_id) do
+    retry_target = fetch(payload, :retryTarget) || fetch(payload, :retry_target)
+    next_phase = fetch(payload, :nextPhase) || fetch(payload, :next_phase)
+    outcome = fetch(payload, :outcome) || fetch(payload, :status)
+
+    cond do
+      is_binary(retry_target) and retry_target != "" -> retry_target
+      is_binary(next_phase) and next_phase != "" -> next_phase
+      outcome == "retry" -> default_retry_target(phase_id)
+      true -> default_next_phase(phase_id)
+    end
+  end
+
+  defp default_retry_target("qa"), do: "developer"
+  defp default_retry_target("documentation"), do: "developer"
+  defp default_retry_target("finalize"), do: "developer"
+  defp default_retry_target(_phase_id), do: nil
+
+  defp default_next_phase("explorer"), do: "fix"
+  defp default_next_phase("fix"), do: "documentation"
+  defp default_next_phase("developer"), do: "qa"
+  defp default_next_phase("documentation"), do: "qa"
+  defp default_next_phase("qa"), do: "finalize"
+  defp default_next_phase(_phase_id), do: nil
+
+  defp send_report_steering(run_id, task_id, phase_id, target, outcome, payload, loop_count) do
+    summary = fetch(payload, :summary) || %{}
+
+    source_report =
+      source_report_name(fetch(payload, :artifacts)) || fetch(payload, :sourceReport) ||
+        fetch(payload, :source_report)
+
+    body =
+      Jason.encode!(%{
+        kind: "steering",
+        source: "overwatch",
+        taskId: task_id,
+        runId: run_id,
+        phase: phase_id,
+        targetPhase: target,
+        outcome: outcome,
+        sourceReport: source_report,
+        reportId: fetch(payload, :report_id) || fetch(payload, :reportId),
+        loopCount: loop_count,
+        summary: summary,
+        instructions: steering_instructions(phase_id, target, outcome)
+      })
+
+    Inbox.send_operator_message(%{
+      run_id: run_id,
+      phase_id: target,
+      from: "overwatch",
+      to: target,
+      subject: "overwatch steering: #{phase_id} → #{target}",
+      body: body,
+      worker_supports_receiving: true
+    })
+  end
+
+  defp source_report_name([first | _]) when is_map(first), do: fetch(first, :name)
+  defp source_report_name(_), do: nil
+
+  defp steering_instructions("qa", "developer", outcome) when outcome in ["retry", :retry],
+    do:
+      "Use QA failure evidence only. Patch the smallest target, avoid broad rewrites, then update DEVELOPER_REPORT.md for the next QA pass."
+
+  defp steering_instructions(_phase, "qa", _outcome),
+    do:
+      "Use the prior phase report as handoff. Run focused verification and write QA_REPORT.md with concrete command evidence."
+
+  defp steering_instructions(_phase, "documentation", _outcome),
+    do:
+      "Use the developer report to update only necessary operator-facing docs. Do not run tests."
+
+  defp steering_instructions(_phase, _target, _outcome),
+    do:
+      "Use the source report as steering context. Avoid rediscovery unless the report conflicts with direct evidence."
 
   defp decide_tool(phase_id, "read", args) do
     path = fetch(args, :path) || fetch(args, :file_path) || fetch(args, :filePath)
@@ -145,7 +305,8 @@ defmodule ForemanServer.Overwatch do
     end
   end
 
-  defp decide_tool("explorer", tool_name, _args) when tool_name in ["bash", "grep", "find", "ls"] do
+  defp decide_tool("explorer", tool_name, _args)
+       when tool_name in ["bash", "grep", "find", "ls"] do
     deny("explorer must use Graphify/Glob/Read discovery, not shell or text-search bypasses")
   end
 
@@ -223,7 +384,12 @@ defmodule ForemanServer.Overwatch do
   end
 
   defp maybe_send_tool_nudge(run_id, phase_id, tool_name, %{allowed: false, reason: reason}) do
-    send_overwatch_nudge(run_id, phase_id, "overwatch tool denied: #{tool_name}", "Tool #{tool_name} denied: #{reason}. Adjust approach and continue with allowed discovery/workflow tools.")
+    send_overwatch_nudge(
+      run_id,
+      phase_id,
+      "overwatch tool denied: #{tool_name}",
+      "Tool #{tool_name} denied: #{reason}. Adjust approach and continue with allowed discovery/workflow tools."
+    )
   end
 
   defp maybe_send_tool_nudge(_run_id, _phase_id, _tool_name, _decision), do: :ok
@@ -256,7 +422,8 @@ defmodule ForemanServer.Overwatch do
   defp normalize_tool(tool) when is_binary(tool), do: String.downcase(tool)
   defp normalize_tool(tool), do: tool
 
-  defp fetch(map, key) when is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp fetch(map, key) when is_atom(key),
+    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
   defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}

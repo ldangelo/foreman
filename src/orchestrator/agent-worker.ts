@@ -1752,7 +1752,7 @@ async function runMergeBuiltinPhase(args: {
   };
 }
 
-function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "assistant-message" | "tool-call-finished" | "run-completed" | "run-failed" | "task-updated"): string {
+function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "phase-report" | "assistant-message" | "tool-call-finished" | "run-completed" | "run-failed" | "task-updated"): string {
   if (eventType === "phase-start") return "phase_started";
   if (eventType === "complete") return "phase_completed";
   if (eventType === "phase-failed") return "phase_failed";
@@ -1760,6 +1760,7 @@ function elixirWorkerEventType(eventType: "phase-start" | "complete" | "heartbea
   if (eventType === "phase-skipped") return "phase_skipped";
   if (eventType === "phase-verdict") return "phase_verdict";
   if (eventType === "phase-nudge") return "phase_nudge";
+  if (eventType === "phase-report") return "phase_report_produced";
   if (eventType === "assistant-message") return "assistant_message";
   if (eventType === "tool-call-finished") return "tool_call_finished";
   if (eventType === "run-completed") return "run_completed";
@@ -1955,6 +1956,7 @@ async function runPipeline(
             log(`[pipeline-observability] ${eventType} event append failed (non-fatal): ${msg}`);
           }
 
+          if (eventType === "phase-report") return;
           if (!registeredReadStore || !registeredProjectId) return;
           try {
             await registeredReadStore.logEvent(registeredProjectId, eventType, data, config.runId);

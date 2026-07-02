@@ -5,7 +5,13 @@ defmodule ForemanServer.OverwatchTest do
 
   setup do
     Application.stop(:foreman_server)
-    path = Path.join(System.tmp_dir!(), "foreman-overwatch-#{System.unique_integer([:positive])}.term.log")
+
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "foreman-overwatch-#{System.unique_integer([:positive])}.term.log"
+      )
+
     Application.put_env(:foreman_server, :event_log_path, path)
     {:ok, _} = Application.ensure_all_started(:foreman_server)
 
@@ -55,7 +61,12 @@ defmodule ForemanServer.OverwatchTest do
   end
 
   test "approves ordinary file reads" do
-    file = Path.join(System.tmp_dir!(), "foreman-overwatch-file-#{System.unique_integer([:positive])}.txt")
+    file =
+      Path.join(
+        System.tmp_dir!(),
+        "foreman-overwatch-file-#{System.unique_integer([:positive])}.txt"
+      )
+
     File.write!(file, "ok")
     on_exit(fn -> File.rm(file) end)
 
@@ -66,6 +77,93 @@ defmodule ForemanServer.OverwatchTest do
                tool_name: "Read",
                args: %{path: file}
              })
+  end
+
+  test "uses phase report events to send compact steering mail to next phase" do
+    EventStore.append(%{
+      stream_id: "run:run-1",
+      event_type: "PhaseReportProduced",
+      payload: %{
+        run_id: "run-1",
+        task_id: "task-1",
+        phase_id: "developer",
+        details: %{
+          "run_id" => "run-1",
+          "task_id" => "task-1",
+          "phase_id" => "developer",
+          "report_id" => "report-1",
+          "outcome" => "completed",
+          "next_phase" => "qa",
+          "artifacts" => [%{"name" => "DEVELOPER_REPORT.md", "content_type" => "text/markdown"}],
+          "summary" => %{
+            "rootCause" => "Board only watched inbox messages in Elixir mode.",
+            "fix" => "Poll task snapshots and diff ids/status/updated fields.",
+            "filesChanged" => "- src/cli/commands/board.ts",
+            "qaHandoff" => "Verify task create and status update refresh the board."
+          }
+        }
+      },
+      metadata: %{correlation_id: "test"}
+    })
+
+    Process.sleep(50)
+
+    inbox = ProjectionStore.snapshot().inbox_messages |> Map.values()
+
+    steering =
+      Enum.find(
+        inbox,
+        &(&1.from == "overwatch" and &1.to == "qa" and &1.subject =~ "developer → qa")
+      )
+
+    assert steering
+
+    body = Jason.decode!(steering.body)
+    assert body["kind"] == "steering"
+    assert body["taskId"] == "task-1"
+    assert body["sourceReport"] == "DEVELOPER_REPORT.md"
+    assert body["summary"]["rootCause"] =~ "Board only watched"
+    assert body["summary"]["qaHandoff"] =~ "Verify task create"
+  end
+
+  test "uses QA failure report event to steer retry target" do
+    EventStore.append(%{
+      stream_id: "run:run-1",
+      event_type: "PhaseReportProduced",
+      payload: %{
+        run_id: "run-1",
+        task_id: "task-1",
+        phase_id: "qa",
+        report_id: "report-qa-1",
+        outcome: "retry",
+        retryTarget: "developer",
+        artifacts: [%{name: "QA_REPORT.md", content_type: "text/markdown"}],
+        summary: %{
+          verdict: "FAIL",
+          testResults:
+            "- Command: npx vitest run src/cli/__tests__/board-pure-helpers.test.ts\n- Failure: expected task update to appear."
+        }
+      },
+      metadata: %{correlation_id: "test"}
+    })
+
+    Process.sleep(50)
+
+    inbox = ProjectionStore.snapshot().inbox_messages |> Map.values()
+
+    steering =
+      Enum.find(
+        inbox,
+        &(&1.from == "overwatch" and &1.to == "developer" and &1.subject =~ "qa → developer")
+      )
+
+    assert steering
+
+    body = Jason.decode!(steering.body)
+    assert body["outcome"] == "retry"
+    assert body["summary"]["verdict"] == "FAIL"
+    assert body["summary"]["testResults"] =~ "npx vitest"
+    assert body["instructions"] =~ "QA failure evidence"
   end
 
   test "sends native stale phase nudges from heartbeat events" do
@@ -80,7 +178,13 @@ defmodule ForemanServer.OverwatchTest do
       EventStore.append(%{
         stream_id: "worker:run-1:worker-1",
         event_type: "WorkerHeartbeat",
-        payload: %{run_id: "run-1", task_id: "task-1", phase_id: "explorer", worker_id: "worker-1", sequence: seq},
+        payload: %{
+          run_id: "run-1",
+          task_id: "task-1",
+          phase_id: "explorer",
+          worker_id: "worker-1",
+          sequence: seq
+        },
         metadata: %{correlation_id: "test"}
       })
     end
@@ -88,9 +192,17 @@ defmodule ForemanServer.OverwatchTest do
     Process.sleep(50)
 
     events = EventStore.stream("run:run-1")
-    assert Enum.any?(events, &(&1.event_type == "PhaseNudged" and &1.payload.source == "elixir_overwatch"))
+
+    assert Enum.any?(
+             events,
+             &(&1.event_type == "PhaseNudged" and &1.payload.source == "elixir_overwatch")
+           )
 
     inbox = ProjectionStore.snapshot().inbox_messages |> Map.values()
-    assert Enum.any?(inbox, &(&1.from == "overwatch" and &1.subject == "overwatch nudge: stale phase"))
+
+    assert Enum.any?(
+             inbox,
+             &(&1.from == "overwatch" and &1.subject == "overwatch nudge: stale phase")
+           )
   end
 end

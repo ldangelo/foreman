@@ -20,7 +20,7 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Native task storage** — Elixir-backed tasks/events/projections
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
 - **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
-- **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections; Elixir overwatch records tool policy decisions and sends Agent Mail steering nudges when workers drift
+- **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections; structured phase-report events let Elixir Overwatch send next-phase Agent Mail steering, and Overwatch records tool policy decisions/nudges when workers drift
 
 > **Note:** Foreman uses the Elixir backend for operator workflows after cutover. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
 

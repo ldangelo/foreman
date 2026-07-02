@@ -48,7 +48,7 @@ describe("agent-worker runtime task client threading", () => {
     expect(source).toContain("await registeredReadStore.updateRunProgress(config.runId, progress);");
     expect(source).toContain("await registeredReadStore.logEvent(registeredProjectId, eventType, data, config.runId);");
     expect(source).toContain("observabilityWriter: registeredObservabilityWriter,");
-    expect(pipelineSource).toContain('logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "assistant-message" | "tool-call-finished" | "run-completed" | "run-failed" | "task-updated", data: Record<string, unknown>) => Promise<void> | void;');
+    expect(pipelineSource).toContain('logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "phase-report" | "assistant-message" | "tool-call-finished" | "run-completed" | "run-failed" | "task-updated", data: Record<string, unknown>) => Promise<void> | void;');
     expect(pipelineSource).toContain("ctx.heartbeatManager?.setTaskId(taskId);");
     expect(pipelineSource).toContain("createHeartbeatManager(heartbeatConfig, store, config.projectId, config.runId, config.vcsBackend, worktreePath, ctx.observabilityWriter,");
     expect(source).toContain("if (observabilityWriter?.updateProgress) {");

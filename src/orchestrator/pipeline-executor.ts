@@ -117,7 +117,7 @@ export interface PhaseObservabilityInput {
 
 export interface PipelineObservabilityWriter {
   updateProgress?: (progress: RunProgress) => Promise<void> | void;
-  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "assistant-message" | "tool-call-finished" | "run-completed" | "run-failed" | "task-updated", data: Record<string, unknown>) => Promise<void> | void;
+  logEvent?: (eventType: "phase-start" | "complete" | "heartbeat" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict" | "phase-nudge" | "phase-report" | "assistant-message" | "tool-call-finished" | "run-completed" | "run-failed" | "task-updated", data: Record<string, unknown>) => Promise<void> | void;
 }
 
 /** A child task within an epic pipeline run. */
@@ -299,6 +299,67 @@ export interface PipelineContext {
 function readReport(worktreePath: string, filename: string): string | null {
   const p = resolveArtifactPath(worktreePath, filename);
   try { return readFileSync(p, "utf-8"); } catch { return null; }
+}
+
+function trimReportValue(value: string | undefined, max = 2_000): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+}
+
+function extractMarkdownSection(markdown: string, heading: string): string | undefined {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = markdown.match(new RegExp(`(?:^|\\n)##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, "i"));
+  return trimReportValue(match?.[1]);
+}
+
+function extractVerdict(markdown: string): string | undefined {
+  const inline = markdown.match(/^##\s+Verdict\s*:?\s*(.+)$/im)?.[1];
+  return trimReportValue(inline ?? extractMarkdownSection(markdown, "Verdict"), 200);
+}
+
+async function emitPhaseReportEvent(
+  ctx: PipelineContext,
+  phaseName: string,
+  artifact: string | undefined,
+  outcome: "completed" | "failed" | "retry",
+  nextPhase?: string,
+  retryTarget?: string,
+): Promise<void> {
+  if (!ctx.observabilityWriter?.logEvent || !artifact) return;
+  const report = readReport(ctx.config.worktreePath, artifact);
+  if (!report) return;
+  const artifactPath = resolveArtifactPath(ctx.config.worktreePath, artifact);
+  const summary = {
+    verdict: extractVerdict(report),
+    rootCause: extractMarkdownSection(report, "Root Cause"),
+    fix: extractMarkdownSection(report, "Fix"),
+    filesChanged: extractMarkdownSection(report, "Files Changed"),
+    qaHandoff: extractMarkdownSection(report, "QA Handoff"),
+    testResults: extractMarkdownSection(report, "Test Results"),
+    failures: extractMarkdownSection(report, "Failures") ?? extractMarkdownSection(report, "Issues") ?? extractMarkdownSection(report, "Findings"),
+    knownLimitations: extractMarkdownSection(report, "Known Limitations"),
+  };
+  const compactSummary = Object.fromEntries(Object.entries(summary).filter(([, value]) => value));
+  await ctx.observabilityWriter.logEvent("phase-report", {
+    run_id: ctx.config.runId,
+    runId: ctx.config.runId,
+    task_id: ctx.config.taskId,
+    taskId: ctx.config.taskId,
+    phase: phaseName,
+    phase_id: phaseName,
+    report_id: `${ctx.config.runId}:${phaseName}:${Date.now()}`,
+    status: outcome,
+    outcome,
+    verdict: summary.verdict,
+    summary: compactSummary,
+    next_phase: nextPhase,
+    nextPhase,
+    retry_target: retryTarget,
+    retryTarget,
+    artifacts: [{ name: artifact, path: artifactPath, content_type: "text/markdown" }],
+    created_at: new Date().toISOString(),
+  });
 }
 
 function readRelativeFile(worktreePath: string, relativePath?: string): string | null {
@@ -1580,7 +1641,18 @@ async function runPhaseSequence(
             });
             ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
-            await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", { taskId, phase: phaseName, retryTarget, attempt: currentRetries + 1, maxRetries, reason: errorMsg }, observabilityWriter);
+            await emitPhaseReportEvent(ctx, phaseName, interpolatedArtifact, "retry", undefined, retryTarget);
+            await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", {
+              taskId,
+              phase: phaseName,
+              retryTarget,
+              attempt: currentRetries + 1,
+              maxRetries,
+              reason: errorMsg,
+              artifact: interpolatedArtifact,
+              artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
+              artifact_present: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+            }, observabilityWriter);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
               retryOnlyActivations.add(retryTarget);
@@ -1607,7 +1679,15 @@ async function runPhaseSequence(
           taskId, phase: phaseName, status: "completed", cost: 0, turns: 0,
         });
       }
-      await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { taskId, phase: phaseName, costUsd: 0 }, observabilityWriter);
+      await emitPhaseReportEvent(ctx, phaseName, interpolatedArtifact, "completed", phases[i + 1]?.name);
+      await writeNormalPhaseEvent(store, config.projectId, runId, "complete", {
+        taskId,
+        phase: phaseName,
+        costUsd: 0,
+        artifact: interpolatedArtifact,
+        artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
+        artifact_present: artifactPresent,
+      }, observabilityWriter);
       await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
         costUsd: 0,
         turns: 0,
@@ -1692,7 +1772,18 @@ async function runPhaseSequence(
             });
             ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
-            await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", { taskId, phase: phaseName, retryTarget, attempt: currentRetries + 1, maxRetries, reason: errorMsg }, observabilityWriter);
+            await emitPhaseReportEvent(ctx, phaseName, interpolatedArtifact, "retry", undefined, retryTarget);
+            await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", {
+              taskId,
+              phase: phaseName,
+              retryTarget,
+              attempt: currentRetries + 1,
+              maxRetries,
+              reason: errorMsg,
+              artifact: interpolatedArtifact,
+              artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
+              artifact_present: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+            }, observabilityWriter);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
               retryOnlyActivations.add(retryTarget);
@@ -1732,7 +1823,14 @@ async function runPhaseSequence(
             taskId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
           });
         }
-        await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { taskId, phase: phaseName, costUsd: result.costUsd }, observabilityWriter);
+        await writeNormalPhaseEvent(store, config.projectId, runId, "complete", {
+          taskId,
+          phase: phaseName,
+          costUsd: result.costUsd,
+          artifact: interpolatedArtifact,
+          artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
+          artifact_present: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+        }, observabilityWriter);
         await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
           costUsd: result.costUsd,
           turns: result.turns,
@@ -2257,7 +2355,18 @@ async function runPhaseSequence(
 
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
-          await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", { taskId, phase: phaseName, retryTarget, attempt: currentRetries + 1, maxRetries, reason: feedbackContext ?? `${phaseName} verdict failed` }, observabilityWriter);
+          await emitPhaseReportEvent(ctx, phaseName, interpolatedArtifact, "retry", undefined, retryTarget);
+          await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", {
+            taskId,
+            phase: phaseName,
+            retryTarget,
+            attempt: currentRetries + 1,
+            maxRetries,
+            reason: feedbackContext ?? `${phaseName} verdict failed`,
+            artifact: interpolatedArtifact,
+            artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
+            artifact_present: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+          }, observabilityWriter);
 
           const targetIdx = phaseIndex.get(retryTarget);
           if (targetIdx !== undefined) {
@@ -2288,7 +2397,15 @@ async function runPhaseSequence(
         taskId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
       });
     }
-    await writeNormalPhaseEvent(store, config.projectId, runId, "complete", { taskId, phase: phaseName, costUsd: result.costUsd }, observabilityWriter);
+    await emitPhaseReportEvent(ctx, phaseName, interpolatedArtifact, "completed", phases[i + 1]?.name);
+    await writeNormalPhaseEvent(store, config.projectId, runId, "complete", {
+      taskId,
+      phase: phaseName,
+      costUsd: result.costUsd,
+      artifact: interpolatedArtifact,
+      artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
+      artifact_present: artifactPresent,
+    }, observabilityWriter);
     await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
       costUsd: result.costUsd,
       turns: result.turns,
