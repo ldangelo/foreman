@@ -414,18 +414,22 @@ phases:
     expect(mergePhase?.artifact).toBe("{task.projectReportsDir}/MERGE_REPORT.md");
   });
 
-  it("bundled auto-merge workflows expose cli-review, PR review, and merge phases", () => {
+  it("bundled auto-merge workflows expose PR review and merge phases", () => {
     const workflows = ["default", "feature", "bug", "chore", "docs", "task", "quick"];
     for (const workflowName of workflows) {
       const config = loadWorkflowConfig(workflowName, tmpDir);
       const phaseNames = config.phases.map((phase) => phase.name);
-      expect(phaseNames, workflowName).toContain("cli-review");
+      if (workflowName === "bug") {
+        expect(phaseNames, workflowName).not.toContain("cli-review");
+      } else {
+        expect(phaseNames, workflowName).toContain("cli-review");
+        expect(config.phases.find((phase) => phase.name === "cli-review")?.builtin, workflowName).toBe(true);
+      }
       expect(phaseNames, workflowName).toContain("create-pr");
       expect(phaseNames, workflowName).toContain("pr-wait");
       expect(phaseNames, workflowName).toContain("prepare-pr-review");
       expect(phaseNames, workflowName).toContain("pr-review");
       expect(phaseNames, workflowName).toContain("merge");
-      expect(config.phases.find((phase) => phase.name === "cli-review")?.builtin, workflowName).toBe(true);
       expect(config.phases.find((phase) => phase.name === "merge")?.builtin, workflowName).toBe(true);
     }
   });

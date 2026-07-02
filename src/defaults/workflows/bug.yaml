@@ -112,22 +112,7 @@ phases:
       onComplete: true
       onFail: developer
 
-  # ── Phase 4: cli-review (builtin) ───────────────────────────────────────
-  # Run CodeRabbit CLI before finalize so the developer remediation loop can
-  # address findings before PR creation and merge gates.
-  - name: cli-review
-    builtin: true
-    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
-    timeoutSecs: 600
-    verdict: true
-    retryWith: developer
-    retryOnFail: 2
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: developer
-
-  # ── Phase 5: finalize (prompt phase) ───────────────────────────────────
+  # ── Phase 4: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
   # artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md" is what the pipeline reads for the validation
   # contract check (Target Integration / Test Validation sections + Verdict).
