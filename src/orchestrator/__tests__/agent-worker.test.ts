@@ -171,6 +171,16 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).toContain("maxTurns: config.maxTurns");
   });
 
+  it("reserves worker event sequence before appending so one rejected event does not poison later events", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    const sequenceIndex = source.indexOf("const nextSequence = sequence + 1;");
+    const reserveIndex = source.indexOf("sequence = nextSequence;", sequenceIndex);
+    const sendIndex = source.indexOf("sendWorkerEvent({", reserveIndex);
+    expect(sequenceIndex).toBeGreaterThan(-1);
+    expect(reserveIndex).toBeGreaterThan(sequenceIndex);
+    expect(sendIndex).toBeGreaterThan(reserveIndex);
+  });
+
   it("routes markStuck terminal run updates through the helper", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { updateTerminalRunStatus } from "./agent-worker-run-status.js";');

@@ -438,6 +438,47 @@ async function writeNormalPhaseEvent(
   store.logEvent(projectId, eventType, data, runId);
 }
 
+async function emitPipelineTerminalFailureEvents(
+  ctx: PipelineContext,
+  markStuckArgs: unknown[],
+): Promise<void> {
+  const writer = ctx.observabilityWriter;
+  if (!writer?.logEvent) return;
+
+  const runId = typeof markStuckArgs[1] === "string" ? markStuckArgs[1] : ctx.config.runId;
+  const taskId = typeof markStuckArgs[3] === "string" ? markStuckArgs[3] : ctx.config.taskId;
+  const phase = typeof markStuckArgs[6] === "string" ? markStuckArgs[6] : "pipeline";
+  const reason = typeof markStuckArgs[7] === "string" ? markStuckArgs[7] : "pipeline_failed";
+  const now = new Date().toISOString();
+  const base = {
+    run_id: runId,
+    runId,
+    task_id: taskId,
+    taskId,
+    phase,
+    phase_id: phase,
+    status: "failed",
+    reason,
+    message: reason,
+  };
+
+  const events: Array<["phase-failed" | "run-failed" | "task-updated", Record<string, unknown>]> = [
+    ["phase-failed", { ...base, failed_at: now }],
+    ["run-failed", { ...base, failed_at: now }],
+    ["task-updated", { ...base, updated_at: now }],
+  ];
+
+  for (const [eventType, payload] of events) {
+    try {
+      await writer.logEvent(eventType, payload);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.log(`[pipeline-observability] CRITICAL terminal ${eventType} append failed for run ${runId}: ${msg}`);
+    }
+  }
+  ctx.log(`[pipeline-observability] terminal failure events emitted for run ${runId} phase=${phase} reason=${reason}`);
+}
+
 /** Result of running a sequence of phases. */
 interface PhaseSequenceResult {
   success: boolean;
@@ -683,11 +724,45 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
   const epicTasks = ctx.epicTasks;
   applyEffectiveSandboxConfig(ctx);
   const isEpicMode = epicTasks && epicTasks.length > 0 && workflowConfig.taskPhases;
+  let terminalFailureEmitted = false;
+  const terminalAwareCtx: PipelineContext = {
+    ...ctx,
+    markStuck: async (...args) => {
+      if (!terminalFailureEmitted) {
+        terminalFailureEmitted = true;
+        await emitPipelineTerminalFailureEvents(ctx, args);
+      }
+      return ctx.markStuck(...args);
+    },
+    onPipelineComplete: ctx.onPipelineComplete
+      ? async (info) => {
+          if (!info.success && !terminalFailureEmitted) {
+            terminalFailureEmitted = true;
+            const failedPhase = [...info.phaseRecords].reverse().find((phase) => phase.success === false);
+            const phaseName = failedPhase?.name ?? info.progress.currentPhase ?? "pipeline";
+            const reason = failedPhase?.error ?? `${phaseName}_failed`;
+            await emitPipelineTerminalFailureEvents(ctx, [
+              ctx.store,
+              config.runId,
+              config.projectId,
+              config.taskId,
+              config.taskTitle,
+              info.progress,
+              phaseName,
+              reason,
+              config.projectPath,
+              ctx.notifyClient,
+            ]);
+          }
+          return ctx.onPipelineComplete!(info);
+        }
+      : undefined,
+  };
 
   if (isEpicMode) {
-    await executeEpicPipeline(ctx);
+    await executeEpicPipeline(terminalAwareCtx);
   } else {
-    await executeSingleTaskPipeline(ctx);
+    await executeSingleTaskPipeline(terminalAwareCtx);
   }
 }
 

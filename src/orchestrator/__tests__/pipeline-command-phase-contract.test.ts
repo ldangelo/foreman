@@ -77,6 +77,163 @@ describe("executePipeline command phase contract enforcement", () => {
     expect(markStuck.mock.calls[0]?.[7]).toContain("Expected artifact missing: DEVELOPER_REPORT.md");
   });
 
+  it("emits durable terminal failure events before marking a failed phase stuck", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const calls: string[] = [];
+    const logEvent = vi.fn().mockImplementation(async (eventType: string) => {
+      calls.push(eventType);
+    });
+    const markStuck = vi.fn().mockImplementation(async () => {
+      calls.push("markStuck");
+    });
+    const runPhase = vi.fn().mockResolvedValue({
+      success: false,
+      costUsd: 0.01,
+      turns: 30,
+      tokensIn: 100,
+      tokensOut: 50,
+      error: "Phase exceeded maxTurns (30)",
+    });
+
+    await executePipeline({
+      config: {
+        runId: "run-terminal-1",
+        projectId: "proj-terminal-1",
+        taskId: "task-terminal-1",
+        taskTitle: "Terminal event contract",
+        model: "anthropic/claude-sonnet-4-6",
+        worktreePath: tmpDir,
+        env: {},
+      },
+      workflowConfig: {
+        name: "bug",
+        phases: [
+          { name: "explorer", prompt: "explorer.md", maxTurns: 30 },
+        ],
+      } as never,
+      store: {
+        updateRunProgress: vi.fn(),
+        logEvent: vi.fn(),
+      } as never,
+      logFile: join(tmpDir, "pipeline.log"),
+      notifyClient: null,
+      agentMailClient: null,
+      runPhase,
+      registerAgent: vi.fn().mockResolvedValue(undefined),
+      sendMail: vi.fn(),
+      sendMailText: vi.fn(),
+      reserveFiles: vi.fn(),
+      releaseFiles: vi.fn(),
+      markStuck,
+      log: vi.fn(),
+      observabilityWriter: { logEvent },
+      promptOpts: { projectRoot: tmpDir, workflow: "default" },
+    });
+
+    expect(calls.slice(-4)).toEqual(["phase-failed", "run-failed", "task-updated", "markStuck"]);
+    expect(logEvent).toHaveBeenCalledWith("phase-failed", expect.objectContaining({
+      run_id: "run-terminal-1",
+      task_id: "task-terminal-1",
+      phase: "explorer",
+      reason: "Phase exceeded maxTurns (30)",
+      status: "failed",
+    }));
+    expect(logEvent).toHaveBeenCalledWith("run-failed", expect.objectContaining({
+      run_id: "run-terminal-1",
+      task_id: "task-terminal-1",
+      phase: "explorer",
+      reason: "Phase exceeded maxTurns (30)",
+      status: "failed",
+    }));
+    expect(logEvent).toHaveBeenCalledWith("task-updated", expect.objectContaining({
+      run_id: "run-terminal-1",
+      task_id: "task-terminal-1",
+      phase: "explorer",
+      reason: "Phase exceeded maxTurns (30)",
+      status: "failed",
+    }));
+    expect(markStuck).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits terminal failure events when a failed phase is finalized through onPipelineComplete", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const calls: string[] = [];
+    const logEvent = vi.fn().mockImplementation(async (eventType: string) => {
+      calls.push(eventType);
+    });
+    const onPipelineComplete = vi.fn().mockImplementation(async () => {
+      calls.push("onPipelineComplete");
+    });
+    const runPhase = vi.fn().mockResolvedValue({
+      success: false,
+      costUsd: 0.01,
+      turns: 30,
+      tokensIn: 100,
+      tokensOut: 50,
+      error: "Phase exceeded maxTurns (30)",
+    });
+
+    await executePipeline({
+      config: {
+        runId: "run-terminal-2",
+        projectId: "proj-terminal-2",
+        taskId: "task-terminal-2",
+        taskTitle: "Terminal event callback contract",
+        model: "anthropic/claude-sonnet-4-6",
+        worktreePath: tmpDir,
+        env: {},
+      },
+      workflowConfig: {
+        name: "bug",
+        phases: [
+          { name: "explorer", prompt: "explorer.md", maxTurns: 30 },
+        ],
+      } as never,
+      store: {
+        updateRunProgress: vi.fn(),
+        logEvent: vi.fn(),
+      } as never,
+      logFile: join(tmpDir, "pipeline.log"),
+      notifyClient: null,
+      agentMailClient: null,
+      runPhase,
+      registerAgent: vi.fn().mockResolvedValue(undefined),
+      sendMail: vi.fn(),
+      sendMailText: vi.fn(),
+      reserveFiles: vi.fn(),
+      releaseFiles: vi.fn(),
+      markStuck: vi.fn().mockResolvedValue(undefined),
+      log: vi.fn(),
+      observabilityWriter: { logEvent },
+      onPipelineComplete,
+      promptOpts: { projectRoot: tmpDir, workflow: "default" },
+    });
+
+    expect(calls.slice(-4)).toEqual(["phase-failed", "run-failed", "task-updated", "onPipelineComplete"]);
+    expect(logEvent).toHaveBeenCalledWith("phase-failed", expect.objectContaining({
+      run_id: "run-terminal-2",
+      task_id: "task-terminal-2",
+      phase: "explorer",
+      reason: "Phase exceeded maxTurns (30)",
+      status: "failed",
+    }));
+    expect(logEvent).toHaveBeenCalledWith("run-failed", expect.objectContaining({
+      run_id: "run-terminal-2",
+      task_id: "task-terminal-2",
+      phase: "explorer",
+      reason: "Phase exceeded maxTurns (30)",
+      status: "failed",
+    }));
+    expect(logEvent).toHaveBeenCalledWith("task-updated", expect.objectContaining({
+      run_id: "run-terminal-2",
+      task_id: "task-terminal-2",
+      phase: "explorer",
+      reason: "Phase exceeded maxTurns (30)",
+      status: "failed",
+    }));
+    expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+  });
+
   it("fails immediately when a command phase attempts git commit outside finalize", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const markStuck = vi.fn().mockResolvedValue(undefined);

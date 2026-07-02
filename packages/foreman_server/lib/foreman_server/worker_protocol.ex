@@ -139,6 +139,8 @@ defmodule ForemanServer.WorkerProtocol do
   defp worker_event_type("assistant"), do: "AssistantMessage"
   defp worker_event_type("assistant_message"), do: "AssistantMessage"
   defp worker_event_type("tool_call_finished"), do: "ToolCallFinished"
+  defp worker_event_type("heartbeat"), do: "WorkerHeartbeat"
+  defp worker_event_type("worker_heartbeat"), do: "WorkerHeartbeat"
   defp worker_event_type("phase_completed"), do: "PhaseCompleted"
   defp worker_event_type("phase_failed"), do: "PhaseFailed"
   defp worker_event_type("phase_retry"), do: "PhaseRetried"

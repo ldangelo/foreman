@@ -809,6 +809,15 @@ defmodule ForemanServer.ProjectionStore do
     )
   end
 
+  defp apply_domain_event(
+         projection,
+         %{payload: %{run_id: run_id, worker_id: worker_id, sequence: sequence} = payload},
+         _mode
+       )
+       when is_binary(run_id) and is_binary(worker_id) and is_integer(sequence) do
+    put_worker_sequence(projection, payload)
+  end
+
   defp apply_domain_event(projection, _event, _mode), do: projection
 
   defp maybe_complete_worker(run, %{worker_id: worker_id})

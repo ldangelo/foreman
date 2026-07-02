@@ -1836,6 +1836,7 @@ function createElixirWorkerObservabilityWriter(
       eventTail = eventTail.catch(() => { /* keep later worker events flowing after a failed append */ }).then(async () => {
         const phaseId = typeof data.phase === "string" ? data.phase : typeof data.phase_id === "string" ? data.phase_id : "pipeline";
         const nextSequence = sequence + 1;
+        sequence = nextSequence;
         await (await client()).sendWorkerEvent({
           run_id: config.runId,
           project_id: registeredProjectId,
@@ -1850,7 +1851,6 @@ function createElixirWorkerObservabilityWriter(
           tool_name: typeof data.tool_name === "string" ? data.tool_name : undefined,
           details: { ...data, task_id: config.taskId },
         });
-        sequence = nextSequence;
       });
       await eventTail;
     },
@@ -2046,31 +2046,6 @@ async function runPipeline(
       reserveFiles,
       releaseFiles,
       markStuck: async (storeArg, runIdArg, projectIdArg, taskIdArg, taskTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) => {
-        const now = new Date().toISOString();
-        await Promise.resolve(registeredObservabilityWriter?.logEvent?.("phase-failed", {
-          run_id: runIdArg,
-          task_id: taskIdArg,
-          phase: phaseArg,
-          status: "failed",
-          reason: reasonArg,
-          failed_at: now,
-        }));
-        await Promise.resolve(registeredObservabilityWriter?.logEvent?.("run-failed", {
-          run_id: runIdArg,
-          task_id: taskIdArg,
-          phase: phaseArg,
-          status: "failed",
-          reason: reasonArg,
-          failed_at: now,
-        }));
-        await Promise.resolve(registeredObservabilityWriter?.logEvent?.("task-updated", {
-          run_id: runIdArg,
-          task_id: taskIdArg,
-          phase: phaseArg,
-          status: "failed",
-          reason: reasonArg,
-          updated_at: now,
-        }));
         return markStuck(
           storeArg,
           localStore,

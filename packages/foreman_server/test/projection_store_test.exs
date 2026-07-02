@@ -99,6 +99,18 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert task.updated_at == "2026-07-01T20:10:23Z"
   end
 
+  test "worker-sequenced events without specific projections still advance sequence" do
+    append!("worker:run-1:worker-1", "PhaseNudged", %{
+      run_id: "run-1",
+      worker_id: "worker-1",
+      phase_id: "explorer",
+      sequence: 7,
+      message: "nudge"
+    })
+
+    assert ProjectionStore.snapshot().worker_sequences["run-1:worker-1"] == 7
+  end
+
   test "run projection exposes status counts without log inference" do
     append!("run:active", "RunStarted", %{run_id: "active", task_id: "task-1"})
     append!("run:active", "PhaseStarted", %{run_id: "active", phase_id: "developer"})
