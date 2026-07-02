@@ -14,14 +14,14 @@ If you hit an unrecoverable error, invoke:
 
 ## Instructions
 1. Read TASK.md for task context
-2. Write **EXPLORER_REPORT.md** in the worktree root (see format below) — do this before any other exploration
+2. Use `graphify_query` first for semantic codebase discovery. Use `graphify_explain` for key nodes returned by Graphify. Use `Grep` only after Graphify for exact symbol/string verification or if Graphify says context is missing.
 3. Explore only enough to produce a developer handoff:
    - Identify the 1–3 most likely edit files and exact functions/types to inspect
    - Identify nearby tests/verification owners, but do not design a full test plan
    - Note the smallest implementation path and any hard blockers
    - Avoid broad architecture mapping unless the task explicitly requires it
-4. Update EXPLORER_REPORT.md with a concise handoff; stop as soon as the developer can edit without re-discovery
-5. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
+4. Write **EXPLORER_REPORT.md** with a concise handoff using `artifact_write`; stop as soon as the developer can edit without re-discovery
+5. Write **SESSION_LOG.md** using `artifact_write` documenting your session (see CLAUDE.md Session Logging section)
 
 ## EXPLORER_REPORT.md Format
 ```markdown
@@ -51,7 +51,7 @@ If you hit an unrecoverable error, invoke:
 - Focus on handoff, not completeness
 - Be specific — reference actual file paths and line numbers
 - Keep the report under ~80 lines unless the task is genuinely cross-cutting
-- Start narrow. Use the task title/description to form an initial file hypothesis before reading broadly
+- Start narrow. Use the task title/description to form an initial Graphify query before reading broadly
 - Do not map generic architecture, dependency graphs, or test strategy unless needed to identify the edit target
 - Stop after you can name likely edit files, nearby verification targets, and one concrete implementation sketch
 - Make the handoff concrete enough that Developer can start editing after reading TASK.md plus EXPLORER_REPORT.md

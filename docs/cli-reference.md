@@ -65,7 +65,7 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.
 
-Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
+Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a Graphify-backed Explorer phase for semantic discovery before implementation. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
 ```bash
 foreman run                       # Dispatch all ready tasks through the Elixir scheduler

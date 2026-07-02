@@ -27,11 +27,11 @@ phases:
   - name: explorer
     prompt: explorer.md
     tools:
-      allowed: [Glob, Grep, Read, Write]
+      allowed: [GraphifyQuery, GraphifyExplain, Glob, Read, Write]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 12
+    maxTurns: 30
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: EXPLORER_REPORT.md
     mail:

@@ -21,6 +21,8 @@ import {
   createArtifactWriteTool,
   createCloseBeadTool,
   createGetRunStatusTool,
+  createGraphifyExplainTool,
+  createGraphifyQueryTool,
   createMailReadTool,
   createMailSendTool,
   createPhaseHandoffTool,
@@ -31,6 +33,7 @@ import {
   createValidationResultTool,
   type ForemanToolContext,
 } from "./pi-sdk-tools.js";
+import { ensureGraphifyIndex } from "./graphify-index.js";
 import { executePipeline } from "./pipeline-executor.js";
 import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter } from "./pipeline-executor.js";
 import { ForemanStore } from "../lib/store.js";
@@ -817,12 +820,28 @@ async function runPhase(
     customTools.push(createMailSendTool(agentMailClient, foremanToolContext));
     customTools.push(createMailReadTool(agentMailClient, agentName, foremanToolContext));
   }
+  if (role === "explorer" || roleConfig.allowedTools.includes("GraphifyQuery") || roleConfig.allowedTools.includes("GraphifyExplain")) {
+    try {
+      const result = await ensureGraphifyIndex(config.worktreePath);
+      log(`[GRAPHIFY] ${result.command} ready at ${result.graphPath}`);
+      await appendFile(logFile, `[GRAPHIFY] ${result.command} ready at ${result.graphPath}\n`);
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log(`[GRAPHIFY] index failed: ${reason.slice(0, 200)}`);
+      await appendFile(logFile, `[GRAPHIFY] index failed: ${reason}\n`);
+      return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: reason };
+    }
+    customTools.push(createGraphifyQueryTool(foremanToolContext));
+    customTools.push(createGraphifyExplainTool(foremanToolContext));
+  }
   customTools.push(createPhaseHandoffTool(agentMailClient ?? null, foremanToolContext));
   customTools.push(createArtifactWriteTool(foremanToolContext));
   customTools.push(createValidationResultTool(foremanToolContext));
   customTools.push(createTaskBlockTool(agentMailClient ?? null, foremanToolContext));
   customTools.push(createProgressUpdateTool(agentMailClient ?? null, foremanToolContext));
-  customTools.push(createSafeCommandRunTool(foremanToolContext));
+  if (role !== "explorer") {
+    customTools.push(createSafeCommandRunTool(foremanToolContext));
+  }
 
   try {
     const phaseResult = await runPhaseSession({
@@ -2136,10 +2155,39 @@ async function runPipeline(
         } else {
           store.logEvent(projectId, eventType, eventData, runId);
         }
+        const now = new Date().toISOString();
         if (success) {
+          await Promise.resolve(registeredObservabilityWriter?.logEvent?.("run-completed", {
+            run_id: runId,
+            task_id: taskId,
+            status: "completed",
+            completed_at: now,
+          }));
+          await updateTerminalRunStatus({
+            runId,
+            projectId: config.projectId,
+            projectPath: pipelineProjectPath,
+            updates: { status: "completed", completed_at: now },
+          });
+          notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
           log(`PIPELINE COMPLETED for ${taskId} (${progress.turns} turns, ${progress.toolCalls} tools, $${progress.costUsd.toFixed(4)})`);
           await appendFile(logFile, `\n[PIPELINE] COMPLETED ($${progress.costUsd.toFixed(4)}, ${progress.turns} turns)\n`);
         } else {
+          await Promise.resolve(registeredObservabilityWriter?.logEvent?.("run-failed", {
+            run_id: runId,
+            task_id: taskId,
+            status: "failed",
+            failed_at: now,
+            phase: progress.currentPhase ?? "pipeline",
+            reason: `${progress.currentPhase ?? "pipeline"}_failed`,
+          }));
+          await updateTerminalRunStatus({
+            runId,
+            projectId: config.projectId,
+            projectPath: pipelineProjectPath,
+            updates: { status: "failed", completed_at: now },
+          });
+          notifyClient.send({ type: "status", runId, status: "failed", timestamp: now });
           log(`PIPELINE FAILED for ${taskId} with explicit merge workflow ($${progress.costUsd.toFixed(4)})`);
           await appendFile(logFile, `\n[PIPELINE] FAILED ($${progress.costUsd.toFixed(4)})\n`);
         }
