@@ -850,7 +850,7 @@ async function runPhase(
           runId: config.runId,
           taskId: config.taskId,
           phaseId: role,
-          workerId: `node-pipeline:${config.taskId}`,
+          workerId: `node-pipeline-policy:${config.taskId}:${role}`,
         },
         check: async (toolCallId: string, toolName: string, args: Record<string, unknown>) => {
           policySequence += 1;
@@ -859,7 +859,7 @@ async function runPhase(
             run_id: config.runId,
             task_id: config.taskId,
             phase_id: role,
-            worker_id: `node-pipeline:${config.taskId}`,
+            worker_id: `node-pipeline-policy:${config.taskId}:${role}`,
             sequence: policySequence,
             tool_call_id: toolCallId,
             tool_name: toolName,

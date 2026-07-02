@@ -44,7 +44,7 @@ defmodule ForemanServer.WorkerLauncher do
             output: output
           })
 
-          append_missing_terminal_event(task, run_id, workflow, status, output)
+          append_missing_terminal_event(task, run_id, workflow, status, combined_worker_output(run_id, output))
         end)
 
       {:ok, %{pid: pid, workflow: workflow}}
@@ -150,9 +150,11 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp infer_terminal_failure(output) when is_binary(output) do
+    normalized_output = String.replace(output, "—", "-")
+
     %{
-      phase_id: infer_failed_phase(output),
-      reason: infer_failure_reason(output)
+      phase_id: infer_failed_phase(normalized_output),
+      reason: infer_failure_reason(normalized_output)
     }
   end
 
@@ -163,6 +165,7 @@ defmodule ForemanServer.WorkerLauncher do
       ~r/FAILED\s+[—-]\s+\s*\S+\s+\[([^\]]+)\]/,
       ~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i,
       ~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+FAIL:/i,
+      ~r/\[([A-Za-z0-9_-]+)\]\s+FAIL\s+[—-]/i,
       ~r/\[PHASE:\s*([^\]]+)\]\s+FAILED/i
     ]
 
@@ -185,13 +188,19 @@ defmodule ForemanServer.WorkerLauncher do
         {"#{phase}_failed", start}
       end)
 
-    fail_reasons =
+    pipeline_fail_reasons =
       Regex.scan(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+FAIL:\s*([^\n]+)/i, output, return: :index)
       |> Enum.map(fn [{start, _}, _phase_capture, reason_capture] ->
         {capture_text(output, [reason_capture]) |> String.trim(), start}
       end)
 
-    case Enum.max_by(reasons ++ fail_reasons, fn {_reason, start} -> start end, fn -> {nil, nil} end) do
+    phase_fail_reasons =
+      Regex.scan(~r/\[([A-Za-z0-9_-]+)\]\s+FAIL\s+[^\n]+/i, output, return: :index)
+      |> Enum.map(fn [{start, length}, _phase_capture] ->
+        {output |> binary_part(start, length) |> reason_after_fail(), start}
+      end)
+
+    case Enum.max_by(reasons ++ pipeline_fail_reasons ++ phase_fail_reasons, fn {_reason, start} -> start end, fn -> {nil, nil} end) do
       {reason, _start} when is_binary(reason) and reason != "" ->
         reason
 
@@ -208,6 +217,14 @@ defmodule ForemanServer.WorkerLauncher do
 
   defp capture_text(_output, _captures), do: nil
 
+  defp reason_after_fail(line) do
+    line
+    |> String.split(~r/\s+FAIL\s+/i, parts: 2)
+    |> List.last()
+    |> String.replace(~r/^[—-]\s*/, "")
+    |> String.trim()
+  end
+
   defp normalize_phase(phase) when is_binary(phase) do
     phase
     |> String.trim()
@@ -215,6 +232,22 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp normalize_phase(_phase), do: nil
+
+  defp combined_worker_output(run_id, output) do
+    [output, read_worker_log(run_id, ".log"), read_worker_log(run_id, ".err")]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join("\n")
+  end
+
+  defp read_worker_log(run_id, suffix) do
+    path = Path.join([System.user_home!(), ".foreman", "logs", "#{run_id}#{suffix}"])
+
+    if File.exists?(path) do
+      File.read!(path)
+    end
+  rescue
+    _ -> nil
+  end
 
   defp append(event_type, task, run_id, payload) do
     EventStore.append(%{

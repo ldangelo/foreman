@@ -174,6 +174,55 @@ defmodule ForemanServer.WorkerLauncherTest do
     end)
   end
 
+  test "worker fallback failure parses bracketed phase failures from worker logs", %{
+    bin_dir: bin_dir,
+    project_dir: project_dir
+  } do
+    foreman = Path.join(bin_dir, "foreman")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    echo '[PR-REVIEW] Completed (17 turns, $0.1107)'
+    echo '[MERGE] FAIL — pr_review_failed_checks: Test (Node 20)'
+    exit 0
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{
+      task_id: "foreman-ecd62",
+      project_id: "project-a",
+      project_path: project_dir,
+      task_type: "bug"
+    }
+
+    run_id = "00000000-0000-0000-0000-000000000005"
+
+    {:ok, _} =
+      EventStore.append(%{
+        event_type: "RunStarted",
+        stream_id: "run:#{run_id}",
+        payload: %{run_id: run_id, task_id: "foreman-ecd62", current_phase: "explorer"}
+      })
+
+    {:ok, _} =
+      EventStore.append(%{
+        event_type: "PhaseStarted",
+        stream_id: "run:#{run_id}",
+        payload: %{run_id: run_id, task_id: "foreman-ecd62", phase_id: "explorer"}
+      })
+
+    assert {:ok, _} = WorkerLauncher.launch(task, run_id, ["explorer", "merge"])
+
+    assert_eventually(fn -> EventStore.stream("worker-launch:#{run_id}") end, fn events ->
+      Enum.any?(events, fn event ->
+        event.event_type == "RunFailed" &&
+          event.payload.phase_id == "merge" &&
+          event.payload.reason == "pr_review_failed_checks: Test (Node 20)"
+      end)
+    end)
+  end
+
   test "zero-exit failed worker output records diagnostic fallback failure", %{
     bin_dir: bin_dir,
     project_dir: project_dir

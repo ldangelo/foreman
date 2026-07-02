@@ -85,6 +85,12 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('enqueueCloseTask(store, taskId, "agent-worker-finalize")');
   });
 
+  it("keeps tool-policy worker sequences isolated from pipeline observability", () => {
+    expect(source).toContain('workerId: `node-pipeline-policy:${config.taskId}:${role}`');
+    expect(source).toContain('worker_id: `node-pipeline-policy:${config.taskId}:${role}`');
+    expect(source).toContain('const workerId = `node-pipeline:${config.taskId}`;');
+  });
+
   it("routes finalize terminal statuses through the helper", () => {
     expect(source).toContain('status: "completed"');
     expect(source).toContain('status: "pr-created"');
