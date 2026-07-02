@@ -723,6 +723,7 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig } = ctx;
   const epicTasks = ctx.epicTasks;
   applyEffectiveSandboxConfig(ctx);
+  ensureTaskMarkdown(ctx);
   const isEpicMode = epicTasks && epicTasks.length > 0 && workflowConfig.taskPhases;
   let terminalFailureEmitted = false;
   const terminalAwareCtx: PipelineContext = {
@@ -763,6 +764,39 @@ export async function executePipeline(ctx: PipelineContext): Promise<void> {
     await executeEpicPipeline(terminalAwareCtx);
   } else {
     await executeSingleTaskPipeline(terminalAwareCtx);
+  }
+}
+
+function ensureTaskMarkdown(ctx: PipelineContext): void {
+  const { config } = ctx;
+  const path = join(config.worktreePath, "TASK.md");
+  if (existsSync(path)) return;
+
+  const lines = [
+    `# ${config.taskId}: ${config.taskTitle}`,
+    "",
+    "## Task",
+    `- ID: ${config.taskId}`,
+    `- Title: ${config.taskTitle}`,
+    config.taskType ? `- Type: ${config.taskType}` : undefined,
+    config.taskPriority ? `- Priority: ${config.taskPriority}` : undefined,
+    config.targetBranch ? `- Target branch: ${config.targetBranch}` : undefined,
+    "",
+    "## Description",
+    config.taskDescription?.trim() || "(no description)",
+    "",
+    config.taskComments?.trim() ? "## Comments" : undefined,
+    config.taskComments?.trim() || undefined,
+    "",
+    "## Instructions",
+    "Follow the active workflow phase prompt. Treat this file as task context, not as an implementation plan.",
+    "",
+  ].filter((line): line is string => line !== undefined);
+
+  try {
+    writeFileSync(path, lines.join("\n"), "utf-8");
+  } catch (err) {
+    ctx.log(`[PIPELINE] Failed to write TASK.md: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
