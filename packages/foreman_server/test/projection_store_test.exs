@@ -74,6 +74,31 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert ProjectionStore.task("task-1").failure_output == nil
   end
 
+  test "run terminal events update task projection when task_id is present" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "in_progress",
+      run_id: "run-1"
+    })
+
+    append!("run:run-1", "RunStarted", %{run_id: "run-1", task_id: "task-1"})
+
+    append!("run:run-1", "RunFailed", %{
+      run_id: "run-1",
+      task_id: "task-1",
+      phase_id: "explorer",
+      reason: "Phase exceeded maxTurns (30)",
+      failed_at: "2026-07-01T20:10:23Z"
+    })
+
+    task = ProjectionStore.task("task-1")
+    assert task.status == "failed"
+    assert task.run_id == "run-1"
+    assert task.failure_reason == "Phase exceeded maxTurns (30)"
+    assert task.updated_at == "2026-07-01T20:10:23Z"
+  end
+
   test "run projection exposes status counts without log inference" do
     append!("run:active", "RunStarted", %{run_id: "active", task_id: "task-1"})
     append!("run:active", "PhaseStarted", %{run_id: "active", phase_id: "developer"})

@@ -2045,8 +2045,33 @@ async function runPipeline(
       sendMailText,
       reserveFiles,
       releaseFiles,
-      markStuck: async (storeArg, runIdArg, projectIdArg, taskIdArg, taskTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) =>
-        markStuck(
+      markStuck: async (storeArg, runIdArg, projectIdArg, taskIdArg, taskTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) => {
+        const now = new Date().toISOString();
+        await Promise.resolve(registeredObservabilityWriter?.logEvent?.("phase-failed", {
+          run_id: runIdArg,
+          task_id: taskIdArg,
+          phase: phaseArg,
+          status: "failed",
+          reason: reasonArg,
+          failed_at: now,
+        }));
+        await Promise.resolve(registeredObservabilityWriter?.logEvent?.("run-failed", {
+          run_id: runIdArg,
+          task_id: taskIdArg,
+          phase: phaseArg,
+          status: "failed",
+          reason: reasonArg,
+          failed_at: now,
+        }));
+        await Promise.resolve(registeredObservabilityWriter?.logEvent?.("task-updated", {
+          run_id: runIdArg,
+          task_id: taskIdArg,
+          phase: phaseArg,
+          status: "failed",
+          reason: reasonArg,
+          updated_at: now,
+        }));
+        return markStuck(
           storeArg,
           localStore,
           runIdArg,
@@ -2059,7 +2084,8 @@ async function runPipeline(
           projectPathArg,
           notifyClientArg,
           registeredReadStore,
-        ),
+        );
+      },
       log,
       promptOpts: { projectRoot: pipelineProjectPath, workflow: resolvedWorkflow },
       taskMeta: config.taskMeta,
