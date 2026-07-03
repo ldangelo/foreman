@@ -423,6 +423,25 @@ export function shouldUseCooldownRetry(error: string | undefined, phase: Pick<Wo
   return Boolean(phase.retryAfterCooldown && isRateLimitError(error));
 }
 
+export function retryTargetForFailure(
+  phase: Pick<WorkflowPhaseConfig, "retryWith" | "retryWithByReason">,
+  reason: string | undefined,
+): string | undefined {
+  const normalized = reason ?? "";
+  for (const [pattern, target] of Object.entries(phase.retryWithByReason ?? {})) {
+    if (pattern.startsWith("/") && pattern.endsWith("/")) {
+      try {
+        if (new RegExp(pattern.slice(1, -1), "i").test(normalized)) return target;
+      } catch {
+        // Bad workflow regex: ignore and fall back to prefix/static retry.
+      }
+    } else if (normalized.toLowerCase().startsWith(pattern.toLowerCase())) {
+      return target;
+    }
+  }
+  return phase.retryWith;
+}
+
 /**
  * Extract Retry-After seconds from an error message if present.
  * Some providers include this in the error message.
@@ -1630,8 +1649,8 @@ async function runPhaseSequence(
           return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
         }
 
-        if (phase.retryWith) {
-          const retryTarget = phase.retryWith;
+        const retryTarget = retryTargetForFailure(phase, errorMsg);
+        if (retryTarget) {
           const maxRetries = phase.retryOnFail ?? 0;
           const currentRetries = retryCounts[phaseName] ?? 0;
           const artifactContent = interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null;
@@ -1639,10 +1658,8 @@ async function runPhaseSequence(
 
           if (currentRetries < maxRetries) {
             retryCounts[phaseName] = currentRetries + 1;
-            if (phase.mail?.onFail) {
-              const feedbackTarget = `${phase.mail.onFail}-${taskId}`;
-              ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
-            }
+            const feedbackTarget = `${retryTarget}-${taskId}`;
+            ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
             feedbackContext = feedback;
             ctx.sendMail(agentMailClient, "foreman", "agent-error", {
               taskId, phase: phaseName, error: errorMsg, retryable: true,
@@ -1760,8 +1777,8 @@ async function runPhaseSequence(
           return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
         }
 
-        if (phase.retryWith) {
-          const retryTarget = phase.retryWith;
+        const retryTarget = retryTargetForFailure(phase, errorMsg);
+        if (retryTarget) {
           const maxRetries = phase.retryOnFail ?? 0;
           const currentRetries = retryCounts[phaseName] ?? 0;
           const feedback = (interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null)
@@ -1770,10 +1787,8 @@ async function runPhaseSequence(
 
           if (currentRetries < maxRetries) {
             retryCounts[phaseName] = currentRetries + 1;
-            if (phase.mail?.onFail) {
-              const feedbackTarget = `${phase.mail.onFail}-${taskId}`;
-              ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
-            }
+            const feedbackTarget = `${retryTarget}-${taskId}`;
+            ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
             feedbackContext = feedback;
             ctx.sendMail(agentMailClient, "foreman", "agent-error", {
               taskId, phase: phaseName, error: errorMsg, retryable: true,
@@ -2337,8 +2352,9 @@ async function runPhaseSequence(
 
       await writeNormalPhaseEvent(store, config.projectId, runId, "phase-verdict", { taskId, phase: phaseName, verdict, artifact: interpolatedArtifact }, observabilityWriter);
 
-      if (verdict === "fail" && phase.retryWith) {
-        const retryTarget = phase.retryWith;
+      const verdictRetryTarget = retryTargetForFailure(phase, feedbackContext ?? report ?? `${phaseName}_failed`);
+      if (verdict === "fail" && verdictRetryTarget) {
+        const retryTarget = verdictRetryTarget;
         const maxRetries = phase.retryOnFail ?? 0;
         const retryCountKey = phaseName;
         const currentRetries = retryCounts[retryCountKey] ?? 0;
@@ -2355,8 +2371,8 @@ async function runPhaseSequence(
         if (currentRetries < maxRetries) {
           retryCounts[retryCountKey] = currentRetries + 1;
 
-          if (phase.mail?.onFail && report) {
-            const feedbackTarget = `${phase.mail.onFail}-${taskId}`;
+          if (report) {
+            const feedbackTarget = `${retryTarget}-${taskId}`;
             ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
           }
           feedbackContext = feedbackContext ?? (report ? extractIssues(report) : `(${phaseName} failed but no report)`);

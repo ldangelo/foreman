@@ -163,6 +163,11 @@ export interface WorkflowPhaseConfig {
    */
   retryWith?: string;
   /**
+   * Optional failure-reason routing map. Keys are reason prefixes or `/regex/`
+   * strings; values are retry phase names. Falls back to retryWith.
+   */
+  retryWithByReason?: Record<string, string>;
+  /**
    * Max retry count when this phase fails (verdict FAIL).
    * When retryWith is set, the executor loops back retryOnFail times.
    */
@@ -499,6 +504,13 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
+    if (isRecord(p["retryWithByReason"])) {
+      const routing: Record<string, string> = {};
+      for (const [key, value] of Object.entries(p["retryWithByReason"])) {
+        if (typeof value === "string") routing[key] = value;
+      }
+      if (Object.keys(routing).length > 0) phase.retryWithByReason = routing;
+    }
     if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
     if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
     if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];

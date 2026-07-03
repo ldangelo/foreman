@@ -359,6 +359,9 @@ phases:
       if (phase.retryWith) {
         expect(phaseNames.has(phase.retryWith), `${phase.name}.retryWith`).toBe(true);
       }
+      for (const [reason, target] of Object.entries(phase.retryWithByReason ?? {})) {
+        expect(phaseNames.has(target), `${phase.name}.retryWithByReason.${reason}`).toBe(true);
+      }
       if (phase.mail?.onFail) {
         expect(phaseNames.has(phase.mail.onFail), `${phase.name}.mail.onFail`).toBe(true);
       }
@@ -402,6 +405,9 @@ phases:
     const prWaitPhase = config.phases.find((phase) => phase.name === "pr-wait");
     expect(prWaitPhase?.artifact).toBe("{task.projectReportsDir}/PR_WAIT_REPORT.md");
     expect(prWaitPhase?.retryWith).toBe("developer");
+    expect(prWaitPhase?.retryWithByReason?.["ci_failed:"]).toBe("cicd-developer");
+    expect(prWaitPhase?.retryWithByReason?.["coderabbit_"]).toBe("cr-developer");
+    expect(prWaitPhase?.retryWithByReason?.["merge_conflict:"]).toBe("merge-resolver");
     expect(prWaitPhase?.retryOnFail).toBe(2);
     expect(config.phases.find((phase) => phase.name === "pr-review")).toBeUndefined();
     const mergePhase = config.phases.find((phase) => phase.name === "merge");

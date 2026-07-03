@@ -33,6 +33,7 @@ import {
   formatPipelineEvent,
   formatPipelineEventTableRow,
   renderPipelineEventsTable,
+  renderPipelineEventsTableRows,
   resolvePostgresInboxProject,
   selectUnseenEvents,
   sortEventsChronologically,
@@ -105,6 +106,17 @@ describe("inbox event helpers", () => {
     ["anything", null, "anything"],
   ])("formatEventSummary covers %s fallback branches", (eventType, details, expected) => {
     expect(formatEventSummary(eventType, details as Record<string, unknown> | null)).toBe(expected);
+  });
+
+  it("renders live event rows without repeating the table header", () => {
+    const output = renderPipelineEventsTableRows([
+      { id: "evt-1", runId: "run-1", eventType: "WorkerHeartbeat", createdAt: "2026-01-01T00:00:00.000Z", details: { task_id: "task-1", phase_id: "qa" } },
+    ] as any);
+
+    expect(output).toContain("task-1");
+    expect(output).toContain("WorkerHeartbeat");
+    expect(output).not.toContain("TIME");
+    expect(output).not.toContain("────");
   });
 
   it("formats Elixir domain events with useful task, run, and phase context", () => {

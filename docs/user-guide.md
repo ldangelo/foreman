@@ -200,7 +200,7 @@ foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for event-projected agent messages (including message contents) plus current lifecycle/terminal events; add `--events` to see a columnar lifecycle table with phase completions, retries, verdicts, and overwatch nudges, add `--grouped` for workflow → phase → message/tool-call grouping, or `--compact` for a concise run/task, phase, tool, denial, and notable-event summary. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. For stuck runs, use `foreman retry` or Elixir recovery workflows.
+Use `foreman board` for kanban-style task triage. Use `foreman inbox --task <id>` for event-projected agent messages (including message contents) plus current lifecycle/terminal events; add `--events` to see a columnar lifecycle table with phase completions, retries, verdicts, and overwatch nudges, add `--grouped` for workflow → phase → message/tool-call grouping, or `--compact` for a concise run/task, phase, tool, denial, and notable-event summary. In watch mode, live event rows append without repeating the table header. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions; MCP uses the Elixir backend only. In Pi, use slash commands like `/foreman-smoke`, `/foreman-tasks`, `/foreman-task <id>`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick` for common MCP-backed operator checks and approvals. For stuck runs, use `foreman retry` or Elixir recovery workflows.
 
 ### 8. Triage Failures
 
@@ -223,7 +223,7 @@ Avoid mass retrying unless failures are known transient and the root cause is ex
 
 ### 9. Review and Merge
 
-Auto-merge workflows create PRs, wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through the configured merge phase. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route failures back to the developer/fix phase when retryable.
+Auto-merge workflows create PRs, wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through the configured merge phase. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
 
 ```bash
 foreman merge

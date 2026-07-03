@@ -25,7 +25,11 @@ describe("task and bug workflow remediation routing", () => {
     it(`${workflowName} routes findings back to developer, not the initial fix prompt`, () => {
       const workflow = loadBundledWorkflow(workflowName);
       const phasesByName = new Map(workflow.phases.map((phase) => [phase.name, phase]));
-      const remediationPhases = ["test", "qa", "reviewer", "cli-review", "finalize", "pr-wait", "pr-review"];
+      const remediationPhases = ["test", "qa", "reviewer", "cli-review", "finalize", "pr-wait", "merge"];
+
+      expect(phasesByName.get("cicd-developer")?.retryOnly).toBe(true);
+      expect(phasesByName.get("cr-developer")?.retryOnly).toBe(true);
+      expect(phasesByName.get("merge-resolver")?.retryOnly).toBe(true);
 
       for (const phaseName of remediationPhases) {
         const phase = phasesByName.get(phaseName);
@@ -34,6 +38,13 @@ describe("task and bug workflow remediation routing", () => {
         expect(phase.retryWith).toBe("developer");
         expect(phase.mail?.onFail ?? "developer").toBe("developer");
       }
+
+      const prWait = phasesByName.get("pr-wait");
+      expect(prWait?.retryWithByReason).toMatchObject({
+        "ci_failed:": "cicd-developer",
+        "coderabbit_": "cr-developer",
+        "merge_conflict:": "merge-resolver",
+      });
     });
   }
 });

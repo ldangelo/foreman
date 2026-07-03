@@ -36,6 +36,60 @@ phases:
       reserve: true
       leaseSecs: 600
 
+  - name: cicd-developer
+    retryOnly: true
+    prompt: developer.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: cr-developer
+    retryOnly: true
+    prompt: developer.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: merge-resolver
+    retryOnly: true
+    prompt: developer.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
   - name: documentation
     prompt: documentation.md
     tools:
@@ -61,6 +115,11 @@ phases:
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
     retryWith: developer
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
     retryOnFail: 2
     mail:
       onStart: true
@@ -106,6 +165,11 @@ phases:
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
     retryWith: developer
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
     retryOnFail: 2
     mail:
       onStart: true
@@ -117,6 +181,11 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
     retryWith: developer
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
     retryOnFail: 2
     mail:
       onStart: true

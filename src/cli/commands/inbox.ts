@@ -218,10 +218,8 @@ export function formatPipelineEventTableRow(event: PipelineEvent, messageWidth =
   };
 }
 
-export function renderPipelineEventsTable(events: PipelineEvent[], messageWidth = 90): string {
-  const rows = sortEventsChronologically(events).map((event) => formatPipelineEventTableRow(event, messageWidth));
-  if (rows.length === 0) return "";
-  const widths = {
+function pipelineEventTableWidths(rows: PipelineEventTableRow[], messageWidth = 90) {
+  return {
     time: 19,
     task: Math.max(12, ...rows.map((row) => row.task.length)),
     phase: Math.max(10, ...rows.map((row) => row.phase.length)),
@@ -229,6 +227,29 @@ export function renderPipelineEventsTable(events: PipelineEvent[], messageWidth 
     event: Math.max(5, ...rows.map((row) => row.event.length)),
     message: messageWidth,
   };
+}
+
+function renderPipelineEventTableRows(rows: PipelineEventTableRow[], widths: ReturnType<typeof pipelineEventTableWidths>): string[] {
+  return rows.map((row) => [
+    pad(row.time, widths.time),
+    pad(row.task, widths.task),
+    pad(row.phase, widths.phase),
+    pad(row.turns, widths.turns),
+    pad(row.event, widths.event),
+    pad(row.message, widths.message),
+  ].join(" │ "));
+}
+
+export function renderPipelineEventsTableRows(events: PipelineEvent[], messageWidth = 90): string {
+  const rows = sortEventsChronologically(events).map((event) => formatPipelineEventTableRow(event, messageWidth));
+  if (rows.length === 0) return "";
+  return renderPipelineEventTableRows(rows, pipelineEventTableWidths(rows, messageWidth)).join("\n");
+}
+
+export function renderPipelineEventsTable(events: PipelineEvent[], messageWidth = 90): string {
+  const rows = sortEventsChronologically(events).map((event) => formatPipelineEventTableRow(event, messageWidth));
+  if (rows.length === 0) return "";
+  const widths = pipelineEventTableWidths(rows, messageWidth);
   const header = [
     pad("TIME", widths.time),
     pad("TASK", widths.task),
@@ -239,14 +260,7 @@ export function renderPipelineEventsTable(events: PipelineEvent[], messageWidth 
   ].join(" │ ");
   const totalWidth = widths.time + widths.task + widths.phase + widths.turns + widths.event + widths.message + 15;
   const hr = "─".repeat(totalWidth);
-  const lines = rows.map((row) => [
-    pad(row.time, widths.time),
-    pad(row.task, widths.task),
-    pad(row.phase, widths.phase),
-    pad(row.turns, widths.turns),
-    pad(row.event, widths.event),
-    pad(row.message, widths.message),
-  ].join(" │ "));
+  const lines = renderPipelineEventTableRows(rows, widths);
   return [hr, header, hr, ...lines, hr].join("\n");
 }
 
@@ -1870,7 +1884,7 @@ export const inboxCommand = new Command("inbox")
                 if (groupedEvents) {
                   for (const event of unseenEvents) console.log(formatPipelineEvent(event));
                 } else {
-                  console.log(renderPipelineEventsTable(unseenEvents));
+                  console.log(renderPipelineEventsTableRows(unseenEvents));
                 }
               }
             }
