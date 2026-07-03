@@ -136,17 +136,26 @@ defmodule ForemanServer.WorkerLauncher do
 
     unless Map.get(run, :status) in ["completed", "failed", "blocked"] do
       inferred = infer_terminal_failure(output)
-      phase_id = inferred.phase_id || Map.get(run, :current_phase)
 
-      append("RunFailed", task, run_id, %{
-        workflow: workflow,
-        exit_code: exit_code,
-        phase_id: phase_id,
-        reason: inferred.reason || "worker_exited_without_terminal_event",
-        diagnostic_reason: "worker_exited_without_terminal_event"
-      })
+      unless detached_worker_started?(exit_code, output, inferred) do
+        phase_id = inferred.phase_id || Map.get(run, :current_phase)
+
+        append("RunFailed", task, run_id, %{
+          workflow: workflow,
+          exit_code: exit_code,
+          phase_id: phase_id,
+          reason: inferred.reason || "worker_exited_without_terminal_event",
+          diagnostic_reason: "worker_exited_without_terminal_event"
+        })
+      end
     end
   end
+
+  defp detached_worker_started?(0, output, %{phase_id: nil, reason: nil}) when is_binary(output) do
+    String.contains?(output, "Worker spawned (pid=")
+  end
+
+  defp detached_worker_started?(_exit_code, _output, _inferred), do: false
 
   defp infer_terminal_failure(output) when is_binary(output) do
     normalized_output = String.replace(output, "—", "-")

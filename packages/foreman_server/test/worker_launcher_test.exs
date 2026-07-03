@@ -225,6 +225,49 @@ defmodule ForemanServer.WorkerLauncherTest do
     end)
   end
 
+  test "zero-exit detached worker output does not record fallback failure", %{
+    bin_dir: bin_dir,
+    project_dir: project_dir
+  } do
+    foreman = Path.join(bin_dir, "foreman")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    echo 'Running task: foreman-abf48'
+    echo 'Worker spawned (pid=12345) for run 00000000-0000-0000-0000-000000000006'
+    echo '  Logs: ~/.foreman/logs/00000000-0000-0000-0000-000000000006.log'
+    exit 0
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{
+      task_id: "foreman-abf48",
+      project_id: "project-a",
+      project_path: project_dir,
+      task_type: "feature"
+    }
+
+    run_id = "00000000-0000-0000-0000-000000000006"
+
+    {:ok, _} =
+      EventStore.append(%{
+        event_type: "RunStarted",
+        stream_id: "run:#{run_id}",
+        payload: %{run_id: run_id, task_id: "foreman-abf48", current_phase: nil}
+      })
+
+    assert {:ok, _} = WorkerLauncher.launch(task, run_id, ["explorer"])
+
+    assert_eventually(fn -> EventStore.stream("worker-launch:#{run_id}") end, fn events ->
+      Enum.any?(events, fn event -> event.event_type == "WorkerProcessExited" end)
+    end)
+
+    refute Enum.any?(EventStore.stream("worker-launch:#{run_id}"), fn event ->
+             event.event_type == "RunFailed"
+           end)
+  end
+
   test "zero-exit failed worker output records diagnostic fallback failure", %{
     bin_dir: bin_dir,
     project_dir: project_dir
