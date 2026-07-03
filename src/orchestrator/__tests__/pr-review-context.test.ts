@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCodeRabbitFindings, parseFailedChecks, renderPrReviewFindings, renderPrWaitReport, summarizePrWaitStatus, updatePrReadyStability } from "../pr-review-context.js";
+import { isPrWaitStatusReady, parseCodeRabbitFindings, parseFailedChecks, renderPrReviewFindings, renderPrWaitReport, summarizePrWaitStatus, updatePrReadyStability } from "../pr-review-context.js";
 
 describe("pr-review-context", () => {
   it("extracts only CodeRabbit critical/high/medium/major findings", () => {
@@ -127,6 +127,12 @@ describe("pr-review-context", () => {
       codeRabbitComments: 1,
       codeRabbitReviews: 1,
     });
+    const failed = summarizePrWaitStatus({
+      prNumber: 197,
+      checks: [{ name: "Test (Node 20)", status: "COMPLETED", conclusion: "FAILURE" }],
+      codeRabbitComments: 1,
+      codeRabbitReviews: 1,
+    });
     const ready = summarizePrWaitStatus({
       prNumber: 197,
       checks: [{ name: "Test (Node 20)", status: "COMPLETED", conclusion: "SUCCESS" }],
@@ -135,9 +141,11 @@ describe("pr-review-context", () => {
     });
 
     const firstReady = updatePrReadyStability(ready, undefined, 1_000, 60_000);
+    expect(isPrWaitStatusReady(failed)).toBe(false);
     expect(firstReady).toEqual({ ready: true, readySince: 1_000, stable: false });
     expect(updatePrReadyStability(ready, firstReady.readySince, 61_000, 60_000)).toEqual({ ready: true, readySince: 1_000, stable: true });
     expect(updatePrReadyStability(pending, firstReady.readySince, 62_000, 60_000)).toEqual({ ready: false, readySince: undefined, stable: false });
+    expect(updatePrReadyStability(failed, firstReady.readySince, 63_000, 60_000)).toEqual({ ready: false, readySince: undefined, stable: false });
   });
 
   it("renders PR wait report", () => {
@@ -157,6 +165,23 @@ describe("pr-review-context", () => {
     expect(rendered).toContain("- Reviews: 1");
     expect(rendered).toContain("- Status: OK");
     expect(rendered).toContain("## Verdict: PASS");
+  });
+
+  it("renders PR wait failed when terminal checks include failures", () => {
+    const rendered = renderPrWaitReport({
+      prNumber: 311,
+      prUrl: "https://github.com/ldangelo/foreman/pull/311",
+      headSha: "abc123",
+      mergeable: "MERGEABLE",
+      mergeStateStatus: "UNSTABLE",
+      checks: [{ name: "Test (Node 20)", status: "COMPLETED", conclusion: "FAILURE" }],
+      codeRabbitComments: 1,
+      codeRabbitReviews: 1,
+    }, false);
+
+    expect(rendered).toContain("- Status: COMPLETE");
+    expect(rendered).toContain("- Failed: 1");
+    expect(rendered).toContain("## Verdict: FAIL");
   });
 
   it("renders findings for the pr-review prompt", () => {

@@ -154,7 +154,7 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
 }
 
 export function isPrWaitStatusReady(status: PrWaitStatus): boolean {
-  return status.checksTerminal && status.codeRabbitComplete && !status.mergeConflict;
+  return status.checksTerminal && status.failedChecks.length === 0 && status.codeRabbitComplete && !status.mergeConflict;
 }
 
 export function updatePrReadyStability(status: PrWaitStatus, readySince: number | undefined, now: number, stabilityMs: number): PrReadyStability {
@@ -326,7 +326,7 @@ export function renderPrWaitReport(snapshot: PrWaitSnapshot, timedOut: boolean):
     `- Status: ${status.mergeConflict ? "CONFLICT" : "OK"}`,
     `- Reason: ${status.mergeConflictReason ?? "none"}`,
     ``,
-    `## Verdict: ${status.checksTerminal && status.codeRabbitComplete && !status.mergeConflict ? "PASS" : "FAIL"}`,
+    `## Verdict: ${isPrWaitStatusReady(status) ? "PASS" : "FAIL"}`,
   ];
   return lines.join("\n") + "\n";
 }
