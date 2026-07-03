@@ -3,7 +3,7 @@
  *
  * Validates:
  *   - troubleshooter role config exists in ROLE_CONFIGS
- *   - troubleshooter tools (get_run_status, close_bead) are correctly structured
+ *   - troubleshooter tools (get_run_status) are correctly structured
  *   - troubleshooter.md prompt exists and contains required sections
  *   - default.yaml onFailure block is valid and parseable
  *   - WorkflowConfig.onFailure field is supported by validateWorkflowConfig
@@ -20,7 +20,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ROLE_CONFIGS, buildRoleConfigs } from "../roles.js";
-import { createGetRunStatusTool, createCloseBeadTool, createSendMailTool } from "../pi-sdk-tools.js";
+import { createGetRunStatusTool, createSendMailTool } from "../pi-sdk-tools.js";
 import { validateWorkflowConfig, loadWorkflowConfig } from "../../lib/workflow-loader.js";
 import { getTroubleshooterBudget } from "../../lib/config.js";
 import type { ForemanStore } from "../../lib/store.js";
@@ -165,7 +165,7 @@ describe("createGetRunStatusTool", () => {
     const text = (result.content[0] as { type: string; text: string }).text;
     const info = JSON.parse(text) as Record<string, unknown>;
     expect(info.runId).toBe("run-123");
-    expect(info.beadId).toBe("bd-abc");
+    expect(info.taskId).toBe("bd-abc");
     expect(info.taskId).toBe("bd-abc");
     expect(info.status).toBe("stuck");
     expect(info.currentPhase).toBe("finalize");
@@ -199,51 +199,6 @@ describe("createGetRunStatusTool", () => {
   });
 });
 
-// ── createCloseBeadTool ───────────────────────────────────────────────────────
-
-describe("createCloseBeadTool", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "foreman-troubleshooter-test-"));
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("creates a tool with name close_bead", () => {
-    const tool = createCloseBeadTool(tmpDir);
-    expect(tool.name).toBe("close_bead");
-  });
-
-  it("has a description mentioning complete", () => {
-    const tool = createCloseBeadTool(tmpDir);
-    expect(tool.description.toLowerCase()).toContain("complete");
-  });
-
-  it("has promptGuidelines cautioning only-close-if-complete", () => {
-    const tool = createCloseBeadTool(tmpDir);
-    const guidelines = tool.promptGuidelines ?? [];
-    expect(guidelines.join("\n")).toContain("Only close");
-  });
-
-  it("returns error text when br command fails", async () => {
-    // br binary won't exist in test env — should return a failure message
-    const tool = createCloseBeadTool("/nonexistent/path");
-    const result = await tool.execute("call-1", { beadId: "bd-test", reason: "work done" }, undefined, undefined, {} as never);
-    const text = (result.content[0] as { type: string; text: string }).text;
-    expect(text).toContain("Failed to close bead");
-  });
-
-  it("accepts legacy taskId as an alias for beadId", async () => {
-    const tool = createCloseBeadTool("/nonexistent/path");
-    const result = await tool.execute("call-1", { taskId: "bd-legacy", reason: "work done" }, undefined, undefined, {} as never);
-    const text = (result.content[0] as { type: string; text: string }).text;
-    expect(text).toContain("Failed to close bead bd-legacy");
-  });
-});
-
 // ── troubleshooter.md prompt ──────────────────────────────────────────────────
 
 describe("troubleshooter.md prompt", () => {
@@ -251,9 +206,9 @@ describe("troubleshooter.md prompt", () => {
     expect(existsSync(TROUBLESHOOTER_PROMPT)).toBe(true);
   });
 
-  it("contains template variables for beadId and runId", () => {
+  it("contains template variables for taskId and runId", () => {
     const content = readFileSync(TROUBLESHOOTER_PROMPT, "utf-8");
-    expect(content).toContain("{{beadId}}");
+    expect(content).toContain("{{taskId}}");
     expect(content).toContain("{{runId}}");
   });
 
@@ -280,11 +235,6 @@ describe("troubleshooter.md prompt", () => {
   it("contains get_run_status tool reference", () => {
     const content = readFileSync(TROUBLESHOOTER_PROMPT, "utf-8");
     expect(content).toContain("get_run_status");
-  });
-
-  it("contains close_bead tool reference", () => {
-    const content = readFileSync(TROUBLESHOOTER_PROMPT, "utf-8");
-    expect(content).toContain("close_bead");
   });
 
   it("references escalation path for unresolvable failures", () => {
@@ -395,10 +345,9 @@ describe("default.yaml: onFailure block", () => {
 describe("agent-worker.ts: troubleshooter integration", () => {
   const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
 
-  it("imports createGetRunStatusTool and createCloseBeadTool", () => {
+  it("imports createGetRunStatusTool", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain("createGetRunStatusTool");
-    expect(source).toContain("createCloseBeadTool");
   });
 
   it("defines runTroubleshooterPhase function", () => {

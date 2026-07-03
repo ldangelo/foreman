@@ -47,7 +47,6 @@ import { cleanStateCommand } from "./commands/clean-state.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { boardCommand } from "./commands/board.js";
 import { watchCommand } from "./commands/watch/index.js";
-import { beadCommand } from "./commands/bead.js";
 import { worktreeCommand } from "./commands/worktree.js";
 import { slingCommand } from "./commands/sling.js";
 import { stopCommand } from "./commands/stop.js";
@@ -108,7 +107,6 @@ program.addCommand(cleanStateCommand);
 program.addCommand(doctorCommand);
 program.addCommand(boardCommand);
 program.addCommand(watchCommand); // also handles the deprecated 'dashboard' alias
-program.addCommand(beadCommand, { hidden: true }); // deprecated: 'foreman task create --from-text'
 program.addCommand(worktreeCommand);
 program.addCommand(slingCommand);
 program.addCommand(stopCommand);
@@ -143,7 +141,6 @@ Domain groups:
 
 Deprecated aliases print the replacement spelling when used:
   legacy dashboard -> watch
-  legacy bead -> task create --from-text
   legacy purge-logs -> purge logs
   legacy purge-zombie-runs -> purge runs`,
 );

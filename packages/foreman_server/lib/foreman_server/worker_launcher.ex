@@ -78,7 +78,6 @@ defmodule ForemanServer.WorkerLauncher do
 
   defp worker_env do
     env = [
-      {"FOREMAN_BACKEND", "node"},
       {"FOREMAN_SERVER_URL", server_url()},
       {"FOREMAN_SERVER_HTTP_ENABLED", "false"},
       {"FOREMAN_SERVER_HTTP_PORT", "0"}

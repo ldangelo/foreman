@@ -20,6 +20,11 @@ const {
   mockWatchRunsInk,
   mockListRegisteredProjects,
   mockResolveRepoRootProjectPath,
+  mockElixirHealth,
+  mockElixirGetTask,
+  mockPgCreatePipelineRun,
+  mockPgUpdateTask,
+  mockPgCreateTask,
 } = vi.hoisted(() => {
   const taskClient = {
     show: vi.fn(),
@@ -63,6 +68,11 @@ const {
   const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
   const mockListRegisteredProjects = vi.fn().mockResolvedValue([]);
   const mockResolveRepoRootProjectPath = vi.fn().mockResolvedValue("/test/project");
+  const mockElixirHealth = vi.fn().mockResolvedValue({ ok: true });
+  const mockElixirGetTask = vi.fn();
+  const mockPgCreatePipelineRun = vi.fn();
+  const mockPgUpdateTask = vi.fn();
+  const mockPgCreateTask = vi.fn();
 
   return {
     mockCreateTaskClient,
@@ -74,6 +84,11 @@ const {
     mockWatchRunsInk,
     mockListRegisteredProjects,
     mockResolveRepoRootProjectPath,
+    mockElixirHealth,
+    mockElixirGetTask,
+    mockPgCreatePipelineRun,
+    mockPgUpdateTask,
+    mockPgCreateTask,
   };
 });
 
@@ -91,8 +106,9 @@ vi.mock("../../lib/postgres-store.js", () => ({
 
 vi.mock("../../lib/db/postgres-adapter.js", () => ({
   PostgresAdapter: vi.fn().mockImplementation(() => ({
-    createPipelineRun: vi.fn(),
-    updateTask: vi.fn(),
+    createPipelineRun: mockPgCreatePipelineRun,
+    updateTask: mockPgUpdateTask,
+    createTask: mockPgCreateTask,
   })),
 }));
 
@@ -141,6 +157,19 @@ vi.mock("../../orchestrator/auto-merge.js", () => ({
 vi.mock("../commands/project-task-support.js", () => ({
   resolveRepoRootProjectPath: mockResolveRepoRootProjectPath,
   listRegisteredProjects: mockListRegisteredProjects,
+}));
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn(function (this: Record<string, unknown>) {
+    this.url = "http://127.0.0.1:4766";
+    this.health = mockElixirHealth;
+  }),
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn(function (this: Record<string, unknown>) {
+    this.getTask = mockElixirGetTask;
+  }),
 }));
 
 import { runTaskCommand, runTaskAction } from "../commands/run-task.js";
@@ -232,6 +261,48 @@ phases:
         pipeline: true,
         workflowName: "default",
         workflowPath: "default",
+      }));
+    });
+
+    it("uses Elixir task lookup without Postgres mirroring for internal --run-id bridge", async () => {
+      const taskClientShow = vi.fn().mockRejectedValue(new Error("should not use native lookup"));
+      mockCreateTaskClient.mockImplementationOnce(async () => ({
+        taskClient: {
+          show: taskClientShow,
+          update: vi.fn(),
+        },
+        backendType: "native" as const,
+      }));
+      mockListRegisteredProjects.mockResolvedValueOnce([
+        { id: "proj-elixir", name: "foreman", path: testProjectPath, status: "active" },
+      ]);
+      mockElixirGetTask.mockResolvedValueOnce({
+        task_id: "task-123",
+        title: "Elixir task",
+        status: "failed",
+        task_type: "feature",
+        priority: 4,
+        description: "Elixir body",
+      });
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        runId: "00000000-0000-0000-0000-000000000123",
+        watch: false,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockElixirGetTask).toHaveBeenCalledWith("task-123");
+      expect(taskClientShow).not.toHaveBeenCalled();
+      expect(mockPgCreateTask).not.toHaveBeenCalled();
+      expect(mockPgCreatePipelineRun).not.toHaveBeenCalled();
+      expect(mockPgUpdateTask).not.toHaveBeenCalled();
+      expect(mockSpawnWorkerProcess).toHaveBeenCalledWith(expect.objectContaining({
+        runId: "00000000-0000-0000-0000-000000000123",
+        projectId: "proj-elixir",
+        taskTitle: "Elixir task",
+        taskType: "feature",
+        taskPriority: "4",
       }));
     });
 

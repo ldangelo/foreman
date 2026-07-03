@@ -155,7 +155,7 @@ foreman task create \
   --description "When CodeRabbit reports a transient rate limit, schedule retry after cooldown instead of terminal failure."
 ```
 
-The legacy Node/beads natural-language generator was removed after the Elixir cutover; create structured tasks with `--title` and `--description`.
+Natural-language task generation was removed after the Elixir cutover; create structured tasks with `--title` and `--description`.
 
 Good task descriptions include:
 

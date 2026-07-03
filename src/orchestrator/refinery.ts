@@ -5,7 +5,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ForemanStore } from "../lib/store.js";
-import type { BeadGraph } from "../lib/beads.js";
 import type { UpdateOptions } from "../lib/task-client.js";
 // Note: removeWorktree shim removed in TRD-012; workspace removal now goes through this.vcsBackend.removeWorkspace()
 import { extractBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
@@ -138,9 +137,13 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
  * BeadsRustClient does not implement getGraph(); the try/catch in
  * orderByDependencies will fall back to insertion order in that case.
  */
+interface TaskDependencyGraph {
+  edges: Array<{ from: string; to: string }>;
+}
+
 export interface IRefineryTaskClient {
   show(id: string): Promise<{ title?: string; description?: string | null; status: string; labels?: string[] }>;
-  getGraph?(): Promise<BeadGraph>;
+  getGraph?(): Promise<TaskDependencyGraph>;
   update?(id: string, opts: UpdateOptions): Promise<void>;
 }
 

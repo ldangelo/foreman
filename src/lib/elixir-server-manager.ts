@@ -17,9 +17,10 @@ export class ElixirServerManager {
   readonly packagePath: string;
   readonly authToken?: string;
 
-  constructor(opts: { port?: number; pidPath?: string; packagePath?: string; authToken?: string } = {}) {
+  constructor(opts: { port?: number; pidPath?: string; packagePath?: string; authToken?: string; url?: string } = {}) {
+    const envUrl = opts.url ?? process.env.FOREMAN_SERVER_URL;
     this.port = opts.port ?? Number(process.env.FOREMAN_SERVER_HTTP_PORT ?? 4766);
-    this.url = `http://127.0.0.1:${this.port}`;
+    this.url = envUrl ?? `http://127.0.0.1:${this.port}`;
     this.pidPath = opts.pidPath ?? resolve(process.cwd(), ".foreman", "elixir-server.pid");
     this.packagePath = opts.packagePath ?? resolve(repoRoot(), "packages", "foreman_server");
     this.authToken = opts.authToken ?? process.env.FOREMAN_SERVER_AUTH_TOKEN;

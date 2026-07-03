@@ -28,7 +28,6 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 | Deprecated | Use instead |
 |------------|-------------|
 | `foreman dashboard` | `foreman watch` |
-| `foreman bead` | Removed; use structured `foreman task create --title ...` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow |
@@ -55,7 +54,7 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 |--------|-------------|
 | `-n, --name <name>` | Project name (default: directory name) |
 | `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. |
-| `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`beads`, `jira`, or `github`), optional service credentials, then write `.foreman/config.yaml` |
+| `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
 ---
 
@@ -76,7 +75,6 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--task <id>` / `--bead <id>` | — | Removed after Elixir cutover; use normal `foreman run` or `foreman retry` |
 | `--max-agents <n>` | `5` | Removed operator override; Elixir scheduler owns capacity |
 | `--model <model>` | — | Removed operator override; workflow/provider config owns worker models |
 | `--dry-run` | — | Check Elixir server availability without sending a scheduler tick |
@@ -406,7 +404,6 @@ foreman merge --stats weekly      # Weekly cost breakdown
 | `--no-tests` | — | Skip running tests during merge |
 | `--test-command <cmd>` | `npm test` | Test command to run |
 | `--task <id>` | — | Merge a single task by ID |
-| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--list` | — | List tasks ready to merge |
 | `--dry-run` | — | Preview merge operations |
 | `--resolve <runId>` | — | Resolve a merge conflict |
@@ -480,7 +477,6 @@ foreman inbox --ack               # Mark shown messages as read
 | `--agent <name>` | all | Filter to specific agent/role |
 | `--run <id>` | latest | Filter to specific run ID |
 | `--task <id>` | — | Resolve run by task ID |
-| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--all` | — | Show/watch messages across all runs |
 | `--watch` | — | Poll every 2 seconds for new messages |
 | `--unread` | — | Show only unread messages |
@@ -554,7 +550,6 @@ foreman sling trd docs/TRD.md --json     # Output parsed structure
 foreman sling trd docs/TRD.md --auto     # Skip confirmation prompts
 foreman sling trd docs/TRD.md --skip-completed   # Skip [x] items
 foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
-foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_rust only
 ```
 
 | Option | Description |
@@ -562,7 +557,6 @@ foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_ru
 | `--dry-run` | Preview without creating tasks |
 | `--auto` | Skip confirmation prompts |
 | `--json` | Output parsed structure as JSON |
-| `--br-only` | Compatibility path: write to beads_rust only |
 | `--skip-completed` | Skip `[x]` completed tasks |
 | `--close-completed` | Create and immediately close `[x]` tasks |
 | `--no-parallel` | Disable parallel sprint detection |
@@ -572,7 +566,7 @@ foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_ru
 
 ### `foreman task create`
 
-Create a new structured task in backlog status. The legacy Node/beads natural-language generator (`--from-text` and hidden `foreman bead`) was removed after the Elixir backend cutover.
+Create a new structured task in backlog status. Natural-language task generation (`--from-text`) was removed after the Elixir backend cutover.
 
 ```bash
 foreman task create --title "Fix login timeout" --type bug --priority 1

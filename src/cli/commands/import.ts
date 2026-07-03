@@ -2,16 +2,14 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { performBeadsImport } from "./task.js";
 import { ensureCliPostgresPool, listRegisteredProjects, resolveProjectPathFromOptions } from "./project-task-support.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 export const importCommand = new Command("import")
-  .description("Import legacy Foreman data")
-  .option("--from-beads", "Import tasks from .beads/issues.jsonl or .beads/beads.jsonl", true)
-  .option("--dry-run", "Preview the first 5 mappings without writing to the database")
+  .description("Import legacy Foreman data into the Elixir event store")
+  .option("--dry-run", "Preview mode for supported import sources")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .option("--to-elixir", "Import a legacy migration JSON payload into the Elixir event store")
@@ -26,31 +24,7 @@ export const importCommand = new Command("import")
         return;
       }
 
-      const projectPath = await resolveProjectPathFromOptions(opts);
-      const result = await performBeadsImport(projectPath, { dryRun: opts.dryRun });
-      if (opts.dryRun) {
-        console.log(chalk.bold("\n  Dry-run preview (first 5 tasks)\n"));
-        for (const record of result.preview.slice(0, 5)) {
-          console.log(
-            `  ${chalk.dim(record.bead.id)} → ${record.nativeId.slice(0, 8)} ` +
-              `${chalk.cyan(record.status)} ${record.bead.title}`,
-          );
-        }
-        console.log();
-        console.log(
-          chalk.green(
-            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
-          ),
-        );
-        return;
-      }
-
-      console.log(
-        chalk.green(
-            `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
-        ),
-      );
-      console.log(chalk.dim(`  Source: ${result.jsonlPath}`));
+      throw new Error("No default import source is available. Use --to-elixir with --file or --from-node.");
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);

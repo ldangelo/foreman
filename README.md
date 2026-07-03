@@ -22,7 +22,6 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
 - **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections; structured phase-report events let Elixir Overwatch send next-phase Agent Mail steering, and Overwatch records tool policy decisions/nudges when workers drift
 
-> **Note:** Foreman uses the Elixir backend for operator workflows after cutover. Legacy beads_rust data can be imported with `foreman task import --from-beads`, but it is not a runtime task store.
 
 ## Architecture
 
@@ -206,8 +205,6 @@ foreman server start
 # 3. Create or import tasks
 foreman task create "Add user auth" --type feature --priority 1
 foreman task create "Write auth tests" --type task --priority 2
-# or migrate an existing beads project
-foreman task import --from-beads
 
 # 4. Dispatch agents to ready tasks
 foreman run
@@ -424,7 +421,6 @@ foreman merge --test-command "npm test"  # Custom test command
 
 Auto-merge tiers (T1–T4):
 - **T1**: Fast-forward or trivial rebase — no conflicts
-- **T2**: Auto-resolve report-file conflicts (`.beads/` compatibility data, `EXPLORER_REPORT.md`, etc.)
 - **T3**: AI-assisted conflict resolution via Pi session
 - **T4**: Create PR for human review (true code conflicts)
 
@@ -750,10 +746,8 @@ foreman task dep list task-123                 # show dependencies
 
 All task operations route through `TrpcClient` → daemon's Postgres store when daemon is running; otherwise they use direct PostgreSQL access via ForemanStore. Native status `review` means the pipeline has finished and the branch/PR is waiting for review or merge; phase status `reviewer` is reserved for an actively running reviewer agent.
 
-For projects with existing [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) data, import it once into native tasks:
 
 ```bash
-foreman task import --from-beads
 ```
 
 `FOREMAN_TASK_STORE=native` is accepted for backward compatibility but has no operational effect — the native Postgres task store is always used.
@@ -844,13 +838,11 @@ export FOREMAN_MAX_PIPELINE_REVIEW_LOOPS=0   # Per-run retry/review loop budget;
 | Path | Contents |
 |---|---|
 | `.foreman/` | Project-level config, workflow assets, and runtime metadata |
-| `.beads/` | Legacy beads_rust task data for one-time import (JSONL, git-tracked) |
 | `~/.foreman/daemon.sock` | Legacy daemon socket, only relevant when inspecting/stopping stray legacy processes |
 | `~/.foreman/daemon.pid` | Daemon process ID — optional |
 | `~/.foreman/logs/` | Per-run agent logs + daemon stdout/stderr |
 | `DATABASE_URL` | PostgreSQL connection string — only required when running daemon |
 
-**Storage model:** Foreman stores operator state through the Elixir backend event/projection model. Native tasks are the supported runtime task store; beads_rust data is import-only legacy input.
 
 ## Project Structure
 
@@ -882,7 +874,6 @@ foreman/
 │       │   └── postgres-adapter.ts # Legacy Postgres adapter utilities
 │       ├── store.ts                # Legacy project-level PostgreSQL store
 │       ├── postgres-store.ts       # Legacy Postgres-backed store
-│       ├── beads-rust.ts           # Compatibility br CLI wrapper
 │       └── git.ts                  # Git worktree management
 ├── packages/
 │   └── foreman-pi-extensions/      # Pi extension package

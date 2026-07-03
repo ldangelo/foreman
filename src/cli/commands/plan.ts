@@ -317,48 +317,6 @@ class ElixirPlanTaskClient implements PlanTaskClient {
   }
 }
 
-class BeadsPlanTaskClient implements PlanTaskClient {
-  private readonly clientPromise: Promise<PlanTaskClient>;
-
-  constructor(projectPath: string) {
-    this.clientPromise = import("../../lib/beads-rust.js").then(({ BeadsRustClient }) =>
-      new BeadsRustClient(projectPath) as PlanTaskClient
-    );
-  }
-
-  private async withClient<T>(fn: (client: PlanTaskClient) => Promise<T>): Promise<T> {
-    return fn(await this.clientPromise);
-  }
-
-  async create(title: string, opts?: PlanCreateOptions): Promise<Issue> {
-    return this.withClient((client) => client.create(title, opts));
-  }
-
-  async addDependency(fromId: string, toId: string): Promise<void> {
-    return this.withClient((client) => client.addDependency(fromId, toId));
-  }
-
-  async list(opts?: { status?: string; type?: string }): Promise<Issue[]> {
-    return this.withClient((client) => client.list(opts));
-  }
-
-  async ready(): Promise<Issue[]> {
-    return this.withClient((client) => client.ready());
-  }
-
-  async show(id: string): Promise<{ status: string; description?: string | null; notes?: string | null }> {
-    return this.withClient((client) => client.show(id));
-  }
-
-  async update(id: string, opts: UpdateOptions): Promise<void> {
-    return this.withClient((client) => client.update(id, opts));
-  }
-
-  async close(id: string, reason?: string): Promise<void> {
-    return this.withClient((client) => client.close(id, reason));
-  }
-}
-
 export function createPlanClient(
   projectPath: string,
 ): PlanTaskClient {

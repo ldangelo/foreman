@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and merges results back. Built with TypeScript, [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) for in-process agent sessions, and [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for task tracking.
+Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and merges results back. Built with TypeScript, [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) for in-process agent sessions, with the Elixir backend for task tracking.
 
 ## Quick Reference
 
@@ -24,7 +24,7 @@ foreman sentinel       # Background health daemon
 foreman retry <task>   # Re-run a failed pipeline phase
 foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
 foreman debug <id>     # AI-powered execution analysis (Opus)
-foreman sling trd X    # TRD -> task hierarchy (tasks + beads)
+foreman sling trd X    # TRD -> task hierarchy
 foreman plan X         # PRD -> TRD pipeline
 foreman plan prd|trd X # Server-backed PRD/TRD planning
 foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
@@ -42,7 +42,7 @@ foreman inbox --all --watch  # Live stream all mail across runs
 foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
 # In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
 
-# br (beads_rust) task tracking
+# Elixir task tracking
 br ready               # Unblocked tasks
 br list --status=open  # All tasks
 br show <id>           # Task detail
@@ -59,7 +59,7 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
                    PostgreSQL         Pi SDK (in-process)
                    (state)        createAgentSession()
                       |              |
-                   br (beads_rust)   Pipeline Executor
+                   Elixir task store   Pipeline Executor
                    (task graph)      (workflow YAML-driven)
                                      |
                                   Refinery + autoMerge
@@ -111,7 +111,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
 5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
 
-After finalize: autoMerge triggers immediately → refinery merges to dev → bead closed.
+After finalize: autoMerge triggers immediately → refinery merges to dev → task lifecycle updated.
 
 ## VCS Backend Abstraction (PRD-2026-004)
 
@@ -203,17 +203,6 @@ phases:
 
 **Model shorthands:** `haiku` → `anthropic/claude-haiku-4-5`, `sonnet` → `anthropic/claude-sonnet-4-6`, `opus` → `anthropic/claude-opus-4-6`. Full model IDs also accepted (e.g. `openai/gpt-4o`).
 
-## br (beads_rust) Conventions
-
-- Installed at `~/.local/bin/br`
-- Storage: `.beads/beads.jsonl` (git-tracked)
-- Types: `bug | feature | task | epic | chore | docs | question`
-- Priorities: `0` (critical) through `4` (backlog) — never use words like "high"/"medium"
-- `br dep add <issue> <depends-on>` to declare blocking dependencies
-- `br ready` shows issues with no open blockers
-- `br close <id1> <id2>` to close multiple issues at once
-- `br sync --flush-only` to export DB to JSONL before committing
-
 ## Critical Constraints
 
 - **Non-interactive shell commands**: Always use `cp -f`, `mv -f`, `rm -f` (agents hang on `-i` prompts)
@@ -222,9 +211,9 @@ phases:
 - **CLAUDECODE env var**: Must be stripped from worker spawn env to avoid nested session errors
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
 - **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
-- **Auto-reset on failure**: `markStuck()` resets bead to open when pipeline fails (rate limits); marks failed for permanent errors
+- **Auto-reset on failure**: `markStuck()` resets task to open when pipeline fails (rate limits); marks failed for permanent errors
 - **Agent Mail is PostgreSQL-backed**: Messages stored in Postgres (shared across all workers), not a separate mail database
-- **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, and `.beads/issues.jsonl` after `git add -A` to prevent polluted PRs and shared-state churn
+- **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
 - **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
 
@@ -232,9 +221,9 @@ phases:
 
 ```bash
 # AI-powered execution analysis
-foreman debug <bead-id>         # Full Opus analysis of pipeline run
-foreman debug <bead-id> --raw   # Dump all artifacts without AI
-foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
+foreman debug <task-id>         # Full Opus analysis of pipeline run
+foreman debug <task-id> --raw   # Dump all artifacts without AI
+foreman debug <task-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs
 foreman doctor         # Check br/Pi, DB integrity, stale runs/worktrees
@@ -267,75 +256,13 @@ npx tsc --noEmit       # Type-check without building
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)
-- br state diverged from git → `br sync --flush-only && git add .beads/ && git commit -m "sync beads"`
+- br state diverged from git → `br sync --flush-only && git add .tasks/ && git commit -m "sync tasks"`
 - agent-worker crash on startup → check `~/.foreman/logs/<runId>.err` for syntax/import errors
 
 <!-- br-agent-instructions-v1 -->
 
 ---
 
-## Beads Workflow Integration
-
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
-
-### Essential Commands
-
-```bash
-# View ready issues (open, unblocked, not deferred)
-br ready
-
-# List and search
-br list --status=open # All open issues
-br show <id>          # Full issue details with dependencies
-br search "keyword"   # Full-text search
-
-# Create and update
-br create --title="..." --description="..." --type=task --priority=2
-br update <id> --status=in_progress
-br close <id> --reason="Completed"
-br close <id1> <id2>  # Close multiple issues at once
-
-# Sync with git
-br sync --flush-only  # Export DB to JSONL
-br sync --status      # Check sync status
-```
-
-### Workflow Pattern
-
-1. **Start**: Run `br ready` to find actionable work
-2. **Claim**: Use `br update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id>`
-5. **Sync**: Always run `br sync --flush-only` at session end
-
-### Key Concepts
-
-- **Dependencies**: Issues can block other issues. `br ready` shows only open, unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
-- **Types**: task, bug, feature, epic, chore, docs, question
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
-
-### Session Protocol
-
-**Before ending any session, run this checklist:**
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-br sync --flush-only    # Export beads changes to JSONL
-git commit -m "..."     # Commit everything
-git push                # Push to remote
-```
-
-### Session Logging
-
-Saving a session log is **required** — not optional. At the end of every agent session, write a `SESSION_LOG.md` in the worktree root documenting what was done.
-
-Agent worker logs are automatically written to `~/.foreman/logs/<runId>.log` and streamed in real time. The SESSION_LOG.md is a higher-level human-readable record.
-
-**SESSION_LOG.md format:**
-
-```markdown
 ## Metadata
 - Date: <ISO date>
 - Phase: <explorer | developer | qa | reviewer | finalize>
@@ -384,7 +311,7 @@ patterns applied, failures encountered, or decisions made — and record them:
 mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
 ```
 
-Link evidence when available: `--evidence-commit <sha>`, `--evidence-bead <id>`
+Link evidence when available: `--evidence-commit <sha>`, `--evidence-task <id>`
 
 Run `mulch status` to check domain health and entry counts.
 Run `mulch --help` for full usage.

@@ -41,6 +41,7 @@ defmodule ForemanServer.WorkerLauncherTest do
 
     File.write!(foreman, """
     #!/usr/bin/env sh
+    echo "backend=${FOREMAN_BACKEND:-unset}"
     echo "server_url=$FOREMAN_SERVER_URL"
     echo "http_enabled=$FOREMAN_SERVER_HTTP_ENABLED"
     echo "http_port=$FOREMAN_SERVER_HTTP_PORT"
@@ -64,6 +65,7 @@ defmodule ForemanServer.WorkerLauncherTest do
       fn events ->
         Enum.any?(events, fn event ->
           event.event_type == "WorkerProcessExited" &&
+            String.contains?(event.payload.output, "backend=unset") &&
             String.contains?(event.payload.output, "server_url=http://127.0.0.1:4766") &&
             String.contains?(event.payload.output, "http_enabled=false") &&
             String.contains?(event.payload.output, "http_port=0")

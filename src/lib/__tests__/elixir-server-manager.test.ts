@@ -8,6 +8,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   delete process.env.FOREMAN_SERVER_AUTH_TOKEN;
+  delete process.env.FOREMAN_SERVER_URL;
+  delete process.env.FOREMAN_SERVER_HTTP_PORT;
 });
 
 describe("ElixirServerManager", () => {
@@ -19,6 +21,18 @@ describe("ElixirServerManager", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("prefers FOREMAN_SERVER_URL over FOREMAN_SERVER_HTTP_PORT", async () => {
+    process.env.FOREMAN_SERVER_URL = "http://127.0.0.1:4999";
+    process.env.FOREMAN_SERVER_HTTP_PORT = "0";
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const manager = new ElixirServerManager();
+    await expect(manager.health()).resolves.toEqual({ ok: true, body: { ok: true } });
+    const calls = fetchMock.mock.calls as unknown as [[URL]];
+    expect(String(calls[0][0])).toBe("http://127.0.0.1:4999/api/v1/health");
   });
 
   it("checks /api/v1/health on the configured port", async () => {

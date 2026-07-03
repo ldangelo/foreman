@@ -19,7 +19,6 @@ import { runPhaseSession } from "./phase-runner.js";
 import type { StreamEvent } from "./pi-sdk-runner.js";
 import {
   createArtifactWriteTool,
-  createCloseBeadTool,
   createGetRunStatusTool,
   createGraphifyExplainTool,
   createGraphifyQueryTool,
@@ -331,7 +330,7 @@ interface WorkerConfig {
   maxTurns?: number;
   allowedTools?: string[];
   worktreePath: string;
-  /** Project root directory (contains .beads/). Used as cwd for br commands. */
+  /** Project root directory. */
   projectPath?: string;
   prompt: string;
   env: Record<string, string>;
@@ -346,7 +345,7 @@ interface WorkerConfig {
    */
   taskType?: string;
   /**
-   * Labels from the bead. Used to resolve `workflow:<name>` overrides.
+   * Labels from the task. Used to resolve `workflow:<name>` overrides.
    * e.g. ["phase:explorer", "workflow:smoke"]
    */
   taskLabels?: string[];
@@ -366,7 +365,7 @@ interface WorkerConfig {
    */
   epicTasks?: EpicTask[];
   /**
-   * Parent epic bead ID (TRD-2026-007).
+   * Parent epic task ID (TRD-2026-007).
    * When set, this run is an epic execution.
    */
   epicId?: string;
@@ -704,7 +703,7 @@ async function main(): Promise<void> {
         resumed: !!resume,
       }, log);
       log(`FAILED: ${reason.slice(0, 300)}`);
-      // Permanent failure — mark bead as 'failed' so it is NOT auto-retried.
+      // Permanent failure — mark task as 'failed' so it is NOT auto-retried.
       enqueueMarkBeadFailed(store, taskId, "agent-worker");
     }
   } catch (err: unknown) {
@@ -785,7 +784,7 @@ async function runPhase(
   const roleConfig = config.allowedTools
     ? { ...baseRoleConfig, role: role as typeof baseRoleConfig.role, allowedTools: config.allowedTools }
     : baseRoleConfig;
-  // Use the model resolved by the pipeline executor (from workflow YAML + bead priority).
+  // Use the model resolved by the pipeline executor (from workflow YAML + task priority).
   // Falls back to ROLE_CONFIGS[role].model for backward compat (no-YAML / direct invocation).
   const resolvedModel: string = config.model || roleConfig.model;
   progress.currentPhase = role;
@@ -1032,20 +1031,20 @@ async function runTroubleshooterPhase(
   const onFailure = workflowConfig.onFailure;
   if (!onFailure) return false;
 
-  const { runId, taskId: beadId, taskTitle: beadTitle } = config;
-  log(`[TROUBLESHOOTER] Activating for ${beadId} — failure context: ${failureContext.slice(0, 120)}`);
+  const { runId, taskId, taskTitle } = config;
+  log(`[TROUBLESHOOTER] Activating for ${taskId} — failure context: ${failureContext.slice(0, 120)}`);
 
   // Build a basic troubleshooter prompt with failure context injected
   const prompt = [
     `# Troubleshooter Agent`,
     ``,
-    `**Bead:** ${beadId} — ${beadTitle}`,
+    `**Task:** ${taskId} — ${taskTitle}`,
     `**Run ID:** ${runId}`,
     `**Failure Context:**`,
     failureContext,
     ``,
     `Use get_run_status, read artifacts, and apply fixes. Write TROUBLESHOOT_REPORT.md when done.`,
-    `Use bead terminology in your notes. Include "RESOLVED" in the report if the failure was fixed, or "ESCALATED" if not.`,
+    `Use task terminology in your notes. Include "RESOLVED" in the report if the failure was fixed, or "ESCALATED" if not.`,
   ].join("\n");
 
   const roleConfig = ROLE_CONFIGS.troubleshooter;
@@ -1053,15 +1052,14 @@ async function runTroubleshooterPhase(
 
   const customTools: import("@mariozechner/pi-coding-agent").ToolDefinition[] = [];
   if (agentMailClient) {
-    customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${beadId}`));
+    customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${taskId}`));
   }
   customTools.push(createGetRunStatusTool(store));
-  customTools.push(createCloseBeadTool(pipelineProjectPath));
 
   try {
     const result = await runPhaseSession({
       prompt,
-      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
+      systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for task: ${taskTitle}`,
       cwd: config.worktreePath,
       model: resolvedModel,
       allowedTools: roleConfig.allowedTools,
@@ -1070,8 +1068,8 @@ async function runTroubleshooterPhase(
       context: {
         phaseName: "troubleshooter",
         runId,
-        taskId: beadId,
-        taskTitle: beadTitle,
+        taskId,
+        taskTitle,
         taskType: config.taskType,
         taskDescription: config.taskDescription,
         worktreePath: config.worktreePath,
@@ -1079,13 +1077,13 @@ async function runTroubleshooterPhase(
       },
       observability: {
         runId,
-        taskId: beadId,
+        taskId,
         phase: "troubleshooter",
         phaseType: "prompt",
         model: resolvedModel,
         worktreePath: config.worktreePath,
         rawPrompt: prompt,
-        systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for bead: ${beadTitle}`,
+        systemPrompt: `You are the troubleshooter agent for Foreman. Your job is to diagnose and fix a pipeline failure for task: ${taskTitle}`,
         expectedArtifact: "TROUBLESHOOT_REPORT.md",
       },
       onToolCall: () => { /* no-op */ },
@@ -1102,7 +1100,7 @@ async function runTroubleshooterPhase(
       const report = rfs(pathJoin(config.worktreePath, "TROUBLESHOOT_REPORT.md"), "utf-8");
       const troubleshooterResolved = report.includes("RESOLVED");
       if (troubleshooterResolved) {
-        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${beadId}`);
+        log(`[TROUBLESHOOTER] PIPELINE RECOVERED for ${taskId}`);
         await appendFile(logFile, `[TROUBLESHOOTER] PIPELINE RECOVERED\n`);
         return true;
       }

@@ -39,10 +39,10 @@ interface InitProjectStore {
  * Options bag for initBackend — injectable for testing.
  */
 export interface InitBackendOpts {
-  /** Directory containing the project (.tasks / .beads live here). */
+  /** Directory containing the project. */
   projectDir: string;
-  /** The issue tracker selected in the wizard (beads/jira/github). */
-  issueTracker: "beads" | "jira" | "github";
+  /** The issue tracker selected in the wizard (jira/github). */
+  issueTracker: "jira" | "github";
   execSync?: typeof execFileSync;
   checkExists?: (path: string) => boolean;
 }
@@ -50,43 +50,14 @@ export interface InitBackendOpts {
 /**
  * Initialize the task-tracking backend for the given project directory.
  *
- * TRD-024: Native Postgres task store is the only supported backend.
- * Foreman no longer uses beads (br) for task tracking — it writes directly
- * to the native Postgres store. The .beads/ directory is initialized here for
- * backwards compatibility (operators may still use br directly outside foreman).
- *
- * br init is only run when the user selected "beads" as their issue tracker.
- * For jira/github, beads is not used and initialization is skipped.
+ * Task tracking is owned by the Elixir backend. No file-backed issue tracker
+ * workspace is created.
  *
  * Exported for unit testing.
  */
 export async function initBackend(opts: InitBackendOpts): Promise<void> {
-  const { projectDir, issueTracker, execSync = execFileSync, checkExists = existsSync } = opts;
-
-  // Initialize .beads/ for backwards compatibility only when beads is the issue tracker
-  // For jira/github, foreman writes directly to Postgres — no beads needed
-  if (issueTracker !== "beads") {
-    console.log(chalk.dim(`Skipping beads init (${issueTracker} tracker selected)`));
-    return;
-  }
-
-  const brPath = join(homedir(), ".local", "bin", "br");
-
-  if (!checkExists(join(projectDir, ".beads"))) {
-    const spinner = ora("Initializing beads workspace...").start();
-    try {
-      execSync(brPath, ["init"], { stdio: "pipe" });
-      spinner.succeed("Beads workspace initialized");
-    } catch (e) {
-      spinner.fail("Failed to initialize beads workspace");
-      console.error(
-        chalk.red(e instanceof Error ? e.message : String(e)),
-      );
-      process.exit(1);
-    }
-  } else {
-    console.log(chalk.dim("Beads workspace already exists, skipping init"));
-  }
+  void opts;
+  console.log(chalk.dim("Task tracking uses the Elixir backend; no local issue tracker workspace created."));
 }
 
 // ── Store init logic ──────────────────────────────────────────────────────
@@ -171,7 +142,7 @@ export interface GitHubWizardConfig {
 export interface InitWizardAnswers {
   vcsBackend: "git" | "jujutsu" | "auto";
   workflowTemplate: string;
-  issueTracker: "beads" | "jira" | "github";
+  issueTracker: "jira" | "github";
   jira?: JiraWizardConfig;
   github?: GitHubWizardConfig;
 }
@@ -243,7 +214,7 @@ async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
     const workflowChoices = [...BUNDLED_WORKFLOW_NAMES] as const;
     const workflowTemplate = await promptChoice(rl, "Workflow template", workflowChoices, "default");
 
-    const issueTracker = await promptChoice(rl, "Issue tracker", ["beads", "jira", "github"] as const, "beads");
+    const issueTracker = await promptChoice(rl, "Issue tracker", ["jira", "github"] as const, "jira");
 
     let jira: JiraWizardConfig | undefined;
     if (issueTracker === "jira") {
@@ -356,7 +327,7 @@ export const initCommand = new Command("init")
       chalk.bold(`Initializing foreman project: ${chalk.cyan(projectName)}`),
     );
 
-    let issueTracker: "beads" | "jira" | "github" = "beads";
+    let issueTracker: "jira" | "github" = "jira";
 
     if (wizard) {
       const answers = await runInitWizard(projectDir);
@@ -370,8 +341,7 @@ export const initCommand = new Command("init")
       issueTracker = answers.issueTracker;
     }
 
-    // Initialize the task-tracking backend
-    // issueTracker comes from wizard answers (or defaults to "beads" if wizard skipped)
+    // Initialize task tracking (Elixir backend only).
     await initBackend({ projectDir, issueTracker });
 
     let store: PostgresStore | null = null;

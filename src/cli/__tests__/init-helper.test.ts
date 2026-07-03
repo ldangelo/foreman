@@ -79,27 +79,13 @@ describe("init helpers", () => {
     expect(yaml).toContain("- fixme");
   });
 
-  it("initBackend skips beads init for non-beads trackers", async () => {
+  it("initBackend does not create a local issue-tracker workspace", async () => {
     const execSync = vi.fn();
 
     await initBackend({ projectDir: "/tmp/project", issueTracker: "jira", execSync });
 
     expect(execSync).not.toHaveBeenCalled();
-    expect(vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("Skipping beads init");
-  });
-
-  it("initBackend skips when .beads already exists", async () => {
-    const execSync = vi.fn();
-
-    await initBackend({
-      projectDir: "/tmp/project",
-      issueTracker: "beads",
-      execSync,
-      checkExists: (path) => path.endsWith(".beads"),
-    });
-
-    expect(execSync).not.toHaveBeenCalled();
-    expect(vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("already exists");
+    expect(vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("Elixir backend");
   });
 
   it("initProjectStore tasks sentinel config only when missing", async () => {
@@ -143,7 +129,7 @@ describe("init helpers", () => {
   it("formatInitDatabaseError expands config and password guidance", () => {
     const projectDir = "/tmp/project";
     const configMsg = formatInitDatabaseError(new DatabaseConfigError("DATABASE_URL missing", ""), projectDir);
-    expect(configMsg).toContain("Failed to initialize the Postgres-backed project registry.");
+    expect(configMsg).toContain("Failed to initialize the Postgres database schema or project registry.");
     expect(configMsg).toContain("DATABASE_URL missing");
     expect(configMsg).toContain("/tmp/project/.env");
 
