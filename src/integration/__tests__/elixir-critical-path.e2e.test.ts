@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
@@ -135,7 +135,11 @@ async function waitFor<T>(fn: () => Promise<T>, predicate: (value: T) => boolean
   return value;
 }
 
-describe("Elixir native critical-path e2e", () => {
+const shouldRunElixirE2e = process.env.FOREMAN_RUN_ELIXIR_E2E === "1" &&
+  spawnSync("mix", ["--version"], { stdio: "ignore" }).status === 0;
+const describeElixirE2e = shouldRunElixirE2e ? describe : describe.skip;
+
+describeElixirE2e("Elixir native critical-path e2e", () => {
   const originalEnv = {
     HOME: process.env.HOME,
     MIX_HOME: process.env.MIX_HOME,
