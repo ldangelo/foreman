@@ -73,8 +73,16 @@ defmodule ForemanServer.Http.Router do
   end
 
   get "/api/v1/tasks" do
+    conn = fetch_query_params(conn)
+
     with :ok <- authorize(conn) do
-      send_json(conn, 200, %{ok: true, tasks: ForemanServer.ProjectionStore.task_list()})
+      since = conn.query_params["since"]
+
+      tasks =
+        ForemanServer.ProjectionStore.task_list()
+        |> maybe_filter_tasks_since(since)
+
+      send_json(conn, 200, %{ok: true, tasks: tasks})
     else
       {:error, :unauthorized} ->
         send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
@@ -526,5 +534,34 @@ defmodule ForemanServer.Http.Router do
         correlation_id: List.first(get_req_header(conn, "x-correlation-id"))
       }
     })
+  end
+
+  # Filter tasks by updated_at timestamp when since parameter is provided
+  defp maybe_filter_tasks_since(tasks, nil), do: tasks
+  defp maybe_filter_tasks_since(tasks, ""), do: tasks
+
+  defp maybe_filter_tasks_since(tasks, since) do
+    case DateTime.from_iso8601(since) do
+      {:ok, since_dt, _} ->
+        Enum.filter(tasks, fn task ->
+          case Map.get(task, :updated_at) do
+            nil ->
+              false
+
+            updated when is_binary(updated) ->
+              case DateTime.from_iso8601(updated) do
+                {:ok, updated_dt, _} -> DateTime.compare(updated_dt, since_dt) == :gt
+                {:error, _} -> false
+              end
+
+            _ ->
+              false
+          end
+        end)
+
+      {:error, _} ->
+        # Invalid ISO8601 string, return all tasks
+        tasks
+    end
   end
 end
