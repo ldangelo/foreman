@@ -200,19 +200,15 @@ describe("AC-T-012-1: Clean squash merge invokes git merge --squash and closes t
     );
   });
 
-  it("closes the task via enqueueCloseTask after a successful merge", async () => {
-    const { store, refinery } = makeMocks();
+  it("updates the task client after a successful merge", async () => {
+    const { store, tasks, refinery } = makeMocks();
     const run = makeRun({ task_id: "task-001" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // AC-T-012-1: task must be closed after merge
-    expect(enqueueCloseTask).toHaveBeenCalledWith(
-      expect.anything(),
-      "task-001",
-      "refinery",
-    );
+    expect(tasks.update).toHaveBeenCalledWith("task-001", { status: "merged" });
+    expect(enqueueCloseTask).not.toHaveBeenCalled();
   });
 
   it("marks run as merged in store after clean merge", async () => {

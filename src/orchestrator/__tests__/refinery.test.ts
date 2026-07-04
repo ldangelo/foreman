@@ -268,9 +268,7 @@ describe("Refinery.resolveConflict()", () => {
       expect.objectContaining({ reason: expect.stringContaining("abort") }),
       run.id,
     );
-    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.task_id, expect.stringContaining("aborted"), "refinery",
-    );
+    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
   });
 
   it("theirs strategy calls git checkout and merge, marks run as merged, returns true", async () => {
@@ -318,9 +316,7 @@ describe("Refinery.resolveConflict()", () => {
     );
 
     expect(vcs.abortMerge).toHaveBeenCalledWith("/tmp/project");
-    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.task_id, expect.stringContaining("Merge failed"), "refinery",
-    );
+    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
 
     // Merge conflicts remain blocked until an explicit human retry/reset.
     expect(enqueueResetTaskToOpen).not.toHaveBeenCalled();
@@ -390,9 +386,7 @@ describe("Refinery.resolveConflict()", () => {
     );
 
     expect(vcs.rollbackFailedMerge).toHaveBeenCalled();
-    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.task_id, expect.stringContaining("tests failed"), "refinery",
-    );
+    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
 
     // Test failures remain blocked until an explicit human retry/reset.
     expect(enqueueResetTaskToOpen).not.toHaveBeenCalled();
@@ -581,7 +575,7 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.merged).toHaveLength(1);
   });
 
-  it("closes registered native tasks via Postgres instead of the local tasks table", async () => {
+  it("closes registered native tasks via task client instead of direct Postgres/local task tables", async () => {
     const { store, tasks, vcs, mockDb } = makeMocks();
     const run = makeRun({ id: "run-pg-task", task_id: "task-pg-task" });
     const runLookup = {
@@ -590,7 +584,6 @@ describe("Refinery.mergeCompleted()", () => {
       getRunsByStatuses: vi.fn().mockResolvedValue([run]),
       getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
     };
-    mockPostgresListTasks.mockResolvedValue([{ id: "task-1" }]);
 
     const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcs, {
       runLookup,
@@ -599,18 +592,19 @@ describe("Refinery.mergeCompleted()", () => {
 
     await refinery.mergeCompleted({ runId: run.id, runTests: false, projectId: "proj-1", taskId: run.task_id });
 
-    expect(mockPostgresListTasks).toHaveBeenCalledWith("proj-1", { runId: "run-pg-task", limit: 1 });
-    expect(mockPostgresUpdateTask).toHaveBeenCalledWith("proj-1", "task-1", { status: "merged" });
+    expect(tasks.update).toHaveBeenCalledWith("task-pg-task", { status: "merged" });
+    expect(mockPostgresListTasks).not.toHaveBeenCalled();
+    expect(mockPostgresUpdateTask).not.toHaveBeenCalled();
     expect(mockDb.prepare).not.toHaveBeenCalled();
   });
 
-  it("uses Postgres-first run updates and events for registered finalize PR writes", async () => {
+  it("uses registered run lookup and Elixir event path for registered finalize PR writes", async () => {
     const { store, tasks, vcs } = makeMocks();
     const run = makeRun({ id: "run-registered-pr", task_id: "task-registered-pr" });
     const { refinery } = makeRegisteredRefinery(store, tasks, vcs, run);
 
     store.getRun.mockImplementation(() => {
-      throw new Error("local run lookup should not be used for registered writes");
+      throw new Error("local run lookup should not be used for registered reads");
     });
 
     const result = await refinery.ensurePullRequestForRun({
@@ -620,28 +614,16 @@ describe("Refinery.mergeCompleted()", () => {
     });
 
     expect(result.prUrl).toBe("foreman://pr/task-registered-pr");
-    expect(mockPostgresLogEvent).toHaveBeenCalledWith(
-      "proj-1",
-      run.id,
-      "pr-created",
-      expect.any(String),
-    );
-    expect(mockPostgresUpdateRun).toHaveBeenCalledWith(
-      "proj-1",
-      run.id,
-      { status: "pr-created" },
-    );
+    expect(mockPostgresLogEvent).not.toHaveBeenCalled();
+    expect(mockPostgresUpdateRun).not.toHaveBeenCalled();
     expect(store.logEvent).not.toHaveBeenCalled();
-    expect(store.updateRun).not.toHaveBeenCalled();
+    expect(store.updateRun).toHaveBeenCalledWith(run.id, { status: "pr-created" });
   });
 
-  it("falls back to the local store when registered run persistence fails", async () => {
+  it("does not fall back to local event writes for registered run persistence", async () => {
     const { store, tasks, vcs } = makeMocks();
     const run = makeRun({ id: "run-registered-fallback", task_id: "task-registered-fallback" });
     const { refinery } = makeRegisteredRefinery(store, tasks, vcs, run);
-
-    mockPostgresLogEvent.mockRejectedValueOnce(new Error("pg event unavailable"));
-    mockPostgresUpdateRun.mockRejectedValueOnce(new Error("pg update unavailable"));
 
     const result = await refinery.ensurePullRequestForRun({
       runId: run.id,
@@ -650,12 +632,7 @@ describe("Refinery.mergeCompleted()", () => {
     });
 
     expect(result.prUrl).toBe("foreman://pr/task-registered-fallback");
-    expect(store.logEvent).toHaveBeenCalledWith(
-      run.project_id,
-      "pr-created",
-      expect.objectContaining({ taskId: run.task_id, existing: false }),
-      run.id,
-    );
+    expect(store.logEvent).not.toHaveBeenCalled();
     expect(store.updateRun).toHaveBeenCalledWith(run.id, { status: "pr-created" });
   });
 
@@ -685,10 +662,8 @@ describe("Refinery.mergeCompleted()", () => {
   it("preserves a registered pr-created run instead of downgrading it to failed", async () => {
     const { store, tasks, vcs } = makeMocks();
     const run = makeRun({ id: "run-registered-keep", task_id: "task-registered-keep" });
-    const { refinery } = makeRegisteredRefinery(store, tasks, vcs, run);
-    mockPostgresGetRun.mockResolvedValueOnce({ id: run.id, status: "pr-created" });
-
-    await (refinery as any).persistRunUpdate(run, { status: "failed" });
+    const { refinery } = makeRegisteredRefinery(store, tasks, vcs, { ...run, status: "pr-created" });
+    await (refinery as any).persistRunUpdate({ ...run, status: "pr-created" }, { status: "failed" });
 
     expect(mockPostgresUpdateRun).not.toHaveBeenCalled();
     expect(store.updateRun).not.toHaveBeenCalled();
@@ -818,10 +793,7 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
-    // Must add a note explaining what happened before the reset
-    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.task_id, expect.stringContaining("manual retry required"), "refinery",
-    );
+    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
   });
 
   it("adds failure note when rebase-conflict PR creation fails", async () => {
@@ -861,10 +833,7 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
-    // Must add a note explaining what happened before the reset
-    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.task_id, expect.stringContaining("manual retry required"), "refinery",
-    );
+    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
   });
 
   it("marks run as test-failed when tests fail after merge", async () => {
@@ -903,9 +872,7 @@ describe("Refinery.mergeCompleted()", () => {
       run.id,
       expect.objectContaining({ status: "test-failed" }),
     );
-    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.task_id, expect.stringContaining("tests failed"), "refinery",
-    );
+    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
   });
 
   it("merges in dependency order", async () => {
@@ -958,12 +925,10 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.testFailures).toHaveLength(0);
     expect(report.unexpectedErrors).toHaveLength(1);
     expect(report.unexpectedErrors[0].error).toContain("Unexpected git failure");
-    expect(enqueueAddNotesToBead).toHaveBeenCalledWith(
-      expect.anything(), run.task_id, expect.stringContaining("Merge failed"), "refinery",
-    );
+    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
   });
 
-  it("syncs registered native task status when merge marks run failed", async () => {
+  it("does not use direct Postgres task status sync when merge marks run failed", async () => {
     const { store, tasks, vcs } = makeMocks();
     const run = makeRun({ id: "run-pg-fail", task_id: "task-pg-fail" });
     const { refinery } = makeRegisteredRefinery(store, tasks, vcs, run);
@@ -980,8 +945,9 @@ describe("Refinery.mergeCompleted()", () => {
     });
 
     expect(report.unexpectedErrors).toHaveLength(1);
-    expect(mockPostgresUpdateRun).toHaveBeenCalledWith("proj-1", run.id, { status: "failed" });
-    expect(mockPostgresUpdateTaskStatusForRun).toHaveBeenCalledWith("proj-1", run.id, "failed");
+    expect(store.updateRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ status: "failed" }));
+    expect(mockPostgresUpdateRun).not.toHaveBeenCalled();
+    expect(mockPostgresUpdateTaskStatusForRun).not.toHaveBeenCalled();
   });
 
   it("retries a previously-failed task: finds run in test-failed state when taskId is specified", async () => {
@@ -1055,15 +1021,16 @@ describe("Refinery.mergeCompleted()", () => {
 
   // ── bead close-after-merge tests (bd-jpt4 fix) ───────────────────────────
 
-  it("calls closeTask after successful merge in mergeCompleted()", async () => {
-    const { store, refinery } = makeMocks();
+  it("updates task client after successful merge in mergeCompleted()", async () => {
+    const { store, tasks, refinery } = makeMocks();
     const run = makeRun({ task_id: "task-closeme" });
     store.getRunsByStatus.mockReturnValue([run]);
     (removeWorktree as any).mockResolvedValue(undefined);
 
     await refinery.mergeCompleted({ runTests: false });
 
-    expect(enqueueCloseTask).toHaveBeenCalledWith(expect.anything(), "task-closeme", "refinery");
+    expect(tasks.update).toHaveBeenCalledWith("task-closeme", { status: "merged" });
+    expect(enqueueCloseTask).not.toHaveBeenCalled();
   });
 
   it("does NOT call closeTask when merge has code conflicts", async () => {
@@ -1233,8 +1200,8 @@ describe("Refinery.resolveConflict() — bead close after merge", () => {
     vi.clearAllMocks();
   });
 
-  it("calls closeTask after successful resolveConflict (theirs)", async () => {
-    const { store, refinery } = makeMocks();
+  it("updates task client after successful resolveConflict (theirs)", async () => {
+    const { store, tasks, refinery } = makeMocks();
     const run = makeRun({ id: "run-1", task_id: "task-resolve", status: "conflict" });
     store.getRun.mockReturnValue(run);
 
@@ -1248,7 +1215,8 @@ describe("Refinery.resolveConflict() — bead close after merge", () => {
     const result = await refinery.resolveConflict("run-1", "theirs", { runTests: false });
 
     expect(result).toBe(true);
-    expect(enqueueCloseTask).toHaveBeenCalledWith(expect.anything(), "task-resolve", "refinery");
+    expect(tasks.update).toHaveBeenCalledWith("task-resolve", { status: "merged" });
+    expect(enqueueCloseTask).not.toHaveBeenCalled();
   });
 
   it("does NOT call closeTask when resolveConflict uses abort strategy", async () => {
@@ -1407,58 +1375,45 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
   }
 
   describe("mergeCompleted()", () => {
-    it("calls taskStore.updateStatus with 'merged' when a native task exists for the run", async () => {
-      const { store, refinery } = makeMocksWithTask("run-task-1", "task-abc");
+    it("calls task client update with 'merged' when a task exists for the run", async () => {
+      const { store, tasks, refinery } = makeMocksWithTask("run-task-1", "task-abc");
       const run = makeRun({ id: "run-task-1", task_id: "task-task-1" });
       store.getRunsByStatus.mockReturnValue([run]);
       (removeWorktree as any).mockResolvedValue(undefined);
 
-      const taskStore = (refinery as any).taskStore;
-      const updateStatusSpy = vi.spyOn(taskStore, "updateStatus");
-
       await refinery.mergeCompleted({ runTests: false });
 
-      expect(updateStatusSpy).toHaveBeenCalledTimes(1);
-      expect(updateStatusSpy).toHaveBeenCalledWith("task-abc", "merged");
+      expect(tasks.update).toHaveBeenCalledWith("task-task-1", { status: "merged" });
     });
 
-    it("does NOT throw when taskStore.updateStatus fails (non-fatal)", async () => {
-      const { store, refinery } = makeMocksWithTask("run-task-2", "task-def");
+    it("does NOT throw when task client update fails (non-fatal)", async () => {
+      const { store, tasks, refinery } = makeMocksWithTask("run-task-2", "task-def");
       const run = makeRun({ id: "run-task-2", task_id: "task-task-2" });
       store.getRunsByStatus.mockReturnValue([run]);
+      tasks.update.mockRejectedValue(new Error("update failed"));
       (removeWorktree as any).mockResolvedValue(undefined);
 
-      const taskStore = (refinery as any).taskStore;
-      vi.spyOn(taskStore, "updateStatus").mockImplementation(() => {
-        throw new Error("updateStatus failed");
-      });
-
-      // Should not throw — closeNativeTaskPostMerge is non-fatal
       await expect(refinery.mergeCompleted({ runTests: false })).resolves.not.toThrow();
     });
 
-    it("still calls enqueueCloseTask when no native task exists for the run", async () => {
-      const { store, refinery } = makeMocksWithoutTask();
+    it("does not use legacy enqueue close fallback", async () => {
+      const { store, tasks, refinery } = makeMocksWithoutTask();
       const run = makeRun({ id: "run-no-task", task_id: "task-no-task" });
       store.getRunsByStatus.mockReturnValue([run]);
       (removeWorktree as any).mockResolvedValue(undefined);
-
-      // Reset spy before the call
       (syncBeadStatusAfterMerge as any).mockClear();
 
       await refinery.mergeCompleted({ runTests: false });
 
-      // enqueueCloseTask should still be called for the task
-      expect(enqueueCloseTask).toHaveBeenCalledWith(expect.anything(), "task-no-task", "refinery");
-
-      // syncBeadStatusAfterMerge should NOT be called (beads fallback removed)
+      expect(tasks.update).toHaveBeenCalledWith("task-no-task", { status: "merged" });
+      expect(enqueueCloseTask).not.toHaveBeenCalled();
       expect(syncBeadStatusAfterMerge).not.toHaveBeenCalled();
     });
   });
 
   describe("resolveConflict()", () => {
-    it("calls taskStore.updateStatus with 'merged' when a native task exists for the run", async () => {
-      const { store, refinery } = makeMocksWithTask("run-conflict-task", "task-xyz");
+    it("calls task client update with 'merged' when a task exists for the run", async () => {
+      const { store, tasks, refinery } = makeMocksWithTask("run-conflict-task", "task-xyz");
       const run = makeRun({ id: "run-conflict-task", task_id: "task-conflict-task", status: "conflict" });
       store.getRun.mockReturnValue(run);
 
@@ -1469,20 +1424,17 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
       );
       (removeWorktree as any).mockResolvedValue(undefined);
 
-      const taskStore = (refinery as any).taskStore;
-      const updateStatusSpy = vi.spyOn(taskStore, "updateStatus");
-
       const result = await refinery.resolveConflict("run-conflict-task", "theirs", { runTests: false });
 
       expect(result).toBe(true);
-      expect(updateStatusSpy).toHaveBeenCalledTimes(1);
-      expect(updateStatusSpy).toHaveBeenCalledWith("task-xyz", "merged");
+      expect(tasks.update).toHaveBeenCalledWith("task-conflict-task", { status: "merged" });
     });
 
-    it("does NOT throw when taskStore.updateStatus fails in resolveConflict (non-fatal)", async () => {
-      const { store, refinery } = makeMocksWithTask("run-conflict-task-2", "task-fail");
+    it("does NOT throw when task client update fails in resolveConflict (non-fatal)", async () => {
+      const { store, tasks, refinery } = makeMocksWithTask("run-conflict-task-2", "task-fail");
       const run = makeRun({ id: "run-conflict-task-2", task_id: "task-conflict-task-2", status: "conflict" });
       store.getRun.mockReturnValue(run);
+      tasks.update.mockRejectedValue(new Error("update failed"));
 
       (execFile as any).mockImplementation(
         (_cmd: string, _args: string[], _opts: any, callback: Function) => {
@@ -1491,12 +1443,6 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
       );
       (removeWorktree as any).mockResolvedValue(undefined);
 
-      const taskStore = (refinery as any).taskStore;
-      vi.spyOn(taskStore, "updateStatus").mockImplementation(() => {
-        throw new Error("updateStatus failed");
-      });
-
-      // Should not throw — closeNativeTaskPostMerge is non-fatal
       await expect(refinery.resolveConflict("run-conflict-task-2", "theirs", { runTests: false }))
         .resolves.not.toThrow();
     });

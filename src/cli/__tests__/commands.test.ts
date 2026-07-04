@@ -59,7 +59,6 @@ describe("CLI smoke tests", () => {
     expect(output).toContain("Setup/health:");
     expect(output).toContain("Tasks/views:");
     expect(output).toContain("legacy dashboard -> watch");
-    expect(output).toContain("legacy bead -> task create --from-text");
 
     // Deprecated spellings are hidden from help but still parse
     expect(output).not.toMatch(/^\s+bead[\s|]/m);
@@ -72,7 +71,6 @@ describe("CLI smoke tests", () => {
     const names = program.commands.map((command) => command.name());
     const aliases = program.commands.flatMap((command) => command.aliases());
 
-    expect(names).toContain("bead");
     expect(names).toContain("purge-logs");
     expect(names).toContain("purge-zombie-runs");
     expect(names).toContain("purge");

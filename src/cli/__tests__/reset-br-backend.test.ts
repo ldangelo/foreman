@@ -1,20 +1,15 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-describe("foreman reset removed after Elixir cutover", () => {
-  afterEach(() => vi.restoreAllMocks());
+const RESET_SRC = fileURLToPath(new URL("../commands/reset.ts", import.meta.url));
 
-  it("fails with removal guidance instead of using local run-store reset", async () => {
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw new Error(`process.exit(${code ?? ""})`);
-    }) as never);
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const { resetCommand } = await import("../commands/reset.js");
+describe("foreman reset after Elixir cutover", () => {
+  const source = readFileSync(RESET_SRC, "utf8");
 
-    await expect(resetCommand.parseAsync(["--dry-run"], { from: "user" })).rejects.toThrow("process.exit(1)");
-
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    const rendered = errSpy.mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("removed after the Elixir backend cutover");
-    expect(rendered).not.toContain("FOREMAN_BACKEND=node");
+  it("does not use local br/run-store reset paths", () => {
+    expect(source).toContain("Elixir");
+    expect(source).not.toContain("FOREMAN_BACKEND=node");
+    expect(source).not.toContain("enqueueResetTaskToOpen");
   });
 });

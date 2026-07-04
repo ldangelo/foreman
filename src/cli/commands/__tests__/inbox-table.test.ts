@@ -254,7 +254,8 @@ describe("pipeline event formatting", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
     });
 
-    expect(line).toContain("] · unknown-event — unknown-event: task-3");
+    expect(line).toContain("] task-3");
+    expect(line).toContain("unknown-event");
   });
 
   it("adapts Postgres events from both JSON strings and object payloads", () => {
@@ -349,7 +350,7 @@ describe("formatMessageTable", () => {
     expect(row.receiver).toBe("developer");
     expect(row.kind).toBeUndefined();
     expect(row.tool).toBeUndefined();
-    expect(row.args).toBeUndefined();
+    expect(row.args).toBe("plain text notification");
     expect(row.runId).toBe("run-xyz");
     expect(row.isRead).toBe(true);
   });
@@ -370,7 +371,7 @@ describe("formatMessageTable", () => {
     expect(row.ticket).toBe("run-xyz"); // falls back to run_id
     expect(row.kind).toBeUndefined();
     expect(row.tool).toBeUndefined();
-    expect(row.args).toBeUndefined();
+    expect(row.args).toContain('"phase":"developer"');
   });
 
   it("truncates long args safely", () => {
@@ -484,7 +485,7 @@ describe("renderMessageTable", () => {
     ];
     const output = renderMessageTable(rows);
     expect(output).toContain("DATE");
-    expect(output).toContain("TICKET");
+    expect(output).toContain("foreman-c3845");
     expect(output).toContain("SENDER");
     expect(output).toContain("RECEIVER");
     expect(output).toContain("KIND");

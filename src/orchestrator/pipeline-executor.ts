@@ -33,8 +33,7 @@ import { updateTerminalRunStatus } from "./agent-worker-run-status.js";
 import { writeSessionLog } from "./session-log.js";
 import type { PhaseRecord, SessionLogData } from "./session-log.js";
 import type { AgentMailClient } from "../lib/agent-mail-client.js";
-import type { ForemanStore } from "../lib/store.js";
-import type { RunProgress } from "../lib/store.js";
+import type { Event, Run, RunProgress } from "../lib/store.js";
 import type { RunProgressSummary } from "./read-models.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { HeartbeatManager, createHeartbeatManager, type HeartbeatConfig } from "./heartbeat-manager.js";
@@ -52,13 +51,28 @@ type AnyMailClient = AgentMailClient;
 
 /** Function signature matching the runPhase() in agent-worker.ts. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type WorkerStoreCompat = {
+  updateRunProgress(runId: string, progress: RunProgress): Promise<void> | void;
+  logEvent(projectId: string, eventType: string, data: Record<string, unknown>, runId?: string): Promise<void> | void;
+  updateRun?(runId: string, updates: Record<string, unknown>): Promise<void> | void;
+  logRateLimitEvent?(projectId: string, model: string, phase: string, error: string, retryAfterSeconds?: number, runId?: string): Promise<void> | void;
+  updateTaskStatus?(taskId: string, status: string): Promise<void> | void;
+  getRun(runId: string): Run | null;
+  getRunProgress(runId: string): RunProgress | null;
+  getEvents(projectId?: string, limit?: number, eventType?: string): Event[];
+  getRunsByStatus(status: Run["status"], projectId?: string): Promise<Run[]> | Run[];
+  getRunsByStatuses(statuses: Run["status"][], projectId?: string): Promise<Run[]> | Run[];
+  getRunsByBaseBranch(baseBranch: string, projectId?: string): Promise<Run[]> | Run[];
+  close?(): void;
+};
+
 export type RunPhaseFn = (
   role: any,
   prompt: string,
   config: any,
   progress: RunProgress,
   logFile: string,
-  store: ForemanStore,
+  store: WorkerStoreCompat,
   notifyClient: any,
   agentMailClient?: AnyMailClient | null,
   observability?: PhaseObservabilityInput,
@@ -187,7 +201,7 @@ export interface PipelineRunConfig {
 export interface PipelineContext {
   config: PipelineRunConfig;
   workflowConfig: WorkflowConfig;
-  store: ForemanStore;
+  store: WorkerStoreCompat;
   logFile: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   notifyClient: any;
@@ -491,7 +505,7 @@ function findDebugArtifacts(root: string, max = 20): string[] {
 }
 
 async function writeNormalPhaseProgress(
-  store: ForemanStore,
+  store: WorkerStoreCompat,
   runId: string,
   progress: RunProgress,
   observabilityWriter?: PipelineObservabilityWriter,
@@ -505,7 +519,7 @@ async function writeNormalPhaseProgress(
 }
 
 async function writeNormalPhaseEvent(
-  store: ForemanStore,
+  store: WorkerStoreCompat,
   projectId: string,
   runId: string,
   eventType: "phase-start" | "complete" | "phase-failed" | "phase-retry" | "phase-skipped" | "phase-verdict",
@@ -1835,7 +1849,7 @@ async function runPhaseSequence(
         if (phaseName === "finalize" && result.success && config.vcsBackend) {
           try {
             const finalizedHead = await config.vcsBackend.getHeadId(worktreePath);
-            store.updateRun(runId, { commit_sha: finalizedHead });
+            await Promise.resolve(store.updateRun?.(runId, { commit_sha: finalizedHead }));
           } catch {
             // Best effort — HEAD capture failure should not block pipeline completion.
           }
@@ -2090,7 +2104,7 @@ async function runPhaseSequence(
         await appendFile(logFile, `\n${rateLimitAlert}\n`);
 
         // P1: Log rate limit event for per-model tracking (P2 recommendation)
-        store.logRateLimitEvent(projectId, phaseModel, phaseName, errorMsg, retryAfterSeconds, runId);
+        await Promise.resolve(store.logRateLimitEvent?.(projectId, phaseModel, phaseName, errorMsg, retryAfterSeconds, runId));
 
         // P1: Call onRateLimit callback if provided (for alerting)
         ctx.onRateLimit?.(phaseModel, phaseName, errorMsg, retryAfterSeconds);
@@ -2222,7 +2236,7 @@ async function runPhaseSequence(
 
           // Mark task as in cooldown state so dispatcher skips it
           try {
-            store.updateTaskStatus(taskId, "cooldown");
+            await Promise.resolve(store.updateTaskStatus?.(taskId, "cooldown"));
             ctx.log(`[${phaseName.toUpperCase()}] Task ${taskId} marked as cooldown until ${cooldownUntil}`);
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);

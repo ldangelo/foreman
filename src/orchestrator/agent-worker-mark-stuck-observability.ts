@@ -1,44 +1,48 @@
-import type { ForemanStore, RunProgress } from "../lib/store.js";
-import type { PostgresStore } from "../lib/postgres-store.js";
+import type { RunProgress } from "../lib/store.js";
+
+type MarkStuckWriter = {
+  updateProgress?(progress: RunProgress): Promise<void> | void;
+  logEvent?(eventType: "stuck" | "fail", data: Record<string, unknown>): Promise<void> | void;
+};
+
+function isProgress(value: unknown): value is RunProgress {
+  return typeof value === "object" && value !== null && "toolCalls" in value && "costUsd" in value;
+}
 
 export async function writeMarkStuckProgress(
-  localStore: ForemanStore,
-  registeredReadStore: PostgresStore | undefined,
-  runId: string,
-  progress: RunProgress,
-  log: (msg: string) => void,
+  writer: MarkStuckWriter | undefined,
+  runIdOrRegistered: string | unknown,
+  progressOrRunId: RunProgress | string,
+  logOrProgress: ((msg: string) => void) | RunProgress,
+  maybeLog?: (msg: string) => void,
 ): Promise<void> {
-  if (registeredReadStore) {
-    try {
-      await registeredReadStore.updateRunProgress(runId, progress);
-      return;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[markStuck] registered progress write failed (non-fatal); falling back to local store: ${msg}`);
-    }
+  const progress = isProgress(progressOrRunId) ? progressOrRunId : isProgress(logOrProgress) ? logOrProgress : undefined;
+  const log = typeof logOrProgress === "function" ? logOrProgress : maybeLog ?? (() => undefined);
+  try {
+    await Promise.resolve(writer?.updateProgress?.(progress as RunProgress));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[markStuck] progress event failed (non-fatal): ${msg}`);
   }
-
-  await Promise.resolve(localStore.updateRunProgress(runId, progress));
 }
 
 export async function writeMarkStuckEvent(
-  localStore: ForemanStore,
-  registeredReadStore: PostgresStore | undefined,
-  projectId: string,
-  runId: string,
-  eventType: "stuck" | "fail",
-  data: Record<string, unknown>,
-  log: (msg: string) => void,
+  writer: MarkStuckWriter | undefined,
+  projectIdOrRegistered: string | unknown,
+  runIdOrProjectId: string,
+  eventTypeOrRunId: "stuck" | "fail" | string,
+  dataOrEventType: Record<string, unknown> | "stuck" | "fail",
+  logOrData: ((msg: string) => void) | Record<string, unknown>,
+  maybeLog?: (msg: string) => void,
 ): Promise<void> {
-  if (registeredReadStore) {
-    try {
-      await registeredReadStore.logEvent(projectId, eventType, data, runId);
-      return;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[markStuck] registered ${eventType} event write failed (non-fatal); falling back to local store: ${msg}`);
-    }
+  const legacy = typeof dataOrEventType === "string";
+  const eventType = (legacy ? dataOrEventType : eventTypeOrRunId) as "stuck" | "fail";
+  const data = (legacy ? logOrData : dataOrEventType) as Record<string, unknown>;
+  const log = ((legacy ? maybeLog : logOrData) as ((msg: string) => void) | undefined) ?? (() => undefined);
+  try {
+    await Promise.resolve(writer?.logEvent?.(eventType, data));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[markStuck] ${eventType} event failed (non-fatal): ${msg}`);
   }
-
-  localStore.logEvent(projectId, eventType, data, runId);
 }

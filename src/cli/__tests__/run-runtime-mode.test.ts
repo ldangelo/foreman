@@ -69,6 +69,12 @@ vi.mock("../../lib/db/pool-manager.js", () => ({
   initPool: vi.fn(),
   isPoolInitialised: vi.fn().mockReturnValue(true),
 }));
+vi.mock("../../lib/task-client-factory.js", () => ({
+  createTaskClient: vi.fn().mockResolvedValue({
+    backendType: "native",
+    taskClient: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), close: vi.fn() },
+  }),
+}));
 
 import { createTaskClients, resolveRuntimeMode } from "../commands/run.js";
 
@@ -117,7 +123,7 @@ describe("run runtime mode", () => {
   });
 
   it("uses native backend in normal runtime", async () => {
-    const result = await createTaskClients(projectPath, "normal");
+    const result = await createTaskClients(projectPath, "normal", "proj-1");
 
     expect(result.backendType).toBe("native");
     expect(MockBeadsRustClient).not.toHaveBeenCalled();

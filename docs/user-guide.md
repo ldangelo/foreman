@@ -88,7 +88,7 @@ Docs that must be considered for every fix or feature:
 
 ### 1. Start or Check the Elixir Server
 
-Foreman uses the Elixir backend for shared project state and scheduling.
+Foreman uses the Elixir backend for shared project state, database access, and scheduling. Node CLI/client code and Node/Pi workers communicate with Elixir over HTTP commands/projections instead of connecting directly to the database. Workers enqueue/report merge readiness; they do not drain database-backed merge queues themselves.
 
 ```bash
 foreman server start

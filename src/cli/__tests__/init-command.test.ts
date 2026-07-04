@@ -124,6 +124,7 @@ describe("init command", () => {
     mockInstallBundledSkills.mockReturnValue({ installed: [] });
     mockInstallBundledWorkflows.mockReturnValue({ installed: [], skipped: ["default.yaml"] });
     mockRegisterProjectInElixir.mockResolvedValue({ id: "proj-1" });
+    process.env.FOREMAN_MASTER_KEY = Buffer.alloc(32, 1).toString("base64");
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
@@ -133,6 +134,7 @@ describe("init command", () => {
 
   afterEach(() => {
     process.chdir(originalCwd);
+    delete process.env.FOREMAN_MASTER_KEY;
     vi.restoreAllMocks();
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
     tempDirs.length = 0;

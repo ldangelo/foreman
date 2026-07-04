@@ -272,7 +272,7 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
     );
   });
 
-  it("uses the registered run update helper to clear base_branch when rebase succeeds", async () => {
+  it("uses the store compatibility update helper to clear base_branch when rebase succeeds", async () => {
     const mergedRun = makeRun({ task_id: "story-1", status: "completed" });
     const stackedRun = makeRun({ id: "run-3", task_id: "story-3", status: "running", base_branch: "foreman/story-1" });
     const { store, refinery, runLookup } = makeRegisteredMocks([stackedRun], {
@@ -283,12 +283,8 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
 
     await refinery.mergeCompleted({ runTests: false });
 
-    expect(mockPostgresUpdateRun).toHaveBeenCalledWith(
-      "proj-1",
-      "run-3",
-      expect.objectContaining({ base_branch: null }),
-    );
-    expect(store.updateRun).not.toHaveBeenCalledWith(
+    expect(mockPostgresUpdateRun).not.toHaveBeenCalled();
+    expect(store.updateRun).toHaveBeenCalledWith(
       "run-3",
       expect.objectContaining({ base_branch: null }),
     );

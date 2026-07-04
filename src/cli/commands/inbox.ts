@@ -1321,7 +1321,9 @@ export async function resolvePostgresRunId(
   if (options.run) return options.run;
   const taskFilter = options.task ?? options.bead;
   if (taskFilter) {
-    const task = await adapter.getTask(projectId, taskFilter);
+    const task = typeof adapter.getTask === "function"
+      ? await adapter.getTask(projectId, taskFilter)
+      : null;
     if (task?.run_id) return task.run_id;
     const runs = await adapter.listRuns(projectId, { limit: 100 });
     return runs.find((run) => run.task_id === taskFilter)?.id ?? null;
@@ -1377,7 +1379,7 @@ export async function resolveDaemonRunId(
   if (options.run) return options.run;
   if (daemon.backend === "elixir") {
     const taskFilter = options.task ?? options.bead;
-    if (taskFilter) {
+    if (taskFilter && typeof daemon.client.getTask === "function") {
       const task = await daemon.client.getTask(taskFilter).catch(() => null);
       const taskRunId = task && typeof task.run_id === "string" ? task.run_id : null;
       if (taskRunId) return taskRunId;

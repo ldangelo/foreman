@@ -188,6 +188,12 @@ vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   PI_PHASE_CONFIGS: {},
   parsePiEvent: vi.fn().mockReturnValue(null),
 }));
+vi.mock("../../lib/task-client-factory.js", () => ({
+  createTaskClient: vi.fn().mockResolvedValue({
+    backendType: "native",
+    taskClient: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), close: vi.fn() },
+  }),
+}));
 
 // ── Module under test ─────────────────────────────────────────────────────────
 import { runCommand } from "../commands/run.js";

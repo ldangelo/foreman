@@ -24,10 +24,9 @@ function testFileExists(modulePath: string): boolean {
 
 describe("TRD-NF-005: key migrated modules have test coverage", () => {
   const coreModules = [
-    "src/lib/beads-rust.ts",
     "src/lib/bv.ts",
     "src/lib/feature-flags.ts",
-    // task-client.ts is interface-only; tested through consumers (beads-rust, reset, dispatcher)
+    // task-client.ts is interface-only; tested through consumers (reset, dispatcher)
     "src/orchestrator/monitor.ts",
     "src/orchestrator/dispatcher.ts",
     "src/orchestrator/task-backend-ops.ts",

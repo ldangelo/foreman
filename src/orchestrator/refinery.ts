@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { ForemanStore } from "../lib/store.js";
+
 import type { UpdateOptions } from "../lib/task-client.js";
 // Note: removeWorktree shim removed in TRD-012; workspace removal now goes through this.vcsBackend.removeWorkspace()
 import { extractBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
@@ -13,17 +13,12 @@ import type { MergeReport, MergedRun, ConflictRun, FailedRun, PrReport, CreatedP
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { ConflictResolver } from "./conflict-resolver.js";
 import { DEFAULT_MERGE_CONFIG } from "./merge-config.js";
-import { enqueueCloseTask, enqueueResetTaskToOpen, enqueueAddNotesToBead } from "./task-backend-ops.js";
-
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { loadProjectConfig } from "../lib/project-config.js";
 import type { ProjectHooksConfig } from "../lib/project-config.js";
 import { runWorkspaceHook } from "../lib/setup.js";
-import { NativeTaskStore } from "../lib/task-store.js";
-import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import type { Run, EventType } from "../lib/store.js";
-import { closeLinkedGithubIssue, linkPrToGithubIssue } from "../daemon/github-poller.js";
 import { writeElixirOrchestrationEvent } from "./elixir-event-bridge.js";
 
 const execFileAsync = promisify(execFile);
@@ -49,6 +44,13 @@ export interface RefineryOptions {
   runLookup?: RefineryRunLookup;
   registeredProjectId?: string;
 }
+
+export type RefineryStoreCompat = RefineryRunLookup & {
+  updateRun?(runId: string, updates: Record<string, unknown>): Awaitable<void>;
+  logEvent?(projectId: string, eventType: string, data: Record<string, unknown>, runId?: string): Awaitable<void>;
+  sendMessage?(runId: string, from: string, to: string, subject: string, body: string): Awaitable<unknown>;
+  getDb?(): unknown;
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -152,13 +154,11 @@ export interface IRefineryTaskClient {
 export class Refinery {
   private conflictResolver: ConflictResolver;
   private vcsBackend: VcsBackend;
-  private readonly taskStore?: NativeTaskStore;
   private readonly runLookup: RefineryRunLookup;
   private readonly registeredProjectId?: string;
-  private readonly postgresAdapter?: PostgresAdapter;
 
   constructor(
-    private store: ForemanStore,
+    private store: RefineryStoreCompat,
     private tasks: IRefineryTaskClient,
     private projectPath: string,
     vcsBackend?: VcsBackend,
@@ -170,11 +170,6 @@ export class Refinery {
     this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
     this.runLookup = opts.runLookup ?? store;
     this.registeredProjectId = opts.registeredProjectId;
-    if (this.registeredProjectId) {
-      this.postgresAdapter = new PostgresAdapter();
-    } else {
-      this.taskStore = new NativeTaskStore(this.store.getDb());
-    }
   }
 
   private async lookupRun(runId: string): Promise<Run | null> {
@@ -206,59 +201,29 @@ export class Refinery {
       && (currentStatus === "merged" || currentStatus === "pr-created")
       && (nextStatus === "failed" || nextStatus === "stuck" || nextStatus === "conflict" || nextStatus === "test-failed");
 
-    if (this.registeredProjectId && this.postgresAdapter) {
-      try {
-        const currentRun = "getRun" in this.postgresAdapter
-          ? await this.postgresAdapter.getRun(this.registeredProjectId, run.id)
-          : null;
-        if (shouldPreserveTerminalSuccess(currentRun?.status as Run["status"] | undefined)) {
-          return;
-        }
-
-        await this.postgresAdapter.updateRun(this.registeredProjectId, run.id, updates);
-        const linkedTaskStatus = nextStatus
-          ? TERMINAL_TASK_STATUS_BY_REFINERY_RUN_STATUS[nextStatus]
-          : undefined;
-        if (linkedTaskStatus && typeof this.postgresAdapter.updateTaskStatusForRun === "function") {
-          await this.postgresAdapter.updateTaskStatusForRun(this.registeredProjectId, run.id, linkedTaskStatus);
-        }
-        return;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[Refinery] Registered run update failed (non-fatal); falling back to local store: ${msg}`);
-      }
-    }
-
     try {
-      const currentRun = await Promise.resolve(this.store.getRun(run.id));
+      const currentRun = await this.lookupRun(run.id);
       if (shouldPreserveTerminalSuccess(currentRun?.status)) {
         return;
       }
 
-      await Promise.resolve(this.store.updateRun(run.id, updates));
+      await Promise.resolve(this.store.updateRun?.(run.id, updates));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[Refinery] Local run update failed (non-fatal): ${msg}`);
+      console.warn(`[Refinery] Run update failed (non-fatal): ${msg}`);
     }
   }
 
   private async persistRunEvent(run: Run, eventType: EventType, data: Record<string, unknown>): Promise<void> {
-    if (this.registeredProjectId && this.postgresAdapter) {
-      try {
-        await this.postgresAdapter.logEvent(this.registeredProjectId, run.id, eventType, JSON.stringify(data));
+    try {
+      if (this.registeredProjectId) {
         await writeElixirOrchestrationEvent({ runId: run.id, projectId: this.registeredProjectId, eventType, payload: data }).catch(() => undefined);
         return;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[Refinery] Registered event write failed (non-fatal); falling back to local store: ${msg}`);
       }
-    }
-
-    try {
-      this.store.logEvent(run.project_id, eventType, data, run.id);
+      await Promise.resolve(this.store.logEvent?.(run.project_id, eventType, data, run.id));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[Refinery] Local event write failed (non-fatal): ${msg}`);
+      console.warn(`[Refinery] Event write failed (non-fatal): ${msg}`);
     }
   }
 
@@ -376,7 +341,7 @@ export class Refinery {
     subject: string,
     body: Record<string, unknown>,
   ): void {
-    void Promise.resolve().then(() => this.store.sendMessage(runId, "refinery", "foreman", subject, JSON.stringify({
+    void Promise.resolve().then(() => this.store.sendMessage?.(runId, "refinery", "foreman", subject, JSON.stringify({
         ...body,
         timestamp: new Date().toISOString(),
       }))).catch(() => {
@@ -488,7 +453,6 @@ export class Refinery {
       targetBranch,
     });
 
-    enqueueCloseTask(this.store, run.task_id, "refinery");
     await this.closeNativeTaskPostMerge(run.id, run.task_id);
 
     this.sendMail(run.id, "bead-closed", {
@@ -680,20 +644,9 @@ export class Refinery {
    * Adds a comment to the GitHub issue referencing the PR URL.
    * Non-fatal — PR linking must not block PR creation.
    */
-  async #linkPrToGithubIssue(runId: string, prUrl: string): Promise<void> {
-    if (!this.registeredProjectId || !this.postgresAdapter) return;
-    try {
-      // Find the task linked to this run
-      const [task] = await this.postgresAdapter.listTasks(this.registeredProjectId, {
-        runId,
-        limit: 1,
-      });
-      if (!task) return;
-      const gh = new (await import("../lib/gh-cli.js")).GhCli();
-      await linkPrToGithubIssue(gh, this.registeredProjectId, task.id, prUrl);
-    } catch {
-      // Non-fatal — best effort PR linking
-    }
+  async #linkPrToGithubIssue(_runId: string, _prUrl: string): Promise<void> {
+    // Disabled in Elixir-backed runtime: linking requires a task lookup endpoint
+    // rather than direct database access. Non-fatal by design.
   }
 
   async mergePullRequest(opts: {
@@ -798,33 +751,11 @@ export class Refinery {
    * Implements REQ-018: updateStatus(taskId, 'merged') on success.
    * Non-fatal — failures are silently ignored so they don't block the merge flow.
    */
-  private async closeNativeTaskPostMerge(runId: string, _taskId: string): Promise<void> {
+  private async closeNativeTaskPostMerge(_runId: string, taskId: string): Promise<void> {
     try {
-      if (this.registeredProjectId && this.postgresAdapter) {
-        const [task] = await this.postgresAdapter.listTasks(this.registeredProjectId, {
-          runId,
-          limit: 1,
-        });
-        if (task) {
-          await this.postgresAdapter.updateTask(this.registeredProjectId, task.id, { status: "merged" });
-          // Auto-close the linked GitHub issue (TRD-032)
-          await closeLinkedGithubIssue(this.postgresAdapter, new (await import("../lib/gh-cli.js")).GhCli(), this.registeredProjectId, task.id);
-          return;
-        }
-      } else {
-        const row = this.store.getDb()
-          .prepare("SELECT id FROM tasks WHERE run_id = ?")
-          .get(runId) as { id: string } | undefined;
-
-        if (row && this.taskStore) {
-          this.taskStore.updateStatus(row.id, "merged");
-          return;
-        }
-      }
-
-      // No native task found — nothing to close (beads fallback removed)
+      await this.tasks.update?.(taskId, { status: "merged" });
     } catch {
-      // Non-fatal — native task closure must not block the merge
+      // Non-fatal — task status update must not block merge
     }
   }
 
@@ -832,16 +763,9 @@ export class Refinery {
    * Attempt to add a note to a bead explaining what went wrong.
    * Non-fatal — a failure to annotate the bead must not mask the original error.
    */
-  private async addFailureNote(taskId: string, note: string): Promise<void> {
-    // Enqueue instead of calling br directly — multiple agent workers run
-    // refinery concurrently, and direct calls can contend on beads backend locks.
-    try {
-      enqueueAddNotesToBead(this.store, taskId, note.slice(0, 500), "refinery");
-    } catch (err: unknown) {
-      // Non-fatal: best-effort annotation
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[Refinery] Failed to enqueue failure note for bead ${taskId}: ${message}`);
-    }
+  private async addFailureNote(_taskId: string, _note: string): Promise<void> {
+    // Disabled in Elixir-backed runtime until task annotation writes are exposed
+    // through Elixir commands. Non-fatal by design.
   }
 
   /**
@@ -983,9 +907,8 @@ export class Refinery {
       ];
       const runs = await this.lookupRunsByStatuses(retryStatuses, projectId);
       const matching = runs.filter((r) => r.task_id === taskId);
-      // Prefer a completed run over newer stuck/failed runs for the same task.
-      // Postgres returns rows ordered by created_at DESC so stuck/failed may appear
-      // first even though a completed run exists from an earlier attempt.
+      // Prefer a completed run over newer stuck/failed runs for the same task;
+      // projections may return newer failed attempts before older completed ones.
       const completedRun = matching.find((r) => r.status === "completed");
       return completedRun ? [completedRun] : matching.slice(0, 1);
     }
@@ -1102,9 +1025,8 @@ export class Refinery {
     let rawRuns: import("../lib/store.js").Run[];
     if (opts?.runId) {
       // Fetch by ID directly - bypasses status check entirely.
-      // This is the most reliable path for immediate autoMerge calls because
-      // the status update happens before autoMerge is called, but due to Postgres
-      // WAL timing, the query might not see it immediately.
+      // This is the most reliable path for immediate merge calls because
+      // projection timing may lag behind the status update.
        const fetchedRun = await this.lookupRun(opts.runId);
        rawRuns = fetchedRun ? [fetchedRun] : [];
      } else if (opts?.overrideRun) {
@@ -1502,11 +1424,6 @@ export class Refinery {
             targetBranch,
           });
 
-          // Close the bead NOW — after the code has actually landed in main.
-          // projectPath (repo root) is where .beads/ lives; not the worktree dir.
-          enqueueCloseTask(this.store, run.task_id, "refinery");
-
-          // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
           await this.closeNativeTaskPostMerge(run.id, run.task_id);
 
           // Send bead-closed mail so inbox shows bead lifecycle completion
@@ -1703,10 +1620,6 @@ export class Refinery {
       { taskId: run.task_id, branchName, strategy: "theirs", targetBranch },
     );
 
-    // Close the bead after successful conflict-resolution merge.
-    enqueueCloseTask(this.store, run.task_id, "refinery");
-
-    // Close native task post-merge (REQ-018) — updateStatus('merged') or fallback
     await this.closeNativeTaskPostMerge(run.id, run.task_id);
 
     return true;

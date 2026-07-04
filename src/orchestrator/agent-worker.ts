@@ -4,7 +4,7 @@
  *
  * Spawned as a detached child process by the dispatcher. Survives parent exit.
  * Reads config from a JSON file passed as argv[2], runs the SDK query(),
- * and updates the Postgres store with progress/completion.
+ * and reports progress/completion to the Elixir backend.
  *
  * Usage: tsx agent-worker.ts <config-file>
  */
@@ -34,13 +34,9 @@ import {
 } from "./pi-sdk-tools.js";
 import { ensureGraphifyIndex } from "./graphify-index.js";
 import { executePipeline } from "./pipeline-executor.js";
-import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter } from "./pipeline-executor.js";
-import { ForemanStore } from "../lib/store.js";
-import type { RunProgress } from "../lib/store.js";
-import { PostgresStore } from "../lib/postgres-store.js";
+import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter, WorkerStoreCompat } from "./pipeline-executor.js";
+import type { Run, RunProgress } from "../lib/store.js";
 import type { RunProgressSummary } from "./read-models.js";
-import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
-import { initPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
 import { ElixirServerClient } from "../lib/elixir-server-client.js";
 import { PIPELINE_BUFFERS, PIPELINE_TIMEOUTS } from "../lib/config.js";
@@ -49,24 +45,20 @@ import {
   getDisallowedTools,
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { enqueueResetTaskToOpen, enqueueMarkBeadFailed, enqueueAddNotesToBead, enqueueCloseTask } from "./task-backend-ops.js";
 import { updateFatalRunStatus } from "./agent-worker-fatal-path.js";
 import { updateTerminalRunStatus } from "./agent-worker-run-status.js";
-import { createDualWriteStore } from "./rate-limit-dual-write.js";
 import { writeMarkStuckEvent, writeMarkStuckProgress } from "./agent-worker-mark-stuck-observability.js";
 import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";
 import type { WorkerNotification } from "./types.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import type { AgentMailClient } from "../lib/agent-mail-client.js";
-import { createProjectMailClient, resolveProjectDatabaseUrl } from "../lib/project-mail-client.js";
-import { ProjectRegistry } from "../lib/project-registry.js";
+import { createProjectMailClient } from "../lib/project-mail-client.js";
 import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
-import { autoMerge } from "./auto-merge.js";
 import { runCodeRabbitCliReview } from "./coderabbit-cli-review.js";
 import { collectPrReviewContext, collectPrWaitSnapshot, isPrWaitStatusReady, summarizePrWaitStatus, updatePrReadyStability, writePrReviewFindings, writePrWaitReport } from "./pr-review-context.js";
-import { Refinery } from "./refinery.js";
+import { Refinery, type RefineryRunLookup } from "./refinery.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
@@ -74,6 +66,7 @@ import type { TaskMeta } from "../lib/interpolate.js";
 import type { WorkflowPhaseConfig } from "../lib/workflow-loader.js";
 import { runWorkspaceHook } from "../lib/setup.js";
 import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
+import { foremanBackendMode } from "../lib/backend-mode.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
 
 const execFileAsync = promisify(execFile);
@@ -124,44 +117,14 @@ class NotificationClient {
   }
 }
 
-async function resolveRegisteredProjectIdForPath(
-  projectPath: string,
-  databaseUrl?: string,
-): Promise<string | undefined> {
-  if (!databaseUrl) return undefined;
-
-  if (!isPoolInitialised()) {
-    try {
-      initPool({ databaseUrl });
-    } catch {
-      // Fall through to the legacy registry source when Postgres is unavailable.
-    }
-  }
-
-  const registries = [
-    new ProjectRegistry({ pg: new PostgresAdapter() }),
-    new ProjectRegistry(),
-  ];
-
-  for (const registry of registries) {
-    try {
-      const projects = await registry.list();
-      const match = projects.find((project) => project.path === projectPath);
-      if (match) {
-        return match.id;
-      }
-    } catch {
-      // Fall through to the next registry source.
-    }
-  }
-
-  return undefined;
-}
-
 // ── Agent Mail helper ─────────────────────────────────────────────────────────
 
 /** Mail client type. */
 type AnyMailClient = AgentMailClient;
+type RegisteredReadStore = RefineryRunLookup & {
+  updateRunProgress?(runId: string, progress: RunProgress): Promise<void> | void;
+  logEvent?(projectId: string, eventType: string, data: Record<string, unknown>, runId?: string): Promise<void> | void;
+};
 
 /**
  * Fire-and-forget wrapper for AgentMailClient.sendMessage.
@@ -309,6 +272,43 @@ async function createRuntimeTaskClient(projectPath: string, registeredProjectId?
   return (await createTaskClient(projectPath, {
     registeredProjectId,
   })).taskClient;
+}
+
+function createWorkerStoreCompat(): WorkerStoreCompat {
+  return {
+    updateRunProgress() {},
+    logEvent() {},
+    updateRun() {},
+    logRateLimitEvent() {},
+    updateTaskStatus() {},
+    getRun() { return null; },
+    getRunProgress() { return null; },
+    getEvents() { return []; },
+    getRunsByStatus() { return []; },
+    getRunsByStatuses() { return []; },
+    getRunsByBaseBranch() { return []; },
+    close() {},
+  };
+}
+
+async function updateTaskStatusViaElixir(
+  projectPath: string,
+  projectId: string | undefined,
+  taskId: string,
+  status: string,
+  source: string,
+): Promise<void> {
+  try {
+    const client = await createRuntimeTaskClient(projectPath, projectId);
+    if (status === "closed") {
+      await client.close(taskId, source);
+    } else {
+      await client.update(taskId, { status });
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[task-status] ${source} failed to set ${taskId}=${status} via Elixir (non-fatal): ${msg}`);
+  }
 }
 
 // ── Module-level phase tracker ───────────────────────────────────────────────
@@ -523,13 +523,12 @@ async function main(): Promise<void> {
   log(`Worker started for ${taskId} [${model}] pid=${process.pid} mode=${mode}`);
   currentPhase = "init";
 
-  // Open local store and mirror key runtime writes into Postgres-backed store.
-  const databaseUrl = resolveProjectDatabaseUrl(storeProjectPath);
-  const localStore = ForemanStore.forProject(storeProjectPath);
-  const registeredProjectId = await resolveRegisteredProjectIdForPath(storeProjectPath, databaseUrl);
-  const pgStore = registeredProjectId ? PostgresStore.forProject(registeredProjectId) : undefined;
-  const store = pgStore ? createDualWriteStore(localStore, pgStore, true, log) : localStore;
-  const registeredReadStore = registeredProjectId && pgStore ? pgStore : undefined;
+  // No database-backed store in the worker. Authoritative task/run/mail state
+  // is read/written through Elixir; this object only satisfies legacy in-process
+  // pipeline interfaces where Elixir observability is already preferred.
+  const store = createWorkerStoreCompat();
+  const registeredProjectId = config.projectId;
+  const registeredReadStore = undefined;
 
   // Apply worker env vars.
   // NOTE: `ROLE_CONFIGS` in roles.ts is materialised at module load time,
@@ -542,19 +541,10 @@ async function main(): Promise<void> {
     process.env[key] = value;
   }
 
-  // Initialize Postgres pool for dual-write mirrors when DATABASE_URL is available.
-  if (registeredProjectId && databaseUrl && !isPoolInitialised()) {
-    try {
-      initPool({ databaseUrl });
-    } catch {
-      // Non-fatal: dual-write mirrors log their own failures if the pool is unavailable.
-    }
-  }
-
   // Create notification client using FOREMAN_NOTIFY_URL (set in env above if provided by dispatcher)
   const notifyClient = new NotificationClient(process.env.FOREMAN_NOTIFY_URL);
 
-  // Create daemon-backed mail client when Postgres is available; fall back to Postgres mail otherwise.
+  // Create backend-routed Agent Mail client.
   let agentMailClient: AnyMailClient | null = null;
   try {
     const mailClient = await createProjectMailClient(storeProjectPath);
@@ -571,11 +561,11 @@ async function main(): Promise<void> {
   // ── Pipeline mode: run each phase as a separate SDK session ─────────
   if (pipeline) {
     try {
-      await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);
+      await runPipeline(config, store, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);
       log(`Pipeline worker exiting for ${taskId}`);
     } finally {
       await runAfterRunHook(config);
-      store.close();
+      store.close?.();
     }
     return;
   }
@@ -601,7 +591,7 @@ async function main(): Promise<void> {
   const flushProgress = () => {
     if (progressDirty) {
       progressDirty = false;
-      progressFlushTail = progressFlushTail.then(() => writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log));
+      progressFlushTail = progressFlushTail.then(() => writeSingleAgentProgress(undefined, runId, progress, log));
     }
   };
   const progressTimer = setInterval(flushProgress, PIPELINE_TIMEOUTS.progressFlushMs);
@@ -664,7 +654,7 @@ async function main(): Promise<void> {
     progress.toolBreakdown = piResult.toolBreakdown;
     progress.tokensIn = piResult.tokensIn;
     progress.tokensOut = piResult.tokensOut;
-    await writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log);
+    await writeSingleAgentProgress(undefined, runId, progress, log);
 
     const now = new Date().toISOString();
 
@@ -676,7 +666,7 @@ async function main(): Promise<void> {
         updates: { status: "completed", completed_at: now },
       });
       notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
-      await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, "complete", {
+      await writeSingleAgentTerminalEvent(undefined, projectId, runId, "complete", {
         taskId,
         title: taskTitle,
         costUsd: progress.costUsd,
@@ -695,7 +685,7 @@ async function main(): Promise<void> {
         updates: { status: "failed", completed_at: now },
       });
       notifyClient.send({ type: "status", runId, status: "failed", timestamp: now, details: { reason } });
-      await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, "fail", {
+      await writeSingleAgentTerminalEvent(undefined, projectId, runId, "fail", {
         taskId,
         reason,
         costUsd: progress.costUsd,
@@ -704,12 +694,12 @@ async function main(): Promise<void> {
       }, log);
       log(`FAILED: ${reason.slice(0, 300)}`);
       // Permanent failure — mark task as 'failed' so it is NOT auto-retried.
-      enqueueMarkBeadFailed(store, taskId, "agent-worker");
+      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker");
     }
   } catch (err: unknown) {
     clearInterval(progressTimer);
     await waitForProgressFlush();
-    await writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log);
+    await writeSingleAgentProgress(undefined, runId, progress, log);
     const reason = err instanceof Error ? err.message : String(err);
     const reasonLower = reason.toLowerCase();
     const isRateLimit = reasonLower.includes("hit your limit") || reasonLower.includes("rate limit");
@@ -726,7 +716,7 @@ async function main(): Promise<void> {
       },
     });
     notifyClient.send({ type: "status", runId, status: catchStatus, timestamp: now, details: { reason } });
-    await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {
+    await writeSingleAgentTerminalEvent(undefined, projectId, runId, isRateLimit ? "stuck" : "fail", {
       taskId,
       reason,
       costUsd: progress.costUsd,
@@ -738,14 +728,14 @@ async function main(): Promise<void> {
     await appendFile(logFile, `\n[foreman-worker] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
     // Transient (rate limit) → reset to 'open' for retry; permanent → mark 'failed'.
     if (isRateLimit) {
-      enqueueResetTaskToOpen(store, taskId, "agent-worker");
+      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "ready", "agent-worker");
     } else {
-      enqueueMarkBeadFailed(store, taskId, "agent-worker");
+      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker");
     }
   }
 
   await runAfterRunHook(config);
-  store.close();
+  store.close?.();
   log(`Worker exiting for ${taskId}`);
 }
 
@@ -774,7 +764,7 @@ async function runPhase(
   config: WorkerConfig,
   progress: RunProgress,
   logFile: string,
-  store: ForemanStore,
+  store: WorkerStoreCompat,
   notifyClient: NotificationClient,
   agentMailClient?: AnyMailClient | null,
   observability?: PhaseObservabilityInput,
@@ -1021,7 +1011,7 @@ function readReport(worktreePath: string, filename: string): string | null {
 async function runTroubleshooterPhase(
   config: WorkerConfig,
   workflowConfig: import("../lib/workflow-loader.js").WorkflowConfig,
-  store: ForemanStore,
+  store: WorkerStoreCompat,
   logFile: string,
   notifyClient: NotificationClient,
   agentMailClient: AnyMailClient | null,
@@ -1115,52 +1105,78 @@ async function runTroubleshooterPhase(
   }
 }
 
+function toStoreRun(input: Record<string, unknown>, projectId: string): Run {
+  const status = typeof input.status === "string" ? input.status : "running";
+  const now = new Date().toISOString();
+  return {
+    id: typeof input.run_id === "string" ? input.run_id : String(input.id ?? ""),
+    project_id: typeof input.project_id === "string" ? input.project_id : projectId,
+    task_id: typeof input.task_id === "string" ? input.task_id : "",
+    agent_type: typeof input.agent_type === "string" ? input.agent_type : "pipeline",
+    session_key: typeof input.session_key === "string" ? input.session_key : null,
+    worktree_path: typeof input.worktree_path === "string" ? input.worktree_path : null,
+    status: status as Run["status"],
+    started_at: typeof input.started_at === "string" ? input.started_at : null,
+    completed_at: typeof input.completed_at === "string" ? input.completed_at : null,
+    created_at: typeof input.created_at === "string" ? input.created_at : now,
+    progress: typeof input.progress === "string" ? input.progress : null,
+    base_branch: typeof input.base_branch === "string" ? input.base_branch : null,
+    merge_strategy: (typeof input.merge_strategy === "string" ? input.merge_strategy : null) as Run["merge_strategy"],
+    commit_sha: typeof input.commit_sha === "string" ? input.commit_sha : null,
+    pr_url: typeof input.pr_url === "string" ? input.pr_url : null,
+    pr_state: (typeof input.pr_state === "string" ? input.pr_state : null) as Run["pr_state"],
+    pr_head_sha: typeof input.pr_head_sha === "string" ? input.pr_head_sha : null,
+    cooldown_until: typeof input.cooldown_until === "string" ? input.cooldown_until : null,
+  };
+}
+
+function createElixirRunLookup(projectId: string): RefineryRunLookup {
+  const client = process.env.FOREMAN_SERVER_URL
+    ? Promise.resolve(new ElixirServerClient(process.env.FOREMAN_SERVER_URL, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN))
+    : new ElixirServerManager().ensureRunning().then((status) => (
+        new ElixirServerClient(status.url, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN)
+      ));
+
+  const list = async (): Promise<Run[]> => {
+    const runs = await (await client).listRuns({ projectId });
+    return runs.map((run) => toStoreRun(run, projectId));
+  };
+
+  return {
+    async getRun(id) {
+      return (await list()).find((run) => run.id === id) ?? null;
+    },
+    async getRunsByStatus(status) {
+      return (await list()).filter((run) => run.status === status);
+    },
+    async getRunsByStatuses(statuses) {
+      return (await list()).filter((run) => statuses.includes(run.status));
+    },
+    async getRunsByBaseBranch(baseBranch) {
+      return (await list()).filter((run) => run.base_branch === baseBranch);
+    },
+  };
+}
+
 /**
  * Derive fallback refinery options for registered/native run lookups.
  *
- * If registeredProjectId is missing but a database URL exists in the project path,
- * derive a PostgresStore for run lookups. This ensures registered/native runs can
- * be found even when registeredProjectId was not propagated.
- *
- * Error handling: Safely handles the case where the connection pool may not be
- * properly initialized by wrapping PostgresStore.forProject in a try-catch that
- * logs the error and returns undefined instead of throwing.
+ * Workers use the Elixir run projection for lookup. Node must not connect to
+ * the database directly for registered run state.
  */
 function deriveFallbackRefineryOptions(
   registeredProjectId: string | undefined,
-  registeredReadStore: PostgresStore | undefined,
-  pipelineProjectPath: string,
+  _registeredReadStore: RefineryRunLookup | undefined,
+  _pipelineProjectPath: string,
   configProjectId: string,
-  log?: (msg: string) => void,
-): { registeredProjectId: string; runLookup: PostgresStore } | undefined {
-  const fallbackRegisteredProjectId = !registeredProjectId && resolveProjectDatabaseUrl(pipelineProjectPath)
-    ? configProjectId
-    : undefined;
-  const refineryProjectId = registeredProjectId ?? fallbackRegisteredProjectId;
-
-  if (!refineryProjectId) {
-    return undefined;
-  }
-
-  let fallbackReadStore: PostgresStore | undefined;
-  const projectIdForFallback = fallbackRegisteredProjectId ?? registeredProjectId;
-  if (!registeredReadStore && projectIdForFallback) {
-    try {
-      fallbackReadStore = PostgresStore.forProject(projectIdForFallback);
-    } catch (err) {
-      log?.(`[deriveFallbackRefineryOptions] Failed to create PostgresStore for fallback: ${err instanceof Error ? err.message : String(err)}`);
-      return undefined;
-    }
-  }
-
-  const runLookup = registeredReadStore ?? fallbackReadStore;
-  if (!runLookup) {
-    return undefined;
-  }
+  _log?: (msg: string) => void,
+): { registeredProjectId: string; runLookup: RefineryRunLookup } | undefined {
+  const refineryProjectId = registeredProjectId ?? configProjectId;
+  if (!refineryProjectId) return undefined;
 
   return {
     registeredProjectId: refineryProjectId,
-    runLookup,
+    runLookup: createElixirRunLookup(refineryProjectId),
   };
 }
 
@@ -1185,11 +1201,11 @@ async function hasChangesAgainstBase(vcsBackend: VcsBackend | undefined, repoPat
 
 async function runCreatePrBuiltinPhase(args: {
   config: WorkerConfig;
-  store: ForemanStore;
+  store: WorkerStoreCompat;
   runtimeTaskClient: ITaskClient;
   pipelineProjectPath: string;
   registeredProjectId?: string;
-  registeredReadStore?: PostgresStore;
+  registeredReadStore?: RegisteredReadStore;
   vcsBackend?: VcsBackend;
   workflowConfig: WorkflowConfig;
   log: (msg: string) => void;
@@ -1198,7 +1214,7 @@ async function runCreatePrBuiltinPhase(args: {
   const { config, store, runtimeTaskClient, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, workflowConfig, log, agentMailClient } = args;
 
   // Fallback logic mirrors runPipeline: if registeredReadStore is missing but a database
-  // URL exists in the project path, derive a PostgresStore for run lookups. This ensures
+  // URL exists in the project path, derive a RegisteredReadStore for run lookups. This ensures
   // registered/native runs can be found even when registeredProjectId was not propagated.
   const registeredRefineryOptions = deriveFallbackRefineryOptions(
     registeredProjectId,
@@ -1652,10 +1668,10 @@ async function writeMergeReport(args: {
 
 async function runMergeBuiltinPhase(args: {
   config: WorkerConfig;
-  store: ForemanStore;
+  store: WorkerStoreCompat;
   pipelineProjectPath: string;
   registeredProjectId?: string;
-  registeredReadStore?: PostgresStore;
+  registeredReadStore?: RegisteredReadStore;
   vcsBackend?: VcsBackend;
   workflowConfig: WorkflowConfig;
   log: (msg: string) => void;
@@ -1724,49 +1740,24 @@ async function runMergeBuiltinPhase(args: {
     updates: { status: "completed", completed_at: now },
   });
 
-  const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
-  const registeredAutoMergeReadStore = registeredProjectId ? registeredReadStore : undefined;
-  const currentRun = registeredAutoMergeReadStore
-    ? (await registeredAutoMergeReadStore.getRun(config.runId)) ?? undefined
-    : store.getRun(config.runId) ?? undefined;
-  const mergeResult = await autoMerge({
-    store,
-    taskClient: runtimeTaskClient,
-    projectPath: pipelineProjectPath,
-    targetBranch: config.targetBranch,
-    ...(registeredAutoMergeReadStore
-      ? { registeredProjectId, readLookup: registeredAutoMergeReadStore }
-      : {}),
-    runId: config.runId,
-    ...(currentRun ? { overrideRun: currentRun } : {}),
-  });
-
-  const targetMergeResult = mergeResult.target;
-  const details = `Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`
-    + (targetMergeResult
-      ? `; target=${targetMergeResult.runId} merged=${targetMergeResult.merged}, conflicts=${targetMergeResult.conflicts}, failed=${targetMergeResult.failed}`
-      : "");
-  const success = targetMergeResult
-    ? targetMergeResult.merged > 0 && targetMergeResult.conflicts === 0 && targetMergeResult.failed === 0
-    : mergeResult.merged > 0 && mergeResult.conflicts === 0 && mergeResult.failed === 0;
+  const details = "Merge queued for Elixir/refinery processing";
   await writeMergeReport({
     config,
-    status: success ? "SUCCESS" : "FAIL",
+    status: "SUCCESS",
     details,
-    merged: mergeResult.merged,
-    conflicts: mergeResult.conflicts,
-    failed: mergeResult.failed,
+    merged: 0,
+    conflicts: 0,
+    failed: 0,
     prNumber,
   });
   log(`[MERGE] ${details}`);
 
   return {
-    success,
+    success: true,
     costUsd: 0,
     turns: 0,
     tokensIn: 0,
     tokensOut: 0,
-    error: success ? undefined : details,
     outputText: details,
   };
 }
@@ -1907,12 +1898,11 @@ function createElixirWorkerObservabilityWriter(
 
 async function runPipeline(
   config: WorkerConfig,
-  store: ForemanStore,
-  localStore: ForemanStore,
+  store: WorkerStoreCompat,
   logFile: string,
   notifyClient: NotificationClient,
   agentMailClient: AnyMailClient | null,
-  registeredReadStore?: PostgresStore,
+  registeredReadStore?: RegisteredReadStore,
   registeredProjectId?: string,
 ): Promise<void> {
   const pipelineProjectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
@@ -1956,36 +1946,21 @@ async function runPipeline(
     ? createElixirWorkerObservabilityWriter(config, eventProjectId)
     : undefined;
   log(`[pipeline-observability] worker event bridge ${elixirWorkerObservabilityWriter ? "enabled" : "disabled"}${eventProjectId ? ` project=${eventProjectId}` : ""}`);
-  const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = (registeredReadStore || elixirWorkerObservabilityWriter)
-    ? {
-        async updateProgress(progress) {
-          if (!registeredReadStore) return;
-          try {
-            await registeredReadStore.updateRunProgress(config.runId, progress);
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`[pipeline-observability] progress update failed (non-fatal): ${msg}`);
-          }
-        },
-        async logEvent(eventType, data) {
-          try {
-            await elixirWorkerObservabilityWriter?.logEvent?.(eventType, data);
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`[pipeline-observability] ${eventType} event append failed (non-fatal): ${msg}`);
-          }
-
-          if (eventType === "phase-report") return;
-          if (!registeredReadStore || !registeredProjectId) return;
-          try {
-            await registeredReadStore.logEvent(registeredProjectId, eventType, data, config.runId);
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`[pipeline-observability] ${eventType} projection write failed (non-fatal): ${msg}`);
-          }
-        },
-      }
-    : undefined;
+  const registeredObservabilityWriter: PipelineObservabilityWriter | undefined = (() => {
+    const writer = elixirWorkerObservabilityWriter;
+    return writer
+      ? {
+          async logEvent(eventType, data) {
+            try {
+              await writer.logEvent?.(eventType, data);
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              log(`[pipeline-observability] ${eventType} event append failed (non-fatal): ${msg}`);
+            }
+          },
+        }
+      : undefined;
+  })();
 
   // Initialize VCS backend for prompt templating (TRD-026, TRD-027).
   // Reconstructed from FOREMAN_VCS_BACKEND env var set by dispatcher.
@@ -2034,17 +2009,17 @@ async function runPipeline(
       async onTaskPhaseNote(taskId, phaseName, kind, body, metadata) {
         if (runtimeTaskBackend !== "native" || !taskId || !registeredProjectId) return;
         try {
-          await new PostgresAdapter().addTaskNote(registeredProjectId, taskId, {
-            runId: config.runId,
-            phase: phaseName,
-            author: `${phaseName}-${config.taskId}`,
+          await elixirWorkerObservabilityWriter?.logEvent?.("task-updated", {
+            run_id: config.runId,
+            task_id: taskId,
+            phase_id: phaseName,
             kind,
             body,
             metadata,
           });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[task-note] append failed (non-fatal): ${msg}`);
+          log(`[task-note] event append failed (non-fatal): ${msg}`);
         }
       },
       epicTasks: config.epicTasks,
@@ -2104,7 +2079,6 @@ async function runPipeline(
       markStuck: async (storeArg, runIdArg, projectIdArg, taskIdArg, taskTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) => {
         return markStuck(
           storeArg,
-          localStore,
           runIdArg,
           projectIdArg,
           taskIdArg,
@@ -2201,17 +2175,7 @@ async function runPipeline(
           filesChanged: progress.filesChanged.length,
           phases: completedPhases,
         };
-        if (registeredProjectId && registeredReadStore) {
-          try {
-            await registeredReadStore.logEvent(registeredProjectId, eventType, eventData, runId);
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`[PIPELINE] Registered terminal event write failed (non-fatal); falling back to local store: ${msg}`);
-            store.logEvent(projectId, eventType, eventData, runId);
-          }
-        } else {
-          store.logEvent(projectId, eventType, eventData, runId);
-        }
+        store.logEvent(projectId, eventType, eventData, runId);
         const now = new Date().toISOString();
         if (success) {
           await Promise.resolve(registeredObservabilityWriter?.logEvent?.("run-completed", {
@@ -2469,7 +2433,7 @@ async function runPipeline(
             if (changedAgainstTarget.length === 0) {
               skipMergeQueue = true;
               log(`[FINALIZE] Branch already matches ${completionTargetBranch} after troubleshooter recovery — skipping branch-ready/merge queue`);
-              enqueueCloseTask(store, taskId, "agent-worker-finalize");
+              await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize");
             }
           } catch (alreadyMergedErr: unknown) {
             const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
@@ -2506,30 +2470,7 @@ async function runPipeline(
                 taskId, runId, branch: `foreman/${taskId}`, worktreePath,
               });
 
-              try {
-                const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
-                const registeredAutoMergeReadStore = registeredProjectId ? registeredReadStore : undefined;
-                const currentRun = registeredAutoMergeReadStore
-                  ? (await registeredAutoMergeReadStore.getRun(runId)) ?? undefined
-                  : store.getRun(runId) ?? undefined;
-                const mergeResult = await autoMerge({
-                  store,
-                  taskClient: runtimeTaskClient,
-                  projectPath: pipelineProjectPath,
-                  targetBranch: config.targetBranch,
-                  ...(registeredAutoMergeReadStore
-                    ? { registeredProjectId, readLookup: registeredAutoMergeReadStore }
-                    : {}),
-                  runId,
-                  ...(currentRun ? { overrideRun: currentRun } : {}),
-                });
-                log(
-                  `[FINALIZE] Immediate merge drain result: merged=${mergeResult.merged}, conflicts=${mergeResult.conflicts}, failed=${mergeResult.failed}`,
-                );
-              } catch (drainErr: unknown) {
-                const drainMsg = drainErr instanceof Error ? drainErr.message : String(drainErr);
-                log(`[FINALIZE] Immediate merge drain failed (non-fatal): ${drainMsg}`);
-              }
+              log("[FINALIZE] Merge queued for Elixir/refinery processing");
             } else {
               log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
             }
@@ -2583,7 +2524,7 @@ async function runPipeline(
                 updates: { status: "merged", completed_at: now },
               });
               notifyClient.send({ type: "status", runId, status: "merged", timestamp: now });
-              enqueueCloseTask(store, taskId, "agent-worker-finalize");
+              await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize");
               log(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating bead as merged`);
             }
           } catch (alreadyMergedErr: unknown) {
@@ -2608,9 +2549,9 @@ async function runPipeline(
             retryable: finalizeRetryable,
           });
           if (finalizeRetryable) {
-            enqueueResetTaskToOpen(store, taskId, "agent-worker-finalize");
+            await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "ready", "agent-worker-finalize");
           } else {
-            enqueueMarkBeadFailed(store, taskId, "agent-worker-finalize");
+            await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "failed", "agent-worker-finalize");
             log(`[PIPELINE] Deterministic finalize failure for ${taskId} — marking failed without retry`);
           }
         }
@@ -2620,17 +2561,10 @@ async function runPipeline(
         eventType: "complete" | "stuck" | "fail",
         data: Record<string, unknown>,
       ): Promise<void> => {
-        if (registeredProjectId && registeredReadStore) {
-          try {
-            await registeredReadStore.logEvent(registeredProjectId, eventType, data, runId);
-            return;
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`[FINALIZE] Registered terminal event write failed (non-fatal); falling back to local store: ${msg}`);
-          }
-        }
-
-        store.logEvent(projectId, eventType, data, runId);
+        await registeredObservabilityWriter?.logEvent?.(eventType === "complete" ? "run-completed" : "run-failed", {
+          ...data,
+          terminal_event: eventType,
+        });
       };
 
       // Authoritative terminal domain events come from the worker, not the launcher.
@@ -2655,7 +2589,7 @@ async function runPipeline(
         });
       }
 
-      // Compatibility read-model event for legacy Postgres/local surfaces.
+      // Compatibility read-model event for local debug surfaces.
       await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), terminalPayload);
 
       if (finalizeSucceeded) {
@@ -2723,8 +2657,7 @@ async function runPipeline(
 // Pipeline execution is now driven by workflow YAML via executePipeline() in pipeline-executor.ts.
 
 async function markStuck(
-  store: ForemanStore,
-  localStore: ForemanStore,
+  _store: WorkerStoreCompat,
   runId: string,
   projectId: string,
   taskId: string,
@@ -2734,13 +2667,13 @@ async function markStuck(
   reason: string,
   projectPath: string,
   notifyClient?: NotificationClient,
-  registeredReadStore?: PostgresStore,
+  _registeredReadStore?: RegisteredReadStore,
 ): Promise<void> {
   const reasonLower = reason.toLowerCase();
   const isRateLimit = reasonLower.includes("hit your limit") || reasonLower.includes("rate limit");
   const now = new Date().toISOString();
   const stuckStatus = isRateLimit ? "stuck" : "failed";
-  await writeMarkStuckProgress(localStore, registeredReadStore, runId, progress, log);
+  await writeMarkStuckProgress(undefined, runId, progress, log);
   await updateTerminalRunStatus({
     runId,
     projectId,
@@ -2748,7 +2681,7 @@ async function markStuck(
     updates: { status: stuckStatus, completed_at: now },
   });
   notifyClient?.send({ type: "status", runId, status: stuckStatus, timestamp: now, details: { phase, reason } });
-  await writeMarkStuckEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {
+  await writeMarkStuckEvent(undefined, projectId, runId, isRateLimit ? "stuck" : "fail", {
     taskId,
     title: taskTitle,
     phase,
@@ -2761,40 +2694,13 @@ async function markStuck(
   // the ready queue for automatic retry.
   // For permanent failures, mark as 'failed' so the task is NOT auto-retried —
   // the operator must investigate and re-open it manually.
-  // Enqueue via the bead write queue instead of calling br directly — the
-  // dispatcher drains the queue sequentially, preventing Postgres contention.
   if (isRateLimit) {
-    enqueueResetTaskToOpen(store, taskId, "agent-worker-markStuck");
-    log(`Enqueued reset-task for ${taskId} (rate limited — will retry on next dispatch)`);
+    await updateTaskStatusViaElixir(projectPath, projectId, taskId, "ready", "agent-worker-markStuck");
+    log(`Updated ${taskId} to ready via Elixir (rate limited — will retry on next dispatch)`);
   } else {
-    enqueueMarkBeadFailed(store, taskId, "agent-worker-markStuck");
-    log(`Enqueued mark-failed for ${taskId} (permanent failure — manual intervention required)`);
+    await updateTaskStatusViaElixir(projectPath, projectId, taskId, "failed", "agent-worker-markStuck");
+    log(`Updated ${taskId} to failed via Elixir (permanent failure — manual intervention required)`);
   }
-
-  // Add failure reason as a note on the bead for visibility.
-  // This allows anyone looking at the bead to see why it failed without
-  // having to dig into log files or Postgres.
-  const notePrefix = isRateLimit ? "[RATE_LIMITED]" : "[FAILED]";
-  const failureNote = `${notePrefix} [${phase.toUpperCase()}] ${reason}`;
-  enqueueAddNotesToBead(store, taskId, failureNote, "agent-worker-markStuck");
-  if (projectId && taskId) {
-    try {
-      await new PostgresAdapter().addTaskNote(projectId, taskId, {
-        runId,
-        phase,
-        author: "agent-worker-markStuck",
-        kind: "failure",
-        body: failureNote,
-        metadata: { rateLimit: isRateLimit, costUsd: progress.costUsd },
-      });
-      log(`Added native failure note for task ${taskId}`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[task-note] failure note append failed (non-fatal): ${msg}`);
-    }
-  }
-  log(`Enqueued add-notes for task ${taskId}`);
-  // Note: do NOT close store here — the caller (main()) owns the store lifecycle.
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -2825,9 +2731,8 @@ function log(msg: string): void {
 /**
  * Top-level fatal error handler.
  *
- * When main() rejects (e.g. config parse failure, ForemanStore.forProject()
- * throws, or runPipeline() propagates an uncaught error), we attempt to:
- *   1. Update the run status to "failed" in Postgres so the run is not left stuck.
+ * When main() rejects (e.g. config parse failure or runPipeline() propagates an uncaught error), we attempt to:
+ *   1. Update the run status to "failed" so the run is not left stuck.
  *   2. Send an Agent Mail "worker-error" message to the "foreman" mailbox so
  *      the operator can see the error without having to grep log files.
  *
@@ -2843,7 +2748,7 @@ async function fatalHandler(err: unknown): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`[foreman-worker] Fatal: ${msg}`);
 
-  // Try to recover enough context to update Postgres + send Agent Mail.
+  // Try to recover enough context to update run state + send Agent Mail.
   const configPath = process.argv[2];
   if (!configPath) {
     process.exit(1);
@@ -2868,8 +2773,7 @@ async function fatalHandler(err: unknown): Promise<void> {
   }
 
   if (runId && projectPath) {
-    // Repair the fatal run status with the registered backend when available,
-    // falling back to local Postgres for unregistered projects.
+    // Repair the fatal run status with the registered backend when available.
     try {
       await updateFatalRunStatus({
         runId,
@@ -2882,7 +2786,7 @@ async function fatalHandler(err: unknown): Promise<void> {
       console.error(`[foreman-worker] Could not update run status: ${storeMsg}`);
     }
 
-    // Send Postgres mail notification so the run record reflects the fatal error.
+    // Send Agent Mail notification so the run record reflects the fatal error.
     // agentMailClient is not in scope here — create a fresh one.
     if (taskId && runId) {
       try {
@@ -2899,7 +2803,7 @@ async function fatalHandler(err: unknown): Promise<void> {
           }),
         );
       } catch {
-        // Mail unavailable — Postgres update above is sufficient.
+        // Mail unavailable — run-status update above is sufficient.
       }
     }
   }

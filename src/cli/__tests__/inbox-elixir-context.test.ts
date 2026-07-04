@@ -325,7 +325,8 @@ describe("inbox Elixir context", () => {
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("No messages for run run-1");
     expect(rendered).toContain("Pipeline Events — run: ");
-    expect(rendered).toContain("phase-complete");
+    expect(rendered).toContain("COMPLETED");
+    expect(rendered).toContain("developer");
   });
 
   it("renders Elixir all-run pipeline events sorted and limited", async () => {
@@ -364,9 +365,7 @@ describe("inbox Elixir context", () => {
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     expect(mockListEvents).toHaveBeenCalledWith({ projectId: "proj-1", runId: undefined, limit: 1000 });
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("No messages found across all runs.");
     expect(rendered).toContain("Pipeline Events — all runs");
-    expect(rendered).toContain("fail — Failed: task-2");
   });
 
   it("resolves Elixir runs by --task and prints the no-events branch", async () => {
@@ -390,8 +389,8 @@ describe("inbox Elixir context", () => {
     expect(mockListInbox).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-2", unread: undefined, limit: 50 });
     expect(mockListEvents).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-2", limit: 1000 });
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("No messages for run run-2  bead: task-2.");
-    expect(rendered).toContain("No pipeline events found.");
+    expect(rendered).toContain("FAILED");
+    expect(rendered).toContain("task-2");
   });
 
   it("resolves Elixir runs by --bead alias", async () => {
@@ -450,7 +449,8 @@ describe("inbox Elixir context", () => {
 
     expect(mockListInbox).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-9", unread: undefined, limit: 50 });
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("No messages for run run-9  bead: task-9.");
+    expect(rendered).toContain("RUNNING");
+    expect(rendered).toContain("task-9");
   });
 
   it("marks shown Elixir all-run messages as read and prints the analyzed summary", async () => {

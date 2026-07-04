@@ -1,9 +1,6 @@
-import { NativeTaskClient } from "./native-task-client.js";
-import { PostgresAdapter } from "./db/postgres-adapter.js";
-import { initPool, isPoolInitialised } from "./db/pool-manager.js";
-import { resolveProjectDatabaseUrl } from "./project-mail-client.js";
-import { ProjectRegistry } from "./project-registry.js";
-import { ForemanStore } from "./store.js";
+import { ElixirServerClient } from "./elixir-server-client.js";
+import { ElixirServerManager } from "./elixir-server-manager.js";
+import { ElixirTaskClient } from "./elixir-task-client.js";
 import type { ITaskClient } from "./task-client.js";
 
 export type TaskClientBackend = "native";
@@ -25,7 +22,7 @@ export interface TaskCounts {
   blocked: number;
 }
 
-const NATIVE_TOTAL_STATUSES = [
+const TOTAL_STATUSES = new Set([
   "backlog",
   "ready",
   "in-progress",
@@ -35,103 +32,60 @@ const NATIVE_TOTAL_STATUSES = [
   "failed",
   "stuck",
   "blocked",
-] as const;
+]);
 
-const NATIVE_BLOCKED_STATUSES = [
+const BLOCKED_STATUSES = new Set([
   "backlog",
   "conflict",
   "failed",
   "stuck",
   "blocked",
-] as const;
+]);
 
-async function resolveRegisteredProject(
-  projectPath: string,
-  registeredProjectId?: string,
-): Promise<{ id: string; path: string } | null> {
-  const databaseUrl = resolveProjectDatabaseUrl(projectPath);
-  if (databaseUrl && !isPoolInitialised()) {
-    try {
-      initPool({ databaseUrl });
-    } catch {
-      // Best effort only — callers fall back to local behavior when the pool is unavailable.
-    }
+async function createElixirClient(): Promise<ElixirServerClient> {
+  const token = process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN;
+  if (process.env.FOREMAN_SERVER_URL) {
+    return new ElixirServerClient(process.env.FOREMAN_SERVER_URL, token);
   }
 
-  const registries = databaseUrl
-    ? [new ProjectRegistry({ pg: new PostgresAdapter() }), new ProjectRegistry()]
-    : [new ProjectRegistry()];
+  const status = await new ElixirServerManager().ensureRunning();
+  return new ElixirServerClient(status.url, token);
+}
 
-  for (const registry of registries) {
-    try {
-      const projects = await registry.list();
-      if (registeredProjectId) {
-        const byId = projects.find((project) => project.id === registeredProjectId);
-        if (byId) {
-          return { id: byId.id, path: byId.path };
-        }
-        continue;
-      }
+async function resolveProjectId(projectPath: string, registeredProjectId?: string): Promise<string> {
+  if (registeredProjectId) return registeredProjectId;
 
-      const byPath = projects.find((project) => project.path === projectPath);
-      if (byPath) {
-        return { id: byPath.id, path: byPath.path };
-      }
-    } catch {
-      // Keep falling back — local/unregistered mode should remain available.
-    }
+  const client = await createElixirClient();
+  const projects = await client.listProjects();
+  const project = projects.find((record) => record.path === projectPath);
+  const projectId = project?.id ?? project?.project_id;
+  if (!projectId) {
+    throw new Error(`Project at '${projectPath}' is not registered in Elixir projections.`);
   }
-
-  return null;
+  return projectId;
 }
 
 export async function createTaskClient(
   projectPath: string,
   opts?: TaskClientFactoryOptions,
 ): Promise<TaskClientFactoryResult> {
-  const registered = await resolveRegisteredProject(projectPath, opts?.registeredProjectId);
+  const projectId = await resolveProjectId(projectPath, opts?.registeredProjectId);
   return {
     backendType: "native",
-    taskClient: new NativeTaskClient(projectPath, { registeredProjectId: registered?.id }),
+    taskClient: new ElixirTaskClient(projectPath, projectId),
   };
 }
 
-async function fetchNativeTaskCounts(projectPath: string, registeredProjectId?: string): Promise<TaskCounts> {
-  const registered = await resolveRegisteredProject(projectPath, registeredProjectId);
-  if (registered) {
-    const adapter = new PostgresAdapter();
-    const [total, ready, inProgress, completed, blocked] = await Promise.all([
-      adapter.listTasks(registered.id, { status: [...NATIVE_TOTAL_STATUSES], limit: 1000 }),
-      adapter.listTasks(registered.id, { status: ["ready"], limit: 1000 }),
-      adapter.listTasks(registered.id, { status: ["in-progress"], limit: 1000 }),
-      adapter.listTasks(registered.id, { status: ["merged", "closed"], limit: 1000 }),
-      adapter.listTasks(registered.id, { status: [...NATIVE_BLOCKED_STATUSES], limit: 1000 }),
-    ]);
-
-    return {
-      total: total.length,
-      ready: ready.length,
-      inProgress: inProgress.length,
-      completed: completed.length,
-      blocked: blocked.length,
-    };
-  }
-
-  const store = ForemanStore.forProject(projectPath);
-  const list = (statuses: string[]) => store.listTasksByStatus?.(statuses) ?? [];
-  try {
-    return {
-      total: list([...NATIVE_TOTAL_STATUSES]).length,
-      ready: list(["ready"]).length,
-      inProgress: list(["in-progress"]).length,
-      completed: list(["merged", "closed"]).length,
-      blocked: list([...NATIVE_BLOCKED_STATUSES]).length,
-    };
-  } finally {
-    store.close();
-  }
-}
-
 export async function fetchTaskCounts(projectPath: string): Promise<TaskCounts> {
-  return fetchNativeTaskCounts(projectPath);
+  const projectId = await resolveProjectId(projectPath);
+  const client = new ElixirTaskClient(projectPath, projectId);
+  const tasks = await client.list();
+
+  return {
+    total: tasks.filter((task) => TOTAL_STATUSES.has(task.status)).length,
+    ready: tasks.filter((task) => task.status === "ready").length,
+    inProgress: tasks.filter((task) => task.status === "in-progress").length,
+    completed: tasks.filter((task) => task.status === "merged" || task.status === "closed").length,
+    blocked: tasks.filter((task) => BLOCKED_STATUSES.has(task.status)).length,
+  };
 }

@@ -19,7 +19,6 @@ import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
 import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
-import { getPoolConfig } from "../lib/db/pool-manager.js";
 import type { EpicTask } from "./pipeline-executor.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
@@ -1400,8 +1399,8 @@ export class Dispatcher {
    *
    * Writes a WorkerConfig JSON file and spawns `agent-worker.ts` as a
    * detached child process that survives the parent foreman process exiting.
-   * The worker runs the SDK `query()` loop independently and updates the
-   * Postgres store with progress/completion.
+   * The worker runs the SDK `query()` loop independently and reports
+   * progress/completion through backend APIs.
    */
   private async spawnAgent(
     model: ModelSelection,
@@ -1472,7 +1471,6 @@ export class Dispatcher {
         prompt,
         env,
         pipeline: usePipeline,
-        dbPath: join(this.projectPath, ".foreman", "foreman.db"),
         workflowName: pipelineOpts?.workflowName,
         taskType,
         taskLabels: task.labels,
@@ -1538,7 +1536,6 @@ export class Dispatcher {
       env,
       resume: sdkSessionId,
       nativeTaskId: task.id,
-      dbPath: join(this.projectPath, ".foreman", "foreman.db"),
     });
 
     const sessionKey = buildSdkSessionKey(model, runId, pid, sdkSessionId);
@@ -1894,7 +1891,6 @@ export interface WorkerConfig {
   resume?: string;
   pipeline?: boolean;
   /** Legacy local-store path retained for compatibility only. */
-  dbPath?: string;
   /** Explicit workflow name/path for direct task execution. Overrides task labels/type. */
   workflowName?: string;
   workflowPath?: string;
@@ -1920,10 +1916,8 @@ export interface WorkerConfig {
    */
   targetBranch?: string;
   /**
-   * Optional task ID from native task store (NativeTaskStore.claim()).
-   * When present, pipeline will call taskStore.updatePhase(taskId, phaseName)
-   * at each phase transition for phase-level visibility (REQ-012).
-   * Null/undefined when no task ID is available — no-op via optional chaining.
+   * Optional task ID for phase-level status updates through the Elixir task client.
+   * Null/undefined when no task ID is available.
    */
   nativeTaskId?: string | null;
   /**
@@ -2098,12 +2092,7 @@ export function buildWorkerEnv(
   env.PATH = `${home}/.local/bin:/opt/homebrew/bin:${env.PATH ?? ""}`;
   env.TSX_DISABLE_IPC = "1";
   env.PI_PERMISSION_LEVEL = process.env.FOREMAN_PI_PERMISSION_LEVEL?.trim() || "bypassed";
-  if (!env.DATABASE_URL) {
-    const poolConfig = getPoolConfig();
-    if (typeof poolConfig?.connectionString === "string") {
-      env.DATABASE_URL = poolConfig.connectionString;
-    }
-  }
+  delete env.DATABASE_URL;
 
   if (notifyUrl) {
     env.FOREMAN_NOTIFY_URL = notifyUrl;

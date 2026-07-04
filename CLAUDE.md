@@ -111,7 +111,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
 5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
 
-After finalize: autoMerge triggers immediately → refinery merges to dev → task lifecycle updated.
+After finalize: worker enqueues/reports merge readiness via Elixir-backed paths; merge/refinery processing owns the drain/merge lifecycle.
 
 ## VCS Backend Abstraction (PRD-2026-004)
 
@@ -212,7 +212,7 @@ phases:
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
 - **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
 - **Auto-reset on failure**: `markStuck()` resets task to open when pipeline fails (rate limits); marks failed for permanent errors
-- **Agent Mail is PostgreSQL-backed**: Messages stored in Postgres (shared across all workers), not a separate mail database
+- **Node workers do not connect to the database**: Elixir owns database access. Node/Pi workers and CLI clients use Elixir HTTP commands/projections for task/run/mail state; do not pass `DATABASE_URL` into workers or add Postgres-backed worker fallbacks.
 - **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
 - **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
@@ -260,6 +260,14 @@ npx tsc --noEmit       # Type-check without building
 - agent-worker crash on startup → check `~/.foreman/logs/<runId>.err` for syntax/import errors
 
 <!-- br-agent-instructions-v1 -->
+
+### Session Protocol
+
+Follow the worker phase instructions, write required reports, and keep audit artifacts out of commits.
+
+### Session Logging
+
+Session logging is required, not optional. The worker also writes automatic logs under `~/.foreman/logs/`; each agent session must maintain `SESSION_LOG.md` using this format:
 
 ---
 
