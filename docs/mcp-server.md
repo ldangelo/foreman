@@ -44,6 +44,7 @@ The HTTP transport accepts JSON-RPC MCP requests via `POST /mcp` and exposes `GE
 | `foreman.tasks.get` | One task from the Elixir projection. |
 | `foreman.tasks.update` | Mutate task through Elixir command boundary. |
 | `foreman.tasks.approve` | Approve an open task through Elixir command boundary. |
+| `foreman.tasks.create` | Create a backlog task through Elixir command boundary. Accepts `project_id`/`project`, `title`, `description`, `task_type` (task/bug/feature/epic/chore/docs/question), and `priority` (1-4). |
 | `foreman.runs.list` | Recent project runs. |
 | `foreman.runs.logs` | Event-backed run logs; tails entries for one run or recent runs. Supports `view: "compact"`, `"plain"`, or `"raw"`; `plain` strips `message_update` noise before applying `limit`. |
 | `foreman.inbox.list` | Agent messages by run or project. |

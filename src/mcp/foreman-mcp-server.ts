@@ -1,5 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -297,6 +298,46 @@ export class ForemanMcpServer {
           payload: args,
           metadata: { source: "foreman-mcp" },
         }),
+      },
+      {
+        name: "foreman.tasks.create",
+        description: "Create a backlog task through the Elixir command boundary.",
+        inputSchema: {
+          type: "object",
+          required: ["title"],
+          properties: {
+            project_id: { type: "string", description: "Project ID (required for project-scoped creation)" },
+            project: { type: "string", description: "Project name or id; project_id wins." },
+            title: { type: "string", description: "Task title (required)" },
+            description: { type: "string", description: "Task description" },
+            task_type: { type: "string", enum: ["task", "bug", "feature", "epic", "chore", "docs", "question"], description: "Task type (default: feature)" },
+            priority: { type: "number", enum: [1, 2, 3, 4], description: "Priority 1 (critical) to 4 (low); default: 2" },
+          },
+          additionalProperties: false,
+        },
+        futureUseCases: ["remote backlog grooming", "agent-initiated task creation"],
+        handler: async (args) => {
+          const projectId = await this.resolveProjectId(args).catch(() => undefined);
+          if (!projectId) throw new Error("Project not found; pass project_id or project");
+          if (!args.title) throw new Error("Missing required field: title");
+          const priority = args.priority;
+          if (priority !== undefined && ![1, 2, 3, 4].includes(Number(priority))) {
+            throw new Error("Invalid priority: must be 1 (critical), 2 (high), 3 (normal), or 4 (low)");
+          }
+          const validTypes = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
+          if (args.task_type && !validTypes.includes(args.task_type as string)) {
+            throw new Error(`Invalid task_type: must be one of ${validTypes.join(", ")}`);
+          }
+          // Allocate task_id before sending command - Elixir requires this to emit TaskCreated event
+          const projectKey = projectId.replace(/[^a-zA-Z0-9]+/g, "-").toLowerCase().slice(0, 20) || "task";
+          const taskId = `${projectKey}-${randomBytes(3).toString("hex").slice(0, 5)}`;
+          return this.client.sendCommand({
+            command_id: `mcp-task-create-${Date.now()}-${randomUUID()}`,
+            command_type: "task.create",
+            payload: { ...args, task_id: taskId, project_id: projectId },
+            metadata: { source: "foreman-mcp" },
+          });
+        },
       },
       {
         name: "foreman.runs.list",
