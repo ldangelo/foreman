@@ -22,7 +22,7 @@ export interface Workspace {
 export interface WorkspaceResult {
   /** Absolute path to the created workspace directory. */
   workspacePath: string;
-  /** Branch/bookmark name created for this workspace; format: 'foreman/<seedId>' for both backends. */
+  /** Branch/bookmark name created for this workspace; format: 'foreman/<taskId>' for both backends. */
   branchName: string;
 }
 
@@ -67,6 +67,8 @@ export interface DeleteBranchResult {
 export interface PushOptions {
   /** If true, force-push (overwrite remote history). Use with caution. */
   force?: boolean;
+  /** If true, use a safer force-with-lease push when supported. */
+  forceWithLease?: boolean;
   /**
    * Jujutsu-specific compatibility hint: older jj versions needed
    * `--allow-new` for first push of a new bookmark. GitBackend ignores it.
@@ -76,10 +78,10 @@ export interface PushOptions {
 
 /** Template variables for backend-specific finalize command generation. */
 export interface FinalizeTemplateVars {
-  /** The seed/bead ID for this task (e.g. 'bd-deoi'). */
-  seedId: string;
-  /** Human-readable title of the seed/task. */
-  seedTitle: string;
+  /** The task/bead ID for this task (e.g. 'bd-deoi'). */
+  taskId: string;
+  /** Human-readable title of the task/task. */
+  taskTitle: string;
   /** The base branch to rebase onto (e.g. 'dev' or 'main'). */
   baseBranch: string;
   /** Absolute path to the worktree/workspace directory. */

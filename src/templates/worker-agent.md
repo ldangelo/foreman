@@ -1,7 +1,7 @@
 # Agent Task
 
 ## Task Details
-**Seed ID:** {{seedId}}
+**Task ID:** {{taskId}}
 **Title:** {{title}}
 **Description:** {{description}}
 **Model:** {{model}}
@@ -10,7 +10,7 @@
 ## Agent Team
 This task is handled by an Engineering Lead agent that orchestrates a team:
 - **Explorer** — reads the codebase, produces EXPLORER_REPORT.md (read-only)
-- **Developer** — implements changes and writes tests (read-write)
+- **Developer** — implements changes (read-write; no test authoring/runs)
 - **QA** — runs tests, verifies correctness, produces QA_REPORT.md (read-write)
 - **Reviewer** — independent code review, produces REVIEW.md (read-only)
 

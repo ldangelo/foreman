@@ -9,7 +9,7 @@
  *   - truncate() respects max length and adds `…`
  *   - truncate() stops at word boundary when possible
  *   - truncate() handles empty string
- *   - Long run_id gets middle-cut treatment
+ *   - Long task/run id gets middle-cut treatment
  *   - formatTable() renders header + rows with proper alignment
  *   - Mixed payloads (some with JSON, some without) render correctly
  *   - ARGS column truncation shows `…` for long values
@@ -22,6 +22,9 @@ import {
   TableFormatter,
   truncate,
   extractBodyFields,
+  formatCompactInboxSummary,
+  formatInboxMessageLine,
+  formatMessageTable,
 } from "../commands/inbox.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -40,6 +43,82 @@ function makeMockMessage(overrides: Partial<Message> = {}): Message {
     ...overrides,
   };
 }
+
+// ── extractBodyFields ───────────────────────────────────────────────────────
+
+describe("formatMessageTable", () => {
+  it("prefers projected task_id over run_id for operator-facing identity", () => {
+    const msg = makeMockMessage({ run_id: "run-uuid" } as Partial<Message>) as Message & { task_id?: string };
+    msg.task_id = "foreman-ecd62";
+    expect(formatMessageTable(msg).ticket).toBe("foreman-ecd62");
+  });
+
+  it("shows plain-text overwatch mail body and infers tool fields", () => {
+    const msg = makeMockMessage({
+      sender_agent_type: "overwatch",
+      recipient_agent_type: "explorer",
+      body: "Tool read denied: stale path. Rediscover.",
+    });
+    const row = formatMessageTable(msg);
+    expect(row.kind).toBe("denied");
+    expect(row.tool).toBe("read");
+    expect(row.args).toContain("Tool read denied");
+    expect(formatInboxMessageLine(msg)).toContain("Mail denied read — overwatch → explorer");
+  });
+});
+
+// ── extractBodyFields ───────────────────────────────────────────────────────
+
+describe("formatCompactInboxSummary", () => {
+  it("shows task id and grouped phase/tool/denial counts", () => {
+    const msg = makeMockMessage({
+      run_id: "run-1",
+      sender_agent_type: "overwatch",
+      recipient_agent_type: "fix",
+      body: "Tool read denied: stale path. Rediscover.",
+    }) as Message & { task_id?: string };
+    msg.task_id = "foreman-ecd62";
+
+    const output = formatCompactInboxSummary({
+      runId: "run-1",
+      taskId: "foreman-ecd62",
+      status: "running",
+      messages: [msg],
+      events: [
+        {
+          id: "evt-1",
+          runId: "run-1",
+          taskId: "foreman-ecd62",
+          eventType: "PhaseStarted",
+          details: { task_id: "foreman-ecd62", phase_id: "fix" },
+          createdAt: "2024-01-01T12:00:00.000Z",
+        },
+        {
+          id: "evt-2",
+          runId: "run-1",
+          taskId: "foreman-ecd62",
+          eventType: "ToolCallRequested",
+          details: { task_id: "foreman-ecd62", phase_id: "fix", tool_name: "read" },
+          createdAt: "2024-01-01T12:00:01.000Z",
+        },
+        {
+          id: "evt-3",
+          runId: "run-1",
+          taskId: "foreman-ecd62",
+          eventType: "ToolCallDenied",
+          details: { task_id: "foreman-ecd62", phase_id: "fix", tool_name: "read", reason: "stale" },
+          createdAt: "2024-01-01T12:00:02.000Z",
+        },
+      ],
+    });
+
+    expect(output).toContain("task=foreman-ecd62");
+    expect(output).toContain("fix: active");
+    expect(output).toContain("tools=read×1");
+    expect(output).toContain("denied=read×1");
+    expect(output).toContain("denials=fix:read×1");
+  });
+});
 
 // ── extractBodyFields ───────────────────────────────────────────────────────
 
@@ -67,19 +146,18 @@ describe("extractBodyFields", () => {
   });
 
   it("falls back to raw body when no recognized args fields", () => {
-    const result = extractBodyFields(
-      JSON.stringify({ phase: "developer", status: "running" }),
-    );
+    const body = JSON.stringify({ phase: "developer", status: "running" });
+    const result = extractBodyFields(body);
     expect(result.kind).toBeNull();
     expect(result.tool).toBeNull();
-    expect(result.args).toBeNull();
+    expect(result.args).toBe(body);
   });
 
-  it("returns nulls for all fields when body is not JSON", () => {
+  it("returns raw body content when body is not JSON", () => {
     const result = extractBodyFields("plain text body with no JSON");
     expect(result.kind).toBeNull();
     expect(result.tool).toBeNull();
-    expect(result.args).toBeNull();
+    expect(result.args).toBe("plain text body with no JSON");
   });
 
   it("returns nulls for all fields when body is empty string", () => {
@@ -89,20 +167,19 @@ describe("extractBodyFields", () => {
     expect(result.args).toBeNull();
   });
 
-  it("returns nulls for all fields when JSON is malformed", () => {
+  it("returns malformed JSON as raw body content", () => {
     const result = extractBodyFields('{"broken": json}');
     expect(result.kind).toBeNull();
     expect(result.tool).toBeNull();
-    expect(result.args).toBeNull();
+    expect(result.args).toBe('{"broken": json}');
   });
 
-  it("returns nulls when kind/tool/args are non-string types", () => {
-    const result = extractBodyFields(
-      JSON.stringify({ kind: 123, tool: { name: "bash" }, args: ["list", "of", "things"] }),
-    );
+  it("returns raw body when kind/tool/args are non-string types", () => {
+    const body = JSON.stringify({ kind: 123, tool: { name: "bash" }, args: ["list", "of", "things"] });
+    const result = extractBodyFields(body);
     expect(result.kind).toBeNull();
     expect(result.tool).toBeNull();
-    expect(result.args).toBeNull();
+    expect(result.args).toBe(body);
   });
 });
 
@@ -167,7 +244,7 @@ describe("TableFormatter.formatHeader", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
     const header = tf.formatHeader();
     expect(header).toContain("DATETIME");
-    expect(header).toContain("TICKET");
+    expect(header).toContain("TASK");
     expect(header).toContain("SENDER");
     expect(header).toContain("RECEIVER");
     expect(header).toContain("KIND");
@@ -200,20 +277,19 @@ describe("TableFormatter.formatRow", () => {
     expect(row.columns.args).toBe("cd /tmp");
   });
 
-  it("shows `—` for missing kind and tool", () => {
+  it("shows body content when kind and tool are missing", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
-    const msg = makeMockMessage({
-      body: JSON.stringify({ phase: "developer" }),
-    });
+    const body = JSON.stringify({ phase: "developer" });
+    const msg = makeMockMessage({ body });
 
     const row = tf.formatRow(msg);
 
     expect(row.columns.kind).toBe("—");
     expect(row.columns.tool).toBe("—");
-    expect(row.columns.args).toBe("—");
+    expect(row.columns.args).toBe(body);
   });
 
-  it("shows `—` for all payload fields when body is not JSON", () => {
+  it("shows body content when body is not JSON", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
     const msg = makeMockMessage({ body: "plain text body" });
 
@@ -221,7 +297,7 @@ describe("TableFormatter.formatRow", () => {
 
     expect(row.columns.kind).toBe("—");
     expect(row.columns.tool).toBe("—");
-    expect(row.columns.args).toBe("—");
+    expect(row.columns.args).toBe("plain text body");
   });
 
   it("truncates ARGS column to column maxWidth", () => {
@@ -238,7 +314,7 @@ describe("TableFormatter.formatRow", () => {
     expect(row.columns.args.endsWith("…")).toBe(true);
   });
 
-  it("truncates TICKET column with middle-cut when run_id > 20 chars", () => {
+  it("truncates TASK column with middle-cut when run_id > 20 chars", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
     const msg = makeMockMessage({
       run_id: "run-very-long-id-that-exceeds-twenty-chars",
@@ -285,7 +361,7 @@ describe("TableFormatter.calcWidths", () => {
     expect(widths.args).toBeGreaterThanOrEqual(1);
   });
 
-  it("clamps TICKET column to max 20", () => {
+  it("clamps TASK column to max 20", () => {
     const tf = new TableFormatter({ terminalWidth: 120 });
     const msg = makeMockMessage({
       run_id: "run-very-long-id-that-exceeds-twenty-chars",
@@ -325,7 +401,7 @@ describe("TableFormatter.formatTable", () => {
     const table = tf.formatTable([msg]);
 
     expect(table).toContain("DATETIME");
-    expect(table).toContain("TICKET");
+    expect(table).toContain("TASK");
     expect(table).toContain("SENDER");
     expect(table).toContain("RECEIVER");
     expect(table).toContain("KIND");
@@ -396,7 +472,8 @@ describe("TableFormatter.formatTable", () => {
     expect(table).toContain("run-plain");
     expect(table).toContain("update");
     expect(table).toContain("bash");
-    // Plain text row shows `—` for kind/tool/args
+    // Plain text bodies are visible in ARGS so inbox shows message contents by default.
+    expect(table).toContain("plain text message");
     expect(table).toContain("—");
   });
 
@@ -405,7 +482,7 @@ describe("TableFormatter.formatTable", () => {
     const table = tf.formatTable([]);
 
     expect(table).toContain("DATETIME");
-    expect(table).toContain("TICKET");
+    expect(table).toContain("TASK");
     expect(table).toContain("ARGS");
   });
 

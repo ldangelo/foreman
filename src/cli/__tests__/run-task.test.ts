@@ -20,6 +20,11 @@ const {
   mockWatchRunsInk,
   mockListRegisteredProjects,
   mockResolveRepoRootProjectPath,
+  mockElixirHealth,
+  mockElixirGetTask,
+  mockPgCreatePipelineRun,
+  mockPgUpdateTask,
+  mockPgCreateTask,
 } = vi.hoisted(() => {
   const taskClient = {
     show: vi.fn(),
@@ -32,7 +37,7 @@ const {
 
   const MockForemanStore = vi.fn(function MockForemanStoreImpl(this: Record<string, unknown>) {
     this.getProjectByPath = vi.fn().mockReturnValue({ id: "proj-1", path: "/test/project" });
-    this.getRunsForSeed = vi.fn().mockResolvedValue([]);
+    this.getRunsForTask = vi.fn().mockResolvedValue([]);
     this.createRun = vi.fn().mockReturnValue({ id: "local-run-1" });
     this.getRun = vi.fn().mockResolvedValue(null);
     this.close = vi.fn();
@@ -40,7 +45,7 @@ const {
   (MockForemanStore as any).forProject = vi.fn(() => new MockForemanStore());
 
   const mockPostgresStoreForProject = vi.fn(() => ({
-    getRunsForSeed: vi.fn().mockResolvedValue([]),
+    getRunsForTask: vi.fn().mockResolvedValue([]),
     getRun: vi.fn().mockResolvedValue(null),
     close: vi.fn(),
   }));
@@ -63,6 +68,11 @@ const {
   const mockWatchRunsInk = vi.fn().mockResolvedValue({ detached: false });
   const mockListRegisteredProjects = vi.fn().mockResolvedValue([]);
   const mockResolveRepoRootProjectPath = vi.fn().mockResolvedValue("/test/project");
+  const mockElixirHealth = vi.fn().mockResolvedValue({ ok: true });
+  const mockElixirGetTask = vi.fn();
+  const mockPgCreatePipelineRun = vi.fn();
+  const mockPgUpdateTask = vi.fn();
+  const mockPgCreateTask = vi.fn();
 
   return {
     mockCreateTaskClient,
@@ -74,6 +84,11 @@ const {
     mockWatchRunsInk,
     mockListRegisteredProjects,
     mockResolveRepoRootProjectPath,
+    mockElixirHealth,
+    mockElixirGetTask,
+    mockPgCreatePipelineRun,
+    mockPgUpdateTask,
+    mockPgCreateTask,
   };
 });
 
@@ -91,8 +106,9 @@ vi.mock("../../lib/postgres-store.js", () => ({
 
 vi.mock("../../lib/db/postgres-adapter.js", () => ({
   PostgresAdapter: vi.fn().mockImplementation(() => ({
-    createPipelineRun: vi.fn(),
-    updateTask: vi.fn(),
+    createPipelineRun: mockPgCreatePipelineRun,
+    updateTask: mockPgUpdateTask,
+    createTask: mockPgCreateTask,
   })),
 }));
 
@@ -143,6 +159,19 @@ vi.mock("../commands/project-task-support.js", () => ({
   listRegisteredProjects: mockListRegisteredProjects,
 }));
 
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: vi.fn(function (this: Record<string, unknown>) {
+    this.url = "http://127.0.0.1:4766";
+    this.health = mockElixirHealth;
+  }),
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: vi.fn(function (this: Record<string, unknown>) {
+    this.getTask = mockElixirGetTask;
+  }),
+}));
+
 import { runTaskCommand, runTaskAction } from "../commands/run-task.js";
 
 const task = {
@@ -157,16 +186,19 @@ const task = {
 
 describe("run task command", () => {
   let testProjectPath: string;
+  let testForemanHome: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
     testProjectPath = join(tmpdir(), `foreman-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testForemanHome = join(tmpdir(), `foreman-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(join(testProjectPath, ".foreman"), { recursive: true });
+    mkdirSync(join(testForemanHome, "workflows"), { recursive: true });
     writeFileSync(join(testProjectPath, ".foreman", "config.yaml"), "vcs:\n  backend: auto\n");
+    process.env.FOREMAN_HOME = testForemanHome;
 
-    const workflowDir = join(testProjectPath, ".foreman", "workflows");
-    mkdirSync(workflowDir, { recursive: true });
+    const workflowDir = join(testForemanHome, "workflows");
     writeFileSync(join(workflowDir, "default.yaml"), `
 name: default
 phases:
@@ -188,7 +220,9 @@ phases:
   });
 
   afterEach(() => {
+    delete process.env.FOREMAN_HOME;
     rmSync(testProjectPath, { recursive: true, force: true });
+    rmSync(testForemanHome, { recursive: true, force: true });
   });
 
   describe("command structure", () => {
@@ -219,14 +253,56 @@ phases:
       expect(client.update).toHaveBeenCalledWith("task-123", { status: "in-progress" });
       expect(mockSpawnWorkerProcess).toHaveBeenCalledWith(expect.objectContaining({
         runId: "local-run-1",
-        seedId: "task-123",
-        seedTitle: "Direct task run",
-        seedType: "feature",
-        seedPriority: 1,
+        taskId: "task-123",
+        taskTitle: "Direct task run",
+        taskType: "feature",
+        taskPriority: 1,
         worktreePath: "/tmp/worktrees/proj-1/task-1",
         pipeline: true,
         workflowName: "default",
         workflowPath: "default",
+      }));
+    });
+
+    it("uses Elixir task lookup without Postgres mirroring for internal --run-id bridge", async () => {
+      const taskClientShow = vi.fn().mockRejectedValue(new Error("should not use native lookup"));
+      mockCreateTaskClient.mockImplementationOnce(async () => ({
+        taskClient: {
+          show: taskClientShow,
+          update: vi.fn(),
+        },
+        backendType: "native" as const,
+      }));
+      mockListRegisteredProjects.mockResolvedValueOnce([
+        { id: "proj-elixir", name: "foreman", path: testProjectPath, status: "active" },
+      ]);
+      mockElixirGetTask.mockResolvedValueOnce({
+        task_id: "task-123",
+        title: "Elixir task",
+        status: "failed",
+        task_type: "feature",
+        priority: 4,
+        description: "Elixir body",
+      });
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        runId: "00000000-0000-0000-0000-000000000123",
+        watch: false,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockElixirGetTask).toHaveBeenCalledWith("task-123");
+      expect(taskClientShow).not.toHaveBeenCalled();
+      expect(mockPgCreateTask).not.toHaveBeenCalled();
+      expect(mockPgCreatePipelineRun).not.toHaveBeenCalled();
+      expect(mockPgUpdateTask).not.toHaveBeenCalled();
+      expect(mockSpawnWorkerProcess).toHaveBeenCalledWith(expect.objectContaining({
+        runId: "00000000-0000-0000-0000-000000000123",
+        projectId: "proj-elixir",
+        taskTitle: "Elixir task",
+        taskType: "feature",
+        taskPriority: "4",
       }));
     });
 
@@ -261,7 +337,7 @@ phases:
     it("fails closed when worktree lock lookup fails", async () => {
       (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
         getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
-        getRunsForSeed: vi.fn().mockRejectedValue(new Error("store unavailable")),
+        getRunsForTask: vi.fn().mockRejectedValue(new Error("store unavailable")),
         close: vi.fn(),
       });
 
@@ -309,7 +385,7 @@ phases:
     it("blocks when an active run already owns the task worktree", async () => {
       (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
         getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
-        getRunsForSeed: vi.fn().mockResolvedValue([{ id: "run-active", status: "running" }]),
+        getRunsForTask: vi.fn().mockResolvedValue([{ id: "run-active", status: "running" }]),
         close: vi.fn(),
       });
 
@@ -321,6 +397,193 @@ phases:
       expect(exitCode).toBe(1);
       expect(mockWorktreeManager).not.toHaveBeenCalled();
       expect(mockSpawnWorkerProcess).not.toHaveBeenCalled();
+    });
+
+    it("returns early in dry-run mode without creating a run or spawning a worker", async () => {
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        dryRun: true,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockSpawnWorkerProcess).not.toHaveBeenCalled();
+      expect(mockWatchRunsInk).not.toHaveBeenCalled();
+      const storeInstance = (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mock.results[0]?.value as { createRun?: ReturnType<typeof vi.fn> };
+      expect(storeInstance?.createRun).not.toHaveBeenCalled();
+    });
+
+    it("skips watch mode when watch=false", async () => {
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockSpawnWorkerProcess).toHaveBeenCalledTimes(1);
+      expect(mockWatchRunsInk).not.toHaveBeenCalled();
+    });
+
+    it("shows detach messaging when watch mode detaches", async () => {
+      mockWatchRunsInk.mockResolvedValueOnce({ detached: true });
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      try {
+        const exitCode = await runTaskAction("task-123", "default", {
+          projectPath: testProjectPath,
+          watch: true,
+        });
+
+        expect(exitCode).toBe(0);
+        expect(mockWatchRunsInk).toHaveBeenCalledTimes(1);
+        const rendered = logSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+        expect(rendered).toContain("Detached — worker continues in background");
+        expect(rendered).toContain("foreman status");
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it("treats dependency installation failure as non-fatal when no workflow setup is defined", async () => {
+      const { installDependencies } = await import("../../lib/setup.js");
+      vi.mocked(installDependencies).mockRejectedValueOnce(new Error("npm install failed"));
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        const exitCode = await runTaskAction("task-123", "default", {
+          projectPath: testProjectPath,
+          watch: false,
+        });
+
+        expect(exitCode).toBe(0);
+        expect(mockSpawnWorkerProcess).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Dependency installation failed"));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("returns an error when worktree creation fails", async () => {
+      mockWorktreeManager.mockImplementationOnce(function MockWorktreeManagerImpl(this: Record<string, unknown>) {
+        this.createWorktree = vi.fn().mockRejectedValue(new Error("git failed"));
+      });
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(mockSpawnWorkerProcess).not.toHaveBeenCalled();
+    });
+
+    it("returns an error when workflow setup fails", async () => {
+      writeFileSync(join(testForemanHome, "workflows", "setup.yaml"), `
+name: setup
+setup:
+  - npm ci
+phases:
+  - name: developer
+    prompt: developer.md
+    models:
+      default: MiniMax
+`);
+      const { runSetupWithCache } = await import("../../lib/setup.js");
+      vi.mocked(runSetupWithCache).mockRejectedValueOnce(new Error("setup exploded"));
+
+      const exitCode = await runTaskAction("task-123", "setup", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(mockSpawnWorkerProcess).not.toHaveBeenCalled();
+    });
+
+    it("returns an error when local run record creation fails", async () => {
+      (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
+        getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
+        getRunsForTask: vi.fn().mockResolvedValue([]),
+        createRun: vi.fn().mockImplementation(() => { throw new Error("create run failed"); }),
+        close: vi.fn(),
+      });
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(mockSpawnWorkerProcess).not.toHaveBeenCalled();
+    });
+
+    it("continues when updating the task to in-progress fails", async () => {
+      mockCreateTaskClient.mockImplementationOnce(async () => ({
+        taskClient: {
+          show: vi.fn().mockResolvedValue(task),
+          update: vi.fn().mockRejectedValue(new Error("update failed")),
+        },
+        backendType: "native" as const,
+      }));
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockSpawnWorkerProcess).toHaveBeenCalledTimes(1);
+    });
+
+    it("continues when notification server startup fails", async () => {
+      vi.doMock("../../orchestrator/notification-server.js", () => ({
+        NotificationServer: vi.fn(function (this: Record<string, unknown>) {
+          this.start = vi.fn().mockRejectedValue(new Error("notify offline"));
+          this.stop = vi.fn().mockResolvedValue(undefined);
+          this.url = undefined;
+        }),
+      }));
+      vi.resetModules();
+      const { runTaskAction: runTaskActionFresh } = await import("../commands/run-task.js");
+
+      const exitCode = await runTaskActionFresh("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockSpawnWorkerProcess).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns an error when worker spawn fails", async () => {
+      mockSpawnWorkerProcess.mockRejectedValueOnce(new Error("spawn exploded"));
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(1);
+    });
+
+    it("triggers local auto-merge after a watched completed run", async () => {
+      const { autoMerge } = await import("../../orchestrator/auto-merge.js");
+      mockWatchRunsInk.mockResolvedValueOnce({ detached: false });
+      (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mockReturnValueOnce({
+        getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: testProjectPath }),
+        getRunsForTask: vi.fn().mockResolvedValue([]),
+        createRun: vi.fn().mockReturnValue({ id: "local-run-1" }),
+        getRun: vi.fn().mockResolvedValue({ id: "local-run-1", status: "completed" }),
+        close: vi.fn(),
+      });
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: true,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(vi.mocked(autoMerge)).toHaveBeenCalledWith(expect.objectContaining({
+        projectPath: testProjectPath,
+        taskClient: expect.any(Object),
+      }));
     });
   });
 });

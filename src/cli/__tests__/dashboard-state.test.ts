@@ -1,8 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { type DashboardReadStore } from "../../lib/store.js";
 import type { Run, RunProgress, Project, Metrics, Event, NativeTask } from "../../lib/store.js";
 import * as projectTaskSupport from "../commands/project-task-support.js";
 import * as trpcClientModule from "../../lib/trpc-client.js";
+import * as backendModeModule from "../../lib/backend-mode.js";
+import * as elixirServerManagerModule from "../../lib/elixir-server-manager.js";
+import * as elixirServerClientModule from "../../lib/elixir-server-client.js";
 import {
   renderEventLine,
   renderProjectHeader,
@@ -40,7 +43,7 @@ function makeRun(overrides?: Partial<Run>): Run {
   return {
     id: "run-001",
     project_id: "proj-1",
-    seed_id: "foreman-1a",
+    task_id: "foreman-1a",
     agent_type: "claude-sonnet-4-6",
     session_key: null,
     worktree_path: null,
@@ -83,7 +86,7 @@ function makeEvent(overrides?: Partial<Event>): Event {
     project_id: "proj-1",
     run_id: "run-001",
     event_type: "dispatch",
-    details: JSON.stringify({ seedId: "foreman-1a", title: "Fix auth bug" }),
+    details: JSON.stringify({ taskId: "foreman-1a", title: "Fix auth bug" }),
     created_at: new Date(Date.now() - 5 * 60_000).toISOString(),
     ...overrides,
   };
@@ -148,15 +151,15 @@ function makeMockStore(opts: {
 // ── renderEventLine() ─────────────────────────────────────────────────────
 
 describe("renderEventLine", () => {
-  it("renders a dispatch event with seedId", () => {
-    const event = makeEvent({ event_type: "dispatch", details: JSON.stringify({ seedId: "foreman-1a" }) });
+  it("renders a dispatch event with taskId", () => {
+    const event = makeEvent({ event_type: "dispatch", details: JSON.stringify({ taskId: "foreman-1a" }) });
     const output = renderEventLine(event);
     expect(output).toContain("dispatch");
     expect(output).toContain("foreman-1a");
   });
 
   it("renders a complete event", () => {
-    const event = makeEvent({ event_type: "complete", details: JSON.stringify({ seedId: "foreman-1a", phase: "developer" }) });
+    const event = makeEvent({ event_type: "complete", details: JSON.stringify({ taskId: "foreman-1a", phase: "developer" }) });
     const output = renderEventLine(event);
     expect(output).toContain("complete");
     expect(output).toContain("foreman-1a");
@@ -164,7 +167,7 @@ describe("renderEventLine", () => {
   });
 
   it("renders a fail event", () => {
-    const event = makeEvent({ event_type: "fail", details: JSON.stringify({ seedId: "foreman-2b", reason: "Build failed" }) });
+    const event = makeEvent({ event_type: "fail", details: JSON.stringify({ taskId: "foreman-2b", reason: "Build failed" }) });
     const output = renderEventLine(event);
     expect(output).toContain("fail");
     expect(output).toContain("Build failed");
@@ -251,7 +254,7 @@ describe("renderDashboard", () => {
     expect(output).toContain("my-project");
   });
 
-  it("shows active seed_id in output", () => {
+  it("shows active task_id in output", () => {
     const state = makeDashboardState();
     const output = renderDashboard(state);
     expect(output).toContain("foreman-1a");
@@ -303,7 +306,7 @@ describe("renderDashboard", () => {
       id: "run-completed",
       status: "completed",
       completed_at: new Date(Date.now() - 300_000).toISOString(),
-      seed_id: "foreman-done",
+      task_id: "foreman-done",
     });
     const state = makeDashboardState({
       activeRuns: new Map([[project.id, []]]),
@@ -803,6 +806,11 @@ describe("renderDashboard with needsHumanTasks", () => {
 // ── approveTask() / retryTask() ───────────────────────────────────────────
 
 describe("approveTask and retryTask", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("node");
+  });
+
   it("approveTask calls daemon task approve", async () => {
     const approve = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
@@ -829,6 +837,26 @@ describe("approveTask and retryTask", () => {
     expect(approve).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-001" });
   });
 
+  it("approveTask uses Elixir task.approve in default Elixir mode", async () => {
+    const sendCommand = vi.fn().mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr-1" });
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project" },
+    ]);
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("elixir");
+    vi.spyOn(elixirServerManagerModule, "ElixirServerManager").mockImplementation(function MockManager() {
+      return { ensureRunning: vi.fn().mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 }) } as unknown as elixirServerManagerModule.ElixirServerManager;
+    });
+    vi.spyOn(elixirServerClientModule, "ElixirServerClient").mockImplementation(function MockClient() {
+      return { sendCommand } as unknown as elixirServerClientModule.ElixirServerClient;
+    });
+
+    await approveTask("task-001", "/some/project");
+    expect(sendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.approve",
+      payload: expect.objectContaining({ project_id: "proj-1", task_id: "task-001" }),
+    }));
+  });
+
   it("retryTask calls daemon task retry", async () => {
     const retry = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
@@ -840,6 +868,26 @@ describe("approveTask and retryTask", () => {
 
     await retryTask("task-001", "/some/project");
     expect(retry).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-001" });
+  });
+
+  it("retryTask uses Elixir task.update->backlog in default Elixir mode", async () => {
+    const sendCommand = vi.fn().mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr-1" });
+    vi.spyOn(projectTaskSupport, "listRegisteredProjects").mockResolvedValue([
+      { id: "proj-1", name: "test", path: "/some/project" },
+    ]);
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("elixir");
+    vi.spyOn(elixirServerManagerModule, "ElixirServerManager").mockImplementation(function MockManager() {
+      return { ensureRunning: vi.fn().mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 }) } as unknown as elixirServerManagerModule.ElixirServerManager;
+    });
+    vi.spyOn(elixirServerClientModule, "ElixirServerClient").mockImplementation(function MockClient() {
+      return { sendCommand } as unknown as elixirServerClientModule.ElixirServerClient;
+    });
+
+    await retryTask("task-001", "/some/project");
+    expect(sendCommand).toHaveBeenCalledWith(expect.objectContaining({
+      command_type: "task.update",
+      payload: expect.objectContaining({ project_id: "proj-1", task_id: "task-001", status: "backlog" }),
+    }));
   });
 
   it("retryTask resolves registered projects by normalized path", async () => {

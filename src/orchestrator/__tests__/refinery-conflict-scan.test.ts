@@ -13,8 +13,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 vi.mock("../task-backend-ops.js", () => ({
-  resetSeedToOpen: vi.fn().mockResolvedValue(undefined),
-  closeSeed: vi.fn().mockResolvedValue(undefined),
+  resetTaskToOpen: vi.fn().mockResolvedValue(undefined),
+  closeTask: vi.fn().mockResolvedValue(undefined),
   enqueueSetBeadStatus: vi.fn(),
 }));
 
@@ -34,13 +34,13 @@ function makeMocks() {
     logEvent: vi.fn(),
     getDb: vi.fn(() => mockDb),
   };
-  const seeds = {
+  const tasks = {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
     update: vi.fn(async () => undefined),
   };
-  const refinery = new Refinery(store as any, seeds as any, "/tmp/project");
-  return { store, seeds, refinery };
+  const refinery = new Refinery(store as any, tasks as any, "/tmp/project");
+  return { store, tasks, refinery };
 }
 
 /** Build a minimal unified diff that adds lines to a file. */

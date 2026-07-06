@@ -34,8 +34,8 @@ describe("WorkerConfig: taskId field", () => {
     const config = {
       runId: "run-001",
       projectId: "proj-001",
-      seedId: "seed-001",
-      seedTitle: "Test seed",
+      taskId: "task-001",
+      taskTitle: "Test task",
       model: "anthropic/claude-sonnet-4-6",
       worktreePath: "/tmp/wt",
       prompt: "Do stuff",
@@ -43,37 +43,37 @@ describe("WorkerConfig: taskId field", () => {
     };
     // If taskId was required, the line above would fail strict TS checks.
     // Runtime: just verify the field is absent (i.e., the type allows it)
-    expect((config as Record<string, unknown>)["taskId"]).toBeUndefined();
+    expect((config as Record<string, unknown>)["nativeTaskId"]).toBeUndefined();
   });
 
   it("WorkerConfig taskId can be a string", () => {
     const config = {
       runId: "run-001",
       projectId: "proj-001",
-      seedId: "seed-001",
-      seedTitle: "Test seed",
+      taskId: "task-001",
+      taskTitle: "Test task",
       model: "anthropic/claude-sonnet-4-6",
       worktreePath: "/tmp/wt",
       prompt: "Do stuff",
       env: {},
-      taskId: "task-abc-123",
+      nativeTaskId: "task-abc-123",
     };
-    expect(config.taskId).toBe("task-abc-123");
+    expect(config.nativeTaskId).toBe("task-abc-123");
   });
 
   it("WorkerConfig taskId can be null when no task ID is available", () => {
     const config = {
       runId: "run-001",
       projectId: "proj-001",
-      seedId: "seed-001",
-      seedTitle: "Test seed",
+      taskId: "task-001",
+      taskTitle: "Test task",
       model: "anthropic/claude-sonnet-4-6",
       worktreePath: "/tmp/wt",
       prompt: "Do stuff",
       env: {},
-      taskId: null,
+      nativeTaskId: null,
     };
-    expect(config.taskId).toBeNull();
+    expect(config.nativeTaskId).toBeNull();
   });
 });
 
@@ -191,12 +191,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-001",
         projectId: "proj-001",
-        seedId: "seed-001",
-        seedTitle: "Test",
+        taskId: "task-001",
+        taskTitle: "Test",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         env: {},
-        taskId: "task-native-001",
+        nativeTaskId: "task-native-001",
       },
       workflowConfig: workflowConfig as never,
       store: mockStore as never,
@@ -256,12 +256,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-005",
         projectId: "proj-005",
-        seedId: "seed-005",
-        seedTitle: "Test callback swallow",
+        taskId: "task-005",
+        taskTitle: "Test callback swallow",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         env: {},
-        taskId: "task-native-005",
+        nativeTaskId: "task-native-005",
       },
       workflowConfig: workflowConfig as never,
       store: mockStore as never,
@@ -309,12 +309,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-002",
         projectId: "proj-002",
-        seedId: "seed-002",
-        seedTitle: "Test no taskId",
+        taskId: "task-002",
+        taskTitle: "Test no taskId",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         env: {},
-        taskId: null,
+        nativeTaskId: null,
       },
       workflowConfig: workflowConfig as never,
       store: mockStore as never,
@@ -362,12 +362,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-observability",
         projectId: "proj-observability",
-        seedId: "seed-observability",
-        seedTitle: "Registered seam",
+        taskId: "task-observability",
+        taskTitle: "Registered seam",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         env: {},
-        taskId: "task-native-observability",
+        nativeTaskId: "task-native-observability",
       },
       workflowConfig: {
         name: "test",
@@ -403,11 +403,11 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
     );
     expect(observabilityWriter.logEvent).toHaveBeenCalledWith(
       "phase-start",
-      expect.objectContaining({ seedId: "seed-observability", phase: "explorer" }),
+      expect.objectContaining({ taskId: "task-observability", phase: "explorer" }),
     );
     expect(observabilityWriter.logEvent).toHaveBeenCalledWith(
       "complete",
-      expect.objectContaining({ seedId: "seed-observability", phase: "explorer", costUsd: 0.25 }),
+      expect.objectContaining({ taskId: "task-observability", phase: "explorer", costUsd: 0.25 }),
     );
     expect(mockStore.updateRunProgress).not.toHaveBeenCalled();
     expect(mockStore.logEvent).not.toHaveBeenCalled();
@@ -433,12 +433,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-bash-observability",
         projectId: "proj-bash-observability",
-        seedId: "seed-bash-observability",
-        seedTitle: "Registered bash seam",
+        taskId: "task-bash-observability",
+        taskTitle: "Registered bash seam",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         env: {},
-        taskId: "task-native-bash",
+        nativeTaskId: "task-native-bash",
       },
       workflowConfig: {
         name: "test",
@@ -464,7 +464,7 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
     expect(observabilityWriter.updateProgress).toHaveBeenCalled();
     expect(observabilityWriter.logEvent).toHaveBeenCalledWith(
       "complete",
-      expect.objectContaining({ seedId: "seed-bash-observability", phase: "explorer" }),
+      expect.objectContaining({ taskId: "task-bash-observability", phase: "explorer" }),
     );
     expect(mockStore.updateRunProgress).not.toHaveBeenCalled();
     expect(mockStore.logEvent).not.toHaveBeenCalled();
@@ -514,12 +514,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
         config: {
           runId: "run-haiku-fallback-observability",
           projectId: "proj-haiku-fallback-observability",
-          seedId: "seed-haiku-fallback-observability",
-          seedTitle: "Registered haiku fallback seam",
+          taskId: "task-haiku-fallback-observability",
+          taskTitle: "Registered haiku fallback seam",
           model: "anthropic/claude-haiku-4-5",
           worktreePath: tmpDir,
           env: {},
-          taskId: "task-native-haiku-fallback",
+          nativeTaskId: "task-native-haiku-fallback",
         },
         workflowConfig: {
           name: "test",
@@ -550,7 +550,7 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
     expect(observabilityWriter.updateProgress).toHaveBeenCalled();
     expect(observabilityWriter.logEvent).toHaveBeenCalledWith(
       "complete",
-      expect.objectContaining({ seedId: "seed-haiku-fallback-observability", phase: "explorer" }),
+      expect.objectContaining({ taskId: "task-haiku-fallback-observability", phase: "explorer" }),
     );
     expect(mockStore.updateRunProgress).not.toHaveBeenCalled();
     expect(mockStore.logEvent).not.toHaveBeenCalled();
@@ -625,12 +625,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-qa-finalize",
         projectId: "proj-qa-finalize",
-        seedId: "seed-qa-finalize",
-        seedTitle: "QA finalize seam",
+        taskId: "task-qa-finalize",
+        taskTitle: "QA finalize seam",
         model: "anthropic/claude-sonnet-4-6",
         worktreePath: tmpDir,
         env: {},
-        taskId: "task-native-qa-finalize",
+        nativeTaskId: "task-native-qa-finalize",
         vcsBackend: mockVcsBackend as never,
       },
       workflowConfig: {
@@ -665,11 +665,11 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
     );
     expect(observabilityWriter.logEvent).toHaveBeenCalledWith(
       "complete",
-      expect.objectContaining({ seedId: "seed-qa-finalize", phase: "qa" }),
+      expect.objectContaining({ taskId: "task-qa-finalize", phase: "qa" }),
     );
     expect(observabilityWriter.logEvent).toHaveBeenCalledWith(
       "complete",
-      expect.objectContaining({ seedId: "seed-qa-finalize", phase: "finalize" }),
+      expect.objectContaining({ taskId: "task-qa-finalize", phase: "finalize" }),
     );
     expect(mockStore.updateRunProgress).not.toHaveBeenCalled();
     expect(mockStore.logEvent).not.toHaveBeenCalled();
@@ -702,12 +702,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-epic-observability",
         projectId: "proj-epic-observability",
-        seedId: "seed-epic-observability",
-        seedTitle: "Epic observability seam",
+        taskId: "task-epic-observability",
+        taskTitle: "Epic observability seam",
         model: "anthropic/claude-sonnet-4-6",
         worktreePath: tmpDir,
         env: {},
-        taskId: "task-epic-parent",
+        nativeTaskId: "task-epic-parent",
       },
       workflowConfig: {
         name: "test",
@@ -738,14 +738,14 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       promptOpts: { projectRoot: tmpDir, workflow: "default" },
       epicTasks: [
         {
-          seedId: "epic-child-001",
-          seedTitle: "Epic child 1",
-          seedDescription: "Child task 1",
+          taskId: "epic-child-001",
+          taskTitle: "Epic child 1",
+          taskDescription: "Child task 1",
         },
         {
-          seedId: "epic-child-002",
-          seedTitle: "Epic child 2",
-          seedDescription: "Child task 2",
+          taskId: "epic-child-002",
+          taskTitle: "Epic child 2",
+          taskDescription: "Child task 2",
         },
       ],
     } as never);
@@ -782,12 +782,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-epic-local",
         projectId: "proj-epic-local",
-        seedId: "seed-epic-local",
-        seedTitle: "Epic local fallback",
+        taskId: "task-epic-local",
+        taskTitle: "Epic local fallback",
         model: "anthropic/claude-sonnet-4-6",
         worktreePath: tmpDir,
         env: {},
-        taskId: null,
+        nativeTaskId: null,
       },
       workflowConfig: {
         name: "test",
@@ -820,9 +820,9 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       promptOpts: { projectRoot: tmpDir, workflow: "default" },
       epicTasks: [
         {
-          seedId: "epic-local-child",
-          seedTitle: "Epic child",
-          seedDescription: "Child task",
+          taskId: "epic-local-child",
+          taskTitle: "Epic child",
+          taskDescription: "Child task",
         },
       ],
     } as never);
@@ -942,12 +942,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-epic-qa-scope",
         projectId: "proj-epic-qa-scope",
-        seedId: "seed-epic-qa-scope",
-        seedTitle: "Epic QA scope",
+        taskId: "task-epic-qa-scope",
+        taskTitle: "Epic QA scope",
         model: "anthropic/claude-sonnet-4-6",
         worktreePath: tmpDir,
         env: {},
-        taskId: "task-epic-parent",
+        nativeTaskId: "task-epic-parent",
         epicId: "epic-parent",
       },
       workflowConfig: {
@@ -974,9 +974,9 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       onTaskQaFailure,
       onTaskQaPass,
       epicTasks: [
-        { seedId: "task-a", seedTitle: "Task A" },
-        { seedId: "task-b", seedTitle: "Task B" },
-        { seedId: "task-a", seedTitle: "Task A retry" },
+        { taskId: "task-a", taskTitle: "Task A" },
+        { taskId: "task-b", taskTitle: "Task B" },
+        { taskId: "task-a", taskTitle: "Task A retry" },
       ],
     } as never);
 
@@ -1006,12 +1006,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-local-fallback",
         projectId: "proj-local-fallback",
-        seedId: "seed-local-fallback",
-        seedTitle: "Local fallback",
+        taskId: "task-local-fallback",
+        taskTitle: "Local fallback",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         env: {},
-        taskId: null,
+        nativeTaskId: null,
       },
       workflowConfig: {
         name: "test",
@@ -1037,13 +1037,13 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
     expect(mockStore.logEvent).toHaveBeenCalledWith(
       "proj-local-fallback",
       "phase-start",
-      expect.objectContaining({ seedId: "seed-local-fallback", phase: "explorer" }),
+      expect.objectContaining({ taskId: "task-local-fallback", phase: "explorer" }),
       "run-local-fallback",
     );
     expect(mockStore.logEvent).toHaveBeenCalledWith(
       "proj-local-fallback",
       "complete",
-      expect.objectContaining({ seedId: "seed-local-fallback", phase: "explorer", costUsd: 0.05 }),
+      expect.objectContaining({ taskId: "task-local-fallback", phase: "explorer", costUsd: 0.05 }),
       "run-local-fallback",
     );
     expect(onTaskPhaseChange).toHaveBeenCalledWith(null, "explorer");
@@ -1075,12 +1075,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
         config: {
           runId: "run-003",
           projectId: "proj-003",
-          seedId: "seed-003",
-          seedTitle: "Test no callback",
+          taskId: "task-003",
+          taskTitle: "Test no callback",
           model: "anthropic/claude-haiku-4-5",
           worktreePath: tmpDir,
           env: {},
-          taskId: "task-xyz",
+          nativeTaskId: "task-xyz",
         },
         workflowConfig: workflowConfig as never,
         store: mockStore as never,
@@ -1129,12 +1129,12 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-004",
         projectId: "proj-004",
-        seedId: "seed-004",
-        seedTitle: "Test failure",
+        taskId: "task-004",
+        taskTitle: "Test failure",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         env: {},
-        taskId: "task-abc",
+        nativeTaskId: "task-abc",
       },
       workflowConfig: workflowConfig as never,
       store: mockStore as never,
@@ -1178,8 +1178,8 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       config: {
         runId: "run-stuck-contract",
         projectId: "proj-stuck-contract",
-        seedId: "seed-stuck-contract",
-        seedTitle: "Stuck contract",
+        taskId: "task-stuck-contract",
+        taskTitle: "Stuck contract",
         model: "anthropic/claude-haiku-4-5",
         worktreePath: tmpDir,
         projectPath: tmpDir,
@@ -1209,7 +1209,7 @@ describe("executePipeline(): onTaskPhaseChange() called at phase transitions", (
       mockStore,
       "run-stuck-contract",
       "proj-stuck-contract",
-      "seed-stuck-contract",
+      "task-stuck-contract",
       "Stuck contract",
       expect.objectContaining({ currentPhase: "explorer" }),
       "explorer",

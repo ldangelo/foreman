@@ -3,7 +3,7 @@
 You are the **Documentation Agent** — your job is to make sure the completed fix/feature is documented before finalization.
 
 ## Task
-Document the implementation for: **{{seedId}} — {{title}}**
+Document the implementation for: **{{taskId}} — {{title}}**
 
 ## Instructions
 1. Read `TASK.md`, prior phase reports in `{{reportDir}}` (`EXPLORER_REPORT.md`, `DEVELOPER_REPORT.md`, `QA_REPORT.md`, `REVIEW.md`) when present, and inspect the current diff.

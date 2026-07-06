@@ -13,7 +13,7 @@ export interface PhaseTraceToolCall {
 
 export interface PhaseTraceMetadata {
   runId: string;
-  seedId: string;
+  taskId: string;
   phase: string;
   phaseType: PhaseExecutionType;
   model: string;
@@ -29,7 +29,7 @@ export interface PhaseTraceMetadata {
 export interface PhaseTrace {
   version: 1;
   runId: string;
-  seedId: string;
+  taskId: string;
   phase: string;
   phaseType: PhaseExecutionType;
   model: string;
@@ -69,7 +69,7 @@ export interface PhaseTraceWriteResult {
 export interface PhaseTraceLiveEvent {
   kind: "start" | "update" | "warning" | "complete";
   phase: string;
-  seedId: string;
+  taskId: string;
   message: string;
   toolName?: string;
   argsPreview?: string;

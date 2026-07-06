@@ -29,8 +29,8 @@ vi.mock("../../lib/git.js", () => ({
 }));
 
 vi.mock("../task-backend-ops.js", () => ({
-  enqueueCloseSeed: vi.fn(),
-  enqueueResetSeedToOpen: vi.fn(),
+  enqueueCloseTask: vi.fn(),
+  enqueueResetTaskToOpen: vi.fn(),
   enqueueAddNotesToBead: vi.fn(),
   enqueueSetBeadStatus: vi.fn(),
 }));
@@ -54,7 +54,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
     branchExists: vi.fn().mockResolvedValue(false),
     branchExistsOnRemote: vi.fn().mockResolvedValue(false),
     deleteBranch: vi.fn().mockResolvedValue({ deleted: true }),
-    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/workspace", branchName: "foreman/seed-abc" }),
+    createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/workspace", branchName: "foreman/task-abc" }),
     removeWorkspace: vi.fn().mockResolvedValue(undefined),
     listWorkspaces: vi.fn().mockResolvedValue([]),
     stageAll: vi.fn().mockResolvedValue(undefined),
@@ -104,7 +104,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seed-abc",
+    task_id: "task-abc",
     agent_type: "claude-code",
     session_key: null,
     worktree_path: null,
@@ -132,7 +132,7 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
     sendMessage: vi.fn(),
     getDb: vi.fn(() => mockDb),
   };
-  const seeds = {
+  const tasks = {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
     update: vi.fn(async () => undefined),
@@ -151,8 +151,8 @@ function makeMocks(vcsOverrides: Partial<Record<keyof VcsBackend, ReturnType<typ
 
   // "/tmp/project" has no .git directory, so useIntegrationWorktree is false
   // and the merge runs directly against the project root (the fallback path).
-  const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
-  return { store, seeds, refinery, vcs };
+  const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcs);
+  return { store, tasks, refinery, vcs };
 }
 
 describe("Refinery restores the original project-root branch (fallback merge path)", () => {
@@ -167,7 +167,7 @@ describe("Refinery restores the original project-root branch (fallback merge pat
         .mockResolvedValue("main"),              // after merge: left on target
       branchExists: vi.fn().mockResolvedValue(true),
     });
-    const run = makeRun({ seed_id: "seed-001" });
+    const run = makeRun({ task_id: "task-001" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     const report = await refinery.mergeCompleted({ runTests: false });
@@ -188,7 +188,7 @@ describe("Refinery restores the original project-root branch (fallback merge pat
       branchExists: vi.fn().mockResolvedValue(true),
       mergeWithoutCommit: vi.fn().mockRejectedValue(new Error("boom — unexpected merge error")),
     });
-    const run = makeRun({ seed_id: "seed-002" });
+    const run = makeRun({ task_id: "task-002" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     const report = await refinery.mergeCompleted({ runTests: false });
@@ -205,7 +205,7 @@ describe("Refinery restores the original project-root branch (fallback merge pat
         .mockResolvedValue("main"),
       branchExists: vi.fn().mockResolvedValue(false),
     });
-    const run = makeRun({ seed_id: "seed-003" });
+    const run = makeRun({ task_id: "task-003" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });
@@ -223,7 +223,7 @@ describe("Refinery restores the original project-root branch (fallback merge pat
         if (branch === "fix/my-feature") throw new Error("checkout failed: dirty tree");
       }),
     });
-    const run = makeRun({ seed_id: "seed-004" });
+    const run = makeRun({ task_id: "task-004" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await expect(refinery.mergeCompleted({ runTests: false })).resolves.toBeDefined();
@@ -231,7 +231,7 @@ describe("Refinery restores the original project-root branch (fallback merge pat
 
   it("does not perform an extra checkout when the project root was already on the target branch", async () => {
     const { store, refinery, vcs } = makeMocks(); // getCurrentBranch always "main"
-    const run = makeRun({ seed_id: "seed-005" });
+    const run = makeRun({ task_id: "task-005" });
     store.getRunsByStatus.mockReturnValue([run]);
 
     await refinery.mergeCompleted({ runTests: false });

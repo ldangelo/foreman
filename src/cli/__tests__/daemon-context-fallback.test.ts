@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import * as trpcClientModule from "../../lib/trpc-client.js";
+import * as backendModeModule from "../../lib/backend-mode.js";
 import { debugCommand } from "../commands/debug.js";
 import { recoverCommand } from "../commands/recover.js";
 
@@ -39,17 +40,17 @@ type CommandCase = {
 };
 
 const commandCases: CommandCase[] = [
-  { name: "debug", command: debugCommand, args: ["seed-1", "--raw"] },
-  { name: "recover", command: recoverCommand, args: ["seed-1", "--raw", "--reason", "stale-blocked"] },
+  { name: "debug", command: debugCommand, args: ["task-1", "--raw"] },
+  { name: "recover", command: recoverCommand, args: ["task-1", "--raw", "--reason", "stale-blocked"] },
 ];
 
 function makeDaemonRun() {
   return {
     id: "run-daemon",
     project_id: "proj-daemon",
-    bead_id: "seed-1",
+    bead_id: "task-1",
     status: "running",
-    branch: "foreman/seed-1",
+    branch: "foreman/task-1",
     agent_type: "daemon",
     session_key: null,
     worktree_path: null,
@@ -67,7 +68,7 @@ function makeLocalRun() {
   return {
     id: "run-local",
     project_id: "proj-local",
-    seed_id: "seed-1",
+    task_id: "task-1",
     status: "running",
     agent_type: "daemon",
     session_key: null,
@@ -84,7 +85,7 @@ function makeLocalRun() {
 describe("daemon context fallback", () => {
   let tmpDir: string;
   let localStore: {
-    getRunsForSeed: ReturnType<typeof vi.fn>;
+    getRunsForTask: ReturnType<typeof vi.fn>;
     getRunProgress: ReturnType<typeof vi.fn>;
     getAllMessages: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -95,7 +96,7 @@ describe("daemon context fallback", () => {
     mkdirSync(join(tmpDir, ".foreman"), { recursive: true });
     vi.clearAllMocks();
     localStore = {
-      getRunsForSeed: vi.fn(),
+      getRunsForTask: vi.fn(),
       getRunProgress: vi.fn(),
       getAllMessages: vi.fn(),
       close: vi.fn(),
@@ -105,6 +106,7 @@ describe("daemon context fallback", () => {
     mockCreateVcsBackend.mockResolvedValue({
       getRepoRoot: vi.fn().mockResolvedValue(tmpDir),
     });
+    vi.spyOn(backendModeModule, "foremanBackendMode").mockReturnValue("node");
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
@@ -132,16 +134,16 @@ describe("daemon context fallback", () => {
     }
 
     expect(mockCreateTrpcClient).toHaveBeenCalledTimes(2);
-    expect(localStore.getRunsForSeed).not.toHaveBeenCalled();
+    expect(localStore.getRunsForTask).not.toHaveBeenCalled();
     expect(localStore.getRunProgress).not.toHaveBeenCalled();
     expect(localStore.getAllMessages).not.toHaveBeenCalled();
-    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "seed-1", limit: 50 });
+    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "task-1", limit: 50 });
     expect(daemonMailList).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-daemon" });
   });
 
   it("does not resolve daemon context for a matching name with a different path", async () => {
     mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "foreman", path: "/elsewhere/foreman" }]);
-    localStore.getRunsForSeed.mockReturnValue([makeLocalRun()]);
+    localStore.getRunsForTask.mockReturnValue([makeLocalRun()]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
 
@@ -150,14 +152,14 @@ describe("daemon context fallback", () => {
     }
 
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
-    expect(localStore.getRunsForSeed).toHaveBeenCalledWith("seed-1");
+    expect(localStore.getRunsForTask).toHaveBeenCalledWith("task-1");
     expect(localStore.getRunProgress).toHaveBeenCalled();
     expect(localStore.getAllMessages).toHaveBeenCalled();
   });
 
   it("keeps local fallback behavior intact when no registered project matches", async () => {
     mockListRegisteredProjects.mockResolvedValue([]);
-    localStore.getRunsForSeed.mockReturnValue([makeLocalRun()]);
+    localStore.getRunsForTask.mockReturnValue([makeLocalRun()]);
     localStore.getRunProgress.mockReturnValue(null);
     localStore.getAllMessages.mockReturnValue([]);
 
@@ -166,7 +168,7 @@ describe("daemon context fallback", () => {
     }
 
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
-    expect(localStore.getRunsForSeed).toHaveBeenCalledWith("seed-1");
+    expect(localStore.getRunsForTask).toHaveBeenCalledWith("task-1");
     expect(localStore.getAllMessages).toHaveBeenCalled();
   });
 });

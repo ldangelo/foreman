@@ -49,7 +49,7 @@ All archived documents have been identified and have banners injected. The valid
 
 | File | Variant | Status |
 |------|---------|--------|
-| `docs/migration-seeds-to-br.md` | migration | ✅ Banner injected |
+| `docs/migration-tasks-to-br.md` | migration | ✅ Banner injected |
 | `docs/Overstory_comparison.md` | comparison | ✅ Banner injected |
 | `docs/flywheel_comparison.md` | comparison | ✅ Banner injected |
 | `docs/mail-transport-plan.md` | standard | ✅ Banner injected |
@@ -57,7 +57,7 @@ All archived documents have been identified and have banners injected. The valid
 | `docs/PRD/PRD-2026-005-mid-pipeline-rebase-and-shared-worktree.md` | standard | ✅ Banner injected |
 | `docs/TRD/TRD-2026-004-vcs-backend-abstraction.md` | standard | ✅ Banner injected |
 | `docs/TRD/TRD-2026-005-mid-pipeline-rebase.md` | standard | ✅ Banner injected |
-| `docs/TRD/seeds-to-br-bv-migration.md` | comparison | ✅ Banner injected |
+| `docs/TRD/tasks-to-br-bv-migration.md` | comparison | ✅ Banner injected |
 
 ## Validation
 
@@ -76,7 +76,7 @@ npx tsx docs/experiments/historical-context-prd-rerun/validate-historical-banner
 
 **Current validation result:**
 ```
-✅  migration-seeds-to-br.md: banner present (migration)
+✅  migration-tasks-to-br.md: banner present (migration)
 ✅  Overstory_comparison.md: banner present (comparison)
 ✅  flywheel_comparison.md: banner present (comparison)
 ✅  mail-transport-plan.md: banner present (standard)
@@ -84,7 +84,7 @@ npx tsx docs/experiments/historical-context-prd-rerun/validate-historical-banner
 ✅  PRD/PRD-2026-005-mid-pipeline-rebase-and-shared-worktree.md: banner present (standard)
 ✅  TRD/TRD-2026-004-vcs-backend-abstraction.md: banner present (standard)
 ✅  TRD/TRD-2026-005-mid-pipeline-rebase.md: banner present (standard)
-✅  TRD/seeds-to-br-bv-migration.md: banner present (comparison)
+✅  TRD/tasks-to-br-bv-migration.md: banner present (comparison)
 ✅  guides//*: no banners (excluded as active-operator-doc)
 
 ✅  All historical banner validations passed.

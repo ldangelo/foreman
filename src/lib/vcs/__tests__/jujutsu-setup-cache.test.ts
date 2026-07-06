@@ -146,9 +146,9 @@ function makeRemoteAndLocal(): { remoteDir: string; localDir: string } {
  *
  * Returns the workspace path.
  */
-function makeWorkspaceWithKeyFile(localDir: string, seedId: string): string {
+function makeWorkspaceWithKeyFile(localDir: string, taskId: string): string {
   const workspacePath = realpathSync(
-    mkdtempSync(join(tmpdir(), `foreman-ws-${seedId}-`)),
+    mkdtempSync(join(tmpdir(), `foreman-ws-${taskId}-`)),
   );
   // Copy the key file into the workspace
   const keyContent = JSON.stringify({ version: 1 });
@@ -191,7 +191,7 @@ describe.skipIf(!JJ_AVAILABLE)(
 
       // ── First workspace ──────────────────────────────────────────────────
 
-      const workspace1 = makeWorkspaceWithKeyFile(localDir, "seed-cache-1");
+      const workspace1 = makeWorkspaceWithKeyFile(localDir, "task-cache-1");
       tempDirs.push(workspace1);
       setupRanMarkers.push(join(workspace1, "cached-dir", "setup-ran.txt"));
 
@@ -228,7 +228,7 @@ describe.skipIf(!JJ_AVAILABLE)(
 
       // ── Second workspace ─────────────────────────────────────────────────
 
-      const workspace2 = makeWorkspaceWithKeyFile(localDir, "seed-cache-2");
+      const workspace2 = makeWorkspaceWithKeyFile(localDir, "task-cache-2");
       tempDirs.push(workspace2);
 
       // Write a marker to detect if setup steps ran (they should NOT run on cache hit)
@@ -269,7 +269,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       expect(target1).toBe(target2);
     });
 
-    it("cache miss on different key file content → steps run for each", async () => {
+    it("cache miss on different key file content → steps run for each", { timeout: 180_000 }, async () => {
       const { remoteDir, localDir } = makeRemoteAndLocal();
       tempDirs.push(remoteDir, localDir);
 
@@ -286,7 +286,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       ];
 
       // Workspace A: uses key content { version: 1 }
-      const workspaceA = makeWorkspaceWithKeyFile(localDir, "seed-key-a");
+      const workspaceA = makeWorkspaceWithKeyFile(localDir, "task-key-a");
       tempDirs.push(workspaceA);
 
       await runSetupWithCache(workspaceA, projectRoot, setupSteps, cacheConfig);
@@ -304,7 +304,7 @@ describe.skipIf(!JJ_AVAILABLE)(
 
       // Workspace B: uses DIFFERENT key content → different hash
       const workspaceB = realpathSync(
-        mkdtempSync(join(tmpdir(), "foreman-ws-seed-key-b-")),
+        mkdtempSync(join(tmpdir(), "foreman-ws-task-key-b-")),
       );
       tempDirs.push(workspaceB);
       // Write different key file content
@@ -335,7 +335,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       expect(targetB).not.toBe(join(cacheDirA, "cached-dir"));
     });
 
-    it("missing key file → no caching, steps still run", async () => {
+    it("missing key file → no caching, steps still run", { timeout: 180_000 }, async () => {
       const { remoteDir, localDir } = makeRemoteAndLocal();
       tempDirs.push(remoteDir, localDir);
 

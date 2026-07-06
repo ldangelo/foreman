@@ -16,7 +16,7 @@ function makeRun(overrides?: Partial<Run>): Run {
   return {
     id: "test-run-id",
     project_id: "test-project",
-    seed_id: "foreman-abc1",
+    task_id: "foreman-abc1",
     agent_type: "claude-sonnet-4-5",
     session_key: null,
     worktree_path: null,

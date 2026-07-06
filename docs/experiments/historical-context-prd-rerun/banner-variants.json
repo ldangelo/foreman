@@ -30,7 +30,7 @@
     },
     "migration": {
       "description": "For migration guides describing past transitions",
-      "trigger": "Document is a migration guide (seeds → br, or other historical migration)",
+      "trigger": "Document is a migration guide (tasks → br, or other historical migration)",
       "additionalLine": "This migration guide is preserved for historical reference. See TRD-2026-006 for current task management architecture.",
       "lines": [
         "> ⚠️ Historical Context",

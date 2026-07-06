@@ -77,7 +77,7 @@ ConflictPatterns (learning, FR-7)
 CREATE TABLE IF NOT EXISTS merge_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   branch_name TEXT NOT NULL,
-  seed_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   agent_name TEXT,
   files_modified TEXT DEFAULT '[]',
@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS conflict_patterns (
   success INTEGER NOT NULL,
   failure_reason TEXT,
   merge_queue_id INTEGER,
-  seed_id TEXT,
+  task_id TEXT,
   recorded_at TEXT NOT NULL,
   FOREIGN KEY (merge_queue_id) REFERENCES merge_queue(id)
 );
@@ -211,7 +211,7 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T001 | Implement `autoCommitStateFiles()` in refinery.ts -- detect uncommitted changes in `.seeds/` and `.foreman/` via `git status --porcelain`, stage and commit with descriptive message | 3h | -- | `src/orchestrator/refinery.ts` | [x] |
+| MQ-T001 | Implement `autoCommitStateFiles()` in refinery.ts -- detect uncommitted changes in `.tasks/` and `.foreman/` via `git status --porcelain`, stage and commit with descriptive message | 3h | -- | `src/orchestrator/refinery.ts` | [x] |
 | MQ-T002 | Wire `autoCommitStateFiles()` into `mergeCompleted()` before each merge attempt, applying to both target branch and feature branch | 2h | MQ-T001 | `src/orchestrator/refinery.ts` | [x] |
 | MQ-T003 | Write unit tests for `autoCommitStateFiles()` -- test no-op when clean, commit when dirty, correct commit message, both target and feature branch | 3h | MQ-T001 | `src/orchestrator/__tests__/refinery-state-files.test.ts` | [x] |
 
@@ -255,7 +255,7 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 |----|------|------|------|-------|--------|
 | MQ-T018 | Refactor `foreman merge` to use queue-based flow: run `reconcile()`, then process via `dequeue()` loop. Convert `Refinery` to thin wrapper that delegates to `MergeQueue` and `ConflictResolver` internally -- preserve `Refinery` public API (`mergeCompleted()`, `resolveConflict()`, `createPRs()`, `getCompletedRuns()`, `orderByDependencies()`) but gut internals. No legacy path | 5h | MQ-T008, MQ-T009 | `src/cli/commands/merge.ts`, `src/orchestrator/refinery.ts` | [x] |
 | MQ-T018b | Migrate Refinery helper methods to appropriate new modules: `isReportFile()` and `removeReportFiles()` -> ConflictResolver, `archiveReportsPostMerge()` -> MergeQueue post-merge hook, `autoResolveRebaseConflicts()` -> ConflictResolver pre-merge step. Ensure Refinery delegates to these new locations | 3h | MQ-T018 | `src/orchestrator/refinery.ts`, `src/orchestrator/conflict-resolver.ts`, `src/orchestrator/merge-queue.ts` | [ ] |
-| MQ-T019 | Update `foreman merge --list` to read from `merge_queue` table instead of filtering completed runs. Show status, branch, seed, age, and files_modified count | 2h | MQ-T008 | `src/cli/commands/merge.ts` | [x] |
+| MQ-T019 | Update `foreman merge --list` to read from `merge_queue` table instead of filtering completed runs. Show status, branch, task, age, and files_modified count | 2h | MQ-T008 | `src/cli/commands/merge.ts` | [x] |
 | MQ-T020 | Write integration tests for queue-based merge flow -- reconcile detects missing entries, dequeue processes in order, status transitions correct | 4h | MQ-T018 | `src/cli/__tests__/merge-queue-flow.test.ts` | [x] |
 
 ### 2.3 Sprint 3a: Deterministic Resolution (FR-1, Tier 1-2)
@@ -340,13 +340,13 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 | MQ-T049 | Wire cluster ordering into MergeQueue dequeue: before processing, build overlap graph and order entries so that entries within the same cluster are processed consecutively (reducing conflict likelihood). Re-cluster after each merge commit | 2h | MQ-T047, MQ-T048, MQ-T018 | `src/orchestrator/merge-queue.ts` | [x] |
 | MQ-T050 | Write tests for clustering -- independent entries in separate clusters, overlapping entries in same cluster, re-clustering after merge creates new overlaps, empty queue, single entry, cluster-ordered sequential dequeue | 4h | MQ-T047, MQ-T048, MQ-T049 | `src/orchestrator/__tests__/conflict-cluster.test.ts` | [x] |
 
-### 2.6 Sprint 6: Worktree Commands, Dry-Run, Seeds Preservation (FR-5, FR-8, FR-6)
+### 2.6 Sprint 6: Worktree Commands, Dry-Run, Tasks Preservation (FR-5, FR-8, FR-6)
 
 #### Story 6.1: Worktree CLI Commands
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T054 | Implement `foreman worktree list` -- list all `foreman/*` worktrees with branch, path, run status (from store), seed ID, age. Support `--json` for structured output | 3h | -- | `src/cli/commands/worktree.ts` | [x] |
+| MQ-T054 | Implement `foreman worktree list` -- list all `foreman/*` worktrees with branch, path, run status (from store), task ID, age. Support `--json` for structured output | 3h | -- | `src/cli/commands/worktree.ts` | [x] |
 | MQ-T055 | Implement `foreman worktree clean` -- remove worktrees for completed/merged/failed runs (default). `--all` removes active worktrees too. `--force` uses safe branch deletion with force. Show summary with count and freed space | 3h | MQ-T004, MQ-T054 | `src/cli/commands/worktree.ts` | [x] |
 | MQ-T056 | Register worktree subcommand in main CLI entry point | 1h | MQ-T054 | `src/cli/index.ts` | [x] |
 | MQ-T057 | Write tests for worktree commands -- list with various run states, clean respects active agents, force deletion, JSON output valid | 4h | MQ-T054, MQ-T055 | `src/cli/__tests__/worktree.test.ts` | [x] |
@@ -355,20 +355,20 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T058 | Implement `foreman merge --dry-run`: for each queued/completed branch, show branch name, seed ID, `git diff --stat` output, conflict detection via `git merge-tree`. Support `--bead <id>` filter. No git state modification | 4h | MQ-T008 | `src/cli/commands/merge.ts`, `src/orchestrator/merge-queue.ts` | [x] |
+| MQ-T058 | Implement `foreman merge --dry-run`: for each queued/completed branch, show branch name, task ID, `git diff --stat` output, conflict detection via `git merge-tree`. Support `--bead <id>` filter. No git state modification | 4h | MQ-T008 | `src/cli/commands/merge.ts`, `src/orchestrator/merge-queue.ts` | [x] |
 | MQ-T058b | **Resolved: keep `gh pr create`**. Investigation (MQ-T058d) found `git town propose` opens a browser window and does not return PR URLs via stdout, making it unsuitable for non-interactive automation. Both normal-flow and conflict PRs continue using `gh pr create`. Decision documented in code comments on `Refinery.createPRs()` and `ConflictResolver.handleFallback()` | 1h | MQ-T058d | `src/orchestrator/refinery.ts`, `src/orchestrator/conflict-resolver.ts` | [x] |
 | MQ-T058c | **Resolved: no dual strategy needed**. Since MQ-T058d found `git town propose` unsuitable, there is no dual PR strategy to test. Existing `createPRs()` tests in `refinery.test.ts` cover `gh pr create`. Added `refinery-git-town.test.ts` documenting the investigation decision and verifying both PR paths use `gh pr create` | 1h | MQ-T058b | `src/orchestrator/__tests__/refinery-git-town.test.ts` | [x] |
 | MQ-T058d | **Completed**. `git town propose` (v22.6.0) opens browser via `open https://github.com/...` compare URL, does not create PR via API, does not return PR URL in stdout. Also runs side-effect commands (`git fetch`, `git stash`, `git push`). Unsuitable for non-interactive automation. Decision: keep `gh pr create` for all PR paths. Findings documented in `Refinery.createPRs()` JSDoc | 1h | -- | `src/orchestrator/refinery.ts` | [x] |
 | MQ-T059 | Add estimated resolution tier column when FR-7 conflict_patterns data is available. Gracefully omit column when no pattern data exists (no errors, no empty columns) | 2h | MQ-T058 | `src/cli/commands/merge.ts` | [x] |
 | MQ-T060 | Write tests for dry-run -- no git state modified, conflict detection accurate, `--bead` filter works, graceful degradation without FR-7 data | 3h | MQ-T058, MQ-T059 | `src/cli/__tests__/merge-dryrun.test.ts` | [x] |
 
-#### Story 6.3: Seeds Preservation
+#### Story 6.3: Tasks Preservation
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| MQ-T061 | Implement `preserveSeedChanges(branchName, targetBranch)` in refinery.ts: extract `.seeds/` changes via `git diff {target}...{branch} -- .seeds/`, write temp patch, `git apply --index`, commit with descriptive message. Cleanup temp file in `finally` block. Error code MQ-019 on patch failure | 3h | -- | `src/orchestrator/refinery.ts` | [x] |
-| MQ-T062 | Wire seed preservation into branch cleanup paths (refinery merge failure, worktree clean) -- call before branch deletion | 2h | MQ-T061 | `src/orchestrator/refinery.ts`, `src/cli/commands/worktree.ts` | [x] |
-| MQ-T063 | Write tests for seeds preservation -- changes applied, only .seeds/ preserved, patch failure logs warning but does not block, temp file always cleaned | 3h | MQ-T061 | `src/orchestrator/__tests__/refinery-seeds-preserve.test.ts` | [x] |
+| MQ-T061 | Implement `preserveTaskChanges(branchName, targetBranch)` in refinery.ts: extract `.tasks/` changes via `git diff {target}...{branch} -- .tasks/`, write temp patch, `git apply --index`, commit with descriptive message. Cleanup temp file in `finally` block. Error code MQ-019 on patch failure | 3h | -- | `src/orchestrator/refinery.ts` | [x] |
+| MQ-T062 | Wire task preservation into branch cleanup paths (refinery merge failure, worktree clean) -- call before branch deletion | 2h | MQ-T061 | `src/orchestrator/refinery.ts`, `src/cli/commands/worktree.ts` | [x] |
+| MQ-T063 | Write tests for tasks preservation -- changes applied, only .tasks/ preserved, patch failure logs warning but does not block, temp file always cleaned | 3h | MQ-T061 | `src/orchestrator/__tests__/refinery-tasks-preserve.test.ts` | [x] |
 
 ### 2.7 Sprint 7: Pattern Learning and Cost Tracking (FR-7, Cost Tracking)
 
@@ -377,7 +377,7 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
 | MQ-T064 | Add `conflict_patterns` table migration to store.ts | 1h | -- | `src/lib/store.ts` | [x] |
-| MQ-T065 | Implement `ConflictPatterns` class: `recordOutcome(filePath, extension, tier, success, failureReason?, mergeQueueId?, seedId?)` -- fire-and-forget recording. `shouldSkipTier(extension, tier)` -- return true if >= 2 failures AND 0 successes. `getSuccessContext(extension, tier)` -- return past successful resolution examples as AI context | 4h | MQ-T064 | `src/orchestrator/conflict-patterns.ts` | [x] |
+| MQ-T065 | Implement `ConflictPatterns` class: `recordOutcome(filePath, extension, tier, success, failureReason?, mergeQueueId?, taskId?)` -- fire-and-forget recording. `shouldSkipTier(extension, tier)` -- return true if >= 2 failures AND 0 successes. `getSuccessContext(extension, tier)` -- return past successful resolution examples as AI context | 4h | MQ-T064 | `src/orchestrator/conflict-patterns.ts` | [x] |
 | MQ-T066 | Implement post-merge test failure pattern recording: when test fails, record all AI-resolved files with `failure_reason='post_merge_test_failure'`. `shouldPreferFallback(filePath)` returns true if file has >= 2 post-merge test failures with AI resolution | 3h | MQ-T065 | `src/orchestrator/conflict-patterns.ts` | [x] |
 | MQ-T067 | Wire ConflictPatterns into ConflictResolver: before each tier attempt call `shouldSkipTier()` (MQ-015), before AI calls check `shouldPreferFallback()` (MQ-016), after each attempt call `recordOutcome()`, pass `getSuccessContext()` to Tier 3/4 prompts | 3h | MQ-T065, MQ-T066, MQ-T038 | `src/orchestrator/conflict-resolver.ts` | [x] |
 | MQ-T068 | Write tests for pattern learning -- outcome recording, tier skip after threshold, success context provided, test failure recording, fallback preference, fire-and-forget (errors do not block) | 5h | MQ-T065, MQ-T066, MQ-T067 | `src/orchestrator/__tests__/conflict-patterns.test.ts` | [x] |
@@ -427,7 +427,7 @@ All merge queue errors use structured codes `MQ-001` through `MQ-020`. See PRD S
 | 3b | AI-Powered Resolution | MQ-T030 to MQ-T037 | 26h | Tier 3 (Sonnet) and Tier 4 (Opus) via Messages API, cost tracking |
 | 4 | Resolution Orchestration | MQ-T038 to MQ-T046 | 31h | Per-file cascade orchestration, post-merge validation (AI-only), event logging |
 | 5 | Overlap Clustering | MQ-T047 to MQ-T050 | 12h | Conflict clustering for smart sequential ordering |
-| 6 | Worktree/DryRun/Seeds/git-town | MQ-T054 to MQ-T063, MQ-T058b/c/d | 37h | Worktree CLI, dry-run preview, seeds preservation, dual PR strategy retrofit |
+| 6 | Worktree/DryRun/Tasks/git-town | MQ-T054 to MQ-T063, MQ-T058b/c/d | 37h | Worktree CLI, dry-run preview, tasks preservation, dual PR strategy retrofit |
 | 7 | Learning and Costs | MQ-T064 to MQ-T073 | 27h | Pattern learning, cost tracking, stats command |
 | 8 | Polish | MQ-T074 to MQ-T079 | 15h | Untracked file prevention, queue health checks |
 
@@ -476,7 +476,7 @@ Sprint 5 (Clustering) -- depends on MQ-T018
   MQ-T047 -> MQ-T048 -> MQ-T049 -> MQ-T050
   MQ-T049 depends on MQ-T018
 
-Sprint 6 (Worktree/DryRun/Seeds/git-town) -- independent, can parallelize with Sprint 5
+Sprint 6 (Worktree/DryRun/Tasks/git-town) -- independent, can parallelize with Sprint 5
   MQ-T054 -> MQ-T055 -> MQ-T057
   MQ-T054 -> MQ-T056
   MQ-T008 -> MQ-T058 -> MQ-T059 -> MQ-T060
@@ -535,7 +535,7 @@ Sprint 8 (Polish) -- depends on Sprint 2
 
 ### 5.2 FR-2: Auto-Commit State Files
 
-- [ ] AC-2.1: Uncommitted `.seeds/` changes auto-committed before merge
+- [ ] AC-2.1: Uncommitted `.tasks/` changes auto-committed before merge
 - [ ] AC-2.2: Uncommitted `.foreman/` changes auto-committed before merge
 - [ ] AC-2.3: No commit when state files have no changes
 - [ ] AC-2.4: Auto-commit uses distinguishable commit message
@@ -547,7 +547,7 @@ Sprint 8 (Polish) -- depends on Sprint 2
 - [ ] AC-3.2: Concurrent agents enqueue without conflicts (WAL + busy timeout)
 - [ ] AC-3.3: Dequeue is atomic (no double-processing)
 - [ ] AC-3.4: Queue entries record resolution tier
-- [ ] AC-3.5: `--list` shows entries with status, branch, seed, age
+- [ ] AC-3.5: `--list` shows entries with status, branch, task, age
 - [ ] AC-3.6: Migration adds table without affecting existing data
 - [ ] AC-3.7: Agent finalize auto-enqueues completed branches
 - [ ] AC-3.8: Reconciliation detects and enqueues missed runs (validates branch existence)
@@ -578,10 +578,10 @@ Sprint 8 (Polish) -- depends on Sprint 2
 - [ ] AC-5.5: `worktree clean` respects safe branch deletion
 - [ ] AC-5.6: Active agent worktrees not cleaned unless `--all`
 
-### 5.6 FR-6: Seeds Preservation
+### 5.6 FR-6: Tasks Preservation
 
-- [ ] AC-6.1: Seed changes from non-merged branches applied to target
-- [ ] AC-6.2: Only `.seeds/` changes preserved
+- [ ] AC-6.1: Task changes from non-merged branches applied to target
+- [ ] AC-6.2: Only `.tasks/` changes preserved
 - [ ] AC-6.3: Failed patch logs warning, does not block cleanup
 - [ ] AC-6.4: Temp patch file always cleaned up
 
@@ -708,7 +708,7 @@ Sprint 8 (Polish) -- depends on Sprint 2
 |------|--------|-------|---------|
 | `src/lib/store.ts` | 2, 7 | MQ-T007, MQ-T010, MQ-T044, MQ-T064, MQ-T069 | Schema migrations for merge_queue, conflict_patterns, merge_costs tables; EventType additions; busy timeout |
 | `src/lib/git.ts` | 1 | MQ-T004 | `deleteBranch()` API change to safe deletion with options |
-| `src/orchestrator/refinery.ts` | 1, 2, 6 | MQ-T001, MQ-T002, MQ-T005, MQ-T018, MQ-T018b, MQ-T058b, MQ-T061, MQ-T062 | Auto-commit state files, safe deletion calls, thin-wrapper migration, git-town PR retrofit, seed preservation |
+| `src/orchestrator/refinery.ts` | 1, 2, 6 | MQ-T001, MQ-T002, MQ-T005, MQ-T018, MQ-T018b, MQ-T058b, MQ-T061, MQ-T062 | Auto-commit state files, safe deletion calls, thin-wrapper migration, git-town PR retrofit, task preservation |
 | `src/orchestrator/agent-worker.ts` | 2 | MQ-T016 | Auto-enqueue in finalize phase |
 | `src/orchestrator/types.ts` | 4 | MQ-T040, MQ-T044 | Extended MergeReport, new EventType values |
 | `src/cli/commands/merge.ts` | 2, 6, 7 | MQ-T018, MQ-T019, MQ-T058, MQ-T071, MQ-T072 | Queue-based flow, dry-run, stats |
@@ -737,7 +737,7 @@ Sprint 8 (Polish) -- depends on Sprint 2
 | `src/orchestrator/__tests__/conflict-cluster.test.ts` | 5 | MQ-T050 |
 | `src/cli/__tests__/worktree.test.ts` | 6 | MQ-T057 |
 | `src/cli/__tests__/merge-dryrun.test.ts` | 6 | MQ-T060 |
-| `src/orchestrator/__tests__/refinery-seeds-preserve.test.ts` | 6 | MQ-T063 |
+| `src/orchestrator/__tests__/refinery-tasks-preserve.test.ts` | 6 | MQ-T063 |
 | `src/orchestrator/__tests__/refinery-git-town.test.ts` | 6 | MQ-T058c |
 | `src/orchestrator/__tests__/conflict-patterns.test.ts` | 7 | MQ-T068 |
 | `src/orchestrator/__tests__/merge-costs.test.ts` | 7 | MQ-T073 |

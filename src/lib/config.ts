@@ -56,6 +56,17 @@ function envNonNegativeInt(name: string, defaultValue: number): number {
   return parsed;
 }
 
+function envNonNegativeNumber(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  const parsed = parseFloat(raw);
+  if (isNaN(parsed) || parsed < 0) {
+    console.warn(`[foreman] Warning: invalid value for ${name}="${raw}", using default ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
 // ── Model defaults ───────────────────────────────────────────────────────
 
 /**
@@ -162,12 +173,20 @@ export const PIPELINE_LIMITS = {
    * Override via: FOREMAN_EMPTY_POLL_CYCLES=<n>
    */
   emptyPollCycles: envNonNegativeInt("FOREMAN_EMPTY_POLL_CYCLES", 20),
+  /** Maximum wall-clock runtime for one pipeline in milliseconds. 0 disables. */
+  maxPipelineWallClockMs: envNonNegativeInt("FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS", 0),
+  /** Maximum total SDK/tool calls recorded across one pipeline. 0 disables. */
+  maxPipelineToolCalls: envNonNegativeInt("FOREMAN_MAX_PIPELINE_TOOL_CALLS", 0),
+  /** Maximum total retry/review loop activations across one pipeline. 0 disables. */
+  maxPipelineReviewLoops: envNonNegativeInt("FOREMAN_MAX_PIPELINE_REVIEW_LOOPS", 0),
+  /** Maximum total pipeline cost in USD. 0 disables. */
+  maxPipelineCostUsd: envNonNegativeNumber("FOREMAN_MAX_PIPELINE_COST_USD", 0),
 } as const;
 
 /**
- * Exponential backoff configuration for seeds that repeatedly get stuck.
+ * Exponential backoff configuration for tasks that repeatedly get stuck.
  *
- * When a seed is reset to open after a stuck run, the dispatcher applies
+ * When a task is reset to open after a stuck run, the dispatcher applies
  * this backoff before re-dispatching. This prevents tight retry loops for
  * deterministic failures (e.g. non-fast-forward push errors).
  *
@@ -179,7 +198,7 @@ export const PIPELINE_LIMITS = {
  * To enable a 3rd-tier delay (240s) before hard-blocking, set maxRetries=4.
  */
 export const STUCK_RETRY_CONFIG = {
-  /** Number of recent stuck runs before the seed is blocked from dispatch */
+  /** Number of recent stuck runs before the task is blocked from dispatch */
   maxRetries: envNonNegativeInt("FOREMAN_STUCK_MAX_RETRIES", 3),
   /** Initial backoff delay in milliseconds after the first stuck run */
   initialDelayMs: envInt("FOREMAN_STUCK_INITIAL_DELAY_MS", 60_000),
@@ -238,7 +257,7 @@ export function calculateRateLimitBackoffMs(retryCount: number): number {
 }
 
 /**
- * Calculate the required backoff delay in milliseconds for a seed that has
+ * Calculate the required backoff delay in milliseconds for a task that has
  * been stuck `stuckCount` times recently.
  *
  * Formula: initialDelayMs * backoffMultiplier^(stuckCount - 1), capped at maxDelayMs.

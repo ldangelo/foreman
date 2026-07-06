@@ -340,13 +340,17 @@ export class JujutsuBackend implements VcsBackend {
     return { deleted: false, wasFullyMerged: false };
   }
 
+  async deleteRemoteBranch(repoPath: string, branchName: string): Promise<void> {
+    await this.git(["push", "origin", "--delete", branchName], repoPath);
+  }
+
   // ── Workspace Operations ─────────────────────────────────────────────
 
   /**
-   * Create a jj workspace for a seed.
+   * Create a jj workspace for a task.
    *
  * Creates a workspace in Foreman's external workspace root and sets up
- * a bookmark `foreman/<seedId>` pointing to the new workspace's revision.
+ * a bookmark `foreman/<taskId>` pointing to the new workspace's revision.
  * When `baseBranch` is provided, the new workspace is created directly from
  * that branch/revision instead of inheriting the controller workspace parent.
    *
@@ -354,12 +358,12 @@ export class JujutsuBackend implements VcsBackend {
    */
   async createWorkspace(
     repoPath: string,
-    seedId: string,
+    taskId: string,
     baseBranch?: string,
   ): Promise<WorkspaceResult> {
     const base = baseBranch ?? (await this.getCurrentBranch(repoPath));
-    const branchName = `foreman/${seedId}`;
-    const workspacePath = getWorkspacePath(repoPath, seedId);
+    const branchName = `foreman/${taskId}`;
+    const workspacePath = getWorkspacePath(repoPath, taskId);
 
     // If workspace directory already exists, reuse it
     if (existsSync(workspacePath)) {
@@ -388,7 +392,7 @@ export class JujutsuBackend implements VcsBackend {
           "workspace",
           "add",
           "--name",
-          `foreman-${seedId}`,
+          `foreman-${taskId}`,
           "--revision",
           base,
           workspacePath,
@@ -401,13 +405,13 @@ export class JujutsuBackend implements VcsBackend {
         // Workspace registered in jj but directory missing (stale metadata from
         // a previous run that was cleaned up). Forget and recreate.
         if (!existsSync(workspacePath)) {
-          await this.jj(["workspace", "forget", `foreman-${seedId}`], repoPath);
+          await this.jj(["workspace", "forget", `foreman-${taskId}`], repoPath);
           await this.jj(
             [
               "workspace",
               "add",
               "--name",
-              `foreman-${seedId}`,
+              `foreman-${taskId}`,
               "--revision",
               base,
               workspacePath,
@@ -421,8 +425,8 @@ export class JujutsuBackend implements VcsBackend {
     }
 
     // Create a bookmark for this workspace
-    // Use "foreman-<seedId>@" syntax to reference the workspace's working copy
-    const workspaceRef = `foreman-${seedId}@`;
+    // Use "foreman-<taskId>@" syntax to reference the workspace's working copy
+    const workspaceRef = `foreman-${taskId}@`;
     try {
       await this.jj(
         ["bookmark", "create", branchName, "-r", workspaceRef],
@@ -449,8 +453,8 @@ export class JujutsuBackend implements VcsBackend {
    */
   async removeWorkspace(repoPath: string, workspacePath: string): Promise<void> {
     // Derive workspace name from path
-    const seedId = workspacePath.split("/").pop() ?? "";
-    const workspaceName = `foreman-${seedId}`;
+    const taskId = workspacePath.split("/").pop() ?? "";
+    const workspaceName = `foreman-${taskId}`;
 
     try {
       await this.jj(["workspace", "forget", workspaceName], repoPath);
@@ -488,9 +492,9 @@ export class JujutsuBackend implements VcsBackend {
           const [, name, changeId] = match;
           // Map workspace name back to a path
           if (name !== "default") {
-            const seedId = name.replace(/^foreman-/, "");
-            const path = getWorkspacePath(repoPath, seedId);
-            const branchName = `foreman/${seedId}`;
+            const taskId = name.replace(/^foreman-/, "");
+            const path = getWorkspacePath(repoPath, taskId);
+            const branchName = `foreman/${taskId}`;
             workspaces.push({
               path,
               branch: branchName,
@@ -550,7 +554,7 @@ export class JujutsuBackend implements VcsBackend {
     options?: PushOptions,
   ): Promise<void> {
     const baseArgs = ["git", "push", "--bookmark", branchName];
-    if (options?.force) {
+    if (options?.force || options?.forceWithLease) {
       baseArgs.push("--force");
     }
 
@@ -1155,20 +1159,20 @@ export class JujutsuBackend implements VcsBackend {
    * Return pre-computed jj finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
+    const { taskId, taskTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
     // Escape single quotes so the shell-level single-quoted commit message is
-    // safe even when seedTitle contains apostrophes or shell-special characters.
-    const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
+    // safe even when taskTitle contains apostrophes or shell-special characters.
+    const safeTaskTitle = taskTitle.replace(/'/g, "'\\''");
     const footerSuffix = githubIssueNumber
       ? `\\n\\nFixes #${githubIssueNumber}`
       : "";
     return {
       stageCommand: "", // jj auto-stages
-      commitCommand: `jj describe -m '${safeSeedTitle} (${seedId})${footerSuffix}'`,
-      pushCommand: `jj git push --bookmark foreman/${seedId}`,
+      commitCommand: `jj describe -m '${safeTaskTitle} (${taskId})${footerSuffix}'`,
+      pushCommand: `jj git push --bookmark foreman/${taskId}`,
       integrateTargetCommand: `jj git fetch && jj rebase -d ${baseBranch}@origin`,
-      branchVerifyCommand: `jj bookmark list foreman/${seedId}`,
-      cleanCommand: `jj workspace forget foreman-${seedId}`,
+      branchVerifyCommand: `jj bookmark list foreman/${taskId}`,
+      cleanCommand: `jj workspace forget foreman-${taskId}`,
       restoreTrackedStateCommand: buildTrackedStateRestoreCommand(worktreePath, this.projectPath),
     };
   }

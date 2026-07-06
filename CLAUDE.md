@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and merges results back. Built with TypeScript, [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) for in-process agent sessions, and [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for task tracking.
+Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and merges results back. Built with TypeScript, [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) for in-process agent sessions, with the Elixir backend for task tracking.
 
 ## Quick Reference
 
@@ -10,37 +10,39 @@ Foreman is an AI-powered engineering orchestrator that decomposes work into task
 # Development
 npm run build          # tsc compile
 npm test               # vitest run
+npm run test:coverage:transition  # Elixir-transition coverage gate
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # type check only
 npx vitest run <file>  # run a single test file
 
 # CLI (after build or via tsx)
-foreman init           # Initialize project + beads
-foreman run            # Dispatch ready tasks to agents
-foreman run --bead X   # Dispatch specific task
+foreman init           # Apply packaged Postgres migrations + initialize project
+foreman run            # Tick Elixir scheduler for ready-task dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
-foreman reset          # Clean up failed/stuck runs
-foreman reset --detect-stuck  # Detect + reset stuck runs (replaces 'foreman monitor')
-foreman retry <seed>   # Re-run a failed pipeline phase
-foreman stop           # Gracefully stop all agents
-foreman doctor         # Health checks (br, Pi, DB integrity)
+foreman retry <task>   # Re-run a failed pipeline phase
+foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
 foreman debug <id>     # AI-powered execution analysis (Opus)
-foreman sling trd X    # TRD -> task hierarchy (seeds + beads)
+foreman sling trd X    # TRD -> task hierarchy
 foreman plan X         # PRD -> TRD pipeline
+foreman plan prd|trd X # Server-backed PRD/TRD planning
+foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
+foreman server doctor # Elixir default backend; scheduler ticks every 5s and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
 foreman merge          # Merge completed branches
 foreman pr             # Create PRs for completed work
 foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
-foreman task create --from-text "X"  # Natural-language task creation (replaces 'foreman bead')
 foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
 foreman purge runs     # Remove stale failed run records
-foreman inbox          # Agent mail inbox viewer
+foreman inbox          # Agent mail + selected-run lifecycle events
+foreman inbox --task X --events  # Grouped workflow→phase→message/tool timeline
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
+foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
+# In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
 
-# br (beads_rust) task tracking
+# Elixir task tracking
 br ready               # Unblocked tasks
 br list --status=open  # All tasks
 br show <id>           # Task detail
@@ -57,19 +59,33 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
                    PostgreSQL         Pi SDK (in-process)
                    (state)        createAgentSession()
                       |              |
-                   br (beads_rust)   Pipeline Executor
+                   Elixir task store   Pipeline Executor
                    (task graph)      (workflow YAML-driven)
                                      |
                                   Refinery + autoMerge
                                   (merge queue → dev branch)
 ```
 
+TRD-2026-014 Elixir migration split:
+
+**Event-sourced orchestration invariant:** domain events are the source of truth and operational trigger. Projections are read models only. Scheduler/run loop, inbox/watch surfaces, and recovery flows must consume or reconcile from events, then read projections to decide action; do not rely on projection polling as the primary signal. Node/Pi workers emit authoritative terminal run/task events plus Pi SDK tool-call/assistant-message trace events; raw logs are compatibility/debug projections and must not contain unique operational truth. Launchers only record process-exit facts and must not infer success/failure from stdout.
+
+```
+Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker
+   |                              |                                  |
+   |                              |                                  └─ Pi SDK phases, ordered events/heartbeats/logs/artifacts + Elixir overwatch policy/nudges
+   |                              └─ commands, events, projections, run/phase actors, recovery, VCS/PR, doctor/metrics, audits
+   └─ command parsing, auto-start, projection rendering, legacy alias/deprecation warnings
+```
+
+See `docs/guides/elixir-backend-architecture.md` for the operator architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
+
 **Key modules:**
 
 - `src/cli/commands/` — 26 CLI commands (including `debug` for AI-powered analysis)
 - `src/orchestrator/pipeline-executor.ts` — generic workflow YAML-driven phase executor
 - `src/orchestrator/pi-sdk-runner.ts` — Pi SDK wrapper (`createAgentSession` + `session.prompt()`)
-- `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (native `send_mail` tool)
+- `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (`send_mail`, `mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`)
 - `src/orchestrator/agent-worker.ts` — detached worker process, pipeline orchestration
 - `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
 - `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
@@ -89,13 +105,13 @@ CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
 
 **Default pipeline phases:**
 
-1. **Explorer** (Haiku) — read-only codebase analysis → EXPLORER_REPORT.md
-2. **Developer** (Sonnet) — implementation + tests → DEVELOPER_REPORT.md
-3. **QA** (Sonnet) — test verification → QA_REPORT.md (verdict: PASS/FAIL)
+1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
+2. **Developer** (Sonnet) — implementation only; QA/finalize own tests → DEVELOPER_REPORT.md
+3. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
 4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
 5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
 
-After finalize: autoMerge triggers immediately → refinery merges to dev → bead closed.
+After finalize: worker enqueues/reports merge readiness via Elixir-backed paths; merge/refinery processing owns the drain/merge lifecycle.
 
 ## VCS Backend Abstraction (PRD-2026-004)
 
@@ -153,7 +169,7 @@ vcs:
 
 ## Workflow YAML Configuration
 
-Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). A workflow may declare top-level `task_type: <type>`; each task type must be declared by at most one workflow.
+Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). A workflow may declare top-level `task_type: <type>`; each task type must be declared by at most one workflow. The bundled bug Explorer phase indexes/updates Graphify and uses Graphify semantic queries before exact-file reads; Grep is reserved for later exact verification phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before `foreman run`; `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults.
 
 ```yaml
 # Example: src/defaults/workflows/default.yaml
@@ -164,7 +180,7 @@ phases:
     models:
       default: haiku
       P0: opus
-    maxTurns: 30
+    maxTurns: 12
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     mail:
@@ -187,17 +203,6 @@ phases:
 
 **Model shorthands:** `haiku` → `anthropic/claude-haiku-4-5`, `sonnet` → `anthropic/claude-sonnet-4-6`, `opus` → `anthropic/claude-opus-4-6`. Full model IDs also accepted (e.g. `openai/gpt-4o`).
 
-## br (beads_rust) Conventions
-
-- Installed at `~/.local/bin/br`
-- Storage: `.beads/beads.jsonl` (git-tracked)
-- Types: `bug | feature | task | epic | chore | docs | question`
-- Priorities: `0` (critical) through `4` (backlog) — never use words like "high"/"medium"
-- `br dep add <issue> <depends-on>` to declare blocking dependencies
-- `br ready` shows issues with no open blockers
-- `br close <id1> <id2>` to close multiple issues at once
-- `br sync --flush-only` to export DB to JSONL before committing
-
 ## Critical Constraints
 
 - **Non-interactive shell commands**: Always use `cp -f`, `mv -f`, `rm -f` (agents hang on `-i` prompts)
@@ -206,9 +211,9 @@ phases:
 - **CLAUDECODE env var**: Must be stripped from worker spawn env to avoid nested session errors
 - **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
 - **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
-- **Auto-reset on failure**: `markStuck()` resets bead to open when pipeline fails (rate limits); marks failed for permanent errors
-- **Agent Mail is PostgreSQL-backed**: Messages stored in Postgres (shared across all workers), not a separate mail database
-- **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, and `.beads/issues.jsonl` after `git add -A` to prevent polluted PRs and shared-state churn
+- **Auto-reset on failure**: `markStuck()` resets task to open when pipeline fails (rate limits); marks failed for permanent errors
+- **Node workers do not connect to the database**: Elixir owns database access. Node/Pi workers and CLI clients use Elixir HTTP commands/projections for task/run/mail state; do not pass `DATABASE_URL` into workers or add Postgres-backed worker fallbacks.
+- **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
 - **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
 
@@ -216,16 +221,14 @@ phases:
 
 ```bash
 # AI-powered execution analysis
-foreman debug <bead-id>         # Full Opus analysis of pipeline run
-foreman debug <bead-id> --raw   # Dump all artifacts without AI
-foreman debug <bead-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
+foreman debug <task-id>         # Full Opus analysis of pipeline run
+foreman debug <task-id> --raw   # Dump all artifacts without AI
+foreman debug <task-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs
-foreman doctor         # Check br binary, Pi binary, DB integrity
+foreman doctor         # Check br/Pi, DB integrity, stale runs/worktrees
 foreman status         # See all active/failed agents
-foreman reset          # Reset all failed/stuck runs to open
-foreman reset --bead X # Reset a specific run
-foreman retry <seed>   # Re-run a specific pipeline phase
+foreman retry <task>   # Re-run a specific pipeline phase
 
 # Agent logs (streamed during run)
 ls ~/.foreman/logs/    # One .log file per runId
@@ -235,7 +238,7 @@ foreman purge runs     # Remove stale failed run records
 
 # Mail inspection
 foreman inbox --all --watch  # Live stream all mail across all runs
-foreman inbox --bead X       # Mail for a specific bead
+foreman inbox --task X       # Mail/events for a specific task
 
 # Worktree cleanup
 foreman worktree list   # See all active worktrees
@@ -249,83 +252,29 @@ npx tsc --noEmit       # Type-check without building
 
 **Common failure modes:**
 
-- Agent stuck in Developer phase → `foreman retry <seed>` or `foreman reset --bead <bead>`
+- Agent stuck in Developer phase → check `foreman inbox --task <id> --events` for overwatch nudges, then `foreman retry <task>` or Elixir recovery workflow
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)
-- br state diverged from git → `br sync --flush-only && git add .beads/ && git commit -m "sync beads"`
+- br state diverged from git → `br sync --flush-only && git add .tasks/ && git commit -m "sync tasks"`
 - agent-worker crash on startup → check `~/.foreman/logs/<runId>.err` for syntax/import errors
 
 <!-- br-agent-instructions-v1 -->
 
----
-
-## Beads Workflow Integration
-
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
-
-### Essential Commands
-
-```bash
-# View ready issues (open, unblocked, not deferred)
-br ready
-
-# List and search
-br list --status=open # All open issues
-br show <id>          # Full issue details with dependencies
-br search "keyword"   # Full-text search
-
-# Create and update
-br create --title="..." --description="..." --type=task --priority=2
-br update <id> --status=in_progress
-br close <id> --reason="Completed"
-br close <id1> <id2>  # Close multiple issues at once
-
-# Sync with git
-br sync --flush-only  # Export DB to JSONL
-br sync --status      # Check sync status
-```
-
-### Workflow Pattern
-
-1. **Start**: Run `br ready` to find actionable work
-2. **Claim**: Use `br update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id>`
-5. **Sync**: Always run `br sync --flush-only` at session end
-
-### Key Concepts
-
-- **Dependencies**: Issues can block other issues. `br ready` shows only open, unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
-- **Types**: task, bug, feature, epic, chore, docs, question
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
-
 ### Session Protocol
 
-**Before ending any session, run this checklist:**
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-br sync --flush-only    # Export beads changes to JSONL
-git commit -m "..."     # Commit everything
-git push                # Push to remote
-```
+Follow the worker phase instructions, write required reports, and keep audit artifacts out of commits.
 
 ### Session Logging
 
-Saving a session log is **required** — not optional. At the end of every agent session, write a `SESSION_LOG.md` in the worktree root documenting what was done.
+Session logging is required, not optional. The worker also writes automatic logs under `~/.foreman/logs/`; each agent session must maintain `SESSION_LOG.md` using this format:
 
-Agent worker logs are automatically written to `~/.foreman/logs/<runId>.log` and streamed in real time. The SESSION_LOG.md is a higher-level human-readable record.
+---
 
-**SESSION_LOG.md format:**
-
-```markdown
 ## Metadata
 - Date: <ISO date>
 - Phase: <explorer | developer | qa | reviewer | finalize>
-- Seed: <seed-id>
+- Task: <task-id>
 - Run ID: <run-id>
 
 ## Key Activities
@@ -370,7 +319,7 @@ patterns applied, failures encountered, or decisions made — and record them:
 mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
 ```
 
-Link evidence when available: `--evidence-commit <sha>`, `--evidence-bead <id>`
+Link evidence when available: `--evidence-commit <sha>`, `--evidence-task <id>`
 
 Run `mulch status` to check domain health and entry counts.
 Run `mulch --help` for full usage.

@@ -149,22 +149,16 @@ phases:
   # ── Phase 4: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
   - name: finalize
-    prompt: finalize.md
-    tools:
-      allowed: [Bash, Glob, Grep, Read, Write]
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 60
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
-    retryOnFail: 3
+    retryOnFail: 1
     mail:
-      onStart: false
+      onStart: true
       onComplete: true
       onFail: developer
-
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"

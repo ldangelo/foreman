@@ -1,58 +1,51 @@
-import type { ForemanStore, RunProgress } from "../lib/store.js";
-import type { PostgresStore } from "../lib/postgres-store.js";
+import type { RunProgress } from "../lib/store.js";
 
-type SingleAgentProgressStore = Pick<ForemanStore, "updateRunProgress">;
-type SingleAgentEventStore = Pick<ForemanStore, "logEvent">;
-type RegisteredSingleAgentStore = Pick<PostgresStore, "updateRunProgress" | "logEvent">;
+type SingleAgentProgressWriter = {
+  updateProgress?(progress: RunProgress): Promise<void> | void;
+};
+
+type SingleAgentEventWriter = {
+  logEvent?(eventType: "complete" | "fail" | "stuck", data: Record<string, unknown>): Promise<void> | void;
+};
+
+function isProgress(value: unknown): value is RunProgress {
+  return typeof value === "object" && value !== null && "toolCalls" in value && "costUsd" in value;
+}
 
 export async function writeSingleAgentProgress(
-  localStore: SingleAgentProgressStore,
-  registeredReadStore: RegisteredSingleAgentStore | undefined,
-  runId: string,
-  progress: RunProgress,
-  log: (msg: string) => void,
+  writer: SingleAgentProgressWriter | undefined,
+  runIdOrRegistered: string | unknown,
+  progressOrRunId: RunProgress | string,
+  logOrProgress: ((msg: string) => void) | RunProgress,
+  maybeLog?: (msg: string) => void,
 ): Promise<void> {
-  if (registeredReadStore) {
-    try {
-      await registeredReadStore.updateRunProgress(runId, progress);
-      return;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[agent-worker] registered single-agent progress write failed (non-fatal); falling back to local store: ${msg}`);
-    }
-  }
-
+  const progress = isProgress(progressOrRunId) ? progressOrRunId : isProgress(logOrProgress) ? logOrProgress : undefined;
+  const log = typeof logOrProgress === "function" ? logOrProgress : maybeLog ?? (() => undefined);
   try {
-    await Promise.resolve(localStore.updateRunProgress(runId, progress));
+    await Promise.resolve(writer?.updateProgress?.(progress as RunProgress));
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`[agent-worker] local single-agent progress write failed (non-fatal): ${msg}`);
+    log(`[agent-worker] single-agent progress event failed (non-fatal): ${msg}`);
   }
 }
 
 export async function writeSingleAgentTerminalEvent(
-  localStore: SingleAgentEventStore,
-  registeredReadStore: RegisteredSingleAgentStore | undefined,
-  projectId: string,
-  runId: string,
-  eventType: "complete" | "fail" | "stuck",
-  data: Record<string, unknown>,
-  log: (msg: string) => void,
+  writer: SingleAgentEventWriter | undefined,
+  projectIdOrRegistered: string | unknown,
+  runIdOrProjectId: string,
+  eventTypeOrRunId: "complete" | "fail" | "stuck" | string,
+  dataOrEventType: Record<string, unknown> | "complete" | "fail" | "stuck",
+  logOrData: ((msg: string) => void) | Record<string, unknown>,
+  maybeLog?: (msg: string) => void,
 ): Promise<void> {
-  if (registeredReadStore) {
-    try {
-      await registeredReadStore.logEvent(projectId, eventType, data, runId);
-      return;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[agent-worker] registered single-agent terminal event write failed (non-fatal); falling back to local store: ${msg}`);
-    }
-  }
-
+  const legacy = typeof dataOrEventType === "string";
+  const eventType = (legacy ? dataOrEventType : eventTypeOrRunId) as "complete" | "fail" | "stuck";
+  const data = (legacy ? logOrData : dataOrEventType) as Record<string, unknown>;
+  const log = ((legacy ? maybeLog : logOrData) as ((msg: string) => void) | undefined) ?? (() => undefined);
   try {
-    localStore.logEvent(projectId, eventType, data, runId);
+    await Promise.resolve(writer?.logEvent?.(eventType, data));
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`[agent-worker] local single-agent terminal event write failed (non-fatal): ${msg}`);
+    log(`[agent-worker] single-agent terminal event failed (non-fatal): ${msg}`);
   }
 }

@@ -4,10 +4,10 @@ import { runWithPiSdk } from "./pi-sdk-runner.js";
 export interface PhaseRunnerContext {
   phaseName: string;
   runId?: string;
-  seedId: string;
-  seedTitle: string;
-  seedType?: string;
-  seedDescription?: string;
+  taskId: string;
+  taskTitle: string;
+  taskType?: string;
+  taskDescription?: string;
   worktreePath: string;
   targetBranch?: string;
 }

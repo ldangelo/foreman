@@ -12,12 +12,18 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
-import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
+import type { AgentMessageRow, RunRow } from "../../lib/db/postgres-adapter.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, ensureCliPostgresPool } from "./project-task-support.js";
 
 interface DaemonMailMessage {
   id: string;
@@ -50,9 +56,21 @@ interface DaemonPipelineEventRow {
   created_at: string;
 }
 
+type InboxClientContext =
+  | { backend: "node"; client: ReturnType<typeof createTrpcClient>; projectId: string }
+  | { backend: "elixir"; client: ElixirServerClient; projectId: string };
+
+async function createElixirInboxClient(): Promise<ElixirServerClient> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+}
+
 interface PipelineEvent {
   id: string;
   runId: string | null;
+  taskId?: string | null;
+  projectId?: string | null;
   eventType: string;
   details: Record<string, unknown> | null;
   createdAt: string;
@@ -62,11 +80,25 @@ interface PipelineEvent {
 
 const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "phase-start":           "▶",
+  "PhaseStarted":          "▶",
   "phase-complete":        "✓",
+  "PhaseCompleted":        "✓",
+  "PhaseFailed":           "✗",
+  "PhaseRetried":          "↻",
+  "PhaseSkipped":          "↷",
+  "PhaseVerdict":          "◆",
+  "PhaseNudged":           "!",
+  "phase-nudge":           "!",
+  "PhaseReportProduced":   "☰",
   "dispatch":              "→",
   "claim":                 "◈",
   "complete":              "✓",
   "fail":                  "✗",
+  "RunFailed":             "✗",
+  "WorkerLaunchFailed":    "✗",
+  "WorkerProcessExited":   "◼",
+  "AssistantMessage":      "✎",
+  "ToolCallFinished":      "⚙",
   "merge":                 "⚡",
   "pr-created":            "⎇",
   "merge-queue-enqueue":   "⏳",
@@ -74,33 +106,441 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "merge-queue-resolve":   "✓",
   "merge-queue-fallback":  "⚠",
   "merge-cleanup-fallback":"⚠",
+  "WorktreeCreated":       "▣",
+  "worktree-created":      "▣",
   "conflict":              "⚠",
   "test-fail":             "✗",
   "stuck":                 "⚠",
 };
 
-function formatPipelineEvent(event: PipelineEvent): string {
+export function formatPipelineEvent(event: PipelineEvent): string {
   const ts = formatTimestamp(event.createdAt);
   const icon = PIPELINE_EVENT_ICONS[event.eventType] ?? "·";
-  const summary = formatEventSummary(event.eventType, event.details);
-  return `[${ts}] ${icon} ${event.eventType} — ${summary}`;
+  const details = normalizedEventDetails(event);
+  const taskId = details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : undefined;
+  const taskPrefix = taskId ? ` ${taskId}` : "";
+  const summary = formatEventSummary(event.eventType, details);
+  return `[${ts}]${taskPrefix} ${icon} ${event.eventType} — ${summary}`;
 }
 
-function formatEventSummary(eventType: string, details: Record<string, unknown> | null): string {
+function normalizedEventDetails(event: PipelineEvent): Record<string, unknown> | null {
+  return event.details ? {
+    ...event.details,
+    task_id: event.details.task_id ?? event.taskId,
+    run_id: event.details.run_id ?? event.runId,
+    project_id: event.details.project_id ?? event.projectId,
+  } : null;
+}
+
+function eventPhase(details: Record<string, unknown> | null): string | undefined {
+  return details ? detailString(details, ["phase_id", "phase", "current_phase"]) : undefined;
+}
+
+function eventTurns(details: Record<string, unknown> | null): string | undefined {
+  return details ? detailString(details, ["numTurns", "num_turns", "turns", "totalTurns", "total_turns"]) : undefined;
+}
+
+function eventTask(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {
+  return details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : event.taskId ?? undefined;
+}
+
+function eventKind(eventType: string): string {
+  switch (eventType) {
+    case "RunStarted":
+    case "TaskCreated":
+    case "WorkerLaunchRequested":
+    case "WorktreeCreated":
+    case "worktree-created":
+    case "PhaseStarted":
+    case "phase-start":
+    case "dispatch":
+    case "claim":
+    case "merge-queue-dequeue":
+      return "start";
+    case "RunCompleted":
+    case "TaskUpdated":
+    case "PhaseCompleted":
+    case "phase-complete":
+    case "PhaseReportProduced":
+    case "PhaseVerdict":
+    case "WorkerProcessExited":
+    case "complete":
+    case "merge":
+    case "Merge":
+    case "pr-created":
+    case "merge-queue-resolve":
+      return "stop";
+    case "RunFailed":
+    case "WorkerLaunchFailed":
+    case "PhaseFailed":
+    case "fail":
+    case "test-fail":
+    case "conflict":
+    case "stuck":
+      return "error";
+    case "PhaseRetried":
+      return "retry";
+    case "PhaseSkipped":
+      return "skip";
+    case "ToolCallRequested":
+    case "ToolCallApproved":
+    case "ToolCallDenied":
+    case "ToolCallFinished":
+      return "tool";
+    case "InboxMessageAppended":
+    case "AssistantMessage":
+    case "PhaseNudged":
+    case "phase-nudge":
+      return "mail";
+    default:
+      return eventType;
+  }
+}
+
+interface PipelineEventTableRow {
+  time: string;
+  task: string;
+  phase: string;
+  turns: string;
+  event: string;
+  message: string;
+}
+
+export function formatPipelineEventTableRow(event: PipelineEvent, messageWidth = 90): PipelineEventTableRow {
+  const details = normalizedEventDetails(event);
+  return {
+    time: formatTimestamp(event.createdAt),
+    task: eventTask(event, details) ?? "-",
+    phase: eventPhase(details) ?? "-",
+    turns: eventTurns(details) ?? "-",
+    event: eventKind(event.eventType),
+    message: truncate(formatEventSummary(event.eventType, details), messageWidth),
+  };
+}
+
+function pipelineEventTableWidths(rows: PipelineEventTableRow[], messageWidth = 90) {
+  return {
+    time: 19,
+    task: Math.max(12, ...rows.map((row) => row.task.length)),
+    phase: Math.max(10, ...rows.map((row) => row.phase.length)),
+    turns: Math.max(5, ...rows.map((row) => row.turns.length)),
+    event: Math.max(5, ...rows.map((row) => row.event.length)),
+    message: messageWidth,
+  };
+}
+
+function renderPipelineEventTableRows(rows: PipelineEventTableRow[], widths: ReturnType<typeof pipelineEventTableWidths>): string[] {
+  return rows.map((row) => [
+    pad(row.time, widths.time),
+    pad(row.task, widths.task),
+    pad(row.phase, widths.phase),
+    pad(row.turns, widths.turns),
+    pad(row.event, widths.event),
+    pad(row.message, widths.message),
+  ].join(" │ "));
+}
+
+export function renderPipelineEventsTableRows(events: PipelineEvent[], messageWidth = 90): string {
+  const rows = sortEventsChronologically(events).map((event) => formatPipelineEventTableRow(event, messageWidth));
+  if (rows.length === 0) return "";
+  return renderPipelineEventTableRows(rows, pipelineEventTableWidths(rows, messageWidth)).join("\n");
+}
+
+export function renderPipelineEventsTable(events: PipelineEvent[], messageWidth = 90): string {
+  const rows = sortEventsChronologically(events).map((event) => formatPipelineEventTableRow(event, messageWidth));
+  if (rows.length === 0) return "";
+  const widths = pipelineEventTableWidths(rows, messageWidth);
+  const header = [
+    pad("TIME", widths.time),
+    pad("TASK", widths.task),
+    pad("PHASE", widths.phase),
+    pad("TURNS", widths.turns),
+    pad("EVENT", widths.event),
+    pad("MESSAGE", widths.message),
+  ].join(" │ ");
+  const totalWidth = widths.time + widths.task + widths.phase + widths.turns + widths.event + widths.message + 15;
+  const hr = "─".repeat(totalWidth);
+  const lines = renderPipelineEventTableRows(rows, widths);
+  return [hr, header, hr, ...lines, hr].join("\n");
+}
+
+export function formatPipelineEventsGrouped(events: PipelineEvent[]): string[] {
+  const lines: string[] = [];
+  let currentWorkflow = "workflow";
+  let currentPhase: string | null = null;
+
+  for (const event of sortEventsChronologically(events)) {
+    const details = normalizedEventDetails(event);
+    const workflow = details ? detailString(details, ["workflow"]) : undefined;
+    const phase = eventPhase(details);
+
+    if (event.eventType === "RunStarted") {
+      currentWorkflow = workflow ?? currentWorkflow;
+      lines.push(chalk.bold(`workflow: ${currentWorkflow}`));
+      continue;
+    }
+
+    if (event.eventType === "PhaseStarted" && phase) {
+      currentPhase = phase;
+      lines.push(chalk.bold(`  phase: ${phase}`));
+      lines.push(`    ${formatPipelineEvent(event)}`);
+      continue;
+    }
+
+    const effectivePhase: string | null = phase ?? currentPhase;
+    if (effectivePhase && effectivePhase !== currentPhase) {
+      currentPhase = effectivePhase;
+      lines.push(chalk.bold(`  phase: ${effectivePhase}`));
+    }
+
+    lines.push(`${currentPhase ? "    " : "  "}${formatPipelineEvent(event)}`);
+  }
+
+  return lines;
+}
+
+interface CompactPhaseSummary {
+  started?: string;
+  completed?: string;
+  failed?: string;
+  retryCount: number;
+  denials: Map<string, number>;
+  tools: Map<string, number>;
+}
+
+function compactTaskId(events: PipelineEvent[], messages: Message[], fallback?: string): string {
+  for (const event of events) {
+    const details = normalizedEventDetails(event);
+    const taskId = details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : event.taskId ?? undefined;
+    if (taskId) return taskId;
+  }
+  for (const msg of messages) {
+    const taskId = messageTask(msg);
+    if (taskId && taskId !== msg.run_id) return taskId;
+  }
+  return fallback ?? "unknown";
+}
+
+function compactPhaseKey(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {
+  return details ? detailString(details, ["phase_id", "phase", "current_phase"]) : undefined;
+}
+
+function incrementMap(map: Map<string, number>, key: string): void {
+  map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+function compactMap(map: Map<string, number>): string {
+  return [...map.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([key, count]) => `${key}×${count}`)
+    .join(", ");
+}
+
+export function formatCompactInboxSummary(input: {
+  runId: string;
+  taskId?: string | null;
+  status?: string | null;
+  messages?: Message[];
+  events?: PipelineEvent[];
+}): string {
+  const messages = input.messages ?? [];
+  const events = sortEventsChronologically(input.events ?? []);
+  const taskId = input.taskId ?? compactTaskId(events, messages, input.runId);
+  const phases = new Map<string, CompactPhaseSummary>();
+  const notable: string[] = [];
+  const notableKeys = new Set<string>();
+  const pushNotable = (key: string, line: string): void => {
+    if (notableKeys.has(key)) return;
+    notableKeys.add(key);
+    notable.push(line);
+  };
+
+  const phaseSummary = (phase: string): CompactPhaseSummary => {
+    const existing = phases.get(phase);
+    if (existing) return existing;
+    const created: CompactPhaseSummary = { retryCount: 0, denials: new Map(), tools: new Map() };
+    phases.set(phase, created);
+    return created;
+  };
+
+  for (const event of events) {
+    const details = normalizedEventDetails(event);
+    const phase = compactPhaseKey(event, details);
+    const tool = details ? detailString(details, ["tool_name", "toolName"]) : undefined;
+    const at = formatTimestamp(event.createdAt);
+
+    if (phase) {
+      const summary = phaseSummary(phase);
+      if (event.eventType === "PhaseStarted") summary.started = at;
+      if (event.eventType === "PhaseCompleted") summary.completed = at;
+      if (event.eventType === "PhaseFailed") summary.failed = at;
+      if (event.eventType === "PhaseRetried") summary.retryCount += 1;
+      if (event.eventType === "ToolCallRequested" && tool) incrementMap(summary.tools, tool);
+      if (event.eventType === "ToolCallDenied" && tool) incrementMap(summary.denials, tool);
+    }
+
+    if (["RunFailed", "WorkerLaunchFailed", "PhaseFailed", "PhaseNudged", "ToolCallDenied"].includes(event.eventType)) {
+      const reason = details ? detailString(details, ["reason", "message", "error"]) : undefined;
+      pushNotable(`${event.eventType}:${phase ?? "run"}:${tool ?? ""}:${reason ?? ""}`, formatPipelineEvent(event));
+    }
+  }
+
+  const mailDenials = new Map<string, number>();
+  for (const msg of messages) {
+    const row = formatMessageTable(msg, 120);
+    if (row.kind === "denied" || row.kind === "error") {
+      const key = `${row.receiver}:${row.tool ?? row.kind}`;
+      incrementMap(mailDenials, key);
+      pushNotable(`mail:${key}:${row.args ?? msg.subject}`, formatInboxMessageLine(msg));
+    }
+  }
+
+  const lines: string[] = [
+    chalk.bold("Compact Inbox"),
+    `task=${taskId}  run=${input.runId}  status=${input.status ?? "unknown"}`,
+  ];
+
+  if (phases.size > 0) {
+    lines.push(chalk.bold("Phases"));
+    for (const [phase, summary] of phases) {
+      const state = summary.failed ? "failed" : summary.completed ? "done" : summary.started ? "active" : "seen";
+      const bits = [`${phase}: ${state}`];
+      if (summary.retryCount > 0) bits.push(`retries=${summary.retryCount}`);
+      if (summary.tools.size > 0) bits.push(`tools=${compactMap(summary.tools)}`);
+      if (summary.denials.size > 0) bits.push(chalk.yellow(`denied=${compactMap(summary.denials)}`));
+      lines.push(`- ${bits.join("  ")}`);
+    }
+  }
+
+  if (mailDenials.size > 0) {
+    lines.push(chalk.bold("Mail/Overwatch"));
+    lines.push(`- denials=${compactMap(mailDenials)}`);
+  }
+
+  if (notable.length > 0) {
+    lines.push(chalk.bold("Notable"));
+    for (const line of notable.slice(-10)) lines.push(`- ${line}`);
+  }
+
+  return lines.join("\n");
+}
+
+function detailString(details: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = details[key];
+    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "number") return String(value);
+  }
+  return undefined;
+}
+
+export function formatEventSummary(eventType: string, details: Record<string, unknown> | null): string {
   if (!details) return eventType;
+
+  const taskId = detailString(details, ["task_id", "taskId", "bead_id", "beadId"]);
+  const runId = detailString(details, ["run_id", "runId"]);
+  const phase = detailString(details, ["phase_id", "phase", "current_phase"]);
+  const status = detailString(details, ["status"]);
+  const workflow = detailString(details, ["workflow"]);
+  const error = detailString(details, ["error", "reason", "message"]);
+  const target = taskId ? `task ${taskId}` : runId ? `run ${runId}` : undefined;
 
   switch (eventType) {
     case "phase-start":
+    case "PhaseStarted":
+      return phase ? (target ? `Start ${phase} for ${target}` : `Start: ${phase}`) : target ? `Start phase for ${target}` : eventType;
     case "phase-complete":
-      return details.phase ? `${eventType === "phase-start" ? "Start" : "Complete"}: ${details.phase}` : eventType;
+    case "PhaseCompleted":
+      return phase ? (target ? `Complete ${phase} for ${target}${status ? ` → ${status}` : ""}` : `Complete: ${phase}${status ? ` → ${status}` : ""}`) : target ? `Complete phase for ${target}` : eventType;
+    case "PhaseFailed":
+      return phase ? `Failed ${phase}${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}` : target ? `Failed phase for ${target}` : eventType;
+    case "PhaseRetried": {
+      const retryTarget = detailString(details, ["retry_target", "retryTarget"]);
+      const attempt = detailString(details, ["attempt"]);
+      const max = detailString(details, ["max_retries", "maxRetries"]);
+      const retryText = attempt && max ? ` (${attempt}/${max})` : "";
+      return phase ? `Retry ${phase}${retryTarget ? ` via ${retryTarget}` : ""}${retryText}${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}` : eventType;
+    }
+    case "PhaseSkipped":
+      return phase ? `Skipped ${phase}${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}` : eventType;
+    case "PhaseVerdict": {
+      const verdict = detailString(details, ["verdict"]);
+      return phase ? `${phase} verdict${verdict ? `: ${verdict}` : ""}${target ? ` for ${target}` : ""}` : eventType;
+    }
+    case "PhaseNudged":
+    case "phase-nudge": {
+      const recipient = detailString(details, ["recipient"]);
+      return phase ? `Overwatch nudged ${phase}${target ? ` for ${target}` : ""}${recipient ? ` → ${recipient}` : ""}${error ? `: ${error}` : ""}` : eventType;
+    }
+    case "PhaseReportProduced": {
+      const outcome = detailString(details, ["outcome", "status"]);
+      const nextPhase = detailString(details, ["next_phase", "nextPhase", "retry_target", "retryTarget"]);
+      const verdict = detailString(details, ["verdict"]);
+      return phase ? `Report ${phase}${target ? ` for ${target}` : ""}${outcome ? ` → ${outcome}` : ""}${verdict ? ` (${verdict})` : ""}${nextPhase ? `; steer ${nextPhase}` : ""}` : eventType;
+    }
+    case "RunStarted":
+      return `Started${target ? ` ${target}` : ""}${workflow ? ` (${workflow})` : ""}`;
+    case "TaskCreated":
+      return `Created${target ? ` ${target}` : ""}${status ? ` → ${status}` : ""}`;
+    case "TaskUpdated":
+      return `Updated${target ? ` ${target}` : ""}${status ? ` → ${status}` : ""}${runId ? ` (run ${runId})` : ""}`;
+    case "TaskAnnotated":
+      return `Note added${target ? ` to ${target}` : ""}`;
+    case "WorkerLaunchRequested":
+      return `Worker launch requested${target ? ` for ${target}` : ""}${workflow ? ` (${workflow})` : ""}${runId ? ` (run ${runId})` : ""}`;
+    case "WorktreeCreated":
+    case "worktree-created": {
+      const branch = detailString(details, ["branchName", "branch_name"]);
+      const path = detailString(details, ["worktreePath", "worktree_path"]);
+      return `Worktree created${target ? ` for ${target}` : ""}${branch ? ` (${branch})` : ""}${path ? ` at ${path}` : ""}`;
+    }
+    case "WorkerLaunchFailed":
+      return `Worker launch failed${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}`;
+    case "WorkerProcessExited": {
+      const exitCode = detailString(details, ["exit_code", "exitCode"]);
+      return `Worker process exited${target ? ` for ${target}` : ""}${exitCode ? ` (exit ${exitCode})` : ""}`;
+    }
+    case "AssistantMessage": {
+      const phase = detailString(details, ["phase", "phase_id"]);
+      const body = detailString(details, ["message", "output"]);
+      return `Assistant message${phase ? ` in ${phase}` : ""}${body ? `: ${body.slice(0, 120)}${body.length > 120 ? "…" : ""}` : ""}`;
+    }
+    case "ToolCallRequested": {
+      const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
+      const phase = detailString(details, ["phase", "phase_id"]);
+      const path = detailString(details, ["path", "file_path", "filePath"]);
+      const args = details.args && typeof details.args === "object" ? details.args as Record<string, unknown> : undefined;
+      const argPath = args ? detailString(args, ["path", "file_path", "filePath", "command", "query"]) : undefined;
+      return `Tool ${tool} requested${phase ? ` in ${phase}` : ""}${path || argPath ? `: ${truncate(path || argPath || "", 80)}` : ""}`;
+    }
+    case "ToolCallApproved": {
+      const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
+      const phase = detailString(details, ["phase", "phase_id"]);
+      return `Tool ${tool} approved${phase ? ` in ${phase}` : ""}`;
+    }
+    case "ToolCallDenied": {
+      const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
+      const phase = detailString(details, ["phase", "phase_id"]);
+      const reason = detailString(details, ["reason", "message", "error"]);
+      return `Tool ${tool} denied${phase ? ` in ${phase}` : ""}${reason ? `: ${reason}` : ""}`;
+    }
+    case "ToolCallFinished": {
+      const tool = detailString(details, ["tool_name", "toolName"]) || "tool";
+      const status = detailString(details, ["status"]);
+      const phase = detailString(details, ["phase", "phase_id"]);
+      return `Tool ${tool}${status ? ` ${status}` : " finished"}${phase ? ` in ${phase}` : ""}`;
+    }
+    case "RunFailed":
+      return `Failed${target ? ` ${target}` : ""}${phase ? ` at ${phase}` : ""}${error ? `: ${error}` : ""}`;
     case "dispatch":
-      return details.bead_id ? `Dispatch: ${details.bead_id}` : "Dispatch";
+      return taskId ? `Dispatch: ${taskId}` : "Dispatch";
     case "complete":
-      return details.seedId ? `Complete: ${details.seedId}` : "Complete";
+      return taskId ? `Complete: ${taskId}` : "Complete";
     case "fail":
-      return details.seedId ? `Failed: ${details.seedId}` : "Failed";
+      return taskId ? `Failed: ${taskId}` : "Failed";
     case "merge":
-      return details.bead_id ? `Merged: ${details.bead_id}` : "Merged";
+    case "Merge":
+      return taskId ? `Merged: ${taskId}` : "Merged";
     case "pr-created":
       return details.pr_number ? `PR #${details.pr_number} created` : "PR created";
     case "merge-queue-enqueue":
@@ -108,28 +548,85 @@ function formatEventSummary(eventType: string, details: Record<string, unknown> 
     case "merge-queue-resolve":
     case "merge-queue-fallback":
     case "merge-cleanup-fallback":
-      return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
+      return taskId ? `${eventType}: ${taskId}` : eventType;
     case "conflict":
     case "test-fail":
-      return details.bead_id ? `${eventType}: ${details.bead_id}` : eventType;
+      return taskId ? `${eventType}: ${taskId}` : eventType;
     case "stuck":
-      return details.seedId ? `Stuck: ${details.seedId}` : "Stuck";
+      return taskId ? `Stuck: ${taskId}` : "Stuck";
     default:
-      return details.bead_id ? `${eventType}: ${details.bead_id}` :
-             details.seedId ? `${eventType}: ${details.seedId}` : eventType;
+      return taskId ? `${eventType}: ${taskId}` : runId ? `${eventType}: ${runId}` : eventType;
   }
 }
 
-async function fetchDaemonEvents(
-  client: ReturnType<typeof createTrpcClient>,
+export function adaptPostgresEvent(row: { id: string; run_id: string | null; task_id?: string | null; project_id?: string | null; event_type: string; payload: unknown; created_at: string | Date }): PipelineEvent {
+  const payload = typeof row.payload === "string"
+    ? JSON.parse(row.payload)
+    : row.payload;
+  return {
+    id: row.id,
+    runId: row.run_id,
+    taskId: row.task_id,
+    projectId: row.project_id,
+    eventType: row.event_type,
+    details: payload && typeof payload === "object" ? payload as Record<string, unknown> : null,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  };
+}
+
+export async function fetchPostgresEvents(
+  adapter: PostgresAdapter,
   projectId: string,
   options: { all?: boolean; runId?: string; limit: number },
 ): Promise<PipelineEvent[]> {
+  const rows = options.runId
+    ? await adapter.listPipelineEventsForRun(options.runId, options.limit)
+    : options.all
+      ? await adapter.listProjectPipelineEvents(projectId, options.limit)
+      : [];
+  return rows.map(adaptPostgresEvent);
+}
+
+export function sortEventsChronologically(events: PipelineEvent[]): PipelineEvent[] {
+  return [...events].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+export function selectUnseenEvents(events: PipelineEvent[], seenIds: Set<string>): PipelineEvent[] {
+  return sortEventsChronologically(events.filter((event) => !seenIds.has(event.id)));
+}
+
+export async function fetchDaemonEvents(
+  daemon: InboxClientContext,
+  options: { all?: boolean; runId?: string; limit: number },
+): Promise<PipelineEvent[]> {
+  if (daemon.backend === "elixir") {
+    const rows = await daemon.client.listEvents({
+      projectId: daemon.projectId,
+      runId: options.all ? undefined : options.runId,
+      limit: 1000,
+    });
+    return rows
+      .map((row) => {
+        const payload = row.payload && typeof row.payload === "object" ? row.payload as Record<string, unknown> : null;
+        const nestedDetails = payload?.details && typeof payload.details === "object" ? payload.details as Record<string, unknown> : null;
+        return {
+          id: String(row.event_id ?? `${row.run_id ?? "run"}-${row.event_type ?? row.type ?? "event"}`),
+          runId: row.run_id ? String(row.run_id) : null,
+          taskId: row.task_id ? String(row.task_id) : null,
+          projectId: row.project_id ? String(row.project_id) : null,
+          eventType: String(row.event_type ?? row.type ?? "event"),
+          details: payload ? { ...payload, ...(nestedDetails ?? {}) } : null,
+          createdAt: String(row.occurred_at ?? row.created_at ?? new Date().toISOString()),
+        };
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, options.limit);
+  }
+
   if (options.all) {
-    // Fetch runs then events for each
-    const runs = await client.runs.list({ projectId, limit: 100 }) as DaemonRunRow[];
+    const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[];
     const eventLists = await Promise.all(
-      runs.map((run) => client.runs.listEvents({ runId: run.id }) as Promise<DaemonPipelineEventRow[]>),
+      runs.map((run) => daemon.client.runs.listEvents({ runId: run.id }) as Promise<DaemonPipelineEventRow[]>),
     );
     return eventLists
       .flat()
@@ -144,7 +641,7 @@ async function fetchDaemonEvents(
       .slice(0, options.limit);
   }
   if (!options.runId) return [];
-  const rows = await client.runs.listEvents({ runId: options.runId }) as DaemonPipelineEventRow[];
+  const rows = await daemon.client.runs.listEvents({ runId: options.runId }) as DaemonPipelineEventRow[];
   return rows
     .map((row) => ({
       id: row.id,
@@ -239,7 +736,7 @@ function formatMessage(msg: Message, fullPayload = false): string {
     if (typeof parsed["status"] === "string") parts.push(`status=${parsed["status"]}`);
     if (typeof parsed["error"] === "string") parts.push(`error=${parsed["error"]}`);
     if (typeof parsed["currentPhase"] === "string") parts.push(`currentPhase=${parsed["currentPhase"]}`);
-    if (typeof parsed["seedId"] === "string") parts.push(`seedId=${parsed["seedId"]}`);
+    if (typeof parsed["taskId"] === "string") parts.push(`taskId=${parsed["taskId"]}`);
     if (typeof parsed["runId"] === "string") parts.push(`runId=${parsed["runId"]}`);
     if (typeof parsed["message"] === "string") parts.push(`message=${parsed["message"]}`);
     if (typeof parsed["kind"] === "string") parts.push(`kind=${parsed["kind"]}`);
@@ -285,7 +782,7 @@ interface ParsedMessageBody {
   status?: string;
   error?: string;
   currentPhase?: string;
-  seedId?: string;
+  taskId?: string;
   runId?: string;
   message?: string;
   kind?: string;
@@ -311,7 +808,7 @@ export function parseMessageBody(body: string): ParsedMessageBody {
       status: typeof parsed["status"] === "string" ? parsed["status"] : undefined,
       error: typeof parsed["error"] === "string" ? parsed["error"] : undefined,
       currentPhase: typeof parsed["currentPhase"] === "string" ? parsed["currentPhase"] : undefined,
-      seedId: typeof parsed["seedId"] === "string" ? parsed["seedId"] : undefined,
+      taskId: typeof parsed["taskId"] === "string" ? parsed["taskId"] : undefined,
       runId: typeof parsed["runId"] === "string" ? parsed["runId"] : undefined,
       message: typeof parsed["message"] === "string" ? parsed["message"] : undefined,
       kind: typeof parsed["kind"] === "string" ? parsed["kind"] : undefined,
@@ -356,24 +853,37 @@ const DEFAULT_ARGS_WIDTH = 40;
  */
 export function formatMessageTable(msg: Message, argsMaxLen = DEFAULT_ARGS_WIDTH): TableRow {
   const parsed = parseMessageBody(msg.body);
+  const bodyPreview = msg.body ? msg.body.replace(/\n/g, " ") : undefined;
+  const plainToolMatch = bodyPreview?.match(/^Tool\s+(\S+)\s+(denied|approved|requested|finished|error)\b/i);
+  const argsPreview = parsed.argsPreview ?? parsed.message ?? parsed.body ?? bodyPreview;
   return {
     date: formatTimestamp(msg.created_at),
-    ticket: parsed.seedId ?? msg.run_id,
+    ticket: messageTask(msg),
     sender: msg.sender_agent_type,
     receiver: msg.recipient_agent_type,
-    kind: parsed.kind,
-    tool: parsed.tool,
-    args: parsed.argsPreview ? truncate(parsed.argsPreview, argsMaxLen) : undefined,
+    kind: parsed.kind ?? plainToolMatch?.[2]?.toLowerCase(),
+    tool: parsed.tool ?? plainToolMatch?.[1]?.toLowerCase(),
+    args: argsPreview ? truncate(argsPreview, argsMaxLen) : undefined,
     runId: msg.run_id,
     isRead: msg.read === 1,
   };
+}
+
+export function formatInboxMessageLine(msg: Message): string {
+  const row = formatMessageTable(msg, 140);
+  const icon = row.kind === "denied" || row.kind === "error" ? "!" : "✉";
+  const route = `${msg.sender_agent_type} → ${msg.recipient_agent_type}`;
+  const tool = row.tool ? ` ${row.tool}` : "";
+  const kind = row.kind ? ` ${row.kind}` : "";
+  const summary = row.args ?? msg.subject;
+  return `[${row.date}] ${row.ticket} ${icon} Mail${kind}${tool} — ${route}: ${summary}`;
 }
 
 // ── ASCII table renderer ───────────────────────────────────────────────────────
 
 /**
  * Column widths for the inbox table.
- * Compact sortable datetime | ticket | sender | receiver | kind | tool | args
+ * Compact sortable datetime | run/task | sender | receiver | kind | tool | args
  */
 const COL_WIDTHS = {
   date: 19,    // "2026-04-30 14:23:45"
@@ -421,7 +931,7 @@ export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): 
 
   const header = [
     pad("DATE", sizes.date),
-    pad("TICKET", sizes.ticket),
+    pad("TASK", sizes.ticket),
     pad("SENDER", sizes.sender),
     pad("RECEIVER", sizes.receiver),
     pad("KIND", sizes.kind),
@@ -465,10 +975,11 @@ export function extractBodyFields(body: string): {
   args: string | null;
 } {
   const parsed = parseMessageBody(body);
+  const plainToolMatch = body.match(/^Tool\s+(\S+)\s+(denied|approved|requested|finished|error)\b/i);
   return {
-    kind: parsed.kind ?? null,
-    tool: parsed.tool ?? null,
-    args: parsed.argsPreview ?? parsed.message ?? parsed.body ?? null,
+    kind: parsed.kind ?? plainToolMatch?.[2]?.toLowerCase() ?? null,
+    tool: parsed.tool ?? plainToolMatch?.[1]?.toLowerCase() ?? null,
+    args: parsed.argsPreview ?? parsed.message ?? parsed.body ?? (body ? body : null),
   };
 }
 
@@ -489,7 +1000,7 @@ interface FormattedRow {
 
 /**
  * Formats inbox messages as a space-aligned table with columns:
- * DATETIME | TICKET | SENDER | RECEIVER | KIND | TOOL | ARGS
+ * DATETIME | TASK | SENDER | RECEIVER | KIND | TOOL | ARGS
  */
 export class TableFormatter {
   private readonly terminalWidth: number;
@@ -518,7 +1029,7 @@ export class TableFormatter {
     return {
       columns: {
         datetime: this.formatDatetime(msg.created_at),
-        ticket: this.middleCutTicket(msg.run_id),
+        ticket: this.middleCutTicket(messageTask(msg)),
         sender: msg.sender_agent_type,
         receiver: msg.recipient_agent_type,
         kind: kind ?? dash,
@@ -573,7 +1084,7 @@ export class TableFormatter {
   }
 
   formatHeader(): string {
-    return "DATETIME          TICKET       SENDER     RECEIVER   KIND       TOOL       ARGS";
+    return "DATETIME          TASK        SENDER     RECEIVER   KIND       TOOL       ARGS";
   }
 
   private formatSeparator(widths: ReturnType<typeof this.calcWidths>): string {
@@ -641,10 +1152,10 @@ function formatRunStatus(run: Run): string {
   } else {
     statusStr = chalk.yellow(run.status.toUpperCase());
   }
-  return `[${ts}] ${chalk.bold("●")} ${run.seed_id} ${statusStr} (run ${run.id})`;
+  return `[${ts}] ${chalk.bold("●")} ${run.task_id} ${statusStr} (run ${run.id})`;
 }
 
-function adaptDaemonMessage(row: DaemonMailMessage): Message {
+export function adaptDaemonMessage(row: DaemonMailMessage): Message {
   return {
     id: row.id,
     run_id: row.run_id,
@@ -667,8 +1178,9 @@ function messagePhase(msg: Message): string | undefined {
   return parseMessageBody(msg.body).phase ?? phaseFromSender(msg.sender_agent_type);
 }
 
-function messageSeed(msg: Message): string {
-  return parseMessageBody(msg.body).seedId ?? msg.run_id;
+function messageTask(msg: Message): string {
+  const projectedTaskId = (msg as Message & { task_id?: string | null }).task_id;
+  return parseMessageBody(msg.body).taskId ?? projectedTaskId ?? msg.run_id;
 }
 
 function messageActivity(msg: Message): string {
@@ -713,14 +1225,14 @@ function renderRunProgressSummary(messages: Message[], runs: Run[]): string {
     const latestError = [...list].reverse().find((msg) => msg.subject === "agent-error" || parseMessageBody(msg.body).error);
     const phase = latest ? messagePhase(latest) : undefined;
     const parsedLatest = latest ? parseMessageBody(latest.body) : {};
-    const seed = run?.seed_id ?? (latest ? messageSeed(latest) : runId);
+    const task = run?.task_id ?? (latest ? messageTask(latest) : runId);
     const status = run?.status ?? "unknown";
     const stage = phase
       ? `${phase}${parsedLatest.kind ? `:${parsedLatest.kind}` : ""}`
       : "unknown";
     const lastAt = latest ? formatTimestamp(latest.created_at) : "—";
     const error = latestError ? parseMessageBody(latestError.body).error : undefined;
-    lines.push(`- ${seed}  run=${runId.slice(0, 8)}…  status=${status}  stage=${stage}  last=${lastAt}`);
+    lines.push(`- ${task}  run=${runId.slice(0, 8)}…  status=${status}  stage=${stage}  last=${lastAt}`);
     if (error) lines.push(`  ${chalk.red("error:")} ${wrapText(error, Math.max(40, getTerminalWidth() - 10)).replace(/\n/g, "\n  ")}`);
   }
   return lines.join("\n");
@@ -733,7 +1245,7 @@ function renderRecentActivity(messages: Message[]): string {
   for (const msg of messages) {
     const phase = messagePhase(msg) ?? "—";
     const activity = messageActivity(msg);
-    lines.push(`[${formatTimestamp(msg.created_at)}] ${messageSeed(msg)} ${phase} ${msg.sender_agent_type} → ${msg.recipient_agent_type}`);
+    lines.push(`[${formatTimestamp(msg.created_at)}] ${messageTask(msg)} ${phase} ${msg.sender_agent_type} → ${msg.recipient_agent_type}`);
     lines.push(`  ${activity}`);
     const args = messageArgs(msg);
     if (args && args !== activity) {
@@ -743,11 +1255,11 @@ function renderRecentActivity(messages: Message[]): string {
   return lines.join("\n");
 }
 
-function adaptDaemonRun(row: DaemonRunRow): Run {
+export function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: "",
-    seed_id: row.bead_id,
+    task_id: row.bead_id,
     agent_type: "daemon",
     session_key: null,
     worktree_path: null,
@@ -760,29 +1272,128 @@ function adaptDaemonRun(row: DaemonRunRow): Run {
   };
 }
 
-export async function resolveDaemonInboxContext(projectPath: string, projectSelector?: string): Promise<{
-  client: ReturnType<typeof createTrpcClient>;
-  projectId: string;
-} | null> {
-  try {
-    const projects = await listRegisteredProjects();
-    const project = projectSelector
-      ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
-      : projects.find((record) => resolve(record.path) === resolve(projectPath));
-    if (!project) return null;
-    return { client: createTrpcClient(), projectId: project.id };
-  } catch {
-    return null;
-  }
+function adaptPostgresRun(row: RunRow): Run {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    task_id: row.task_id,
+    agent_type: row.agent_type,
+    session_key: row.session_key,
+    worktree_path: row.worktree_path,
+    status: row.status as Run["status"],
+    started_at: row.started_at,
+    completed_at: row.completed_at,
+    created_at: row.created_at,
+    progress: row.progress,
+    base_branch: row.base_branch,
+  };
 }
 
-async function resolveDaemonRunId(
-  client: ReturnType<typeof createTrpcClient>,
+function adaptPostgresMessage(row: AgentMessageRow): Message {
+  return {
+    id: row.id,
+    run_id: row.run_id,
+    sender_agent_type: row.sender_agent_type,
+    recipient_agent_type: row.recipient_agent_type,
+    subject: row.subject,
+    body: row.body,
+    read: row.read,
+    created_at: row.created_at,
+    deleted_at: row.deleted_at,
+  };
+}
+
+export async function resolvePostgresInboxProject(projectPath: string, projectSelector?: string): Promise<{ adapter: PostgresAdapter; projectId: string } | null> {
+  ensureCliPostgresPool(projectPath);
+  const projects = await listRegisteredProjects();
+  const project = projectSelector
+    ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
+    : projects.find((record) => resolve(record.path) === resolve(projectPath));
+  if (!project) return null;
+  return { adapter: new PostgresAdapter(), projectId: project.id };
+}
+
+export async function resolvePostgresRunId(
+  adapter: PostgresAdapter,
   projectId: string,
   options: { run?: string; task?: string; bead?: string },
 ): Promise<string | null> {
   if (options.run) return options.run;
-  const runs = await client.runs.list({ projectId, limit: 100 }) as DaemonRunRow[];
+  const taskFilter = options.task ?? options.bead;
+  if (taskFilter) {
+    const task = typeof adapter.getTask === "function"
+      ? await adapter.getTask(projectId, taskFilter)
+      : null;
+    if (task?.run_id) return task.run_id;
+    const runs = await adapter.listRuns(projectId, { limit: 100 });
+    return runs.find((run) => run.task_id === taskFilter)?.id ?? null;
+  }
+  const runs = await adapter.listRuns(projectId, { limit: 100 });
+  return runs[0]?.id ?? null;
+}
+
+export async function fetchPostgresMessages(
+  adapter: PostgresAdapter,
+  projectId: string,
+  options: { all?: boolean; runId?: string; agent?: string; unread?: boolean; limit: number },
+): Promise<Message[]> {
+  if (options.all) {
+    let rows = await adapter.getAllMessagesGlobal(projectId, options.limit);
+    if (options.agent) rows = rows.filter((row) => row.recipient_agent_type === options.agent);
+    if (options.unread) rows = rows.filter((row) => row.read === 0);
+    return rows.map(adaptPostgresMessage);
+  }
+  if (!options.runId) return [];
+  if (options.agent) {
+    const rows = await adapter.getMessages(projectId, options.runId, options.agent, options.unread ?? false);
+    return selectRecentMessages(rows.map(adaptPostgresMessage), options.limit);
+  }
+  let rows = await adapter.getAllMessages(options.runId);
+  if (options.unread) rows = rows.filter((row) => row.read === 0);
+  return selectRecentMessages(rows.map(adaptPostgresMessage), options.limit);
+}
+
+export async function resolveDaemonInboxContext(projectPath: string, projectSelector?: string): Promise<InboxClientContext | null> {
+  const backendMode = foremanBackendMode();
+  let projects: Awaited<ReturnType<typeof listRegisteredProjects>>;
+  try {
+    projects = await listRegisteredProjects();
+  } catch (error) {
+    if (backendMode === "elixir") throw error;
+    return null;
+  }
+  const project = projectSelector
+    ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
+    : projects.find((record) => resolve(record.path) === resolve(projectPath));
+  if (!project) return null;
+  if (backendMode === "elixir") {
+    return { backend: "elixir", client: await createElixirInboxClient(), projectId: project.id };
+  }
+  return { backend: "node", client: createTrpcClient(), projectId: project.id };
+}
+
+export async function resolveDaemonRunId(
+  daemon: InboxClientContext,
+  options: { run?: string; task?: string; bead?: string },
+): Promise<string | null> {
+  if (options.run) return options.run;
+  if (daemon.backend === "elixir") {
+    const taskFilter = options.task ?? options.bead;
+    if (taskFilter && typeof daemon.client.getTask === "function") {
+      const task = await daemon.client.getTask(taskFilter).catch(() => null);
+      const taskRunId = task && typeof task.run_id === "string" ? task.run_id : null;
+      if (taskRunId) return taskRunId;
+    }
+
+    const runs = await daemon.client.listRuns({ projectId: daemon.projectId });
+    if (taskFilter) {
+      const match = runs.find((run) => String(run.task_id ?? "") === taskFilter);
+      return match?.run_id ? String(match.run_id) : match?.id ? String(match.id) : null;
+    }
+    const first = runs[0];
+    return first?.run_id ? String(first.run_id) : first?.id ? String(first.id) : null;
+  }
+  const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[];
   const taskFilter = options.task ?? options.bead;
   if (taskFilter) {
     const match = runs.find((run) => run.bead_id === taskFilter);
@@ -795,13 +1406,36 @@ export function selectRecentMessages(messages: Message[], limit: number): Messag
   return messages.slice(Math.max(0, messages.length - limit));
 }
 
-async function fetchDaemonMessages(
-  client: ReturnType<typeof createTrpcClient>,
-  projectId: string,
+export async function fetchDaemonMessages(
+  daemon: InboxClientContext,
   options: { all?: boolean; runId?: string; agent?: string; unread?: boolean; limit: number },
 ): Promise<Message[]> {
+  if (daemon.backend === "elixir") {
+    const rows = await daemon.client.listInbox({
+      projectId: daemon.projectId,
+      runId: options.all ? undefined : options.runId,
+      unread: options.unread,
+      limit: options.limit,
+    });
+    const messages = rows
+      .map((row) => ({
+        id: String(row.message_id ?? `${row.run_id ?? "run"}-${row.subject ?? randomUUID()}`),
+        run_id: String(row.run_id ?? ""),
+        task_id: typeof row.task_id === "string" ? row.task_id : undefined,
+        sender_agent_type: String(row.sender_agent_type ?? row.sender ?? row.from ?? "agent"),
+        recipient_agent_type: String(row.recipient_agent_type ?? row.recipient ?? row.to ?? "run"),
+        subject: String(row.subject ?? row.hook ?? "message"),
+        body: typeof row.body === "string" ? row.body : JSON.stringify(row.body ?? {}),
+        read: row.unread === false ? 1 : 0,
+        created_at: String(row.created_at ?? new Date().toISOString()),
+        deleted_at: null,
+      }))
+      .filter((row) => !options.agent || row.recipient_agent_type === options.agent);
+    return options.all ? messages : selectRecentMessages(messages, options.limit);
+  }
+
   if (options.all) {
-    const rows = await client.mail.listGlobal({ projectId, limit: options.limit }) as DaemonMailMessage[];
+    const rows = await daemon.client.mail.listGlobal({ projectId: daemon.projectId, limit: options.limit }) as DaemonMailMessage[];
     const filtered = options.agent
       ? rows.filter((row) => row.recipient_agent_type === options.agent)
       : rows;
@@ -809,8 +1443,8 @@ async function fetchDaemonMessages(
     return unreadFiltered.map(adaptDaemonMessage);
   }
   if (!options.runId) return [];
-  const rows = await client.mail.list({
-    projectId,
+  const rows = await daemon.client.mail.list({
+    projectId: daemon.projectId,
     runId: options.runId,
     agentType: options.agent,
     unreadOnly: options.unread,
@@ -830,18 +1464,82 @@ function resolveLatestRunId(store: ForemanStore): string | null {
   return runs[0]?.id ?? null;
 }
 
-function resolveRunIdBySeed(store: ForemanStore, seedId: string): string | null {
+function resolveRunIdByTask(store: ForemanStore, taskId: string): string | null {
   const runs = store.getRunsByStatuses(
     ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
   );
-  const seedRuns = runs.filter((r) => r.seed_id === seedId);
+  const taskRuns = runs.filter((r) => r.task_id === taskId);
   // Runs are returned DESC by created_at, so [0] is most recent
-  return seedRuns[0]?.id ?? null;
+  return taskRuns[0]?.id ?? null;
 }
 
 function getInboxStatusRuns(store: ForemanStore): ReturnType<ForemanStore["getRunsByStatuses"]> {
   if (typeof store.getRunsByStatuses !== "function") return [];
   return store.getRunsByStatuses(["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
+}
+
+export async function listDaemonRuns(daemon: InboxClientContext): Promise<Run[]> {
+  if (daemon.backend === "elixir") {
+    const runs = await daemon.client.listRuns();
+    return runs
+      .filter((run) => run.project_id === daemon.projectId)
+      .map((run) => ({
+        id: String(run.run_id ?? run.id ?? "unknown"),
+        project_id: daemon.projectId,
+        task_id: String(run.task_id ?? run.run_id ?? run.id ?? "unknown"),
+        agent_type: "elixir",
+        session_key: null,
+        worktree_path: null,
+        status: String(run.status ?? "running") as Run["status"],
+        started_at: typeof run.started_at === "string" ? run.started_at : null,
+        completed_at: typeof run.completed_at === "string" ? run.completed_at : null,
+        created_at: typeof run.created_at === "string" ? run.created_at : new Date().toISOString(),
+        progress: null,
+        base_branch: null,
+        merge_strategy: null,
+      }));
+  }
+  const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[];
+  return runs.map(adaptDaemonRun);
+}
+
+async function markDaemonMessageRead(daemon: InboxClientContext, messageId: string): Promise<void> {
+  if (daemon.backend === "elixir") {
+    return;
+  }
+  await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId });
+}
+
+async function sendDaemonMessage(
+  daemon: InboxClientContext,
+  input: { runId: string; from: string; to: string; subject: string; body: string },
+): Promise<void> {
+  if (daemon.backend === "elixir") {
+    const response = await daemon.client.sendCommand({
+      command_id: `inbox-send-${randomUUID()}`,
+      command_type: "inbox.send",
+      payload: {
+        project_id: daemon.projectId,
+        run_id: input.runId,
+        sender_agent_type: input.from,
+        recipient_agent_type: input.to,
+        subject: input.subject,
+        body: input.body,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(response.error.message);
+    }
+    return;
+  }
+  await daemon.client.mail.send({
+    projectId: daemon.projectId,
+    runId: input.runId,
+    senderAgentType: input.from,
+    recipientAgentType: input.to,
+    subject: input.subject,
+    body: input.body,
+  });
 }
 
 // ── Events helper ───────────────────────────────────────────────────────────
@@ -912,6 +1610,7 @@ const inboxSendCommand = new Command("send")
         "inbox send error: --run-id is required (or set FOREMAN_RUN_ID)\n",
       );
       process.exit(1);
+      return;
     }
 
     // Validate body is valid JSON
@@ -930,17 +1629,14 @@ const inboxSendCommand = new Command("send")
     const projectPath = await resolveRepoRootProjectPath({});
     try {
       const resolvedProjectPath = resolve(projectPath);
-      const projects = await listRegisteredProjects();
-      const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
-      if (!project) {
+      const daemon = await resolveDaemonInboxContext(resolvedProjectPath);
+      if (!daemon) {
         throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
       }
-      const client = createTrpcClient();
-      await client.mail.send({
-        projectId: project.id,
+      await sendDaemonMessage(daemon, {
         runId,
-        senderAgentType: options.from,
-        recipientAgentType: options.to,
+        from: options.from,
+        to: options.to,
         subject: options.subject,
         body: parsedBody,
       });
@@ -972,7 +1668,9 @@ export const inboxCommand = new Command("inbox")
   .option("--full", "Show full message payloads (no truncation, JSON pretty-printed)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .option("--events", "Also show pipeline events (phase transitions, PR status, merge queue)")
+  .option("--events", "Also show pipeline events as a columnar table (time, task, phase, turns, event, message)")
+  .option("--compact", "Show compact task/run summary instead of raw event/mail spam")
+  .option("--grouped", "Group pipeline events by workflow/phase instead of the default event table")
   .option("--events-limit <n>", "Max pipeline events to show (default: 50)", "50")
   .action(async (options: {
     agent?: string;
@@ -988,12 +1686,17 @@ export const inboxCommand = new Command("inbox")
     project?: string;
     projectPath?: string;
     events?: boolean;
+    compact?: boolean;
+    grouped?: boolean;
+    eventsLimit?: string;
     "events-limit"?: string;
   }) => {
     const fullPayload = options.full ?? false;
     const limit = parseInt(options.limit ?? "50", 10);
-    const eventsLimit = parseInt(options["events-limit"] ?? "50", 10);
+    const eventsLimit = parseInt(options.eventsLimit ?? options["events-limit"] ?? "50", 10);
     const showEvents = options.events ?? false;
+    const compactOutput = options.compact ?? false;
+    const groupedEvents = options.grouped ?? false;
     const taskFilter = options.task ?? options.bead;
 
     // Require --project or --all in multi-project mode
@@ -1011,14 +1714,19 @@ export const inboxCommand = new Command("inbox")
     }
 
     const daemon = await resolveDaemonInboxContext(projectPath, options.project);
-    const store = daemon ? null : ForemanStore.forProject(projectPath);
+    const postgres = process.env.FOREMAN_ENABLE_INBOX_POSTGRES === "1"
+      ? await resolvePostgresInboxProject(projectPath, options.project)
+      : null;
+    const store = daemon || postgres ? null : ForemanStore.forProject(projectPath);
 
     try {
       // ── One-shot global mode (--all without --watch) ───────────────────────
       if (options.all && !options.watch) {
-        let messages = daemon
-          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
-          : store!.getAllMessagesGlobal(limit);
+        let messages = postgres
+          ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: options.unread, limit })
+          : daemon
+            ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: options.unread, limit })
+            : store!.getAllMessagesGlobal(limit);
 
         // Apply agent filter (by recipient, matching single-run behavior)
         if (!daemon && options.agent) {
@@ -1030,9 +1738,11 @@ export const inboxCommand = new Command("inbox")
           messages = messages.filter((m) => m.read === 0);
         }
 
-        const summaryRuns = daemon
-          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-          : getInboxStatusRuns(store!);
+        const summaryRuns = postgres
+          ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+          : daemon
+            ? await listDaemonRuns(daemon)
+            : getInboxStatusRuns(store!);
         const chronologicalMessages = [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
         if (messages.length === 0) {
@@ -1055,9 +1765,11 @@ export const inboxCommand = new Command("inbox")
         }
 
         if (options.ack && messages.length > 0) {
-          if (daemon) {
+          if (postgres) {
+            for (const msg of messages) await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+          } else if (daemon) {
             for (const msg of messages) {
-              await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+              await markDaemonMessageRead(daemon, msg.id);
             }
           } else {
             for (const msg of messages) {
@@ -1070,19 +1782,25 @@ export const inboxCommand = new Command("inbox")
         // ── Pipeline events section (--events) ─────────────────────────────
         if (showEvents) {
           console.log("");
-          const events = daemon
-            ? await fetchDaemonEvents(daemon.client, daemon.projectId, { all: true, limit: eventsLimit })
-            : fetchEventsFromStore(store!, eventsLimit);
+          const events = postgres
+            ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { all: true, limit: eventsLimit })
+            : daemon
+              ? await fetchDaemonEvents(daemon, { all: true, limit: eventsLimit })
+              : fetchEventsFromStore(store!, eventsLimit);
 
           if (events.length === 0) {
             console.log("No pipeline events found.");
           } else {
             console.log(chalk.bold("\nPipeline Events — all runs"));
-            console.log("─".repeat(70));
-            for (const event of events) {
-              console.log(formatPipelineEvent(event));
+            if (groupedEvents) {
+              console.log("─".repeat(70));
+              for (const line of formatPipelineEventsGrouped(events)) {
+                console.log(line);
+              }
+              console.log("─".repeat(70));
+            } else {
+              console.log(renderPipelineEventsTable(events));
             }
-            console.log("─".repeat(70));
             console.log(`${events.length} event(s) shown.`);
           }
         }
@@ -1093,10 +1811,13 @@ export const inboxCommand = new Command("inbox")
       if (options.all && options.watch) {
         console.log("Watching all runs... (Ctrl-C to stop)\n");
         const seenIds = new Set<string>();
-        const seenRunIds = new Set<string>();
-        const initialGlobal = daemon
-          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
-          : store!.getAllMessagesGlobal(limit);
+        const seenEventIds = new Set<string>();
+        const seenRunStatuses = new Map<string, string>();
+        const initialGlobal = postgres
+          ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
+          : daemon
+            ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: false, limit })
+            : store!.getAllMessagesGlobal(limit);
         if (initialGlobal.length > 0) {
           console.log(`── past messages ${"─".repeat(53)}`);
           if (fullPayload) {
@@ -1109,21 +1830,71 @@ export const inboxCommand = new Command("inbox")
           }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         }
-        const initRuns = daemon
-          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-          : store!.getRunsByStatuses(["completed", "failed", "running"]);
-        for (const r of initRuns) seenRunIds.add(r.id);
+        const initRuns = postgres
+          ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+          : daemon
+            ? await listDaemonRuns(daemon)
+            : store!.getRunsByStatuses(["completed", "failed", "running"]);
+        for (const r of initRuns) seenRunStatuses.set(r.id, r.status);
+
+        if (showEvents) {
+          const initialEvents = postgres
+            ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { all: true, limit: eventsLimit })
+            : daemon
+              ? await fetchDaemonEvents(daemon, { all: true, limit: eventsLimit })
+              : fetchEventsFromStore(store!, eventsLimit);
+
+          if (initialEvents.length > 0) {
+            console.log(`── past events ${"─".repeat(55)}`);
+            const sortedEvents = sortEventsChronologically(initialEvents);
+            for (const event of sortedEvents) seenEventIds.add(event.id);
+            if (groupedEvents) {
+              for (const event of sortedEvents) console.log(formatPipelineEvent(event));
+            } else {
+              console.log(renderPipelineEventsTable(sortedEvents));
+            }
+            console.log(`── live ${"─".repeat(62)}\n`);
+          } else {
+            console.log(`── live ${"─".repeat(62)}\n`);
+          }
+        }
         const pollAll = (): void => {
           void (async () => {
-            const statusRuns = daemon
-              ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-              : store!.getRunsByStatuses(["completed", "failed", "running"]);
+            const statusRuns = postgres
+              ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+              : daemon
+                ? await listDaemonRuns(daemon)
+                : store!.getRunsByStatuses(["completed", "failed", "running"]);
             for (const run of statusRuns) {
-              if (!seenRunIds.has(run.id)) { seenRunIds.add(run.id); console.log(formatRunStatus(run)); console.log(""); }
+              const priorStatus = seenRunStatuses.get(run.id);
+              if (priorStatus !== run.status) {
+                seenRunStatuses.set(run.id, run.status);
+                console.log(formatRunStatus(run));
+                console.log("");
+              }
             }
-            const msgs = daemon
-              ? await fetchDaemonMessages(daemon.client, daemon.projectId, { all: true, agent: options.agent, unread: false, limit })
-              : store!.getAllMessagesGlobal(limit);
+
+            if (showEvents) {
+              const events = postgres
+                ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { all: true, limit: eventsLimit })
+                : daemon
+                  ? await fetchDaemonEvents(daemon, { all: true, limit: eventsLimit })
+                  : fetchEventsFromStore(store!, eventsLimit);
+              const unseenEvents = selectUnseenEvents(events, seenEventIds);
+              if (unseenEvents.length > 0) {
+                for (const event of unseenEvents) seenEventIds.add(event.id);
+                if (groupedEvents) {
+                  for (const event of unseenEvents) console.log(formatPipelineEvent(event));
+                } else {
+                  console.log(renderPipelineEventsTableRows(unseenEvents));
+                }
+              }
+            }
+            const msgs = postgres
+              ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { all: true, agent: options.agent, unread: false, limit })
+              : daemon
+                ? await fetchDaemonMessages(daemon, { all: true, agent: options.agent, unread: false, limit })
+                : store!.getAllMessagesGlobal(limit);
             for (const msg of msgs.filter((m) => !seenIds.has(m.id))) {
               seenIds.add(msg.id);
               if (fullPayload) {
@@ -1143,61 +1914,91 @@ export const inboxCommand = new Command("inbox")
         return;
       }
 
-      const runId = daemon
-        ? await resolveDaemonRunId(daemon.client, daemon.projectId, { run: options.run, task: options.task, bead: options.bead })
-        : options.run
-          ?? (taskFilter ? resolveRunIdBySeed(store!, taskFilter) : null)
-          ?? resolveLatestRunId(store!);
+      const runId = postgres
+        ? await resolvePostgresRunId(postgres.adapter, postgres.projectId, { run: options.run, task: options.task, bead: options.bead })
+        : daemon
+          ? await resolveDaemonRunId(daemon, { run: options.run, task: options.task, bead: options.bead })
+          : options.run
+            ?? (taskFilter ? resolveRunIdByTask(store!, taskFilter) : null)
+            ?? resolveLatestRunId(store!);
       if (!runId) {
         console.error("No runs found. Start a pipeline first with `foreman run`.");
         process.exit(1);
       }
 
-      // Resolve seed ID for display (run record carries seed_id)
-      const allRuns = daemon
-        ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-        : store!.getRunsByStatuses(
-          ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
-        );
+      // Resolve task ID for display (run record carries task_id)
+      const allRuns = postgres
+        ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+        : daemon
+          ? await listDaemonRuns(daemon)
+          : store!.getRunsByStatuses(
+            ["pending", "running", "completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"],
+          );
       const thisRun = allRuns.find((r) => r.id === runId);
-      const seedLabel = thisRun?.seed_id ? `  bead: ${thisRun.seed_id}` : "";
+      const taskLabel = thisRun?.task_id ? `  task: ${thisRun.task_id}` : "";
 
       if (!options.watch) {
         // One-shot: show current run lifecycle status then fetch and display messages
-        const runStatusRuns = daemon
-          ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-          : store!.getRunsByStatuses(["completed", "failed"]);
+        const runStatusRuns = postgres
+          ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+          : daemon
+            ? await listDaemonRuns(daemon)
+            : store!.getRunsByStatuses(["completed", "failed"]);
         const currentRun = runStatusRuns.find((r) => r.id === runId);
         if (currentRun) {
           console.log(formatRunStatus(currentRun));
           console.log("");
         }
 
-        const messages = daemon
-          ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
-          : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
+        const messages = postgres
+          ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+          : daemon
+            ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: options.unread, limit })
+            : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
         if (messages.length === 0) {
-          console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+          if (!compactOutput) {
+            console.log(`No ${options.unread ? "unread " : ""}messages for run ${runId}${taskLabel}${options.agent ? ` (agent: ${options.agent})` : ""}.`);
+          }
         } else {
-          if (fullPayload) {
-            console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
+          if (compactOutput) {
+            // Summarized with events below.
+          } else if (fullPayload) {
+            console.log(`\nInbox — run: ${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}\n${"─".repeat(70)}`);
             for (const msg of messages) {
               console.log(formatMessage(msg, true));
               console.log("");
             }
             console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
+          } else if (showEvents) {
+            console.log(chalk.bold(`\nInbox Messages — run: `) + `${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
+            console.log("─".repeat(70));
+            for (const msg of messages) console.log(formatInboxMessageLine(msg));
+            console.log("─".repeat(70));
+            console.log(`${messages.length} message(s) shown.`);
           } else {
             const rows = messages.map((msg) => formatMessageTable(msg));
-            console.log(`\nInbox — run: ${runId}${seedLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
+            console.log(`\nInbox — run: ${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
             console.log(renderMessageTable(rows));
             console.log(`${messages.length} message(s) shown.`);
           }
         }
 
+        if (postgres && !showEvents) {
+          const lifecycleEvents = await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: Math.min(eventsLimit, 10) });
+          if (lifecycleEvents.length > 0) {
+            console.log(chalk.bold("\nLifecycle Events — run: ") + runId);
+            console.log("─".repeat(70));
+            for (const event of lifecycleEvents) console.log(formatPipelineEvent(event));
+            console.log("─".repeat(70));
+          }
+        }
+
         if (options.ack && messages.length > 0) {
-          if (daemon) {
+          if (postgres) {
+            for (const msg of messages) await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+          } else if (daemon) {
             for (const msg of messages) {
-              await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+              await markDaemonMessageRead(daemon, msg.id);
             }
           } else {
             for (const msg of messages) {
@@ -1207,41 +2008,65 @@ export const inboxCommand = new Command("inbox")
           console.log(`Marked ${messages.length} message(s) as read.`);
         }
 
-        // ── Pipeline events section (--events) ─────────────────────────────
-        if (showEvents) {
+        // ── Pipeline events / compact section (--events, --compact) ────────
+        if (showEvents || compactOutput) {
           console.log("");
-          const events = daemon
-            ? await fetchDaemonEvents(daemon.client, daemon.projectId, { runId, limit: eventsLimit })
-            : fetchEventsFromStoreForRun(store!, runId, eventsLimit);
+          const eventFetchLimit = compactOutput ? Math.max(eventsLimit, 500) : eventsLimit;
+          const events = postgres
+            ? await fetchPostgresEvents(postgres.adapter, postgres.projectId, { runId, limit: eventFetchLimit })
+            : daemon
+              ? await fetchDaemonEvents(daemon, { runId, limit: eventFetchLimit })
+              : fetchEventsFromStoreForRun(store!, runId, eventFetchLimit);
 
-          if (events.length === 0) {
-            console.log("No pipeline events found.");
-          } else {
-            console.log(chalk.bold("\nPipeline Events — run: ") + runId);
-            console.log("─".repeat(70));
-            for (const event of events) {
-              console.log(formatPipelineEvent(event));
+          if (compactOutput) {
+            console.log(formatCompactInboxSummary({
+              runId,
+              taskId: thisRun?.task_id,
+              status: currentRun?.status ?? thisRun?.status,
+              messages,
+              events,
+            }));
+          }
+
+          if (!compactOutput) {
+            if (events.length === 0) {
+              console.log("\nNo pipeline events found.");
+            } else {
+              console.log(chalk.bold("\nPipeline Events — run: ") + `${runId}${taskLabel}`);
+              if (groupedEvents) {
+                console.log("─".repeat(70));
+                for (const line of formatPipelineEventsGrouped(events)) {
+                  console.log(line);
+                }
+                console.log("─".repeat(70));
+              } else {
+                console.log(renderPipelineEventsTable(events));
+              }
+              console.log(`${events.length} event(s) shown.`);
             }
-            console.log("─".repeat(70));
-            console.log(`${events.length} event(s) shown.`);
           }
         }
         return;
       }
 
       // Watch mode: poll every 2s, show past messages first then new ones
-      console.log(`Watching inbox for run ${runId}${seedLabel}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
+      console.log(`Watching inbox for run ${runId}${taskLabel}${options.agent ? ` (agent: ${options.agent})` : ""}... (Ctrl-C to stop)\n`);
       const seenIds = new Set<string>();
       const seenRunIds = new Set<string>();
 
       // Initial fetch — print existing messages immediately, then track them as seen
-      const initial = daemon
-        ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: false, limit })
-        : fetchMessages(store!, runId, options.agent, false, limit);
+      const initial = postgres
+        ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: false, limit })
+        : daemon
+          ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: false, limit })
+          : fetchMessages(store!, runId, options.agent, false, limit);
       if (initial.length > 0) {
         console.log(`── past messages ${"─".repeat(53)}`);
         if (fullPayload) {
           for (const m of initial) { console.log(formatMessage(m, true)); console.log(""); seenIds.add(m.id); }
+          console.log(`── live ─────────────────────────────────────────────────────────────\n`);
+        } else if (showEvents) {
+          for (const m of initial) { console.log(formatInboxMessageLine(m)); seenIds.add(m.id); }
           console.log(`── live ─────────────────────────────────────────────────────────────\n`);
         } else {
           const rows = initial.map((m) => formatMessageTable(m));
@@ -1252,17 +2077,21 @@ export const inboxCommand = new Command("inbox")
         }
       }
 
-      // Seed seenRunIds with any already-completed/failed runs so we only show new transitions
-      const initialRuns = daemon
-        ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-        : store!.getRunsByStatuses(["completed", "failed"]);
+      // Task seenRunIds with any already-completed/failed runs so we only show new transitions
+      const initialRuns = postgres
+        ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+        : daemon
+          ? await listDaemonRuns(daemon)
+          : store!.getRunsByStatuses(["completed", "failed"]);
       for (const r of initialRuns) seenRunIds.add(r.id);
 
       const poll = (): void => {
         void (async () => {
-          const statusRuns = daemon
-            ? (await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[]).map(adaptDaemonRun)
-            : store!.getRunsByStatuses(["completed", "failed"]);
+          const statusRuns = postgres
+            ? (await postgres.adapter.listRuns(postgres.projectId, { limit: 100 })).map(adaptPostgresRun)
+            : daemon
+              ? await listDaemonRuns(daemon)
+              : store!.getRunsByStatuses(["completed", "failed"]);
           for (const run of statusRuns) {
             if (!seenRunIds.has(run.id)) {
               seenRunIds.add(run.id);
@@ -1271,14 +2100,19 @@ export const inboxCommand = new Command("inbox")
             }
           }
 
-          const msgs = daemon
-            ? await fetchDaemonMessages(daemon.client, daemon.projectId, { runId, agent: options.agent, unread: options.unread, limit })
-            : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
+          const msgs = postgres
+            ? await fetchPostgresMessages(postgres.adapter, postgres.projectId, { runId, agent: options.agent, unread: options.unread, limit })
+            : daemon
+              ? await fetchDaemonMessages(daemon, { runId, agent: options.agent, unread: options.unread, limit })
+              : fetchMessages(store!, runId, options.agent, options.unread ?? false, limit);
           const newMsgs = msgs.filter((m) => !seenIds.has(m.id));
           for (const msg of newMsgs) {
             seenIds.add(msg.id);
             if (fullPayload) {
               console.log(formatMessage(msg, true));
+              console.log("");
+            } else if (showEvents) {
+              console.log(formatInboxMessageLine(msg));
               console.log("");
             } else {
               const rows = [formatMessageTable(msg)];
@@ -1286,8 +2120,10 @@ export const inboxCommand = new Command("inbox")
               console.log("");
             }
             if (options.ack) {
-              if (daemon) {
-                await daemon.client.mail.markRead({ projectId: daemon.projectId, messageId: msg.id });
+              if (postgres) {
+                await postgres.adapter.markMessageRead(postgres.projectId, msg.id);
+              } else if (daemon) {
+                await markDaemonMessageRead(daemon, msg.id);
               } else {
                 store!.markMessageRead(msg.id);
               }

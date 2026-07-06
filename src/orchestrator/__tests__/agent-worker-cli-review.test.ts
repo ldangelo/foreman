@@ -35,7 +35,7 @@ describe("agent-worker cli-review builtin wiring", () => {
 
   it("does not route rate-limit phase failures through retryWith feedback loops", () => {
     const rateLimitIdx = pipelineSource.indexOf("if (isRateLimitError(errorMsg))");
-    const retryWithIdx = pipelineSource.indexOf("if (phase.retryWith)", rateLimitIdx);
+    const retryWithIdx = pipelineSource.indexOf("const retryTarget = retryTargetForFailure(phase, errorMsg);", rateLimitIdx);
     expect(rateLimitIdx).toBeGreaterThan(-1);
     expect(retryWithIdx).toBeGreaterThan(rateLimitIdx);
   });

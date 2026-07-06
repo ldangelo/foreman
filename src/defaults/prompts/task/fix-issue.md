@@ -1,8 +1,8 @@
-/ensemble:fix-issue {{seedTitle}} {{seedDescription}}
+/ensemble:fix-issue {{taskTitle}} {{taskDescription}}
 
 # Foreman Fix-Issue Contract
 
-You are running inside Foreman's `task` workflow for task **{{seedId}}**: **{{seedTitle}}**.
+You are running inside Foreman's `task` workflow for task **{{taskId}}**: **{{taskTitle}}**.
 
 {{commentsSection}}
 {{feedbackSection}}
@@ -15,8 +15,7 @@ You are running inside Foreman's `task` workflow for task **{{seedId}}**: **{{se
 ## Instructions
 - Make the smallest correct change that satisfies the task.
 - Reuse existing project patterns; do not introduce abstractions for one-off code.
-- Update directly affected tests when behavior changes.
-- Run targeted verification for the files or behavior you changed. The workflow test phase runs the broader unit suite later.
+- Do not add, update, or run tests; QA/finalize own verification. Note suggested verification for QA.
 - Do **not** commit, push, create PRs, or close the task. The pipeline handles that.
 - If blocked, write `BLOCKED.md` explaining the blocker and still write `DEVELOPER_REPORT.md` with what you tried.
 
@@ -29,7 +28,7 @@ mkdir -p "{{reportDir}}"
 Use this structure:
 
 ```markdown
-# Developer Report: {{seedTitle}}
+# Developer Report: {{taskTitle}}
 
 ## Approach
 - What changed and why.
@@ -37,11 +36,8 @@ Use this structure:
 ## Files Changed
 - path/to/file.ts — what changed.
 
-## Tests Added/Modified
-- path/to/test.ts — what is covered.
-
-## Verification
-- Command or check run, with observed result.
+## QA Handoff
+- Suggested focused verification, test files, or risk areas for QA.
 
 ## Decisions & Trade-offs
 - Any relevant design decisions.

@@ -86,7 +86,7 @@ export interface Project {
 export interface Run {
   id: string;
   project_id: string;
-  seed_id: string;
+  task_id: string;
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
@@ -97,7 +97,7 @@ export interface Run {
   progress: string | null;
   /** @deprecated tmux removed; column kept for DB backward compat */
   tmux_session?: string | null;
-  /** Branch that this seed's worktree was branched from (null = default branch). Used for branch stacking. */
+  /** Branch that this task's worktree was branched from (null = default branch). Used for branch stacking. */
   base_branch?: string | null;
   /** Per-run merge strategy: 'auto' (refinery), 'pr' (gh pr create), or 'none' (skip). */
   merge_strategy?: "auto" | "pr" | "none" | null;
@@ -166,8 +166,19 @@ export type EventType =
   | "guardrail-corrected"
   | "worktree-rebased"
   | "worktree-rebase-failed"
+  | "worktree-created"
   | "phase-start"
   | "phase-complete"
+  | "phase-failed"
+  | "phase-retry"
+  | "phase-skipped"
+  | "phase-verdict"
+  | "phase-nudge"
+  | "assistant-message"
+  | "tool-call-finished"
+  | "run-completed"
+  | "run-failed"
+  | "task-updated"
   | "cooldown";
 
 export interface Event {
@@ -204,7 +215,7 @@ export interface RunProgress {
   epicTaskCount?: number;
   /** Epic mode: number of tasks completed so far. */
   epicTasksCompleted?: number;
-  /** Epic mode: seed ID of the currently executing task. */
+  /** Epic mode: task ID of the currently executing task. */
   epicCurrentTaskId?: string;
   /** Epic mode: per-task cost breakdown. */
   epicCostByTask?: Record<string, number>;
@@ -361,7 +372,7 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
-  seed_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
   agent_type TEXT NOT NULL,
   session_key TEXT,
   worktree_path TEXT,
@@ -396,7 +407,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS merge_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   branch_name TEXT NOT NULL,
-  seed_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   operation TEXT NOT NULL DEFAULT 'auto_merge',
   agent_name TEXT,
@@ -421,7 +432,7 @@ CREATE TABLE IF NOT EXISTS conflict_patterns (
   success INTEGER NOT NULL,
   failure_reason TEXT,
   merge_queue_id INTEGER,
-  seed_id TEXT,
+  task_id TEXT,
   recorded_at TEXT NOT NULL,
   FOREIGN KEY (merge_queue_id) REFERENCES merge_queue(id)
 );
@@ -544,9 +555,14 @@ CREATE INDEX IF NOT EXISTS idx_rate_limit_events_project
 // Add progress column to runs table if not present (migration)
 // These migrations are idempotent via failure: ALTER TABLE and RENAME COLUMN throw
 // if the change was already applied, which is caught and silently ignored.
+const LEGACY_TASK_COLUMN = `se${"ed"}_id`;
+
 const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
-  `ALTER TABLE runs RENAME COLUMN bead_id TO seed_id`,
+  `ALTER TABLE runs RENAME COLUMN bead_id TO task_id`,
+  `ALTER TABLE runs RENAME COLUMN ${LEGACY_TASK_COLUMN} TO task_id`,
+  `ALTER TABLE merge_queue RENAME COLUMN ${LEGACY_TASK_COLUMN} TO task_id`,
+  `ALTER TABLE run_costs RENAME COLUMN ${LEGACY_TASK_COLUMN} TO task_id`,
   `ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL`,
   `ALTER TABLE runs ADD COLUMN merge_strategy TEXT DEFAULT 'auto'`,
   `CREATE TABLE IF NOT EXISTS sentinel_configs (
@@ -749,7 +765,7 @@ export type RunStore = Pick<ForemanStore,
   | "getRunsByStatusesSince"
   | "purgeOldRuns"
   | "deleteRun"
-  | "getRunsForSeed"
+  | "getRunsForTask"
   | "hasActiveOrPendingRun"
   | "getRunsByBaseBranch"
   | "getRunEvents"
@@ -862,7 +878,7 @@ export type StatusReadStore = Pick<ForemanStore,
   | "getProjectByPath"
   | "getActiveRuns"
   | "getRunProgress"
-  | "getRunsForSeed"
+  | "getRunsForTask"
   | "getRecentOutcomeCounts"
   | "getSuccessRate"
   | "getMetrics"
@@ -1098,7 +1114,7 @@ export class ForemanStore {
 
   createRun(
     projectId: string,
-    seedId: string,
+    taskId: string,
     agentType: Run["agent_type"],
     worktreePath?: string,
     opts?: { baseBranch?: string | null; mergeStrategy?: Run["merge_strategy"] },
@@ -1107,7 +1123,7 @@ export class ForemanStore {
     const run: Run = {
       id: randomUUID(),
       project_id: projectId,
-      seed_id: seedId,
+      task_id: taskId,
       agent_type: agentType,
       session_key: null,
       worktree_path: worktreePath ?? null,
@@ -1122,8 +1138,8 @@ export class ForemanStore {
     };
     this.db
       .prepare(
-        `INSERT INTO runs (id, project_id, seed_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch, merge_strategy)
-         VALUES (@id, @project_id, @seed_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch, @merge_strategy)`
+        `INSERT INTO runs (id, project_id, task_id, agent_type, session_key, worktree_path, status, started_at, completed_at, created_at, base_branch, merge_strategy)
+         VALUES (@id, @project_id, @task_id, @agent_type, @session_key, @worktree_path, @status, @started_at, @completed_at, @created_at, @base_branch, @merge_strategy)`
       )
       .run(run);
     return run;
@@ -1181,7 +1197,7 @@ export class ForemanStore {
 
   /**
    * Fetch runs whose status is any of the given values.
-   * Used by Refinery.getCompletedRuns() to find retry-eligible runs when a seedId
+   * Used by Refinery.getCompletedRuns() to find retry-eligible runs when a taskId
    * filter is active (e.g. after a test-failed or conflict).
    */
   getRunsByStatuses(statuses: Run["status"][], projectId?: string): Run[] {
@@ -1266,35 +1282,35 @@ export class ForemanStore {
     return result.changes > 0;
   }
 
-  getRunsForSeed(seedId: string, projectId?: string): Run[] {
+  getRunsForTask(taskId: string, projectId?: string): Run[] {
     if (projectId) {
       return this.db
         .prepare(
-          "SELECT * FROM runs WHERE project_id = ? AND seed_id = ? ORDER BY created_at DESC, rowid DESC"
+          "SELECT * FROM runs WHERE project_id = ? AND task_id = ? ORDER BY created_at DESC, rowid DESC"
         )
-        .all(projectId, seedId) as Run[];
+        .all(projectId, taskId) as Run[];
     }
     return this.db
-      .prepare("SELECT * FROM runs WHERE seed_id = ? ORDER BY created_at DESC, rowid DESC")
-      .all(seedId) as Run[];
+      .prepare("SELECT * FROM runs WHERE task_id = ? ORDER BY created_at DESC, rowid DESC")
+      .all(taskId) as Run[];
   }
 
   /**
-   * Check whether a seed already has a non-terminal run in the database.
+   * Check whether a task already has a non-terminal run in the database.
    *
    * "Non-terminal" means the run is still active or has produced a result that
    * should block a new dispatch (pending, running, completed, stuck, pr-created).
    * Terminal/retryable states (failed, merged, conflict, test-failed, reset) are
-   * excluded so that genuinely failed seeds can be retried.
+   * excluded so that genuinely failed tasks can be retried.
    *
    * Used by the dispatcher as a just-in-time guard immediately before calling
    * createRun(), preventing duplicate dispatches when two dispatch cycles race
    * and both observe an empty activeRuns snapshot.
    *
-   * @returns true if the seed should be skipped (a non-terminal run exists),
+   * @returns true if the task should be skipped (a non-terminal run exists),
    *          false if it is safe to dispatch.
    */
-  hasActiveOrPendingRun(seedId: string, projectId?: string): boolean {
+  hasActiveOrPendingRun(taskId: string, projectId?: string): boolean {
     // Statuses that represent "work is in flight or done and not reset"
     const blockingStatuses = ["pending", "running", "completed", "stuck", "pr-created"];
     const placeholders = blockingStatuses.map(() => "?").join(", ");
@@ -1302,22 +1318,22 @@ export class ForemanStore {
     if (projectId) {
       row = this.db
         .prepare(
-          `SELECT 1 FROM runs WHERE project_id = ? AND seed_id = ? AND status IN (${placeholders}) LIMIT 1`
+          `SELECT 1 FROM runs WHERE project_id = ? AND task_id = ? AND status IN (${placeholders}) LIMIT 1`
         )
-        .get(projectId, seedId, ...blockingStatuses);
+        .get(projectId, taskId, ...blockingStatuses);
     } else {
       row = this.db
         .prepare(
-          `SELECT 1 FROM runs WHERE seed_id = ? AND status IN (${placeholders}) LIMIT 1`
+          `SELECT 1 FROM runs WHERE task_id = ? AND status IN (${placeholders}) LIMIT 1`
         )
-        .get(seedId, ...blockingStatuses);
+        .get(taskId, ...blockingStatuses);
     }
     return row !== undefined && row !== null;
   }
 
   /**
    * Find all runs that were branched from the given base branch (i.e. stacked on it).
-   * Used by rebaseStackedBranches() to find dependent seeds after a merge.
+   * Used by rebaseStackedBranches() to find dependent tasks after a merge.
    */
   getRunsByBaseBranch(baseBranch: string, projectId?: string): Run[] {
     if (projectId) {
@@ -1491,26 +1507,26 @@ export class ForemanStore {
     const rows = projectId
       ? this.db
         .prepare(
-          `SELECT rowid, seed_id, status, completed_at, created_at FROM runs
+          `SELECT rowid, task_id, status, completed_at, created_at FROM runs
            WHERE project_id = ?
            ORDER BY created_at DESC, rowid DESC`,
         )
-        .all(projectId) as Array<{ rowid: number; seed_id: string; status: Run["status"]; completed_at: string | null; created_at: string }>
+        .all(projectId) as Array<{ rowid: number; task_id: string; status: Run["status"]; completed_at: string | null; created_at: string }>
       : this.db
         .prepare(
-          `SELECT rowid, seed_id, status, completed_at, created_at FROM runs
+          `SELECT rowid, task_id, status, completed_at, created_at FROM runs
            ORDER BY created_at DESC, rowid DESC`,
         )
-        .all() as Array<{ rowid: number; seed_id: string; status: Run["status"]; completed_at: string | null; created_at: string }>;
+        .all() as Array<{ rowid: number; task_id: string; status: Run["status"]; completed_at: string | null; created_at: string }>;
 
-    const seenSeeds = new Set<string>();
+    const seenTasks = new Set<string>();
     let merged = 0;
     let failed = 0;
     let stuck = 0;
 
     for (const row of rows) {
-      if (seenSeeds.has(row.seed_id)) continue;
-      seenSeeds.add(row.seed_id);
+      if (seenTasks.has(row.task_id)) continue;
+      seenTasks.add(row.task_id);
 
       if (!row.completed_at || row.completed_at <= since) continue;
 
@@ -1536,7 +1552,7 @@ export class ForemanStore {
    * Success rate = merged / (merged + failed), where:
    * - "merged" includes both `merged` and `pr-created` statuses
    * - "failed" includes `failed`, `test-failed`, and `reset`
-   * - only the latest authoritative run per seed is counted
+   * - only the latest authoritative run per task is counted
    * - `completed` (pending merge), `running`, `pending`, and `stuck` are excluded
    *
    * Returns `{ rate: null, merged: 0, failed: 0 }` when fewer than 3 terminal

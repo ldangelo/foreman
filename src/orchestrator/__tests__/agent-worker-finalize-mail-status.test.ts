@@ -23,9 +23,10 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('non-retryable agent-error mail received');
   });
 
-  it("marks deterministic finalize failures as failed without retry", () => {
+  it("marks deterministic finalize failures via Elixir task status helper", () => {
     expect(source).toContain('const terminalStatus = finalizeRetryable ? "stuck" : "failed"');
-    expect(source).toContain('enqueueMarkBeadFailed(store, seedId, "agent-worker-finalize")');
+    expect(source).toContain('await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "failed", "agent-worker-finalize");');
+    expect(source).not.toContain('enqueueMarkBeadFailed(store, taskId, "agent-worker-finalize")');
   });
 
   it("does not assume finalize success when finalize mail is missing", () => {
@@ -37,7 +38,7 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('if (troubleshooterResolved)');
     expect(source).toContain('skipMergeQueue = true;');
     expect(source).toContain('Branch already matches ${completionTargetBranch} after troubleshooter recovery');
-    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+    expect(source).toContain('await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize");');
   });
 
   it("treats non-retryable pre-existing test failures as merged when the branch already landed", () => {
@@ -45,7 +46,7 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('await updateTerminalRunStatus({');
     expect(source).toContain('status: "merged"');
     expect(source).toContain('Pre-existing test failures but branch already matches ${completionTargetBranch}');
-    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+    expect(source).toContain('await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize");');
   });
 
   it("skips troubleshooter for non-retryable pre-existing finalize test failures", () => {
@@ -55,13 +56,12 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('!!workflowConfig.onFailure && !shouldSkipTroubleshooter');
   });
 
-  it("routes normal registered finalize terminal events Postgres-first with local fallback", () => {
+  it("routes normal registered finalize terminal events through Elixir worker events", () => {
     expect(source).toContain('const writeFinalizeTerminalEvent = async (');
-    expect(source).toContain('if (registeredProjectId && registeredReadStore) {');
-    expect(source).toContain('await registeredReadStore.logEvent(registeredProjectId, eventType, data, runId);');
-    expect(source).toContain('Registered terminal event write failed (non-fatal); falling back to local store');
-    expect(source).toContain('store.logEvent(projectId, eventType, data, runId);');
-    expect(source).toContain('await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), {');
+    expect(source).toContain('await registeredObservabilityWriter?.logEvent?.(eventType === "complete" ? "run-completed" : "run-failed", {');
+    expect(source).not.toContain('await registeredReadStore.logEvent(registeredProjectId, eventType, data, runId);');
+    expect(source).not.toContain('store.logEvent(projectId, eventType, data, runId);');
+    expect(source).toContain('await writeFinalizeTerminalEvent(finalizeSucceeded ? "complete" : (finalizeRetryable ? "stuck" : "fail"), terminalPayload);');
   });
 
   it("threads registered project context into Refinery during finalize PR creation", () => {
@@ -82,7 +82,14 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('sendMail(agentMailClient, "refinery", "branch-ready", {');
     expect(source).toContain('await updateTerminalRunStatus({');
     expect(source).toContain('enqueueToMergeQueue({');
-    expect(source).toContain('enqueueCloseSeed(store, seedId, "agent-worker-finalize")');
+    expect(source).toContain('await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize");');
+    expect(source).not.toContain('enqueueCloseTask(store, taskId, "agent-worker-finalize")');
+  });
+
+  it("keeps tool-policy worker sequences isolated from pipeline observability", () => {
+    expect(source).toContain('workerId: `node-pipeline-policy:${config.taskId}:${role}`');
+    expect(source).toContain('worker_id: `node-pipeline-policy:${config.taskId}:${role}`');
+    expect(source).toContain('const workerId = `node-pipeline:${config.taskId}`;');
   });
 
   it("routes finalize terminal statuses through the helper", () => {

@@ -24,6 +24,9 @@ import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run, Message } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirInboxMessage, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
@@ -65,6 +68,11 @@ interface DaemonRecoverContext {
   projectId: string;
 }
 
+interface ElixirRecoverContext {
+  client: ElixirServerClient;
+  projectId: string;
+}
+
 function adaptDaemonRun(row: DaemonRunRow): Run {
   const statusMap: Record<string, Run["status"]> = {
     pending: "pending",
@@ -77,7 +85,7 @@ function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    seed_id: row.bead_id,
+    task_id: row.bead_id,
     agent_type: row.agent_type ?? "daemon",
     session_key: row.session_key,
     worktree_path: row.worktree_path,
@@ -116,13 +124,71 @@ async function resolveDaemonRecoverContext(projectPath: string): Promise<DaemonR
   }
 }
 
+async function resolveElixirRecoverContext(projectPath: string): Promise<ElixirRecoverContext | null> {
+  const projects = await listRegisteredProjects();
+  const project = projects.find((record) => record.path === projectPath);
+  if (!project) return null;
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return {
+    client: new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN),
+    projectId: project.id,
+  };
+}
+
+function adaptElixirRun(row: ElixirRun): Run {
+  const runId = String(row.run_id ?? row.id ?? "");
+  const statusMap: Record<string, Run["status"]> = {
+    pending: "pending",
+    in_progress: "running",
+    running: "running",
+    completed: "completed",
+    failed: "failed",
+    blocked: "conflict",
+    reset: "reset",
+    merged: "merged",
+    "pr-created": "pr-created",
+    conflict: "conflict",
+    "test-failed": "test-failed",
+  };
+  return {
+    id: runId,
+    project_id: String(row.project_id ?? ""),
+    task_id: String(row.task_id ?? ""),
+    agent_type: "elixir",
+    session_key: null,
+    worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : null,
+    status: statusMap[String(row.status ?? "failed")] ?? "failed",
+    started_at: typeof row.started_at === "string" ? row.started_at : null,
+    completed_at: typeof row.completed_at === "string" ? row.completed_at : null,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date(0).toISOString(),
+    progress: null,
+    base_branch: typeof row.base_branch === "string" ? row.base_branch : null,
+    merge_strategy: null,
+  };
+}
+
+function adaptElixirMessage(row: ElixirInboxMessage): Message {
+  return {
+    id: String(row.message_id ?? row.id ?? row.run_id ?? "message"),
+    run_id: String(row.run_id ?? ""),
+    sender_agent_type: typeof row.sender_agent_type === "string" ? row.sender_agent_type : "foreman",
+    recipient_agent_type: typeof row.recipient_agent_type === "string" ? row.recipient_agent_type : "operator",
+    subject: typeof row.subject === "string" ? row.subject : String(row.type ?? row.event_type ?? "message"),
+    body: typeof row.body === "string" ? row.body : JSON.stringify(row),
+    read: row.unread === false ? 1 : 0,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date(0).toISOString(),
+    deleted_at: null,
+  };
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type RecoveryReason = "test-failed" | "stuck" | "stale-blocked" | "finalize-conflict";
 type RecommendedRecovery = "clean-replay-from-main";
 
 interface CleanReplayWorkspace {
-  seedId: string;
+  taskId: string;
   branchName: string;
   workspacePath: string;
   baseBranch: string;
@@ -200,7 +266,7 @@ function formatMessages(messages: Message[]): string {
 function formatRunSummary(run: Run, progress: Record<string, unknown> | null): string {
   const lines = [
     `Run ID: ${run.id}`,
-    `Seed: ${run.seed_id}`,
+    `Task: ${run.task_id}`,
     `Status: ${run.status}`,
     `Agent Type: ${run.agent_type}`,
     `Started: ${run.started_at ?? "unknown"}`,
@@ -358,10 +424,10 @@ async function pushCleanReplayWorkspace(projectPath: string, workspace: CleanRep
 async function prepareCleanReplayWorkspace(projectPath: string, beadId: string): Promise<CleanReplayWorkspace> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const baseBranch = await vcs.detectDefaultBranch(projectPath);
-  const replaySeedId = `${beadId}-clean-replay`;
-  const { workspacePath, branchName } = await vcs.createWorkspace(projectPath, replaySeedId, baseBranch);
+  const replayTaskId = `${beadId}-clean-replay`;
+  const { workspacePath, branchName } = await vcs.createWorkspace(projectPath, replayTaskId, baseBranch);
   return {
-    seedId: replaySeedId,
+    taskId: replayTaskId,
     branchName,
     workspacePath,
     baseBranch,
@@ -456,15 +522,22 @@ export const recoverCommand = new Command("recover")
     }
 
     const projectPath = await resolveRepoRootProjectPath({});
-    const daemon = await resolveDaemonRecoverContext(projectPath);
+    const isElixir = foremanBackendMode() === "elixir";
+    const elixir = isElixir ? await resolveElixirRecoverContext(projectPath) : null;
+    if (isElixir && !elixir) {
+      throw new Error(`Project at '${projectPath}' is not registered in Elixir projections.`);
+    }
+    const daemon = isElixir ? null : await resolveDaemonRecoverContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 
-    // Find runs for this seed
-    const runs = daemon
-      ? ((await daemon.client.runs.list({ projectId: daemon.projectId, beadId, limit: 50 }) as DaemonRunRow[]).map(adaptDaemonRun))
-      : store.getRunsForSeed(beadId);
+    // Find runs for this task
+    const runs = elixir
+      ? ((await elixir.client.listRuns({ projectId: elixir.projectId })).filter((row) => row.task_id === beadId).map(adaptElixirRun))
+      : daemon
+        ? ((await daemon.client.runs.list({ projectId: daemon.projectId, beadId, limit: 50 }) as DaemonRunRow[]).map(adaptDaemonRun))
+        : store.getRunsForTask(beadId);
     if (runs.length === 0) {
-      console.error(chalk.red(`No runs found for seed ${beadId}`));
+      console.error(chalk.red(`No runs found for task ${beadId}`));
       process.exit(1);
     }
 
@@ -474,7 +547,7 @@ export const recoverCommand = new Command("recover")
       : runs[0]; // latest
 
     if (!run) {
-      console.error(chalk.red(`Run ${opts.runId} not found for seed ${beadId}`));
+      console.error(chalk.red(`Run ${opts.runId} not found for task ${beadId}`));
       console.error(`Available runs: ${runs.map((r) => `${r.id.slice(0, 8)} (${r.status})`).join(", ")}`);
       process.exit(1);
     }
@@ -482,13 +555,17 @@ export const recoverCommand = new Command("recover")
     // 1. Run summary + progress
     const progress = daemon && run.progress
       ? JSON.parse(run.progress) as Record<string, unknown>
-      : store.getRunProgress(run.id);
+      : elixir
+        ? null
+        : store.getRunProgress(run.id);
     const runSummary = formatRunSummary(run, progress as Record<string, unknown> | null);
 
     // 2. Mail messages
-    const allMessages = daemon
-      ? (await daemon.client.mail.list({ projectId: daemon.projectId, runId: run.id }) as DaemonMailMessage[]).map(adaptDaemonMessage)
-      : store.getAllMessages(run.id);
+    const allMessages = elixir
+      ? (await elixir.client.listInbox({ projectId: elixir.projectId, runId: run.id, limit: 100 })).map(adaptElixirMessage)
+      : daemon
+        ? (await daemon.client.mail.list({ projectId: daemon.projectId, runId: run.id }) as DaemonMailMessage[]).map(adaptDaemonMessage)
+        : store.getAllMessages(run.id);
     const messagesText = formatMessages(allMessages);
 
     // 3. Reports from worktree
@@ -617,7 +694,7 @@ export const recoverCommand = new Command("recover")
       console.log(recoveryRecommendation);
       if (cleanReplayWorkspace) {
         console.log(chalk.bold("\n─── Clean Replay Workspace ───"));
-        console.log(`Seed: ${cleanReplayWorkspace.seedId}`);
+        console.log(`Task: ${cleanReplayWorkspace.taskId}`);
         console.log(`Base: ${cleanReplayWorkspace.baseBranch}`);
         console.log(`Branch: ${cleanReplayWorkspace.branchName}`);
         console.log(`Path: ${cleanReplayWorkspace.workspacePath}`);

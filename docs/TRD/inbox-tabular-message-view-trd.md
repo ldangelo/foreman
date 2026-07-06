@@ -15,7 +15,7 @@ The `foreman inbox` command currently renders messages as free-form text blocks:
 
 ```
 [2024-01-01 12:00:00] explorer → developer  |  work started [read]
-  phase=explorer, status=in_progress, seedId=foreman-x7k2m, runId=run-abc123
+  phase=explorer, status=in_progress, taskId=foreman-x7k2m, runId=run-abc123
 ```
 
 This format makes it difficult to:
@@ -218,7 +218,7 @@ DATETIME            TICKET       SENDER     RECEIVER   KIND       TOOL       ARG
   {
     "phase": "explorer",
     "status": "in_progress",
-    "seedId": "foreman-x7k2m",
+    "taskId": "foreman-x7k2m",
     "runId": "run-abc123"
   }
 ```

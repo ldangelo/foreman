@@ -3,7 +3,7 @@
 ## Metadata
 - Date: 2026-03-23
 - Phase: reviewer
-- Seed: bd-z8pj
+- Task: bd-z8pj
 - Run ID: 10ad7fe2-467e-4bc4-8e6f-341232cdf7af
 
 ## Key Activities
@@ -13,8 +13,8 @@
 4. Read `src/orchestrator/auto-merge.ts` — reviewed the implementation
 5. Read `src/orchestrator/__tests__/auto-merge.test.ts` — reviewed new retry exhaustion tests
 6. Read `src/orchestrator/__tests__/auto-merge-mail.test.ts` — reviewed mail test updates
-7. Read `src/orchestrator/task-backend-ops.ts` — understood `markBeadFailed()`, `resetSeedToOpen()`
-8. Read `src/lib/run-status.ts` — found key insight: `test-failed` → `blocked` in `mapRunStatusToSeedStatus()`
+7. Read `src/orchestrator/task-backend-ops.ts` — understood `markBeadFailed()`, `resetTaskToOpen()`
+8. Read `src/lib/run-status.ts` — found key insight: `test-failed` → `blocked` in `mapRunStatusToTaskStatus()`
 9. Read `src/lib/task-client.ts` — confirmed `taskClient.update` calls `br update`
 10. Read `src/orchestrator/merge-queue.ts` — confirmed `RETRY_CONFIG.maxRetries = 3`
 11. Traced execution flow for retry-exhausted case — discovered the `finally`-block override bug
@@ -26,8 +26,8 @@
 
 ## Key Finding
 The critical insight was tracing the execution path when `totalTestFailCount >= RETRY_CONFIG.maxRetries`:
-1. `markBeadFailed(seedId)` → `br update <seedId> --status failed`
-2. `finally` → `syncBeadStatusAfterMerge()` → `mapRunStatusToSeedStatus('test-failed')` = `blocked` → `taskClient.update(seedId, { status: 'blocked' })`
+1. `markBeadFailed(taskId)` → `br update <taskId> --status failed`
+2. `finally` → `syncBeadStatusAfterMerge()` → `mapRunStatusToTaskStatus('test-failed')` = `blocked` → `taskClient.update(taskId, { status: 'blocked' })`
 
 The `finally` block's `syncBeadStatusAfterMerge` call silently overrides the `failed` status with `blocked`. The loop IS practically prevented (blocked ≠ open), but the semantic intent of `markBeadFailed()` is not achieved, and no test catches this.
 

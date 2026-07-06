@@ -30,7 +30,7 @@ describe("branchExistsOnOrigin", () => {
     // Create origin repo with a branch
     const origin = makeTempRepo();
     tempDirs.push(origin);
-    execFileSync("git", ["checkout", "-b", "foreman/seed-abc"], { cwd: origin });
+    execFileSync("git", ["checkout", "-b", "foreman/task-abc"], { cwd: origin });
     writeFileSync(join(origin, "file.txt"), "content");
     execFileSync("git", ["add", "."], { cwd: origin });
     execFileSync("git", ["commit", "-m", "add file"], { cwd: origin });
@@ -42,7 +42,7 @@ describe("branchExistsOnOrigin", () => {
     execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: local });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: local });
 
-    const result = await branchExistsOnOrigin(local, "foreman/seed-abc");
+    const result = await branchExistsOnOrigin(local, "foreman/task-abc");
     expect(result).toBe(true);
   });
 

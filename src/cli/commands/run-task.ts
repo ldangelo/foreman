@@ -37,11 +37,13 @@ import type { ModelSelection } from "../../orchestrator/types.js";
 import { buildWorkerEnv, spawnWorkerProcess } from "../../orchestrator/dispatcher.js";
 import { getRunReportsDir } from "../../lib/report-paths.js";
 import { normalizeBranchLabel } from "../../lib/branch-label.js";
-import type { SeedInfo } from "../../orchestrator/types.js";
+import type { TaskInfo } from "../../orchestrator/types.js";
 import { autoMerge } from "../../orchestrator/auto-merge.js";
 import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -83,17 +85,54 @@ export function skipFlagsDeprecationWarning(
 }
 
 /**
- * Convert an Issue to SeedInfo format for the worker.
+ * Convert an Issue to TaskInfo format for the worker.
  */
-function issueToSeedInfo(seed: Issue): SeedInfo {
+function issueToTaskInfo(task: Issue): TaskInfo {
   return {
-    id: seed.id,
-    title: seed.title,
-    description: seed.description ?? undefined,
-    priority: seed.priority,
-    type: seed.type,
-    labels: seed.labels,
+    id: task.id,
+    title: task.title,
+    description: task.description ?? undefined,
+    priority: task.priority,
+    type: task.type,
+    labels: task.labels,
   };
+}
+
+async function fetchElixirTask(taskId: string, projectPath: string): Promise<Issue | null> {
+  try {
+    const manager = new ElixirServerManager();
+    if (!(await manager.health()).ok) return null;
+    const client = new ElixirServerClient(manager.url, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    const task = await client.getTask(taskId);
+    return task ? elixirTaskToIssue(task, projectPath, taskId) : null;
+  } catch {
+    return null;
+  }
+}
+
+function elixirTaskToIssue(task: ElixirTask, projectPath: string, fallbackId: string): Issue {
+  const id = task.task_id ?? task.id ?? fallbackId;
+  const now = new Date().toISOString();
+  return {
+    id,
+    title: task.title ?? id,
+    status: normalizeElixirStatus(task.status ?? "backlog"),
+    description: task.description ?? null,
+    type: task.task_type ?? task.type ?? "task",
+    priority: String(typeof task.priority === "number" ? task.priority : 2),
+    assignee: null,
+    parent: null,
+    labels: [`project:${projectPath}`],
+    created_at: task.created_at ?? now,
+    updated_at: task.updated_at ?? now,
+  };
+}
+
+function normalizeElixirStatus(status: string): string {
+  if (status === "in_progress") return "in-progress";
+  if (status === "open") return "backlog";
+  if (status === "completed") return "closed";
+  return status;
 }
 
 /**
@@ -113,7 +152,7 @@ async function checkWorktreeLock(
   taskId: string,
   projectId: string,
 ): Promise<string | null> {
-  const runs = await store.getRunsForSeed(taskId, projectId);
+  const runs = await store.getRunsForTask(taskId, projectId);
   const activeRun = runs.find(
     (r) => r.status === "running" || r.status === "pending",
   );
@@ -143,6 +182,7 @@ export async function runTaskAction(
     dryRun?: boolean;
     watch?: boolean;
     targetBranch?: string;
+    runId?: string;
     project?: string;
     projectPath?: string;
   },
@@ -152,6 +192,7 @@ export async function runTaskAction(
     dryRun = false,
     watch = true,
     targetBranch,
+    runId: requestedRunId,
     project,
     projectPath: optsProjectPath,
   } = opts;
@@ -174,12 +215,15 @@ export async function runTaskAction(
   const taskClient = clients.taskClient;
 
   // ── Look up task (no state gating) ───────────────────────────────────
-  let task: Issue;
-  try {
-    task = await taskClient.show(taskId) as Issue;
-  } catch {
-    console.error(chalk.red(`Task '${taskId}' not found`));
-    return 1;
+  let task: Issue | null;
+  if (requestedRunId) {
+    task = await fetchElixirTask(taskId, resolvedProjectPath);
+  } else {
+    try {
+      task = await taskClient.show(taskId) as Issue;
+    } catch {
+      task = null;
+    }
   }
   if (!task) {
     console.error(chalk.red(`Task '${taskId}' not found`));
@@ -204,7 +248,8 @@ export async function runTaskAction(
 
   // ── Resolve project ID ───────────────────────────────────────────────
   const store = ForemanStore.forProject(resolvedProjectPath);
-  const daemonStore = registered
+  const testRuntime = process.env.FOREMAN_RUNTIME_MODE === "test";
+  const daemonStore = registered && !testRuntime
     ? PostgresStore.forProject(registered.id)
     : null;
   const projectRecord = registered ?? store.getProjectByPath(resolvedProjectPath);
@@ -215,19 +260,21 @@ export async function runTaskAction(
   const projectId = registered?.id ?? projectRecord.id;
 
   // ── Check worktree lock ───────────────────────────────────────────────
-  let lockRunId: string | null;
-  try {
-    lockRunId = await checkWorktreeLock(daemonStore ?? store, taskId, projectId);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(chalk.red(`Failed to check worktree lock: ${msg}`));
-    store.close();
-    return 1;
-  }
-  if (lockRunId) {
-    console.error(chalk.red(`Worktree is locked by active run: ${lockRunId}`));
-    console.error(chalk.dim("  Use 'foreman stop' to stop the active run, or 'foreman reset --bead <id>' to reset it"));
-    return 1;
+  if (!(testRuntime && requestedRunId)) {
+    let lockRunId: string | null;
+    try {
+      lockRunId = await checkWorktreeLock(daemonStore ?? store, taskId, projectId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`Failed to check worktree lock: ${msg}`));
+      store.close();
+      return 1;
+    }
+    if (lockRunId) {
+      console.error(chalk.red(`Worktree is locked by active run: ${lockRunId}`));
+      console.error(chalk.dim("  Use 'foreman stop' to stop the active run, or 'foreman reset <task-id>' to reset it"));
+      return 1;
+    }
   }
 
   // ── Resolve VCS backend ───────────────────────────────────────────────
@@ -244,9 +291,14 @@ export async function runTaskAction(
   let taskDescription: string | undefined;
   let taskLabels: string[] | undefined;
   try {
-    const detail = await taskClient.show(taskId) as { description?: string | null; labels?: string[] };
-    taskDescription = detail?.description ?? undefined;
-    taskLabels = detail?.labels ?? [];
+    if (requestedRunId) {
+      taskDescription = task.description ?? undefined;
+      taskLabels = task.labels ?? [];
+    } else {
+      const detail = await taskClient.show(taskId) as { description?: string | null; labels?: string[] };
+      taskDescription = detail?.description ?? undefined;
+      taskLabels = detail?.labels ?? [];
+    }
   } catch {
     // Non-fatal: use defaults
   }
@@ -333,13 +385,15 @@ export async function runTaskAction(
   }
 
   // ── Create run record ────────────────────────────────────────────────
-  let runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  let runId = requestedRunId ?? `run-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const attemptNumber = 1;
 
   try {
-    if (daemonStore && registered) {
+    if (requestedRunId) {
+      // Elixir scheduler already appended RunStarted and claimed the task.
+    } else if (daemonStore && registered) {
       const pg = new PostgresAdapter();
-      const existingRuns = await daemonStore.getRunsForSeed(taskId, projectId);
+      const existingRuns = await daemonStore.getRunsForTask(taskId, projectId);
       const runNumber = existingRuns.length + 1;
 
       await pg.createPipelineRun({
@@ -348,7 +402,7 @@ export async function runTaskAction(
         beadId: taskId,
         runNumber,
         branch: branchName,
-        trigger: "direct",
+        trigger: "manual",
         agentType: "developer",
         worktreePath,
         baseBranch: baseBranch ?? undefined,
@@ -370,7 +424,9 @@ export async function runTaskAction(
 
   // ── Update task status to in_progress ────────────────────────────────
   try {
-    if (daemonStore && registered) {
+    if (requestedRunId) {
+      // Elixir scheduler already owns task status for this run.
+    } else if (daemonStore && registered) {
       const pg = new PostgresAdapter();
       await pg.updateTask(projectId, taskId, { status: "in-progress" });
     } else if (typeof taskClient.update === "function") {
@@ -392,7 +448,7 @@ export async function runTaskAction(
 
   // ── Spawn worker ──────────────────────────────────────────────────────
   const selectedModel: ModelSelection = (model as ModelSelection) ?? "anthropic/claude-sonnet-4-6";
-  const seedInfo: SeedInfo = issueToSeedInfo(task);
+  const taskInfo: TaskInfo = issueToTaskInfo(task);
 
   const env = buildWorkerEnv(false, taskId, runId, selectedModel, notifyUrl, vcsBackend);
 
@@ -400,10 +456,10 @@ export async function runTaskAction(
     const { pid } = await spawnWorkerProcess({
       runId,
       projectId,
-      seedId: taskId,
-      seedTitle: task.title,
-      seedDescription: taskDescription,
-      seedComments: undefined,
+      taskId: taskId,
+      taskTitle: task.title,
+      taskDescription: taskDescription,
+      taskComments: undefined,
       model: selectedModel,
       worktreePath,
       projectPath: resolvedProjectPath,
@@ -412,12 +468,12 @@ export async function runTaskAction(
       pipeline: true,
       workflowName: workflowConfig.name,
       workflowPath,
-      seedType: task.type ?? "task",
-      seedLabels: taskLabels,
-      seedPriority: task.priority,
+      taskType: task.type ?? "task",
+      taskLabels: taskLabels,
+      taskPriority: task.priority,
       targetBranch: targetBranch ?? baseBranch,
       attemptNumber,
-      taskId,
+      nativeTaskId: taskId,
       taskMeta: {
         id: taskId,
         title: task.title,
@@ -500,9 +556,18 @@ export const runTaskCommand = new Command("task")
   .option("--dry-run", "Show what would be done without executing")
   .option("--no-watch", "Exit immediately after spawning worker (don't monitor)")
   .option("--target-branch <branch>", "Override target branch for finalize/merge")
+  .addOption(new Option("--run-id <id>", "Use an existing orchestration run id (internal Elixir scheduler bridge)").hideHelp())
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (taskId, workflowPath, opts) => {
+    if (process.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.VITEST !== "true" && !opts.runId) {
+      console.error(
+        chalk.red(
+          "Error: foreman run task operator use was removed after the Elixir backend cutover. Elixir scheduler worker launches use the internal --run-id bridge.",
+        ),
+      );
+      process.exit(1);
+    }
     const exitCode = await runTaskAction(taskId, workflowPath, {
       model: opts.model as string | undefined,
       skipExplore: opts.skipExplore as boolean | undefined,
@@ -510,6 +575,7 @@ export const runTaskCommand = new Command("task")
       dryRun: opts.dryRun as boolean | undefined,
       watch: opts.watch as boolean,
       targetBranch: opts.targetBranch as string | undefined,
+      runId: opts.runId as string | undefined,
       project: opts.project as string | undefined,
       projectPath: opts.projectPath as string | undefined,
     });

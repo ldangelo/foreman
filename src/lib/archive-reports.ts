@@ -25,7 +25,7 @@ export const REPORT_FILES = [
 ];
 
 /**
- * Archive report files from a worktree into .foreman/reports/<seedId>/
+ * Archive report files from a worktree into .foreman/reports/<taskId>/
  * before the worktree is deleted. Best-effort: errors are logged but not thrown.
  *
  * Files are copied (not moved) since the worktree directory will be removed
@@ -33,15 +33,15 @@ export const REPORT_FILES = [
  *
  * @param projectPath - Absolute path to the main git repository root
  * @param worktreePath - Absolute path to the worktree being deleted
- * @param seedId - Seed ID used to name the per-seed archive directory
+ * @param taskId - Task ID used to name the per-task archive directory
  * @returns Number of files successfully archived
  */
 export async function archiveWorktreeReports(
   projectPath: string,
   worktreePath: string,
-  seedId: string,
+  taskId: string,
 ): Promise<number> {
-  const destDir = path.join(projectPath, ".foreman", "reports", seedId);
+  const destDir = path.join(projectPath, ".foreman", "reports", taskId);
   let archived = 0;
 
   try {

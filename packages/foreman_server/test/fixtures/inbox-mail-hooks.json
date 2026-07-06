@@ -1,0 +1,9 @@
+{
+  "run_id": "run-mail-1",
+  "phase_id": "phase-build",
+  "hooks": {
+    "phase_started": [{ "to": "agent", "body": "Build phase started" }],
+    "phase_completed": [{ "to": "operator", "body": "Build phase completed" }],
+    "phase_failed": [{ "to": "operator", "body": "Build phase failed" }]
+  }
+}

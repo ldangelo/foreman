@@ -10,7 +10,7 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
     success: { type: "integer", notNull: true },
     failure_reason: { type: "text", notNull: false },
     merge_queue_id: { type: "bigint", notNull: false },
-    seed_id: { type: "text", notNull: false },
+    task_id: { type: "text", notNull: false },
     recorded_at: { type: "timestamp with time zone", notNull: true },
   });
 

@@ -52,6 +52,7 @@ class MockVcsBackend implements VcsBackend {
   async deleteBranch(_p: string, _b: string): Promise<DeleteBranchResult> {
     return { deleted: false, wasFullyMerged: false };
   }
+  async deleteRemoteBranch(_p: string, _b: string): Promise<void> {}
   async createWorkspace(_p: string, _s: string): Promise<WorkspaceResult> {
     return { workspacePath: '/tmp/ws', branchName: 'foreman/test' };
   }
@@ -232,6 +233,7 @@ describe("GitBackend satisfies VcsBackend", () => {
     expect(typeof b.branchExists).toBe('function');
     expect(typeof b.branchExistsOnRemote).toBe('function');
     expect(typeof b.deleteBranch).toBe('function');
+    expect(typeof b.deleteRemoteBranch).toBe('function');
     expect(typeof b.createWorkspace).toBe('function');
     expect(typeof b.removeWorkspace).toBe('function');
     expect(typeof b.listWorkspaces).toBe('function');
@@ -279,6 +281,7 @@ describe("JujutsuBackend satisfies VcsBackend", () => {
     expect(typeof b.branchExists).toBe('function');
     expect(typeof b.branchExistsOnRemote).toBe('function');
     expect(typeof b.deleteBranch).toBe('function');
+    expect(typeof b.deleteRemoteBranch).toBe('function');
     expect(typeof b.createWorkspace).toBe('function');
     expect(typeof b.removeWorkspace).toBe('function');
     expect(typeof b.listWorkspaces).toBe('function');

@@ -5,13 +5,13 @@ You are the **Finalize** agent for a **bug workflow** — commit implementation 
 > QA already validated this bug fix. Finalize should be fast: verify the worktree, commit, integrate target drift only when required, run tests only when target drift exists, then push.
 
 ## Task
-**Seed:** {{seedId}} — {{seedTitle}}
+**Task:** {{taskId}} — {{taskTitle}}
 
 ## Error Reporting
 If you hit an unrecoverable error, use the `send_mail` tool to report it:
 - to: `foreman`
 - subject: `agent-error`
-- body: `{"phase":"finalize","seedId":"{{seedId}}","error":"<description>"}`
+- body: `{"phase":"finalize","taskId":"{{taskId}}","error":"<description>"}`
 
 ## Instructions
 
@@ -38,7 +38,7 @@ git log origin/{{baseBranch}}..HEAD --oneline 2>/dev/null || git log {{baseBranc
 ```
 
 - If output is non-empty, work was already committed; continue.
-- If there are no commits ahead and this is a verification/test bead (`{{seedType}}` is `test` OR title contains "verify", "validate", or "test"), continue.
+- If there are no commits ahead and this is a verification/test bead (`{{taskType}}` is `test` OR title contains "verify", "validate", or "test"), continue.
 - Otherwise send `nothing_to_commit` mail and stop.
 
 ### Step 3: Verify branch
@@ -46,9 +46,9 @@ Run:
 ```
 {{vcsBranchVerifyCommand}}
 ```
-If output is not `foreman/{{seedId}}`, run:
+If output is not `foreman/{{taskId}}`, run:
 ```
-git checkout foreman/{{seedId}}
+git checkout foreman/{{taskId}}
 ```
 
 ### Step 4: Integrate target drift only when required
@@ -73,9 +73,9 @@ mkdir -p "{{reportDir}}"
 
 Write `{{reportDir}}/FINALIZE_VALIDATION.md` with this format:
 ```markdown
-# Finalize Validation: {{seedTitle}}
+# Finalize Validation: {{taskTitle}}
 
-## Seed: {{seedId}}
+## Task: {{taskId}}
 ## Run: {{runId}}
 ## Timestamp: <ISO timestamp>
 
@@ -118,9 +118,9 @@ If push fails, send `push_failed` mail and stop.
 ### Step 7: Write finalize report
 Write `{{reportDir}}/FINALIZE_REPORT.md`:
 ```markdown
-# Finalize Report: {{seedTitle}}
+# Finalize Report: {{taskTitle}}
 
-## Seed: {{seedId}}
+## Task: {{taskId}}
 ## Run: {{runId}}
 ## Timestamp: <ISO timestamp>
 
@@ -133,7 +133,7 @@ Write `{{reportDir}}/FINALIZE_REPORT.md`:
 
 ## Push
 - Status: SUCCESS
-- Branch: foreman/{{seedId}}
+- Branch: foreman/{{taskId}}
 ```
 
 ## Rules

@@ -42,8 +42,8 @@ function makeMockStore(getRun: ReturnType<typeof vi.fn>) {
 function makeEntry(overrides: Partial<MergeQueueEntry> = {}): MergeQueueEntry {
   return {
     id: 1,
-    branch_name: "foreman/test-seed",
-    seed_id: "test-seed",
+    branch_name: "foreman/test-task",
+    task_id: "test-task",
     run_id: "run-123",
     operation: "auto_merge",
     agent_name: null,
@@ -244,7 +244,7 @@ describe("RefineryAgent", () => {
 
       await agent.processOnce();
 
-      expect(runAgentSpy).toHaveBeenCalledWith(entry, expect.anything(), "/tmp/test/worktrees/test-seed");
+      expect(runAgentSpy).toHaveBeenCalledWith(entry, expect.anything(), "/tmp/test/worktrees/test-task");
     });
 
     it("falls back to project-local worktree when injected lookup has no path", async () => {
@@ -273,7 +273,7 @@ describe("RefineryAgent", () => {
 
       await agent.processOnce();
 
-      expect(runAgentSpy).toHaveBeenCalledWith(entry, expect.anything(), "/tmp/test/worktrees/test-seed");
+      expect(runAgentSpy).toHaveBeenCalledWith(entry, expect.anything(), "/tmp/test/worktrees/test-task");
     });
 
     it("marks a queue entry failed when injected lookup throws", async () => {

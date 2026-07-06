@@ -33,20 +33,20 @@ function auditFilePath(dir: string, runId: string): string {
 // ── shared fixtures ───────────────────────────────────────────────────────────
 
 const RUN_ID = 'run-test';
-const SEED_ID = 'seed-test';
+const TASK_ID = 'task-test';
 const PHASE = 'explorer';
 
 const mockCtx: ExtensionContext = {
   phase: PHASE,
   runId: RUN_ID,
-  seedId: SEED_ID,
+  taskId: TASK_ID,
   getContextUsage: () => ({ totalTokens: 1000, inputTokens: 800, outputTokens: 200 }),
   log: vi.fn(),
 };
 
 beforeEach(() => {
   process.env['FOREMAN_RUN_ID'] = RUN_ID;
-  process.env['FOREMAN_SEED_ID'] = SEED_ID;
+  process.env['FOREMAN_TASK_ID'] = TASK_ID;
   process.env['FOREMAN_PHASE'] = PHASE;
 });
 
@@ -61,7 +61,7 @@ describe('createAuditExtension', () => {
 
   // 1. onToolCall writes correct JSONL entry
   describe('onToolCall', () => {
-    it('writes a JSONL line with eventType=tool_call, toolName, phase, runId, seedId, timestamp', () => {
+    it('writes a JSONL line with eventType=tool_call, toolName, phase, runId, taskId, timestamp', () => {
       const dir = makeTmpDir();
       const ext = createAuditExtension(dir);
       ext.onToolCall?.({ toolName: 'Bash', input: { command: 'ls' } }, mockCtx);
@@ -71,7 +71,7 @@ describe('createAuditExtension', () => {
       expect(entry['eventType']).toBe('tool_call');
       expect(entry['toolName']).toBe('Bash');
       expect(entry['runId']).toBe(RUN_ID);
-      expect(entry['seedId']).toBe(SEED_ID);
+      expect(entry['taskId']).toBe(TASK_ID);
       expect(entry['phase']).toBe(PHASE);
       expect(typeof entry['timestamp']).toBe('string');
       // ISO 8601 — must be parseable as a date
@@ -102,7 +102,7 @@ describe('createAuditExtension', () => {
       expect(entry['turnNumber']).toBe(5);
       expect(entry['totalTokens']).toBe(2000);
       expect(entry['runId']).toBe(RUN_ID);
-      expect(entry['seedId']).toBe(SEED_ID);
+      expect(entry['taskId']).toBe(TASK_ID);
       expect(entry['phase']).toBe(PHASE);
     });
   });
@@ -176,7 +176,7 @@ describe('createAuditExtension', () => {
 
   // 6. All entries include required base fields
   describe('base fields on every entry', () => {
-    it('every event type includes timestamp (ISO), runId, seedId, phase', () => {
+    it('every event type includes timestamp (ISO), runId, taskId, phase', () => {
       const dir = makeTmpDir();
       const ext = createAuditExtension(dir);
       ext.onToolCall?.({ toolName: 'Glob', input: {} }, mockCtx);
@@ -193,7 +193,7 @@ describe('createAuditExtension', () => {
         expect(typeof entry['timestamp']).toBe('string');
         expect(new Date(entry['timestamp'] as string).toISOString()).toBe(entry['timestamp']);
         expect(entry['runId']).toBe(RUN_ID);
-        expect(entry['seedId']).toBe(SEED_ID);
+        expect(entry['taskId']).toBe(TASK_ID);
         expect(entry['phase']).toBe(PHASE);
       }
     });

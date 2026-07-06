@@ -27,7 +27,7 @@ describe("createDirectoryGuardrail", () => {
     it("should always return allowed: true immediately", () => {
       const config: GuardrailConfig = {
         directory: { mode: "disabled" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -39,12 +39,12 @@ describe("createDirectoryGuardrail", () => {
     it("should not check cwd at all", () => {
       const config: GuardrailConfig = {
         directory: { mode: "disabled" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
       // Even correct cwd should still pass through
-      const result = guardrail("Bash", { command: "npm test" }, "/worktrees/project/seed-abc");
+      const result = guardrail("Bash", { command: "npm test" }, "/worktrees/project/task-abc");
       expect(result.allowed).toBe(true);
     });
   });
@@ -53,7 +53,7 @@ describe("createDirectoryGuardrail", () => {
     it("should return allowed: false when cwd is wrong", () => {
       const config: GuardrailConfig = {
         directory: { mode: "veto" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -66,7 +66,7 @@ describe("createDirectoryGuardrail", () => {
     it("should log guardrail-veto event", () => {
       const config: GuardrailConfig = {
         directory: { mode: "veto" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -76,7 +76,7 @@ describe("createDirectoryGuardrail", () => {
         "guardrail-veto",
         expect.objectContaining({
           tool: "Edit",
-          expectedCwd: "/worktrees/project/seed-abc",
+          expectedCwd: "/worktrees/project/task-abc",
           actualCwd: "/wrong/path",
         }),
       );
@@ -85,11 +85,11 @@ describe("createDirectoryGuardrail", () => {
     it("should return allowed: true when cwd is correct", () => {
       const config: GuardrailConfig = {
         directory: { mode: "veto" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
-      const result = guardrail("Edit", { path: "/some/file.ts" }, "/worktrees/project/seed-abc");
+      const result = guardrail("Edit", { path: "/some/file.ts" }, "/worktrees/project/task-abc");
       expect(result.allowed).toBe(true);
       expect(mockLogEvent).not.toHaveBeenCalled();
     });
@@ -97,7 +97,7 @@ describe("createDirectoryGuardrail", () => {
     it("should veto Bash tool when cwd is wrong", () => {
       const config: GuardrailConfig = {
         directory: { mode: "veto" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -111,7 +111,7 @@ describe("createDirectoryGuardrail", () => {
     it("should correct Bash commands by prepending cd", () => {
       const config: GuardrailConfig = {
         directory: { mode: "auto-correct" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -121,7 +121,7 @@ describe("createDirectoryGuardrail", () => {
       expect(result.correctedArgs).toBeDefined();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const correctedCommand = (result.correctedArgs as any).command as string;
-      expect(correctedCommand).toContain('cd "/worktrees/project/seed-abc"');
+      expect(correctedCommand).toContain('cd "/worktrees/project/task-abc"');
       expect(correctedCommand).toContain("npm test");
       expect(result.eventType).toBe("guardrail-corrected");
     });
@@ -129,7 +129,7 @@ describe("createDirectoryGuardrail", () => {
     it("should correct Edit file paths", () => {
       const config: GuardrailConfig = {
         directory: { mode: "auto-correct" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -145,23 +145,23 @@ describe("createDirectoryGuardrail", () => {
     it("should correct Write file paths", () => {
       const config: GuardrailConfig = {
         directory: { mode: "auto-correct" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
-      const result = guardrail("Write", { path: "/worktrees/project/seed-xyz/new-file.ts", content: "hello" }, "/worktrees/project/seed-xyz");
+      const result = guardrail("Write", { path: "/worktrees/project/task-xyz/new-file.ts", content: "hello" }, "/worktrees/project/task-xyz");
 
       expect(result.allowed).toBe(true);
       expect(result.correctedArgs).toBeDefined();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const correctedPath = (result.correctedArgs as any).path as string;
-      expect(correctedPath).toContain("/worktrees/project/seed-abc/");
+      expect(correctedPath).toContain("/worktrees/project/task-abc/");
     });
 
     it("should log guardrail-corrected event", () => {
       const config: GuardrailConfig = {
         directory: { mode: "auto-correct" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -171,7 +171,7 @@ describe("createDirectoryGuardrail", () => {
         "guardrail-corrected",
         expect.objectContaining({
           tool: "Bash",
-          expectedCwd: "/worktrees/project/seed-abc",
+          expectedCwd: "/worktrees/project/task-abc",
           actualCwd: "/wrong/path",
         }),
       );
@@ -180,11 +180,11 @@ describe("createDirectoryGuardrail", () => {
     it("should return allowed: true when cwd is correct", () => {
       const config: GuardrailConfig = {
         directory: { mode: "auto-correct" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
-      const result = guardrail("Bash", { command: "npm test" }, "/worktrees/project/seed-abc");
+      const result = guardrail("Bash", { command: "npm test" }, "/worktrees/project/task-abc");
       expect(result.allowed).toBe(true);
       expect(result.correctedArgs).toBeUndefined();
       expect(mockLogEvent).not.toHaveBeenCalled();
@@ -193,13 +193,13 @@ describe("createDirectoryGuardrail", () => {
     it("should set correctedCwd when auto-correcting", () => {
       const config: GuardrailConfig = {
         directory: { mode: "auto-correct" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
       const result = guardrail("Bash", { command: "npm test" }, "/wrong/path");
 
-      expect(result.correctedCwd).toBe("/worktrees/project/seed-abc");
+      expect(result.correctedCwd).toBe("/worktrees/project/task-abc");
     });
   });
 
@@ -207,18 +207,18 @@ describe("createDirectoryGuardrail", () => {
     it("should allow cwd within allowed paths", () => {
       const config: GuardrailConfig = {
         directory: { mode: "veto", allowedPaths: ["/worktrees/project"] },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
-      const result = guardrail("Bash", { command: "npm test" }, "/worktrees/project/seed-abc");
+      const result = guardrail("Bash", { command: "npm test" }, "/worktrees/project/task-abc");
       expect(result.allowed).toBe(true);
     });
 
     it("should veto cwd outside allowed paths", () => {
       const config: GuardrailConfig = {
         directory: { mode: "veto", allowedPaths: ["/worktrees/project"] },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -233,13 +233,13 @@ describe("createDirectoryGuardrail", () => {
     it("should handle trailing slashes correctly", () => {
       const config: GuardrailConfig = {
         directory: { mode: "veto" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
       // Both with and without trailing slash should be treated as the same
-      const result1 = guardrail("Bash", { command: "ls" }, "/worktrees/project/seed-abc/");
-      const result2 = guardrail("Bash", { command: "ls" }, "/worktrees/project/seed-abc");
+      const result1 = guardrail("Bash", { command: "ls" }, "/worktrees/project/task-abc/");
+      const result2 = guardrail("Bash", { command: "ls" }, "/worktrees/project/task-abc");
 
       expect(result1.allowed).toBe(true);
       expect(result2.allowed).toBe(true);
@@ -248,12 +248,12 @@ describe("createDirectoryGuardrail", () => {
     it("should handle relative paths in expectedCwd", () => {
       const config: GuardrailConfig = {
         directory: { mode: "veto" },
-        expectedCwd: "./worktrees/project/seed-abc",
+        expectedCwd: "./worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
       // Resolved path should match
-      const result = guardrail("Bash", { command: "ls" }, process.cwd() + "/worktrees/project/seed-abc");
+      const result = guardrail("Bash", { command: "ls" }, process.cwd() + "/worktrees/project/task-abc");
       expect(result.allowed).toBe(true);
     });
   });
@@ -262,7 +262,7 @@ describe("createDirectoryGuardrail", () => {
     it("should handle Edit without path argument", () => {
       const config: GuardrailConfig = {
         directory: { mode: "auto-correct" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -275,7 +275,7 @@ describe("createDirectoryGuardrail", () => {
     it("should handle Bash without command argument", () => {
       const config: GuardrailConfig = {
         directory: { mode: "auto-correct" },
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -287,7 +287,7 @@ describe("createDirectoryGuardrail", () => {
     it("should use default mode auto-correct when not specified", () => {
       const config: GuardrailConfig = {
         directory: {},
-        expectedCwd: "/worktrees/project/seed-abc",
+        expectedCwd: "/worktrees/project/task-abc",
       };
       const guardrail = createDirectoryGuardrail(config, mockLogEvent, projectId, runId);
 
@@ -302,7 +302,7 @@ describe("measureGuardrailOverhead", () => {
   it("should measure guardrail overhead in milliseconds", () => {
     const config: GuardrailConfig = {
       directory: { mode: "auto-correct" },
-      expectedCwd: "/worktrees/project/seed-abc",
+      expectedCwd: "/worktrees/project/task-abc",
     };
     const guardrail = createDirectoryGuardrail(config, vi.fn(), "proj", "run");
 
@@ -314,7 +314,7 @@ describe("measureGuardrailOverhead", () => {
   it("should complete within 5ms for NFR requirement", () => {
     const config: GuardrailConfig = {
       directory: { mode: "auto-correct" },
-      expectedCwd: "/worktrees/project/seed-abc",
+      expectedCwd: "/worktrees/project/task-abc",
     };
     const guardrail = createDirectoryGuardrail(config, vi.fn(), "proj", "run");
 
@@ -327,11 +327,11 @@ describe("wrapToolWithGuardrail", () => {
   it("should wrap a tool factory with guardrail checks", () => {
     const config: GuardrailConfig = {
       directory: { mode: "veto" },
-      expectedCwd: "/worktrees/project/seed-abc",
+      expectedCwd: "/worktrees/project/task-abc",
     };
     const mockLogEvent = vi.fn((_eventType: string, _details: Record<string, unknown>) => {});
     const guardrail = createDirectoryGuardrail(config, mockLogEvent, "proj", "run");
-    const getCwd = () => "/worktrees/project/seed-abc";
+    const getCwd = () => "/worktrees/project/task-abc";
 
     // Create a mock tool factory
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -343,7 +343,7 @@ describe("wrapToolWithGuardrail", () => {
 
     // Call with correct cwd — should work
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = wrapped("/worktrees/project/seed-abc", { file: "test.ts" } as any);
+    const result = wrapped("/worktrees/project/task-abc", { file: "test.ts" } as any);
     expect(mockFactory).toHaveBeenCalled();
   });
 });

@@ -130,6 +130,42 @@ describe("pr command registered context", () => {
     expect(exitCalled).toBe(false);
   });
 
+  it("prints created and failed PR summaries", async () => {
+    mockCreatePRs.mockResolvedValue({
+      created: [
+        { taskId: "task-1", branchName: "foreman/task-1", prUrl: "https://example.test/pr/1" },
+      ],
+      failed: [
+        { taskId: "task-2", branchName: "foreman/task-2", error: "first line\nstack" },
+      ],
+    });
+
+    await runCommand(["--base-branch", "develop"]);
+
+    expect(mockCreatePRs).toHaveBeenCalledWith({
+      baseBranch: "develop",
+      draft: undefined,
+      projectId: "proj-local",
+    });
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Created 1 PR(s):");
+    expect(rendered).toContain("task-1");
+    expect(rendered).toContain("https://example.test/pr/1");
+    expect(rendered).toContain("Failed 1 PR(s):");
+    expect(rendered).toContain("task-2");
+    expect(rendered).toContain("first line");
+    expect(rendered).not.toContain("stack");
+  });
+
+  it("fails clearly when no registered or local project exists", async () => {
+    mockGetProjectByPath.mockReturnValue(null);
+
+    await runCommand();
+
+    expect(exitCalled).toBe(true);
+    expect(vi.mocked(console.error)).toHaveBeenCalledWith("No project registered. Run 'foreman init' first.");
+  });
+
   it("keeps outside-a-repo behavior unchanged", async () => {
     mockResolveRepoRootProjectPath.mockRejectedValue(new Error("not a repo"));
 

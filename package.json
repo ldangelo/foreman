@@ -1,7 +1,7 @@
 {
   "name": "@oftheangels/foreman",
   "version": "0.1.4",
-  "description": "Multi-agent AI coding orchestrator with native task management, git worktree isolation, and compatibility fallback for legacy beads flows",
+  "description": "Multi-agent AI coding orchestrator with native task management and git worktree isolation",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -44,6 +44,7 @@
     "test:report:e2e:full-run": "mkdir -p .foreman/test-reports && vitest run -c vitest.e2e.full-run.config.ts --reporter=json --outputFile=.foreman/test-reports/e2e-full-run.json || test -f .foreman/test-reports/e2e-full-run.json",
     "test:report:system": "mkdir -p .foreman/test-reports && vitest run -c vitest.system.config.ts --reporter=json --outputFile=.foreman/test-reports/system.json || test -f .foreman/test-reports/system.json",
     "test:report:ci": "mkdir -p .foreman/test-reports && npm run test:report:unit && npm run test:report:integration && npm run test:report:e2e:smoke && npm run test:report:e2e:full-run",
+    "test:coverage:ci": "node scripts/test-coverage-ci.mjs",
     "prebuilds:download": "tsx scripts/download-prebuilds.ts",
     "prebuilds:download:force": "tsx scripts/download-prebuilds.ts --force",
     "prebuilds:status": "tsx scripts/download-prebuilds.ts --status",
@@ -52,7 +53,8 @@
     "lint:fix": "eslint src/ scripts/ --ext .ts --fix",
     "db:migrate": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ up --tsx",
     "db:migrate:down": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ down --tsx",
-    "db:migrate:create": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ create --tsx --migration-file-language ts"
+    "db:migrate:create": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ create --tsx --migration-file-language ts",
+    "test:coverage:transition": "node scripts/test-transition-coverage-ci.mjs"
   },
   "keywords": [
     "ai",
@@ -81,7 +83,8 @@
     "postgres": "3.4.5",
     "react": "^19.2.4",
     "ws": "^8.18.1",
-    "yaml": "^2.8.3"
+    "yaml": "^2.8.3",
+    "node-pg-migrate": "^8.0.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -93,7 +96,6 @@
     "@vitest/coverage-v8": "^4.1.1",
     "esbuild": "^0.27.4",
     "eslint": "^10.1.0",
-    "node-pg-migrate": "^8.0.4",
     "testcontainers": "^12.0.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

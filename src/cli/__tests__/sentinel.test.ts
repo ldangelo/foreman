@@ -100,16 +100,15 @@ describe("sentinel CLI smoke tests", () => {
     expect(output).toContain("--dry-run");
   }, TEST_TIMEOUT_MS);
 
-  it("sentinel status without init shows error", async () => {
+  it("sentinel status with an unknown project shows error", async () => {
     const tmp = makeTempDir();
-    const result = await runWithRetry(["sentinel", "status"], tmp);
+    const result = await runWithRetry(["sentinel", "status", "--project", "missing-project"], tmp);
 
     const output = result.stdout + result.stderr;
-    // Should fail (no git repo or no project init)
     expect(
       result.exitCode !== 0 ||
         output.toLowerCase().includes("error") ||
-        output.includes("init"),
+        output.includes("missing-project"),
     ).toBe(true);
   }, TEST_TIMEOUT_MS);
 

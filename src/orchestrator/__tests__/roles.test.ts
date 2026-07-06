@@ -96,26 +96,26 @@ describe("DCG (Destructive Command Guard) permission modes", () => {
 });
 
 describe("prompt templates", () => {
-  it("explorerPrompt includes seed context and read-only instructions", () => {
+  it("explorerPrompt includes task context and read-only instructions", () => {
     const prompt = explorerPrompt("bd-123", "Fix auth", "JWT token refresh");
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("Fix auth");
     expect(prompt).toContain("JWT token refresh");
     expect(prompt).toContain("DO NOT modify");
     expect(prompt).toContain("EXPLORER_REPORT.md");
-    expect(prompt).toContain("## Implementation Plan");
+    expect(prompt).toContain("## Developer Handoff");
   });
 
-  it("developerPrompt includes seed context", () => {
+  it("developerPrompt includes task context", () => {
     const prompt = developerPrompt("bd-123", "Fix auth", "JWT refresh", true);
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("EXPLORER_REPORT.md");
-    expect(prompt).toContain("Implementation Plan");
+    expect(prompt).toContain("Developer Handoff");
   });
 
   it("developerPrompt includes feedback when provided", () => {
     const prompt = developerPrompt("bd-123", "Fix auth", "desc", false, "Tests failed: auth.test.ts");
-    expect(prompt).toContain("Previous Feedback");
+    expect(prompt).toContain("Focused Repair Feedback");
     expect(prompt).toContain("Tests failed: auth.test.ts");
   });
 
@@ -124,13 +124,13 @@ describe("prompt templates", () => {
     expect(prompt).not.toContain("Previous Feedback");
   });
 
-  it("qaPrompt includes seed reference", () => {
+  it("qaPrompt includes task reference", () => {
     const prompt = qaPrompt("bd-123", "Fix auth");
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("QA_REPORT.md");
   });
 
-  it("reviewerPrompt includes seed context and read-only rules", () => {
+  it("reviewerPrompt includes task context and read-only rules", () => {
     const prompt = reviewerPrompt("bd-123", "Fix auth", "JWT refresh");
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("REVIEW.md");
@@ -144,7 +144,7 @@ describe("prompt templates", () => {
     expect(prompt).toContain("SENTINEL_REPORT.md");
   });
 
-  it("finalizePrompt includes seed context", () => {
+  it("finalizePrompt includes task context", () => {
     const prompt = finalizePrompt("bd-123", "Fix auth", "run-xyz", "main");
     expect(prompt).toContain("bd-123");
     expect(prompt).toContain("Fix auth");
@@ -169,9 +169,9 @@ describe("prompt templates", () => {
 describe("buildPhasePrompt — worktreePath propagation", () => {
   it("injects worktreePath into finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-abc",
-      seedTitle: "My task",
-      seedDescription: "desc",
+      taskId: "bd-abc",
+      taskTitle: "My task",
+      taskDescription: "desc",
       runId: "run-1",
       worktreePath: "/home/user/worktrees/bd-abc",
     });
@@ -181,9 +181,9 @@ describe("buildPhasePrompt — worktreePath propagation", () => {
   it("does not break other phases when worktreePath is provided", () => {
     // Other phases don't use {{worktreePath}} but it should be harmless to pass it
     const prompt = buildPhasePrompt("developer", {
-      seedId: "bd-abc",
-      seedTitle: "My task",
-      seedDescription: "desc",
+      taskId: "bd-abc",
+      taskTitle: "My task",
+      taskDescription: "desc",
       runId: "run-1",
       worktreePath: "/home/user/worktrees/bd-abc",
     });
@@ -194,9 +194,9 @@ describe("buildPhasePrompt — worktreePath propagation", () => {
   it("produces empty string for worktreePath when omitted", () => {
     // buildPhasePrompt should not leave {{worktreePath}} un-interpolated
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-abc",
-      seedTitle: "My task",
-      seedDescription: "desc",
+      taskId: "bd-abc",
+      taskTitle: "My task",
+      taskDescription: "desc",
     });
     expect(prompt).not.toContain("{{worktreePath}}");
   });
@@ -206,12 +206,12 @@ describe("buildPhasePrompt — worktreePath propagation", () => {
     try {
       const promptDir = join(projectRoot, ".foreman", "prompts", "task");
       mkdirSync(promptDir, { recursive: true });
-      writeFileSync(join(promptDir, "fix-issue.md"), "fix {{seedId}} {{agentRole}} {{seedTitle}}", "utf8");
+      writeFileSync(join(promptDir, "fix-issue.md"), "fix {{taskId}} {{agentRole}} {{taskTitle}}", "utf8");
 
       const prompt = buildPhasePrompt("fix", {
-        seedId: "foreman-12345",
-        seedTitle: "Native task store",
-        seedDescription: "desc",
+        taskId: "foreman-12345",
+        taskTitle: "Native task store",
+        taskDescription: "desc",
       }, {
         projectRoot,
         workflow: "task",
@@ -225,38 +225,38 @@ describe("buildPhasePrompt — worktreePath propagation", () => {
   });
 });
 
-describe("buildPhasePrompt — seedType propagation", () => {
-  it("injects seedType into finalize prompt when provided", () => {
+describe("buildPhasePrompt — taskType propagation", () => {
+  it("injects taskType into finalize prompt when provided", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-abc",
-      seedTitle: "My task",
-      seedDescription: "desc",
+      taskId: "bd-abc",
+      taskTitle: "My task",
+      taskDescription: "desc",
       runId: "run-1",
-      seedType: "test",
+      taskType: "test",
     });
-    // The finalize prompt uses {{seedType}} — it should be interpolated
-    expect(prompt).not.toContain("{{seedType}}");
+    // The finalize prompt uses {{taskType}} — it should be interpolated
+    expect(prompt).not.toContain("{{taskType}}");
     expect(prompt).toContain("test");
   });
 
-  it("produces empty string for seedType when omitted", () => {
+  it("produces empty string for taskType when omitted", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-abc",
-      seedTitle: "My task",
-      seedDescription: "desc",
+      taskId: "bd-abc",
+      taskTitle: "My task",
+      taskDescription: "desc",
     });
-    expect(prompt).not.toContain("{{seedType}}");
+    expect(prompt).not.toContain("{{taskType}}");
   });
 
   it("finalize prompt contains nothing-to-commit logic for verification beads", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-abc",
-      seedTitle: "Verify auth flow",
-      seedDescription: "desc",
+      taskId: "bd-abc",
+      taskTitle: "Verify auth flow",
+      taskDescription: "desc",
       runId: "run-1",
-      seedType: "test",
+      taskType: "test",
     });
-    // The updated finalize.md should instruct the agent to check seedType
+    // The updated finalize.md should instruct the agent to check taskType
     expect(prompt).toContain("verification");
     expect(prompt).toContain("nothing to commit");
   });

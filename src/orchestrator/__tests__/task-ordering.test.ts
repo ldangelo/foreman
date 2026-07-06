@@ -100,7 +100,7 @@ describe("getTaskOrder", () => {
     const client = makeBrClient(details);
 
     const result = await getTaskOrder("epic-1", client as never, "/tmp", false);
-    expect(result.map((t) => t.seedId)).toEqual(["t1", "t2", "t3"]);
+    expect(result.map((t) => t.taskId)).toEqual(["t1", "t2", "t3"]);
   });
 
   it("uses priority as tiebreaker when no deps", async () => {
@@ -120,7 +120,7 @@ describe("getTaskOrder", () => {
     const client = makeBrClient(details);
 
     const result = await getTaskOrder("epic-1", client as never, "/tmp", false);
-    expect(result.map((t) => t.seedId)).toEqual(["t-p0", "t-p1", "t-p2"]);
+    expect(result.map((t) => t.taskId)).toEqual(["t-p0", "t-p1", "t-p2"]);
   });
 
   it("throws CircularDependencyError on circular deps", async () => {
@@ -158,10 +158,10 @@ describe("getTaskOrder", () => {
 
     const result = await getTaskOrder("epic-1", client as never, "/tmp", false);
     expect(result).toHaveLength(1);
-    expect(result[0].seedId).toBe("t1");
+    expect(result[0].taskId).toBe("t1");
   });
 
-  it("includes seedDescription from bead description", async () => {
+  it("includes taskDescription from bead description", async () => {
     const task1 = makeDetail("t1", "Task 1", "P1", []);
 
     const epic = makeDetail("epic-1", "Epic", "P1", [], "epic");
@@ -174,7 +174,7 @@ describe("getTaskOrder", () => {
     const client = makeBrClient(details);
 
     const result = await getTaskOrder("epic-1", client as never, "/tmp", false);
-    expect(result[0].seedDescription).toBe("Description for Task 1");
+    expect(result[0].taskDescription).toBe("Description for Task 1");
   });
 
   it("handles mixed deps — some within children, some external", async () => {
@@ -194,6 +194,6 @@ describe("getTaskOrder", () => {
 
     // External dep ext-1 is ignored (not in children set), so t2 only depends on t1
     const result = await getTaskOrder("epic-1", client as never, "/tmp", false);
-    expect(result.map((t) => t.seedId)).toEqual(["t1", "t2"]);
+    expect(result.map((t) => t.taskId)).toEqual(["t1", "t2"]);
   });
 });

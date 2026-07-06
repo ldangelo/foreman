@@ -2,7 +2,7 @@
 document_id: TRD-2026-014
 prd_reference: PRD-2026-014
 prd_path: docs/PRD/PRD-2026-014-elixir-backend-orchestration.md
-version: 1.0.4
+version: 1.0.5
 status: Draft
 date: 2026-06-16
 design_readiness_score: 4.75
@@ -44,11 +44,11 @@ Project type: brownfield. Existing TypeScript Foreman codebase remains source fo
 
 ## 3. Architecture Decision
 
-Chosen approach: **Option B — Full OTP orchestration core**, conditional on the comparative architecture spike.
+Chosen approach: **Option B — Full OTP orchestration core**.
 
 Foreman will move orchestration ownership to an Elixir/OTP server as the target architecture from the start. Node remains as CLI/runtime edge and Pi SDK worker layer, but the Elixir server owns durable commands, events, projections, supervisors, run/phase actors, recovery, VCS/PR state machines, and integration command ingestion.
 
-**Conditional gate:** Option B is the selected target architecture only if TRD-001 confirms Elixir/OTP remains the correct backend after comparing WolverineFx/Marten and a control alternative. If TRD-001 recommends WolverineFx/Marten or another stack, implementation must halt and this TRD must be revised before tasks TRD-002 and later proceed.
+**Spike result:** TRD-001 completed the comparative architecture spike in `docs/spikes/TRD-2026-014-architecture-spike.md`. The spike compared Elixir/OTP, WolverineFx/Marten, and a TypeScript control alternative against the same Foreman lifecycle and worker-crash recovery scenario. It confirmed Elixir/OTP remains the target backend because OTP supervision best matches Foreman's local long-running worker/process orchestration model, while WolverineFx/Marten's durable inbox/outbox, saga, scheduled-message, dead-letter, and event-store strengths do not remove the need for custom local worker supervision.
 
 ### 3.1 Alternatives Considered
 
@@ -58,7 +58,7 @@ Foreman will move orchestration ownership to an Elixir/OTP server as the target 
 | B: Full OTP orchestration core | Elixir owns all orchestration domains from the target design | Clearest boundaries, strongest recovery model, avoids dual truth | Larger migration, more upfront work | **Selected** |
 | C: Spike-gated hybrid | Architecture spike first, then vertical hybrid slices | Balanced and PRD-aligned | Slower to full ownership | Not selected |
 
-The comparative spike remains a required first task because REQ-025 requires validating Elixir/OTP against WolverineFx/Marten and a control alternative before backend commitment. If the spike disproves Elixir, this TRD must be revised before implementation continues beyond TRD-001.
+The comparative spike is complete. Implementation may proceed beyond TRD-001 under the Elixir/OTP target architecture unless a future TRD explicitly revises the runtime decision.
 
 ## 4. System Architecture
 
@@ -292,7 +292,7 @@ Merge orchestration must revalidate `stable_ready` immediately before appending 
 
 | Quality Attribute | Requirement | Verification |
 |-------------------|-------------|--------------|
-| Projection latency | `status`, `task list`, and `run show` projection reads return in <250ms for 100 active/recent tasks locally | Integration benchmark with seeded projection rows |
+| Projection latency | `status`, `task list`, and `run show` projection reads return in <250ms for 100 active/recent tasks locally | Integration benchmark with tasked projection rows |
 | Event append throughput | Event append path supports >=100 events/sec locally for bursty worker logs/tool events | Event-store load test with ordered stream assertions |
 | Worker liveness | Worker heartbeat interval defaults to 10s; worker is stale after 60s without matching heartbeat metadata | Recovery fixture and fake worker tests |
 | API error handling | Command API returns structured `{ok:false,error:{code,message,details,retryable,correlation_id}}` envelope for validation, auth, conflict, unsupported, and internal errors | API contract tests |
@@ -306,9 +306,9 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 1: Architecture Decision and Server Skeleton
 
 **Shippable State:** Operators can run `foreman server doctor` and receive a real Elixir server readiness report showing project loading, database connectivity, and projection health.
-- [ ] **TRD-001**: Complete comparative architecture spike and record final stack decision (6h) [satisfies REQ-025]
+- [x] **TRD-001**: Complete comparative architecture spike and record final stack decision (6h) [satisfies REQ-025]
 
-**Description:** Complete comparative architecture spike and record final stack decision with production code, migration-safe boundaries, and operator-visible behavior.
+**Description:** Complete comparative architecture spike with executable lifecycle/recovery prototypes and record final stack decision before production implementation continues.
 
 **Validates PRD ACs:** AC-025-1, AC-025-2, AC-025-3, AC-025-4
 
@@ -316,7 +316,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-001-TEST**: Verify Complete comparative architecture spike and record final stack decision (3h) [verifies TRD-001] [satisfies REQ-025] [depends: TRD-001]
+- [x] **TRD-001-TEST**: Verify Complete comparative architecture spike and record final stack decision (3h) [verifies TRD-001] [satisfies REQ-025] [depends: TRD-001]
 
 **Description:** Add unit/integration tests that verify AC-025-1, AC-025-2, AC-025-3, AC-025-4 for TRD-001.
 
@@ -324,7 +324,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-002**: Create Elixir application shell and OTP supervision topology (6h) [satisfies REQ-001] [depends: TRD-001]
+- [x] **TRD-002**: Create Elixir application shell and OTP supervision topology (6h) [satisfies REQ-001] [depends: TRD-001]
 
 **Description:** Create Elixir application shell and OTP supervision topology with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -334,7 +334,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-002-TEST**: Verify Create Elixir application shell and OTP supervision topology (3h) [verifies TRD-002] [satisfies REQ-001] [depends: TRD-002]
+- [x] **TRD-002-TEST**: Verify Create Elixir application shell and OTP supervision topology (3h) [verifies TRD-002] [satisfies REQ-001] [depends: TRD-002]
 
 **Description:** Add unit/integration tests that verify AC-001-1, AC-001-2, AC-001-3 for TRD-002.
 
@@ -342,7 +342,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-003**: Define Postgres event store schema, event envelopes, and versioned decoders (6h) [satisfies REQ-002] [depends: TRD-002]
+- [x] **TRD-003**: Define Postgres event store schema, event envelopes, and versioned decoders (6h) [satisfies REQ-002] [depends: TRD-002]
 
 **Description:** Define Postgres event store schema, event envelopes, and versioned decoders with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -352,7 +352,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-003-TEST**: Verify Define Postgres event store schema, event envelopes, and versioned decoders (3h) [verifies TRD-003] [satisfies REQ-002] [depends: TRD-003]
+- [x] **TRD-003-TEST**: Verify Define Postgres event store schema, event envelopes, and versioned decoders (3h) [verifies TRD-003] [satisfies REQ-002] [depends: TRD-003]
 
 **Description:** Add unit/integration tests that verify AC-002-1, AC-002-2, AC-002-3 for TRD-003.
 
@@ -360,7 +360,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-004**: Implement projection pipeline and rebuild entry points (6h) [satisfies REQ-003] [depends: TRD-003]
+- [x] **TRD-004**: Implement projection pipeline and rebuild entry points (6h) [satisfies REQ-003] [depends: TRD-003]
 
 **Description:** Implement projection pipeline and rebuild entry points with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -370,7 +370,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-004-TEST**: Verify Implement projection pipeline and rebuild entry points (3h) [verifies TRD-004] [satisfies REQ-003] [depends: TRD-004]
+- [x] **TRD-004-TEST**: Verify Implement projection pipeline and rebuild entry points (3h) [verifies TRD-004] [satisfies REQ-003] [depends: TRD-004]
 
 **Description:** Add unit/integration tests that verify AC-003-1, AC-003-2, AC-003-3 for TRD-004.
 
@@ -378,7 +378,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-005**: Implement authenticated HTTP server API and Node CLI client transport (5h) [satisfies REQ-004, REQ-023] [depends: TRD-002, TRD-004]
+- [x] **TRD-005**: Implement authenticated HTTP server API and Node CLI client transport (5h) [satisfies REQ-004, REQ-023] [depends: TRD-002, TRD-004]
 
 **Description:** Implement authenticated HTTP server API and Node CLI client transport with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -388,7 +388,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-005-TEST**: Verify Implement authenticated HTTP server API and Node CLI client transport (3h) [verifies TRD-005] [satisfies REQ-004, REQ-023] [depends: TRD-005]
+- [x] **TRD-005-TEST**: Verify Implement authenticated HTTP server API and Node CLI client transport (3h) [verifies TRD-005] [satisfies REQ-004, REQ-023] [depends: TRD-005]
 
 **Description:** Add unit/integration tests that verify AC-004-1, AC-004-3, AC-023-2 for TRD-005.
 
@@ -398,7 +398,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-006**: Implement server bootstrap, health, and CLI auto-start behavior (4h) [satisfies REQ-004, REQ-005] [depends: TRD-005]
+- [x] **TRD-006**: Implement server bootstrap, health, and CLI auto-start behavior (4h) [satisfies REQ-004, REQ-005] [depends: TRD-005]
 
 **Description:** Implement server bootstrap, health, and CLI auto-start behavior with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -408,7 +408,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-006-TEST**: Verify Implement server bootstrap, health, and CLI auto-start behavior (3h) [verifies TRD-006] [satisfies REQ-004, REQ-005] [depends: TRD-006]
+- [x] **TRD-006-TEST**: Verify Implement server bootstrap, health, and CLI auto-start behavior (3h) [verifies TRD-006] [satisfies REQ-004, REQ-005] [depends: TRD-006]
 
 **Description:** Add unit/integration tests that verify AC-004-3, AC-005-1, AC-005-3 for TRD-006.
 
@@ -419,7 +419,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 2: CLI, Projects, Tasks, and Scheduling
 
 **Shippable State:** Users can create/list/show tasks and start eligible runs through the new Node CLI backed by Elixir projections.
-- [ ] **TRD-007**: Implement domain command grouping and legacy alias warnings (5h) [satisfies REQ-005] [depends: TRD-006]
+- [x] **TRD-007**: Implement domain command grouping and legacy alias warnings (5h) [satisfies REQ-005] [depends: TRD-006]
 
 **Description:** Implement domain command grouping and legacy alias warnings with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -429,7 +429,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-007-TEST**: Verify Implement domain command grouping and legacy alias warnings (3h) [verifies TRD-007] [satisfies REQ-005] [depends: TRD-007]
+- [x] **TRD-007-TEST**: Verify Implement domain command grouping and legacy alias warnings (3h) [verifies TRD-007] [satisfies REQ-005] [depends: TRD-007]
 
 **Description:** Add unit/integration tests that verify AC-005-1, AC-005-2, AC-005-3 for TRD-007.
 
@@ -437,7 +437,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-008**: Implement task and project command handlers with atomic projections (6h) [satisfies REQ-010] [depends: TRD-005]
+- [x] **TRD-008**: Implement task and project command handlers with atomic projections (6h) [satisfies REQ-010] [depends: TRD-005]
 
 **Description:** Implement task and project command handlers with atomic projections with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -447,7 +447,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-008-TEST**: Verify Implement task and project command handlers with atomic projections (3h) [verifies TRD-008] [satisfies REQ-010] [depends: TRD-008]
+- [x] **TRD-008-TEST**: Verify Implement task and project command handlers with atomic projections (3h) [verifies TRD-008] [satisfies REQ-010] [depends: TRD-008]
 
 **Description:** Add unit/integration tests that verify AC-010-1, AC-010-2, AC-010-3 for TRD-008.
 
@@ -455,7 +455,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-009**: Implement run and phase state machines as OTP actors (6h) [satisfies REQ-008] [depends: TRD-003]
+- [x] **TRD-009**: Implement run and phase state machines as OTP actors (6h) [satisfies REQ-008] [depends: TRD-003]
 
 **Description:** Implement run and phase state machines as OTP actors with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -465,7 +465,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-009-TEST**: Verify Implement run and phase state machines as OTP actors (3h) [verifies TRD-009] [satisfies REQ-008] [depends: TRD-009]
+- [x] **TRD-009-TEST**: Verify Implement run and phase state machines as OTP actors (3h) [verifies TRD-009] [satisfies REQ-008] [depends: TRD-009]
 
 **Description:** Add unit/integration tests that verify AC-008-1, AC-008-2, AC-008-3 for TRD-009.
 
@@ -473,7 +473,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-010**: Implement supervised scheduler and capacity enforcement (6h) [satisfies REQ-011] [depends: TRD-008]
+- [x] **TRD-010**: Implement supervised scheduler and capacity enforcement (6h) [satisfies REQ-011] [depends: TRD-008]
 
 **Description:** Implement supervised scheduler and capacity enforcement with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -483,7 +483,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-010-TEST**: Verify Implement supervised scheduler and capacity enforcement (3h) [verifies TRD-010] [satisfies REQ-011] [depends: TRD-010]
+- [x] **TRD-010-TEST**: Verify Implement supervised scheduler and capacity enforcement (3h) [verifies TRD-010] [satisfies REQ-011] [depends: TRD-010]
 
 **Description:** Add unit/integration tests that verify AC-011-1, AC-011-2, AC-011-3 for TRD-010.
 
@@ -494,7 +494,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 3: Worker Bridge and Workflow Execution
 
 **Shippable State:** Users can run existing YAML workflows through a Node/Pi worker controlled by the Elixir server.
-- [ ] **TRD-011**: Implement Node/Pi SDK worker HTTP protocol and heartbeat contract (6h) [satisfies REQ-006] [depends: TRD-005]
+- [x] **TRD-011**: Implement Node/Pi SDK worker HTTP protocol and heartbeat contract (6h) [satisfies REQ-006] [depends: TRD-005]
 
 **Description:** Implement Node/Pi SDK worker HTTP protocol and heartbeat contract with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -504,7 +504,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-011-TEST**: Verify Implement Node/Pi SDK worker HTTP protocol and heartbeat contract (3h) [verifies TRD-011] [satisfies REQ-006] [depends: TRD-011]
+- [x] **TRD-011-TEST**: Verify Implement Node/Pi SDK worker HTTP protocol and heartbeat contract (3h) [verifies TRD-011] [satisfies REQ-006] [depends: TRD-011]
 
 **Description:** Add unit/integration tests that verify AC-006-1, AC-006-2, AC-006-3, AC-006-4 for TRD-011.
 
@@ -514,7 +514,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-012**: Implement provider adapter registry with Pi-only production enforcement for v1 (4h) [satisfies REQ-007] [depends: TRD-011]
+- [x] **TRD-012**: Implement provider adapter registry with Pi-only production enforcement for v1 (4h) [satisfies REQ-007] [depends: TRD-011]
 
 **Description:** Implement provider adapter registry with Pi-only production enforcement for v1 with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -524,7 +524,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-012-TEST**: Verify Implement provider adapter registry with Pi-only production enforcement for v1 (3h) [verifies TRD-012] [satisfies REQ-007] [depends: TRD-012]
+- [x] **TRD-012-TEST**: Verify Implement provider adapter registry with Pi-only production enforcement for v1 (3h) [verifies TRD-012] [satisfies REQ-007] [depends: TRD-012]
 
 **Description:** Add unit/integration tests that verify AC-007-1, AC-007-2, AC-007-3 for TRD-012.
 
@@ -532,7 +532,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-013**: Migrate workflow YAML interpretation into Elixir state-machine execution (6h) [satisfies REQ-009] [depends: TRD-009, TRD-011]
+- [x] **TRD-013**: Migrate workflow YAML interpretation into Elixir state-machine execution (6h) [satisfies REQ-009] [depends: TRD-009, TRD-011]
 
 **Description:** Migrate workflow YAML interpretation into Elixir state-machine execution with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -542,7 +542,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-013-TEST**: Verify Migrate workflow YAML interpretation into Elixir state-machine execution (3h) [verifies TRD-013] [satisfies REQ-009] [depends: TRD-013]
+- [x] **TRD-013-TEST**: Verify Migrate workflow YAML interpretation into Elixir state-machine execution (3h) [verifies TRD-013] [satisfies REQ-009] [depends: TRD-013]
 
 **Description:** Add unit/integration tests that verify AC-009-1, AC-009-2, AC-009-3 for TRD-013.
 
@@ -550,7 +550,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-014**: Implement deterministic simulation harness for run, phase, and worker events (5h) [satisfies REQ-021] [depends: TRD-009, TRD-011]
+- [x] **TRD-014**: Implement deterministic simulation harness for run, phase, and worker events (5h) [satisfies REQ-021] [depends: TRD-009, TRD-011]
 
 **Description:** Implement deterministic simulation harness for run, phase, and worker events with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -560,7 +560,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-014-TEST**: Verify Implement deterministic simulation harness for run, phase, and worker events (3h) [verifies TRD-014] [satisfies REQ-021] [depends: TRD-014]
+- [x] **TRD-014-TEST**: Verify Implement deterministic simulation harness for run, phase, and worker events (3h) [verifies TRD-014] [satisfies REQ-021] [depends: TRD-014]
 
 **Description:** Add unit/integration tests that verify AC-021-1, AC-021-2, AC-021-3 for TRD-014.
 
@@ -571,7 +571,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 4: Recovery, VCS, PR Gates, and Inbox
 
 **Shippable State:** Users can recover crashed workers, manage worktrees, observe PR gate state, and exchange inbox messages from event-backed views.
-- [ ] **TRD-015**: Implement worker recovery and external-state reconciliation engine (6h) [satisfies REQ-012] [depends: TRD-011]
+- [x] **TRD-015**: Implement worker recovery and external-state reconciliation engine (6h) [satisfies REQ-012] [depends: TRD-011]
 
 **Description:** Implement worker recovery and external-state reconciliation engine with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -581,7 +581,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-015-TEST**: Verify Implement worker recovery and external-state reconciliation engine (3h) [verifies TRD-015] [satisfies REQ-012] [depends: TRD-015]
+- [x] **TRD-015-TEST**: Verify Implement worker recovery and external-state reconciliation engine (3h) [verifies TRD-015] [satisfies REQ-012] [depends: TRD-015]
 
 **Description:** Add unit/integration tests that verify AC-012-1, AC-012-2, AC-012-3 for TRD-015.
 
@@ -591,7 +591,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-016**: Implement VCS and worktree adapters behind server-owned events (6h) [satisfies REQ-013] [depends: TRD-009]
+- [x] **TRD-016**: Implement VCS and worktree adapters behind server-owned events (6h) [satisfies REQ-013] [depends: TRD-009]
 
 **Description:** Implement VCS and worktree adapters behind server-owned events with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -601,7 +601,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-016-TEST**: Verify Implement VCS and worktree adapters behind server-owned events (3h) [verifies TRD-016] [satisfies REQ-013] [depends: TRD-016]
+- [x] **TRD-016-TEST**: Verify Implement VCS and worktree adapters behind server-owned events (3h) [verifies TRD-016] [satisfies REQ-013] [depends: TRD-016]
 
 **Description:** Add unit/integration tests that verify AC-013-1, AC-013-2, AC-013-3 for TRD-016.
 
@@ -609,7 +609,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-017**: Implement PR gate and merge orchestration state machines (6h) [satisfies REQ-014] [depends: TRD-016]
+- [x] **TRD-017**: Implement PR gate and merge orchestration state machines (6h) [satisfies REQ-014] [depends: TRD-016]
 
 **Description:** Implement PR gate and merge orchestration state machines with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -619,7 +619,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-017-TEST**: Verify Implement PR gate and merge orchestration state machines (3h) [verifies TRD-017] [satisfies REQ-014] [depends: TRD-017]
+- [x] **TRD-017-TEST**: Verify Implement PR gate and merge orchestration state machines (3h) [verifies TRD-017] [satisfies REQ-014] [depends: TRD-017]
 
 **Description:** Add unit/integration tests that verify AC-014-1, AC-014-2, AC-014-3 for TRD-017.
 
@@ -627,7 +627,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-018**: Implement event-backed inbox and agent mail projection (5h) [satisfies REQ-015] [depends: TRD-004]
+- [x] **TRD-018**: Implement event-backed inbox and agent mail projection (5h) [satisfies REQ-015] [depends: TRD-004]
 
 **Description:** Implement event-backed inbox and agent mail projection with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -637,7 +637,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-018-TEST**: Verify Implement event-backed inbox and agent mail projection (3h) [verifies TRD-018] [satisfies REQ-015] [depends: TRD-018]
+- [x] **TRD-018-TEST**: Verify Implement event-backed inbox and agent mail projection (3h) [verifies TRD-018] [satisfies REQ-015] [depends: TRD-018]
 
 **Description:** Add unit/integration tests that verify AC-015-1, AC-015-2, AC-015-3 for TRD-018.
 
@@ -648,7 +648,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 5: Integrations, Debug, Attach, Planning, and Migration
 
 **Shippable State:** Users can ingest external triggers, debug timelines, attach to supported sessions, run planning flows, and coexist with legacy TS commands.
-- [ ] **TRD-019**: Implement sentinel, Jira, and GitHub command ingestion with idempotency (5h) [satisfies REQ-016] [depends: TRD-008]
+- [x] **TRD-019**: Implement sentinel, Jira, and GitHub command ingestion with idempotency (5h) [satisfies REQ-016] [depends: TRD-008]
 
 **Description:** Implement sentinel, Jira, and GitHub command ingestion with idempotency with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -658,7 +658,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-019-TEST**: Verify Implement sentinel, Jira, and GitHub command ingestion with idempotency (3h) [verifies TRD-019] [satisfies REQ-016] [depends: TRD-019]
+- [x] **TRD-019-TEST**: Verify Implement sentinel, Jira, and GitHub command ingestion with idempotency (3h) [verifies TRD-019] [satisfies REQ-016] [depends: TRD-019]
 
 **Description:** Add unit/integration tests that verify AC-016-1, AC-016-2, AC-016-3 for TRD-019.
 
@@ -666,7 +666,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-020**: Implement event-backed logs, reports, and debug timeline views (5h) [satisfies REQ-017] [depends: TRD-004]
+- [x] **TRD-020**: Implement event-backed logs, reports, and debug timeline views (5h) [satisfies REQ-017] [depends: TRD-004]
 
 **Description:** Implement event-backed logs, reports, and debug timeline views with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -676,7 +676,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-020-TEST**: Verify Implement event-backed logs, reports, and debug timeline views (3h) [verifies TRD-020] [satisfies REQ-017] [depends: TRD-020]
+- [x] **TRD-020-TEST**: Verify Implement event-backed logs, reports, and debug timeline views (3h) [verifies TRD-020] [satisfies REQ-017] [depends: TRD-020]
 
 **Description:** Add unit/integration tests that verify AC-017-1, AC-017-2, AC-017-3 for TRD-020.
 
@@ -684,7 +684,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-021**: Implement attach and interactive recovery bridge (5h) [satisfies REQ-018] [depends: TRD-011]
+- [x] **TRD-021**: Implement attach and interactive recovery bridge (5h) [satisfies REQ-018] [depends: TRD-011]
 
 **Description:** Implement attach and interactive recovery bridge with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -694,7 +694,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-021-TEST**: Verify Implement attach and interactive recovery bridge (3h) [verifies TRD-021] [satisfies REQ-018] [depends: TRD-021]
+- [x] **TRD-021-TEST**: Verify Implement attach and interactive recovery bridge (3h) [verifies TRD-021] [satisfies REQ-018] [depends: TRD-021]
 
 **Description:** Add unit/integration tests that verify AC-018-1, AC-018-2, AC-018-3 for TRD-021.
 
@@ -702,7 +702,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-022**: Implement PRD/TRD planning flow execution through worker pipeline (5h) [satisfies REQ-019] [depends: TRD-013]
+- [x] **TRD-022**: Implement PRD/TRD planning flow execution through worker pipeline (5h) [satisfies REQ-019] [depends: TRD-013]
 
 **Description:** Implement PRD/TRD planning flow execution through worker pipeline with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -712,7 +712,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-022-TEST**: Verify Implement PRD/TRD planning flow execution through worker pipeline (3h) [verifies TRD-022] [satisfies REQ-019] [depends: TRD-022]
+- [x] **TRD-022-TEST**: Verify Implement PRD/TRD planning flow execution through worker pipeline (3h) [verifies TRD-022] [satisfies REQ-019] [depends: TRD-022]
 
 **Description:** Add unit/integration tests that verify AC-019-1, AC-019-2, AC-019-3 for TRD-022.
 
@@ -720,7 +720,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-023**: Implement migration importer and legacy TS coexistence delegation (6h) [satisfies REQ-020] [depends: TRD-003, TRD-008]
+- [x] **TRD-023**: Implement migration importer and legacy TS coexistence delegation (6h) [satisfies REQ-020] [depends: TRD-003, TRD-008]
 
 **Description:** Implement migration importer and legacy TS coexistence delegation with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -730,7 +730,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-023-TEST**: Verify Implement migration importer and legacy TS coexistence delegation (3h) [verifies TRD-023] [satisfies REQ-020] [depends: TRD-023]
+- [x] **TRD-023-TEST**: Verify Implement migration importer and legacy TS coexistence delegation (3h) [verifies TRD-023] [satisfies REQ-020] [depends: TRD-023]
 
 **Description:** Add unit/integration tests that verify AC-020-1, AC-020-2, AC-020-3 for TRD-023.
 
@@ -741,7 +741,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 ### PR 6: Operations, Security, and Documentation
 
 **Shippable State:** Operators can safely run the remotely configurable server with auth, metrics, doctor checks, and updated documentation.
-- [ ] **TRD-024**: Implement operational metrics, server doctor, and projection lag reporting (5h) [satisfies REQ-022] [depends: TRD-004, TRD-020]
+- [x] **TRD-024**: Implement operational metrics, server doctor, and projection lag reporting (5h) [satisfies REQ-022] [depends: TRD-004, TRD-020]
 
 **Description:** Implement operational metrics, server doctor, and projection lag reporting with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -751,7 +751,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-024-TEST**: Verify Implement operational metrics, server doctor, and projection lag reporting (3h) [verifies TRD-024] [satisfies REQ-022] [depends: TRD-024]
+- [x] **TRD-024-TEST**: Verify Implement operational metrics, server doctor, and projection lag reporting (3h) [verifies TRD-024] [satisfies REQ-022] [depends: TRD-024]
 
 **Description:** Add unit/integration tests that verify AC-022-1, AC-022-2, AC-022-3 for TRD-024.
 
@@ -759,7 +759,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-025**: Implement worker secret scoping, authorization audit events, and remote access controls (5h) [satisfies REQ-023] [depends: TRD-005, TRD-011]
+- [x] **TRD-025**: Implement worker secret scoping, authorization audit events, and remote access controls (5h) [satisfies REQ-023] [depends: TRD-005, TRD-011]
 
 **Description:** Implement worker secret scoping, authorization audit events, and remote access controls with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -769,7 +769,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-025-TEST**: Verify Implement worker secret scoping, authorization audit events, and remote access controls (3h) [verifies TRD-025] [satisfies REQ-023] [depends: TRD-025]
+- [x] **TRD-025-TEST**: Verify Implement worker secret scoping, authorization audit events, and remote access controls (3h) [verifies TRD-025] [satisfies REQ-023] [depends: TRD-025]
 
 **Description:** Add unit/integration tests that verify AC-023-1, AC-023-2, AC-023-3 for TRD-025.
 
@@ -777,7 +777,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
-- [ ] **TRD-026**: Update README, User Guide, CLI Reference, and architecture docs (4h) [satisfies REQ-024] [depends: TRD-024]
+- [x] **TRD-026**: Update README, User Guide, CLI Reference, and architecture docs (4h) [satisfies REQ-024] [depends: TRD-024]
 
 **Description:** Update README, User Guide, CLI Reference, and architecture docs with production code, migration-safe boundaries, and operator-visible behavior.
 
@@ -787,7 +787,7 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the feature is configured, when the relevant command/API path is exercised, then the documented behavior succeeds and emits durable events where applicable.
 - Given invalid input, missing dependencies, or unsupported state, when the path is exercised, then the system fails before side effects with actionable diagnostics.
 - Given the server restarts, when projections or actors are rebuilt, then user-visible state remains consistent with the event store.
-- [ ] **TRD-026-TEST**: Verify Update README, User Guide, CLI Reference, and architecture docs (3h) [verifies TRD-026] [satisfies REQ-024] [depends: TRD-026]
+- [x] **TRD-026-TEST**: Verify Update README, User Guide, CLI Reference, and architecture docs (3h) [verifies TRD-026] [satisfies REQ-024] [depends: TRD-026]
 
 **Description:** Add unit/integration tests that verify AC-024-1, AC-024-2, AC-024-3 for TRD-026.
 
@@ -795,6 +795,118 @@ Each `*-TEST` task must name the exact command or API endpoint exercised, fixtur
 - Given the happy-path fixture, when the implementation is executed, then the expected command/event/projection result is asserted.
 - Given an edge-case fixture, when the implementation is executed, then failure or recovery behavior is asserted without flake-prone sleeps.
 - Given test cleanup runs, when the test exits, then no orphan worker, worktree, or DB state remains.
+
+### PR 7: Elixir Cutover Gates
+
+**Shippable State:** Operators can select Elixir as the active backend without accidentally running the legacy Node scheduler or silently delegating mutating commands back to the TypeScript control plane.
+- [x] **TRD-027**: Implement explicit Elixir cutover mode and Node daemon scheduler guard (3h) [satisfies REQ-020, REQ-024] [depends: TRD-023, TRD-026]
+
+**Description:** Add an explicit backend-selection gate for cutover. `FOREMAN_BACKEND=elixir` or `FOREMAN_MIGRATION_COMPLETE=true` disables Node daemon start/restart, prevents legacy TS delegation, and directs operators to `foreman server start` so there is one active scheduler per project.
+
+**Validates PRD ACs:** AC-020-3, AC-024-1, AC-024-3
+
+**Implementation AC Checklist:**
+- Given `FOREMAN_BACKEND=elixir`, when `foreman daemon start` or `foreman daemon restart` is requested, then the command fails before starting the Node daemon and prints the Elixir server command.
+- Given `FOREMAN_MIGRATION_COMPLETE=true`, when compatibility delegation is configured, then legacy TS delegation is disabled.
+- Given neither cutover flag is set, when legacy operation is required, then existing Node daemon and compatibility behavior remains available.
+- [x] **TRD-027-TEST**: Verify explicit Elixir cutover mode and Node daemon scheduler guard (2h) [verifies TRD-027] [satisfies REQ-020, REQ-024] [depends: TRD-027]
+
+**Description:** Add focused TypeScript tests for backend-mode resolution and legacy delegation behavior during Elixir cutover.
+
+**Verification Steps:**
+- `npx vitest run src/lib/__tests__/backend-mode.test.ts src/cli/__tests__/legacy-coexistence.test.ts --reporter=dot`
+- `npx tsc --noEmit`
+
+
+### PR 8: CLI Cutover Parity
+
+**Shippable State:** `FOREMAN_BACKEND=elixir` supports the operator commands needed to use Foreman without the legacy Node daemon socket. Commands either route to Elixir HTTP APIs or fail before side effects with a specific parity-gap message.
+- [x] **TRD-028**: Implement Elixir client read APIs for projects, tasks, runs, logs, debug, and inbox (5h) [satisfies REQ-004, REQ-010, REQ-017, REQ-020] [depends: TRD-024, TRD-027]
+
+**Description:** Extend the Node CLI Elixir client beyond command submission so CLI views can read Elixir projections directly. Include typed methods for `/api/v1/projects`, `/api/v1/tasks`, task detail, run logs, run reports, debug timeline, and any missing run/inbox projection endpoints required by CLI views.
+
+**Implementation AC Checklist:**
+- Given `FOREMAN_BACKEND=elixir`, when a read-only CLI view resolves project/task/run state, then it uses Elixir HTTP and never opens `~/.foreman/daemon.sock`.
+- Given an Elixir endpoint is not implemented, when the command is invoked, then the CLI prints a named parity gap and exits before side effects.
+- Given auth is configured, when reads execute, then `FOREMAN_SERVER_AUTH_TOKEN` is sent as bearer auth.
+- [x] **TRD-028-TEST**: Verify Elixir client read APIs (3h) [verifies TRD-028] [satisfies REQ-004, REQ-010, REQ-017, REQ-020] [depends: TRD-028]
+
+**Verification Steps:**
+- Unit tests for Elixir client read methods, auth headers, and server error envelopes.
+- CLI tests proving Elixir-mode reads do not instantiate the tRPC client.
+
+- [x] **TRD-029**: Route `foreman board` to Elixir task projections in cutover mode (6h) [satisfies REQ-004, REQ-010, REQ-020, REQ-024] [depends: TRD-028]
+
+**Description:** Make `FOREMAN_BACKEND=elixir foreman board --project <name>` load tasks from Elixir projections and apply supported board mutations through Elixir commands (`task.create`, `task.update`, `task.close`, `task.annotate`). Unsupported actions must fail clearly instead of falling back to Node.
+
+**Implementation AC Checklist:**
+- Given the Node daemon is stopped and Elixir is running, when `foreman board --project foreman` runs in Elixir mode, then it renders tasks without `daemon.sock`.
+- Given a board status change, close, create, or note action is made in Elixir mode, then the CLI sends an Elixir command and refreshes from projection state.
+- Given the project has not been imported into Elixir, then board prints an import/cutover instruction instead of a socket error.
+- [x] **TRD-029-TEST**: Verify Elixir board routing and mutations (4h) [verifies TRD-029] [satisfies REQ-004, REQ-010, REQ-020] [depends: TRD-029]
+
+**Verification Steps:**
+- Unit tests for board Elixir data adapter and mutation command mapping.
+- Smoke test with Node daemon stopped and Elixir server running.
+
+- [x] **TRD-030**: Route task/status/watch/logs/debug/inbox/attach read views to Elixir in cutover mode (10h) [satisfies REQ-004, REQ-010, REQ-017, REQ-018, REQ-020] [depends: TRD-028]
+
+**Description:** Port the primary operator views from tRPC to Elixir HTTP when `FOREMAN_BACKEND=elixir`: `task list/show`, `status`, `watch`, `logs`, `debug`, `inbox`, and attach status/control reads.
+
+**Implementation AC Checklist:**
+- Given `FOREMAN_BACKEND=elixir`, each listed command either succeeds through Elixir or prints an explicit parity-gap message.
+- Given the Node daemon socket is absent, read-only commands do not fail with `connect ENOENT ~/.foreman/daemon.sock`.
+- Given projections lag or events are inconsistent, commands surface Elixir doctor/debug guidance.
+- [x] **TRD-030-TEST**: Verify Elixir cutover read views (6h) [verifies TRD-030] [satisfies REQ-004, REQ-010, REQ-017, REQ-018, REQ-020] [depends: TRD-030]
+
+**Verification Steps:**
+- CLI tests for each command with tRPC mocked to throw and Elixir mocked to return projections.
+- Integration smoke covering task/status/logs with Elixir server running.
+
+- [x] **TRD-031**: Route task/run mutating commands to Elixir in cutover mode (12h) [satisfies REQ-004, REQ-010, REQ-011, REQ-020, REQ-023] [depends: TRD-028, TRD-030]
+
+**Description:** Port `task create/update/approve/close/note`, `run`, `retry`, `reset`, `stop`, `recover`, `sling`, and integration-trigger mutations so they use Elixir command APIs in cutover mode, with no silent fallback to Node.
+
+**Implementation AC Checklist:**
+- Given `FOREMAN_BACKEND=elixir`, mutating commands send Elixir commands and emit authorization/audit events where required.
+- Given a mutating command has no Elixir equivalent yet, it fails before side effects with the missing command type named.
+- Given legacy mode is explicit (`FOREMAN_BACKEND=node`), existing Node behavior remains available.
+- [x] **TRD-031-TEST**: Verify Elixir cutover mutations (8h) [verifies TRD-031] [satisfies REQ-004, REQ-010, REQ-011, REQ-020, REQ-023] [depends: TRD-031]
+
+**Verification Steps:**
+- Command-router tests for each command type.
+- CLI tests proving no tRPC/socket use in Elixir mode.
+- Audit/security assertions for destructive mutations.
+
+- [x] **TRD-032**: Implement migration export/import parity for active projects (6h) [satisfies REQ-020, REQ-024] [depends: TRD-023, TRD-028]
+
+**Description:** Provide an operator-supported path to populate Elixir projections from the current Node/Postgres project state, including a snapshot export command or direct import bridge. The path must make `foreman board --project foreman` useful immediately after cutover.
+
+**Implementation AC Checklist:**
+- Given an existing Node/Postgres project, when migration export/import runs, then Elixir `/projects` and `/tasks` show the project and tasks.
+- Given migration is re-run with the same idempotency key, then duplicate projects/tasks are not created.
+- Given migration has not run, Elixir-mode commands print import guidance.
+- [x] **TRD-032-TEST**: Verify migration export/import parity (4h) [verifies TRD-032] [satisfies REQ-020, REQ-024] [depends: TRD-032]
+
+**Verification Steps:**
+- Fixture migration from Node-shaped project/task/run/inbox payload.
+- End-to-end smoke: import, then Elixir-mode board/status read succeeds with Node daemon stopped.
+
+- [x] **TRD-033**: Retire or isolate the Node daemon after Elixir CLI parity (4h) [satisfies REQ-020, REQ-024] [depends: TRD-029, TRD-030, TRD-031, TRD-032]
+
+**Description:** Once Elixir CLI parity exists, make Elixir the default backend, require explicit `FOREMAN_BACKEND=node` for legacy daemon use, and document rollback. Remove stale daemon/socket assumptions from cutover docs.
+
+**Implementation AC Checklist:**
+- Given no backend env is set after cutover, Foreman defaults to Elixir.
+- Given `FOREMAN_BACKEND=node`, legacy daemon behavior is explicit and documented as rollback only.
+- Given both backends are running, doctor warns about dual scheduler risk.
+- [x] **TRD-033-TEST**: Verify Node daemon retirement/isolation (3h) [verifies TRD-033] [satisfies REQ-020, REQ-024] [depends: TRD-033]
+
+**Verification Steps:**
+- Backend-mode tests for default Elixir behavior after cutover.
+- Doctor tests for dual-scheduler warning.
+- Docs tests for rollback instructions.
+
 
 ## Team Configuration
 
@@ -1044,8 +1156,8 @@ The matrix above is requirement-level. Detailed AC coverage is carried by each t
 
 ### 9.2 Coverage Issues
 
-1. **Issue:** REQ-025 requires a spike but chosen Option B assumes Elixir remains selected.  
-   **Resolution:** TRD-001 is a blocking task. If the spike selects WolverineFx/Marten or another stack, stop and revise this TRD.
+1. **Issue:** REQ-025 requires a spike before backend commitment.  
+   **Resolution:** TRD-001 completed the spike in `docs/spikes/TRD-2026-014-architecture-spike.md` and confirmed Elixir/OTP remains selected.
 
 2. **Issue:** Documentation is easy to defer until after behavior changes.  
    **Resolution:** TRD-026 is in the final shippable PR and explicitly covers README, User Guide, CLI Reference, and architecture docs.
@@ -1067,13 +1179,13 @@ The matrix above is requirement-level. Detailed AC coverage is carried by each t
 
 | Dimension | Score | Notes |
 |-----------|-------|-------|
-| Architecture completeness | 4.75 | Components, transports, data flows, contracts, NFRs, fixture schemas, and external boundaries are defined; final stack still depends on REQ-025 spike |
+| Architecture completeness | 4.75 | Components, transports, data flows, contracts, NFRs, fixture schemas, external boundaries, and final stack decision are defined; REQ-025 spike is complete |
 | Task coverage | 4.75 | Every PRD requirement and AC has implementation/test coverage mapping |
 | Dependency clarity | 4.75 | Dependencies are explicit and acyclic; additional recovery, integration, attach, and planning tracks can run in parallel |
 | Estimate confidence | 4.75 | Tasks remain below 8h with concrete fixtures, contracts, and verification targets |
 | **Overall** | **4.75** | **PASS** |
 
-Design gate decision: PASS. Design Readiness: 4.50 -> 4.75 (improved). Proceed only after approving this TRD and completing TRD-001 spike results.
+Design gate decision: PASS. Design Readiness: 4.50 -> 4.75 (improved). TRD-001 spike results are complete; proceed with Elixir/OTP implementation tasks.
 
 ## 11. Traceability Validation Summary
 
@@ -1094,3 +1206,7 @@ Traceability check: 25 requirements covered, 0 uncovered, 0 orphaned annotations
 | 2026-06-16 | 1.0.2 | Pi Agent | Added fixture schemas, integration and VCS/PR contracts, quality requirements, concrete AC-to-task coverage, refined team metrics, and further dependency parallelization |
 | 2026-06-16 | 1.0.3 | Pi Agent | Converted Master Task List to parser-compatible checkbox task format for implement-trd-beads |
 | 2026-06-16 | 1.0.4 | Pi Agent | Converted Team Configuration to implement-trd-beads role-list schema and added local agent registry entries |
+| 2026-06-16 | 1.0.5 | Pi Agent | Recorded TRD-001 comparative architecture spike result and confirmed Elixir/OTP target architecture |
+| 2026-06-17 | 1.0.6 | Pi Agent | Added explicit Elixir cutover gates to disable the Node daemon scheduler and legacy TS delegation during backend migration completion |
+| 2026-06-17 | 1.0.7 | Pi Agent | Reopened Elixir migration scope for CLI cutover parity: board/task/status/watch/logs/inbox mutations and migration export/import remain incomplete |
+| 2026-06-17 | 1.0.8 | Pi Agent | Completed Elixir cutover parity gate: board routes through Elixir, Node/Postgres projects can be imported, and unsupported legacy-daemon commands fail before socket access |

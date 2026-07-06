@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { extractStructuredOutput, getPiSdkEventError, getSandboxedPiResourcePaths, normalizeLegacySlashPrompt, shouldSandboxPiExtensions, type StreamEvent } from "../pi-sdk-runner.js";
+import { extractStructuredOutput, getPiSdkEventError, getSandboxedPiResourcePaths, isDangerousBashCommand, normalizeLegacySlashPrompt, shouldSandboxPiExtensions, type StreamEvent } from "../pi-sdk-runner.js";
 
 const tmpDirs: string[] = [];
 
@@ -11,6 +11,19 @@ afterEach(() => {
   for (const dir of tmpDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("isDangerousBashCommand", () => {
+  it("blocks worker attempts to kill Foreman or unrelated processes", () => {
+    expect(isDangerousBashCommand("lsof -ti:4766 | xargs kill -9")).toBe(true);
+    expect(isDangerousBashCommand("pkill -f foreman_server")).toBe(true);
+    expect(isDangerousBashCommand("foreman server stop")).toBe(true);
+  });
+
+  it("allows normal task-local validation commands", () => {
+    expect(isDangerousBashCommand("npm test -- --runInBand")).toBe(false);
+    expect(isDangerousBashCommand("mix test test/projection_store_test.exs")).toBe(false);
+  });
 });
 
 describe("shouldSandboxPiExtensions", () => {

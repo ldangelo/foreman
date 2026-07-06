@@ -483,13 +483,13 @@ export { PromptNotFoundError };
 export function buildPhasePrompt(
   phaseName: string,
   context: {
-    seedId: string;
-    seedTitle: string;
-    seedDescription: string;
-    seedComments?: string;
+    taskId: string;
+    taskTitle: string;
+    taskDescription: string;
+    taskComments?: string;
     /** Bead type (e.g. "test", "task", "bug"). Used by finalize to handle
      *  "nothing to commit" as success for verification beads. */
-    seedType?: string;
+    taskType?: string;
   runId?: string;
   hasExplorerReport?: boolean;
   requiresExplorerReport?: boolean;
@@ -528,7 +528,7 @@ export function buildPhasePrompt(
   },
   opts?: PromptLoaderOpts,
 ): string {
-  const commentsSection = context.seedComments ? `\n## Additional Context\n${context.seedComments}\n` : "";
+  const commentsSection = context.taskComments ? `\n## Additional Context\n${context.taskComments}\n` : "";
   const explorerInstruction = context.hasExplorerReport
     ? `2. Read **EXPLORER_REPORT.md** for codebase context and follow its **Implementation Plan** unless you document a justified deviation`
     : `2. Explore the codebase to understand the relevant architecture`;
@@ -540,18 +540,18 @@ test -f EXPLORER_REPORT.md || echo "MISSING"
 \`\`\`
 If it is missing, invoke and stop — do not proceed with implementation:
 \`\`\`
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","seedId":"{{seedId}}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"developer","taskId":"{{taskId}}","error":"EXPLORER_REPORT.md is missing — explorer phase did not complete successfully"}'
 \`\`\`
 Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     : "";
   const feedbackSection = context.feedbackContext
-    ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${context.feedbackContext}\n`
+    ? `\n## Focused Repair Feedback\nAddress ONLY the issues below from the previous verification/review. Do not redesign unrelated code. Do not create temporary debug tests, console logs, or one-off debug files. Prefer the smallest patch that makes the reported verification pass. If you need to touch more than five source/test files, explain why in DEVELOPER_REPORT.md before doing so.\n${context.feedbackContext}\n`
     : "";
 
   const vars: Record<string, string> = {
-    seedId: context.seedId,
-    seedTitle: context.seedTitle,
-    seedDescription: context.seedDescription,
+    taskId: context.taskId,
+    taskTitle: context.taskTitle,
+    taskDescription: context.taskDescription,
     commentsSection,
     explorerInstruction,
     explorerPreflightSection,
@@ -561,11 +561,11 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     baseBranch: context.baseBranch ?? "main",
     worktreePath: context.worktreePath ?? "",
     reportDir: context.reportDir ?? "",
-    seedType: context.seedType ?? "",
+    taskType: context.taskType ?? "",
     // VCS finalize command variables (TRD-026)
     vcsStageCommand: context.vcsStageCommand ?? "git add -A",
-    vcsCommitCommand: context.vcsCommitCommand ?? `git commit -m "${context.seedTitle} (${context.seedId})"`,
-    vcsPushCommand: context.vcsPushCommand ?? `git push -u origin foreman/${context.seedId}`,
+    vcsCommitCommand: context.vcsCommitCommand ?? `git commit -m "${context.taskTitle} (${context.taskId})"`,
+    vcsPushCommand: context.vcsPushCommand ?? `git push -u origin foreman/${context.taskId}`,
     vcsIntegrateTargetCommand: context.vcsIntegrateTargetCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
     vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? "git rev-parse --abbrev-ref HEAD",
     vcsCleanCommand: context.vcsCleanCommand ?? `git worktree remove --force ${context.worktreePath ?? ""}`,
@@ -585,23 +585,23 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
   return expandCommandPlaceholders(resolved, cwd);
 }
 
-export function explorerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
-  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
+export function explorerPrompt(taskId: string, taskTitle: string, taskDescription: string, taskComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
+  const commentsSection = taskComments ? `\n## Additional Context\n${taskComments}\n` : "";
   return resolvePrompt(
     "explorer",
-    { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "explorer" },
+    { taskId, taskTitle, taskDescription, commentsSection, runId: runId ?? "", agentRole: "explorer" },
     "explorer-prompt.md",
     opts,
   );
 }
 
 export function developerPrompt(
-  seedId: string,
-  seedTitle: string,
-  seedDescription: string,
+  taskId: string,
+  taskTitle: string,
+  taskDescription: string,
   hasExplorerReport: boolean,
   feedbackContext?: string,
-  seedComments?: string,
+  taskComments?: string,
   runId?: string,
   opts?: PromptLoaderOpts,
 ): string {
@@ -615,17 +615,17 @@ export function developerPrompt(
     : `2. Explore the codebase to understand the relevant architecture`;
 
   const feedbackSection = feedbackContext
-    ? `\n## Previous Feedback\nAddress these issues from the previous review:\n${feedbackContext}\n`
+    ? `\n## Focused Repair Feedback\nAddress ONLY the issues below from the previous verification/review. Do not redesign unrelated code. Do not create temporary debug tests, console logs, or one-off debug files. Prefer the smallest patch that makes the reported verification pass. If you need to touch more than five source/test files, explain why in DEVELOPER_REPORT.md before doing so.\n${feedbackContext}\n`
     : "";
 
-  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
+  const commentsSection = taskComments ? `\n## Additional Context\n${taskComments}\n` : "";
 
   return resolvePrompt(
     "developer",
     {
-      seedId,
-      seedTitle,
-      seedDescription,
+      taskId,
+      taskTitle,
+      taskDescription,
       explorerInstruction,
       feedbackSection,
       commentsSection,
@@ -637,41 +637,41 @@ export function developerPrompt(
   );
 }
 
-export function qaPrompt(seedId: string, seedTitle: string, runId?: string, opts?: PromptLoaderOpts): string {
+export function qaPrompt(taskId: string, taskTitle: string, runId?: string, opts?: PromptLoaderOpts): string {
   return resolvePrompt(
     "qa",
-    { seedId, seedTitle, runId: runId ?? "", agentRole: "qa" },
+    { taskId, taskTitle, runId: runId ?? "", agentRole: "qa" },
     "qa-prompt.md",
     opts,
   );
 }
 
-export function reviewerPrompt(seedId: string, seedTitle: string, seedDescription: string, seedComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
-  const commentsSection = seedComments ? `\n## Additional Context\n${seedComments}\n` : "";
+export function reviewerPrompt(taskId: string, taskTitle: string, taskDescription: string, taskComments?: string, runId?: string, opts?: PromptLoaderOpts): string {
+  const commentsSection = taskComments ? `\n## Additional Context\n${taskComments}\n` : "";
   return resolvePrompt(
     "reviewer",
-    { seedId, seedTitle, seedDescription, commentsSection, runId: runId ?? "", agentRole: "reviewer" },
+    { taskId, taskTitle, taskDescription, commentsSection, runId: runId ?? "", agentRole: "reviewer" },
     "reviewer-prompt.md",
     opts,
   );
 }
 
-export function finalizePrompt(seedId: string, seedTitle: string, runId?: string, baseBranch?: string, opts?: PromptLoaderOpts, worktreePath?: string): string {
+export function finalizePrompt(taskId: string, taskTitle: string, runId?: string, baseBranch?: string, opts?: PromptLoaderOpts, worktreePath?: string): string {
   const resolvedBase = baseBranch ?? "main";
   const resolvedWorktree = worktreePath ?? "";
   return resolvePrompt(
     "finalize",
     {
-      seedId,
-      seedTitle,
+      taskId,
+      taskTitle,
       runId: runId ?? "",
       agentRole: "finalize",
       baseBranch: resolvedBase,
       worktreePath: resolvedWorktree,
       // Default to git commands for backward compatibility (TRD-026)
       vcsStageCommand: "git add -A",
-      vcsCommitCommand: `git commit -m "${seedTitle} (${seedId})"`,
-      vcsPushCommand: `git push -u origin foreman/${seedId}`,
+      vcsCommitCommand: `git commit -m "${taskTitle} (${taskId})"`,
+      vcsPushCommand: `git push -u origin foreman/${taskId}`,
       vcsIntegrateTargetCommand: `git fetch origin && git rebase origin/${resolvedBase}`,
       vcsBranchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       vcsCleanCommand: `git worktree remove --force ${resolvedWorktree}`,

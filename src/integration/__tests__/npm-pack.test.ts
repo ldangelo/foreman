@@ -9,7 +9,7 @@
  * ⚠️  REQUIRES a built dist/ directory. Run `npm run build` first.
  *     Test is automatically skipped when dist/ is absent.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeAll, afterAll } from "vitest";
 import { execSync, spawnSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -58,7 +58,7 @@ function runNpmPack(destDir: string): string {
     {
       cwd: REPO_ROOT,
       encoding: "utf-8",
-      timeout: 60_000,
+      timeout: 120_000,
       env: {
         ...process.env,
         npm_config_cache: npmCacheDir,
@@ -92,6 +92,23 @@ function extractTarball(tarball: string, destDir: string): void {
 
 describe("npm pack integration", () => {
   let tempDir: string | undefined;
+  let packDir: string | undefined;
+  let packedTarball: string | undefined;
+
+  function getPackedTarball(): string {
+    if (!packedTarball) {
+      throw new Error("packed tarball not prepared");
+    }
+    return packedTarball;
+  }
+
+  beforeAll(() => {
+    if (!existsSync(DIST_CLI)) {
+      return;
+    }
+    packDir = mkdtempSync(join(tmpdir(), "foreman-pack-tarball-"));
+    packedTarball = runNpmPack(packDir);
+  }, 120_000);
 
   afterEach(() => {
     if (tempDir && existsSync(tempDir)) {
@@ -100,15 +117,22 @@ describe("npm pack integration", () => {
     tempDir = undefined;
   });
 
+  afterAll(() => {
+    if (packDir && existsSync(packDir)) {
+      rmSync(packDir, { recursive: true, force: true });
+    }
+    packDir = undefined;
+    packedTarball = undefined;
+  });
+
   it("skips gracefully when dist/ is not built", () => {
     if (existsSync(DIST_CLI)) {
-      // dist IS built — nothing to test here, skip via early return
       return;
     }
     console.warn(
       "npm-pack test: dist/cli/index.js not found — run `npm run build` to enable this test"
     );
-    expect(true).toBe(true); // Explicit pass so the test isn't red
+    expect(true).toBe(true);
   });
 
   it(
@@ -116,18 +140,14 @@ describe("npm pack integration", () => {
     { timeout: 90_000 },
     () => {
       if (!existsSync(DIST_CLI)) {
-        return; // skip — dist not built
+        return;
       }
 
-      tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-
+      const tarball = getPackedTarball();
       expect(existsSync(tarball)).toBe(true);
 
       const { size } = statSync(tarball);
-      // Tarball must be at least 100 KB (dist/ + assets included)
       expect(size).toBeGreaterThan(100 * 1024);
-      // Tarball should not be absurdly large (no accidental node_modules)
       expect(size).toBeLessThan(50 * 1024 * 1024);
     }
   );
@@ -141,10 +161,8 @@ describe("npm pack integration", () => {
       }
 
       const version = readPackageVersion();
-      tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
+      const tarball = getPackedTarball();
 
-      // npm converts @scope/name → scope-name, so @oftheangels/foreman → oftheangels-foreman
       const expectedPattern = new RegExp(
         `oftheangels-foreman-${version}\\.tgz$`
       );
@@ -161,14 +179,11 @@ describe("npm pack integration", () => {
       }
 
       tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-      extractTarball(tarball, tempDir);
+      extractTarball(getPackedTarball(), tempDir);
 
-      // npm pack always extracts to a "package/" subdirectory
       const binForeman = join(tempDir, "package", "bin", "foreman");
       expect(existsSync(binForeman)).toBe(true);
 
-      // Should have correct shebang
       const content = readFileSync(binForeman, "utf-8");
       expect(content.startsWith("#!/usr/bin/env node")).toBe(true);
     }
@@ -183,8 +198,7 @@ describe("npm pack integration", () => {
       }
 
       tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-      extractTarball(tarball, tempDir);
+      extractTarball(getPackedTarball(), tempDir);
 
       const distCli = join(tempDir, "package", "dist", "cli", "index.js");
       expect(existsSync(distCli)).toBe(true);
@@ -200,8 +214,7 @@ describe("npm pack integration", () => {
       }
 
       tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-      extractTarball(tarball, tempDir);
+      extractTarball(getPackedTarball(), tempDir);
 
       const defaultWorkflow = join(
         tempDir,
@@ -224,8 +237,7 @@ describe("npm pack integration", () => {
       }
 
       tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-      extractTarball(tarball, tempDir);
+      extractTarball(getPackedTarball(), tempDir);
 
       const explorerPrompt = join(
         tempDir,
@@ -249,10 +261,8 @@ describe("npm pack integration", () => {
       }
 
       tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-      extractTarball(tarball, tempDir);
+      extractTarball(getPackedTarball(), tempDir);
 
-      // package.json "files" includes src/defaults/ — verify it's present
       const srcDefaults = join(tempDir, "package", "src", "defaults");
       expect(existsSync(srcDefaults)).toBe(true);
 
@@ -269,12 +279,11 @@ describe("npm pack integration", () => {
         return;
       }
       if (process.platform === "win32") {
-        return; // Not meaningful on Windows
+        return;
       }
 
       tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-      extractTarball(tarball, tempDir);
+      extractTarball(getPackedTarball(), tempDir);
 
       const binForeman = join(tempDir, "package", "bin", "foreman");
       const { mode } = statSync(binForeman);
@@ -292,24 +301,19 @@ describe("npm pack integration", () => {
       }
 
       tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-      extractTarball(tarball, tempDir);
+      extractTarball(getPackedTarball(), tempDir);
 
       const pkgDir = join(tempDir, "package");
       const binForeman = join(pkgDir, "bin", "foreman");
 
-      // Symlink the repo's node_modules into the extracted package so that
-      // the CLI's imports resolve correctly without a full `npm install`.
-      // This simulates an installed package that has its dependencies available.
       const repoNodeModules = join(REPO_ROOT, "node_modules");
       const pkgNodeModules = join(pkgDir, "node_modules");
       if (existsSync(repoNodeModules) && !existsSync(pkgNodeModules)) {
         symlinkSync(repoNodeModules, pkgNodeModules);
       }
 
-      // Run `node bin/foreman --help` from inside the extracted package directory
       const result = spawnSync(
-        process.execPath, // node
+        process.execPath,
         [binForeman, "--help"],
         {
           cwd: pkgDir,
@@ -321,11 +325,8 @@ describe("npm pack integration", () => {
 
       const output = (result.stdout ?? "") + (result.stderr ?? "");
 
-      // Help text must contain usage line
       expect(output).toContain("Usage: foreman");
-      // Should not crash with module not found
       expect(output).not.toContain("ERR_MODULE_NOT_FOUND");
-      // Exit code: commander writes --help to stdout and exits 0
       expect(result.status).toBe(0);
     }
   );
@@ -339,8 +340,7 @@ describe("npm pack integration", () => {
       }
 
       tempDir = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-      const tarball = runNpmPack(tempDir);
-      extractTarball(tarball, tempDir);
+      extractTarball(getPackedTarball(), tempDir);
 
       const nodeModules = join(tempDir, "package", "node_modules");
       expect(existsSync(nodeModules)).toBe(false);

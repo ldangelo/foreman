@@ -24,7 +24,7 @@ function createMockVcs(overrides: Record<string, unknown> = {}) {
     resolveRef: vi.fn().mockResolvedValue("xyz789abc123"),
     rebase: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
     status: vi.fn().mockResolvedValue(""),
-    getCurrentBranch: vi.fn().mockResolvedValue("foreman/seed-abc"),
+    getCurrentBranch: vi.fn().mockResolvedValue("foreman/task-abc"),
     ...overrides,
   };
 }
@@ -34,7 +34,7 @@ import type { VcsBackend } from "../../lib/vcs/index.js";
 
 describe("checkAndRebaseStaleWorktree", () => {
   let mockStoreInstance: ForemanStore;
-  let worktreePath = "/worktrees/project/seed-abc";
+  let worktreePath = "/worktrees/project/task-abc";
   let targetBranch = "dev";
 
   beforeEach(() => {
@@ -56,7 +56,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
     );
 
     expect(result.rebased).toBe(true);
@@ -77,7 +77,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
     );
 
     expect(result.rebased).toBe(true);
@@ -100,14 +100,14 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
       { eventWriter },
     );
 
     expect(eventWriter).toHaveBeenCalledWith(
       "worktree-rebased",
       expect.objectContaining({
-        seedId: "seed-abc",
+        taskId: "task-abc",
         runId: "run-456",
         reason: "pre-dispatch",
       }),
@@ -128,14 +128,14 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
     );
 
     expect(mockStore.logEvent).toHaveBeenCalledWith(
       "proj-123",
       "worktree-rebased",
       expect.objectContaining({
-        seedId: "seed-abc",
+        taskId: "task-abc",
         runId: "run-456",
         reason: "pre-dispatch",
       }),
@@ -154,7 +154,7 @@ describe("checkAndRebaseStaleWorktree", () => {
         hasConflicts: true,
         conflictingFiles: ["src/conflict.ts", "src/other.ts"],
       }),
-      getCurrentBranch: vi.fn().mockResolvedValue("foreman/seed-abc"),
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/task-abc"),
       status: vi.fn().mockResolvedValue(""),
     };
 
@@ -165,7 +165,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
       { failOnConflict: false },
     );
 
@@ -186,7 +186,7 @@ describe("checkAndRebaseStaleWorktree", () => {
         hasConflicts: true,
         conflictingFiles: ["src/conflict.ts"],
       }),
-      getCurrentBranch: vi.fn().mockResolvedValue("foreman/seed-abc"),
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/task-abc"),
       status: vi.fn().mockResolvedValue(""),
     };
 
@@ -197,7 +197,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
       { failOnConflict: false },
     );
 
@@ -206,7 +206,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       "proj-123",
       "worktree-rebase-failed",
       expect.objectContaining({
-        seedId: "seed-abc",
+        taskId: "task-abc",
         conflictingFiles: ["src/conflict.ts"],
       }),
       "run-456",
@@ -225,7 +225,7 @@ describe("checkAndRebaseStaleWorktree", () => {
         hasConflicts: true,
         conflictingFiles: ["src/conflict.ts"],
       }),
-      getCurrentBranch: vi.fn().mockResolvedValue("foreman/seed-abc"),
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/task-abc"),
       status: vi.fn().mockResolvedValue(""),
     };
 
@@ -236,14 +236,14 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
       { failOnConflict: false, eventWriter },
     );
 
     expect(eventWriter).toHaveBeenCalledWith(
       "worktree-rebase-failed",
       expect.objectContaining({
-        seedId: "seed-abc",
+        taskId: "task-abc",
         conflictingFiles: ["src/conflict.ts"],
       }),
     );
@@ -263,7 +263,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
     );
 
     expect(result.rebased).toBe(true);
@@ -272,7 +272,7 @@ describe("checkAndRebaseStaleWorktree", () => {
 
   it("should skip rebase for fresh worktree with no commits", async () => {
     const mockVcs = createMockVcs({
-      getHeadId: vi.fn().mockRejectedValue(new Error("fatal: your current branch 'foreman/seed-abc' does not have any commits yet")),
+      getHeadId: vi.fn().mockRejectedValue(new Error("fatal: your current branch 'foreman/task-abc' does not have any commits yet")),
     });
 
     const result = await checkAndRebaseStaleWorktree(
@@ -282,7 +282,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
     );
 
     expect(result.rebased).toBe(true);
@@ -302,7 +302,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
       { autoRebase: false },
     );
 
@@ -330,7 +330,7 @@ describe("checkAndRebaseStaleWorktree", () => {
         mockStoreInstance,
         "proj-123",
         "run-456",
-        "seed-abc",
+        "task-abc",
         { failOnConflict: true },
       ),
     ).rejects.toThrow("Rebase failed with conflicts");
@@ -356,7 +356,7 @@ describe("checkAndRebaseStaleWorktree", () => {
       mockStoreInstance,
       "proj-123",
       "run-456",
-      "seed-abc",
+      "task-abc",
       { failOnConflict: false },
     );
 
@@ -378,7 +378,7 @@ describe("detectStaleWorktree", () => {
 
     const result = await detectStaleWorktree(
       mockVcs as unknown as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
       "dev",
     );
 
@@ -395,7 +395,7 @@ describe("detectStaleWorktree", () => {
 
     const result = await detectStaleWorktree(
       mockVcs as unknown as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
       "dev",
     );
 
@@ -410,7 +410,7 @@ describe("detectStaleWorktree", () => {
 
     const result = await detectStaleWorktree(
       mockVcs as unknown as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
       "dev",
     );
 
@@ -430,7 +430,7 @@ describe("hasUncommittedChanges", () => {
 
     const result = await hasUncommittedChanges(
       mockVcs as unknown as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
     );
 
     expect(result).toBe(true);
@@ -443,7 +443,7 @@ describe("hasUncommittedChanges", () => {
 
     const result = await hasUncommittedChanges(
       mockVcs as unknown as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
     );
 
     expect(result).toBe(false);
@@ -459,17 +459,17 @@ describe("getWorktreeStatusSummary", () => {
     const mockVcs = createMockVcs({
       getHeadId: vi.fn().mockResolvedValue("abc12345"),
       resolveRef: vi.fn().mockResolvedValue("def67890"),
-      getCurrentBranch: vi.fn().mockResolvedValue("foreman/seed-abc"),
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/task-abc"),
       status: vi.fn().mockResolvedValue(""),
     });
 
     const summary = await getWorktreeStatusSummary(
       mockVcs as unknown as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
       "dev",
     );
 
-    expect(summary).toContain("foreman/seed-abc");
+    expect(summary).toContain("foreman/task-abc");
     expect(summary).toContain("abc12345");
     expect(summary).toContain("origin/dev");
     expect(summary).toContain("def67890");
@@ -479,13 +479,13 @@ describe("getWorktreeStatusSummary", () => {
     const mockVcs = createMockVcs({
       getHeadId: vi.fn().mockResolvedValue("abc12345"),
       resolveRef: vi.fn().mockResolvedValue("def67890"),
-      getCurrentBranch: vi.fn().mockResolvedValue("foreman/seed-abc"),
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/task-abc"),
       status: vi.fn().mockResolvedValue(""),
     });
 
     const summary = await getWorktreeStatusSummary(
       mockVcs as unknown as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
       "dev",
     );
 
@@ -496,13 +496,13 @@ describe("getWorktreeStatusSummary", () => {
     const mockVcs = createMockVcs({
       getHeadId: vi.fn().mockResolvedValue("abc12345"),
       resolveRef: vi.fn().mockResolvedValue("abc12345"),
-      getCurrentBranch: vi.fn().mockResolvedValue("foreman/seed-abc"),
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/task-abc"),
       status: vi.fn().mockResolvedValue(""),
     });
 
     const summary = await getWorktreeStatusSummary(
       mockVcs as unknown as VcsBackend,
-      "/worktrees/project/seed-abc",
+      "/worktrees/project/task-abc",
       "dev",
     );
 

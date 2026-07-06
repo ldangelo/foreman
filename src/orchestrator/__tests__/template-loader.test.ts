@@ -17,8 +17,8 @@ describe("interpolateTemplate", () => {
   });
 
   it("replaces the same placeholder multiple times", () => {
-    const result = interpolateTemplate("{{x}}/{{x}}", { x: "seed-1" });
-    expect(result).toBe("seed-1/seed-1");
+    const result = interpolateTemplate("{{x}}/{{x}}", { x: "task-1" });
+    expect(result).toBe("task-1/task-1");
   });
 
   it("leaves unknown placeholders as-is", () => {
@@ -47,25 +47,25 @@ describe("loadTemplate", () => {
   it("loads explorer-prompt.md", () => {
     const content = loadTemplate("explorer-prompt.md");
     expect(content).toContain("Explorer");
-    expect(content).toContain("{{seedId}}");
+    expect(content).toContain("{{taskId}}");
   });
 
   it("loads developer-prompt.md", () => {
     const content = loadTemplate("developer-prompt.md");
     expect(content).toContain("Developer");
-    expect(content).toContain("{{seedId}}");
+    expect(content).toContain("{{taskId}}");
   });
 
   it("loads qa-prompt.md", () => {
     const content = loadTemplate("qa-prompt.md");
     expect(content).toContain("QA");
-    expect(content).toContain("{{seedId}}");
+    expect(content).toContain("{{taskId}}");
   });
 
   it("loads reviewer-prompt.md", () => {
     const content = loadTemplate("reviewer-prompt.md");
     expect(content).toContain("Reviewer");
-    expect(content).toContain("{{seedId}}");
+    expect(content).toContain("{{taskId}}");
   });
 
   it("loads sentinel-prompt.md", () => {
@@ -77,7 +77,7 @@ describe("loadTemplate", () => {
   it("loads lead-prompt.md", () => {
     const content = loadTemplate("lead-prompt.md");
     expect(content).toContain("Engineering Lead");
-    expect(content).toContain("{{seedId}}");
+    expect(content).toContain("{{taskId}}");
   });
 
   it("throws a meaningful error for missing template", () => {
@@ -119,15 +119,15 @@ describe("loadAndInterpolate", () => {
 
   it("loads and interpolates explorer-prompt.md", () => {
     const result = loadAndInterpolate("explorer-prompt.md", {
-      seedId: "bd-test",
-      seedTitle: "Test feature",
-      seedDescription: "A test description",
+      taskId: "bd-test",
+      taskTitle: "Test feature",
+      taskDescription: "A test description",
     });
     expect(result).toContain("bd-test");
     expect(result).toContain("Test feature");
     expect(result).toContain("A test description");
-    expect(result).not.toContain("{{seedId}}");
-    expect(result).not.toContain("{{seedTitle}}");
+    expect(result).not.toContain("{{taskId}}");
+    expect(result).not.toContain("{{taskTitle}}");
   });
 });
 

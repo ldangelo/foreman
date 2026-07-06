@@ -15,7 +15,7 @@ describe("merge_strategy in Postgres runs table", { timeout: 120_000 }, () => {
     } catch {
       postgresAvailable = false;
     }
-  });
+  }, 120_000);
 
   afterAll(async () => {
     if (postgresAvailable) {
@@ -26,7 +26,7 @@ describe("merge_strategy in Postgres runs table", { timeout: 120_000 }, () => {
   it.each(["pr", "none", "auto"] as const)("stores and retrieves merge_strategy: %s", async (strategy) => {
     if (!postgresAvailable) return;
     const { store, project } = await createPostgresProjectFixture(`merge-${strategy}`);
-    const run = await store.createRun(project.id, `seed-${strategy}`, "developer", null, { mergeStrategy: strategy });
+    const run = await store.createRun(project.id, `task-${strategy}`, "developer", null, { mergeStrategy: strategy });
 
     expect(run.merge_strategy).toBe(strategy);
     expect((await store.getRun(run.id))?.merge_strategy).toBe(strategy);
@@ -35,7 +35,7 @@ describe("merge_strategy in Postgres runs table", { timeout: 120_000 }, () => {
   it("defaults merge_strategy to auto when not specified", async () => {
     if (!postgresAvailable) return;
     const { store, project } = await createPostgresProjectFixture("merge-default");
-    const run = await store.createRun(project.id, "seed-default", "developer", null);
+    const run = await store.createRun(project.id, "task-default", "developer", null);
 
     expect(run.merge_strategy).toBe("auto");
     expect((await store.getRun(run.id))?.merge_strategy).toBe("auto");
@@ -44,7 +44,7 @@ describe("merge_strategy in Postgres runs table", { timeout: 120_000 }, () => {
   it("updateRun can change merge_strategy", async () => {
     if (!postgresAvailable) return;
     const { store, project } = await createPostgresProjectFixture("merge-update");
-    const run = await store.createRun(project.id, "seed-update", "developer", null, { mergeStrategy: "none" });
+    const run = await store.createRun(project.id, "task-update", "developer", null, { mergeStrategy: "none" });
 
     await store.updateRun(run.id, { merge_strategy: "pr" });
     expect((await store.getRun(run.id))?.merge_strategy).toBe("pr");

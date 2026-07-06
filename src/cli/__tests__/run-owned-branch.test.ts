@@ -87,6 +87,24 @@ describe("resolveOwnedControllerBranch", () => {
     vi.clearAllMocks();
   });
 
+  it("returns early without using the owned branch for non-jujutsu backends", async () => {
+    const vcs = {
+      ...makeJjVcs({ name: "git" as any }),
+      branchExists: vi.fn().mockResolvedValue(true),
+      getCurrentBranch: vi.fn().mockResolvedValue("feature/test"),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+    };
+
+    const result = await resolveOwnedControllerBranch(vcs, "/repo");
+
+    expect(result).toMatchObject({
+      currentBranch: "feature/test",
+      defaultBranch: "main",
+      usedOwnedBranch: false,
+    });
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
   it("creates the foreman-controller bookmark and moves to a mutable child change on it", async () => {
     const vcs = makeJjVcs();
 
@@ -110,6 +128,28 @@ describe("resolveOwnedControllerBranch", () => {
       targetBranch: "dev",
       usedOwnedBranch: true,
     });
+  });
+
+  it("reuses the owned branch without spawning a new child when already on it", async () => {
+    const vcs = makeJjVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman-controller"),
+      branchExists: vi.fn().mockResolvedValue(false),
+    });
+
+    const result = await resolveOwnedControllerBranch(vcs, "/repo", "dev");
+
+    expect(result).toMatchObject({
+      currentBranch: "foreman-controller",
+      defaultBranch: "dev",
+      targetBranch: "dev",
+      usedOwnedBranch: true,
+    });
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "jj",
+      ["bookmark", "create", "foreman-controller", "-r", "dev"],
+      expect.objectContaining({ cwd: "/repo" }),
+    );
   });
 
   it("throws when non-ignorable dirty files are present", async () => {

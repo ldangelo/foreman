@@ -129,16 +129,16 @@ describe("AC-T-014-2: agent-worker-finalize.ts — VcsBackend method usage", () 
     }
   });
 
-  it("constructs the commit message from seedTitle and seedId", () => {
+  it("constructs the commit message from taskTitle and taskId", () => {
     // Commit message should include both fields for traceability
-    expect(source).toContain("seedTitle");
-    expect(source).toContain("seedId");
+    expect(source).toContain("taskTitle");
+    expect(source).toContain("taskId");
     // The combined commit message pattern
-    expect(source).toContain("`${seedTitle} (${seedId})`");
+    expect(source).toContain("`${taskTitle} (${taskId})`");
   });
 
-  it("verifies the expected branch name follows the foreman/<seedId> convention", () => {
-    expect(source).toContain("`foreman/${seedId}`");
+  it("verifies the expected branch name follows the foreman/<taskId> convention", () => {
+    expect(source).toContain("`foreman/${taskId}`");
   });
 });
 
@@ -160,7 +160,7 @@ describe("AC-T-014-3: agent-worker-finalize.ts — retryable vs non-retryable fa
   it("returns { success: false, retryable: false } for rebase conflict path", () => {
     // Verify that after rebase failure, retryable=false is set.
     // The rebase failure branch contains this comment about preventing infinite loop.
-    const markerText = "Deterministic failure — do NOT reset seed to open (prevents infinite loop)";
+    const markerText = "Deterministic failure — do NOT reset task to open (prevents infinite loop)";
     const markerIdx = source.indexOf(markerText);
     expect(markerIdx).toBeGreaterThan(-1);
     // pushRetryable = false must appear within the deterministic failure block
@@ -204,7 +204,7 @@ describe("AC-T-014-3: agent-worker-finalize.ts — retryable vs non-retryable fa
 
   it("only updates bead status to review when push succeeds", () => {
     // Bead status update should be gated on pushSucceeded
-    const statusUpdateIdx = source.indexOf('enqueueSetBeadStatus(statusStore, seedId, "review"');
+    const statusUpdateIdx = source.indexOf('enqueueSetBeadStatus(statusStore, taskId, "review"');
     expect(statusUpdateIdx).toBeGreaterThan(-1);
     // The pushSucceeded guard must appear before the status update
     const pushSucceededGuardIdx = source.indexOf("if (pushSucceeded)");

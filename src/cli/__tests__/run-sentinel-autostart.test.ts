@@ -188,6 +188,12 @@ vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({
   PI_PHASE_CONFIGS: {},
   parsePiEvent: vi.fn().mockReturnValue(null),
 }));
+vi.mock("../../lib/task-client-factory.js", () => ({
+  createTaskClient: vi.fn().mockResolvedValue({
+    backendType: "native",
+    taskClient: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), close: vi.fn() },
+  }),
+}));
 
 // ── Module under test ─────────────────────────────────────────────────────────
 import { runCommand } from "../commands/run.js";
@@ -366,7 +372,7 @@ describe("sentinel auto-start in foreman run", () => {
     );
   });
 
-  it("uses the daemon Postgres store for startup bead sync on registered projects", async () => {
+  it("uses the daemon Postgres store for startup native task sync on registered projects", async () => {
     mockGetProjectByPath.mockReturnValue(null);
     mockListRegisteredProjects.mockResolvedValue([
       { id: "registered-proj", path: "/mock/project", name: "project" },
@@ -388,9 +394,7 @@ describe("sentinel auto-start in foreman run", () => {
 
     expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/mock/project");
     expect(mockPostgresStoreForProject).toHaveBeenCalledWith("registered-proj");
-    expect(mockSyncBeadStatusOnStartup).toHaveBeenCalledWith(postgresStore, expect.anything(), "registered-proj", {
-      projectPath: "/mock/project",
-    });
+    expect(mockSyncBeadStatusOnStartup).not.toHaveBeenCalled();
     expect(mockSyncTaskStatusOnStartup).toHaveBeenCalledWith(postgresStore, "registered-proj");
   });
 

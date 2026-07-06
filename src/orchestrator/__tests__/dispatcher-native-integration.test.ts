@@ -137,10 +137,10 @@ function makeMockStore(opts: {
   return {
     getActiveRuns: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-    getRunsForSeed: vi.fn().mockReturnValue([]),
+    getRunsForTask: vi.fn().mockReturnValue([]),
     getRunsByStatus: vi.fn().mockReturnValue([]),
     getRunsByStatuses: vi.fn().mockReturnValue([]),
-    getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+    getStuckRunsForTask: vi.fn().mockReturnValue([]),
     hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     hasNativeTasks: vi.fn().mockReturnValue(opts.hasNativeTasks ?? false),
     getReadyTasks: vi.fn().mockReturnValue(opts.nativeTasks ?? []),
@@ -150,7 +150,7 @@ function makeMockStore(opts: {
     createRun: vi.fn().mockReturnValue({
       id: "run-001",
       project_id: "proj-1",
-      seed_id: "",
+      task_id: "",
       status: "pending",
       created_at: new Date().toISOString(),
     }),
@@ -166,9 +166,9 @@ function makeMockStore(opts: {
  * Characterization: the dispatcher reads ready tasks exclusively from the native
  * task store (ForemanStore.getReadyTasks). No beads/br fallback path exists.
  *
- * This test documents that native tasks are the only seed source.
+ * This test documents that native tasks are the only task source.
  */
-describe("Dispatcher — native task store is the sole seed source (characterization)", () => {
+describe("Dispatcher — native task store is the sole task source (characterization)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -186,8 +186,8 @@ describe("Dispatcher — native task store is the sole seed source (characteriza
     consoleSpy.mockRestore();
 
     // Native tasks should be dispatched
-    expect(result.dispatched.map((d) => d.seedId)).toContain("t-native-001");
-    expect(result.dispatched.map((d) => d.seedId)).toContain("t-native-002");
+    expect(result.dispatched.map((d) => d.taskId)).toContain("t-native-001");
+    expect(result.dispatched.map((d) => d.taskId)).toContain("t-native-002");
 
     // Beads client must NOT be called — native is the only path
     expect(beadsClient.ready).not.toHaveBeenCalled();
@@ -222,7 +222,7 @@ describe("Dispatcher — native task store is the sole seed source (characteriza
       {
         id: "run-existing",
         project_id: "proj-1",
-        seed_id: "t-active-001",
+        task_id: "t-active-001",
         status: "running",
         created_at: new Date().toISOString(),
       },
@@ -251,7 +251,7 @@ describe("Dispatcher — native task store is the sole seed source (characteriza
       {
         id: "run-completed",
         project_id: "proj-1",
-        seed_id: "t-merged-001",
+        task_id: "t-merged-001",
         status: "completed",
         created_at: new Date().toISOString(),
       },
@@ -291,10 +291,10 @@ describe("Dispatcher — atomic claim against native task store (characterizatio
     return {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       getRunsByStatuses: vi.fn().mockReturnValue([]),
-      getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+      getStuckRunsForTask: vi.fn().mockReturnValue([]),
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([makeNativeTask(taskId)]),
@@ -304,7 +304,7 @@ describe("Dispatcher — atomic claim against native task store (characterizatio
       createRun: vi.fn().mockReturnValue({
         id: runId,
         project_id: "proj-1",
-        seed_id: taskId,
+        task_id: taskId,
         status: "pending",
         created_at: new Date().toISOString(),
       }),
@@ -336,7 +336,7 @@ describe("Dispatcher — atomic claim against native task store (characterizatio
 
     // Task was dispatched
     expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0]!.seedId).toBe(taskId);
+    expect(result.dispatched[0]!.taskId).toBe(taskId);
     expect(result.dispatched[0]!.runId).toBe(runId);
 
     spawnSpy.mockRestore();
@@ -413,7 +413,7 @@ describe("Dispatcher — native tasks dispatched in priority order (characteriza
 
     consoleSpy.mockRestore();
 
-    const ids = result.dispatched.map((d) => d.seedId);
+    const ids = result.dispatched.map((d) => d.taskId);
     expect(ids[0]).toBe("high-prio");
     expect(ids[1]).toBe("mid-prio");
     expect(ids[2]).toBe("low-prio");

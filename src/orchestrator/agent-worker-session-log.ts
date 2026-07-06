@@ -7,8 +7,8 @@
 
 /** Metadata passed to the session-log command. */
 export interface SessionLogData {
-  seedId: string;
-  seedTitle: string;
+  taskId: string;
+  taskTitle: string;
   status: "completed" | "failed" | "stuck";
   phases: string;
   costUsd: number;
@@ -25,8 +25,8 @@ export interface SessionLogData {
  */
 export function buildSessionLogPrompt(data: SessionLogData): string {
   const summary = [
-    `Seed: ${data.seedId}`,
-    `Title: ${data.seedTitle}`,
+    `Task: ${data.taskId}`,
+    `Title: ${data.taskTitle}`,
     `Status: ${data.status}`,
     `Phases: ${data.phases}`,
     `Cost: $${data.costUsd.toFixed(4)}`,

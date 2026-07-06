@@ -164,7 +164,7 @@ function renderAgentsPanel(state: WatchState, width: number): string {
                         run.status === "completed" ? chalk.green :
                         run.status === "pending" ? chalk.gray : chalk.blue;
 
-    let line = `${indexPrefix}${expandIndicator} ${icon} ${chalk.cyan(run.seed_id)} ${statusColor(run.status.toUpperCase())}${elapsedStr}`;
+    let line = `${indexPrefix}${expandIndicator} ${icon} ${chalk.cyan(run.task_id)} ${statusColor(run.status.toUpperCase())}${elapsedStr}`;
     line = truncate(line, innerWidth);
 
     lines.push(`  ${line}`);
@@ -452,10 +452,10 @@ function formatEventSummary(entry: {
       return d?.bead_id ? `Dispatch: ${d.bead_id}` : "Dispatch";
 
     case "complete":
-      return d?.seedId ? `Complete: ${d.seedId}` : "Complete";
+      return d?.taskId ? `Complete: ${d.taskId}` : "Complete";
 
     case "fail":
-      return d?.seedId ? `Failed: ${d.seedId}` : "Failed";
+      return d?.taskId ? `Failed: ${d.taskId}` : "Failed";
 
     case "merge":
       return d?.bead_id ? `Merged: ${d.bead_id}` : "Merged";
@@ -485,7 +485,7 @@ function formatEventSummary(entry: {
       return d?.bead_id ? `Test fail: ${d.bead_id}` : "Test fail";
 
     case "stuck":
-      return d?.seedId ? `Stuck: ${d.seedId}` : "Stuck";
+      return d?.taskId ? `Stuck: ${d.taskId}` : "Stuck";
 
     case "sentinel-start":
     case "sentinel-pass":
@@ -501,7 +501,7 @@ function formatEventSummary(entry: {
     default:
       // Generic fallback: show event type + any known fields
       if (d?.bead_id) return `${et}: ${d.bead_id}`;
-      if (d?.seedId) return `${et}: ${d.seedId}`;
+      if (d?.taskId) return `${et}: ${d.taskId}`;
       return et;
   }
 }

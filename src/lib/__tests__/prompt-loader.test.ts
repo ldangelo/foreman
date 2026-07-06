@@ -27,11 +27,11 @@ describe("prompt loader", () => {
     const foremanHome = makeForemanHome();
     writeFileSync(
       join(foremanHome, "prompts", "default", "finalize.md"),
-      "default finalize for {{seedId}}",
+      "default finalize for {{taskId}}",
       "utf8",
     );
 
-    const loaded = loadPrompt("finalize", { seedId: "bd-123" }, "custom", "/ignored/project");
+    const loaded = loadPrompt("finalize", { taskId: "bd-123" }, "custom", "/ignored/project");
     expect(loaded).toContain("default finalize for bd-123");
   });
 
@@ -98,7 +98,7 @@ describe("prompt loader", () => {
   it("fix-issue prompts invoke ensemble and preserve the developer artifact contract", () => {
     for (const workflow of ["task", "bug", "chore"] as const) {
       const content = getBundledPromptContent(workflow, "fix-issue");
-      expect(content?.startsWith("/ensemble:fix-issue {{seedTitle}} {{seedDescription}}")).toBe(true);
+      expect(content?.startsWith("/ensemble:fix-issue {{taskTitle}} {{taskDescription}}")).toBe(true);
       expect(content).toContain("DEVELOPER_REPORT.md");
     }
   });
@@ -118,12 +118,12 @@ describe("prompt loader", () => {
     const foremanHome = makeForemanHome();
     writeFileSync(
       join(foremanHome, "prompts", "default", "developer.md"),
-      "# Developer Agent\nRead EXPLORER_REPORT.md\nImplementation Plan",
+      "# Developer Agent\nRead EXPLORER_REPORT.md\n## Developer Handoff",
       "utf8",
     );
     writeFileSync(
       join(foremanHome, "prompts", "default", "explorer.md"),
-      "# Explorer Agent\n## Implementation Plan\n### Likely Edit Files",
+      "# Explorer Agent\n## Developer Handoff\n### Edit First",
       "utf8",
     );
 

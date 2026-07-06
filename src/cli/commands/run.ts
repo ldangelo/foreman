@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 
-import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
@@ -36,7 +35,7 @@ import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
 import { wrapPostgresSentinelStore } from "./sentinel.js";
-import { syncBeadStatusOnStartup, syncTaskStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
+import { syncTaskStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
 import { purgeOrphanedWorkerConfigs } from "../../orchestrator/dispatcher.js";
@@ -47,6 +46,8 @@ import { runTaskCommand, skipFlagsDeprecationWarning } from "./run-task.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RunLookup } from "../../orchestrator/refinery-agent.js";
 import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 
 // ── Backend Client Factory (TRD-007) ─────────────────────────────────
 
@@ -57,7 +58,7 @@ import { MergeQueue } from "../../orchestrator/merge-queue.js";
  */
 export interface TaskClientResult {
   taskClient: ITaskClient;
-  bvClient: null;  // Always null — BvClient was for beads backend which is removed
+  bvClient: null;
   backendType: "native";
 }
 
@@ -80,6 +81,85 @@ export function resolveRuntimeMode(value?: string): RuntimeMode {
   return raw === "test" ? "test" : "normal";
 }
 
+function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverrides {
+  const client = new ElixirServerClient(
+    process.env.FOREMAN_SERVER_URL ?? "http://127.0.0.1:4766",
+    process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN,
+  );
+  const sequences = new Map<string, number>();
+  const nextSequence = (runId: string) => {
+    const next = (sequences.get(runId) ?? 0) + 1;
+    sequences.set(runId, next);
+    return next;
+  };
+
+  return {
+    externalProjectId: projectId,
+    runOps: {
+      createRun: async (args) => {
+        await client.sendWorkerEvent({
+          run_id: args.runId,
+          project_id: args.projectId,
+          phase_id: args.agentType,
+          worker_id: `dispatcher-${args.runId}`,
+          type: "run_started",
+          sequence: nextSequence(args.runId),
+          details: { task_id: args.taskId, branch_name: args.branchName, worktree_path: args.worktreePath },
+        });
+        const startedAt = new Date().toISOString();
+        return {
+          id: args.runId,
+          project_id: args.projectId,
+          task_id: args.taskId,
+          agent_type: args.agentType,
+          session_key: null,
+          worktree_path: args.worktreePath,
+          status: "running",
+          started_at: startedAt,
+          completed_at: null,
+          created_at: startedAt,
+          progress: null,
+          tmux_session: null,
+          base_branch: args.baseBranch ?? null,
+          merge_strategy: args.mergeStrategy ?? "auto",
+        };
+      },
+      updateRun: async (runId, updates) => {
+        if (updates.status === "completed" || updates.status === "failed") {
+          await client.sendWorkerEvent({
+            run_id: runId,
+            project_id: projectId,
+            phase_id: updates.status,
+            worker_id: `dispatcher-${runId}`,
+            type: updates.status === "completed" ? "run_completed" : "run_failed",
+            status: updates.status,
+            sequence: nextSequence(runId),
+          });
+        }
+      },
+      sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
+        await client.sendCommand({
+          command_id: `inbox-send-${runId}-${Date.now()}`,
+          command_type: "inbox.send",
+          payload: { project_id: projectId, run_id: runId, sender: senderAgentType, recipient: recipientAgentType, subject, body },
+          metadata: { correlation_id: runId },
+        });
+      },
+      logEvent: async (runId, eventProjectId, eventType, payload) => {
+        await client.sendWorkerEvent({
+          run_id: runId,
+          project_id: eventProjectId,
+          phase_id: eventType,
+          worker_id: `dispatcher-${runId}`,
+          type: eventType,
+          sequence: nextSequence(runId),
+          details: payload,
+        });
+      },
+    },
+  };
+}
+
 function createRegisteredDispatcherOverrides(projectId: string, daemonStore: PostgresStore): DispatcherOverrides {
   const pg = new PostgresAdapter();
 
@@ -97,20 +177,20 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
       )).flat();
       return runs.filter((run) => run.created_at >= since).length;
     },
-    getActiveSeedIds: async () => {
+    getActiveTaskIds: async () => {
       const activeRuns = await daemonStore.getActiveRuns(projectId);
-      return activeRuns.map((run) => run.seed_id);
+      return activeRuns.map((run) => run.task_id);
     },
     getActiveAgentCount: async () => {
       const activeRuns = await daemonStore.getActiveRuns(projectId);
       return activeRuns.length;
     },
-    hasActiveOrPendingRun: async (seedId: string) => {
-      const runs = await pg.listPipelineRuns(projectId, { beadId: seedId, limit: 20 });
+    hasActiveOrPendingRun: async (taskId: string) => {
+      const runs = await pg.listPipelineRuns(projectId, { beadId: taskId, limit: 20 });
       return runs.some((run) => ["pending", "running", "success"].includes(run.status));
     },
     getRunsByStatus: async (status, overrideProjectId) => await daemonStore.getRunsByStatus(status, overrideProjectId),
-    getRunsForSeed: async (seedId, overrideProjectId) => await daemonStore.getRunsForSeed(seedId, overrideProjectId),
+    getRunsForTask: async (taskId, overrideProjectId) => await daemonStore.getRunsForTask(taskId, overrideProjectId),
     getRun: async (runId) => await daemonStore.getRun(runId),
     getActiveRuns: async (overrideProjectId) => await daemonStore.getActiveRuns(overrideProjectId),
     nativeTaskOps: {
@@ -121,13 +201,13 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
       claimTask: async (taskId: string, runId: string) => await pg.claimTask(projectId, taskId, runId),
     },
     runOps: {
-      createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+      createRun: async ({ runId, taskId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
         const createdAt = new Date().toISOString();
-        const existing = await pg.listPipelineRuns(projectId, { beadId: seedId });
+        const existing = await pg.listPipelineRuns(projectId, { beadId: taskId });
         await pg.createPipelineRun({
           id: runId,
           projectId,
-          beadId: seedId,
+          beadId: taskId,
           runNumber: existing.length + 1,
           branch: branchName,
           trigger: "bead",
@@ -139,7 +219,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
         const run: Run = {
           id: runId,
           project_id: projectId,
-          seed_id: seedId,
+          task_id: taskId,
           agent_type: agentType,
           session_key: null,
           worktree_path: worktreePath,
@@ -186,7 +266,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
         await pg.recordPipelineEvent({
           projectId,
           runId,
-          taskId: payload.seedId as string | undefined,
+          taskId: payload.taskId as string | undefined,
           eventType: mappedEventType,
           payload,
         });
@@ -196,10 +276,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
 }
 
 /**
- * Instantiate the br task-tracking client(s).
- *
- * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
- * plus a BvClient for graph-aware triage.
+ * Instantiate the native task client.
  */
 export async function createTaskClients(
   projectPath: string,
@@ -213,7 +290,7 @@ export async function createTaskClients(
 
   return {
     taskClient,
-    bvClient: null,  // BvClient only used for beads backend
+    bvClient: null,
     backendType,
   };
 }
@@ -376,13 +453,13 @@ export async function resolveOwnedControllerBranch(
 }
 
 /**
- * Check whether any in-progress beads have a `branch:` label that differs
+ * Check whether any in-progress tasks have a `branch:` label that differs
  * from the current git branch.
  *
  * Edge cases handled:
- * - No in-progress beads: no prompt, return false (continue normally)
+ * - No in-progress tasks: no prompt, return false (continue normally)
  * - Label matches current branch: no prompt, return false (continue normally)
- * - No branch: label on bead: no prompt, return false (backward compat)
+ * - No branch: label on task: no prompt, return false
  * - Label differs: show prompt, switch branch (return false) or exit (return true)
  *
  * Returns true if the caller should abort (user declined to switch).
@@ -459,39 +536,39 @@ export async function checkBranchMismatch(
     return false;
   }
 
-  let inProgressBeads: Issue[];
+  let inProgressTasks: Issue[];
   try {
-    inProgressBeads = await taskClient.list({ status: "in_progress" });
+    inProgressTasks = await taskClient.list({ status: "in_progress" });
   } catch {
-    // Cannot list in-progress beads — skip mismatch check
+    // Cannot list in-progress tasks — skip mismatch check
     return false;
   }
 
-  if (inProgressBeads.length === 0) return false;
+  if (inProgressTasks.length === 0) return false;
 
-  // Group mismatched beads by target branch
+  // Group mismatched tasks by target branch
   const mismatchByBranch = new Map<string, string[]>();
-  for (const bead of inProgressBeads) {
+  for (const task of inProgressTasks) {
     try {
-      const detail = await taskClient.show(bead.id) as unknown as { labels?: string[] };
+      const detail = await taskClient.show(task.id) as unknown as { labels?: string[] };
       const targetBranch = normalizeBranchLabel(extractBranchLabel(detail.labels));
       if (targetBranch && targetBranch !== currentBranch) {
         const ids = mismatchByBranch.get(targetBranch) ?? [];
-        ids.push(bead.id);
+        ids.push(task.id);
         mismatchByBranch.set(targetBranch, ids);
       }
     } catch {
-      // Non-fatal: skip this bead if detail fetch fails
+      // Non-fatal: skip this task if detail fetch fails
     }
   }
 
   if (mismatchByBranch.size === 0) return false;
 
   // For each unique target branch, prompt the user to switch
-  for (const [targetBranch, beadIds] of mismatchByBranch) {
-    const beadList = beadIds.join(", ");
+  for (const [targetBranch, taskIds] of mismatchByBranch) {
+    const taskList = taskIds.join(", ");
     const question = chalk.yellow(
-      `\nBeads ${chalk.cyan(beadList)} target branch ${chalk.green(targetBranch)} ` +
+      `\nTasks ${chalk.cyan(taskList)} target branch ${chalk.green(targetBranch)} ` +
       `but you are on ${chalk.red(currentBranch)}.\n` +
       `Switch to ${chalk.green(targetBranch)} to continue? [Y/n] `,
     );
@@ -510,8 +587,8 @@ export async function checkBranchMismatch(
       }
     } else {
       console.log(
-        chalk.yellow(`Skipping beads ${beadList} — they target ${targetBranch}.`) +
-        chalk.dim(` Run 'git checkout ${targetBranch}' and re-run foreman to continue those beads.`),
+        chalk.yellow(`Skipping tasks ${taskList} — they target ${targetBranch}.`) +
+        chalk.dim(` Run 'git checkout ${targetBranch}' and re-run foreman to continue those tasks.`),
       );
       return true; // abort — user said no
     }
@@ -552,7 +629,7 @@ export function validateWorkflowOverride(
 
 export const runCommand = new Command("run")
   .description("Dispatch ready tasks to agents")
-  .option("--max-agents <n>", "Maximum concurrent agents", "5")
+  .option("--max-agents <n>", "Maximum concurrent agents")
   .option("--model <model>", "Force a specific model (overrides FOREMAN_DEFAULT_MODEL)")
   .option("--dry-run", "Show what would be dispatched without doing it")
   .option("--no-watch", "Exit immediately after dispatching (don't monitor agents)")
@@ -564,14 +641,14 @@ export const runCommand = new Command("run")
   .addOption(new Option("--skip-explore", "(deprecated) No effect — use --workflow quick or a custom workflow").hideHelp())
   .addOption(new Option("--skip-review", "(deprecated) No effect — use --workflow quick or a custom workflow").hideHelp())
   .option("--task <id>", "Dispatch only this specific task by ID (must be ready)")
-  .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .option("--runtime-mode <mode>", "Runtime mode: normal|test (test uses deterministic phase-runner seams)")
+  .option("--yes", "Answer yes to run confirmation prompts (for non-interactive dispatch)")
   .action(async (opts) => {
-    const maxAgents = parseInt(opts.maxAgents, 10);
+    const maxAgents = parseInt(opts.maxAgents ?? "5", 10);
     const model = opts.model as ModelSelection | undefined;
     const dryRun = opts.dryRun as boolean | undefined;
     const resume = opts.resume as boolean | undefined;
@@ -580,7 +657,7 @@ export const runCommand = new Command("run")
     const telemetry = opts.telemetry as boolean | undefined;
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
     const workflowOverride = (opts.workflow as string | undefined)?.trim() || undefined;
-    const beadFilter = (opts.bead ?? opts.task) as string | undefined;
+    const taskFilter = opts.task as string | undefined;
 
     // Deprecated no-op flags retained for backwards compatibility
     const deprecationWarning = skipFlagsDeprecationWarning({
@@ -592,6 +669,7 @@ export const runCommand = new Command("run")
     }
     const enableAutoDispatch = opts.autoDispatch !== false; // --no-auto-dispatch sets to false
     const runtimeMode = resolveRuntimeMode(opts.runtimeMode as string | undefined);
+    const assumeYes = opts.yes === true;
 
     // P1: Parse stagger delay for preventing thundering herd on Haiku quotas
     // Accept formats like "30s", "1m", "2m30s"
@@ -605,6 +683,34 @@ export const runCommand = new Command("run")
       } else {
         console.warn(chalk.yellow(`[foreman] Warning: invalid --stagger value "${opts.stagger}", ignoring (use formats like "30s", "1m")`));
       }
+    }
+
+    if (runtimeMode !== "test" && process.env.VITEST !== "true") {
+      if (taskFilter) {
+        console.error(chalk.red("Error: foreman run --task was removed after the Elixir backend cutover. Use normal 'foreman run' to tick the scheduler, or 'foreman retry <task-id>' for retry flows."));
+        process.exit(1);
+      }
+      if (resume || resumeFailed) {
+        console.error(chalk.red("Error: foreman run --resume/--resume-failed was removed after the Elixir backend cutover. Use 'foreman retry' for Elixir-backed retry operations."));
+        process.exit(1);
+      }
+      if (pipeline === false || workflowOverride || staggerMs !== undefined || telemetry || opts.autoDispatch === false || model || opts.maxAgents !== undefined) {
+        console.error(chalk.red("Error: these foreman run dispatch-shaping options were removed after the Elixir backend cutover. The Elixir scheduler owns default dispatch policy."));
+        process.exit(1);
+      }
+      const manager = new ElixirServerManager();
+      const status = await manager.ensureRunning();
+      const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+      if (dryRun) {
+        console.log(chalk.dim("Elixir scheduler dry run: server is available; no scheduler tick sent."));
+      } else {
+        await client.schedulerTick();
+        console.log(chalk.green("✓ Elixir scheduler tick dispatched"));
+      }
+      if (watch) {
+        console.log(chalk.dim("Use 'foreman watch' or 'foreman status --watch' to monitor Elixir-backed runs."));
+      }
+      return;
     }
 
     // Start notification server so workers can POST status updates immediately
@@ -686,7 +792,8 @@ export const runCommand = new Command("run")
 
       let taskClient: ITaskClient;
       let backendType: "native" = "native";
-      if (registered) {
+      const useElixirTestBackend = Boolean(registered && runtimeMode === "test" && process.env.FOREMAN_SERVER_URL);
+      if (registered && !useElixirTestBackend) {
         ensureCliPostgresPool(projectPath);
       }
       try {
@@ -699,7 +806,7 @@ export const runCommand = new Command("run")
         process.exit(1);
       }
       const store = ForemanStore.forProject(projectPath);
-      const daemonStore = registered
+      const daemonStore = registered && !useElixirTestBackend
         ? (() => {
             return PostgresStore.forProject(registered.id);
           })()
@@ -709,8 +816,12 @@ export const runCommand = new Command("run")
         taskClient,
         store,
         projectPath,
-        null,  // BvClient removed — native task store only
-        registered && daemonStore ? createRegisteredDispatcherOverrides(registered.id, daemonStore) : undefined,
+        null,
+        registered && daemonStore && !useElixirTestBackend
+          ? createRegisteredDispatcherOverrides(registered.id, daemonStore)
+          : useElixirTestBackend && registered
+            ? createElixirTestDispatcherOverrides(registered.id)
+            : undefined,
       );
 
       // ── Sentinel Auto-Start ──────────────────────────────────────────────
@@ -720,7 +831,7 @@ export const runCommand = new Command("run")
       let sentinelAgent: SentinelAgent | null = null;
       if (!dryRun) {
         try {
-          if (project) {
+          if (project && !useElixirTestBackend) {
             const sentinelStore = registered
               ? wrapPostgresSentinelStore(daemonStore ?? PostgresStore.forProject(registered.id), registered.id)
               : store;
@@ -786,28 +897,11 @@ export const runCommand = new Command("run")
         }
       }
 
-      // ── Startup Bead / Task Sync ─────────────────────────────────────────
-      // Reconcile bead/task statuses against run state before dispatching.
+      // ── Startup Task Sync ────────────────────────────────────────────────
+      // Reconcile native task statuses against run state before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
+      // Native task status sync runs before dispatch.
       if (!dryRun && project) {
-        try {
-          const syncResult = await syncBeadStatusOnStartup(daemonStore ?? store, taskClient, project.id, { projectPath });
-          if (syncResult.synced > 0 || syncResult.mismatches.length > 0) {
-            console.log(
-              chalk.dim(
-                `[startup] Reconciled ${syncResult.synced} bead(s), ` +
-                `${syncResult.mismatches.length} mismatch(es) detected`
-              )
-            );
-          }
-          for (const err of syncResult.errors) {
-            console.warn(chalk.yellow(`[startup] Sync warning: ${err}`));
-          }
-        } catch (syncErr: unknown) {
-          const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
-          console.warn(chalk.yellow(`[startup] Bead sync failed (non-fatal): ${msg}`));
-        }
-
         try {
           const taskSyncResult = await syncTaskStatusOnStartup(daemonStore ?? store, project.id);
           if (taskSyncResult.synced > 0 || taskSyncResult.mismatches.length > 0) {
@@ -828,7 +922,7 @@ export const runCommand = new Command("run")
       }
 
       // ── Branch mismatch check ───────────────────────────────────────────────
-      // Before dispatching, check if any in-progress beads target a different
+      // Before dispatching, check if any in-progress tasks target a different
       // branch than the current one. If so, prompt the user to switch branches.
       // Skip in dry-run mode since no actual dispatch happens.
       if (!dryRun && !resume && !resumeFailed) {
@@ -884,7 +978,7 @@ export const runCommand = new Command("run")
               `Agent work will be branched from and merged into ${chalk.green(cb)}.\n` +
               `Continue? [Y/n] `,
             );
-            const confirmed = await promptYesNo(question);
+            const confirmed = assumeYes ? true : await promptYesNo(question);
             if (!confirmed) {
               console.log(
                 chalk.dim(`Aborted. Switch to ${db} or the desired target branch and re-run.`),
@@ -917,7 +1011,7 @@ export const runCommand = new Command("run")
               pipeline,
               runtimeMode,
               workflow: workflowOverride,
-              seedId: beadFilter,
+              taskId: taskFilter,
               notifyUrl,
               targetBranch,
               staggerMs,
@@ -944,7 +1038,7 @@ export const runCommand = new Command("run")
         if (result.resumed.length > 0) {
           console.log(chalk.green.bold(`Resumed ${result.resumed.length} agent(s):\n`));
           for (const task of result.resumed) {
-            console.log(`  ${chalk.cyan(task.seedId)} (was ${chalk.yellow(task.previousStatus)})`);
+            console.log(`  ${chalk.cyan(task.taskId)} (was ${chalk.yellow(task.previousStatus)})`);
             console.log(`    Model:    ${chalk.magenta(task.model)}`);
             console.log(`    Session:  ${chalk.dim(task.sessionId)}`);
             console.log(`    Run ID:   ${task.runId}`);
@@ -957,7 +1051,7 @@ export const runCommand = new Command("run")
         if (result.skipped.length > 0) {
           console.log(chalk.dim(`Skipped ${result.skipped.length} run(s):`));
           for (const task of result.skipped) {
-            console.log(`  ${chalk.dim(task.seedId)} — ${task.reason}`);
+            console.log(`  ${chalk.dim(task.taskId)} — ${task.reason}`);
           }
           console.log();
         }
@@ -1008,7 +1102,7 @@ export const runCommand = new Command("run")
       // Track whether the user explicitly detached (Ctrl+C). When detached, agents
       // continue running in the background so we skip the final merge drain.
       let userDetached = false;
-      // Suppress repeated "No ready beads" log messages — only print once per wait period.
+      // Suppress repeated "No ready tasks" log messages — only print once per wait period.
       let waitingForTasksLogged = false;
       // Count consecutive poll cycles with nothing dispatched and no active agents.
       // When this reaches PIPELINE_LIMITS.emptyPollCycles the loop exits gracefully.
@@ -1027,7 +1121,7 @@ export const runCommand = new Command("run")
           pipeline,
           runtimeMode,
           workflow: workflowOverride,
-          seedId: beadFilter,
+          taskId: taskFilter,
           notifyUrl,
           targetBranch,
           staggerMs,
@@ -1037,7 +1131,7 @@ export const runCommand = new Command("run")
         if (result.dispatched.length > 0) {
           console.log(chalk.green.bold(`Dispatched ${result.dispatched.length} task(s):\n`));
           for (const task of result.dispatched) {
-            console.log(`  ${chalk.cyan(task.seedId)} ${task.title}`);
+            console.log(`  ${chalk.cyan(task.taskId)} ${task.title}`);
             console.log(`    Model:    ${chalk.magenta(task.model)}`);
             console.log(`    Branch:   ${task.branchName}`);
             console.log(`    Worktree: ${task.worktreePath}`);
@@ -1052,7 +1146,7 @@ export const runCommand = new Command("run")
         if (result.skipped.length > 0) {
           console.log(chalk.dim(`Skipped ${result.skipped.length} task(s):`));
           for (const task of result.skipped) {
-            console.log(`  ${chalk.dim(task.seedId)} ${chalk.dim(task.title)} — ${task.reason}`);
+            console.log(`  ${chalk.dim(task.taskId)} ${chalk.dim(task.title)} — ${task.reason}`);
           }
           console.log();
         }
@@ -1100,13 +1194,13 @@ export const runCommand = new Command("run")
               );
               console.log(
                 chalk.yellow(
-                  `\nNo ready beads after ${emptyPollCount} poll cycle(s) (~${elapsedSec}s). Exiting dispatch loop.`
+                  `\nNo ready tasks after ${emptyPollCount} poll cycle(s) (~${elapsedSec}s). Exiting dispatch loop.`
                 )
               );
               console.log(
                 chalk.dim(
                   "  • Re-run 'foreman run' once tasks become unblocked\n" +
-                  "  • Use 'br ready' to see which tasks are ready\n" +
+                  "  • Use 'foreman tasks' to see which tasks are ready\n" +
                   "  • Use 'foreman status' to check for stuck agents\n" +
                   "  • Set FOREMAN_EMPTY_POLL_CYCLES=0 to disable this limit"
                 )
@@ -1116,7 +1210,7 @@ export const runCommand = new Command("run")
             if (!waitingForTasksLogged) {
               console.log(
                 chalk.dim(
-                  `No ready beads — waiting for tasks to become available…`
+                  `No ready tasks — waiting for tasks to become available…`
                 )
               );
               waitingForTasksLogged = true;

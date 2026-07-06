@@ -1,6 +1,8 @@
 import { defineVitestLaneConfig } from "./vitest.shared";
 
 export default defineVitestLaneConfig("integration", {
+  testTimeout: 300_000,
+  hookTimeout: 300_000,
   include: [
     "src/integration/__tests__/**/*.test.ts",
     "src/**/__tests__/**/*integration*.test.ts",

@@ -133,7 +133,7 @@ function makeRun(overrides?: Partial<Run>): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "bd-001",
+    task_id: "bd-001",
     agent_type: "claude-sonnet-4-6",
     session_key: null,
     worktree_path: "/tmp/worktree",
@@ -155,9 +155,9 @@ function makeStore(overrides?: Partial<ForemanStore>): ForemanStore {
   return {
     getActiveRuns: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-    getRunsForSeed: vi.fn().mockReturnValue([]),
+    getRunsForTask: vi.fn().mockReturnValue([]),
     getRunsByStatus: vi.fn().mockReturnValue([]),
-    getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+    getStuckRunsForTask: vi.fn().mockReturnValue([]),
     hasNativeTasks: vi.fn().mockReturnValue(true),
     getReadyTasks: vi.fn(() => currentReadyIssues.map((i) => nativeTaskFromIssue(i))),
     getTaskByExternalId: vi.fn().mockReturnValue(null),
@@ -173,7 +173,7 @@ function makeStore(overrides?: Partial<ForemanStore>): ForemanStore {
   } as unknown as ForemanStore;
 }
 
-function makeSeeds(): ITaskClient {
+function makeTasks(): ITaskClient {
   return {
     ready: vi.fn().mockResolvedValue([]),
     show: vi.fn().mockResolvedValue({ status: "open" }),
@@ -191,15 +191,15 @@ function makeSeeds(): ITaskClient {
 describe("Dispatcher — state-gate bypass for direct task runner", () => {
   beforeEach(() => { currentReadyIssues = []; });
 
-  it("dispatches a 'closed' task when targeted via seedId option (bypass ready-state filter)", async () => {
-    // `foreman run task <id>` bypasses state gating — it uses opts.seedId
+  it("dispatches a 'closed' task when targeted via taskId option (bypass ready-state filter)", async () => {
+    // `foreman run task <id>` bypasses state gating — it uses opts.taskId
     const closedTask = makeIssue("bd-closed", { status: "closed" });
     currentReadyIssues = [closedTask];
 
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(closedTask)]),
@@ -214,25 +214,25 @@ describe("Dispatcher — state-gate bypass for direct task runner", () => {
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
-    // seedId option: simulates `foreman run --bead bd-closed` on a closed task
-    const result = await dispatcher.dispatch({ dryRun: true, seedId: "bd-closed", projectId: "proj-1" });
+    // taskId option: simulates `foreman run --bead bd-closed` on a closed task
+    const result = await dispatcher.dispatch({ dryRun: true, taskId: "bd-closed", projectId: "proj-1" });
 
     // Task is found (not skipped as "not found") — may be skipped due to non-ready status,
     // but the key behavior is that no false "not found" error occurs.
-    expect(result.dispatched.some((d) => d.seedId === "bd-closed") || result.skipped.some((s) => s.seedId === "bd-closed")).toBe(true);
+    expect(result.dispatched.some((d) => d.taskId === "bd-closed") || result.skipped.some((s) => s.taskId === "bd-closed")).toBe(true);
   });
 
-  it("skips a merged-outcome task even when explicitly targeted via seedId (defensive guard)", async () => {
+  it("skips a merged-outcome task even when explicitly targeted via taskId (defensive guard)", async () => {
     const mergedTask = makeIssue("bd-merged");
     currentReadyIssues = [mergedTask];
 
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([makeRun({ seed_id: "bd-merged", status: "merged" })]),
+      getRunsForTask: vi.fn().mockReturnValue([makeRun({ task_id: "bd-merged", status: "merged" })]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(mergedTask)]),
@@ -247,14 +247,14 @@ describe("Dispatcher — state-gate bypass for direct task runner", () => {
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
-    const result = await dispatcher.dispatch({ dryRun: true, seedId: "bd-merged", projectId: "proj-1" });
+    const result = await dispatcher.dispatch({ dryRun: true, taskId: "bd-merged", projectId: "proj-1" });
 
     // Merged-outcome guard takes precedence — even explicit targeting skips it
-    expect(result.dispatched.some((d) => d.seedId === "bd-merged")).toBe(false);
-    expect(result.skipped.some((s) => s.seedId === "bd-merged" && s.reason.includes("merged"))).toBe(true);
+    expect(result.dispatched.some((d) => d.taskId === "bd-merged")).toBe(false);
+    expect(result.skipped.some((s) => s.taskId === "bd-merged" && s.reason.includes("merged"))).toBe(true);
   });
 
   it("dispatches when cooldown has expired and clears the cooldown state", async () => {
@@ -268,7 +268,7 @@ describe("Dispatcher — state-gate bypass for direct task runner", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([makeRun({ seed_id: "bd-cool", status: "cooldown", cooldown_until: pastCooldownUntil })]),
+      getRunsForTask: vi.fn().mockReturnValue([makeRun({ task_id: "bd-cool", status: "cooldown", cooldown_until: pastCooldownUntil })]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(cooldownTask, "cooldown")]),
@@ -283,14 +283,14 @@ describe("Dispatcher — state-gate bypass for direct task runner", () => {
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
-    const result = await dispatcher.dispatch({ dryRun: true, seedId: "bd-cool", projectId: "proj-1" });
+    const result = await dispatcher.dispatch({ dryRun: true, taskId: "bd-cool", projectId: "proj-1" });
 
     // Expired cooldown → dispatcher clears task status to ready → dispatched
     expect(updateTaskStatus).toHaveBeenCalledWith("bd-cool", "ready");
-    expect(result.dispatched.some((d) => d.seedId === "bd-cool")).toBe(true);
+    expect(result.dispatched.some((d) => d.taskId === "bd-cool")).toBe(true);
   });
 });
 
@@ -303,7 +303,7 @@ describe("Dispatcher.dispatch — invalid task / workflow errors", () => {
   // Note: We do NOT call vi.restoreAllMocks() here because the workflow error
   // test uses mockImplementationOnce which must persist through the test.
 
-  it("skips a non-ready task when targeted via seedId (not in 'ready' status)", async () => {
+  it("skips a non-ready task when targeted via taskId (not in 'ready' status)", async () => {
     // Task is in 'review' state, not 'ready'
     const reviewTask = makeIssue("bd-review", { status: "review" });
     currentReadyIssues = [reviewTask];
@@ -311,7 +311,7 @@ describe("Dispatcher.dispatch — invalid task / workflow errors", () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([]), // not in ready list
@@ -326,20 +326,20 @@ describe("Dispatcher.dispatch — invalid task / workflow errors", () => {
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
-    const result = await dispatcher.dispatch({ dryRun: true, seedId: "bd-review", projectId: "proj-1" });
+    const result = await dispatcher.dispatch({ dryRun: true, taskId: "bd-review", projectId: "proj-1" });
 
-    expect(result.dispatched.some((d) => d.seedId === "bd-review")).toBe(false);
-    expect(result.skipped.some((s) => s.seedId === "bd-review" && s.reason.includes("not ready"))).toBe(true);
+    expect(result.dispatched.some((d) => d.taskId === "bd-review")).toBe(false);
+    expect(result.skipped.some((s) => s.taskId === "bd-review" && s.reason.includes("not ready"))).toBe(true);
   });
 
   it("skips when nativeTaskOps.getTaskById returns null (task not found)", async () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([]),
@@ -354,26 +354,26 @@ describe("Dispatcher.dispatch — invalid task / workflow errors", () => {
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
-    const result = await dispatcher.dispatch({ dryRun: true, seedId: "non-existent-task", projectId: "proj-1" });
+    const result = await dispatcher.dispatch({ dryRun: true, taskId: "non-existent-task", projectId: "proj-1" });
 
     expect(result.dispatched).toHaveLength(0);
-    expect(result.skipped.some((s) => s.seedId === "non-existent-task" && s.reason.includes("not found"))).toBe(true);
+    expect(result.skipped.some((s) => s.taskId === "non-existent-task" && s.reason.includes("not found"))).toBe(true);
   });
 
   it("handles getTaskById throwing without crashing dispatch", async () => {
-    const seed = makeIssue("bd-error");
-    currentReadyIssues = [seed];
+    const task = makeIssue("bd-error");
+    currentReadyIssues = [task];
 
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
-      getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(seed)]),
+      getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(task)]),
       getTaskByExternalId: vi.fn().mockResolvedValue(null),
       getTaskById: vi.fn().mockImplementation(() => { throw new Error("DB connection error"); }),
       claimTask: vi.fn().mockReturnValue(true),
@@ -385,13 +385,13 @@ describe("Dispatcher.dispatch — invalid task / workflow errors", () => {
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     // Non-fatal: dispatch proceeds even when detail fetch fails
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.some((d) => d.seedId === "bd-error")).toBe(true);
+    expect(result.dispatched.some((d) => d.taskId === "bd-error")).toBe(true);
   });
 });
 
@@ -408,18 +408,18 @@ describe("Dispatcher.dispatch — safe worktree/run locking", () => {
   });
 
   it("skips when hasActiveOrPendingRun returns true (worktree locked)", async () => {
-    const seed = makeIssue("bd-locked");
-    currentReadyIssues = [seed];
+    const task = makeIssue("bd-locked");
+    currentReadyIssues = [task];
 
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
-      getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(seed)]),
+      getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(task)]),
       getTaskByExternalId: vi.fn().mockResolvedValue(null),
-      getTaskById: vi.fn().mockResolvedValue(nativeTaskFromIssue(seed)),
+      getTaskById: vi.fn().mockResolvedValue(nativeTaskFromIssue(task)),
       claimTask: vi.fn().mockReturnValue(true),
       updateTaskStatus: vi.fn(),
       updateTaskLabels: vi.fn(),
@@ -429,30 +429,30 @@ describe("Dispatcher.dispatch — safe worktree/run locking", () => {
       hasActiveOrPendingRun: vi.fn().mockReturnValue(true),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: false, projectId: "proj-1" });
 
     // Worktree locked → not dispatched
-    expect(result.dispatched.some((d) => d.seedId === "bd-locked")).toBe(false);
+    expect(result.dispatched.some((d) => d.taskId === "bd-locked")).toBe(false);
     // Skipped due to concurrent race condition
-    expect(result.skipped.some((s) => s.seedId === "bd-locked" && /concurrent|race|locked/i.test(s.reason))).toBe(true);
+    expect(result.skipped.some((s) => s.taskId === "bd-locked" && /concurrent|race|locked/i.test(s.reason))).toBe(true);
   });
 
   it("skips tasks with completed-but-unmerged runs (pending merge lock)", async () => {
-    const seed = makeIssue("bd-pending-merge");
-    currentReadyIssues = [seed];
+    const task = makeIssue("bd-pending-merge");
+    currentReadyIssues = [task];
 
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([makeRun({ seed_id: "bd-pending-merge", status: "completed" })]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
+      getRunsByStatus: vi.fn().mockReturnValue([makeRun({ task_id: "bd-pending-merge", status: "completed" })]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
-      getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(seed)]),
+      getReadyTasks: vi.fn().mockReturnValue([nativeTaskFromIssue(task)]),
       getTaskByExternalId: vi.fn().mockResolvedValue(null),
-      getTaskById: vi.fn().mockResolvedValue(nativeTaskFromIssue(seed)),
+      getTaskById: vi.fn().mockResolvedValue(nativeTaskFromIssue(task)),
       claimTask: vi.fn().mockReturnValue(true),
       updateTaskStatus: vi.fn(),
       updateTaskLabels: vi.fn(),
@@ -462,13 +462,13 @@ describe("Dispatcher.dispatch — safe worktree/run locking", () => {
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: false, projectId: "proj-1" });
 
-    expect(result.dispatched.some((d) => d.seedId === "bd-pending-merge")).toBe(false);
-    expect(result.skipped.some((s) => s.seedId === "bd-pending-merge" && s.reason.includes("completed run"))).toBe(true);
+    expect(result.dispatched.some((d) => d.taskId === "bd-pending-merge")).toBe(false);
+    expect(result.skipped.some((s) => s.taskId === "bd-pending-merge" && s.reason.includes("completed run"))).toBe(true);
   });
 });
 
@@ -480,18 +480,18 @@ describe("Dispatcher — delegates to canonical pipeline runner (spawnWorkerProc
   beforeEach(() => { currentReadyIssues = []; });
 
   it("dispatches with correct worktreePath in the result for the canonical runner", async () => {
-    const seed = makeIssue("bd-delegate");
-    currentReadyIssues = [seed];
+    const task = makeIssue("bd-delegate");
+    currentReadyIssues = [task];
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     // dryRun: true so we can verify the dispatched config without needing spawn mocking
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.some((d) => d.seedId === "bd-delegate")).toBe(true);
-    const dispatched = result.dispatched.find((d) => d.seedId === "bd-delegate");
+    expect(result.dispatched.some((d) => d.taskId === "bd-delegate")).toBe(true);
+    const dispatched = result.dispatched.find((d) => d.taskId === "bd-delegate");
     expect(dispatched).toBeDefined();
     // The worktreePath in the dispatch result is used by spawnWorkerProcess to create the worktree
     expect(dispatched!.worktreePath).toBeDefined();
@@ -499,71 +499,71 @@ describe("Dispatcher — delegates to canonical pipeline runner (spawnWorkerProc
   });
 
   it("dispatches with runtime=claude-code (canonical Pi SDK runner)", async () => {
-    const seed = makeIssue("bd-pipeline-cfg");
-    currentReadyIssues = [seed];
+    const task = makeIssue("bd-pipeline-cfg");
+    currentReadyIssues = [task];
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.some((d) => d.seedId === "bd-pipeline-cfg")).toBe(true);
-    const dispatched = result.dispatched.find((d) => d.seedId === "bd-pipeline-cfg");
+    expect(result.dispatched.some((d) => d.taskId === "bd-pipeline-cfg")).toBe(true);
+    const dispatched = result.dispatched.find((d) => d.taskId === "bd-pipeline-cfg");
     expect(dispatched!.runtime).toBe("claude-code");
   });
 
   it("dispatches with model from resolved workflow config", async () => {
-    const seed = makeIssue("bd-model-cfg");
-    currentReadyIssues = [seed];
+    const task = makeIssue("bd-model-cfg");
+    currentReadyIssues = [task];
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.some((d) => d.seedId === "bd-model-cfg")).toBe(true);
-    const dispatched = result.dispatched.find((d) => d.seedId === "bd-model-cfg");
+    expect(result.dispatched.some((d) => d.taskId === "bd-model-cfg")).toBe(true);
+    const dispatched = result.dispatched.find((d) => d.taskId === "bd-model-cfg");
     expect(dispatched!.model).toBeDefined();
   });
 
   it("dispatched result includes branchName for the canonical worktree", async () => {
-    const seed = makeIssue("bd-branch-name");
-    currentReadyIssues = [seed];
+    const task = makeIssue("bd-branch-name");
+    currentReadyIssues = [task];
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.some((d) => d.seedId === "bd-branch-name")).toBe(true);
-    const dispatched = result.dispatched.find((d) => d.seedId === "bd-branch-name");
+    expect(result.dispatched.some((d) => d.taskId === "bd-branch-name")).toBe(true);
+    const dispatched = result.dispatched.find((d) => d.taskId === "bd-branch-name");
     expect(dispatched!.branchName).toBeDefined();
     expect(dispatched!.branchName).toContain("bd-branch-name");
   });
 
   it("dispatched result includes runId for tracking", async () => {
-    const seed = makeIssue("bd-run-id");
-    currentReadyIssues = [seed];
+    const task = makeIssue("bd-run-id");
+    currentReadyIssues = [task];
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
     const result = await dispatcher.dispatch({ dryRun: true, projectId: "proj-1" });
 
-    expect(result.dispatched.some((d) => d.seedId === "bd-run-id")).toBe(true);
-    const dispatched = result.dispatched.find((d) => d.seedId === "bd-run-id");
+    expect(result.dispatched.some((d) => d.taskId === "bd-run-id")).toBe(true);
+    const dispatched = result.dispatched.find((d) => d.taskId === "bd-run-id");
     expect(dispatched!.runId).toBeDefined();
   });
 
-  it("does not dispatch when seedId targets a non-existent task (canonical runner not called)", async () => {
+  it("does not dispatch when taskId targets a non-existent task (canonical runner not called)", async () => {
     const store = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([]),
@@ -578,12 +578,12 @@ describe("Dispatcher — delegates to canonical pipeline runner (spawnWorkerProc
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     } as unknown as ForemanStore;
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
-    const result = await dispatcher.dispatch({ dryRun: true, seedId: "truly-missing", projectId: "proj-1" });
+    const result = await dispatcher.dispatch({ dryRun: true, taskId: "truly-missing", projectId: "proj-1" });
 
-    // No dispatched seeds at all
+    // No dispatched tasks at all
     expect(result.dispatched).toHaveLength(0);
   });
 });

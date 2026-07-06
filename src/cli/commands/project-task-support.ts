@@ -1,10 +1,13 @@
 import chalk from "chalk";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { resolveProjectPath } from "../../lib/project-path.js";
+import { ProjectTargetingError, resolveProjectTarget } from "../../lib/project-targeting.js";
+import { ElixirServerClient, type ElixirProject } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
-import { createTrpcClient } from "../../lib/trpc-client.js";
 import { initPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
 
 export interface RegisteredProjectSummary {
@@ -13,35 +16,124 @@ export interface RegisteredProjectSummary {
   path: string;
   githubUrl?: string;
   defaultBranch?: string;
+  status?: string;
 }
 
-export async function listRegisteredProjects(): Promise<RegisteredProjectSummary[]> {
-  try {
-    const client = createTrpcClient();
-    const projects = await client.projects.list() as Array<{
-      id: string;
-      name: string;
-      path: string;
-      githubUrl?: string;
-      defaultBranch?: string;
-    }>;
-    return projects.map((project) => ({
-      id: project.id,
-      name: project.name,
-      path: project.path,
-      githubUrl: project.githubUrl,
-      defaultBranch: project.defaultBranch,
-    }));
-  } catch {
-    const registry = new ProjectRegistry();
-    const records = await registry.list();
-    return records.map((record) => ({
-      id: record.id,
-      name: record.name,
-      path: record.path,
-      githubUrl: record.githubUrl,
-      defaultBranch: record.defaultBranch,
-    }));
+function summaryFromElixirProject(project: ElixirProject): RegisteredProjectSummary {
+  const path = resolve(project.path);
+  const id = project.project_id ?? project.id ?? basename(path);
+  const configuredName = typeof project.config?.name === "string" ? project.config.name : undefined;
+  return {
+    id,
+    name: project.name ?? configuredName ?? basename(path),
+    path,
+    defaultBranch: project.default_branch,
+    status: project.status,
+  };
+}
+
+function elixirClient(): Promise<ElixirServerClient> {
+  if (process.env.FOREMAN_SERVER_URL) {
+    return Promise.resolve(new ElixirServerClient(process.env.FOREMAN_SERVER_URL, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN));
+  }
+
+  const manager = new ElixirServerManager();
+  return manager.ensureRunning().then((status) => new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN));
+}
+
+export async function listRegisteredProjects(opts: { includeArchived?: boolean } = {}): Promise<RegisteredProjectSummary[]> {
+  const client = await elixirClient();
+  const projects = await client.listProjects();
+  return projects
+    .map(summaryFromElixirProject)
+    .filter((project) => opts.includeArchived || (project.status ?? "active") !== "archived");
+}
+
+function defaultElixirProjectId(projectPath: string, name: string): string {
+  const normalizedName = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "project";
+  const suffix = createHash("sha1").update(resolve(projectPath)).digest("hex").slice(0, 5);
+  return `${normalizedName}-${suffix}`;
+}
+
+export async function registerProjectInElixir(
+  projectPath: string,
+  opts: { name?: string; defaultBranch?: string; status?: "active" | "paused" | "archived" } = {},
+): Promise<RegisteredProjectSummary> {
+  const resolvedPath = resolve(projectPath);
+  const registry = new ProjectRegistry();
+  const records = await registry.list().catch(() => []);
+  const existing = records.find((record) => resolve(record.path) === resolvedPath);
+
+  const name = opts.name ?? existing?.name ?? basename(resolvedPath);
+  const projectId = existing?.id ?? defaultElixirProjectId(resolvedPath, name);
+  const defaultBranch = opts.defaultBranch ?? existing?.defaultBranch ?? "main";
+  const projectStatus = opts.status ?? existing?.status ?? "active";
+
+  const client = await elixirClient();
+  const response = await client.sendCommand({
+    command_id: `project-register-${projectId}-${randomUUID()}`,
+    command_type: "project.register",
+    payload: {
+      project_id: projectId,
+      path: resolvedPath,
+      status: projectStatus,
+      default_branch: defaultBranch,
+      config: { name },
+      health: { ok: true },
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
+
+  return {
+    id: projectId,
+    name,
+    path: resolvedPath,
+    defaultBranch,
+    status: projectStatus,
+  };
+}
+
+export async function archiveProjectInElixir(projectId: string, opts: { force?: boolean } = {}): Promise<void> {
+  const client = await elixirClient();
+  const response = await client.sendCommand({
+    command_id: `project-archive-${projectId}-${randomUUID()}`,
+    command_type: "project.archive",
+    payload: {
+      project_id: projectId,
+      force: Boolean(opts.force),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
+}
+
+export async function updateProjectInElixir(
+  projectId: string,
+  updates: { name?: string; status?: string; defaultBranch?: string },
+): Promise<void> {
+  const payload: Record<string, unknown> = { project_id: projectId };
+  if (updates.name) payload.name = updates.name;
+  if (updates.status) payload.status = updates.status;
+  if (updates.defaultBranch) payload.default_branch = updates.defaultBranch;
+
+  const client = await elixirClient();
+  const response = await client.sendCommand({
+    command_id: `project-update-${projectId}-${randomUUID()}`,
+    command_type: "project.update",
+    payload,
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error.message);
   }
 }
 
@@ -59,14 +151,25 @@ export async function resolveProjectPathFromOptions(
 ): Promise<string> {
   if (opts.project && !opts.projectPath) {
     try {
+      const local = resolveProjectTarget(opts);
+      if (local.warning) {
+        console.warn(chalk.yellow(local.warning));
+      }
+      return local.projectPath;
+    } catch (error) {
+      if (!(error instanceof ProjectTargetingError) || error.code !== "project-name-not-found") {
+        throw error;
+      }
+    }
+
+    try {
       const projects = await listRegisteredProjects();
       const match = projects.find((project) => project.id === opts.project || project.name === opts.project);
       if (match?.path) {
         return match.path;
       }
     } catch {
-      // Fall back to local resolver when the daemon is unavailable or the project
-      // is not managed by the daemon-backed registry.
+      // Fall back to local resolver error below when the daemon/server is unavailable.
     }
   }
 

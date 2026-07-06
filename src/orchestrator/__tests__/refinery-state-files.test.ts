@@ -23,13 +23,13 @@ function makeMocks() {
     logEvent: vi.fn(),
     getDb: vi.fn(() => mockDb),
   };
-  const seeds = {
+  const tasks = {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const refinery = new Refinery(store as any, seeds as any, "/tmp/project");
-  return { store, seeds, refinery };
+  const refinery = new Refinery(store as any, tasks as any, "/tmp/project");
+  return { store, tasks, refinery };
 }
 
 /**
@@ -88,7 +88,7 @@ describe("Refinery.autoCommitStateFiles()", () => {
     expect(commitCall).toBeUndefined();
   });
 
-  it("no-op when dirty files are not in .seeds/ or .foreman/", async () => {
+  it("no-op when dirty files are not in .tasks/ or .foreman/", async () => {
     const { refinery } = makeMocks();
     const calls = mockGitCommands(" M src/index.ts\n?? README.md\n");
 
@@ -103,10 +103,10 @@ describe("Refinery.autoCommitStateFiles()", () => {
     expect(commitCall).toBeUndefined();
   });
 
-  it("commits when .seeds/ has uncommitted changes", async () => {
+  it("commits when .tasks/ has uncommitted changes", async () => {
     const { refinery } = makeMocks();
     const calls = mockGitCommands(
-      " M .seeds/issues.jsonl\n M src/index.ts\n",
+      " M .tasks/issues.jsonl\n M src/index.ts\n",
     );
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -114,10 +114,10 @@ describe("Refinery.autoCommitStateFiles()", () => {
 
     const gitArgs = calls.map((c) => c.args);
 
-    // Should git add only the .seeds/ file
+    // Should git add only the .tasks/ file
     const addCall = gitArgs.find((a) => a[0] === "add");
     expect(addCall).toBeDefined();
-    expect(addCall).toContain(".seeds/issues.jsonl");
+    expect(addCall).toContain(".tasks/issues.jsonl");
 
     // Should git commit
     const commitCall = gitArgs.find((a) => a[0] === "commit");
@@ -127,7 +127,7 @@ describe("Refinery.autoCommitStateFiles()", () => {
   it("commits when .foreman/ has uncommitted changes", async () => {
     const { refinery } = makeMocks();
     const calls = mockGitCommands(
-      " M .foreman/reports/QA-seed-1.md\n",
+      " M .foreman/reports/QA-task-1.md\n",
     );
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -137,7 +137,7 @@ describe("Refinery.autoCommitStateFiles()", () => {
 
     const addCall = gitArgs.find((a) => a[0] === "add");
     expect(addCall).toBeDefined();
-    expect(addCall).toContain(".foreman/reports/QA-seed-1.md");
+    expect(addCall).toContain(".foreman/reports/QA-task-1.md");
 
     const commitCall = gitArgs.find((a) => a[0] === "commit");
     expect(commitCall).toBeDefined();
@@ -145,7 +145,7 @@ describe("Refinery.autoCommitStateFiles()", () => {
 
   it("uses correct commit message format", async () => {
     const { refinery } = makeMocks();
-    const calls = mockGitCommands(" M .seeds/issues.jsonl\n");
+    const calls = mockGitCommands(" M .tasks/issues.jsonl\n");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (refinery as any).autoCommitStateFiles();
@@ -160,10 +160,10 @@ describe("Refinery.autoCommitStateFiles()", () => {
     );
   });
 
-  it("handles both .seeds/ and .foreman/ together", async () => {
+  it("handles both .tasks/ and .foreman/ together", async () => {
     const { refinery } = makeMocks();
     const calls = mockGitCommands(
-      " M .seeds/issues.jsonl\n?? .foreman/state.db\n M src/foo.ts\n",
+      " M .tasks/issues.jsonl\n?? .foreman/state.db\n M src/foo.ts\n",
     );
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -177,7 +177,7 @@ describe("Refinery.autoCommitStateFiles()", () => {
 
     // Collect all files passed to git add
     const addedFiles = addCalls.flatMap((a) => a.slice(1));
-    expect(addedFiles).toContain(".seeds/issues.jsonl");
+    expect(addedFiles).toContain(".tasks/issues.jsonl");
     expect(addedFiles).toContain(".foreman/state.db");
     expect(addedFiles).not.toContain("src/foo.ts");
 

@@ -12,7 +12,7 @@ describe("pi observability trace", () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
     const trace = createPhaseTrace({
       runId: "run-123",
-      seedId: "foreman-56b46",
+      taskId: "foreman-56b46",
       phase: "fix",
       phaseType: "command",
       model: "minimax/MiniMax-M2.7",
@@ -53,7 +53,7 @@ describe("pi observability trace", () => {
     await writeFile(join(worktreePath, "DEVELOPER_REPORT.md"), "# done\n", "utf-8");
     const trace = createPhaseTrace({
       runId: "run-456",
-      seedId: "foreman-56b46",
+      taskId: "foreman-56b46",
       phase: "fix",
       phaseType: "command",
       model: "minimax/MiniMax-M2.7",
@@ -77,7 +77,7 @@ describe("pi observability trace", () => {
     const worktreePath = await mkdtemp(join(tmpdir(), "foreman-trace-"));
     const trace = createPhaseTrace({
       runId: "run-789",
-      seedId: "foreman-56b46",
+      taskId: "foreman-56b46",
       phase: "fix",
       phaseType: "command",
       model: "minimax/MiniMax-M2.7",
@@ -89,12 +89,12 @@ describe("pi observability trace", () => {
     finalizePhaseTrace(trace, { success: true, finalMessage: "Done." });
 
     const paths = await writePhaseTrace(trace);
-    const json = JSON.parse(await readFile(paths.jsonPath, "utf-8")) as { phase: string; seedId: string };
+    const json = JSON.parse(await readFile(paths.jsonPath, "utf-8")) as { phase: string; taskId: string };
     const markdown = await readFile(paths.markdownPath, "utf-8");
 
     expect(paths.relativeJsonPath).toContain(".foreman/reports/runs/run-789/foreman-56b46/FIX_TRACE.json");
     expect(json.phase).toBe("fix");
-    expect(json.seedId).toBe("foreman-56b46");
+    expect(json.taskId).toBe("foreman-56b46");
     expect(markdown).toContain("# FIX Trace — foreman-56b46");
     expect(markdown).toContain("DEVELOPER_REPORT.md");
   });
@@ -103,7 +103,7 @@ describe("pi observability trace", () => {
     const worktreePath = join(tmpdir(), "foreman-trace-sanitize-test", "worktrees", "foreman-abc123");
     const trace = createPhaseTrace({
       runId: "run-sanitize",
-      seedId: "foreman-sanitize",
+      taskId: "foreman-sanitize",
       phase: "developer",
       phaseType: "prompt",
       model: "minimax/MiniMax-M2.7",
@@ -137,9 +137,9 @@ describe("pi observability trace", () => {
     expect(markdown).toContain("<worktree>");
 
     // Verify trace metadata is still correct
-    const parsed = JSON.parse(json) as { phase: string; seedId: string; worktreePath: string };
+    const parsed = JSON.parse(json) as { phase: string; taskId: string; worktreePath: string };
     expect(parsed.phase).toBe("developer");
-    expect(parsed.seedId).toBe("foreman-sanitize");
+    expect(parsed.taskId).toBe("foreman-sanitize");
     expect(parsed.worktreePath).toBe("<worktree>");
   });
 });

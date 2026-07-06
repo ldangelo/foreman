@@ -25,11 +25,11 @@ This enhancement wraps each agent worker process inside a named tmux session, en
 
 3. **No detach/reattach.** Once attached via `claude --resume`, there is no way to detach and return later. The session runs in the foreground until completion or interruption.
 
-4. **No zombie detection at the process level.** The monitor detects stuck agents via timeout heuristics and seed status polling, but cannot detect a dead process whose tmux session or PID no longer exists. A process that crashes silently leaves a "running" row in Postgres until the timeout fires (default: 60 minutes).
+4. **No zombie detection at the process level.** The monitor detects stuck agents via timeout heuristics and task status polling, but cannot detect a dead process whose tmux session or PID no longer exists. A process that crashes silently leaves a "running" row in Postgres until the timeout fires (default: 60 minutes).
 
 5. **Blind dispatching.** `foreman run` dispatches agents and exits (or enters watch mode polling Postgres). There is no option to immediately attach to a spawned agent's terminal for real-time observation.
 
-6. **Session identity is opaque.** Session keys like `foreman:sdk:claude-sonnet-4-6:uuid:session-uuid` are not human-friendly. Users must cross-reference run IDs, seed IDs, and session keys to find the right agent.
+6. **Session identity is opaque.** Session keys like `foreman:sdk:claude-sonnet-4-6:uuid:session-uuid` are not human-friendly. Users must cross-reference run IDs, task IDs, and session keys to find the right agent.
 
 ### 1.3 Current Architecture
 
@@ -44,7 +44,7 @@ Dispatcher.spawnAgent()
   4. Worker updates Postgres with progress every 2s
 
 foreman attach <id>
-  1. Look up run by run-id or seed-id
+  1. Look up run by run-id or task-id
   2. Extract SDK session ID from session_key
   3. spawn("claude", ["--resume", sessionId], { stdio: "inherit" })
 ```
@@ -61,10 +61,10 @@ foreman attach <id>
 
 | Stakeholder | Current Pain | With Tmux Sessions |
 |---|---|---|
-| Solo developer | Cannot see what agents are doing in real time | `foreman attach <seed-id>` drops into the agent's tmux session for real-time observation |
-| Power user | Must `tail -f` log files across multiple terminals | `foreman attach <seed-id>` drops into the exact tmux session |
+| Solo developer | Cannot see what agents are doing in real time | `foreman attach <task-id>` drops into the agent's tmux session for real-time observation |
+| Power user | Must `tail -f` log files across multiple terminals | `foreman attach <task-id>` drops into the exact tmux session |
 | Ops/debugging | Dead agents sit as "running" for up to 60 min | Zombie detection via `tmux has-session` catches dead processes in seconds |
-| New user | Opaque session IDs, no visibility into agent behavior | Named sessions (`foreman-<seedId>`) and enhanced listing show exactly what is happening |
+| New user | Opaque session IDs, no visibility into agent behavior | Named sessions (`foreman-<taskId>`) and enhanced listing show exactly what is happening |
 
 ---
 
@@ -140,7 +140,7 @@ foreman attach <id>
 | G-1 | Enable real-time agent observation without disrupting agent work | Users can follow live output via `--follow` with <2s latency |
 | G-2 | Support safe detach/reattach for interactive sessions | Users can detach (Ctrl+B, D) and reattach without losing agent state |
 | G-3 | Reduce zombie detection time from ~60 min to <30 seconds | Monitor detects dead tmux sessions via `tmux has-session` in <30s |
-| G-4 | Provide human-readable session naming | All sessions named `foreman-<seedId>` with consistent lookup |
+| G-4 | Provide human-readable session naming | All sessions named `foreman-<taskId>` with consistent lookup |
 | G-5 | Maintain backward compatibility when tmux is not installed | Graceful fallback to current detached-process spawning; all existing behavior preserved |
 | G-6 | Enhance session listing with operational context | `--list` shows phase, progress, cost, elapsed time, worktree path |
 
@@ -165,7 +165,7 @@ foreman attach <id>
 **Description:** Wrap each agent worker process inside a named tmux session instead of spawning as a bare detached process. The tmux session provides a persistent terminal that survives parent process exit and supports attachment.
 
 **Acceptance Criteria:**
-1. When tmux is available, `spawnWorkerProcess()` creates a tmux session named `foreman-<seedId>` and runs the worker inside it.
+1. When tmux is available, `spawnWorkerProcess()` creates a tmux session named `foreman-<taskId>` and runs the worker inside it.
 2. The worker process (tsx agent-worker.ts) runs as the sole command in the tmux session.
 3. Existing file-descriptor logging (`~/.foreman/logs/<runId>.{out,err}`) continues to work (tmux does not interfere with stdout/stderr redirection).
 4. The tmux session name is stored in the Postgres `runs` table (new column: `tmux_session`).
@@ -199,7 +199,7 @@ foreman attach <id>
 **Description:** `foreman attach <id>` attaches to the agent's tmux session interactively, replacing the current `claude --resume` behavior when tmux sessions are available.
 
 **Acceptance Criteria:**
-1. `foreman attach <run-id|seed-id>` looks up the run's `tmux_session` value and runs `tmux attach-session -t <session>`.
+1. `foreman attach <run-id|task-id>` looks up the run's `tmux_session` value and runs `tmux attach-session -t <session>`.
 2. The user can interact with the tmux session (observe, scroll buffer, copy text).
 3. The user can detach with Ctrl+B, D. The agent continues running uninterrupted.
 4. The user can reattach any number of times.
@@ -217,7 +217,7 @@ foreman attach <id>
 1. `--follow` captures the tmux pane content via `tmux capture-pane -t <session> -p` every 1 second.
 2. Only new lines (lines not previously displayed) are printed to the user's terminal.
 3. The user exits follow mode with Ctrl+C. The agent continues running.
-4. Follow mode displays a header: `Following foreman-<seedId> [phase] | Ctrl+C to stop | foreman attach <id> for interactive`.
+4. Follow mode displays a header: `Following foreman-<taskId> [phase] | Ctrl+C to stop | foreman attach <id> for interactive`.
 5. When the tmux session ends (agent completes), follow mode prints "Session ended" and exits.
 6. If the run has no tmux session, falls back to tailing the log file (`~/.foreman/logs/<runId>.log`).
 
@@ -232,7 +232,7 @@ foreman attach <id>
 1. `foreman run --bead <id>` auto-attaches to the tmux session when: (a) stdout is a TTY, (b) only one agent is being dispatched, and (c) `--no-attach` flag is not set.
 2. `foreman run --bead <id> --no-attach` skips auto-attach (dispatch and exit).
 3. `foreman run --bead <id> --attach` forces auto-attach even when dispatching multiple agents (attaches to the first).
-4. `foreman run` (multi-agent, no `--seed`) never auto-attaches; enters watch mode as today.
+4. `foreman run` (multi-agent, no `--task`) never auto-attaches; enters watch mode as today.
 5. Auto-attach uses interactive mode by default (full tmux attach-session). The user detaches with Ctrl+B, D to let the agent continue in the background.
 
 ---
@@ -270,7 +270,7 @@ foreman attach <id>
 **Description:** Enhance `foreman attach --list` to show operational context for each session.
 
 **Acceptance Criteria:**
-1. Listing includes columns: SEED, STATUS, PHASE, PROGRESS, COST, ELAPSED, TMUX, WORKTREE.
+1. Listing includes columns: TASK, STATUS, PHASE, PROGRESS, COST, ELAPSED, TMUX, WORKTREE.
 2. PHASE shows the current pipeline phase (explorer, developer, qa, reviewer, finalize) from `RunProgress.currentPhase`.
 3. PROGRESS shows tool calls and files changed (e.g., "42 tools, 8 files").
 4. COST shows `costUsd` formatted as `$0.42`.
@@ -286,10 +286,10 @@ foreman attach <id>
 **Description:** Use a consistent, human-readable naming convention for tmux sessions.
 
 **Acceptance Criteria:**
-1. Session name format: `foreman-<seedId>` (e.g., `foreman-abc1`).
-2. If the seed ID contains characters invalid for tmux session names (colons, periods), they are replaced with hyphens.
+1. Session name format: `foreman-<taskId>` (e.g., `foreman-abc1`).
+2. If the task ID contains characters invalid for tmux session names (colons, periods), they are replaced with hyphens.
 3. Session names are unique per project (enforced by killing existing sessions with the same name before creating new ones, per FR-1 AC-6).
-4. `foreman attach` accepts the seed ID directly (e.g., `foreman attach abc1`) and resolves to the tmux session name `foreman-abc1`.
+4. `foreman attach` accepts the task ID directly (e.g., `foreman attach abc1`) and resolves to the tmux session name `foreman-abc1`.
 
 ---
 
@@ -303,7 +303,7 @@ foreman attach <id>
 2. `foreman reset` kills all `foreman-*` tmux sessions as part of its cleanup.
 3. `foreman doctor --fix` kills orphaned `foreman-*` tmux sessions that have no corresponding active run.
 4. `foreman attach --list` shows completed sessions with a "COMPLETED" or "FAILED" status tag so users know which sessions are available for review.
-5. Users can manually kill individual sessions via `foreman attach --kill <id>` or native `tmux kill-session -t foreman-<seedId>`.
+5. Users can manually kill individual sessions via `foreman attach --kill <id>` or native `tmux kill-session -t foreman-<taskId>`.
 
 ---
 
@@ -359,14 +359,14 @@ New options:
   --no-attach      Skip auto-attach even for single-agent dispatch from TTY
 
 Behavior changes:
-  - When --seed <id> is used from a TTY, auto-attaches interactively (unless --no-attach)
+  - When --task <id> is used from a TTY, auto-attaches interactively (unless --no-attach)
   - Multi-agent dispatch: no change (enters watch mode)
 ```
 
 #### `foreman attach`
 
 ```
-foreman attach <run-id|seed-id> [options]
+foreman attach <run-id|task-id> [options]
 
 Existing options (preserved):
   --list           List all attachable sessions
@@ -429,9 +429,9 @@ Behavior changes:
 | Attach to non-existent session | `tmux has-session` fails | Fall back to `claude --resume` if session ID available; error otherwise | `Tmux session not found. Falling back to SDK session resume.` or `No active session found for "<id>".` |
 | Follow mode on completed agent | tmux session gone, log file exists | Tail log file instead | `Session ended. Showing final log output from ~/.foreman/logs/<runId>.log` |
 | Follow mode on agent without tmux | No `tmux_session` in run record | Tail log file | `No tmux session for this run. Tailing log file instead.` |
-| Duplicate session name | `tmux has-session` succeeds for name | Kill existing session before creating new one | `[foreman] Killed stale tmux session foreman-<seedId>` |
+| Duplicate session name | `tmux has-session` succeeds for name | Kill existing session before creating new one | `[foreman] Killed stale tmux session foreman-<taskId>` |
 | Accumulated completed sessions | Many completed tmux sessions consuming resources | `foreman doctor --fix` or `foreman reset` cleans them up | `[foreman] Cleaned up N completed tmux sessions` |
-| Worker crashes inside tmux | Process exits non-zero; tmux session goes to shell or exits | Monitor detects via `has-session` or PID check | `[foreman] Agent foreman-<seedId> process died. Marking as stuck.` |
+| Worker crashes inside tmux | Process exits non-zero; tmux session goes to shell or exits | Monitor detects via `has-session` or PID check | `[foreman] Agent foreman-<taskId> process died. Marking as stuck.` |
 | `FOREMAN_TMUX_DISABLED=true` | Env var check at spawn time | Use detached process spawning | `[foreman] tmux disabled via FOREMAN_TMUX_DISABLED` |
 
 ---
@@ -442,7 +442,7 @@ Behavior changes:
 
 | ID | Test | Location |
 |---|---|---|
-| UT-1 | `tmuxSessionName()` sanitizes seed IDs with special characters | `src/lib/__tests__/tmux.test.ts` |
+| UT-1 | `tmuxSessionName()` sanitizes task IDs with special characters | `src/lib/__tests__/tmux.test.ts` |
 | UT-2 | `isTmuxAvailable()` returns false when tmux not in PATH | `src/lib/__tests__/tmux.test.ts` |
 | UT-3 | `spawnWorkerProcess()` includes `tmux_session` in run record when tmux available | `src/orchestrator/__tests__/dispatcher.test.ts` |
 | UT-4 | `spawnWorkerProcess()` falls back to detached process when tmux unavailable | `src/orchestrator/__tests__/dispatcher.test.ts` |
@@ -502,7 +502,7 @@ Behavior changes:
 | Component | Reuse |
 |---|---|
 | `spawnWorkerProcess()` | Refactor to accept a `SpawnStrategy` interface; `TmuxSpawnStrategy` and `DetachedSpawnStrategy` implementations share config serialization and logging setup |
-| `Monitor.checkAll()` | Existing loop iterates active runs; add tmux health check alongside seed-status check |
+| `Monitor.checkAll()` | Existing loop iterates active runs; add tmux health check alongside task-status check |
 | `ForemanStore` migrations | Follow existing `MIGRATIONS` array pattern for idempotent `ALTER TABLE` |
 | `buildWorkerEnv()` | Reuse as-is; tmux inherits the worker's environment |
 | `NotificationClient` | No changes needed; HTTP notifications work the same inside tmux |
@@ -526,9 +526,9 @@ ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL;
 | RD-4 | Sessions persist indefinitely after agent completion | Users want full access to completed session output for post-mortem review without time pressure. Cleanup is explicit via `foreman reset`, `foreman doctor --fix`, or `foreman attach --kill`. | 30-second grace period; 5-minute grace; immediate kill |
 | RD-5 | Store `tmux_session` in the runs table, not a separate table | One-to-one relationship with runs; adding a column is simpler than a join table. Nullable column ensures backward compatibility. | Separate `tmux_sessions` table; store in progress JSON |
 | RD-6 | Fall back to detached process when tmux unavailable, not error | Foreman should work in CI/CD environments and containers where tmux is not installed. Erroring would break existing workflows. | Require tmux; auto-install tmux; error with instructions |
-| RD-7 | Session naming uses seed ID, not run ID | Seed IDs are stable, human-assigned identifiers. Run IDs are UUIDs. Users think in terms of tasks (seeds), not execution instances (runs). Conflicts resolved by killing stale sessions. | Run ID naming; compound naming (`foreman-<seedId>-<shortRunId>`) |
+| RD-7 | Session naming uses task ID, not run ID | Task IDs are stable, human-assigned identifiers. Run IDs are UUIDs. Users think in terms of tasks (tasks), not execution instances (runs). Conflicts resolved by killing stale sessions. | Run ID naming; compound naming (`foreman-<taskId>-<shortRunId>`) |
 | RD-8 | Follow mode uses `tmux capture-pane` polling, not a log file tail | `capture-pane` shows exactly what the agent's terminal displays, including formatted output. Log files contain structured event logs, not the agent's interactive output. | `tail -f` on log file; tmux pipe-pane to a FIFO; WebSocket streaming |
-| RD-9 | Auto-attach only for single-agent dispatch (`--seed`) | Multi-agent dispatch should enter watch mode (overview of all agents). Single-agent dispatch is the "I want to watch this one task" use case. | Always auto-attach to first agent; never auto-attach; prompt user |
+| RD-9 | Auto-attach only for single-agent dispatch (`--task`) | Multi-agent dispatch should enter watch mode (overview of all agents). Single-agent dispatch is the "I want to watch this one task" use case. | Always auto-attach to first agent; never auto-attach; prompt user |
 | RD-10 | Session cleanup is explicit, not automatic | Sessions persist after agent completion so users can review output at their leisure. `foreman reset` and `foreman doctor --fix` handle bulk cleanup. `foreman attach --kill` handles individual cleanup. | Auto-cleanup via grace period; dispatcher cleanup via polling; external cron |
 
 ---
@@ -539,7 +539,7 @@ ALTER TABLE runs ADD COLUMN tmux_session TEXT DEFAULT NULL;
 |---|---|---|---|
 | tmux not available in user's environment | Medium | Low | Graceful fallback (FR-2); `foreman doctor` check; clear messaging |
 | tmux version incompatibility (<3.0) | Low | Medium | Document minimum version; test on tmux 3.0+; `foreman doctor` checks version |
-| Session name collisions across projects | Low | Low | Seed IDs are unique within a project; cross-project collisions unlikely with short-ID format |
+| Session name collisions across projects | Low | Low | Task IDs are unique within a project; cross-project collisions unlikely with short-ID format |
 | Performance overhead of tmux wrapping | Low | Low | Measured at <200ms; negligible compared to SDK startup time |
 | User confusion: follow vs interactive mode | Low | Low | Interactive is the universal default; follow mode is opt-in via `--follow`. Clear CLI help text. |
 | Accumulated completed sessions consuming resources | Medium | Medium | `foreman doctor --fix`; `foreman reset`; `foreman attach --kill`; monitor zombie detection. `foreman doctor` warns when >10 completed sessions exist. |

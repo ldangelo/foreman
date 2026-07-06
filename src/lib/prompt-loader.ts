@@ -60,8 +60,8 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
  */
 const REQUIRED_PROMPT_MARKERS: Readonly<Record<string, Readonly<Record<string, ReadonlyArray<string>>>>> = {
   default: {
-    developer: ["EXPLORER_REPORT.md", "Implementation Plan"],
-    explorer: ["## Implementation Plan", "Likely Edit Files"],
+    developer: ["EXPLORER_REPORT.md", "Developer Handoff"],
+    explorer: ["## Developer Handoff", "### Edit First"],
   },
 };
 

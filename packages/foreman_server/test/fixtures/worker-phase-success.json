@@ -1,0 +1,43 @@
+{
+  "start": {
+    "run_id": "run-worker-fixture",
+    "worker_id": "worker-1",
+    "adapter": "pi_sdk",
+    "session_id": "session-1",
+    "prompt_path": ".foreman/prompts/developer.md",
+    "tool_names": ["read", "edit"],
+    "artifact_paths": ["docs/reports/worker.md"]
+  },
+  "heartbeat": {
+    "run_id": "run-worker-fixture",
+    "phase_id": "developer",
+    "worker_id": "worker-1",
+    "session_id": "session-1",
+    "attach": { "session_path": "/tmp/session.jsonl" },
+    "pid": 4242,
+    "sequence": 1
+  },
+  "events": [
+    {
+      "run_id": "run-worker-fixture",
+      "phase_id": "developer",
+      "worker_id": "worker-1",
+      "type": "tool_call_finished",
+      "sequence": 2,
+      "tool_call_id": "tool-1",
+      "tool_name": "edit",
+      "status": "ok",
+      "output": { "changed": ["lib/example.ex"] }
+    },
+    {
+      "run_id": "run-worker-fixture",
+      "phase_id": "developer",
+      "worker_id": "worker-1",
+      "type": "phase_completed",
+      "sequence": 3,
+      "exit_code": 0,
+      "artifact_paths": ["docs/reports/worker.md"],
+      "report_paths": ["QA_REPORT.md"]
+    }
+  ]
+}

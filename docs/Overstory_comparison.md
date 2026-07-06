@@ -10,9 +10,9 @@
 
 ## Overview
 
-**Overstory** (`ov` CLI, `@os-eco/overstory-cli`) is a multi-agent orchestration tool by the same author as seeds. It spawns worker agents in isolated git worktrees via tmux, coordinates them through a Postgres mail system, and merges results with tiered conflict resolution. It supports 8 runtimes (Claude, Pi, Gemini, Copilot, Codex, Cursor, Sapling, OpenCode) and is part of the os-eco ecosystem (overstory, seeds, mulch, canopy, sapling).
+**Overstory** (`ov` CLI, `@os-eco/overstory-cli`) is a multi-agent orchestration tool by the same author as tasks. It spawns worker agents in isolated git worktrees via tmux, coordinates them through a Postgres mail system, and merges results with tiered conflict resolution. It supports 8 runtimes (Claude, Pi, Gemini, Copilot, Codex, Cursor, Sapling, OpenCode) and is part of the os-eco ecosystem (overstory, tasks, mulch, canopy, sapling).
 
-**Foreman** is our AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to Claude agents in isolated git worktrees, and merges results back. Built with TypeScript, Claude Agent SDK, and seeds (sd) for task tracking.
+**Foreman** is our AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to Claude agents in isolated git worktrees, and merges results back. Built with TypeScript, Claude Agent SDK, and tasks (sd) for task tracking.
 
 ## Feature Gap Analysis
 
@@ -20,7 +20,7 @@
 |---|---|---|---|
 | **Agent isolation** | Git worktrees + tmux | Git worktrees + detached processes | Minor |
 | **Pipeline phases** | Role-based (9 roles) | TypeScript-orchestrated (4 phases) | Different approach, foreman's is fine |
-| **Task tracking** | Seeds/beads (pluggable) | Seeds (migrated) | Parity |
+| **Task tracking** | Tasks/beads (pluggable) | Tasks (migrated) | Parity |
 | **Inter-agent messaging** | Postgres mail system | Report files only | **Gap** |
 | **Merge system** | FIFO queue + 4-tier conflict resolution | Basic merge + theirs strategy | **Gap** |
 | **Health monitoring** | 3-tier watchdog + `ov doctor` | Basic monitor + stuck detection | **Gap** |
@@ -89,12 +89,12 @@ Orchestrator (multi-repo coordinator of coordinators)
 | Tool | CLI | Purpose |
 |------|-----|---------|
 | **Mulch** | `ml` | Structured expertise management (JSONL) |
-| **Seeds** | `sd` | Git-native issue tracking (JSONL) |
+| **Tasks** | `sd` | Git-native issue tracking (JSONL) |
 | **Canopy** | `cn` | Version-controlled prompt management |
 | **Sapling** | `sp` | Headless coding agent (pluggable LLM) |
 | **Overstory** | `ov` | Multi-agent orchestration |
 
-## Seed Tasks Created
+## Task Tasks Created
 
 ### P1 — High Impact
 | ID | Feature | Rationale |

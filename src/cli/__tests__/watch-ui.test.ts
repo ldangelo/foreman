@@ -26,7 +26,7 @@ function makeRun(overrides?: Partial<Run>): Run {
   return {
     id: "run-001",
     project_id: "proj-1",
-    seed_id: "foreman-1a",
+    task_id: "foreman-1a",
     agent_type: "claude-sonnet-4-6",
     session_key: null,
     worktree_path: null,
@@ -121,8 +121,8 @@ describe("shortPath", () => {
 // ── renderAgentCard() ─────────────────────────────────────────────────────
 
 describe("renderAgentCard", () => {
-  it("includes seed_id in output", () => {
-    const run = makeRun({ seed_id: "foreman-42a" });
+  it("includes task_id in output", () => {
+    const run = makeRun({ task_id: "foreman-42a" });
     const output = renderAgentCard(run, null);
     expect(output).toContain("foreman-42a");
   });
@@ -239,8 +239,8 @@ describe("renderAgentCard", () => {
 // ── renderAgentCardSummary() ────────────────────────────────────────────────
 
 describe("renderAgentCardSummary", () => {
-  it("includes seed_id in output", () => {
-    const run = makeRun({ seed_id: "foreman-summary-test" });
+  it("includes task_id in output", () => {
+    const run = makeRun({ task_id: "foreman-summary-test" });
     const output = renderAgentCardSummary(run, null);
     expect(output).toContain("foreman-summary-test");
   });
@@ -414,9 +414,9 @@ describe("poll", () => {
   });
 
   it("counts completedCount correctly", async () => {
-    const run1 = makeRun({ id: "r1", seed_id: "foreman-1", status: "completed" });
-    const run2 = makeRun({ id: "r2", seed_id: "foreman-2", status: "completed" });
-    const run3 = makeRun({ id: "r3", seed_id: "foreman-3", status: "failed" });
+    const run1 = makeRun({ id: "r1", task_id: "foreman-1", status: "completed" });
+    const run2 = makeRun({ id: "r2", task_id: "foreman-2", status: "completed" });
+    const run3 = makeRun({ id: "r3", task_id: "foreman-3", status: "failed" });
     const store = makeMockStore({ r1: run1, r2: run2, r3: run3 });
     const state = await poll(store as any, ["r1", "r2", "r3"]);
     expect(state.completedCount).toBe(2);
@@ -425,39 +425,39 @@ describe("poll", () => {
   });
 
   it("counts failedCount including test-failed", async () => {
-    const run1 = makeRun({ id: "r1", seed_id: "foreman-1", status: "failed" });
-    const run2 = makeRun({ id: "r2", seed_id: "foreman-2", status: "test-failed" });
+    const run1 = makeRun({ id: "r1", task_id: "foreman-1", status: "failed" });
+    const run2 = makeRun({ id: "r2", task_id: "foreman-2", status: "test-failed" });
     const store = makeMockStore({ r1: run1, r2: run2 });
     const state = await poll(store as any, ["r1", "r2"]);
     expect(state.failedCount).toBe(2);
   });
 
   it("counts stuckCount correctly", async () => {
-    const run1 = makeRun({ id: "r1", seed_id: "foreman-1", status: "stuck" });
-    const run2 = makeRun({ id: "r2", seed_id: "foreman-2", status: "completed" });
+    const run1 = makeRun({ id: "r1", task_id: "foreman-1", status: "stuck" });
+    const run2 = makeRun({ id: "r2", task_id: "foreman-2", status: "completed" });
     const store = makeMockStore({ r1: run1, r2: run2 });
     const state = await poll(store as any, ["r1", "r2"]);
     expect(state.stuckCount).toBe(1);
   });
 
-  it("dedupes completion counts by latest run per seed", async () => {
+  it("dedupes completion counts by latest run per task", async () => {
     const olderFailed = makeRun({
       id: "r1",
-      seed_id: "foreman-same",
+      task_id: "foreman-same",
       status: "failed",
       created_at: "2026-04-30T10:00:00.000Z",
       completed_at: "2026-04-30T10:05:00.000Z",
     });
     const newerMergedState = makeRun({
       id: "r2",
-      seed_id: "foreman-same",
+      task_id: "foreman-same",
       status: "completed",
       created_at: "2026-04-30T10:10:00.000Z",
       completed_at: "2026-04-30T10:15:00.000Z",
     });
     const unrelatedStuck = makeRun({
       id: "r3",
-      seed_id: "foreman-other",
+      task_id: "foreman-other",
       status: "stuck",
       created_at: "2026-04-30T10:20:00.000Z",
       completed_at: "2026-04-30T10:25:00.000Z",
@@ -601,8 +601,8 @@ describe("renderWatchDisplay", () => {
   });
 
   it("renders multiple agent cards", () => {
-    const run1 = makeRun({ id: "r1", seed_id: "foreman-1a", status: "completed" });
-    const run2 = makeRun({ id: "r2", seed_id: "foreman-2b", status: "running" });
+    const run1 = makeRun({ id: "r1", task_id: "foreman-1a", status: "completed" });
+    const run2 = makeRun({ id: "r2", task_id: "foreman-2b", status: "running" });
     const state = makeState({
       runs: [
         { run: run1, progress: null },
@@ -687,8 +687,8 @@ describe("renderWatchDisplay with expandedRunIds", () => {
   });
 
   it("shows '1-9 toggle agent' hint only for multiple agents", () => {
-    const run1 = makeRun({ id: "r1", seed_id: "foreman-1a", status: "running" });
-    const run2 = makeRun({ id: "r2", seed_id: "foreman-2b", status: "running" });
+    const run1 = makeRun({ id: "r1", task_id: "foreman-1a", status: "running" });
+    const run2 = makeRun({ id: "r2", task_id: "foreman-2b", status: "running" });
     const multiState = makeState({
       runs: [
         { run: run1, progress: makeProgress() },
@@ -708,8 +708,8 @@ describe("renderWatchDisplay with expandedRunIds", () => {
   });
 
   it("renders multiple agents with mixed expand state", () => {
-    const run1 = makeRun({ id: "r1", seed_id: "foreman-1a", status: "running" });
-    const run2 = makeRun({ id: "r2", seed_id: "foreman-2b", status: "running" });
+    const run1 = makeRun({ id: "r1", task_id: "foreman-1a", status: "running" });
+    const run2 = makeRun({ id: "r2", task_id: "foreman-2b", status: "running" });
     const state = makeState({
       runs: [
         { run: run1, progress: makeProgress() },
@@ -735,8 +735,8 @@ describe("renderWatchDisplay with expandedRunIds", () => {
   });
 
   it("shows agent index numbers for multiple agents", () => {
-    const run1 = makeRun({ id: "r1", seed_id: "foreman-1a", status: "running" });
-    const run2 = makeRun({ id: "r2", seed_id: "foreman-2b", status: "running" });
+    const run1 = makeRun({ id: "r1", task_id: "foreman-1a", status: "running" });
+    const run2 = makeRun({ id: "r2", task_id: "foreman-2b", status: "running" });
     const state = makeState({
       runs: [
         { run: run1, progress: null },

@@ -2,10 +2,12 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
@@ -14,8 +16,9 @@ import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../../lib/project-registry.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
 import { installBundledWorkflows, BUNDLED_WORKFLOW_NAMES } from "../../lib/workflow-loader.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { DatabaseConfigError, DatabaseError } from "../../lib/db/pool-manager.js";
-import { ensureCliPostgresPool } from "./project-task-support.js";
+import { ensureCliPostgresPool, registerProjectInElixir } from "./project-task-support.js";
 import { encrypt } from "../../lib/encryption.js";
 
 type Awaitable<T> = T | Promise<T>;
@@ -36,10 +39,10 @@ interface InitProjectStore {
  * Options bag for initBackend — injectable for testing.
  */
 export interface InitBackendOpts {
-  /** Directory containing the project (.seeds / .beads live here). */
+  /** Directory containing the project. */
   projectDir: string;
-  /** The issue tracker selected in the wizard (beads/jira/github). */
-  issueTracker: "beads" | "jira" | "github";
+  /** The issue tracker selected in the wizard (jira/github). */
+  issueTracker: "jira" | "github";
   execSync?: typeof execFileSync;
   checkExists?: (path: string) => boolean;
 }
@@ -47,49 +50,46 @@ export interface InitBackendOpts {
 /**
  * Initialize the task-tracking backend for the given project directory.
  *
- * TRD-024: Native Postgres task store is the only supported backend.
- * Foreman no longer uses beads (br) for task tracking — it writes directly
- * to the native Postgres store. The .beads/ directory is initialized here for
- * backwards compatibility (operators may still use br directly outside foreman).
- *
- * br init is only run when the user selected "beads" as their issue tracker.
- * For jira/github, beads is not used and initialization is skipped.
+ * Task tracking is owned by the Elixir backend. No file-backed issue tracker
+ * workspace is created.
  *
  * Exported for unit testing.
  */
 export async function initBackend(opts: InitBackendOpts): Promise<void> {
-  const { projectDir, issueTracker, execSync = execFileSync, checkExists = existsSync } = opts;
-
-  // Initialize .beads/ for backwards compatibility only when beads is the issue tracker
-  // For jira/github, foreman writes directly to Postgres — no beads needed
-  if (issueTracker !== "beads") {
-    console.log(chalk.dim(`Skipping beads init (${issueTracker} tracker selected)`));
-    return;
-  }
-
-  const brPath = join(homedir(), ".local", "bin", "br");
-
-  if (!checkExists(join(projectDir, ".beads"))) {
-    const spinner = ora("Initializing beads workspace...").start();
-    try {
-      execSync(brPath, ["init"], { stdio: "pipe" });
-      spinner.succeed("Beads workspace initialized");
-    } catch (e) {
-      spinner.fail("Failed to initialize beads workspace");
-      console.error(
-        chalk.red(e instanceof Error ? e.message : String(e)),
-      );
-      process.exit(1);
-    }
-  } else {
-    console.log(chalk.dim("Beads workspace already exists, skipping init"));
-  }
+  void opts;
+  console.log(chalk.dim("Task tracking uses the Elixir backend; no local issue tracker workspace created."));
 }
 
 // ── Store init logic ──────────────────────────────────────────────────────
 
+export function runPostgresMigrations(
+  projectDir: string,
+  execSync: typeof execFileSync = execFileSync,
+): void {
+  const dotEnvPath = join(projectDir, ".env");
+  const databaseUrl = existsSync(dotEnvPath)
+    ? readFileSync(dotEnvPath, "utf8").match(/^\s*DATABASE_URL=(.+)\s*$/m)?.[1]?.trim().replace(/^[\'"]|[\'"]$/g, "")
+    : undefined;
+  const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../lib/db/migrations");
+  const require = createRequire(import.meta.url);
+  const nodePgMigrateBin = require.resolve("node-pg-migrate/bin/node-pg-migrate");
+  const args = [nodePgMigrateBin, "-m", migrationsDir, "up"];
+
+  if (readdirSync(migrationsDir).some((file) => file.endsWith(".ts"))) {
+    args.push("--tsx");
+  }
+
+  execSync(process.execPath, args, {
+    stdio: "pipe",
+    env: {
+      ...process.env,
+      ...(databaseUrl ? { DATABASE_URL: databaseUrl } : {}),
+    },
+  });
+}
+
 /**
- * Register project and seed default sentinel config if not already present.
+ * Register project and task default sentinel config if not already present.
  * Exported for unit testing.
  */
 export async function initProjectStore(
@@ -108,7 +108,7 @@ export async function initProjectStore(
     projectId = project.id;
   }
 
-  // Seed default sentinel config only on first init
+  // Task default sentinel config only on first init
   if (!(await store.getSentinelConfig(projectId))) {
     await store.upsertSentinelConfig(projectId, {
       branch: "main",
@@ -142,7 +142,7 @@ export interface GitHubWizardConfig {
 export interface InitWizardAnswers {
   vcsBackend: "git" | "jujutsu" | "auto";
   workflowTemplate: string;
-  issueTracker: "beads" | "jira" | "github";
+  issueTracker: "jira" | "github";
   jira?: JiraWizardConfig;
   github?: GitHubWizardConfig;
 }
@@ -214,7 +214,7 @@ async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
     const workflowChoices = [...BUNDLED_WORKFLOW_NAMES] as const;
     const workflowTemplate = await promptChoice(rl, "Workflow template", workflowChoices, "default");
 
-    const issueTracker = await promptChoice(rl, "Issue tracker", ["beads", "jira", "github"] as const, "beads");
+    const issueTracker = await promptChoice(rl, "Issue tracker", ["jira", "github"] as const, "jira");
 
     let jira: JiraWizardConfig | undefined;
     if (issueTracker === "jira") {
@@ -272,8 +272,13 @@ async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
   }
 }
 
+export async function maybeRegisterInitializedProjectInElixir(projectDir: string, projectName: string): Promise<void> {
+  if (foremanBackendMode() !== "elixir") return;
+  await registerProjectInElixir(projectDir, { name: projectName, status: "active" });
+}
+
 export function formatInitDatabaseError(err: unknown, projectDir: string): string {
-  const intro = "Failed to initialize the Postgres-backed project registry.";
+  const intro = "Failed to initialize the Postgres database schema or project registry.";
   const fix = `Set DATABASE_URL in ${join(projectDir, ".env")} or your environment to a full Postgres URL like postgresql://user:password@host:5432/database.`;
 
   if (err instanceof DatabaseConfigError) {
@@ -322,7 +327,7 @@ export const initCommand = new Command("init")
       chalk.bold(`Initializing foreman project: ${chalk.cyan(projectName)}`),
     );
 
-    let issueTracker: "beads" | "jira" | "github" = "beads";
+    let issueTracker: "jira" | "github" = "jira";
 
     if (wizard) {
       const answers = await runInitWizard(projectDir);
@@ -336,13 +341,15 @@ export const initCommand = new Command("init")
       issueTracker = answers.issueTracker;
     }
 
-    // Initialize the task-tracking backend
-    // issueTracker comes from wizard answers (or defaults to "beads" if wizard skipped)
+    // Initialize task tracking (Elixir backend only).
     await initBackend({ projectDir, issueTracker });
 
     let store: PostgresStore | null = null;
     try {
-      // Register project and seed sentinel config
+      // Apply shared Postgres migrations before registry/store access.
+      runPostgresMigrations(projectDir);
+
+      // Register project and task sentinel config
       ensureCliPostgresPool(projectDir);
       const registry = new ProjectRegistry({ pg: new PostgresAdapter() });
       let project = (await registry.list()).find((record) => record.path === projectDir || record.name === projectName);
@@ -361,6 +368,13 @@ export const initCommand = new Command("init")
       process.exit(1);
     } finally {
       store?.close();
+    }
+
+    try {
+      await maybeRegisterInitializedProjectInElixir(projectDir, projectName);
+    } catch (err) {
+      console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+      process.exit(1);
     }
 
     // Install bundled prompt templates to .foreman/prompts/

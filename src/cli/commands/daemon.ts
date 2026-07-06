@@ -1,21 +1,19 @@
 /**
- * `foreman daemon` CLI commands — manage the ForemanDaemon lifecycle.
+ * `foreman daemon` CLI commands — inspect/stop stray legacy daemon processes.
  *
  * Sub-commands:
- *   foreman daemon start     — Start the daemon in the background
- *   foreman daemon stop      — Stop the running daemon
- *   foreman daemon status    — Show daemon status
- *   foreman daemon restart   — Stop then start
+ *   foreman daemon start     — Removed after Elixir cutover
+ *   foreman daemon stop      — Stop a running stray legacy daemon
+ *   foreman daemon status    — Show legacy daemon status
+ *   foreman daemon restart   — Removed after Elixir cutover
  *
  * @module src/cli/commands/daemon
  */
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { existsSync, readFileSync } from "node:fs";
 import {
   DaemonManager,
-  DaemonAlreadyRunningError,
   DaemonNotRunningError,
   type DaemonStatus,
 } from "../../lib/daemon-manager.js";
@@ -40,70 +38,26 @@ function formatStatus(status: DaemonStatus): void {
   console.log();
 }
 
-function readDaemonLogExcerpt(path: string): string | null {
-  if (!existsSync(path)) return null;
-  const content = readFileSync(path, "utf-8").trim();
-  if (!content) return null;
-  return content.split("\n").slice(-5).join("\n");
+function rejectRemovedDaemonStart(): never {
+  console.error(chalk.red("Error: foreman daemon start/restart was removed after the Elixir backend cutover."));
+  console.error(chalk.dim("  Use 'foreman server start' to run the Elixir backend scheduler."));
+  process.exit(1);
 }
 
 // ── foreman daemon start ─────────────────────────────────────────────────────
 
 const startCommand = new Command("start")
-  .description("Start the ForemanDaemon in the background")
-  .option("--socket-path <path>", "Override the Unix socket path")
-  .option("--pid-path <path>", "Override the PID file path")
-  .action(async (opts: { socketPath?: string; pidPath?: string }) => {
-    const mgr = new DaemonManager({
-      socketPath: opts.socketPath,
-      pidPath: opts.pidPath,
-    });
-
-    if (mgr.isRunning()) {
-      const status = mgr.status();
-      console.error(
-        chalk.red("Error: daemon is already running.") +
-          chalk.dim(`\n  PID:     ${status.pid ?? "?"}\n  Socket:  ${status.socketPath}\n`),
-      );
-      process.exit(1);
-    }
-
-    try {
-      mgr.start();
-      // Give the daemon a moment to open its socket before we confirm.
-      await new Promise<void>((resolve) => setTimeout(resolve, 500));
-      if (!mgr.isRunning()) {
-        const stderrExcerpt = readDaemonLogExcerpt(mgr.stderrPath);
-        console.error(
-          chalk.red("Error: daemon exited before startup completed.") +
-            chalk.dim("\n  Check DATABASE_URL / Postgres connectivity and retry.") +
-            (stderrExcerpt
-              ? chalk.dim(`\n  Daemon stderr:\n${stderrExcerpt}`)
-              : "") +
-            chalk.dim("\n  For full startup logs, run: node dist/daemon/index.js\n"),
-        );
-        process.exit(1);
-      }
-      console.log(chalk.green("✓ Daemon started."));
-      console.log(chalk.dim(`  Socket: ${mgr.socketPath}`));
-      console.log();
-    } catch (err: unknown) {
-      if (err instanceof DaemonAlreadyRunningError) {
-        // Race: someone else started it between our check and start().
-        console.error(chalk.red("Error: daemon is already running.") +
-          chalk.dim(`  PID: ${err.pid}`));
-      } else {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(chalk.red(`Error: failed to start daemon: ${message}`));
-      }
-      process.exit(1);
-    }
+  .description("Removed after Elixir cutover; use foreman server start")
+  .option("--socket-path <path>", "Ignored legacy daemon socket path")
+  .option("--pid-path <path>", "Ignored legacy daemon PID path")
+  .action(async (_opts: { socketPath?: string; pidPath?: string }) => {
+    rejectRemovedDaemonStart();
   });
 
 // ── foreman daemon stop ──────────────────────────────────────────────────────
 
 const stopCommand = new Command("stop")
-  .description("Stop the running ForemanDaemon")
+  .description("Stop a running stray legacy ForemanDaemon")
   .option("--socket-path <path>", "Override the Unix socket path")
   .option("--pid-path <path>", "Override the PID file path")
   .action(async (opts: { socketPath?: string; pidPath?: string }) => {
@@ -169,45 +123,18 @@ const statusCommand = new Command("status")
 // ── foreman daemon restart ────────────────────────────────────────────────────
 
 const restartCommand = new Command("restart")
-  .description("Stop the daemon if running, then start it again")
-  .option("--socket-path <path>", "Override the Unix socket path")
-  .option("--pid-path <path>", "Override the PID file path")
-  .action(async (opts: { socketPath?: string; pidPath?: string }) => {
-    const mgr = new DaemonManager({
-      socketPath: opts.socketPath,
-      pidPath: opts.pidPath,
-    });
-
-    // Stop if running.
-    if (mgr.isRunning()) {
-      try {
-        mgr.stop();
-        console.log(chalk.green("✓ Daemon stopped."));
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(chalk.red(`Warning: stop failed: ${message}`));
-        // Continue to start anyway.
-      }
-    }
-
-    // Start.
-    try {
-      mgr.start();
-      await new Promise<void>((resolve) => setTimeout(resolve, 500));
-      console.log(chalk.green("✓ Daemon started."));
-      console.log(chalk.dim(`  Socket: ${mgr.socketPath}`));
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`Error: failed to start daemon: ${message}`));
-      process.exit(1);
-    }
+  .description("Removed after Elixir cutover; use foreman server start")
+  .option("--socket-path <path>", "Ignored legacy daemon socket path")
+  .option("--pid-path <path>", "Ignored legacy daemon PID path")
+  .action(async (_opts: { socketPath?: string; pidPath?: string }) => {
+    rejectRemovedDaemonStart();
   });
 
 // ── Parent command ───────────────────────────────────────────────────────────
 
 export const daemonCommand = new Command("daemon")
   .description(
-    "Manage the ForemanDaemon process lifecycle (start/stop/status/restart)",
+    "Inspect or stop a legacy ForemanDaemon; start/restart are removed after Elixir cutover",
   )
   .addCommand(startCommand)
   .addCommand(stopCommand)

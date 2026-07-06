@@ -97,11 +97,11 @@ The `WorkflowRunner` manages internally:
 ```typescript
 async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig, store, logFile } = ctx;
-  const { seedId } = config;
+  const { taskId } = config;
 
   const progress: RunProgress = { /* ... */ };
   const phaseNames = workflowConfig.phases.map((p) => p.name).join(" → ");
-  ctx.log(`Pipeline starting for ${seedId} [workflow: ${workflowConfig.name}]`);
+  ctx.log(`Pipeline starting for ${taskId} [workflow: ${workflowConfig.name}]`);
   ctx.log(`[PIPELINE] Phase sequence: ${phaseNames}`);
   await appendFile(logFile, `\n[foreman-worker] Pipeline orchestration starting\n[PIPELINE] Phase sequence: ${phaseNames}\n`);
 
@@ -111,7 +111,7 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
   ctx.heartbeatManager = config.vcsBackend
     ? createHeartbeatManager(heartbeatConfig, store, config.projectId, config.runId, config.vcsBackend, worktreePath, ctx.observabilityWriter) ?? undefined
     : undefined;
-  ctx.heartbeatManager?.setSeedId(seedId);
+  ctx.heartbeatManager?.setTaskId(taskId);
   ctx.activityPhases = [];
 
   // Create WorkflowRunner with minimal context

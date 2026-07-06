@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const LEGACY_TIMESTAMP_WARNING = /^Can't determine timestamp for 0000000000000\d-/;
+const LEGACY_TIMESTAMP_WARNING = /^Can't determine timestamp for /;
 
 if (!process.env.DATABASE_URL) {
   const dotEnvPath = join(process.cwd(), ".env");

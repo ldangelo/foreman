@@ -55,7 +55,7 @@ export interface ToolExecutionEndEvent {
 export interface ExtensionContext {
   phase: string;
   runId: string;
-  seedId: string;
+  taskId: string;
   getContextUsage(): ContextUsage;
   log(message: string): void;
 }

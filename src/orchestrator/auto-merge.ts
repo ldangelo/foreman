@@ -18,7 +18,7 @@ import type { VcsBackend } from "../lib/vcs/interface.js";
 import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { PostgresMergeQueue } from "./postgres-merge-queue.js";
 import { Refinery } from "./refinery.js";
-import { mapRunStatusToSeedStatus, mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
+import { mapRunStatusToTaskStatus, mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
 import { enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
 
 type Awaitable<T> = T | Promise<T>;
@@ -61,7 +61,7 @@ function sendMail(
  * Immediately sync a task's status in the native task store after a merge outcome.
  *
  * Fetches the latest run status from Postgres, maps it to the expected task
- * status via mapRunStatusToSeedStatus(), and updates the native task store.
+ * status via mapRunStatusToTaskStatus(), and updates the native task store.
  *
  * When `failureReason` is provided (non-empty), logs it (native task store
  * does not have a notes field for failure context).
@@ -72,7 +72,7 @@ export async function syncBeadStatusAfterMerge(
   store: ForemanStore,
   taskClient: ITaskClient,
   runId: string,
-  seedId: string,
+  taskId: string,
   projectPath: string,
   failureReason?: string,
   readLookup: Pick<AutoMergeReadLookup, "getRun"> = store,
@@ -81,7 +81,7 @@ export async function syncBeadStatusAfterMerge(
   if (!run) return;
 
   const expectedStatus = mapRunStatusToNativeTaskStatus(run.status);
-  const existingTask = await Promise.resolve(store.getTaskById?.(seedId));
+  const existingTask = await Promise.resolve(store.getTaskById?.(taskId));
   if (expectedStatus === "review" && (existingTask?.status === "closed" || existingTask?.status === "merged")) {
     return;
   }
@@ -89,10 +89,10 @@ export async function syncBeadStatusAfterMerge(
   // Update the task status directly in the native task store.
   // Multiple agent workers can trigger autoMerge concurrently — the native
   // task store uses Postgres MVCC for safe concurrent writes.
-  await Promise.resolve(store.updateTaskStatus(seedId, expectedStatus));
+  await Promise.resolve(store.updateTaskStatus(taskId, expectedStatus));
 
   if (failureReason) {
-    enqueueAddNotesToBead(store, seedId, failureReason, "auto-merge");
+    enqueueAddNotesToBead(store, taskId, failureReason, "auto-merge");
   }
 }
 
@@ -143,16 +143,16 @@ export interface AutoMergeResult {
 }
 
 interface MergeQueueLike {
-  reconcile(repoPath: string): Promise<{ enqueued: number; skipped: number; invalidBranch: number; failedToEnqueue: Array<{ run_id: string; seed_id: string; reason: string }> }>;
+  reconcile(repoPath: string): Promise<{ enqueued: number; skipped: number; invalidBranch: number; failedToEnqueue: Array<{ run_id: string; task_id: string; reason: string }> }>;
   dequeue(): Promise<{
     id: number;
     branch_name: string;
-    seed_id: string;
+    task_id: string;
     run_id: string;
     operation?: "auto_merge" | "create_pr";
   } | null>;
   updateStatus(id: number, status: "pending" | "merging" | "merged" | "conflict" | "failed", extra?: { resolvedTier?: number; error?: string; completedAt?: string; lastAttemptedAt?: string; retryCount?: number }): Promise<void>;
-  getRetryableEntries(): Promise<Array<{ id: number; seed_id: string; retry_count: number }>>;
+  getRetryableEntries(): Promise<Array<{ id: number; task_id: string; retry_count: number }>>;
   reEnqueue(id: number): Promise<boolean>;
 }
 
@@ -272,13 +272,13 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
           store,
           taskClient,
           currentEntry.run_id,
-          currentEntry.seed_id,
+          currentEntry.task_id,
           projectPath,
           `PR created for manual review.\nPR URL: ${pr.prUrl}`,
           readLookup,
         );
         sendMail(store, currentEntry.run_id, "merge-conflict", {
-          seedId: currentEntry.seed_id,
+          taskId: currentEntry.task_id,
           branchName: pr.branchName,
           prUrl: pr.prUrl,
           prCreated: true,
@@ -314,7 +314,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
             targetBranch,
             runTests: false,
             projectId,
-            seedId: currentEntry.seed_id,
+            taskId: currentEntry.task_id,
             runId: effectiveRunId,
             ...(injectedRunMatchesEntry && overrideRun?.id === currentEntry.run_id ? { overrideRun } : {}),
         });
@@ -329,7 +329,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         // Send merge-complete mail for each successfully merged run
         for (const mergedRun of report.merged) {
           sendMail(store, currentEntry.run_id, "merge-complete", {
-            seedId: mergedRun.seedId,
+            taskId: mergedRun.taskId,
             branchName: mergedRun.branchName,
             targetBranch,
           });
@@ -343,12 +343,12 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         // Build failure reason for the bead note
         if (report.conflicts.length > 0) {
           const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
-          mergeFailureReason = `Merge conflict detected in branch foreman/${currentEntry.seed_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
+          mergeFailureReason = `Merge conflict detected in branch foreman/${currentEntry.task_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
         }
         // Send merge-conflict mail for each conflicted run
         for (const conflictRun of report.conflicts) {
           sendMail(store, currentEntry.run_id, "merge-conflict", {
-            seedId: conflictRun.seedId,
+            taskId: conflictRun.taskId,
             branchName: conflictRun.branchName,
             conflictFiles: conflictRun.conflictFiles,
             prCreated: false,
@@ -356,7 +356,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         }
         for (const pr of report.prsCreated) {
           sendMail(store, currentEntry.run_id, "merge-conflict", {
-            seedId: pr.seedId,
+            taskId: pr.taskId,
             branchName: pr.branchName,
             prUrl: pr.prUrl,
             prCreated: true,
@@ -369,20 +369,20 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
 
         // Count repeated post-merge test failures for diagnostics. Retries are
         // now explicit/human-driven rather than automatic reopen-to-open.
-        const testFailedRunsForSeed = (await Promise.resolve(readLookup.getRunsByStatuses(["test-failed"], projectId)))
-          .filter((r: { seed_id: string }) => r.seed_id === currentEntry.seed_id);
-        const totalTestFailCount = testFailedRunsForSeed.length;
+        const testFailedRunsForTask = (await Promise.resolve(readLookup.getRunsByStatuses(["test-failed"], projectId)))
+          .filter((r: { task_id: string }) => r.task_id === currentEntry.task_id);
+        const totalTestFailCount = testFailedRunsForTask.length;
 
         if (totalTestFailCount >= RETRY_CONFIG.maxRetries) {
           // Retry limit exhausted — permanently mark the bead as failed.
-          enqueueMarkBeadFailed(store, currentEntry.seed_id, "auto-merge");
+          enqueueMarkBeadFailed(store, currentEntry.task_id, "auto-merge");
           mergeFailureReason = [
             `Post-merge tests failed ${totalTestFailCount} time(s) — retry limit (${RETRY_CONFIG.maxRetries}) exhausted.`,
             `Pre-existing failures on the dev branch may be causing false positives.`,
-            `Manual investigation required. Use 'foreman retry ${currentEntry.seed_id}' after fixing dev-branch failures.`,
+            `Manual investigation required. Use 'foreman retry ${currentEntry.task_id}' after fixing dev-branch failures.`,
           ].join(" ");
           console.error(
-            `[auto-merge] Seed ${currentEntry.seed_id} permanently failed after ${totalTestFailCount}` +
+            `[auto-merge] Task ${currentEntry.task_id} permanently failed after ${totalTestFailCount}` +
             ` test-failed attempts (limit: ${RETRY_CONFIG.maxRetries}). Preventing infinite re-dispatch.`,
           );
         } else {
@@ -399,7 +399,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         // Send merge-failed mail for each test failure
         for (const failedRun of report.testFailures) {
           sendMail(store, currentEntry.run_id, "merge-failed", {
-            seedId: failedRun.seedId,
+            taskId: failedRun.taskId,
             branchName: failedRun.branchName,
             reason: "test-failure",
             error: failedRun.error?.slice(0, 400),
@@ -418,11 +418,11 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         await mq.updateStatus(currentEntry.id, "failed", { error: "No completed run found" });
         failedCount++;
         if (target && currentEntry.run_id === target.runId) target.failed += 1;
-        mergeFailureReason = `Merge failed: no mergeable run found for seed ${currentEntry.seed_id}. The run may have been deleted or not yet finalized.`;
+        mergeFailureReason = `Merge failed: no mergeable run found for task ${currentEntry.task_id}. The run may have been deleted or not yet finalized.`;
 
         // Send merge-failed mail when no completed run was found in the queue
         sendMail(store, currentEntry.run_id, "merge-failed", {
-          seedId: currentEntry.seed_id,
+          taskId: currentEntry.task_id,
           reason: "no-completed-run",
         });
       }
@@ -434,7 +434,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       if (target && currentEntry.run_id === target.runId) target.failed += 1;
 
       sendMail(store, currentEntry.run_id, 'merge-failed', {
-        seedId: currentEntry.seed_id,
+        taskId: currentEntry.task_id,
         reason: 'unexpected-error',
         error: message.slice(0, 400),
       });
@@ -446,7 +446,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         store,
         taskClient,
         currentEntry.run_id,
-        currentEntry.seed_id,
+        currentEntry.task_id,
         projectPath,
         mergeFailureReason,
         readLookup,
@@ -457,7 +457,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
       // bead shows OPEN in br but "closed" in pipeline mail (Fix 2).
       if (mergeSucceeded) {
         sendMail(store, currentEntry.run_id, "bead-closed", {
-          seedId: currentEntry.seed_id,
+          taskId: currentEntry.task_id,
         });
       }
     }

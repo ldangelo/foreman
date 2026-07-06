@@ -36,10 +36,10 @@ interface PurgeZombieStore {
  */
 async function isBeadClosedOrGone(
   beadsClient: Pick<ITaskClient, "show">,
-  seedId: string,
+  taskId: string,
 ): Promise<boolean> {
   try {
-    const bead = await beadsClient.show(seedId);
+    const bead = await beadsClient.show(taskId);
     return bead.status === "closed" || bead.status === "completed";
   } catch (err: unknown) {
     const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
@@ -95,11 +95,11 @@ export async function purgeZombieRunsAction(
   for (const run of failedRuns) {
     let shouldPurge: boolean;
     try {
-      shouldPurge = await isBeadClosedOrGone(beadsClient, run.seed_id);
+      shouldPurge = await isBeadClosedOrGone(beadsClient, run.task_id);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(
-        chalk.yellow(`  warn  run ${run.id} (bead ${run.seed_id}): ${msg} — skipping`),
+        chalk.yellow(`  warn  run ${run.id} (bead ${run.task_id}): ${msg} — skipping`),
       );
       result.errors += 1;
       continue;
@@ -107,7 +107,7 @@ export async function purgeZombieRunsAction(
 
     if (!shouldPurge) {
       console.log(
-        chalk.dim(`  skip  run ${run.id} — bead ${run.seed_id} is still open`),
+        chalk.dim(`  skip  run ${run.id} — bead ${run.task_id} is still open`),
       );
       result.skipped += 1;
       continue;
@@ -115,13 +115,13 @@ export async function purgeZombieRunsAction(
 
     if (dryRun) {
       console.log(
-        chalk.cyan(`  would purge  run ${run.id} — bead ${run.seed_id} is closed/gone`),
+        chalk.cyan(`  would purge  run ${run.id} — bead ${run.task_id} is closed/gone`),
       );
       result.purged += 1;
     } else {
       await store.deleteRun(run.id);
       console.log(
-        chalk.green(`  purged  run ${run.id} — bead ${run.seed_id} is closed/gone`),
+        chalk.green(`  purged  run ${run.id} — bead ${run.task_id} is closed/gone`),
       );
       result.purged += 1;
     }

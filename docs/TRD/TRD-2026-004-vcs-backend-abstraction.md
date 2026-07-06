@@ -109,7 +109,7 @@ VcsBackend
   +branchExists(repoPath, branchName): Promise<boolean>
   +branchExistsOnRemote(repoPath, branchName): Promise<boolean>
   +deleteBranch(repoPath, branchName, opts?): Promise<DeleteBranchResult>
-  +createWorkspace(repoPath, seedId, baseBranch?, setupSteps?, setupCache?): Promise<WorkspaceResult>
+  +createWorkspace(repoPath, taskId, baseBranch?, setupSteps?, setupCache?): Promise<WorkspaceResult>
   +removeWorkspace(repoPath, workspacePath): Promise<void>
   +listWorkspaces(repoPath): Promise<Workspace[]>
   +stageAll(workspacePath): Promise<void>
@@ -174,9 +174,9 @@ src/lib/git.ts          -- Deprecation shim: re-exports from GitBackend (backwar
    |-- VcsBackendFactory.create({ backend: resolved }, projectPath)
    |     |-- returns VcsBackend instance
    |
-2. Dispatcher.spawnWorkerProcess(seed)
+2. Dispatcher.spawnWorkerProcess(task)
    |-- env.FOREMAN_VCS_BACKEND = vcsBackend.name  // 'git' or 'jujutsu'
-   |-- vcsBackend.createWorkspace(repoPath, seedId, baseBranch, setupSteps, setupCache)
+   |-- vcsBackend.createWorkspace(repoPath, taskId, baseBranch, setupSteps, setupCache)
    |     |-- returns { workspacePath, branchName }
    |
 3. Agent Worker (child process)
@@ -189,7 +189,7 @@ src/lib/git.ts          -- Deprecation shim: re-exports from GitBackend (backwar
    |     |-- vcsBackend.push()
    |
 4. Refinery.processQueue()
-   |-- new Refinery(store, seeds, projectPath, vcsBackend)
+   |-- new Refinery(store, tasks, projectPath, vcsBackend)
    |-- vcsBackend.merge(repoPath, branchName, targetBranch)
    |-- On conflict: ConflictResolver(projectPath, config, vcsBackend)
    |     |-- vcsBackend.getConflictingFiles()
@@ -213,8 +213,8 @@ Note: Explicit config always overrides auto-detection.
 ```
 Current (hardcoded git):
   "git add -A"
-  "git commit -m '{{seedTitle}} ({{seedId}})'"
-  "git push -u origin foreman/{{seedId}}"
+  "git commit -m '{{taskTitle}} ({{taskId}})'"
+  "git push -u origin foreman/{{taskId}}"
 
 After (backend-agnostic):
   "{{vcsStageCommand}}"          -> GitBackend: "git add -A"
@@ -249,7 +249,7 @@ export interface Workspace {
 /** Result of createWorkspace(). */
 export interface WorkspaceResult {
   workspacePath: string;
-  branchName: string;   // 'foreman/<seedId>' for both backends
+  branchName: string;   // 'foreman/<taskId>' for both backends
 }
 
 /** Result of a merge operation. */
@@ -285,8 +285,8 @@ export interface PushOptions {
 
 /** Template variables for finalize command generation. */
 export interface FinalizeTemplateVars {
-  seedId: string;
-  seedTitle: string;
+  taskId: string;
+  taskTitle: string;
   baseBranch: string;
   worktreePath: string;
 }
@@ -516,7 +516,7 @@ Implement `createWorkspace()`, `removeWorkspace()`, `listWorkspaces()` by extrac
 
 **Implementation ACs:**
 - ( ) AC-I-006-1: Given a git repository, when `GitBackend.createWorkspace('bd-abc1')` is called, then a git worktree is created in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/bd-abc1`) on branch `foreman/bd-abc1`.
-- ( ) AC-I-006-2: Given an existing worktree from a failed run, when `createWorkspace()` is called for the same seedId, then the worktree is reused and rebased onto the base branch (matching current retry behavior).
+- ( ) AC-I-006-2: Given an existing worktree from a failed run, when `createWorkspace()` is called for the same taskId, then the worktree is reused and rebased onto the base branch (matching current retry behavior).
 - ( ) AC-I-006-3: Given a worktree with untracked files, when `removeWorkspace()` is called, then the worktree is removed (falling back to `fs.rm` if `git worktree remove --force` fails) and `git worktree prune` is run.
 - ( ) AC-I-006-4: Given multiple worktrees, when `listWorkspaces()` is called, then all worktrees are returned as `Workspace[]` objects with `path`, `branch`, `head`, `bare` fields.
 
@@ -527,7 +527,7 @@ Implement `createWorkspace()`, `removeWorkspace()`, `listWorkspaces()` by extrac
 **File:** `src/lib/vcs/__tests__/git-backend.test.ts`
 **Estimate:** 3h
 
-- ( ) AC-T-006-1: Given a temp git repo, when `createWorkspace(repo, 'test-seed')`, then a worktree exists in Foreman's workspace root for that repo on branch `foreman/test-seed`.
+- ( ) AC-T-006-1: Given a temp git repo, when `createWorkspace(repo, 'test-task')`, then a worktree exists in Foreman's workspace root for that repo on branch `foreman/test-task`.
 - ( ) AC-T-006-2: Given a worktree already exists, when `createWorkspace()` is called again, then no error is thrown and the workspace is reused.
 - ( ) AC-T-006-3: Given a created worktree, when `removeWorkspace()` is called, then the directory no longer exists and `listWorkspaces()` does not include it.
 
@@ -626,7 +626,7 @@ Implement `getFinalizeCommands()` returning git-specific commands parameterized 
 **Validates PRD ACs:** AC-006-1, AC-006-2, AC-006-3, AC-006-4
 
 **Implementation ACs:**
-- ( ) AC-I-010-1: Given vars `{seedId:'bd-abc1', seedTitle:'Add login', baseBranch:'main'}`, when `getFinalizeCommands()` is called, then `stageCommand === 'git add -A'`.
+- ( ) AC-I-010-1: Given vars `{taskId:'bd-abc1', taskTitle:'Add login', baseBranch:'main'}`, when `getFinalizeCommands()` is called, then `stageCommand === 'git add -A'`.
 - ( ) AC-I-010-2: Given the same vars, then `commitCommand === 'git commit -m "Add login (bd-abc1)"'`.
 - ( ) AC-I-010-3: Given the same vars, then `pushCommand === 'git push -u origin foreman/bd-abc1'`.
 - ( ) AC-I-010-4: Given the same vars, then `rebaseCommand === 'git fetch origin && git rebase origin/main'`.
@@ -639,7 +639,7 @@ Implement `getFinalizeCommands()` returning git-specific commands parameterized 
 **Estimate:** 1h
 
 - ( ) AC-T-010-1: Given finalize vars, when `getFinalizeCommands()` returns, then all 6 command fields are non-null strings.
-- ( ) AC-T-010-2: Given finalize vars with `seedId='test-123'`, then `pushCommand` contains `'foreman/test-123'`.
+- ( ) AC-T-010-2: Given finalize vars with `taskId='test-123'`, then `pushCommand` contains `'foreman/test-123'`.
 - ( ) AC-T-010-3: Given finalize vars with `baseBranch='dev'`, then `rebaseCommand` contains `'origin/dev'`.
 
 ---
@@ -698,7 +698,7 @@ Refactor `Refinery` to accept a `VcsBackend` instance in its constructor. Replac
 **File:** `src/orchestrator/__tests__/refinery-vcs.test.ts`
 **Estimate:** 4h
 
-- ( ) AC-T-012-1: Given a mock `VcsBackend`, when `Refinery.processQueue()` runs a clean merge, then `VcsBackend.merge()` is called and the seed is closed.
+- ( ) AC-T-012-1: Given a mock `VcsBackend`, when `Refinery.processQueue()` runs a clean merge, then `VcsBackend.merge()` is called and the task is closed.
 - ( ) AC-T-012-2: Given a mock `VcsBackend.merge()` returning conflicts, when refinery processes, then the conflict resolution cascade is triggered.
 - ( ) AC-T-012-3: Grep `refinery.ts` for `execFileAsync("git"` -- zero matches.
 
@@ -854,7 +854,7 @@ Tests use `describe.skipIf(!jjAvailable)` to skip when jj is not installed.
 **Estimate:** 5h
 **Depends:** TRD-017
 
-Implement `createWorkspace()` (`jj workspace add <path> --name foreman-<seedId>` + `jj bookmark create foreman/<seedId> -r @`), `removeWorkspace()` (`jj workspace forget`), `listWorkspaces()` (`jj workspace list`).
+Implement `createWorkspace()` (`jj workspace add <path> --name foreman-<taskId>` + `jj bookmark create foreman/<taskId> -r @`), `removeWorkspace()` (`jj workspace forget`), `listWorkspaces()` (`jj workspace list`).
 
 **Validates PRD ACs:** AC-009-1, AC-009-2, AC-009-3, AC-009-4, AC-009-5
 
@@ -872,7 +872,7 @@ Implement `createWorkspace()` (`jj workspace add <path> --name foreman-<seedId>`
 **File:** `src/lib/vcs/__tests__/jujutsu-backend.test.ts`
 **Estimate:** 3h
 
-- ( ) AC-T-018-1: Given a temp jj repo, when `createWorkspace(repo, 'test-seed')`, then a workspace directory exists and a bookmark `foreman/test-seed` is created.
+- ( ) AC-T-018-1: Given a temp jj repo, when `createWorkspace(repo, 'test-task')`, then a workspace directory exists and a bookmark `foreman/test-task` is created.
 - ( ) AC-T-018-2: Given a workspace, when `removeWorkspace()` is called, then the directory is removed and `listWorkspaces()` no longer includes it.
 - ( ) AC-T-018-3: Given a workspace already exists, when `createWorkspace()` is called again, then no error is thrown.
 
@@ -1001,7 +1001,7 @@ Implement `getFinalizeCommands()` returning jj-specific commands.
 
 **Implementation ACs:**
 - ( ) AC-I-023-1: Given finalize vars, when `getFinalizeCommands()` is called, then `stageCommand === ''` (jj auto-stages).
-- ( ) AC-I-023-2: Given vars `{seedId:'bd-abc1', seedTitle:'Add login'}`, then `commitCommand === 'jj describe -m "Add login (bd-abc1)" && jj new'`.
+- ( ) AC-I-023-2: Given vars `{taskId:'bd-abc1', taskTitle:'Add login'}`, then `commitCommand === 'jj describe -m "Add login (bd-abc1)" && jj new'`.
 - ( ) AC-I-023-3: Given the same vars, then `pushCommand === 'jj git push --bookmark foreman/bd-abc1 --allow-new'`.
 - ( ) AC-I-023-4: Given `baseBranch:'main'`, then `rebaseCommand === 'jj git fetch && jj rebase -d main@origin'`.
 - ( ) AC-I-023-5: Given vars, then `branchVerifyCommand === 'jj bookmark list --name foreman/bd-abc1'`.
@@ -1014,7 +1014,7 @@ Implement `getFinalizeCommands()` returning jj-specific commands.
 **Estimate:** 1h
 
 - ( ) AC-T-023-1: Given finalize vars, when `getFinalizeCommands()` returns, then `stageCommand` is empty string.
-- ( ) AC-T-023-2: Given vars with `seedId='test-123'`, then `pushCommand` contains `'foreman/test-123'`.
+- ( ) AC-T-023-2: Given vars with `taskId='test-123'`, then `pushCommand` contains `'foreman/test-123'`.
 - ( ) AC-T-023-3: Given vars, then `commitCommand` contains `'jj describe'` and `'jj new'`.
 
 ---
@@ -1234,7 +1234,7 @@ End-to-end integration test running a full pipeline cycle using `JujutsuBackend`
 **Validates PRD ACs:** AC-009-1 through AC-012-3
 
 **Implementation ACs:**
-- ( ) AC-I-031-1: Given a real colocated jj repo, when `createWorkspace('test-seed')` runs, then a workspace directory exists and `foreman/test-seed` bookmark is created.
+- ( ) AC-I-031-1: Given a real colocated jj repo, when `createWorkspace('test-task')` runs, then a workspace directory exists and `foreman/test-task` bookmark is created.
 - ( ) AC-I-031-2: Given a commit via `describe` + `new`, when pushed via `jj git push --bookmark`, then the bookmark exists on the remote.
 - ( ) AC-I-031-3: Given a merge via `jj new <target> <source>`, when no conflicts exist, then `MergeResult.success === true`.
 
@@ -1710,7 +1710,7 @@ Parallelizable with Sprint 2 (TRD-017 through TRD-023 depend only on Phase A).
 
 ### TD-005: jj Workspace Path Convention
 
-**Decision:** jj workspaces use the same Foreman-managed workspace root as git worktrees, defaulting to an external location (`<repoParent>/.foreman-worktrees/<repoName>/<seedId>`) so parent-repo state writes do not dirty active workspaces.
+**Decision:** jj workspaces use the same Foreman-managed workspace root as git worktrees, defaulting to an external location (`<repoParent>/.foreman-worktrees/<repoName>/<taskId>`) so parent-repo state writes do not dirty active workspaces.
 
 **Rationale:** Consistency across backends. The dispatcher, agent-worker, and status commands all reference this path. Using a different convention for jj would require conditional logic throughout the codebase.
 

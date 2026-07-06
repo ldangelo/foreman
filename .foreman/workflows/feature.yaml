@@ -24,7 +24,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 30
+    maxTurns: 12
     artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
     skipIfArtifact: EXPLORER_REPORT.md
     mail:
@@ -37,7 +37,7 @@ phases:
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 120
+    maxTurns: 60
     artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
     mail:
       onStart: true
@@ -92,11 +92,9 @@ phases:
       forwardArtifactTo: foreman
 
   - name: finalize
-    prompt: finalize.md
-    models:
-      default: haiku
-    maxTurns: 60
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
     retryOnFail: 1
@@ -104,7 +102,6 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
-
 onFailure:
   name: troubleshooter
   prompt: troubleshooter.md

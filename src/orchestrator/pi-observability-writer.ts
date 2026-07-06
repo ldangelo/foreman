@@ -37,10 +37,10 @@ function traceBaseName(phase: string): string {
   return `${phase.toUpperCase()}_TRACE`;
 }
 
-export function getPhaseTracePaths(worktreePath: string, seedId: string, phase: string, runId?: string): PhaseTraceWriteResult {
+export function getPhaseTracePaths(worktreePath: string, taskId: string, phase: string, runId?: string): PhaseTraceWriteResult {
   const reportsDir = runId
-    ? getForemanHomePath("reports", "runs", runId, seedId)
-    : join(worktreePath, "docs", "reports", seedId);
+    ? getForemanHomePath("reports", "runs", runId, taskId)
+    : join(worktreePath, "docs", "reports", taskId);
   const base = traceBaseName(phase);
   const relativeJsonPath = join(reportsDir, `${base}.json`);
   const relativeMarkdownPath = join(reportsDir, `${base}.md`);
@@ -54,7 +54,7 @@ export function getPhaseTracePaths(worktreePath: string, seedId: string, phase: 
 
 function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): string {
   const lines: string[] = [
-    `# ${trace.phase.toUpperCase()} Trace — ${trace.seedId}`,
+    `# ${trace.phase.toUpperCase()} Trace — ${trace.taskId}`,
     "",
     `- Run ID: \`${trace.runId}\``,
     `- Phase type: \`${trace.phaseType}\``,
@@ -109,7 +109,7 @@ function renderTraceMarkdown(trace: PhaseTrace, relativeJsonPath: string): strin
 }
 
 export async function writePhaseTrace(trace: PhaseTrace): Promise<PhaseTraceWriteResult> {
-  const paths = getPhaseTracePaths(trace.worktreePath, trace.seedId, trace.phase, trace.runId);
+  const paths = getPhaseTracePaths(trace.worktreePath, trace.taskId, trace.phase, trace.runId);
   const sanitized = sanitizeTrace(trace);
   await mkdir(join(paths.jsonPath, ".."), { recursive: true });
   await writeFile(paths.jsonPath, `${JSON.stringify(sanitized, null, 2)}\n`, "utf-8");

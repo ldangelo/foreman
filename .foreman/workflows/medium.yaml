@@ -56,12 +56,9 @@ phases:
       onFail: developer
 
   - name: finalize
-    prompt: finalize.md
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    maxTurns: 20
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
     retryOnFail: 1

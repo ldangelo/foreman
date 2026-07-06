@@ -35,7 +35,7 @@ vi.mock("../../lib/store.js", () => {
   class MockForemanStore {
     static forProject = vi.fn(() => new MockForemanStore());
     getProjectByPath = vi.fn(() => ({ id: "proj-1", name: "test", path: "/tmp/project", status: "active", created_at: "", updated_at: "" }));
-    getRunsForSeed = vi.fn((): Run[] => []);
+    getRunsForTask = vi.fn((): Run[] => []);
     getRunsByStatus = vi.fn((): Run[] => []);
     close = vi.fn();
   }
@@ -45,7 +45,7 @@ vi.mock("../../lib/store.js", () => {
 vi.mock("../../lib/postgres-store.js", () => {
   class MockPostgresStore {
     static forProject = vi.fn(() => new MockPostgresStore());
-    getRunsForSeed = vi.fn(async () => []);
+    getRunsForTask = vi.fn(async () => []);
     close = vi.fn();
   }
   return { PostgresStore: MockPostgresStore };
@@ -65,8 +65,8 @@ import * as projectTaskSupport from "../commands/project-task-support.js";
 
 function makeWorktree(overrides: Partial<Workspace> = {}): Workspace {
   return {
-    path: "/tmp/project/.foreman-worktrees/seed-abc",
-    branch: "foreman/seed-abc",
+    path: "/tmp/project/.foreman-worktrees/task-abc",
+    branch: "foreman/task-abc",
     head: "abc123",
     bare: false,
     ...overrides,
@@ -77,10 +77,10 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seed-abc",
+    task_id: "task-abc",
     agent_type: "claude-code",
     session_key: null,
-    worktree_path: "/tmp/project/.foreman-worktrees/seed-abc",
+    worktree_path: "/tmp/project/.foreman-worktrees/task-abc",
     status: "completed",
     started_at: new Date(Date.now() - 3600_000).toISOString(),
     completed_at: new Date().toISOString(),
@@ -99,8 +99,8 @@ describe("listForemanWorktrees()", () => {
   it("returns only foreman/* worktrees", async () => {
     const worktrees: Workspace[] = [
       makeWorktree({ path: "/tmp/project", branch: "main" }),
-      makeWorktree({ path: "/tmp/project/.foreman-worktrees/seed-abc", branch: "foreman/seed-abc" }),
-      makeWorktree({ path: "/tmp/project/.foreman-worktrees/seed-def", branch: "foreman/seed-def" }),
+      makeWorktree({ path: "/tmp/project/.foreman-worktrees/task-abc", branch: "foreman/task-abc" }),
+      makeWorktree({ path: "/tmp/project/.foreman-worktrees/task-def", branch: "foreman/task-def" }),
     ];
     mockListWorkspaces.mockResolvedValue(worktrees as never);
 
@@ -108,21 +108,21 @@ describe("listForemanWorktrees()", () => {
     const result = await listForemanWorktrees("/tmp/project", store);
 
     expect(result).toHaveLength(2);
-    expect(result[0].branch).toBe("foreman/seed-abc");
-    expect(result[1].branch).toBe("foreman/seed-def");
+    expect(result[0].branch).toBe("foreman/task-abc");
+    expect(result[1].branch).toBe("foreman/task-def");
   });
 
-  it("includes run status and seed ID in metadata", async () => {
+  it("includes run status and task ID in metadata", async () => {
     mockListWorkspaces.mockResolvedValue([
-      makeWorktree({ branch: "foreman/seed-abc" }),
+      makeWorktree({ branch: "foreman/task-abc" }),
     ] as never);
     const store = new ForemanStore() as any;
     const run = makeRun({ status: "running" });
-    store.getRunsForSeed.mockReturnValue([run]);
+    store.getRunsForTask.mockReturnValue([run]);
 
     const result = await listForemanWorktrees("/tmp/project", store);
 
-    expect(result[0].seedId).toBe("seed-abc");
+    expect(result[0].taskId).toBe("task-abc");
     expect(result[0].runStatus).toBe("running");
   });
 
@@ -137,14 +137,14 @@ describe("listForemanWorktrees()", () => {
 
   it("handles worktrees with no matching run", async () => {
     mockListWorkspaces.mockResolvedValue([
-      makeWorktree({ branch: "foreman/orphan-seed" }),
+      makeWorktree({ branch: "foreman/orphan-task" }),
     ] as never);
     const store = new ForemanStore() as any;
-    store.getRunsForSeed.mockReturnValue([]);
+    store.getRunsForTask.mockReturnValue([]);
 
     const result = await listForemanWorktrees("/tmp/project", store);
 
-    expect(result[0].seedId).toBe("orphan-seed");
+    expect(result[0].taskId).toBe("orphan-task");
     expect(result[0].runStatus).toBeNull();
   });
 });
@@ -159,19 +159,19 @@ describe("cleanWorktrees()", () => {
   it("removes worktrees for completed/merged/failed runs only", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "merged",
         runId: "run-1",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-active",
-        branch: "foreman/seed-active",
+        path: "/tmp/project/.foreman-worktrees/task-active",
+        branch: "foreman/task-active",
         head: "def",
-        seedId: "seed-active",
+        taskId: "task-active",
         runStatus: "running",
         runId: "run-2",
         createdAt: new Date().toISOString(),
@@ -182,25 +182,25 @@ describe("cleanWorktrees()", () => {
 
     expect(result.removed).toBe(1);
     expect(mockRemoveWorkspace).toHaveBeenCalledTimes(1);
-    expect(mockRemoveWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/project/.foreman-worktrees/seed-done");
+    expect(mockRemoveWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/project/.foreman-worktrees/task-done");
   });
 
   it("with --all removes active worktrees too", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "merged",
         runId: "run-1",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-active",
-        branch: "foreman/seed-active",
+        path: "/tmp/project/.foreman-worktrees/task-active",
+        branch: "foreman/task-active",
         head: "def",
-        seedId: "seed-active",
+        taskId: "task-active",
         runStatus: "running",
         runId: "run-2",
         createdAt: new Date().toISOString(),
@@ -216,10 +216,10 @@ describe("cleanWorktrees()", () => {
   it("with --force uses force branch deletion", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "failed",
         runId: "run-1",
         createdAt: new Date().toISOString(),
@@ -230,7 +230,7 @@ describe("cleanWorktrees()", () => {
 
     expect(mockDeleteBranch).toHaveBeenCalledWith(
       "/tmp/project",
-      "foreman/seed-done",
+      "foreman/task-done",
       expect.objectContaining({ force: true }),
     );
   });
@@ -238,19 +238,19 @@ describe("cleanWorktrees()", () => {
   it("returns summary with count", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-1",
-        branch: "foreman/seed-1",
+        path: "/tmp/project/.foreman-worktrees/task-1",
+        branch: "foreman/task-1",
         head: "a",
-        seedId: "seed-1",
+        taskId: "task-1",
         runStatus: "completed",
         runId: "r1",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-2",
-        branch: "foreman/seed-2",
+        path: "/tmp/project/.foreman-worktrees/task-2",
+        branch: "foreman/task-2",
         head: "b",
-        seedId: "seed-2",
+        taskId: "task-2",
         runStatus: "merged",
         runId: "r2",
         createdAt: new Date().toISOString(),
@@ -268,10 +268,10 @@ describe("cleanWorktrees()", () => {
 
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-1",
-        branch: "foreman/seed-1",
+        path: "/tmp/project/.foreman-worktrees/task-1",
+        branch: "foreman/task-1",
         head: "a",
-        seedId: "seed-1",
+        taskId: "task-1",
         runStatus: "failed",
         runId: "r1",
         createdAt: new Date().toISOString(),
@@ -288,19 +288,19 @@ describe("cleanWorktrees()", () => {
   it("with --dry-run skips actual removal but counts worktrees", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "merged",
         runId: "run-1",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-active",
-        branch: "foreman/seed-active",
+        path: "/tmp/project/.foreman-worktrees/task-active",
+        branch: "foreman/task-active",
         head: "def",
-        seedId: "seed-active",
+        taskId: "task-active",
         runStatus: "running",
         runId: "run-2",
         createdAt: new Date().toISOString(),
@@ -318,19 +318,19 @@ describe("cleanWorktrees()", () => {
   it("with --dry-run populates wouldRemove with the affected worktrees", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "merged",
         runId: "run-1",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-active",
-        branch: "foreman/seed-active",
+        path: "/tmp/project/.foreman-worktrees/task-active",
+        branch: "foreman/task-active",
         head: "def",
-        seedId: "seed-active",
+        taskId: "task-active",
         runStatus: "running",
         runId: "run-2",
         createdAt: new Date().toISOString(),
@@ -340,26 +340,26 @@ describe("cleanWorktrees()", () => {
     const result = await cleanWorktrees("/tmp/project", worktrees, { all: false, force: false, dryRun: true });
 
     expect(result.wouldRemove).toHaveLength(1);
-    expect(result.wouldRemove![0].seedId).toBe("seed-done");
-    expect(result.wouldRemove![0].path).toBe("/tmp/project/.foreman-worktrees/seed-done");
+    expect(result.wouldRemove![0].taskId).toBe("task-done");
+    expect(result.wouldRemove![0].path).toBe("/tmp/project/.foreman-worktrees/task-done");
   });
 
   it("with --dry-run and --all counts all worktrees without removing", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "merged",
         runId: "run-1",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-active",
-        branch: "foreman/seed-active",
+        path: "/tmp/project/.foreman-worktrees/task-active",
+        branch: "foreman/task-active",
         head: "def",
-        seedId: "seed-active",
+        taskId: "task-active",
         runStatus: "running",
         runId: "run-2",
         createdAt: new Date().toISOString(),
@@ -378,19 +378,19 @@ describe("cleanWorktrees()", () => {
   it("with --dry-run and --all populates wouldRemove with all worktrees", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "merged",
         runId: "run-1",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-active",
-        branch: "foreman/seed-active",
+        path: "/tmp/project/.foreman-worktrees/task-active",
+        branch: "foreman/task-active",
         head: "def",
-        seedId: "seed-active",
+        taskId: "task-active",
         runStatus: "running",
         runId: "run-2",
         createdAt: new Date().toISOString(),
@@ -399,36 +399,36 @@ describe("cleanWorktrees()", () => {
 
     const result = await cleanWorktrees("/tmp/project", worktrees, { all: true, force: false, dryRun: true });
 
-    const seedIds = result.wouldRemove!.map((wt) => wt.seedId);
-    expect(seedIds).toContain("seed-done");
-    expect(seedIds).toContain("seed-active");
+    const taskIds = result.wouldRemove!.map((wt) => wt.taskId);
+    expect(taskIds).toContain("task-done");
+    expect(taskIds).toContain("task-active");
   });
 
   it("with --dry-run still respects filter criteria (skips active without --all)", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "completed",
         runId: "run-1",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-pending",
-        branch: "foreman/seed-pending",
+        path: "/tmp/project/.foreman-worktrees/task-pending",
+        branch: "foreman/task-pending",
         head: "def",
-        seedId: "seed-pending",
+        taskId: "task-pending",
         runStatus: "pending",
         runId: "run-2",
         createdAt: new Date().toISOString(),
       },
       {
-        path: "/tmp/project/.foreman-worktrees/seed-running",
-        branch: "foreman/seed-running",
+        path: "/tmp/project/.foreman-worktrees/task-running",
+        branch: "foreman/task-running",
         head: "ghi",
-        seedId: "seed-running",
+        taskId: "task-running",
         runStatus: "running",
         runId: "run-3",
         createdAt: new Date().toISOString(),
@@ -440,7 +440,7 @@ describe("cleanWorktrees()", () => {
     // Only "completed" is cleanable without --all; "pending" and "running" are skipped
     expect(result.removed).toBe(1);
     expect(result.wouldRemove).toHaveLength(1);
-    expect(result.wouldRemove![0].seedId).toBe("seed-done");
+    expect(result.wouldRemove![0].taskId).toBe("task-done");
     expect(mockRemoveWorkspace).not.toHaveBeenCalled();
     expect(mockDeleteBranch).not.toHaveBeenCalled();
   });
@@ -448,10 +448,10 @@ describe("cleanWorktrees()", () => {
   it("without --dry-run does not populate wouldRemove", async () => {
     const worktrees: WorktreeInfo[] = [
       {
-        path: "/tmp/project/.foreman-worktrees/seed-done",
-        branch: "foreman/seed-done",
+        path: "/tmp/project/.foreman-worktrees/task-done",
+        branch: "foreman/task-done",
         head: "abc",
-        seedId: "seed-done",
+        taskId: "task-done",
         runStatus: "completed",
         runId: "run-1",
         createdAt: new Date().toISOString(),
@@ -470,13 +470,15 @@ describe("cleanWorktrees()", () => {
 describe("worktree command targeting", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
   it("resolves registered worktree list to the canonical project path from a non-canonical cwd", async () => {
     const projectTaskSupportMock = vi.mocked(projectTaskSupport);
     const canonicalPath = "/canonical/project";
-    const localStore = { close: vi.fn(), getRunsForSeed: vi.fn().mockResolvedValue([]) } as unknown as ForemanStore;
-    const postgresStore = { close: vi.fn(), getRunsForSeed: vi.fn().mockResolvedValue([]) } as unknown as PostgresStore;
+    const localStore = { close: vi.fn(), getRunsForTask: vi.fn().mockResolvedValue([]) } as unknown as ForemanStore;
+    const postgresStore = { close: vi.fn(), getRunsForTask: vi.fn().mockResolvedValue([]) } as unknown as PostgresStore;
     const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
     const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(postgresStore);
 
@@ -501,8 +503,8 @@ describe("worktree command targeting", () => {
   it("resolves registered worktree clean to the canonical project path from a non-canonical cwd", async () => {
     const projectTaskSupportMock = vi.mocked(projectTaskSupport);
     const canonicalPath = "/canonical/project";
-    const localStore = { close: vi.fn(), getRunsForSeed: vi.fn().mockResolvedValue([]) } as unknown as ForemanStore;
-    const postgresStore = { close: vi.fn(), getRunsForSeed: vi.fn().mockResolvedValue([]) } as unknown as PostgresStore;
+    const localStore = { close: vi.fn(), getRunsForTask: vi.fn().mockResolvedValue([]) } as unknown as ForemanStore;
+    const postgresStore = { close: vi.fn(), getRunsForTask: vi.fn().mockResolvedValue([]) } as unknown as PostgresStore;
     const localStoreSpy = vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
     const postgresStoreSpy = vi.spyOn(PostgresStore, "forProject").mockReturnValue(postgresStore);
 
@@ -544,6 +546,56 @@ describe("worktree command targeting", () => {
       localStoreSpy.mockRestore();
       postgresStoreSpy.mockRestore();
     }
+  });
+
+  it("prints JSON for worktree list output", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStore = new ForemanStore() as any;
+    vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+    projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([]);
+    mockListWorkspaces.mockResolvedValue([makeWorktree({ branch: "foreman/task-abc" })] as never);
+    localStore.getRunsForTask.mockReturnValue([makeRun({ task_id: "task-abc" })]);
+
+    await worktreeListCommandAction({ json: true });
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain('"taskId": "task-abc"');
+  });
+
+  it("prints friendly messages for empty list and empty clean results", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStore = new ForemanStore() as any;
+    vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+    projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([]);
+    mockListWorkspaces.mockResolvedValue([] as never);
+
+    await worktreeListCommandAction({});
+    await worktreeCleanCommandAction({});
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("No foreman worktrees found.");
+    expect(rendered).toContain("No foreman worktrees to clean.");
+  });
+
+  it("prints dry-run clean summaries including wouldRemove and errors", async () => {
+    const projectTaskSupportMock = vi.mocked(projectTaskSupport);
+    const localStore = new ForemanStore() as any;
+    vi.spyOn(ForemanStore, "forProject").mockReturnValue(localStore);
+    projectTaskSupportMock.resolveRepoRootProjectPath.mockResolvedValue("/tmp/project");
+    projectTaskSupportMock.listRegisteredProjects.mockResolvedValue([]);
+    mockListWorkspaces.mockResolvedValue([
+      makeWorktree({ path: "/tmp/project/.foreman-worktrees/task-done", branch: "foreman/task-done" }),
+    ] as never);
+    localStore.getRunsForTask.mockReturnValue([makeRun({ task_id: "task-done", status: "completed", worktree_path: "/tmp/project/.foreman-worktrees/task-done" })]);
+
+    await worktreeCleanCommandAction({ dryRun: true });
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("dry-run mode");
+    expect(rendered).toContain("Worktrees that would be removed:");
+    expect(rendered).toContain("Would remove 1 worktree(s).");
   });
 
   it("keeps outside-a-repo worktree clean behavior unchanged", async () => {

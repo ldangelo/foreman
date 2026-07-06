@@ -47,7 +47,19 @@ export type EventType =
   | "sentinel-start"
   | "sentinel-pass"
   | "sentinel-fail"
+  | "worktree-created"
   | "phase-start"
+  | "phase-complete"
+  | "phase-failed"
+  | "phase-retry"
+  | "phase-skipped"
+  | "phase-verdict"
+  | "phase-nudge"
+  | "assistant-message"
+  | "tool-call-finished"
+  | "run-completed"
+  | "run-failed"
+  | "task-updated"
   | "heartbeat";
 
 /**
@@ -165,7 +177,7 @@ export class PostgresStore implements IStore {
 
   async createRun(
     projectId: string,
-    seedId: string,
+    taskId: string,
     agentType: string,
     worktreePath: string | null,
     opts?: {
@@ -174,7 +186,7 @@ export class PostgresStore implements IStore {
       sessionKey?: string | null;
     },
   ): Promise<Run> {
-    const run = await this.adapter.createRun(projectId, seedId, agentType, {
+    const run = await this.adapter.createRun(projectId, taskId, agentType, {
       sessionKey: opts?.sessionKey ?? undefined,
       worktreePath: worktreePath ?? undefined,
       baseBranch: opts?.baseBranch ?? undefined,
@@ -243,13 +255,13 @@ export class PostgresStore implements IStore {
     return this.adapter.deleteRun(this.projectId, runId);
   }
 
-  async getRunsForSeed(seedId: string, projectId?: string): Promise<Run[]> {
+  async getRunsForTask(taskId: string, projectId?: string): Promise<Run[]> {
     const rows = await this.adapter.listRuns(projectId ?? this.projectId, {});
-    return rows.filter((r) => r.seed_id === seedId).map((r) => this.rowToRun(r));
+    return rows.filter((r) => r.task_id === taskId).map((r) => this.rowToRun(r));
   }
 
-  async hasActiveOrPendingRun(seedId: string, projectId?: string): Promise<boolean> {
-    return this.adapter.hasActiveOrPendingRun(projectId ?? this.projectId, seedId);
+  async hasActiveOrPendingRun(taskId: string, projectId?: string): Promise<boolean> {
+    return this.adapter.hasActiveOrPendingRun(projectId ?? this.projectId, taskId);
   }
 
   async getRunsByBaseBranch(baseBranch: string, projectId?: string): Promise<Run[]> {
@@ -269,7 +281,7 @@ export class PostgresStore implements IStore {
     await this.adapter.recordPipelineEvent({
       projectId,
       runId,
-      taskId: (data.seedId as string | undefined) ?? undefined,
+      taskId: (data.taskId as string | undefined) ?? undefined,
       eventType,
       payload: data,
     });
@@ -621,7 +633,7 @@ export class PostgresStore implements IStore {
   private rowToRun(row: {
     id: string;
     project_id: string;
-    seed_id: string;
+    task_id: string;
     agent_type: string;
     session_key: string | null;
     worktree_path: string | null;
@@ -640,7 +652,7 @@ export class PostgresStore implements IStore {
     return {
       id: row.id,
       project_id: row.project_id,
-      seed_id: row.seed_id,
+      task_id: row.task_id,
       agent_type: row.agent_type,
       session_key: row.session_key,
       worktree_path: row.worktree_path,

@@ -54,7 +54,7 @@ export class GitBackend implements VcsBackend {
       const { stdout } = await execFileAsync("git", args, {
         cwd,
         maxBuffer: 10 * 1024 * 1024,
-        timeout: 60_000,
+        timeout: 120_000,
         env: {
           ...process.env,
           GIT_EDITOR: "true",
@@ -268,12 +268,16 @@ export class GitBackend implements VcsBackend {
     return { deleted: false, wasFullyMerged: false };
   }
 
+  async deleteRemoteBranch(repoPath: string, branchName: string): Promise<void> {
+    await this.git(["push", "origin", "--delete", branchName], repoPath);
+  }
+
   // ── Workspace / Worktree Operations ─────────────────────────────────
 
   /**
-   * Create a git worktree for a seed.
+   * Create a git worktree for a task.
    *
-   * - Branch: foreman/<seedId>
+   * - Branch: foreman/<taskId>
    * - Location: external Foreman workspace root for this repo
    * - Base: baseBranch or current branch
    *
@@ -281,12 +285,12 @@ export class GitBackend implements VcsBackend {
    */
   async createWorkspace(
     repoPath: string,
-    seedId: string,
+    taskId: string,
     baseBranch?: string,
   ): Promise<WorkspaceResult> {
     const base = baseBranch ?? (await this.getCurrentBranch(repoPath));
-    const branchName = `foreman/${seedId}`;
-    const workspacePath = getWorkspacePath(repoPath, seedId);
+    const branchName = `foreman/${taskId}`;
+    const workspacePath = getWorkspacePath(repoPath, taskId);
 
     // If worktree already exists — reuse it with rebase
     if (existsSync(workspacePath)) {
@@ -440,7 +444,9 @@ export class GitBackend implements VcsBackend {
     options?: PushOptions,
   ): Promise<void> {
     const args = ["push", "-u", "origin", branchName];
-    if (options?.force) {
+    if (options?.forceWithLease) {
+      args.splice(1, 0, "--force-with-lease");
+    } else if (options?.force) {
       args.splice(1, 0, "-f");
     }
     await this.git(args, workspacePath);
@@ -918,20 +924,20 @@ export class GitBackend implements VcsBackend {
    * Return pre-computed git finalize commands for prompt rendering.
    */
   getFinalizeCommands(vars: FinalizeTemplateVars): FinalizeCommands {
-    const { seedId, seedTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
-    // Escape single quotes in seedTitle so the shell-level single-quoted commit
+    const { taskId, taskTitle, baseBranch, worktreePath, githubIssueNumber } = vars;
+    // Escape single quotes in taskTitle so the shell-level single-quoted commit
     // message is safe even when the title contains apostrophes or shell-special
     // characters (brackets, colons, parentheses, $, !, etc.).
     // Strategy: end the single-quoted string, escape the quote, reopen it:
     //   O'Brien → 'O'\''Brien'
-    const safeSeedTitle = seedTitle.replace(/'/g, "'\\''");
+    const safeTaskTitle = taskTitle.replace(/'/g, "'\\''");
     const footerSuffix = githubIssueNumber
       ? `\\n\\nFixes #${githubIssueNumber}`
       : "";
     return {
       stageCommand: "git add -A",
-      commitCommand: `git commit -m '${safeSeedTitle} (${seedId})${footerSuffix}'`,
-      pushCommand: `git push -u origin foreman/${seedId}`,
+      commitCommand: `git commit -m '${safeTaskTitle} (${taskId})${footerSuffix}'`,
+      pushCommand: `git push -u origin foreman/${taskId}`,
       integrateTargetCommand: `git fetch origin && git rebase origin/${baseBranch}`,
       branchVerifyCommand: `git rev-parse --abbrev-ref HEAD`,
       cleanCommand: `git worktree remove --force ${vars.worktreePath}`,

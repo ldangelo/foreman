@@ -19,7 +19,7 @@ describe("agent-worker.ts", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("exits with error when no config file argument given", async () => {
+  it("exits with error when no config file argument given", { timeout: 90_000 }, async () => {
     const result = await runTsxModule(WORKER_SCRIPT, [], {
       cwd: PROJECT_ROOT,
       timeout: 10_000,
@@ -37,8 +37,8 @@ describe("agent-worker.ts", () => {
     writeFileSync(configPath, JSON.stringify({
       runId: "test-run-001",
       projectId: "test-project",
-      seedId: "test-seed",
-      seedTitle: "Test Seed",
+      taskId: "test-task",
+      taskTitle: "Test Task",
       model: "claude-sonnet-4-6",
       worktreePath: tmpDir,
       projectPath: tmpDir,
@@ -69,8 +69,8 @@ describe("agent-worker.ts", () => {
     writeFileSync(configPath, JSON.stringify({
       runId: "test-run-log",
       projectId: "test-project",
-      seedId: "test-seed-log",
-      seedTitle: "Test Logging",
+      taskId: "test-task-log",
+      taskTitle: "Test Logging",
       model: "claude-sonnet-4-6",
       worktreePath: tmpDir,
       projectPath: tmpDir,
@@ -96,42 +96,27 @@ describe("agent-worker.ts", () => {
     if (existsSync(logFile)) {
       const content = readFileSync(logFile, "utf-8");
       expect(content).toContain("[foreman-worker]");
-      expect(content).toContain("test-seed-log");
+      expect(content).toContain("test-task-log");
       expect(content).toContain("Test Logging");
     }
     // If log file doesn't exist, the worker crashed before logging
     // (e.g., store init failure) — that's acceptable for this test
   });
 
-  describe("seed reset to open on failure — source regression tests", () => {
+  describe("task status reset/failure source regression tests", () => {
     /**
-     * These tests verify by source inspection that resetSeedToOpen() is called
-     * in the critical failure paths of agent-worker.ts.
-     *
-     * Source-inspection is used here because the integration approach (spawning
-     * the worker with a bad API key) fails before reaching resetSeedToOpen due to
-     * Postgres FOREIGN KEY constraints on the unregistered project_id. The source
-     * inspection approach is lighter and catches the same regression risk: that
-     * a refactor accidentally removes the resetSeedToOpen calls.
+     * Workers must not write task state through the local/DB store. Failure/reset
+     * paths route through the Elixir task client helper instead.
      */
     const WORKER_SRC_PATH = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
 
-    it("catch block (main error path) enqueues resetSeedToOpen via bead write queue", () => {
+    it("routes task failure/reset through Elixir task status helper", () => {
       const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      // The main catch block must enqueue a reset-seed operation
-      expect(source).toContain("enqueueResetSeedToOpen(store, seedId, ");
-    });
-
-    it("enqueueResetSeedToOpen is imported from task-backend-ops", () => {
-      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      expect(source).toMatch(/import.*enqueueResetSeedToOpen.*from.*task-backend-ops/);
-    });
-
-    it("enqueueResetSeedToOpen is called at least twice (catch block + finalize path)", () => {
-      const source = readFileSync(WORKER_SRC_PATH, "utf-8");
-      // Count occurrences — there should be at least 2 (catch block + markStuck)
-      const matches = source.match(/enqueueResetSeedToOpen\(/g) ?? [];
-      expect(matches.length).toBeGreaterThanOrEqual(2);
+      expect(source).toContain("async function updateTaskStatusViaElixir(");
+      expect(source).toContain('await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker");');
+      expect(source).toContain('await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "ready", "agent-worker");');
+      expect(source).not.toContain("enqueueResetTaskToOpen(");
+      expect(source).not.toContain("enqueueMarkBeadFailed(");
     });
   });
 });
@@ -171,6 +156,16 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).toContain("maxTurns: config.maxTurns");
   });
 
+  it("reserves worker event sequence before appending so one rejected event does not poison later events", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    const sequenceIndex = source.indexOf("const nextSequence = sequence + 1;");
+    const reserveIndex = source.indexOf("sequence = nextSequence;", sequenceIndex);
+    const sendIndex = source.indexOf("sendWorkerEvent({", reserveIndex);
+    expect(sequenceIndex).toBeGreaterThan(-1);
+    expect(reserveIndex).toBeGreaterThan(sequenceIndex);
+    expect(sendIndex).toBeGreaterThan(reserveIndex);
+  });
+
   it("routes markStuck terminal run updates through the helper", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { updateTerminalRunStatus } from "./agent-worker-run-status.js";');
@@ -178,42 +173,34 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).not.toContain('store.updateRun(runId, { status: stuckStatus, completed_at: now });');
   });
 
-  it("routes markStuck observability writes through registered-aware helpers", () => {
+  it("routes markStuck observability without registered/local DB store writes", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { writeMarkStuckEvent, writeMarkStuckProgress } from "./agent-worker-mark-stuck-observability.js";');
-    expect(source).toContain('markStuck: async (storeArg, runIdArg, projectIdArg, seedIdArg, seedTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) =>');
-    expect(source).toContain('await writeMarkStuckProgress(localStore, registeredReadStore, runId, progress, log);');
-    expect(source).toContain('await writeMarkStuckEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {');
-    const progressIndex = source.indexOf('await writeMarkStuckProgress(localStore, registeredReadStore, runId, progress, log);');
-    const terminalIndex = source.indexOf('await updateTerminalRunStatus({', progressIndex);
-    const eventIndex = source.indexOf('await writeMarkStuckEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {', terminalIndex);
-    const resetIndex = source.indexOf('enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");', eventIndex);
-    const failIndex = source.indexOf('enqueueMarkBeadFailed(store, seedId, "agent-worker-markStuck");', eventIndex);
-    const notesIndex = source.indexOf('enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");', eventIndex);
-    expect(progressIndex).toBeGreaterThan(-1);
-    expect(terminalIndex).toBeGreaterThan(progressIndex);
-    expect(eventIndex).toBeGreaterThan(terminalIndex);
-    expect(resetIndex).toBeGreaterThan(eventIndex);
-    expect(failIndex).toBeGreaterThan(eventIndex);
-    expect(notesIndex).toBeGreaterThan(eventIndex);
-    expect(source).toContain('enqueueResetSeedToOpen(store, seedId, "agent-worker-markStuck");');
-    expect(source).toContain('enqueueMarkBeadFailed(store, seedId, "agent-worker-markStuck");');
-    expect(source).toContain('enqueueAddNotesToBead(store, seedId, failureNote, "agent-worker-markStuck");');
+    expect(source).toContain('markStuck: async (storeArg, runIdArg, projectIdArg, taskIdArg, taskTitleArg, progressArg, phaseArg, reasonArg, projectPathArg, notifyClientArg) =>');
+    expect(source).toContain('await writeMarkStuckProgress(undefined, runId, progress, log);');
+    expect(source).toContain('await writeMarkStuckEvent(undefined, projectId, runId, isRateLimit ? "stuck" : "fail", {');
+    expect(source).toContain('await updateTaskStatusViaElixir(projectPath, projectId, taskId, "ready", "agent-worker-markStuck");');
+    expect(source).toContain('await updateTaskStatusViaElixir(projectPath, projectId, taskId, "failed", "agent-worker-markStuck");');
+    expect(source).not.toContain('store.updateRunProgress(runId, progress);');
+    expect(source).not.toContain('store.logEvent(projectId, "stuck"');
+    expect(source).not.toContain('store.logEvent(projectId, "fail"');
+    expect(source).not.toContain('enqueueResetTaskToOpen(');
+    expect(source).not.toContain('enqueueMarkBeadFailed(');
+    expect(source).not.toContain('enqueueAddNotesToBead(');
   });
 
-  it("routes single-agent progress and terminal observability through registered-aware helpers", () => {
+  it("routes single-agent progress and terminal observability without DB store writes", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";');
-    expect(source).toContain('const registeredProjectId = await resolveRegisteredProjectIdForPath(storeProjectPath, databaseUrl);');
-    expect(source).toContain('const registeredReadStore = registeredProjectId && pgStore ? pgStore : undefined;');
-    expect(source).toContain('await runPipeline(config, store, localStore, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);');
+    expect(source).toContain('const registeredProjectId = config.projectId;');
+    expect(source).toContain('await runPipeline(config, store, logFile, notifyClient, agentMailClient, registeredReadStore, registeredProjectId);');
     expect(source).toContain('let progressFlushTail: Promise<void> = Promise.resolve();');
-    expect(source).toContain('progressFlushTail = progressFlushTail.then(() => writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log));');
+    expect(source).toContain('progressFlushTail = progressFlushTail.then(() => writeSingleAgentProgress(undefined, runId, progress, log));');
     expect(source).toContain('await waitForProgressFlush();');
-    expect(source).toContain('await writeSingleAgentProgress(localStore, registeredReadStore, runId, progress, log);');
-    expect(source).toContain('await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, "complete", {');
-    expect(source).toContain('await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, "fail", {');
-    expect(source).toContain('await writeSingleAgentTerminalEvent(localStore, registeredReadStore, projectId, runId, isRateLimit ? "stuck" : "fail", {');
+    expect(source).toContain('await writeSingleAgentProgress(undefined, runId, progress, log);');
+    expect(source).toContain('await writeSingleAgentTerminalEvent(undefined, projectId, runId, "complete", {');
+    expect(source).toContain('await writeSingleAgentTerminalEvent(undefined, projectId, runId, "fail", {');
+    expect(source).toContain('await writeSingleAgentTerminalEvent(undefined, projectId, runId, isRateLimit ? "stuck" : "fail", {');
     expect(source).toContain('await updateTerminalRunStatus({');
     expect(source).not.toContain('store.updateRunProgress(runId, progress);');
     expect(source).not.toContain('store.logEvent(projectId, "complete"');

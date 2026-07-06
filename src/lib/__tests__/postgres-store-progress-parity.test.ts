@@ -10,7 +10,7 @@ describe("PostgresStore progress parity", () => {
       getRun: vi.fn(async () => ({
         id: "run-1",
         project_id: "proj-1",
-        seed_id: "seed-1",
+        task_id: "task-1",
         agent_type: "worker",
         session_key: null,
         worktree_path: null,
@@ -45,8 +45,8 @@ describe("PostgresStore progress parity", () => {
       currentTargetRef: "current-ref",
       epicTaskCount: 3,
       epicTasksCompleted: 1,
-      epicCurrentTaskId: "seed-1",
-      epicCostByTask: { "seed-1": 4.2 },
+      epicCurrentTaskId: "task-1",
+      epicCostByTask: { "task-1": 4.2 },
     };
 
     await store.updateRunProgress("run-1", progress);
@@ -70,8 +70,8 @@ describe("PostgresStore progress parity", () => {
       currentTargetRef: "current-ref",
       epicTaskCount: 3,
       epicTasksCompleted: 1,
-      epicCurrentTaskId: "seed-1",
-      epicCostByTask: { "seed-1": 4.2 },
+      epicCurrentTaskId: "task-1",
+      epicCostByTask: { "task-1": 4.2 },
       phase: "developer",
     }));
 

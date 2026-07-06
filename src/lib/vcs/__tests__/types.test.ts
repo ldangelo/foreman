@@ -164,6 +164,11 @@ describe('PushOptions type', () => {
     const opts: PushOptions = { force: true };
     expect(opts.force).toBe(true);
   });
+
+  it('accepts force-with-lease push', () => {
+    const opts: PushOptions = { forceWithLease: true };
+    expect(opts.forceWithLease).toBe(true);
+  });
 });
 
 // ── FinalizeTemplateVars ────────────────────────────────────────────────
@@ -171,12 +176,12 @@ describe('PushOptions type', () => {
 describe('FinalizeTemplateVars type', () => {
   it('has all required fields', () => {
     const vars: FinalizeTemplateVars = {
-      seedId: 'bd-deoi',
-      seedTitle: 'Define Shared VCS Types',
+      taskId: 'bd-deoi',
+      taskTitle: 'Define Shared VCS Types',
       baseBranch: 'dev',
       worktreePath: '/tmp/worktrees/bd-deoi',
     };
-    expect(vars.seedId).toBe('bd-deoi');
+    expect(vars.taskId).toBe('bd-deoi');
     expect(vars.baseBranch).toBe('dev');
   });
 });

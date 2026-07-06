@@ -8,7 +8,7 @@
 
 > **Status:** Draft — awaiting approval
 > **Date:** 2026-03-21
-> **Scope:** (1) Make Agent Mail the primary transport for inter-phase report content in Foreman's pipeline, replacing disk-file reads with inbox reads (disk retained as fallback). (2) Externalize phase prompts to user-editable markdown files and pipeline configuration to JSON config files, enabling custom workflows per seed type (bug, feature, chore) without code changes.
+> **Scope:** (1) Make Agent Mail the primary transport for inter-phase report content in Foreman's pipeline, replacing disk-file reads with inbox reads (disk retained as fallback). (2) Externalize phase prompts to user-editable markdown files and pipeline configuration to JSON config files, enabling custom workflows per task type (bug, feature, chore) without code changes.
 
 ---
 
@@ -26,9 +26,9 @@ Additionally, when the Reviewer triggers a Developer retry, its findings are cur
 
 | Already Implemented | Subject | From → To |
 |---|---|---|
-| Explorer report send | `"Explorer Report"` | worker → `developer-{seedId}` |
-| QA feedback send (on fail) | `"QA Feedback - Retry N"` | worker → `developer-{seedId}` |
-| QA report send (on pass) | `"QA Report"` | worker → `reviewer-{seedId}` |
+| Explorer report send | `"Explorer Report"` | worker → `developer-{taskId}` |
+| QA feedback send (on fail) | `"QA Feedback - Retry N"` | worker → `developer-{taskId}` |
+| QA report send (on pass) | `"QA Report"` | worker → `reviewer-{taskId}` |
 | Phase-complete events | `"phase-complete"` | worker → `foreman` |
 | `developerPrompt(feedbackContext?)` | — | accepts any feedback text |
 | `fetchInbox()` registry resolution | — | resolves logical role names |
@@ -39,7 +39,7 @@ Additionally, when the Reviewer triggers a Developer retry, its findings are cur
 
 1. **QA feedback read path** — after `runPhase("qa")`, the code reads `QA_REPORT.md` from disk. Should read from the developer inbox first (the message is already there), fall back to disk.
 
-2. **Reviewer→Developer inbox send** — when the Reviewer triggers a dev retry, its findings go nowhere except a local variable. Need to send them as `"Review Findings"` to `developer-{seedId}`.
+2. **Reviewer→Developer inbox send** — when the Reviewer triggers a dev retry, its findings go nowhere except a local variable. Need to send them as `"Review Findings"` to `developer-{taskId}`.
 
 3. **Reviewer findings read path** — same pattern as QA: read from inbox first, fall back to the local extracted variable.
 
@@ -73,24 +73,24 @@ Sequential `await`-chain stays unchanged. No new processes. No Postgres schema c
 
 ```
 Explorer ─── sdk.query() ───────────────────────────────────────────────────►
-  └─► sendMailText → "developer-{seedId}"  "Explorer Report"        [already done]
+  └─► sendMailText → "developer-{taskId}"  "Explorer Report"        [already done]
   └─► writes EXPLORER_REPORT.md                                       [kept as fallback]
 
 Developer ◄── feedbackContext from prior QA or Review message (or null on first run)
   └─► writes implementation files
 
 QA ─── sdk.query() ─────────────────────────────────────────────────────────►
-  [FAIL] └─► sendMailText → "developer-{seedId}"  "QA Feedback - Retry N"  [already done]
-  [PASS] └─► sendMailText → "reviewer-{seedId}"   "QA Report"              [already done]
+  [FAIL] └─► sendMailText → "developer-{taskId}"  "QA Feedback - Retry N"  [already done]
+  [PASS] └─► sendMailText → "reviewer-{taskId}"   "QA Report"              [already done]
 
-Developer (retry) ◄── fetchLatestPhaseMessage("developer-{seedId}", "QA Feedback")   [NEW read]
+Developer (retry) ◄── fetchLatestPhaseMessage("developer-{taskId}", "QA Feedback")   [NEW read]
                   ◄── fallback: QA_REPORT.md on disk
 
 Reviewer ─── sdk.query() ───────────────────────────────────────────────────►
-  [issues] └─► sendMailText → "developer-{seedId}"  "Review Findings"      [NEW send]
+  [issues] └─► sendMailText → "developer-{taskId}"  "Review Findings"      [NEW send]
   └─► sendMailText → "foreman"  "Review Complete"                           [already done]
 
-Developer (retry) ◄── fetchLatestPhaseMessage("developer-{seedId}", "Review Findings") [NEW read]
+Developer (retry) ◄── fetchLatestPhaseMessage("developer-{taskId}", "Review Findings") [NEW read]
                   ◄── fallback: local reviewFeedback variable
 
 Finalize ─► sends "branch-ready" to refinery                               [already done]
@@ -173,7 +173,7 @@ qaVerdict = qaReport ? parseVerdict(qaReport) : "unknown";
 // PRIMARY: QA phase already sent this message to the developer inbox
 const qaMailBody = await fetchLatestPhaseMessage(
   agentMailClient,
-  `developer-${seedId}`,
+  `developer-${taskId}`,
   "QA Feedback",
 );
 // FALLBACK: disk file when Agent Mail is unavailable
@@ -204,7 +204,7 @@ if ((reviewVerdict === "fail" || (reviewVerdict === "pass" && hasIssues)) && dev
 
   // NEW: send reviewer findings to developer inbox so Developer can read them as a message
   if (reviewReport) {
-    sendMailText(agentMailClient, `developer-${seedId}`, "Review Findings", reviewFeedback);
+    sendMailText(agentMailClient, `developer-${taskId}`, "Review Findings", reviewFeedback);
   }
 
   devRetries++;
@@ -223,7 +223,7 @@ if ((reviewVerdict === "fail" || (reviewVerdict === "pass" && hasIssues)) && dev
 // PRIMARY: read review findings from developer inbox (just sent above)
 const reviewMailBody = await fetchLatestPhaseMessage(
   agentMailClient,
-  `developer-${seedId}`,
+  `developer-${taskId}`,
   "Review Findings",
 );
 // FALLBACK: local variable extracted from disk earlier
@@ -275,8 +275,8 @@ Test cases for `fetchLatestPhaseMessage()`:
 
 - Phase system prompts (currently TypeScript template literals in `roles.ts`) move to user-editable markdown files in `~/.foreman/prompts/`
 - Phase mechanical config (model, budget, tools) moves to `~/.foreman/phases.json`
-- Pipeline phase sequences move to `~/.foreman/workflows.json`, keyed by seed type
-- `foreman init` seeds all three locations with defaults on first run
+- Pipeline phase sequences move to `~/.foreman/workflows.json`, keyed by task type
+- `foreman init` tasks all three locations with defaults on first run
 - Missing files fall back to built-in defaults — no breakage for existing installs
 
 ---
@@ -292,7 +292,7 @@ Test cases for `fetchLatestPhaseMessage()`:
     reviewer.md       ← system prompt for Reviewer phase
     reproducer.md     ← system prompt for Reproducer phase (bug workflow)
   phases.json         ← model, budget, tools per phase
-  workflows.json      ← phase sequence per seed type
+  workflows.json      ← phase sequence per task type
 ```
 
 ---
@@ -303,10 +303,10 @@ Prompt markdown files use `{{variableName}}` placeholders. All variables are opt
 
 | Variable | Available in phases | Description |
 |---|---|---|
-| `{{seedId}}` | all | Bead/seed ID (e.g. `bd-abc1`) |
-| `{{seedTitle}}` | all | One-line title of the task |
-| `{{seedDescription}}` | explorer, developer, reviewer | Full task description |
-| `{{seedComments}}` | explorer, developer, reviewer | Comments from the bead |
+| `{{taskId}}` | all | Bead/task ID (e.g. `bd-abc1`) |
+| `{{taskTitle}}` | all | One-line title of the task |
+| `{{taskDescription}}` | explorer, developer, reviewer | Full task description |
+| `{{taskComments}}` | explorer, developer, reviewer | Comments from the bead |
 | `{{feedbackContext}}` | developer | QA or Reviewer findings injected on retry |
 | `{{hasExplorerReport}}` | developer | `"true"` or `"false"` |
 
@@ -370,7 +370,7 @@ Replaces the `buildRoleConfigs()` function in `roles.ts`. Environment variable o
 
 ### `~/.foreman/workflows.json`
 
-Defines which phases run for each seed type, in order. The seed type comes from the bead's `type` field (already stored in Postgres). Unknown types fall back to `"feature"`.
+Defines which phases run for each task type, in order. The task type comes from the bead's `type` field (already stored in Postgres). Unknown types fall back to `"feature"`.
 
 ```json
 {
@@ -485,9 +485,9 @@ export function loadWorkflows(): Record<string, string[]> {
   }
 }
 
-export function getWorkflow(seedType: string): string[] {
+export function getWorkflow(taskType: string): string[] {
   const workflows = loadWorkflows();
-  return workflows[seedType] ?? workflows["feature"] ?? DEFAULT_WORKFLOWS.feature;
+  return workflows[taskType] ?? workflows["feature"] ?? DEFAULT_WORKFLOWS.feature;
 }
 ```
 
@@ -504,20 +504,20 @@ import { loadPrompt } from "../lib/prompt-loader.js";
 
 // Inside runPipeline():
 const phaseConfigs = loadPhaseConfigs();
-const phases = getWorkflow(seed.type ?? "feature");   // ["explorer", "developer", ...]
+const phases = getWorkflow(task.type ?? "feature");   // ["explorer", "developer", ...]
 
 // Replace buildRoleConfigs() / ROLE_CONFIGS lookups with phaseConfigs[phaseName]
 
 // Replace explorerPrompt(...) calls with:
-const explorerSystemPrompt = loadPrompt("explorer", { seedId, seedTitle, seedDescription, seedComments }, explorerPrompt(seedId, seedTitle, seedDescription, seedComments));
+const explorerSystemPrompt = loadPrompt("explorer", { taskId, taskTitle, taskDescription, taskComments }, explorerPrompt(taskId, taskTitle, taskDescription, taskComments));
 
 // Replace developerPrompt(...) calls with:
-const developerSystemPrompt = loadPrompt("developer", { seedId, seedTitle, seedDescription, feedbackContext, hasExplorerReport: String(hasExplorerReport) }, developerPrompt(seedId, seedTitle, seedDescription, hasExplorerReport, feedbackContext, comments));
+const developerSystemPrompt = loadPrompt("developer", { taskId, taskTitle, taskDescription, feedbackContext, hasExplorerReport: String(hasExplorerReport) }, developerPrompt(taskId, taskTitle, taskDescription, hasExplorerReport, feedbackContext, comments));
 ```
 
 The existing prompt functions in `roles.ts` serve as the fallback — `loadPrompt()` passes them as the `fallback` argument. No changes to `roles.ts` required.
 
-#### Step 11 — `foreman init` seeds config files
+#### Step 11 — `foreman init` tasks config files
 
 **File:** `src/cli/commands/init.ts`
 
@@ -553,8 +553,8 @@ Key test cases:
 | `loadWorkflows` | File exists, valid JSON | Returns parsed map |
 | `loadWorkflows` | File absent | Returns `DEFAULT_WORKFLOWS` |
 | `loadWorkflows` | File invalid JSON | Warns + returns `DEFAULT_WORKFLOWS` |
-| `getWorkflow` | `seedType = "bug"` | Returns `["reproducer", "developer", "qa", "finalize"]` |
-| `getWorkflow` | `seedType = "unknown"` | Falls back to `"feature"` workflow |
+| `getWorkflow` | `taskType = "bug"` | Returns `["reproducer", "developer", "qa", "finalize"]` |
+| `getWorkflow` | `taskType = "unknown"` | Falls back to `"feature"` workflow |
 | `loadPhaseConfigs` | File valid | Returns parsed phase map |
 | `loadPhaseConfigs` | File missing required field | Warns + returns `ROLE_CONFIGS` |
 
@@ -566,7 +566,7 @@ Key test cases:
 |---|---|---|
 | `src/lib/prompt-loader.ts` | Create | Template loader with `{{var}}` and `{{#if}}` support |
 | `src/lib/phase-config-loader.ts` | Create | Reads `~/.foreman/phases.json`, falls back to `ROLE_CONFIGS` |
-| `src/lib/workflow-config-loader.ts` | Create | Reads `~/.foreman/workflows.json`, `getWorkflow(seedType)` |
+| `src/lib/workflow-config-loader.ts` | Create | Reads `~/.foreman/workflows.json`, `getWorkflow(taskType)` |
 | `src/defaults/phases.json` | Create | Bundled default phase config |
 | `src/defaults/workflows.json` | Create | Bundled default workflow sequences |
 | `src/defaults/prompts/*.md` | Create | Bundled default prompt files (one per phase) |
@@ -599,30 +599,30 @@ npm test
 # --- Part 1: Agent Mail transport ---
 
 # Integration smoke test (requires running Agent Mail server)
-foreman run --bead <seed-id>
+foreman run --bead <task-id>
 # Watch logs for:
-#   [agent-mail] Fetched "QA Feedback - Retry 1" from inbox "developer-{seedId}" (id=...)
-#   [agent-mail] Fetched "Review Findings" from inbox "developer-{seedId}" (id=...)
+#   [agent-mail] Fetched "QA Feedback - Retry 1" from inbox "developer-{taskId}" (id=...)
+#   [agent-mail] Fetched "Review Findings" from inbox "developer-{taskId}" (id=...)
 
 # Backward compat test (stop Agent Mail server first)
-foreman run --bead <seed-id>
+foreman run --bead <task-id>
 # Should complete normally using disk fallback — no errors logged
 
 # --- Part 2: External prompts and workflow config ---
 
-# Seed defaults
+# Task defaults
 foreman init
 # Verify: ~/.foreman/phases.json, ~/.foreman/workflows.json, ~/.foreman/prompts/*.md created
 
 # Custom prompt test: edit ~/.foreman/prompts/explorer.md, add a line
-# Re-run a seed and verify the custom line appears in the agent session log
+# Re-run a task and verify the custom line appears in the agent session log
 
-# Bug workflow test: create a seed with type=bug
-foreman run --bead <bug-seed-id>
+# Bug workflow test: create a task with type=bug
+foreman run --bead <bug-task-id>
 # Verify: logs show phases ["reproducer", "developer", "qa", "finalize"] — no Explorer, no Reviewer
 
 # Custom workflow test: add "chore" workflow to ~/.foreman/workflows.json
-# Create a seed with type=chore, verify only ["developer", "finalize"] runs
+# Create a task with type=chore, verify only ["developer", "finalize"] runs
 
 # Validation test: corrupt ~/.foreman/phases.json, run foreman
 # Should warn and fall back to built-in defaults — no crash

@@ -8,7 +8,7 @@ export type AgentRole = "lead" | "explorer" | "developer" | "qa" | "reviewer" | 
 
 export type Priority = "critical" | "high" | "medium" | "low";
 
-export interface SeedInfo {
+export interface TaskInfo {
   id: string;
   title: string;
   description?: string;
@@ -20,11 +20,11 @@ export interface SeedInfo {
   githubIssueNumber?: number;
 }
 
-/** @deprecated Use SeedInfo instead */
-export type BeadInfo = SeedInfo;
+/** @deprecated Use TaskInfo instead */
+export type BeadInfo = TaskInfo;
 
 export interface DispatchedTask {
-  seedId: string;
+  taskId: string;
   title: string;
   runtime: RuntimeSelection;
   model: ModelSelection;
@@ -34,7 +34,7 @@ export interface DispatchedTask {
 }
 
 export interface SkippedTask {
-  seedId: string;
+  taskId: string;
   title: string;
   reason: string;
 }
@@ -47,7 +47,7 @@ export interface DispatchResult {
 }
 
 export interface ResumedTask {
-  seedId: string;
+  taskId: string;
   title: string;
   model: ModelSelection;
   runId: string;
@@ -65,7 +65,7 @@ export interface PlanStepDefinition {
 }
 
 export interface PlanStepDispatched {
-  seedId: string;
+  taskId: string;
   title: string;
   runId: string;
   sessionKey: string;
@@ -84,21 +84,21 @@ export interface MonitorReport {
 
 export interface MergedRun {
   runId: string;
-  seedId: string;
+  taskId: string;
   branchName: string;
   resolvedTiers?: Map<string, number>;
 }
 
 export interface ConflictRun {
   runId: string;
-  seedId: string;
+  taskId: string;
   branchName: string;
   conflictFiles: string[];
 }
 
 export interface FailedRun {
   runId: string;
-  seedId: string;
+  taskId: string;
   branchName: string;
   error: string;
 }
@@ -119,7 +119,7 @@ export interface MergeReport {
 
 export interface CreatedPr {
   runId: string;
-  seedId: string;
+  taskId: string;
   branchName: string;
   prUrl: string;
 }

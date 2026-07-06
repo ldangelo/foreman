@@ -173,18 +173,18 @@ describe.skipIf(!JJ_AVAILABLE)(
       tempDirs.push(remoteDir, localDir);
 
       const backend = new JujutsuBackend(localDir);
-      const seedId = "test-seed-jj-001";
+      const taskId = "test-task-jj-001";
 
       // ── Phase 1: Create workspace ────────────────────────────────────
       const workspaceResult = await backend.createWorkspace(
         localDir,
-        seedId,
+        taskId,
         "dev",
       );
 
-      expect(workspaceResult.branchName).toBe(`foreman/${seedId}`);
+      expect(workspaceResult.branchName).toBe(`foreman/${taskId}`);
       expect(workspaceResult.workspacePath).toBe(
-        getWorkspacePath(localDir, seedId),
+        getWorkspacePath(localDir, taskId),
       );
       expect(existsSync(workspaceResult.workspacePath)).toBe(true);
 
@@ -204,7 +204,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       expect(existsSync(testFilePath)).toBe(true);
 
       // ── Phase 3: Commit (no stageAll() — jj auto-stages) ────────────
-      const commitMessage = `Implement jj feature (${seedId})`;
+      const commitMessage = `Implement jj feature (${taskId})`;
       await backend.commit(workspaceResult.workspacePath, commitMessage);
 
       // HEAD change ID should be non-empty after commit
@@ -254,11 +254,11 @@ describe.skipIf(!JJ_AVAILABLE)(
       tempDirs.push(remoteDir, localDir);
 
       const backend = new JujutsuBackend(localDir);
-      const seedId = "test-seed-jj-list";
+      const taskId = "test-task-jj-list";
 
       const { workspacePath, branchName } = await backend.createWorkspace(
         localDir,
-        seedId,
+        taskId,
         "dev",
       );
       tempDirs.push(workspacePath);
@@ -281,11 +281,11 @@ describe.skipIf(!JJ_AVAILABLE)(
       tempDirs.push(remoteDir, localDir);
 
       const backend = new JujutsuBackend(localDir);
-      const seedId = "test-seed-jj-no-conflict";
+      const taskId = "test-task-jj-no-conflict";
 
       const { workspacePath, branchName } = await backend.createWorkspace(
         localDir,
-        seedId,
+        taskId,
         "dev",
       );
       tempDirs.push(workspacePath);
@@ -298,7 +298,7 @@ describe.skipIf(!JJ_AVAILABLE)(
       // No stageAll() needed — jj auto-stages
       await backend.commit(
         workspacePath,
-        `feat: add unique jj feature (${seedId})`,
+        `feat: add unique jj feature (${taskId})`,
       );
       await backend.push(workspacePath, branchName, { allowNew: true });
 
@@ -324,11 +324,11 @@ describe.skipIf(!JJ_AVAILABLE)(
       tempDirs.push(remoteDir, localDir);
 
       const backend = new JujutsuBackend(localDir);
-      const seedId = "test-jj-ac007-2";
+      const taskId = "test-jj-ac007-2";
 
       const { workspacePath, branchName } = await backend.createWorkspace(
         localDir,
-        seedId,
+        taskId,
         "dev",
       );
       tempDirs.push(workspacePath);
@@ -353,11 +353,11 @@ describe.skipIf(!JJ_AVAILABLE)(
       tempDirs.push(remoteDir, localDir);
 
       const backend = new JujutsuBackend(localDir);
-      const seedId = "test-jj-ac007-commit";
+      const taskId = "test-jj-ac007-commit";
 
       const { workspacePath } = await backend.createWorkspace(
         localDir,
-        seedId,
+        taskId,
         "dev",
       );
       tempDirs.push(workspacePath);
@@ -382,11 +382,11 @@ describe.skipIf(!JJ_AVAILABLE)(
       tempDirs.push(remoteDir, localDir);
 
       const backend = new JujutsuBackend(localDir);
-      const seedId = "test-jj-noop-stage";
+      const taskId = "test-jj-noop-stage";
 
       const { workspacePath } = await backend.createWorkspace(
         localDir,
-        seedId,
+        taskId,
         "dev",
       );
       tempDirs.push(workspacePath);
@@ -416,14 +416,14 @@ describe.skipIf(!JJ_AVAILABLE)(
       tempDirs.push(remoteDir, localDir);
 
       const backend = new JujutsuBackend(localDir);
-      const seedId = "test-jj-ac022-perf";
+      const taskId = "test-jj-ac022-perf";
 
       const startTime = Date.now();
 
       // Execute the full pipeline via the abstraction layer
       const { workspacePath, branchName } = await backend.createWorkspace(
         localDir,
-        seedId,
+        taskId,
         "dev",
       );
       tempDirs.push(workspacePath);
@@ -433,7 +433,7 @@ describe.skipIf(!JJ_AVAILABLE)(
         "export const perf = true;\n",
       );
       // No stageAll() needed for jj
-      await backend.commit(workspacePath, `perf: test commit (${seedId})`);
+      await backend.commit(workspacePath, `perf: test commit (${taskId})`);
       await backend.push(workspacePath, branchName, { allowNew: true });
       await backend.fetch(localDir);
       const mergeResult = await backend.merge(localDir, branchName, "dev");
@@ -477,12 +477,12 @@ describe.skipIf(!JJ_AVAILABLE)(
       tempDirs.push(remoteDir, localDir);
 
       const backend = new JujutsuBackend(localDir);
-      const seedId = "test-jj-rebase-merge";
+      const taskId = "test-jj-rebase-merge";
 
       // Create workspace on feature bookmark
       const { workspacePath, branchName } = await backend.createWorkspace(
         localDir,
-        seedId,
+        taskId,
         "dev",
       );
       tempDirs.push(workspacePath);
@@ -492,7 +492,7 @@ describe.skipIf(!JJ_AVAILABLE)(
         join(workspacePath, "feature-work.ts"),
         "export const work = 'done';\n",
       );
-      await backend.commit(workspacePath, `feat: feature work (${seedId})`);
+      await backend.commit(workspacePath, `feat: feature work (${taskId})`);
 
       // Push the feature bookmark. `allowNew` uses legacy --allow-new when the
       // local jj binary supports it, and otherwise falls back to plain

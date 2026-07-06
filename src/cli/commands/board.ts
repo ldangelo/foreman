@@ -30,6 +30,9 @@ import { join as joinPath } from "node:path";
 import { createInterface } from "node:readline/promises";
 import * as yaml from "js-yaml";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import {
   priorityLabel,
   formatTaskIdDisplay,
@@ -58,13 +61,19 @@ export function normalizeStatusForBoard(status: string): BoardStatus | null {
 
 export function boardColumnForTaskStatus(status: string): BoardStatus {
   const normalized = status.replace(/-/g, "_");
+  if (["open", "todo"].includes(normalized)) {
+    return "backlog";
+  }
   if (["explorer", "developer", "qa", "reviewer", "finalize"].includes(normalized)) {
     return "in_progress";
   }
   if (["failed", "stuck", "conflict", "blocked", "review"].includes(normalized)) {
     return "needs_attention";
   }
-  return normalizeStatusForBoard(status) ?? "closed";
+  if (["merged", "completed", "done"].includes(normalized)) {
+    return "closed";
+  }
+  return normalizeStatusForBoard(status) ?? "needs_attention";
 }
 
 function boardStatusToStoreStatus(status: BoardStatus): string {
@@ -86,7 +95,7 @@ function storeStatusToBoardStatus(status: string): BoardStatus | null {
  * Convert a user-entered status (underscore or hyphen variants) to a store-valid status.
  * Handles in_progress → in-progress and needs_attention → blocked conversions.
  */
-function normalizeStatusForStore(status: string): string {
+export function normalizeStatusForStore(status: string): string {
   const boardStatus = storeStatusToBoardStatus(status);
   if (boardStatus) {
     return boardStatusToStoreStatus(boardStatus);
@@ -145,11 +154,9 @@ export interface BoardTask {
   notes?: BoardTaskNote[];
 }
 
-interface BoardContext {
-  client: ReturnType<typeof createTrpcClient>;
-  projectId: string;
-  projectPath: string;
-}
+type BoardContext =
+  | { backend: "node"; client: ReturnType<typeof createTrpcClient>; projectId: string; projectPath: string }
+  | { backend: "elixir"; client: ElixirServerClient; projectId: string; projectPath: string };
 
 export interface NavigationState {
   colIndex: number;       // 0-5 for status columns
@@ -230,9 +237,23 @@ async function resolveBoardContext(projectPath: string): Promise<BoardContext> {
   const resolvedProjectPath = resolve(projectPath);
   const project = projects.find((record) => resolve(record.path) === resolvedProjectPath);
   if (!project) {
-    throw new Error(`Project at '${projectPath}' is not registered with the daemon.`);
+    throw new Error(
+      `Project at '${projectPath}' is not registered in Elixir projections. Run 'foreman project register ${resolvedProjectPath}'.`,
+    );
   }
+
+  if (foremanBackendMode() === "elixir") {
+    const manager = new ElixirServerManager();
+    const status = await manager.ensureRunning();
+    if (!status.running) {
+      throw new Error("Elixir server is not running. Start it with 'foreman server start'.");
+    }
+    const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    return { backend: "elixir", client, projectId: project.id, projectPath };
+  }
+
   return {
+    backend: "node",
     client: createTrpcClient(),
     projectId: project.id,
     projectPath,
@@ -261,9 +282,41 @@ function boardTaskFromRow(row: TaskRow): BoardTask {
   };
 }
 
+function boardTaskFromElixir(row: ElixirTask): BoardTask {
+  const now = new Date().toISOString();
+  const id = row.task_id ?? row.id ?? "unknown";
+  return {
+    id,
+    title: row.title ?? id,
+    description: row.description ?? null,
+    type: row.type ?? row.task_type ?? "task",
+    priority: typeof row.priority === "number" ? row.priority : 2,
+    status: row.status ?? "backlog",
+    external_id: row.external_id ?? null,
+    created_at: row.created_at ?? row.updated_at ?? now,
+    updated_at: row.updated_at ?? row.created_at ?? now,
+    approved_at: row.approved_at ?? null,
+    closed_at: row.closed_at ?? null,
+    run_id: row.run_id ?? null,
+    notes: (row.annotations ?? []).map((note, index) => ({
+      id: `${id}-annotation-${index}`,
+      created_at: note.created_at ?? now,
+      phase: null,
+      kind: "note",
+      author: note.author ?? "unknown",
+      body: note.body,
+    })),
+  };
+}
+
 export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStatus, BoardTask[]>> {
-  const { client, projectId } = await resolveBoardContext(projectPath);
-  const rows = await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
+  const context = await resolveBoardContext(projectPath);
+  const rows = context.backend === "elixir"
+    ? (await context.client.listTasks())
+        .filter((task) => !task.project_id || task.project_id === context.projectId)
+        .map(boardTaskFromElixir)
+    : (await context.client.tasks.list({ projectId: context.projectId, limit: 1000 }) as TaskRow[])
+        .map(boardTaskFromRow);
 
   const map = new Map<BoardStatus, BoardTask[]>();
   for (const status of BOARD_STATUSES) {
@@ -272,15 +325,20 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
 
   for (const row of rows) {
     const status = boardColumnForTaskStatus(row.status);
-    map.get(status)!.push(boardTaskFromRow(row));
+    map.get(status)!.push(row);
   }
 
   return map;
 }
 
 export async function loadBoardTask(projectPath: string, taskId: string): Promise<BoardTask | null> {
-  const { client, projectId } = await resolveBoardContext(projectPath);
-  const row = await client.tasks.get({ projectId, taskId }) as TaskRow | null;
+  const context = await resolveBoardContext(projectPath);
+  if (context.backend === "elixir") {
+    const row = await context.client.getTask(taskId);
+    if (!row || (row.project_id && row.project_id !== context.projectId)) return null;
+    return boardTaskFromElixir(row);
+  }
+  const row = await context.client.tasks.get({ projectId: context.projectId, taskId }) as TaskRow | null;
   return row ? boardTaskFromRow(row) : null;
 }
 
@@ -292,7 +350,7 @@ interface BoardInboxMessageRow {
 
 interface BoardRunRow {
   id: string;
-  seed_id?: string | null;
+  task_id?: string | null;
   bead_id?: string | null;
 }
 
@@ -305,13 +363,18 @@ export async function pollBoardInboxTaskUpdates(
   projectPath: string,
   lastSeenId: string | null,
   limit = 100,
-  cursorSeeded = lastSeenId !== null,
+  cursorTasked = lastSeenId !== null,
 ): Promise<BoardInboxUpdateResult> {
-  const { client, projectId } = await resolveBoardContext(projectPath);
+  const context = await resolveBoardContext(projectPath);
+  if (context.backend === "elixir") {
+    return { taskIds: [], newestId: lastSeenId };
+  }
+
+  const { client, projectId } = context;
   const rows = await client.mail.listGlobal({ projectId, limit }) as BoardInboxMessageRow[];
   const newestId = rows[rows.length - 1]?.id ?? null;
 
-  if (!cursorSeeded) {
+  if (!cursorTasked) {
     return { taskIds: [], newestId };
   }
 
@@ -322,7 +385,7 @@ export async function pollBoardInboxTaskUpdates(
 
   for (const runId of runIds) {
     const run = await client.runs.get({ runId }) as BoardRunRow | null;
-    const taskId = run?.seed_id ?? run?.bead_id ?? null;
+    const taskId = run?.task_id ?? run?.bead_id ?? null;
     if (taskId) taskIds.add(taskId);
   }
 
@@ -363,10 +426,77 @@ export async function refreshBoardTasksById(
   return next;
 }
 
+export interface BoardTaskSnapshotUpdateResult {
+  taskIds: string[];
+  tasks: Map<BoardStatus, BoardTask[]>;
+}
+
+function boardTaskSignature(task: BoardTask): string {
+  return [
+    task.id,
+    task.status,
+    task.updated_at,
+    task.title,
+    task.priority,
+    task.run_id ?? "",
+  ].join("\u0000");
+}
+
+function flattenBoardTasks(taskMap: Map<BoardStatus, BoardTask[]>): Map<string, BoardTask> {
+  const flattened = new Map<string, BoardTask>();
+  for (const rows of taskMap.values()) {
+    for (const task of rows) flattened.set(task.id, task);
+  }
+  return flattened;
+}
+
+export function diffBoardTaskSnapshots(
+  previousTasks: Map<BoardStatus, BoardTask[]>,
+  nextTasks: Map<BoardStatus, BoardTask[]>,
+): string[] {
+  const previous = flattenBoardTasks(previousTasks);
+  const next = flattenBoardTasks(nextTasks);
+  const changed = new Set<string>();
+
+  for (const [taskId, task] of next) {
+    const prior = previous.get(taskId);
+    if (!prior || boardTaskSignature(prior) !== boardTaskSignature(task)) {
+      changed.add(taskId);
+    }
+  }
+
+  for (const taskId of previous.keys()) {
+    if (!next.has(taskId)) changed.add(taskId);
+  }
+
+  return [...changed];
+}
+
+export async function pollBoardTaskSnapshotUpdates(
+  projectPath: string,
+  currentTasks: Map<BoardStatus, BoardTask[]>,
+  sortMode: SortMode,
+): Promise<BoardTaskSnapshotUpdateResult> {
+  const loaded = sortBoardColumns(await loadBoardTasks(projectPath), sortMode);
+  return { taskIds: diffBoardTaskSnapshots(currentTasks, loaded), tasks: loaded };
+}
+
 export async function loadBoardTaskNotes(projectPath: string, taskId: string): Promise<BoardTaskNote[]> {
-  const { client, projectId } = await resolveBoardContext(projectPath);
-  const notes = await client.tasks.listNotes({
-    projectId,
+  const context = await resolveBoardContext(projectPath);
+  if (context.backend === "elixir") {
+    const task = await context.client.getTask(taskId);
+    return (task?.annotations ?? []).slice(-10).map((note, index) => ({
+      id: `${taskId}-annotation-${index}`,
+      created_at: note.created_at ?? new Date().toISOString(),
+      phase: null,
+      kind: "note",
+      author: note.author ?? "unknown",
+      body: note.body,
+    }));
+  }
+
+  const notes = await context.client.tasks.listNotes({
+    projectId: context.projectId,
     taskId,
     limit: 10,
     newestFirst: true,
@@ -394,7 +524,7 @@ const HIDE_CURSOR = "\x1b[?25l";
 const SHOW_CURSOR = "\x1b[?25h";
 
 /** Get the terminal width. */
-function getTerminalWidth(): number {
+export function getTerminalWidth(): number {
   return process.stdout.columns || 80;
 }
 
@@ -417,7 +547,7 @@ const MAX_VISIBLE_PER_COL = 5;
 const COLUMN_GAP = 1;
 const h = createElement;
 
-function getVisibleStatuses(
+export function getVisibleStatuses(
   terminalWidth: number,
   selectedColIndex: number,
 ): readonly BoardStatus[] {
@@ -1098,10 +1228,29 @@ export function applyStatusChange(projectPath: string, taskId: string, newStatus
   throw new Error("applyStatusChange is now async; use applyStatusChangeAsync().");
 }
 
+async function sendElixirBoardCommand(
+  client: ElixirServerClient,
+  commandType: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const commandId = `board-${commandType}-${randomUUID()}`;
+  const response = await client.sendCommand({
+    command_id: commandId,
+    command_type: commandType,
+    payload,
+    metadata: { correlation_id: commandId, source: "foreman-board" },
+  });
+  if (!response.ok) throw new Error(response.error.message);
+}
+
 export async function applyStatusChangeAsync(projectPath: string, taskId: string, newStatus: string): Promise<string | null> {
   try {
-    const { client, projectId } = await resolveBoardContext(projectPath);
-    await client.tasks.update({ projectId, taskId, updates: { status: newStatus } });
+    const context = await resolveBoardContext(projectPath);
+    if (context.backend === "elixir") {
+      await sendElixirBoardCommand(context.client, "task.update", { project_id: context.projectId, task_id: taskId, status: newStatus });
+    } else {
+      await context.client.tasks.update({ projectId: context.projectId, taskId, updates: { status: newStatus } });
+    }
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
@@ -1117,8 +1266,12 @@ export function closeTask(projectPath: string, taskId: string, reason?: string):
 
 export async function closeTaskAsync(projectPath: string, taskId: string, _reason?: string): Promise<string | null> {
   try {
-    const { client, projectId } = await resolveBoardContext(projectPath);
-    await client.tasks.close({ projectId, taskId });
+    const context = await resolveBoardContext(projectPath);
+    if (context.backend === "elixir") {
+      await sendElixirBoardCommand(context.client, "task.close", { project_id: context.projectId, task_id: taskId });
+    } else {
+      await context.client.tasks.close({ projectId: context.projectId, taskId });
+    }
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
@@ -1134,17 +1287,22 @@ export function saveEditedTask(projectPath: string, originalId: string, updated:
 
 export async function saveEditedTaskAsync(projectPath: string, originalId: string, updated: BoardTask): Promise<string | null> {
   try {
-    const { client, projectId } = await resolveBoardContext(projectPath);
-    await client.tasks.update({
-      projectId,
-      taskId: originalId,
-      updates: {
-        title: updated.title,
-        description: updated.description ?? undefined,
-        priority: updated.priority,
-        status: updated.status,
-      },
-    });
+    const context = await resolveBoardContext(projectPath);
+    const updates = {
+      title: updated.title,
+      description: updated.description ?? undefined,
+      priority: updated.priority,
+      status: updated.status,
+    };
+    if (context.backend === "elixir") {
+      await sendElixirBoardCommand(context.client, "task.update", { project_id: context.projectId, task_id: originalId, ...updates });
+    } else {
+      await context.client.tasks.update({
+        projectId: context.projectId,
+        taskId: originalId,
+        updates,
+      });
+    }
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
@@ -1320,9 +1478,23 @@ export async function createTaskAsync(
   taskData: { id?: string; title: string; description?: string | null; type?: string; priority?: number; status?: string },
 ): Promise<{ taskId: string } | string> {
   try {
-    const { client, projectId } = await resolveBoardContext(projectPath);
+    const context = await resolveBoardContext(projectPath);
+    const taskId = taskData.id || `task-${randomUUID().slice(0, 8)}`;
+    if (context.backend === "elixir") {
+      await sendElixirBoardCommand(context.client, "task.create", {
+        project_id: context.projectId,
+        task_id: taskId,
+        title: taskData.title,
+        description: taskData.description ?? undefined,
+        task_type: taskData.type,
+        priority: taskData.priority,
+        status: taskData.status,
+      });
+      return { taskId };
+    }
+
     const createInput: { projectId: string; id?: string; title: string; description?: string; type?: string; priority?: number; status?: string } = {
-      projectId,
+      projectId: context.projectId,
       title: taskData.title,
     };
     if (taskData.id) {
@@ -1340,7 +1512,7 @@ export async function createTaskAsync(
     if (taskData.status !== undefined) {
       createInput.status = taskData.status;
     }
-    const created = await client.tasks.create(createInput) as { id: string };
+    const created = await context.client.tasks.create(createInput) as { id: string };
     return { taskId: created.id };
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
@@ -1352,6 +1524,9 @@ export const boardApi = {
   createTaskAsync,
   applyStatusChangeAsync,
   loadTaskNotesAsync: loadBoardTaskNotes,
+  closeTaskAsync,
+  editTaskInEditor,
+  saveEditedTaskAsync,
   copyToClipboard,
 };
 
@@ -1524,7 +1699,7 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
         const task = getHighlightedTask(result.nav, state.tasks);
         if (!task) break;
 
-        const err = await closeTaskAsync(projectPath, task.id);
+        const err = await boardApi.closeTaskAsync(projectPath, task.id);
         if (err) {
           result.errorMessage = err;
         } else {
@@ -1570,12 +1745,12 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
         if (!task) break;
 
         const fullSchema = key === KEY_E;
-        const updated = editTaskInEditor(task, fullSchema, (msg) => {
+        const updated = boardApi.editTaskInEditor(task, fullSchema, (msg) => {
           result.errorMessage = msg;
         });
 
         if (updated && updated.id === task.id) {
-          const saveErr = await saveEditedTaskAsync(projectPath, task.id, updated);
+          const saveErr = await boardApi.saveEditedTaskAsync(projectPath, task.id, updated);
           if (saveErr) {
             result.errorMessage = saveErr;
           } else {
@@ -1734,7 +1909,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   let refreshSpinnerTimer: NodeJS.Timeout | null = null;
   let inboxMonitorTimer: NodeJS.Timeout | null = null;
   let boardInboxLastSeenId: string | null = null;
-  let boardInboxCursorSeeded = false;
+  let boardInboxCursorTasked = false;
   let inboxUpdateInFlight = false;
   let quit = false;
   let stdinRawMode = false;
@@ -1821,40 +1996,49 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
   } catch {
     boardInboxLastSeenId = null;
   }
-  boardInboxCursorSeeded = true;
+  boardInboxCursorTasked = true;
 
   const processInboxTaskUpdates = async () => {
     if (quit || inboxUpdateInFlight) return;
     inboxUpdateInFlight = true;
     try {
-      const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorSeeded);
-      if (update.taskIds.length === 0) {
+      let updatedTaskIds: string[] = [];
+
+      if (foremanBackendMode() === "elixir") {
+        const update = await pollBoardTaskSnapshotUpdates(projectPath, tasks, sortMode);
+        updatedTaskIds = update.taskIds;
+        if (updatedTaskIds.length > 0) {
+          tasks = update.tasks;
+        }
+      } else {
+        const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorTasked);
         if (update.newestId) {
           boardInboxLastSeenId = update.newestId;
         }
-        return;
+        if (update.taskIds.length > 0) {
+          const refreshedTasks = await Promise.all(
+            update.taskIds.map(async (taskId) => ({ taskId, task: await loadBoardTask(projectPath, taskId) })),
+          );
+          let nextTasks = tasks;
+          for (const { taskId, task } of refreshedTasks) {
+            nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
+          }
+          tasks = nextTasks;
+          updatedTaskIds = update.taskIds;
+        }
       }
 
-      const refreshedTasks = await Promise.all(
-        update.taskIds.map(async (taskId) => ({ taskId, task: await loadBoardTask(projectPath, taskId) })),
-      );
-      let nextTasks = tasks;
-      for (const { taskId, task } of refreshedTasks) {
-        nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
-      }
-      tasks = nextTasks;
-      if (update.newestId) {
-        boardInboxLastSeenId = update.newestId;
-      }
+      if (updatedTaskIds.length === 0) return;
+
       normalizeNavRowIndex(nav, tasks);
-      flashTaskId = update.taskIds[0] ?? null;
+      flashTaskId = updatedTaskIds[0] ?? null;
       refreshedAt = new Date().toLocaleTimeString();
       refreshStatus = "refreshed";
 
-      if (detailTask && update.taskIds.includes(detailTask.id)) {
+      if (detailTask && updatedTaskIds.includes(detailTask.id)) {
         const refreshedDetail = getHighlightedTask(nav, tasks)?.id === detailTask.id
           ? getHighlightedTask(nav, tasks)
-          : update.taskIds.includes(detailTask.id)
+          : updatedTaskIds.includes(detailTask.id)
             ? await loadBoardTask(projectPath, detailTask.id)
             : null;
         if (refreshedDetail) {
@@ -1864,7 +2048,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
 
       renderCurrentBoard();
     } catch (err) {
-      errorMessage = `Inbox monitor failed: ${err instanceof Error ? err.message : String(err)}`;
+      errorMessage = `Board monitor failed: ${err instanceof Error ? err.message : String(err)}`;
       renderCurrentBoard();
     } finally {
       inboxUpdateInFlight = false;

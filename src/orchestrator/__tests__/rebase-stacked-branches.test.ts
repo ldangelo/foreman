@@ -23,8 +23,8 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("../task-backend-ops.js", () => ({
-  enqueueResetSeedToOpen: vi.fn(),
-  enqueueCloseSeed: vi.fn(),
+  enqueueResetTaskToOpen: vi.fn(),
+  enqueueCloseTask: vi.fn(),
   enqueueSetBeadStatus: vi.fn(),
   enqueueAddNotesToBead: vi.fn(),
 }));
@@ -40,10 +40,10 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
     project_id: "proj-1",
-    seed_id: "seed-abc",
+    task_id: "task-abc",
     agent_type: "claude-code",
     session_key: null,
-    worktree_path: "/tmp/worktrees/seed-abc",
+    worktree_path: "/tmp/worktrees/task-abc",
     status: "completed",
     started_at: new Date().toISOString(),
     completed_at: null,
@@ -134,14 +134,14 @@ function makeMocks(
     getDb: vi.fn(() => mockDb),
     sendMessage: vi.fn(),
   };
-  const seeds = {
+  const tasks = {
     getGraph: vi.fn(async () => ({ edges: [] })),
     show: vi.fn(async () => null),
     update: vi.fn(async () => undefined),
   };
   const vcs = makeMockVcs(vcsOverrides);
-  const refinery = new Refinery(store as any, seeds as any, "/tmp/project", vcs);
-  return { store, seeds, refinery, vcs };
+  const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcs);
+  return { store, tasks, refinery, vcs };
 }
 
 function makeRegisteredMocks(
@@ -155,7 +155,7 @@ function makeRegisteredMocks(
     getRunsByStatuses: vi.fn().mockResolvedValue([]),
     getRunsByBaseBranch: vi.fn().mockResolvedValue(stackedRuns),
   };
-  const refinery = new Refinery(mocks.store as any, mocks.seeds as any, "/tmp/project", mocks.vcs, {
+  const refinery = new Refinery(mocks.store as any, mocks.tasks as any, "/tmp/project", mocks.vcs, {
     runLookup: runLookup as any,
     registeredProjectId: "proj-1",
   });
@@ -179,7 +179,7 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
   });
 
   it("calls getRunsByBaseBranch with the merged branch name after a successful merge", async () => {
-    const mergedRun = makeRun({ seed_id: "story-1", status: "completed" });
+    const mergedRun = makeRun({ task_id: "story-1", status: "completed" });
     const { store, refinery } = makeMocks([]);
     store.getRunsByStatus.mockReturnValue([mergedRun]);
 
@@ -189,8 +189,8 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
   });
 
   it("rebases stacked branches onto target via VcsBackend.restackBranch", async () => {
-    const mergedRun = makeRun({ seed_id: "story-1", status: "completed" });
-    const stackedRun = makeRun({ id: "run-2", seed_id: "story-2", status: "running", base_branch: "foreman/story-1" });
+    const mergedRun = makeRun({ task_id: "story-1", status: "completed" });
+    const stackedRun = makeRun({ id: "run-2", task_id: "story-2", status: "running", base_branch: "foreman/story-1" });
     const branchExists = vi.fn().mockResolvedValue(true);
     const restackBranch = vi.fn().mockResolvedValue({ success: true, hasConflicts: false });
     const { store, refinery, vcs } = makeMocks([stackedRun], { branchExists, restackBranch });
@@ -208,8 +208,8 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
   });
 
   it("skips rebasing stacked run when its branch does not exist locally", async () => {
-    const mergedRun = makeRun({ seed_id: "story-1", status: "completed" });
-    const stackedRun = makeRun({ id: "run-2", seed_id: "story-2", status: "running", base_branch: "foreman/story-1" });
+    const mergedRun = makeRun({ task_id: "story-1", status: "completed" });
+    const stackedRun = makeRun({ id: "run-2", task_id: "story-2", status: "running", base_branch: "foreman/story-1" });
     const { store, refinery, vcs } = makeMocks([stackedRun], {
       branchExists: vi.fn().mockResolvedValue(false),
       restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
@@ -223,8 +223,8 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
   });
 
   it("skips rebasing stacked runs with terminal statuses (merged, failed)", async () => {
-    const mergedRun = makeRun({ seed_id: "story-1", status: "completed" });
-    const stackedRun = makeRun({ id: "run-2", seed_id: "story-2", status: "merged", base_branch: "foreman/story-1" });
+    const mergedRun = makeRun({ task_id: "story-1", status: "completed" });
+    const stackedRun = makeRun({ id: "run-2", task_id: "story-2", status: "merged", base_branch: "foreman/story-1" });
     const { store, refinery, vcs } = makeMocks([stackedRun], {
       branchExists: vi.fn().mockResolvedValue(true),
       restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
@@ -238,8 +238,8 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
   });
 
   it("merge succeeds even if restack of stacked branch fails", async () => {
-    const mergedRun = makeRun({ seed_id: "story-1", status: "completed" });
-    const stackedRun = makeRun({ id: "run-2", seed_id: "story-2", status: "running", base_branch: "foreman/story-1" });
+    const mergedRun = makeRun({ task_id: "story-1", status: "completed" });
+    const stackedRun = makeRun({ id: "run-2", task_id: "story-2", status: "running", base_branch: "foreman/story-1" });
     const { store, refinery, vcs } = makeMocks([stackedRun], {
       branchExists: vi.fn().mockResolvedValue(true),
       restackBranch: vi.fn().mockResolvedValue({ success: false, hasConflicts: true, conflictingFiles: ["src/conflict.ts"] }),
@@ -256,8 +256,8 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
   });
 
   it("updates base_branch to null in store when rebase succeeds", async () => {
-    const mergedRun = makeRun({ seed_id: "story-1", status: "completed" });
-    const stackedRun = makeRun({ id: "run-2", seed_id: "story-2", status: "running", base_branch: "foreman/story-1" });
+    const mergedRun = makeRun({ task_id: "story-1", status: "completed" });
+    const stackedRun = makeRun({ id: "run-2", task_id: "story-2", status: "running", base_branch: "foreman/story-1" });
     const { store, refinery } = makeMocks([stackedRun], {
       branchExists: vi.fn().mockResolvedValue(true),
       restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
@@ -272,9 +272,9 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
     );
   });
 
-  it("uses the registered run update helper to clear base_branch when rebase succeeds", async () => {
-    const mergedRun = makeRun({ seed_id: "story-1", status: "completed" });
-    const stackedRun = makeRun({ id: "run-3", seed_id: "story-3", status: "running", base_branch: "foreman/story-1" });
+  it("uses the store compatibility update helper to clear base_branch when rebase succeeds", async () => {
+    const mergedRun = makeRun({ task_id: "story-1", status: "completed" });
+    const stackedRun = makeRun({ id: "run-3", task_id: "story-3", status: "running", base_branch: "foreman/story-1" });
     const { store, refinery, runLookup } = makeRegisteredMocks([stackedRun], {
       branchExists: vi.fn().mockResolvedValue(true),
       restackBranch: vi.fn().mockResolvedValue({ success: true, hasConflicts: false }),
@@ -283,12 +283,8 @@ describe("Refinery.rebaseStackedBranches() (via mergeCompleted)", () => {
 
     await refinery.mergeCompleted({ runTests: false });
 
-    expect(mockPostgresUpdateRun).toHaveBeenCalledWith(
-      "proj-1",
-      "run-3",
-      expect.objectContaining({ base_branch: null }),
-    );
-    expect(store.updateRun).not.toHaveBeenCalledWith(
+    expect(mockPostgresUpdateRun).not.toHaveBeenCalled();
+    expect(store.updateRun).toHaveBeenCalledWith(
       "run-3",
       expect.objectContaining({ base_branch: null }),
     );

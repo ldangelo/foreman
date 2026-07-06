@@ -59,6 +59,7 @@ const VCSBACKEND_MEMBERS: string[] = [
   "branchExists",
   "branchExistsOnRemote",
   "deleteBranch",
+  "deleteRemoteBranch",
   // Workspace / Worktree Operations
   "createWorkspace",
   "removeWorkspace",
@@ -186,9 +187,9 @@ describe("AC-T-035: Documentation Completeness — VcsBackend", () => {
       }
     });
 
-    it("documents the total expected number of interface members (30)", () => {
+    it("documents the total expected number of interface members (31)", () => {
       // Sanity check: VCSBACKEND_MEMBERS list is up to date with interface.ts
-      expect(VCSBACKEND_MEMBERS.length).toBe(30);
+      expect(VCSBACKEND_MEMBERS.length).toBe(31);
     });
 
     it("each member is referenced at least once in the doc body", () => {

@@ -311,7 +311,7 @@ Enhanced queue management with AI insights:
 **Purpose:** Analyze branches before merge to inform strategy
 
 **Inputs:**
-- Branch name and seed ID
+- Branch name and task ID
 - Commit history (count, age, messages)
 - Diff statistics (files, lines, types)
 - Conflict markers (if any)
@@ -562,7 +562,7 @@ interface MergeContext {
   state: MergeState;
   branchName: string;
   targetBranch: string;
-  seedId: string;
+  taskId: string;
   runId: string;
   decision?: MergeDecision;
   conflicts?: ConflictResult[];

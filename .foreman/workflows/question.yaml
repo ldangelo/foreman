@@ -43,14 +43,13 @@ phases:
       forwardArtifactTo: foreman
 
   - name: finalize
-    prompt: finalize.md
-    models:
-      default: haiku
-    maxTurns: 15
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
-    retryWith: explore
-    retryOnFail: 0
+    retryWith: developer
+    retryOnFail: 1
     mail:
-      onStart: false
+      onStart: true
       onComplete: true
+      onFail: developer

@@ -42,6 +42,7 @@ export interface PrWaitSnapshot {
   checks: GhCheck[];
   codeRabbitComments: number;
   codeRabbitReviews?: number;
+  blockingFindings?: CodeRabbitFinding[];
 }
 
 export interface PrWaitStatus {
@@ -50,6 +51,7 @@ export interface PrWaitStatus {
   failedChecks: FailedCheckFinding[];
   codeRabbitSeen: boolean;
   codeRabbitComplete: boolean;
+  blockingFindings: CodeRabbitFinding[];
   mergeConflict: boolean;
   mergeConflictReason?: string;
 }
@@ -136,6 +138,7 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
     // submitted. Only ignore that unset rollup once review completion is proven.
     .filter((check) => !(codeRabbitComplete && isCodeRabbitCheck(check)))
     .map((check) => getCheckName(check));
+  const blockingFindings = snapshot.blockingFindings ?? [];
   const mergeable = snapshot.mergeable?.toUpperCase();
   const mergeStateStatus = snapshot.mergeStateStatus?.toUpperCase();
   const mergeConflict = mergeable === "CONFLICTING" || mergeStateStatus === "DIRTY";
@@ -148,13 +151,14 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
     failedChecks: parseFailedChecks(snapshot.checks),
     codeRabbitSeen,
     codeRabbitComplete,
+    blockingFindings,
     mergeConflict,
     mergeConflictReason,
   };
 }
 
 export function isPrWaitStatusReady(status: PrWaitStatus): boolean {
-  return status.checksTerminal && status.codeRabbitComplete && !status.mergeConflict;
+  return status.checksTerminal && status.failedChecks.length === 0 && status.codeRabbitComplete && status.blockingFindings.length === 0 && !status.mergeConflict;
 }
 
 export function updatePrReadyStability(status: PrWaitStatus, readySince: number | undefined, now: number, stabilityMs: number): PrReadyStability {
@@ -285,6 +289,10 @@ export async function collectPrWaitSnapshot(projectPath: string, prNumber: numbe
     checks: pr.statusCheckRollup ?? [],
     codeRabbitComments,
     codeRabbitReviews,
+    blockingFindings: [
+      ...parseCodeRabbitFindings(reviewComments, "review-comment"),
+      ...parseCodeRabbitFindings(issueComments, "issue-comment"),
+    ],
   };
 }
 
@@ -321,12 +329,13 @@ export function renderPrWaitReport(snapshot: PrWaitSnapshot, timedOut: boolean):
     `- Status: ${status.codeRabbitComplete ? "COMPLETE" : status.codeRabbitSeen ? "SEEN" : timedOut ? "TIMEOUT" : "PENDING"}`,
     `- Comments: ${snapshot.codeRabbitComments}`,
     `- Reviews: ${snapshot.codeRabbitReviews ?? 0}`,
+    `- Blocking Findings: ${status.blockingFindings.length}`,
     ``,
     `## Mergeability`,
     `- Status: ${status.mergeConflict ? "CONFLICT" : "OK"}`,
     `- Reason: ${status.mergeConflictReason ?? "none"}`,
     ``,
-    `## Verdict: ${status.checksTerminal && status.codeRabbitComplete && !status.mergeConflict ? "PASS" : "FAIL"}`,
+    `## Verdict: ${isPrWaitStatusReady(status) ? "PASS" : "FAIL"}`,
   ];
   return lines.join("\n") + "\n";
 }

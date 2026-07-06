@@ -8,7 +8,7 @@
  * - AC-T-028-2: jj binary missing + backend=auto    → status=warn, message contains "WARNING"
  * - AC-T-028-3: backend=jujutsu + .jj/repo/store/git missing → status=fail, message contains "colocated"
  *
- * Seed: bd-g43l
+ * Task: bd-g43l
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";

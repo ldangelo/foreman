@@ -52,8 +52,8 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
     async getCurrentBranch(_path: string): Promise<string> { return "main"; }
     async detectDefaultBranch(_path: string): Promise<string> { return "main"; }
     async branchExists(_path: string, _branch: string): Promise<boolean> { return false; }
-    async createWorkspace(_repoPath: string, seedId: string): Promise<{ workspacePath: string; branchName: string }> {
-      return { workspacePath: `/tmp/worktrees/${seedId}`, branchName: `foreman/${seedId}` };
+    async createWorkspace(_repoPath: string, taskId: string): Promise<{ workspacePath: string; branchName: string }> {
+      return { workspacePath: `/tmp/worktrees/${taskId}`, branchName: `foreman/${taskId}` };
     }
   },
 }));
@@ -99,8 +99,8 @@ function makeGitBackend(): VcsBackend {
   return {
     name: "git",
     createWorkspace: vi.fn().mockResolvedValue({
-      workspacePath: "/tmp/worktrees/test-seed",
-      branchName: "foreman/test-seed",
+      workspacePath: "/tmp/worktrees/test-task",
+      branchName: "foreman/test-task",
     }),
     getCurrentBranch: vi.fn().mockResolvedValue("main"),
     detectDefaultBranch: vi.fn().mockResolvedValue("main"),
@@ -112,8 +112,8 @@ function makeJujutsuBackend(): VcsBackend {
   return {
     name: "jujutsu",
     createWorkspace: vi.fn().mockResolvedValue({
-      workspacePath: "/tmp/worktrees/test-seed",
-      branchName: "foreman/test-seed",
+      workspacePath: "/tmp/worktrees/test-task",
+      branchName: "foreman/test-task",
     }),
     getCurrentBranch: vi.fn().mockResolvedValue("main"),
     detectDefaultBranch: vi.fn().mockResolvedValue("main"),
@@ -126,10 +126,10 @@ function makeStore(): ForemanStore {
     getActiveRuns: vi.fn().mockReturnValue([]),
     getRunsByStatus: vi.fn().mockReturnValue([]),
     getRunsByStatuses: vi.fn().mockReturnValue([]),
-    getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+    getStuckRunsForTask: vi.fn().mockReturnValue([]),
     getPendingBeadWrites: vi.fn().mockReturnValue([]),
     hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
-    getRunsForSeed: vi.fn().mockReturnValue([]),
+    getRunsForTask: vi.fn().mockReturnValue([]),
     createRun: vi.fn().mockReturnValue({ id: "run-001" }),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
@@ -137,8 +137,8 @@ function makeStore(): ForemanStore {
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-001" }),
     hasNativeTasks: vi.fn().mockReturnValue(true),
     getReadyTasks: vi.fn().mockReturnValue([{
-      id: "test-seed",
-      title: "Test Seed",
+      id: "test-task",
+      title: "Test Task",
       description: "task description",
       type: "task",
       priority: 2,
@@ -158,10 +158,10 @@ function makeStore(): ForemanStore {
   } as unknown as ForemanStore;
 }
 
-function makeSeeds(issue?: Partial<Issue>): ITaskClient {
-  const seed: Issue = {
-    id: "test-seed",
-    title: "Test Seed",
+function makeTasks(issue?: Partial<Issue>): ITaskClient {
+  const task: Issue = {
+    id: "test-task",
+    title: "Test Task",
     status: "open",
     priority: "P2",
     type: "task",
@@ -172,7 +172,7 @@ function makeSeeds(issue?: Partial<Issue>): ITaskClient {
     ...issue,
   };
   return {
-    ready: vi.fn().mockResolvedValue([seed]),
+    ready: vi.fn().mockResolvedValue([task]),
     show: vi.fn().mockResolvedValue({ status: "open", description: "task description" }),
     update: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
@@ -203,8 +203,8 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
     vi.mocked(VcsBackendFactory.create).mockResolvedValue(gitBackend);
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
 
     // Mock the private spawnAgent method to prevent actual process spawning
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
@@ -230,8 +230,8 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
     vi.mocked(VcsBackendFactory.create).mockResolvedValue(jjBackend);
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     await dispatcher.dispatch({ dryRun: false });
@@ -254,8 +254,8 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
     vi.mocked(VcsBackendFactory.create).mockResolvedValue(gitBackend);
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     await dispatcher.dispatch({ dryRun: false });
@@ -267,7 +267,7 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
     );
   });
 
-  it("VcsBackend is created once per seed per dispatch call", async () => {
+  it("VcsBackend is created once per task per dispatch call", async () => {
     const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
     vi.mocked(loadWorkflowConfig).mockReturnValue({
       name: "default",
@@ -278,13 +278,13 @@ describe("Dispatcher — VCS Backend creation (TRD-015, AC-T-015-1)", () => {
     vi.mocked(VcsBackendFactory.create).mockResolvedValue(makeGitBackend());
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     await dispatcher.dispatch({ dryRun: false });
 
-    // Called exactly once for the single ready seed
+    // Called exactly once for the single ready task
     expect(VcsBackendFactory.create).toHaveBeenCalledTimes(1);
   });
 
@@ -313,8 +313,8 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
     vi.mocked(VcsBackendFactory.create).mockResolvedValue(gitBackend);
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
 
     // Spy on private spawnAgent to capture the vcsBackend argument
     const spawnAgentSpy = vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
@@ -344,10 +344,10 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
     const createdRun = {
       id: "run-registered",
       project_id: "proj-registered",
-      seed_id: "test-seed",
+      task_id: "test-task",
       agent_type: "claude-sonnet-4-6",
       session_key: null,
-      worktree_path: "/tmp/worktrees/proj-registered/test-seed",
+      worktree_path: "/tmp/worktrees/proj-registered/test-task",
       status: "pending",
       started_at: null,
       completed_at: null,
@@ -361,7 +361,7 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
       externalProjectId: "proj-registered",
       getActiveRuns: vi.fn().mockResolvedValue([]),
       getRunsByStatus: vi.fn().mockResolvedValue([]),
-      getRunsForSeed: vi.fn().mockResolvedValue([]),
+      getRunsForTask: vi.fn().mockResolvedValue([]),
       runOps: {
         createRun: vi.fn().mockResolvedValue(createdRun),
         updateRun: vi.fn().mockResolvedValue(undefined),
@@ -370,8 +370,8 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
       },
     };
 
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project", null, overrides);
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     await dispatcher.dispatch({ dryRun: false, projectId: "proj-registered" });
@@ -385,7 +385,7 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
       "run-registered",
       "proj-registered",
       "dispatch",
-      expect.objectContaining({ seedId: "test-seed" }),
+      expect.objectContaining({ taskId: "test-task" }),
     );
     expect(overrides.runOps.sendMessage).toHaveBeenCalledWith(
       "run-registered",
@@ -412,12 +412,12 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
     } as unknown as ReturnType<typeof loadWorkflowConfig>);
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, {
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project", null, {
       externalProjectId: "proj-registered",
       getActiveRuns: vi.fn().mockResolvedValue([]),
       getRunsByStatus: vi.fn().mockResolvedValue([]),
-      getRunsForSeed: vi.fn().mockResolvedValue([]),
+      getRunsForTask: vi.fn().mockResolvedValue([]),
       runOps: {
         createRun: vi.fn().mockResolvedValue(undefined),
         updateRun: vi.fn().mockResolvedValue(undefined),
@@ -429,7 +429,7 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
       "Registered dispatcher write override missing runOps.sendMessage",
     );
 
-    expect(seeds.ready).not.toHaveBeenCalled();
+    expect(tasks.ready).not.toHaveBeenCalled();
     expect(store.createRun).not.toHaveBeenCalled();
     expect(store.updateRun).not.toHaveBeenCalled();
     expect(store.logEvent).not.toHaveBeenCalled();
@@ -449,8 +449,8 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
     vi.mocked(VcsBackendFactory.create).mockResolvedValue(jjBackend);
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
     const spawnAgentSpy = vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     await dispatcher.dispatch({ dryRun: false });
@@ -473,8 +473,8 @@ describe("Dispatcher — VcsBackend propagation to spawnAgent (TRD-015, AC-T-015
     vi.mocked(VcsBackendFactory.create).mockRejectedValue(new Error("VCS backend unavailable"));
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
     const spawnAgentSpy = vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     await dispatcher.dispatch({ dryRun: false });
@@ -497,7 +497,7 @@ describe("Dispatcher — VcsBackend creation failure is non-fatal (TRD-015, AC-T
     mockShowFn = vi.fn().mockRejectedValue(new Error("not found"));
   });
 
-  it("dispatch continues and dispatches the seed even when VcsBackend creation fails", async () => {
+  it("dispatch continues and dispatches the task even when VcsBackend creation fails", async () => {
     const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
     vi.mocked(loadWorkflowConfig).mockReturnValue({
       name: "default",
@@ -508,16 +508,16 @@ describe("Dispatcher — VcsBackend creation failure is non-fatal (TRD-015, AC-T
     vi.mocked(VcsBackendFactory.create).mockRejectedValue(new Error("VCS backend unavailable"));
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     // Should NOT throw — VcsBackend creation failure is non-fatal
     const result = await dispatcher.dispatch({ dryRun: false });
 
-    // The seed should still be dispatched (not skipped due to VCS failure)
+    // The task should still be dispatched (not skipped due to VCS failure)
     expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0].seedId).toBe("test-seed");
+    expect(result.dispatched[0].taskId).toBe("test-task");
   });
 });
 
@@ -540,12 +540,12 @@ describe("Dispatcher — onError=stop uses registered run failure counts", () =>
     } as unknown as ReturnType<typeof loadWorkflowConfig>);
 
     const store = makeStore();
-    const seeds = makeSeeds();
+    const tasks = makeTasks();
     const overrides = {
       getRecentFailureCount: vi.fn().mockResolvedValue(1),
       getActiveRuns: vi.fn().mockResolvedValue([]),
     };
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project", null, overrides);
 
     const result = await dispatcher.dispatch({ dryRun: false });
 
@@ -567,12 +567,12 @@ describe("Dispatcher — onError=stop uses registered run failure counts", () =>
     })) as unknown as typeof loadWorkflowConfig);
 
     const store = makeStore();
-    const seeds = makeSeeds();
+    const tasks = makeTasks();
     const overrides = {
       getRecentFailureCount: vi.fn().mockResolvedValue(1),
       getActiveRuns: vi.fn().mockResolvedValue([]),
     };
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project", null, overrides);
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     const result = await dispatcher.dispatch({ dryRun: false, workflow: "quick" });
@@ -592,12 +592,12 @@ describe("Dispatcher — onError=stop uses registered run failure counts", () =>
     })) as unknown as typeof loadWorkflowConfig);
 
     const store = makeStore();
-    const seeds = makeSeeds();
+    const tasks = makeTasks();
     const overrides = {
       getRecentFailureCount: vi.fn().mockResolvedValue(1),
       getActiveRuns: vi.fn().mockResolvedValue([]),
     };
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project", null, overrides);
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     const result = await dispatcher.dispatch({ dryRun: false });
@@ -636,8 +636,8 @@ describe("buildWorkerEnv — FOREMAN_VCS_BACKEND propagation via VcsBackend.name
     vi.mocked(VcsBackendFactory.create).mockResolvedValue(gitBackend);
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
     const spawnAgentSpy = vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     await dispatcher.dispatch({ dryRun: false });
@@ -659,7 +659,7 @@ describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace cre
     );
   });
 
-  it("calls WorktreeManager.createWorktree() when dispatching a seed (TRD-037)", async () => {
+  it("calls WorktreeManager.createWorktree() when dispatching a task (TRD-037)", async () => {
     const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
     vi.mocked(loadWorkflowConfig).mockReturnValue({
       name: "default",
@@ -670,8 +670,8 @@ describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace cre
     vi.mocked(VcsBackendFactory.create).mockResolvedValue(makeGitBackend());
 
     const store = makeStore();
-    const seeds = makeSeeds();
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project");
+    const tasks = makeTasks();
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project");
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
 
     // Spy on the WorktreeManager module
@@ -683,7 +683,7 @@ describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace cre
     // WorktreeManager.createWorktree() should be called with projectId, beadId, repoPath, baseBranch
     expect(createWorktreeSpy).toHaveBeenCalledWith({
       projectId: "proj-001",
-      beadId: "test-seed",
+      beadId: "test-task",
       repoPath: "/tmp/project",
       baseBranch: "main",
     });
@@ -709,21 +709,21 @@ describe("Dispatcher — registered override-backed dependency stacking", () => 
 
     vi.mocked(VcsBackendFactory.create).mockResolvedValue({
       name: "git",
-      createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/tmp/worktrees/test-seed", branchName: "foreman/test-seed" }),
+      createWorkspace: vi.fn().mockResolvedValue({ workspacePath: "/tmp/worktrees/test-task", branchName: "foreman/test-task" }),
       getCurrentBranch: vi.fn().mockResolvedValue("main"),
       detectDefaultBranch: vi.fn().mockResolvedValue("main"),
       branchExists: vi.fn().mockResolvedValue(true),
     } as unknown as VcsBackend);
 
     const store = makeStore();
-    store.getRunsForSeed = vi.fn().mockResolvedValue([]);
+    store.getRunsForTask = vi.fn().mockResolvedValue([]);
     const overrides = {
-      getRunsForSeed: vi.fn(async (seedId: string, _projectId: string) => {
-        if (seedId === "dep-a") {
+      getRunsForTask: vi.fn(async (taskId: string, _projectId: string) => {
+        if (taskId === "dep-a") {
           return [{
             id: "run-dep-a",
             project_id: "proj-001",
-            seed_id: "dep-a",
+            task_id: "dep-a",
             agent_type: "claude-code",
             session_key: null,
             worktree_path: "/tmp/worktrees/dep-a",
@@ -739,15 +739,15 @@ describe("Dispatcher — registered override-backed dependency stacking", () => 
       }),
     };
 
-    const seeds = makeSeeds({ id: "seed-b", title: "Test Seed" });
-    const dispatcher = new Dispatcher(seeds, store, "/tmp/project", null, overrides);
+    const tasks = makeTasks({ id: "task-b", title: "Test Task" });
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project", null, overrides);
     vi.spyOn(dispatcher as any, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
     const { WorktreeManager } = await import("../../lib/worktree-manager.js");
     const createWorktreeSpy = vi.spyOn(WorktreeManager.prototype, "createWorktree");
 
     await dispatcher.dispatch({ dryRun: false });
 
-    expect(overrides.getRunsForSeed).not.toHaveBeenCalledWith("dep-a", "proj-001");
+    expect(overrides.getRunsForTask).not.toHaveBeenCalledWith("dep-a", "proj-001");
     expect(createWorktreeSpy).toHaveBeenCalledWith(expect.objectContaining({ baseBranch: "main" }));
   });
 });

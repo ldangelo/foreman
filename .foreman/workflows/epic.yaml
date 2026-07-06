@@ -12,7 +12,7 @@
 #
 # Artifact path conventions:
 #   - PRD/TRD: docs/PRD/PRD-{yyyymm}-{title-slug}.md (project docs, committed)
-#   - Phase reports: docs/reports/{seedId}/{REPORT}.md (execution reports, committed)
+#   - Phase reports: docs/reports/{taskId}/{REPORT}.md (execution reports, committed)
 #
 # skipIfArtifact: checked at phase start to skip if report already exists.
 
@@ -133,18 +133,16 @@ phases:
 
   # ── Phase 6: finalize ───────────────────────────────────────────────────
   - name: finalize
-    prompt: finalize.md
-    models:
-      default: MiniMax
-    maxTurns: 30
+    builtin: true
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 30
     verdict: true
     retryWith: developer
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-
+      onFail: developer
 onFailure:
   name: troubleshooter
   prompt: troubleshooter.md

@@ -51,7 +51,7 @@ Migrate the broken local-store tests and remaining local-store production paths 
    - Changes: Call `ensureCliPostgresPool(projectPath)` immediately after resolving a registered project and before any `createTaskClient`, `PostgresStore.forProject`, `PostgresAdapter`, or `ProjectRegistry({ pg })` use.
    - Acceptance: `foreman reset --bead foreman-b91dc --project foreman --dry-run` no longer throws `PoolManager not initialised`; command tests no longer fail for Postgres init order.
 
-9. **Rewrite CLI tests that seed local ForemanStore state**: Migrate command fixtures to registered Postgres project fixtures.
+9. **Rewrite CLI tests that task local ForemanStore state**: Migrate command fixtures to registered Postgres project fixtures.
    - Files: `src/cli/__tests__/task.test.ts`, `src/cli/__tests__/attach.test.ts`, `src/cli/__tests__/attach-follow.test.ts`, `src/cli/__tests__/retry.test.ts`, `src/cli/__tests__/stop.test.ts`, `src/cli/__tests__/inbox.test.ts`, `src/cli/__tests__/purge-logs.test.ts`, `src/cli/__tests__/purge-zombie-runs.test.ts`, `src/cli/__tests__/doctor.test.ts`, `src/cli/__tests__/doctor-native-mode.test.ts`, `src/cli/__tests__/task-project-resolution.test.ts`, `src/cli/commands/__tests__/task-project-resolution.test.ts`
    - Changes: Replace temp `ForemanStore` setup with Testcontainers registered project setup or explicit mocks at process-boundary tests; use real `PostgresStore` for state assertions.
    - Acceptance: Each listed file passes individually; no test asserts `.foreman/foreman.db` or unregistered local persistence.
@@ -61,7 +61,7 @@ Migrate the broken local-store tests and remaining local-store production paths 
    - Files: `src/orchestrator/__tests__/bead-writer-drain.test.ts`, `src/orchestrator/__tests__/task-backend-ops-enqueue.test.ts`, `src/orchestrator/__tests__/doctor.test.ts`, `src/orchestrator/__tests__/doctor-native-task-store.test.ts`, `src/orchestrator/__tests__/task-backend-ops.test.ts`, `src/orchestrator/__tests__/worker-spawn.test.ts`, `src/orchestrator/__tests__/dispatcher-native-integration.test.ts`
    - Changes: Use Testcontainers project fixture and `PostgresStore`/`PostgresAdapter`; update dispatcher/test helpers to accept `IStore`/Postgres-compatible interfaces instead of concrete `ForemanStore` where needed.
    - Acceptance: Listed files pass individually; bead writer tests verify rows in Postgres `bead_write_queue`.
-   - Reason for test changes: These tests currently seed/query a disabled local DB, causing null/undefined failures.
+   - Reason for test changes: These tests currently task/query a disabled local DB, causing null/undefined failures.
 
 11. **Retire or quarantine obsolete local-store-only assertions**: Remove tests whose only purpose was sqlite/local file behavior, not Foreman behavior.
    - Files: `src/lib/__tests__/store.test.ts`, `src/orchestrator/__tests__/doctor.test.ts`, any test section mentioning `.foreman/foreman.db`, readonly sqlite handles, local/global sqlite migration, or sqlite lock/contention.

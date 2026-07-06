@@ -163,6 +163,11 @@ export interface WorkflowPhaseConfig {
    */
   retryWith?: string;
   /**
+   * Optional failure-reason routing map. Keys are reason prefixes or `/regex/`
+   * strings; values are retry phase names. Falls back to retryWith.
+   */
+  retryWithByReason?: Record<string, string>;
+  /**
    * Max retry count when this phase fails (verdict FAIL).
    * When retryWith is set, the executor loops back retryOnFail times.
    */
@@ -515,6 +520,13 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["artifact"] === "string") phase.artifact = p["artifact"];
     if (typeof p["verdict"] === "boolean") phase.verdict = p["verdict"];
     if (typeof p["retryWith"] === "string") phase.retryWith = p["retryWith"];
+    if (isRecord(p["retryWithByReason"])) {
+      const routing: Record<string, string> = {};
+      for (const [key, value] of Object.entries(p["retryWithByReason"])) {
+        if (typeof value === "string") routing[key] = value;
+      }
+      if (Object.keys(routing).length > 0) phase.retryWithByReason = routing;
+    }
     if (typeof p["retryOnFail"] === "number") phase.retryOnFail = p["retryOnFail"];
     if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
     if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];
@@ -1008,16 +1020,11 @@ export function findMissingWorkflows(_projectRoot: string): string[] {
 }
 
 /**
- * Find locally installed workflow configs that are stale (missing critical
- * verdict/retry fields that exist in the bundled default).
+ * Find locally installed workflow configs that differ from bundled defaults.
  *
- * A workflow is considered stale when any phase in the bundled version has
- * `verdict: true` but the corresponding local phase is missing `verdict`,
- * `retryWith`, or `retryOnFail`.
- *
- * This catches the class of bugs where `foreman init` installs an older copy
- * of a workflow YAML and subsequent updates to the bundled default (adding
- * verdict/retry config) are never propagated to the project-local copy.
+ * A workflow is considered stale when the installed YAML content does not match
+ * the bundled version. Operators must run `foreman init --force` after editing
+ * source workflows/prompts so runtime dispatch uses the intended lifecycle.
  *
  * @param projectRoot - Absolute path to the project root.
  * @returns Array of stale workflow names (present but outdated).
@@ -1032,57 +1039,11 @@ export function findStaleWorkflows(_projectRoot: string): string[] {
     if (!existsSync(bundledPath)) continue; // no bundled reference to compare against
 
     try {
-      const localRaw = yamlLoad(readFileSync(localPath, "utf-8")) as {
-        phases?: Array<{ name: string; [k: string]: unknown }>;
-        [k: string]: unknown;
-      };
-      const bundledRaw = yamlLoad(readFileSync(bundledPath, "utf-8")) as {
-        phases?: Array<{ name: string; [k: string]: unknown }>;
-        [k: string]: unknown;
-      };
-
-      if (bundledRaw?.["task_type"] !== undefined && localRaw?.["task_type"] !== bundledRaw["task_type"]) {
-        stale.push(name);
-        continue;
-      }
-
-      if (!Array.isArray(localRaw?.phases) || !Array.isArray(bundledRaw?.phases)) continue;
-
-      // Build a map from phase name → phase config for the local file
-      const localPhaseMap = new Map<string, Record<string, unknown>>();
-      for (const p of localRaw.phases) {
-        if (typeof p.name === "string") {
-          localPhaseMap.set(p.name, p as Record<string, unknown>);
-        }
-      }
-
-      // Check each bundled verdict-phase exists locally with the required fields
-      let isStale = false;
-      for (const bundledPhase of bundledRaw.phases) {
-        if (typeof bundledPhase.name !== "string") continue;
-        if (bundledPhase["verdict"] !== true) continue; // only check verdict phases
-
-        const localPhase = localPhaseMap.get(bundledPhase.name);
-        if (!localPhase) {
-          isStale = true;
-          break;
-        }
-
-        // Stale if local phase is missing verdict, retryWith, or retryOnFail
-        // that the bundled version defines
-        if (
-          (bundledPhase["verdict"] === true && localPhase["verdict"] !== true) ||
-          (bundledPhase["retryWith"] !== undefined && localPhase["retryWith"] === undefined) ||
-          (bundledPhase["retryOnFail"] !== undefined && localPhase["retryOnFail"] === undefined)
-        ) {
-          isStale = true;
-          break;
-        }
-      }
-
-      if (isStale) stale.push(name);
+      const localRaw = readFileSync(localPath, "utf-8").trimEnd();
+      const bundledRaw = readFileSync(bundledPath, "utf-8").trimEnd();
+      if (localRaw !== bundledRaw) stale.push(name);
     } catch {
-      // Parse error in local or bundled file — skip, let checkWorkflows handle it
+      // Parse/read error in local or bundled file — skip, let checkWorkflows handle it
     }
   }
   return stale;
@@ -1166,35 +1127,25 @@ export function validateTaskTypeUniqueness(): TaskTypeUniquenessResult {
 }
 
 /**
- * Resolve the effective workflow name for a seed.
- *
- * Resolution order:
- *   1. First `workflow:<name>` label on the bead
- *   2. Bead type field mapped: "smoke" → "smoke", everything else → "default"
- *
- * @param seedType - The bead's type field (e.g. "feature", "smoke").
- * @param labels   - Optional list of labels on the bead.
- * @returns The resolved workflow name to use.
- */
-/**
- * Resolve the workflow name for a seed/bead.
+ * Resolve the workflow name for a task.
  *
  * Resolution order:
  *  1. `workflowOverride` — explicit override (e.g. `foreman run --workflow <name>`)
  *  2. `workflow:<name>` label on the task
- *  3. `taskTypeWorkflowMap[seedType]` — explicit config mapping
- *  4. `taskTypeWorkflowMap["default"]` — fallback for unknown types
- *  5. `{seedType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
- *  6. "default" (hard fallback)
+ *  3. Workflow YAML `task_type` declarations
+ *  4. `taskTypeWorkflowMap[taskType]` — explicit config mapping
+ *  5. `taskTypeWorkflowMap["default"]` — fallback for unknown types
+ *  6. `{taskType}.yaml` in global (~/.foreman/workflows/) or bundled workflows
+ *  7. "default" (hard fallback)
  *
- * When `taskTypeWorkflowMap` is not provided (undefined), steps 3–4 are skipped
- * and the resolution falls back to the file-existence check (backward compatible).
+ * When `taskTypeWorkflowMap` is not provided (undefined), steps 4–5 are skipped
+ * and the resolution falls back to workflow declarations/file-existence checks.
  *
  * The explicit override is trusted as-is — callers (the CLI) validate it
  * against loadable workflows before dispatch.
  */
 export function resolveWorkflowName(
-  seedType: string,
+  taskType: string,
   labels?: string[],
   taskTypeWorkflowMap?: Record<string, string>,
   workflowOverride?: string,
@@ -1218,14 +1169,14 @@ export function resolveWorkflowName(
   // 2. Workflow-declared task_type mapping. An explicitly provided map is used
   // by tests/callers that already loaded workflows; otherwise build it from the
   // available workflow YAML files.
-  const declaredWorkflow = workflowDeclaredMap?.[seedType] ?? buildTaskTypeWorkflowMap().get(seedType);
+  const declaredWorkflow = workflowDeclaredMap?.[taskType] ?? buildTaskTypeWorkflowMap().get(taskType);
   if (declaredWorkflow && hasWorkflowConfig(declaredWorkflow)) {
     return declaredWorkflow;
   }
 
   // 3. Explicit taskTypeWorkflowMap mapping remains a compatibility fallback.
   if (taskTypeWorkflowMap) {
-    const mappedWorkflow = taskTypeWorkflowMap[seedType];
+    const mappedWorkflow = taskTypeWorkflowMap[taskType];
     if (mappedWorkflow && hasWorkflowConfig(mappedWorkflow)) {
       return mappedWorkflow;
     }
@@ -1237,18 +1188,18 @@ export function resolveWorkflowName(
   }
 
   // 5. File-existence fallback (backward compatible with pre-config behavior)
-  if (seedType) {
-    const globalPath = getForemanHomePath("workflows", `${seedType}.yaml`);
+  if (taskType) {
+    const globalPath = getForemanHomePath("workflows", `${taskType}.yaml`);
     if (existsSync(globalPath)) {
-      return seedType;
+      return taskType;
     }
-    const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${seedType}.yaml`);
+    const bundledPath = join(BUNDLED_WORKFLOWS_DIR, `${taskType}.yaml`);
     if (existsSync(bundledPath)) {
-      return seedType;
+      return taskType;
     }
   }
 
-  // 5. Hard fallback to default
+  // 6. Hard fallback to default
   return "default";
 }
 

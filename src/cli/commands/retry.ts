@@ -3,13 +3,16 @@ import chalk from "chalk";
 
 import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-factory.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
 import { PostgresStore } from "../../lib/postgres-store.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
 import { printDryRunNotice } from "./cli-output.js";
-import { getSeedRetryTargetStatus } from "../../lib/run-status.js";
+import { getTaskRetryTargetStatus } from "../../lib/run-status.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { Dispatcher } from "../../orchestrator/dispatcher.js";
@@ -25,7 +28,7 @@ export interface RetryOpts {
 
 interface RetryStore {
   getProjectByPath(path: string): Promise<{ id: string; path: string } | null>;
-  getRunsForSeed(seedId: string, projectId: string): Promise<import("../../lib/store.js").Run[]>;
+  getRunsForTask(taskId: string, projectId: string): Promise<import("../../lib/store.js").Run[]>;
   updateRun(runId: string, updates: Partial<Pick<import("../../lib/store.js").Run, "status" | "completed_at">>): Promise<void>;
   logEvent(projectId: string, eventType: "restart", data: Record<string, unknown>, runId?: string): Promise<void>;
 }
@@ -55,6 +58,104 @@ function createDaemonTaskClient(client: ReturnType<typeof createTrpcClient>, pro
     async list() { return []; },
     async close() { throw new Error("not implemented"); },
   } as ITaskClient;
+}
+
+async function createElixirRetryClient(): Promise<ElixirServerClient> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+}
+
+function elixirTaskStatus(task: Record<string, unknown>): string {
+  const status = task.status;
+  return typeof status === "string" ? status : "backlog";
+}
+
+async function retryElixirTask(
+  beadId: string,
+  opts: RetryOpts,
+  projectPath: string,
+  projectId: string,
+): Promise<number> {
+  const dryRun = opts.dryRun ?? false;
+  printDryRunNotice(dryRun);
+
+  const client = await createElixirRetryClient();
+  const task = await client.getTask(beadId);
+  if (!task || (task.project_id && task.project_id !== projectId)) {
+    console.error(chalk.red(`Bead "${beadId}" not found: Task '${beadId}' not found`));
+    return 1;
+  }
+
+  const beadStatus = elixirTaskStatus(task as unknown as Record<string, unknown>);
+  console.log(
+    chalk.bold(`Retrying bead: ${chalk.cyan(beadId)}`) +
+      (typeof task.title === "string" ? chalk.dim(` (${task.title})`) : ""),
+  );
+  console.log(`  Status: ${chalk.yellow(beadStatus)}`);
+
+  const runs = (await client.listRuns({ projectId }))
+    .filter((run) => run.task_id === beadId)
+    .sort((a, b) => String(b.run_id ?? "").localeCompare(String(a.run_id ?? "")));
+  const latestRun = runs[0] ?? null;
+
+  if (latestRun) {
+    console.log(`  Latest run: ${chalk.dim(String(latestRun.run_id ?? "(unknown)"))} status=${latestRun.status ?? "unknown"}`);
+  } else {
+    console.log(`  Latest run: ${chalk.dim("(none)")}`);
+  }
+
+  const beadResetTarget = getTaskRetryTargetStatus(beadStatus, { command: "retry", backendType: "native" });
+  const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== beadStatus;
+  const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === beadStatus;
+
+  if (!dryRun) {
+    if (beadNeedsReset) {
+      console.log(`  ${chalk.yellow("reset")} bead status: ${beadStatus} → ${beadResetTarget}`);
+      await client.sendCommand({
+        command_id: `retry-task-${beadId}-${Date.now()}`,
+        command_type: "task.update",
+        payload: { project_id: projectId, task_id: beadId, status: beadResetTarget },
+        metadata: { source: "foreman-retry" },
+      }).then((response) => {
+        if (!response.ok) throw new Error(response.error.message);
+      });
+    } else if (beadIsAlreadyRetryable) {
+      console.log(`  ${chalk.dim("ok")} bead status is already "${beadStatus}"`);
+    } else {
+      console.log(`  ${chalk.dim("skip")} bead status is terminal: ${beadStatus}`);
+    }
+  } else {
+    if (beadNeedsReset) {
+      console.log(chalk.dim(`  Would reset bead status: ${beadStatus} → ${beadResetTarget}`));
+    } else if (beadResetTarget == null) {
+      console.log(chalk.dim(`  Would leave bead status unchanged: ${beadStatus} is terminal`));
+    }
+  }
+
+  if (opts.dispatch) {
+    console.log();
+    console.log(chalk.bold("Dispatching…"));
+    if (dryRun) {
+      console.log(chalk.dim(`  Would request scheduler dispatch for ${beadId}`));
+    } else {
+      const result = await client.schedulerTick();
+      console.log(`  ${chalk.green("queued")} scheduler tick accepted`);
+      void result;
+    }
+  }
+
+  console.log();
+  if (dryRun) {
+    console.log(chalk.yellow("Dry run complete — no changes were made."));
+  } else {
+    console.log(
+      chalk.green("Done.") +
+        (opts.dispatch ? "" : chalk.dim(" Use --dispatch to immediately queue a new run.")),
+    );
+  }
+
+  return 0;
 }
 
 // ── Core action (exported for testing) ───────────────────────────────
@@ -107,7 +208,7 @@ export async function retryAction(
   console.log(`  Status: ${chalk.yellow(bead.status)}`);
 
   // 3. Look up run history
-  const runs = await store.getRunsForSeed(beadId, project.id);
+  const runs = await store.getRunsForTask(beadId, project.id);
   const latestRun = runs.length > 0 ? runs[0] : null;
 
   if (latestRun) {
@@ -119,7 +220,7 @@ export async function retryAction(
   }
 
   // 4. Determine what needs to be reset
-  const beadResetTarget = getSeedRetryTargetStatus(bead.status, { command: "retry", backendType });
+  const beadResetTarget = getTaskRetryTargetStatus(bead.status, { command: "retry", backendType });
   const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== bead.status;
   const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === bead.status;
 
@@ -238,20 +339,20 @@ export async function retryAction(
     const result = await disp.dispatch({
       maxAgents: 1,
       model: opts.model,
-      seedId: beadId,
+      taskId: beadId,
       dryRun,
     });
 
     if (result.dispatched.length > 0) {
       for (const t of result.dispatched) {
         console.log(
-          `  ${chalk.green("dispatched")} ${t.seedId} → worktree ${t.worktreePath}`,
+          `  ${chalk.green("dispatched")} ${t.taskId} → worktree ${t.worktreePath}`,
         );
       }
     } else if (result.skipped.length > 0) {
       for (const s of result.skipped) {
         console.log(
-          `  ${chalk.yellow("skipped")} ${s.seedId}: ${s.reason}`,
+          `  ${chalk.yellow("skipped")} ${s.taskId}: ${s.reason}`,
         );
       }
     } else {
@@ -310,6 +411,32 @@ export const retryCommand = new Command("retry")
 
     const localStore = ForemanStore.forProject(projectPath);
     const registered = await findRegisteredProjectByPath(projectPath, { normalizePaths: true });
+
+    if (foremanBackendMode() === "elixir") {
+      if (!registered) {
+        console.error(
+          chalk.red(
+            `Project at '${projectPath}' is not registered in Elixir projections. Run 'foreman project register ${projectPath}'.`,
+          ),
+        );
+        localStore.close();
+        process.exit(1);
+        return;
+      }
+
+      try {
+        const exitCode = await retryElixirTask(beadId, opts, projectPath, registered.id);
+        localStore.close();
+        process.exit(exitCode);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(`Unexpected error: ${msg}`));
+        localStore.close();
+        process.exit(1);
+      }
+      return;
+    }
+
     const store: RetryStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(localStore);
     const { taskClient, backendType } = registered
       ? { taskClient: createDaemonTaskClient(createTrpcClient(), registered.id), backendType: "native" as const }
@@ -323,7 +450,7 @@ export const retryCommand = new Command("retry")
               const failures = await pg.listTasks(registered.id, { status: ["failed", "stuck", "conflict"], limit: 1000 });
               return failures.filter((t) => t.updated_at >= since).length;
             },
-            getActiveSeedIds: async () => {
+            getActiveTaskIds: async () => {
               const active = await pg.listPipelineRuns(registered.id, { status: "running", limit: 1000 });
               const pending = await pg.listPipelineRuns(registered.id, { status: "pending", limit: 1000 });
               return [...active, ...pending].map((r) => r.bead_id);
@@ -333,8 +460,8 @@ export const retryCommand = new Command("retry")
               const pending = await pg.listPipelineRuns(registered.id, { status: "pending", limit: 1000 });
               return active.length + pending.length;
             },
-            hasActiveOrPendingRun: async (seedId) => {
-              const runs = await pg.listPipelineRuns(registered.id, { beadId: seedId, limit: 20 });
+            hasActiveOrPendingRun: async (taskId) => {
+              const runs = await pg.listPipelineRuns(registered.id, { beadId: taskId, limit: 20 });
               return runs.some((r) => ["pending", "running", "success"].includes(r.status));
             },
             nativeTaskOps: {
@@ -345,13 +472,13 @@ export const retryCommand = new Command("retry")
               claimTask: async (taskId, runId) => await pg.claimTask(registered.id, taskId, runId),
             },
             runOps: {
-              createRun: async ({ runId, seedId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
+              createRun: async ({ runId, taskId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
                 const createdAt = new Date().toISOString();
-                const existing = await pg.listPipelineRuns(registered.id, { beadId: seedId });
+                const existing = await pg.listPipelineRuns(registered.id, { beadId: taskId });
                 await pg.createPipelineRun({
                   id: runId,
                   projectId: registered.id,
-                  beadId: seedId,
+                  beadId: taskId,
                   runNumber: existing.length + 1,
                   branch: branchName,
                   trigger: "bead",
@@ -363,7 +490,7 @@ export const retryCommand = new Command("retry")
                 return {
                   id: runId,
                   project_id: registered.id,
-                  seed_id: seedId,
+                  task_id: taskId,
                   agent_type: agentType,
                   session_key: null,
                   worktree_path: worktreePath,
@@ -409,7 +536,7 @@ export const retryCommand = new Command("retry")
                 await pg.recordPipelineEvent({
                   projectId: registered.id,
                   runId,
-                  taskId: payload.seedId as string | undefined,
+                  taskId: payload.taskId as string | undefined,
                   eventType: mappedEventType,
                   payload,
                 });

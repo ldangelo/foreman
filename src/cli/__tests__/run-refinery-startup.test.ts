@@ -166,7 +166,9 @@ vi.mock("../../orchestrator/notification-server.js", () => ({
 }));
 vi.mock("../../orchestrator/notification-bus.js", () => ({ notificationBus: {} }));
 vi.mock("../../orchestrator/sentinel.js", () => ({ SentinelAgent: vi.fn(), wrapPostgresSentinelStore: (store: unknown) => store }));
-vi.mock("../../orchestrator/task-backend-ops.js", () => ({ syncBeadStatusOnStartup: vi.fn() }));
+vi.mock("../../orchestrator/task-backend-ops.js", () => ({
+  syncTaskStatusOnStartup: vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] }),
+}));
 vi.mock("../../orchestrator/pi-rpc-spawn-strategy.js", () => ({ isPiAvailable: vi.fn().mockReturnValue(false) }));
 // Skip runtime asset preflight — no prompts/workflows in CI/unit test env
 vi.mock("../../lib/prompt-loader.js", () => ({
@@ -276,11 +278,11 @@ describe("foreman run startup refinery lookup", () => {
     expect(overrides).toMatchObject({
       externalProjectId: "proj-1",
       getRecentFailureCount: expect.any(Function),
-      getActiveSeedIds: expect.any(Function),
+      getActiveTaskIds: expect.any(Function),
       getActiveAgentCount: expect.any(Function),
       hasActiveOrPendingRun: expect.any(Function),
       getRunsByStatus: expect.any(Function),
-      getRunsForSeed: expect.any(Function),
+      getRunsForTask: expect.any(Function),
       getRun: expect.any(Function),
       getActiveRuns: expect.any(Function),
       nativeTaskOps: expect.any(Object),
@@ -306,10 +308,10 @@ describe("foreman run startup refinery lookup", () => {
     const run = await runOps.createRun({
       runId: "run-registered",
       projectId: "proj-1",
-      seedId: "seed-1",
+      taskId: "task-1",
       agentType: "claude-sonnet-4-6",
-      branchName: "foreman/seed-1",
-      worktreePath: "/tmp/worktrees/seed-1",
+      branchName: "foreman/task-1",
+      worktreePath: "/tmp/worktrees/task-1",
       baseBranch: null,
       mergeStrategy: "auto",
     });
@@ -317,20 +319,20 @@ describe("foreman run startup refinery lookup", () => {
     expect(mockCreatePipelineRun).toHaveBeenCalledWith(expect.objectContaining({
       id: "run-registered",
       projectId: "proj-1",
-      beadId: "seed-1",
-      branch: "foreman/seed-1",
+      beadId: "task-1",
+      branch: "foreman/task-1",
       trigger: "bead",
       agentType: "claude-sonnet-4-6",
-      worktreePath: "/tmp/worktrees/seed-1",
+      worktreePath: "/tmp/worktrees/task-1",
       mergeStrategy: "auto",
     }));
     expect(run).toMatchObject({
       id: "run-registered",
       project_id: "proj-1",
-      seed_id: "seed-1",
+      task_id: "task-1",
       agent_type: "claude-sonnet-4-6",
       session_key: null,
-      worktree_path: "/tmp/worktrees/seed-1",
+      worktree_path: "/tmp/worktrees/task-1",
       status: "pending",
       started_at: null,
       completed_at: null,

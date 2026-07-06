@@ -65,7 +65,7 @@ The primary success metric is reducing conflict-driven retries from ~50% to unde
 The current Foreman pipeline inserts a rebase step only during finalize, immediately before pushing the completed branch. By this point, the developer agent has finished its work, QA has run, and the reviewer has signed off. If the rebase conflicts:
 
 1. The pipeline fails with status `failed` or `stuck`.
-2. The operator runs `foreman reset --bead <id>` and then `foreman retry <seed>`.
+2. The operator runs `foreman reset --bead <id>` and then `foreman retry <task>`.
 3. The retry re-runs every phase from explorer onward, including the developer, QA, and reviewer -- phases whose work was entirely valid before the conflict.
 4. Token cost per retry is substantial (explorer + developer + QA + reviewer = 4 phase budgets consumed for no new value).
 
@@ -133,7 +133,7 @@ Tasks within the same story frequently modify the same files. Because each task 
 
 ```
 Dispatcher
-  └─> createWorkspace(seedId)          # VcsBackend.createWorkspace()
+  └─> createWorkspace(taskId)          # VcsBackend.createWorkspace()
         └─> explorer phase             # EXPLORER_REPORT.md
               └─> developer phase      # DEVELOPER_REPORT.md
                     └─> QA phase       # QA_REPORT.md (PASS/FAIL)

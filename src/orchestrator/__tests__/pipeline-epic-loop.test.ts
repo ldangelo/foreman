@@ -40,8 +40,8 @@ function makeEpicPipelineArgs(
     config: {
       runId: "run-epic-001",
       projectId: "proj-001",
-      seedId: "epic-001",
-      seedTitle: "Epic test",
+      taskId: "epic-001",
+      taskTitle: "Epic test",
       model: "anthropic/claude-sonnet-4-6",
       worktreePath: tmpDir,
       env: {},
@@ -85,9 +85,9 @@ function qaFailReport(note = "Test broken."): string {
 
 function makeEpicTasks(count: number): EpicTask[] {
   return Array.from({ length: count }, (_, i) => ({
-    seedId: `task-${i + 1}`,
-    seedTitle: `Task ${i + 1}`,
-    seedDescription: `Description for task ${i + 1}`,
+    taskId: `task-${i + 1}`,
+    taskTitle: `Task ${i + 1}`,
+    taskDescription: `Description for task ${i + 1}`,
   }));
 }
 

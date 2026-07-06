@@ -92,6 +92,31 @@ describe("runCodeRabbitCliReview", () => {
     expect(readFileSync(result.reportPath, "utf8")).toContain("src/bar.ts [major]");
   });
 
+  it("ignores generated/runtime artifact findings", async () => {
+    setExecFileHandler((_file, args) => {
+      if (args[0] === "--version") return { stdout: "1.2.3\n" };
+      return {
+        stdout: [
+          JSON.stringify({ type: "finding", severity: "major", fileName: "dist-old-123/orchestrator/pi-sdk-runner.js", codegenInstructions: "stale generated copy" }),
+          JSON.stringify({ type: "complete", status: "review_complete" }),
+          "",
+        ].join("\n"),
+      };
+    });
+
+    const result = await runCodeRabbitCliReview({
+      worktreePath,
+      baseBranch: "main",
+      reportDir: "reports/task-ignored",
+      log: vi.fn(),
+    });
+
+    expect(result.status).toBe("passed");
+    expect(result.blockingFindings).toHaveLength(0);
+    expect(result.ignoredFindings).toHaveLength(1);
+    expect(readFileSync(result.reportPath, "utf8")).toContain("## Ignored Findings");
+  });
+
   it("retries CodeRabbit CLI rate limits before passing", async () => {
     let reviewAttempts = 0;
     const log = vi.fn();

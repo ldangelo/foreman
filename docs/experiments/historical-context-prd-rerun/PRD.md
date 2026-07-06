@@ -24,7 +24,7 @@ Foreman's `docs/` directory contains three types of documents:
 2. **Draft PRDs/TRDs** — describing current work
 3. **Legacy and comparison docs** — describing beads-first era
 
-Readers landing on legacy documents (e.g., `migration-seeds-to-br.md`, `Overstory_comparison.md`) have no immediate signal that these describe an older system state. This causes:
+Readers landing on legacy documents (e.g., `migration-tasks-to-br.md`, `Overstory_comparison.md`) have no immediate signal that these describe an older system state. This causes:
 - Confusion about current vs. historical behavior
 - Operators following archived instructions that no longer apply
 - Difficulty onboarding contributors
@@ -46,7 +46,7 @@ Readers landing on legacy documents (e.g., `migration-seeds-to-br.md`, `Overstor
 | `docs/guides/` | **No — Never** | All guides describe current operating procedures |
 | `docs/standards/` | **No — Never** | Active standards documents |
 
-**Decision Rule:** Any document that references beads-first as the default/proposed architecture, references `seeds` (`sd`) as an active backend option, or pre-dates the native task management initiative is a candidate for archival status.
+**Decision Rule:** Any document that references beads-first as the default/proposed architecture, references `tasks` (`sd`) as an active backend option, or pre-dates the native task management initiative is a candidate for archival status.
 
 ### Q2: What Should the Banner Text Say?
 
@@ -89,7 +89,7 @@ Readers landing on legacy documents (e.g., `migration-seeds-to-br.md`, `Overstor
 
 | ID | Criterion | Verification |
 |----|-----------|--------------|
-| UC-1 | New contributor reading `migration-seeds-to-br.md` immediately understands it describes a past migration | Banner visible on first 5 lines |
+| UC-1 | New contributor reading `migration-tasks-to-br.md` immediately understands it describes a past migration | Banner visible on first 5 lines |
 | UC-2 | Reader of `Overstory_comparison.md` sees Comparison variant with tool-specific notice | Comparison variant used, not standard |
 | UC-3 | Banner text is scannable — no more than 4-6 lines | Visual inspection |
 
@@ -117,7 +117,7 @@ Readers landing on legacy documents (e.g., `migration-seeds-to-br.md`, `Overstor
 
 | File | Variant | Status |
 |------|---------|--------|
-| `docs/migration-seeds-to-br.md` | migration | ✅ Injected |
+| `docs/migration-tasks-to-br.md` | migration | ✅ Injected |
 | `docs/Overstory_comparison.md` | comparison | ✅ Injected |
 | `docs/flywheel_comparison.md` | comparison | ✅ Injected |
 | `docs/mail-transport-plan.md` | standard | ✅ Injected |
@@ -125,7 +125,7 @@ Readers landing on legacy documents (e.g., `migration-seeds-to-br.md`, `Overstor
 | `docs/PRD/PRD-2026-005-mid-pipeline-rebase-and-shared-worktree.md` | standard | ✅ Injected |
 | `docs/TRD/TRD-2026-004-vcs-backend-abstraction.md` | standard | ✅ Injected |
 | `docs/TRD/TRD-2026-005-mid-pipeline-rebase.md` | standard | ✅ Injected |
-| `docs/TRD/seeds-to-br-bv-migration.md` | comparison | ✅ Injected |
+| `docs/TRD/tasks-to-br-bv-migration.md` | comparison | ✅ Injected |
 
 ### Explicitly Excluded (active docs — zero banners)
 
@@ -183,7 +183,7 @@ npx tsx docs/experiments/historical-context-prd-rerun/validate-historical-banner
 | ID | Question | Disposition |
 |----|----------|-------------|
 | OQ-1 | Manual vs. auto-generated manifest? | **Manual** — human review per document is correct for this scale |
-| OQ-2 | Should `docs/TRD/seeds-to-br-bv-migration.md` get a banner? | **Yes** — apply `comparison` variant |
+| OQ-2 | Should `docs/TRD/tasks-to-br-bv-migration.md` get a banner? | **Yes** — apply `comparison` variant |
 | OQ-3 | Does the pre-commit hook block or warn? | **Warn locally, fail CI** |
 | OQ-4 | How to handle TRDs with frontmatter? | Banner goes after frontmatter `---` closing delimiter |
 

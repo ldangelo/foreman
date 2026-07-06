@@ -1,0 +1,14 @@
+name: foreman
+root: .
+windows:
+  - code:
+      layout: even-horizontal
+      panes:
+        - nvim .
+        - pi -r
+  - ops:
+      layout: main-vertical
+      panes:
+        - foreman board
+        - foreman status --watch
+        - ""

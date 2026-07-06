@@ -153,9 +153,9 @@ function makeMockStore(opts: {
   return {
     getActiveRuns: vi.fn().mockReturnValue([]),
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-    getRunsForSeed: vi.fn().mockReturnValue([]),
+    getRunsForTask: vi.fn().mockReturnValue([]),
     getRunsByStatus: vi.fn().mockReturnValue([]),
-    getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+    getStuckRunsForTask: vi.fn().mockReturnValue([]),
     getRunsByStatuses: vi.fn().mockReturnValue([]),
     hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     // Native task store methods (REQ-017)
@@ -165,7 +165,7 @@ function makeMockStore(opts: {
     getTaskById: vi.fn().mockReturnValue(null),
     claimTask: vi.fn().mockReturnValue(opts.claimResult ?? true),
     // Other methods used in dispatch flow
-    createRun: vi.fn().mockReturnValue({ id: "run-001", project_id: "proj-1", seed_id: "" }),
+    createRun: vi.fn().mockReturnValue({ id: "run-001", project_id: "proj-1", task_id: "" }),
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
@@ -240,9 +240,9 @@ describe("Dispatcher — Native task store (AC-014.1)", () => {
     consoleSpy.mockRestore();
 
     // Native tasks dispatched, not beads
-    expect(result.dispatched.map((d) => d.seedId)).toContain("n-001");
-    expect(result.dispatched.map((d) => d.seedId)).toContain("n-002");
-    expect(result.dispatched.map((d) => d.seedId)).not.toContain("b-001");
+    expect(result.dispatched.map((d) => d.taskId)).toContain("n-001");
+    expect(result.dispatched.map((d) => d.taskId)).toContain("n-002");
+    expect(result.dispatched.map((d) => d.taskId)).not.toContain("b-001");
 
     // Native store queried
     expect(store.getReadyTasks).toHaveBeenCalled();
@@ -266,7 +266,7 @@ describe("Dispatcher — Native task store (AC-014.1)", () => {
       .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "mock-session" });
 
-    const result = await dispatcher.dispatch({ dryRun: false, seedId: "bd-explicit" });
+    const result = await dispatcher.dispatch({ dryRun: false, taskId: "bd-explicit" });
 
     // Task not found since no native task matches
     expect(result.skipped).toHaveLength(1);
@@ -294,10 +294,10 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
     return {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       getRunsByStatuses: vi.fn().mockReturnValue([]),
-      getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+      getStuckRunsForTask: vi.fn().mockReturnValue([]),
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue(opts.nativeTasks ?? [makeNativeTask("t-001")]),
@@ -305,7 +305,7 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       createRun: vi.fn().mockReturnValue({
         id: "run-abc",
         project_id: "proj-1",
-        seed_id: "t-001",
+        task_id: "t-001",
         status: "pending",
         created_at: new Date().toISOString(),
       }),
@@ -340,7 +340,7 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
     const createdRun = {
       id: "run-xyz-123",
       project_id: "proj-1",
-      seed_id: "t-atomic-001",
+      task_id: "t-atomic-001",
       status: "pending",
       created_at: new Date().toISOString(),
     };
@@ -348,10 +348,10 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
     const store: ForemanStore = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       getRunsByStatuses: vi.fn().mockReturnValue([]),
-      getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+      getStuckRunsForTask: vi.fn().mockReturnValue([]),
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([task]),
@@ -383,7 +383,7 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
 
     // The task was claimed and dispatched
     expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0].seedId).toBe("t-atomic-001");
+    expect(result.dispatched[0].taskId).toBe("t-atomic-001");
     expect(result.dispatched[0].runId).toBe("run-xyz-123");
 
     spawnSpy.mockRestore();
@@ -394,7 +394,7 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
     const createdRun = {
       id: "run-race-abc",
       project_id: "proj-1",
-      seed_id: "t-race-001",
+      task_id: "t-race-001",
       status: "pending",
       created_at: new Date().toISOString(),
     };
@@ -402,10 +402,10 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
     const store: ForemanStore = {
       getActiveRuns: vi.fn().mockReturnValue([]),
       getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForSeed: vi.fn().mockReturnValue([]),
+      getRunsForTask: vi.fn().mockReturnValue([]),
       getRunsByStatus: vi.fn().mockReturnValue([]),
       getRunsByStatuses: vi.fn().mockReturnValue([]),
-      getStuckRunsForSeed: vi.fn().mockReturnValue([]),
+      getStuckRunsForTask: vi.fn().mockReturnValue([]),
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
       hasNativeTasks: vi.fn().mockReturnValue(true),
       getReadyTasks: vi.fn().mockReturnValue([task]),
@@ -432,7 +432,7 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
 
     // Task should appear in skipped with a meaningful reason
     expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0].seedId).toBe("t-race-001");
+    expect(result.skipped[0].taskId).toBe("t-race-001");
     expect(result.skipped[0].reason).toMatch(/claim/i);
 
     // The orphaned run should have been marked as failed (cleanup)
@@ -508,7 +508,7 @@ describe("Dispatcher — Native task priority ordering", () => {
     const result = await dispatcher.dispatch({ dryRun: true });
     consoleSpy.mockRestore();
 
-    const ids = result.dispatched.map((d) => d.seedId);
+    const ids = result.dispatched.map((d) => d.taskId);
     // P0 (high-prio) first, then P2, then P3
     expect(ids[0]).toBe("high-prio");
     expect(ids[1]).toBe("mid-prio");

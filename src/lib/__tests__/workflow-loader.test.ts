@@ -361,6 +361,9 @@ phases:
       if (phase.retryWith) {
         expect(phaseNames.has(phase.retryWith), `${phase.name}.retryWith`).toBe(true);
       }
+      for (const [reason, target] of Object.entries(phase.retryWithByReason ?? {})) {
+        expect(phaseNames.has(target), `${phase.name}.retryWithByReason.${reason}`).toBe(true);
+      }
       if (phase.mail?.onFail) {
         expect(phaseNames.has(phase.mail.onFail), `${phase.name}.mail.onFail`).toBe(true);
       }
@@ -383,7 +386,7 @@ phases:
     }
   });
 
-  it("feature workflow inserts cli-review, PR review, and merge phases after reviewer", () => {
+  it("feature workflow inserts cli-review, PR wait, and merge phases after reviewer", () => {
     const config = loadWorkflowConfig("feature", tmpDir);
     const phaseNames = config.phases.map((phase) => phase.name);
     expect(phaseNames.slice(phaseNames.indexOf("reviewer"))).toEqual([
@@ -392,8 +395,6 @@ phases:
       "finalize",
       "create-pr",
       "pr-wait",
-      "prepare-pr-review",
-      "pr-review",
       "merge",
     ]);
     const cliReviewPhase = config.phases.find((phase) => phase.name === "cli-review");
@@ -406,28 +407,34 @@ phases:
     const prWaitPhase = config.phases.find((phase) => phase.name === "pr-wait");
     expect(prWaitPhase?.artifact).toBe("{task.projectReportsDir}/PR_WAIT_REPORT.md");
     expect(prWaitPhase?.retryWith).toBe("developer");
+    expect(prWaitPhase?.retryWithByReason?.["ci_failed:"]).toBe("cicd-developer");
+    expect(prWaitPhase?.retryWithByReason?.["coderabbit_"]).toBe("cr-developer");
+    expect(prWaitPhase?.retryWithByReason?.["merge_conflict:"]).toBe("merge-resolver");
     expect(prWaitPhase?.retryOnFail).toBe(2);
-    const prReviewPhase = config.phases.find((phase) => phase.name === "pr-review");
-    expect(prReviewPhase?.artifact).toBe("{task.projectReportsDir}/PR_REVIEW_REPORT.md");
-    expect(prReviewPhase?.retryOnFail).toBe(3);
-    expect(prReviewPhase?.tools?.allowed).not.toContain("Edit");
+    expect(config.phases.find((phase) => phase.name === "pr-review")).toBeUndefined();
     const mergePhase = config.phases.find((phase) => phase.name === "merge");
     expect(mergePhase?.builtin).toBe(true);
     expect(mergePhase?.artifact).toBe("{task.projectReportsDir}/MERGE_REPORT.md");
+    expect(mergePhase?.retryWith).toBe("developer");
+    expect(mergePhase?.retryOnFail).toBe(2);
   });
 
-  it("bundled auto-merge workflows expose cli-review, PR review, and merge phases", () => {
+  it("bundled auto-merge workflows expose PR wait and merge phases", () => {
     const workflows = ["default", "feature", "bug", "chore", "docs", "task", "quick"];
     for (const workflowName of workflows) {
       const config = loadWorkflowConfig(workflowName, tmpDir);
       const phaseNames = config.phases.map((phase) => phase.name);
-      expect(phaseNames, workflowName).toContain("cli-review");
+      if (workflowName === "bug") {
+        expect(phaseNames, workflowName).not.toContain("cli-review");
+      } else {
+        expect(phaseNames, workflowName).toContain("cli-review");
+        expect(config.phases.find((phase) => phase.name === "cli-review")?.builtin, workflowName).toBe(true);
+      }
       expect(phaseNames, workflowName).toContain("create-pr");
       expect(phaseNames, workflowName).toContain("pr-wait");
-      expect(phaseNames, workflowName).toContain("prepare-pr-review");
-      expect(phaseNames, workflowName).toContain("pr-review");
+      expect(phaseNames, workflowName).not.toContain("prepare-pr-review");
+      expect(phaseNames, workflowName).not.toContain("pr-review");
       expect(phaseNames, workflowName).toContain("merge");
-      expect(config.phases.find((phase) => phase.name === "cli-review")?.builtin, workflowName).toBe(true);
       expect(config.phases.find((phase) => phase.name === "merge")?.builtin, workflowName).toBe(true);
     }
   });
@@ -646,14 +653,14 @@ describe("resolveWorkflowName", () => {
   });
 
   it("uses a workflow file installed in the global foreman home", () => {
-    writeWorkflowFile(tmpDir, "custom-seed", `
-name: custom-seed
+    writeWorkflowFile(tmpDir, "custom-task", `
+name: custom-task
 phases:
   - name: finalize
     builtin: true
 `);
 
-    expect(resolveWorkflowName("custom-seed")).toBe("custom-seed");
+    expect(resolveWorkflowName("custom-task")).toBe("custom-task");
   });
 
   it("ignores optional routing hints — uses type-based workflow when no workflow label", () => {
@@ -736,16 +743,24 @@ describe("validateWorkflowConfig — models map", () => {
   });
 
   it("bundled default workflow phases have models map", () => {
-    // Bundled YAMLs have been updated to models map
+    // Bundled YAMLs have been updated to models map.
+    // Force an isolated FOREMAN_HOME so user-local workflow overrides cannot leak in.
     const tmpDir2 = tmpdir() + `/wl-test-${Date.now()}`;
     mkdirSync(tmpDir2, { recursive: true });
-    const config = loadWorkflowConfig("default", tmpDir2);
-    rmSync(tmpDir2, { recursive: true, force: true });
-    for (const phase of config.phases) {
-      if (!phase.builtin) {
-        expect(phase.models).toBeDefined();
-        expect(phase.models!["default"]).toBeTruthy();
+    const previousHome = process.env["FOREMAN_HOME"];
+    process.env["FOREMAN_HOME"] = tmpDir2;
+    try {
+      const config = loadWorkflowConfig("default", tmpDir2);
+      for (const phase of config.phases) {
+        if (!phase.builtin) {
+          expect(phase.models).toBeDefined();
+          expect(phase.models!["default"]).toBeTruthy();
+        }
       }
+    } finally {
+      rmSync(tmpDir2, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env["FOREMAN_HOME"];
+      else process.env["FOREMAN_HOME"] = previousHome;
     }
   });
 });
@@ -1008,12 +1023,19 @@ describe("validateWorkflowConfig — epic mode", () => {
   it("bundled epic.yaml loads with taskPhases and finalPhases", () => {
     const tmpDir2 = tmpdir() + `/wl-epic-test-${Date.now()}`;
     mkdirSync(tmpDir2, { recursive: true });
-    const config = loadWorkflowConfig("epic", tmpDir2);
-    rmSync(tmpDir2, { recursive: true, force: true });
-    expect(config.name).toBe("epic");
-    expect(config.taskPhases).toEqual(["developer", "qa"]);
-    expect(config.finalPhases).toEqual(["finalize"]);
-    expect(config.phases.length).toBeGreaterThanOrEqual(3);
+    const previousHome = process.env["FOREMAN_HOME"];
+    process.env["FOREMAN_HOME"] = tmpDir2;
+    try {
+      const config = loadWorkflowConfig("epic", tmpDir2);
+      expect(config.name).toBe("epic");
+      expect(config.taskPhases).toEqual(["developer", "qa"]);
+      expect(config.finalPhases).toEqual(["finalize"]);
+      expect(config.phases.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      rmSync(tmpDir2, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env["FOREMAN_HOME"];
+      else process.env["FOREMAN_HOME"] = previousHome;
+    }
   });
 
   it("includes the bundled default/smoke/epic workflows", () => {

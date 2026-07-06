@@ -41,7 +41,7 @@ export const prCommand = new Command("pr")
       if (report.created.length > 0) {
         console.log(chalk.green.bold(`Created ${report.created.length} PR(s):\n`));
         for (const pr of report.created) {
-          console.log(`  ${chalk.cyan(pr.seedId)} ${pr.branchName}`);
+          console.log(`  ${chalk.cyan(pr.taskId)} ${pr.branchName}`);
           console.log(`    ${chalk.blue(pr.prUrl)}`);
           console.log();
         }
@@ -50,7 +50,7 @@ export const prCommand = new Command("pr")
       if (report.failed.length > 0) {
         console.log(chalk.red.bold(`Failed ${report.failed.length} PR(s):\n`));
         for (const f of report.failed) {
-          console.log(`  ${chalk.cyan(f.seedId)} ${f.branchName}`);
+          console.log(`  ${chalk.cyan(f.taskId)} ${f.branchName}`);
           console.log(`    ${chalk.dim(f.error.split("\n")[0])}`);
         }
         console.log();

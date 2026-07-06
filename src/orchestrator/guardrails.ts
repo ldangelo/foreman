@@ -121,7 +121,7 @@ function correctFilePath(
   }
 
   // If path starts with a different worktree prefix, try to correct
-  // Check if it's a known worktree path pattern (e.g., .foreman-worktrees/<repo>/<seedId>/...)
+  // Check if it's a known worktree path pattern (e.g., .foreman-worktrees/<repo>/<taskId>/...)
   const wrongWorktreeMatch = /^.*?(\.foreman-worktrees\/[^\/]+\/[^\/]+)/.exec(absolutePath);
   if (wrongWorktreeMatch) {
     const wrongPrefix = wrongWorktreeMatch[1];

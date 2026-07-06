@@ -28,9 +28,9 @@ export interface TaskOrderingClient {
 }
 
 export interface OrderedTask {
-  seedId: string;
-  seedTitle: string;
-  seedDescription?: string;
+  taskId: string;
+  taskTitle: string;
+  taskDescription?: string;
 }
 
 export class CircularDependencyError extends Error {
@@ -122,9 +122,9 @@ async function getBvOrder(
       const detail = childDetails.get(rec.id);
       if (detail) {
         ordered.push({
-          seedId: detail.id,
-          seedTitle: detail.title,
-          seedDescription: detail.description ?? undefined,
+          taskId: detail.id,
+          taskTitle: detail.title,
+          taskDescription: detail.description ?? undefined,
         });
         seen.add(rec.id);
       }
@@ -135,9 +135,9 @@ async function getBvOrder(
   for (const [id, detail] of childDetails) {
     if (!seen.has(id)) {
       ordered.push({
-        seedId: detail.id,
-        seedTitle: detail.title,
-        seedDescription: detail.description ?? undefined,
+        taskId: detail.id,
+        taskTitle: detail.title,
+        taskDescription: detail.description ?? undefined,
       });
     }
   }
@@ -204,9 +204,9 @@ function topologicalSort(childDetails: Map<string, TaskOrderingIssueDetail>): Or
       continue;
     }
     result.push({
-      seedId: detail.id,
-      seedTitle: detail.title,
-      seedDescription: detail.description ?? undefined,
+      taskId: detail.id,
+      taskTitle: detail.title,
+      taskDescription: detail.description ?? undefined,
     });
 
     for (const dependent of dependents.get(id) ?? []) {
@@ -229,7 +229,7 @@ function topologicalSort(childDetails: Map<string, TaskOrderingIssueDetail>): Or
 
   if (result.length < childDetails.size) {
     // Cycle detected — find the cycle for error reporting
-    const remaining = [...childIds].filter(id => !result.some(r => r.seedId === id));
+    const remaining = [...childIds].filter(id => !result.some(r => r.taskId === id));
     throw new CircularDependencyError(remaining);
   }
 

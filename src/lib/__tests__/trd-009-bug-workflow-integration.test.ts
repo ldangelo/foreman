@@ -15,8 +15,10 @@ const BUNDLED_WORKFLOWS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..'
 
 function loadBundledBugWorkflow() {
   const originalHome = process.env.HOME;
+  const originalForemanHome = process.env.FOREMAN_HOME;
   const tempHome = mkdtempSync(join(tmpdir(), 'foreman-bug-workflow-test-'));
   process.env.HOME = tempHome;
+  process.env.FOREMAN_HOME = tempHome;
   try {
     return loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
   } finally {
@@ -24,6 +26,11 @@ function loadBundledBugWorkflow() {
       delete process.env.HOME;
     } else {
       process.env.HOME = originalHome;
+    }
+    if (originalForemanHome === undefined) {
+      delete process.env.FOREMAN_HOME;
+    } else {
+      process.env.FOREMAN_HOME = originalForemanHome;
     }
     rmSync(tempHome, { recursive: true, force: true });
   }
@@ -56,7 +63,7 @@ describe('TRD-009 bug.yaml workflow integration', () => {
 
     it('fix phase has all standard phase config (model, maxTurns, artifact, mail)', () => {
       expect(fixPhase?.models).toBeDefined();
-      expect(fixPhase?.maxTurns).toBe(80);
+      expect(fixPhase?.maxTurns).toBe(500);
       expect(fixPhase?.artifact).toBe('{task.projectReportsDir}/DEVELOPER_REPORT.md');
       expect(fixPhase?.mail).toBeDefined();
     });
@@ -100,8 +107,20 @@ describe('TRD-009 bug.yaml workflow integration', () => {
     });
 
     it('loadWorkflowConfig("bug") returns bug workflow', () => {
-      const wf = loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
-      expect(wf.name).toBe('bug');
+      const originalForemanHome = process.env.FOREMAN_HOME;
+      const tempHome = mkdtempSync(join(tmpdir(), 'foreman-bug-workflow-load-'));
+      process.env.FOREMAN_HOME = tempHome;
+      try {
+        const wf = loadWorkflowConfig('bug', BUNDLED_WORKFLOWS_DIR);
+        expect(wf.name).toBe('bug');
+      } finally {
+        if (originalForemanHome === undefined) {
+          delete process.env.FOREMAN_HOME;
+        } else {
+          process.env.FOREMAN_HOME = originalForemanHome;
+        }
+        rmSync(tempHome, { recursive: true, force: true });
+      }
     });
 
     it('bug type with no label → bug workflow', () => {
@@ -114,15 +133,21 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   });
 
   describe('phase ordering and finalize', () => {
-    it('phases are in order: fix → developer remediation (retryOnly) → documentation → qa → cli-review → finalize → PR review → merge', () => {
+    it('phases are in order: explorer → fix → developer remediation (retryOnly) → documentation → qa → finalize → PR wait → merge', () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      expect(names).toEqual(['fix', 'developer', 'documentation', 'qa', 'cli-review', 'finalize', 'create-pr', 'pr-wait', 'prepare-pr-review', 'pr-review', 'merge']);
+      expect(names).toEqual(['explorer', 'fix', 'developer', 'cicd-developer', 'cr-developer', 'merge-resolver', 'documentation', 'qa', 'finalize', 'create-pr', 'pr-wait', 'merge']);
       expect(bugWorkflow.phases.find((p) => p.name === 'developer')?.retryOnly).toBe(true);
+      expect(bugWorkflow.phases.find((p) => p.name === 'cicd-developer')?.retryOnly).toBe(true);
+      expect(bugWorkflow.phases.find((p) => p.name === 'cr-developer')?.retryOnly).toBe(true);
+      expect(bugWorkflow.phases.find((p) => p.name === 'merge-resolver')?.retryOnly).toBe(true);
+      expect(bugWorkflow.phases.find((p) => p.name === 'cli-review')).toBeUndefined();
+      expect(bugWorkflow.phases.find((p) => p.name === 'pr-review')).toBeUndefined();
     });
 
-    it('finalize phase uses the bug-specific finalize prompt', () => {
+    it('finalize phase uses the deterministic builtin finalizer', () => {
       const finalize = bugWorkflow.phases.find((p) => p.name === 'finalize');
-      expect(finalize?.prompt).toBe('finalize-bug.md');
+      expect(finalize?.builtin).toBe(true);
+      expect(finalize?.prompt).toBeUndefined();
     });
 
     it('finalize phase has verdict: true and retries through developer remediation', () => {

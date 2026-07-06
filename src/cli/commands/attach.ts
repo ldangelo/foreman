@@ -43,7 +43,7 @@ interface DaemonMailMessage {
   deleted_at: string | null;
 }
 
-function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
+export function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
   const statusMap: Record<string, Run["status"]> = {
     pending: "pending",
     running: "running",
@@ -55,7 +55,7 @@ function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    seed_id: row.bead_id,
+    task_id: row.bead_id,
     agent_type: row.agent_type ?? "daemon",
     session_key: row.session_key,
     worktree_path: row.worktree_path ?? getWorkspacePath(projectPath, row.bead_id),
@@ -69,7 +69,7 @@ function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
   };
 }
 
-async function resolveDaemonAttachContext(projectPath: string): Promise<DaemonAttachContext | null> {
+export async function resolveDaemonAttachContext(projectPath: string): Promise<DaemonAttachContext | null> {
   try {
     const projects = await listRegisteredProjects();
     const project = projects.find((record) => record.path === projectPath);
@@ -84,13 +84,13 @@ async function resolveDaemonAttachContext(projectPath: string): Promise<DaemonAt
   }
 }
 
-async function resolveDaemonRun(context: DaemonAttachContext, id: string): Promise<Run | null> {
+export async function resolveDaemonRun(context: DaemonAttachContext, id: string): Promise<Run | null> {
   const runs = await context.client.runs.list({ projectId: context.projectId, limit: 100 }) as DaemonRunRow[];
   const row = runs.find((run) => run.id === id || run.id.startsWith(id) || run.bead_id === id);
   return row ? adaptDaemonRun(row, context.projectPath) : null;
 }
 
-function adaptDaemonMessage(row: DaemonMailMessage): Message {
+export function adaptDaemonMessage(row: DaemonMailMessage): Message {
   return {
     id: row.id,
     run_id: row.run_id,
@@ -130,13 +130,13 @@ export async function attachAction(
   projectPath: string,
   daemon?: DaemonAttachContext | null,
 ): Promise<number> {
-  // Look up by run ID first, then by seed ID (most recent run)
+  // Look up by run ID first, then by task ID (most recent run)
   let run = store.getRun(id);
   let daemonRun: Run | null = null;
   if (!run) {
     const project = store.getProjectByPath(projectPath);
     if (project) {
-      const runs = store.getRunsForSeed(id, project.id);
+      const runs = store.getRunsForTask(id, project.id);
       if (runs.length > 0) {
         run = runs[0]; // Most recent
       }
@@ -231,7 +231,7 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
   console.log("Attachable sessions:\n");
   console.log(
     "  " +
-    "SEED".padEnd(22) +
+    "TASK".padEnd(22) +
     "STATUS".padEnd(12) +
     "PHASE".padEnd(12) +
     "PROGRESS".padEnd(20) +
@@ -253,7 +253,7 @@ export function listSessionsEnhanced(store: ForemanStore, projectPath: string): 
 
     console.log(
       "  " +
-      run.seed_id.padEnd(22) +
+      run.task_id.padEnd(22) +
       run.status.padEnd(12) +
       phase.padEnd(12) +
       progressStr.padEnd(20) +
@@ -298,7 +298,7 @@ export async function listSessionsEnhancedDaemon(context: DaemonAttachContext): 
   console.log("Attachable sessions:\n");
   console.log(
     "  " +
-    "SEED".padEnd(22) +
+    "TASK".padEnd(22) +
     "STATUS".padEnd(12) +
     "PHASE".padEnd(12) +
     "PROGRESS".padEnd(20) +
@@ -313,7 +313,7 @@ export async function listSessionsEnhancedDaemon(context: DaemonAttachContext): 
     const worktree = run.worktree_path ?? "-";
     console.log(
       "  " +
-      run.seed_id.padEnd(22) +
+      run.task_id.padEnd(22) +
       run.status.padEnd(12) +
       "-".padEnd(12) +
       "-".padEnd(20) +
@@ -331,7 +331,7 @@ async function handleDefaultAttach(run: Run): Promise<number> {
   // Try SDK session resume
   const sessionId = extractSessionId(run.session_key);
   if (sessionId) {
-    console.log(`Attaching to ${run.seed_id} [${run.agent_type}] session=${sessionId}`);
+    console.log(`Attaching to ${run.task_id} [${run.agent_type}] session=${sessionId}`);
     console.log(`  Status: ${run.status}`);
     if (run.worktree_path) {
       console.log(`  Worktree: ${run.worktree_path}`);
@@ -366,7 +366,7 @@ async function handleDefaultAttach(run: Run): Promise<number> {
 
     child.on("error", (err) => {
       console.error(`Failed to tail log file: ${err.message}`);
-      console.error(`No active session found for "${run.seed_id}". The agent may have completed or crashed.`);
+      console.error(`No active session found for "${run.task_id}". The agent may have completed or crashed.`);
       resolve(1);
     });
 
@@ -382,7 +382,7 @@ async function handleFollow(
 ): Promise<number> {
   // Tail log file
   const logPath = join(homedir(), ".foreman", "logs", `${run.id}.out`);
-  console.log(`Following log for ${run.seed_id} [${run.agent_type}] | Ctrl+C to stop`);
+  console.log(`Following log for ${run.task_id} [${run.agent_type}] | Ctrl+C to stop`);
   console.log(`Log: ${logPath}\n`);
 
   return new Promise<number>((resolve) => {
@@ -422,7 +422,7 @@ async function handleStream(
 ): Promise<number> {
   const terminalStatuses = new Set(["completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created"]);
 
-  console.log(`Streaming agent mail for ${run.seed_id} [${run.id}] | Ctrl+C to stop`);
+  console.log(`Streaming agent mail for ${run.task_id} [${run.id}] | Ctrl+C to stop`);
   console.log(`  Status: ${run.status}`);
   if (run.worktree_path) {
     console.log(`  Worktree: ${run.worktree_path}`);
@@ -441,7 +441,7 @@ async function handleStream(
   // If already in terminal state, we're done
   const currentRun = store.getRun(run.id);
   if (currentRun && terminalStatuses.has(currentRun.status)) {
-    console.log(`\nRun ${run.seed_id} is already ${currentRun.status}.`);
+    console.log(`\nRun ${run.task_id} is already ${currentRun.status}.`);
     return 0;
   }
 
@@ -472,7 +472,7 @@ async function handleStream(
       // Check if run has reached terminal state
       const latestRun = store.getRun(run.id);
       if (latestRun && terminalStatuses.has(latestRun.status)) {
-        console.log(`\nRun ${run.seed_id} reached terminal state: ${latestRun.status}`);
+        console.log(`\nRun ${run.task_id} reached terminal state: ${latestRun.status}`);
         cleanup(0);
       }
     };
@@ -488,7 +488,7 @@ async function handleStream(
   });
 }
 
-async function handleStreamDaemon(
+export async function handleStreamDaemon(
   run: Run,
   context: DaemonAttachContext,
   signal?: AbortSignal,
@@ -496,7 +496,7 @@ async function handleStreamDaemon(
 ): Promise<number> {
   const terminalStatuses = new Set(["completed", "failed", "stuck", "merged", "conflict", "test-failed", "pr-created", "reset"]);
 
-  console.log(`Streaming agent mail for ${run.seed_id} [${run.id}] | Ctrl+C to stop`);
+  console.log(`Streaming agent mail for ${run.task_id} [${run.id}] | Ctrl+C to stop`);
   console.log(`  Status: ${run.status}`);
   if (run.worktree_path) {
     console.log(`  Worktree: ${run.worktree_path}`);
@@ -514,7 +514,7 @@ async function handleStreamDaemon(
   if (currentRun) {
     const adapted = adaptDaemonRun(currentRun, context.projectPath);
     if (terminalStatuses.has(adapted.status)) {
-      console.log(`\nRun ${run.seed_id} is already ${adapted.status}.`);
+      console.log(`\nRun ${run.task_id} is already ${adapted.status}.`);
       return 0;
     }
   }
@@ -547,7 +547,7 @@ async function handleStreamDaemon(
         if (latestRun) {
           const adapted = adaptDaemonRun(latestRun, context.projectPath);
           if (terminalStatuses.has(adapted.status)) {
-            console.log(`\nRun ${run.seed_id} reached terminal state: ${adapted.status}`);
+            console.log(`\nRun ${run.task_id} reached terminal state: ${adapted.status}`);
             cleanup(0);
           }
         }
@@ -655,10 +655,15 @@ function handleWorktree(run: Run): Promise<number> {
   const shell = process.env.SHELL ?? "/bin/bash";
 
   return new Promise<number>((resolve) => {
-    spawn(shell, [], {
+    const child = spawn(shell, [], {
       cwd: run.worktree_path!,
       stdio: "inherit",
-    }).on("exit", (code) => resolve(code ?? 0));
+    });
+    child.on("error", (err) => {
+      console.error(`Failed to launch shell: ${err.message}`);
+      resolve(1);
+    });
+    child.on("exit", (code) => resolve(code ?? 0));
   });
 }
 

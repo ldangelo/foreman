@@ -12,26 +12,49 @@ foreman --help              # Show all commands
 foreman <command> --help    # Show command-specific help
 ```
 
+### Domain Groups and Deprecated Aliases
+
+`foreman --help` groups commands by domain:
+
+- Setup/health: `init`, `doctor`, `daemon`, `server`
+- Planning: `plan`, `sling`
+- Execution: `run`, `retry`, `reset`, `stop`, `recover`
+- Tasks/views: `task`, `status`, `board`, `watch`, `logs`
+- Collaboration: `inbox`, `attach`, `debug`
+- Delivery/VCS: `worktree`, `merge`, `pr`
+
+Deprecated aliases stay hidden from help and print the replacement spelling when used:
+
+| Deprecated | Use instead |
+|------------|-------------|
+| `foreman dashboard` | `foreman watch` |
+| `foreman purge-logs` | `foreman purge logs` |
+| `foreman purge-zombie-runs` | `foreman purge runs` |
+| `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow |
+| removed `foreman mail send` | `foreman inbox send` |
+
+Legacy TS delegation and Node daemon start/restart were removed after the Elixir cutover; use `foreman server start` for the scheduler.
+
 ---
 
 ## Project Setup
 
 ### `foreman init`
 
-Initialize Foreman in a project. Creates `.foreman/` directory, installs default workflow configs, prompts, and registers the project in the Postgres store.
+Initialize Foreman in a project. Applies pending packaged Postgres migrations, creates `.foreman/` directory, installs default workflow configs, prompts, and registers the project in the Postgres store.
 
 ```bash
 foreman init                      # Initialize with auto-detected name
 foreman init -n my-project        # Initialize with explicit name
-foreman init --force              # Overwrite existing prompt files
+foreman init --force              # Reinstall prompt and workflow files after source edits
 foreman init --wizard             # Interactive setup wizard that writes .foreman/config.yaml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-n, --name <name>` | Project name (default: directory name) |
-| `--force` | Overwrite existing prompt and workflow files |
-| `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`beads`, `jira`, or `github`), optional service credentials, then write `.foreman/config.yaml` |
+| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. |
+| `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
 ---
 
@@ -39,61 +62,40 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 ### `foreman run`
 
-Dispatch ready tasks to AI agents. Runs in a continuous loop by default — dispatches native tasks from the Postgres task store, skips ready tasks whose dependency blockers are not closed, monitors agents, and auto-merges completed work. The daemon uses the same dependency-filtered ready queue and logs both dispatched task IDs and skipped-task reasons each dispatch cycle.
+Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.
 
-Default workflows include a `documentation` phase before finalization. The phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
+Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a Graphify-backed Explorer phase for semantic discovery before implementation. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
 
 ```bash
-foreman run                       # Dispatch all ready tasks (up to max-agents)
+foreman run                       # Dispatch all ready tasks through the Elixir scheduler
 foreman run --project my-project   # Dispatch against a registered project without cd
-foreman run --task bd-abc1        # Dispatch a specific task by ID
-foreman run --dry-run             # Preview what would be dispatched
-foreman run --max-agents 3        # Limit concurrent agents to 3
-foreman run --resume              # Resume stuck/rate-limited runs
-foreman run --resume-failed       # Also resume permanently failed runs
-foreman run --no-watch            # Dispatch once and exit (don't monitor)
-foreman run --no-pipeline         # Single agent mode (no explorer/qa/reviewer)
-foreman run --workflow quick      # Run all dispatched tasks with the quick workflow
-foreman run --model anthropic/claude-opus-4-6  # Force a specific model
+foreman run --dry-run              # Check Elixir server availability without ticking
+foreman run --no-watch             # Tick once and exit; monitor with watch/status
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--task <id>` | — | Dispatch only this specific task ID (must be ready) |
-| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
-| `--max-agents <n>` | `5` | Maximum concurrent agents |
-| `--model <model>` | — | Force a specific model for all phases |
-| `--dry-run` | — | Show what would be dispatched without doing it |
+| `--max-agents <n>` | `5` | Removed operator override; Elixir scheduler owns capacity |
+| `--model <model>` | — | Removed operator override; workflow/provider config owns worker models |
+| `--dry-run` | — | Check Elixir server availability without sending a scheduler tick |
 | `--no-watch` | — | Exit immediately after dispatching |
-| `--resume` | — | Resume stuck/rate-limited runs from previous dispatch |
-| `--resume-failed` | — | Also resume failed runs (not just stuck) |
-| `--no-pipeline` | — | Skip the pipeline — run as single worker agent |
-| `--workflow <name>` | — | Run all dispatched tasks with this workflow (overrides `workflow:<name>` labels, workflow YAML `task_type` routing, and legacy task-type mapping; fails fast with the list of available workflows if it cannot be loaded) |
-| `--no-auto-dispatch` | — | Disable auto-dispatch when capacity is available |
-| `--telemetry` | — | Enable OpenTelemetry tracing (requires OTEL_* env vars) |
+| `--yes` | — | Answer yes to supported run confirmation prompts |
+| `--resume` / `--resume-failed` | — | Removed; use `foreman retry` |
+| `--no-pipeline` / `--workflow <name>` | — | Removed dispatch-shaping options; workflow selection is scheduler-owned by workflow YAML `task_type` routing and labels |
+| `--no-auto-dispatch` / `--telemetry` | — | Removed legacy dispatcher options |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
 > **Deprecated:** `--skip-explore` and `--skip-review` are still parsed for backwards compatibility but have **no effect** on the pipeline (phase shape is defined entirely by the workflow YAML). They are hidden from `--help` and print a deprecation warning. Use `--workflow quick` (a bundled workflow without explorer/reviewer phases) or a custom workflow instead.
 
+Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`, `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`, and `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS`. When exceeded, Foreman stops the run, writes a native task failure note, and marks the run stuck for operator action.
+
 ### `foreman run task`
 
-Run a specific task through an explicit workflow, bypassing scheduler state gates. This is intended for debugging, recovery, and manual reruns where the task may be `failed`, `closed`, `in-progress`, or otherwise not `ready`. Worktree/run locking still applies.
-
-```bash
-foreman run task foreman-12345 task --project foreman --no-watch
-foreman run task foreman-12345 ~/.foreman/workflows/task.yaml --target-branch main
-```
+Operator use of `foreman run task` was removed after the Elixir cutover. The hidden `--run-id` bridge is reserved for Elixir scheduler-launched Node/Pi workers; when that bridge sees an Elixir-only task, Foreman mirrors task metadata into the worker store before execution so prompts receive title/type/priority/description metadata.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--model <model>` | workflow default | Override the model used by spawned worker phases |
-| `--dry-run` | — | Resolve task, workflow, and worktree without creating a run |
-| `--no-watch` | — | Spawn the worker and return immediately |
-| `--target-branch <branch>` | detected default | Override base/target branch for finalization and merge |
-| `--project <name>` | current project | Registered project name |
-| `--project-path <absolute-path>` | current project | Absolute project path for advanced/scripted use |
-
-> **Deprecated:** `--skip-explore` and `--skip-review` are hidden no-ops here too — pick a workflow without those phases instead (e.g. `foreman run task <task-id> quick`).
+This command remains registered only so operator invocations receive an explicit removal message. The internal `--run-id` bridge is hidden and reserved for Elixir scheduler launches.
 
 ---
 
@@ -232,7 +234,7 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman board`
 
-Open the terminal kanban board for native tasks. Press `y` to copy the selected task ID. The board monitors agent inbox messages and updates only the task cards tied to changed runs, so phase/status movement appears without a whole-board reload. Press `r` for a full manual refresh; the header shows a `refreshing…` spinner during full reload and `refreshed <time>` after task data updates.
+Open the terminal kanban board for native tasks. Press `y` to copy the selected task ID. `open`/`backlog` tasks render in Backlog, terminal `closed`/`merged` tasks render in Closed, and unknown statuses render in Needs Attention instead of being hidden as closed. The board monitors agent inbox messages and updates only the task cards tied to changed runs, so phase/status movement appears without a whole-board reload. Press `r` for a full manual refresh; the header shows a `refreshing…` spinner during full reload and `refreshed <time>` after task data updates.
 
 ```bash
 foreman board
@@ -278,7 +280,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, workflow configs, and duplicate workflow YAML `task_type` declarations.
+Health checks for Foreman installation. Validates Pi SDK, DB integrity, prompt files, workflow configs, duplicate workflow YAML `task_type` declarations, stale run records, zombie runs, and stale/orphaned worktrees. Installed workflow YAML is compared to bundled defaults; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
 
 ```bash
 foreman doctor                    # Run all health checks
@@ -289,32 +291,48 @@ foreman doctor --json             # Machine-readable output
 
 | Option | Description |
 |--------|-------------|
-| `--fix` | Auto-fix issues (install missing prompts, migrate stores, etc.) |
+| `--fix` | Auto-fix safe issues: install missing prompts/workflows, migrate stores, mark zombie runs failed, reset retryable failed/stuck runs, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
 
-### `foreman reset`
+### `foreman server`
 
-Reset failed or stuck runs. Cleans up worktrees, deletes branches, and resets task status to a dispatchable state.
+Manage the experimental Elixir orchestration server used by TRD-2026-014.
 
 ```bash
-foreman reset                     # Reset all failed/stuck runs
-foreman reset --project my-project # Reset runs in a registered project without cd
-foreman reset --task bd-abc1      # Reset a specific task by ID
-foreman reset --all               # Reset ALL active runs (nuclear option)
-foreman reset --detect-stuck      # Find and reset stuck agents
-foreman reset --dry-run           # Preview what would be reset
+foreman server start              # Start local Elixir server
+foreman server status             # Show PID/URL and health
+foreman server doctor             # Auto-start then run server doctor checks
+foreman server doctor --no-auto-start  # Doctor check only
+foreman server stop               # Stop server started by Foreman
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--task <id>` | — | Reset a specific task's runs |
-| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
-| `--all` | — | Reset ALL active runs |
-| `--detect-stuck` | — | Run stuck detection first |
-| `--timeout <minutes>` | `15` | Stuck detection timeout |
-| `--dry-run` | — | Preview changes |
-| `--project <name-or-path>` | — | Target a registered project name or absolute project path |
+| Option | Description |
+|--------|-------------|
+| `--port <port>` | Override local HTTP port (default `4766`) |
+| `--no-auto-start` | For `doctor`, fail instead of starting a stopped server |
+
+`server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token. Binding the Elixir HTTP server beyond loopback also requires this token. Worker starts strip forbidden host variables (`FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, `DATABASE_*`) and scope explicit project/run secrets to the run. Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events.
+
+Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns commands/events/projections/recovery/security/overwatch and all database access, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases, stream worker events, emit authoritative terminal run/task events, stream Pi SDK tool calls/assistant messages as ordered worker events, expose typed Foreman tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`), and ask Elixir overwatch to approve/deny tool calls before execution. Node workers and CLI clients do not connect directly to the database; they use Elixir HTTP commands/projections and do not drain DB-backed merge queues from inside the worker. Raw log files are compatibility/debug projections of the worker event stream. The launcher records process-exit facts and emits a diagnostic fallback failure only when a worker exits without an authoritative terminal event; that fallback may parse the final worker output to avoid stale phase attribution, but authoritative worker terminal events remain preferred. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
+
+### `foreman reset`
+
+Reset active Elixir-backed task work. The command stops the active worker process when present, abandons the current run while keeping the task, removes the run worktree unless `--keep-worktree` is set, sets the task back to `ready`, and requests scheduler dispatch.
+
+```bash
+foreman reset foreman-abc12
+foreman reset foreman-abc12 --reason "stale worker"
+foreman reset foreman-abc12 --dry-run
+foreman reset foreman-abc12 --keep-worktree
+```
+
+| Option | Description |
+|--------|-------------|
+| `--reason <text>` | Reason recorded in run history |
+| `--dry-run` | Preview stop/abandon/reset/dispatch steps |
+| `--keep-worktree` | Do not remove the current run worktree |
+| `--project <name-or-path>` | Target a registered project name or absolute project path |
 
 ### `foreman retry`
 
@@ -335,27 +353,35 @@ foreman retry bd-abc1 --dry-run   # Preview
 | `--dry-run` | Show what would happen |
 | `--project <name-or-path>` | Target a registered project name or absolute project path |
 
-### `foreman stop`
+### `foreman abandon`
 
-Gracefully stop running agents.
+Abandon obsolete Foreman work that should not land.
 
 ```bash
-foreman stop                      # Stop all running agents
-foreman stop bd-abc1              # Stop a specific task's agent
-foreman stop --list               # List active runs
-foreman stop --force              # Force kill with SIGKILL
-foreman stop --dry-run            # Preview
+foreman abandon <task-or-run-id> --reason "too stale to land"
+foreman abandon <task-or-run-id> --dry-run
+foreman abandon <task-or-run-id> --delete-branch --force
+foreman abandon --missing-branches --dry-run
+foreman abandon --missing-branches --reason "branch missing"
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--list` | List active runs without stopping |
-| `--force` | Force kill with SIGKILL instead of graceful shutdown |
-| `--dry-run` | Preview without stopping |
+Abandon removes matching merge-queue entries, archives/removes the run worktree, marks the task `blocked` unless `--keep-task` is used, and marks the run failed with an audit event. Branch deletion is opt-in via `--delete-branch`; use `--force` for unmerged branches. Use `--missing-branches` to bulk-abandon completed runs whose `foreman/<task>` branch is missing locally, which clears stale rows that otherwise make `foreman merge` warn repeatedly.
 
----
+### `foreman clean-state`
 
-## Merging & PRs
+Reset Foreman to a clean operator state by intentionally dropping stale/obsolete Foreman work.
+
+```bash
+foreman clean-state --dry-run
+foreman clean-state --force
+foreman clean-state --force --delete-branches
+foreman clean-state --force --delete-branches --delete-origin-branches
+```
+
+`clean-state` removes stale/conflict merge-queue entries, marks non-active related runs abandoned (`failed` with `merge_strategy: none`), removes non-active Foreman worktrees, and marks related tasks blocked unless `--keep-tasks` is used. It never mutates active pending/running runs. Mutating cleanup requires `--force`; without `--force` it previews only. Origin branch deletion is never implicit; opt in with `--delete-origin-branches`.
+
+### `foreman stop`
+Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 
 ### `foreman merge`
 
@@ -378,7 +404,6 @@ foreman merge --stats weekly      # Weekly cost breakdown
 | `--no-tests` | — | Skip running tests during merge |
 | `--test-command <cmd>` | `npm test` | Test command to run |
 | `--task <id>` | — | Merge a single task by ID |
-| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--list` | — | List tasks ready to merge |
 | `--dry-run` | — | Preview merge operations |
 | `--resolve <runId>` | — | Resolve a merge conflict |
@@ -404,11 +429,37 @@ foreman pr --base-branch dev      # PR against dev instead of main
 
 ---
 
+## MCP Server
+
+### `foreman mcp`
+
+Run the Foreman MCP server for agent/tool integrations. Use stdio for local MCP clients that spawn Foreman directly, or HTTP for long-running local/remote clients.
+
+```bash
+foreman mcp --transport stdio
+foreman mcp --transport http --host 127.0.0.1 --port 4777
+foreman mcp --transport http --host 0.0.0.0 --mcp-auth-token "$FOREMAN_MCP_AUTH_TOKEN"
+foreman mcp --transport http --server-url http://foreman.internal:4766
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--transport <stdio\|http>` | `stdio` | MCP transport |
+| `--host <host>` | `127.0.0.1` | HTTP bind host |
+| `--port <port>` | `4777` | HTTP bind port |
+| `--server-url <url>` | local Elixir URL | Elixir backend URL for remote Foreman |
+| `--mcp-auth-token <token>` | unset | Require bearer token for HTTP MCP requests |
+| `--no-auto-start` | — | Do not auto-start the local Elixir server |
+
+Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, inbox, lifecycle events, and debug timelines. MCP reads/writes through the Elixir backend only. The project-local Pi extension exposes common slash commands (`/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, `/foreman-tick`) backed by these tools. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
+
+---
+
 ## Agent Mail
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between pipeline phases and the foreman orchestrator.
+View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. Message contents appear in the table preview by default; use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `--events` includes phase starts/completions, structured phase-report steering, retries, verdicts, skips, overwatch nudges, worktree creation, dispatch, and merge/refinery events as a columnar table (`TIME`, `TASK`, `PHASE`, `TURNS`, `EVENT`, `MESSAGE`). Add `--grouped` to use the workflow → phase → message/tool-call grouping. Use `--compact` for a single operator summary of task/run status, phases, tool counts, denials, and notable failure/overwatch lines without raw mail/event spam. Tool calls and assistant message events are persisted for debug/log projections; inbox keeps them compact or filtered so operator narrative remains readable. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project; after the initial table, live event rows append without repeating the table header.
 
 ```bash
 foreman inbox                     # Show latest run's messages
@@ -417,6 +468,7 @@ foreman inbox --all --watch       # Live stream ALL messages across all runs
 foreman inbox --watch             # Live stream latest run's messages
 foreman inbox --unread            # Show only unread messages
 foreman inbox --limit 100         # Show more messages
+foreman inbox --compact           # Summarize task/run, phases, tools, denials, notable events
 foreman inbox --ack               # Mark shown messages as read
 ```
 
@@ -425,12 +477,15 @@ foreman inbox --ack               # Mark shown messages as read
 | `--agent <name>` | all | Filter to specific agent/role |
 | `--run <id>` | latest | Filter to specific run ID |
 | `--task <id>` | — | Resolve run by task ID |
-| `--bead <id>` | — | Alias for `--task` (backward compatibility) |
 | `--all` | — | Show/watch messages across all runs |
 | `--watch` | — | Poll every 2 seconds for new messages |
 | `--unread` | — | Show only unread messages |
 | `--limit <n>` | `50` | Maximum messages to show |
-| `--ack` | — | Mark shown messages as read |
+| `--ack` | — | Mark shown messages as read where supported |
+| `--full` | — | Show full message bodies instead of table previews |
+| `--events` | — | Show a columnar pipeline event table |
+| `--grouped` | — | Group pipeline events by workflow/phase instead of using the event table |
+| `--events-limit <n>` | `50` | Maximum lifecycle events to show |
 
 ### `foreman inbox send`
 
@@ -468,7 +523,11 @@ foreman plan "..." --prd-only     # Stop after PRD generation
 foreman plan --from-prd docs/PRD.md  # Start from existing PRD
 foreman plan "..." --output-dir docs/auth  # Custom output directory
 foreman plan "..." --dry-run      # Preview steps
+foreman plan prd "Add user authentication"   # Server-backed PRD planning
+foreman plan trd docs/PRD.md                  # Server-backed TRD planning
 ```
+
+`foreman plan prd` and `foreman plan trd` submit `plan.prd` / `plan.trd` commands to the local Elixir orchestration server. They auto-start the server by default; use `--no-auto-start` to require an already-running server.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -477,6 +536,8 @@ foreman plan "..." --dry-run      # Preview steps
 | `--output-dir <dir>` | `./docs` | Output directory for PRD/TRD |
 | `--runtime <runtime>` | `claude-code` | AI runtime (`claude-code` or `codex`) |
 | `--dry-run` | — | Show steps without executing |
+
+Server-backed `plan prd` / `plan trd` options: `--project <path>`, `--output-dir <dir>`, `--provider <provider>`, `--run-id <id>`, `--command-id <id>`, `--no-auto-start`.
 
 ### `foreman sling trd`
 
@@ -489,7 +550,6 @@ foreman sling trd docs/TRD.md --json     # Output parsed structure
 foreman sling trd docs/TRD.md --auto     # Skip confirmation prompts
 foreman sling trd docs/TRD.md --skip-completed   # Skip [x] items
 foreman sling trd docs/TRD.md --close-completed  # Create and close [x] items
-foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_rust only
 ```
 
 | Option | Description |
@@ -497,7 +557,6 @@ foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_ru
 | `--dry-run` | Preview without creating tasks |
 | `--auto` | Skip confirmation prompts |
 | `--json` | Output parsed structure as JSON |
-| `--br-only` | Compatibility path: write to beads_rust only |
 | `--skip-completed` | Skip `[x]` completed tasks |
 | `--close-completed` | Create and immediately close `[x]` tasks |
 | `--no-parallel` | Disable parallel sprint detection |
@@ -507,30 +566,47 @@ foreman sling trd docs/TRD.md --br-only  # Compatibility path: write to beads_ru
 
 ### `foreman task create`
 
-Create a new task in backlog status, or generate task(s) from a natural-language description with `--from-text` (replaces the deprecated `foreman bead`, which remains as a hidden alias).
+Create a new structured task in backlog status. Natural-language task generation (`--from-text`) was removed after the Elixir backend cutover.
 
 ```bash
 foreman task create --title "Fix login timeout" --type bug --priority 1
-foreman task create --from-text "Fix the login timeout bug"
-foreman task create --from-text docs/issue.md       # From a file
-foreman task create --from-text "..." --parent bd-abc1  # Set parent task ID
-foreman task create --from-text "..." --dry-run     # Preview
-foreman task create --from-text "..." --no-llm      # Skip AI parsing (text becomes the title)
+foreman task create --title "Fix login timeout" --description "Session expires too early"
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--title <text>` | — | Task title (required unless `--from-text` is used) |
+| `--title <text>` | — | Task title (required) |
 | `--description <text>` | — | Optional task description |
 | `--type <type>` | `task` | Task type: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question` |
 | `--priority <level>` | `medium` | Priority: `0`–`4` or `critical`/`high`/`medium`/`low`/`backlog` |
-| `--from-text <description>` | — | Create task(s) from a natural-language description (or file path) using an LLM |
-| `--parent <id>` | — | Parent task ID (only with `--from-text`) |
-| `--dry-run` | — | Preview without creating (only with `--from-text`) |
-| `--no-llm` | — | Skip LLM parsing — create a single task with the text as title (only with `--from-text`) |
-| `--model <model>` | — | Claude model for AI parsing (only with `--from-text`) |
+| `--from-text <description>` | — | Removed after Elixir cutover; use `--title` and `--description` |
+| `--parent <id>` / `--dry-run` / `--no-llm` / `--model` | — | Removed natural-language generator options |
 | `--project <name>` | current directory | Registered project name |
 | `--project-path <absolute-path>` | — | Absolute project path (advanced/script usage) |
+
+---
+
+## Migration and Coexistence
+
+### `foreman import --to-elixir`
+
+Import a TypeScript-era migration payload into the Elixir event store. The payload is JSON and may include `projects`, `tasks`, `runs`, `workflows`, `inbox_messages`, and `config`.
+
+```bash
+foreman import --to-elixir --file migration.json
+foreman import --to-elixir --from-node --project foreman
+foreman import --to-elixir --file migration.json --command-id migration-2026-014
+foreman import --to-elixir --file migration.json --no-auto-start
+```
+
+| Option | Description |
+|--------|-------------|
+| `--file <path>` | Migration JSON payload to import |
+| `--from-node` | Build the migration payload from the current Node/Postgres project selected by `--project` / `--project-path` |
+| `--command-id <id>` | Explicit server command id for idempotent retries |
+| `--no-auto-start` | Require an already-running Elixir server |
+
+Elixir is the backend after cutover. Legacy TS delegation has been removed, and `foreman daemon start|restart` now fails with guidance to use `foreman server start`. Operator commands either route through Elixir-backed APIs/events/projections or report removal.
 
 ---
 
@@ -627,4 +703,4 @@ foreman purge runs --dry-run      # Preview
 |--------|-------------|
 | `--dry-run` | Preview without making changes |
 
-> **Removed commands:** `foreman monitor` has been removed — use `foreman reset --detect-stuck` instead. `foreman mail send` has been removed — use `foreman inbox send`.
+> **Removed commands:** `foreman monitor` has been removed. `foreman mail send` has been removed — use `foreman inbox send`.

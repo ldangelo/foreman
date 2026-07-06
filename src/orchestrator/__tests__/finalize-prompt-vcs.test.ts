@@ -81,17 +81,17 @@ describe("finalize.md template: VCS placeholder variables (AC-T-026-1)", () => {
 describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-026-2)", () => {
   const gitBackend = new GitBackend("/tmp/test-project");
   const finalizeCommands = gitBackend.getFinalizeCommands({
-    seedId: "bd-test",
-    seedTitle: "Fix authentication",
+    taskId: "bd-test",
+    taskTitle: "Fix authentication",
     baseBranch: "dev",
     worktreePath: "/tmp/worktrees/bd-test",
   });
 
   it("renders git stage command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "Fix auth token refresh",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "Fix auth token refresh",
       runId: "run-123",
       worktreePath: "/tmp/worktrees/bd-test",
       baseBranch: "dev",
@@ -109,9 +109,9 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
 
   it("renders git tracked-state restore command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       worktreePath: "/tmp/worktrees/bd-test",
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
@@ -127,9 +127,9 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
 
   it("renders git commit command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
       vcsIntegrateTargetCommand: finalizeCommands.integrateTargetCommand,
@@ -142,9 +142,9 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
 
   it("renders git push command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
@@ -158,9 +158,9 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
 
   it("renders git rebase command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       baseBranch: "dev",
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
@@ -175,9 +175,9 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
 
   it("renders finalize drift metadata in prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       baseBranch: "dev",
       qaValidatedTargetRef: "qa-rev-123",
       currentTargetRef: "qa-rev-123",
@@ -197,9 +197,9 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
 
   it("renders git branch verify command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
@@ -213,9 +213,9 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
 
   it("does not leave any unresolved vcs* placeholders in git-rendered prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       runId: "run-1",
       worktreePath: "/tmp/worktrees/bd-test",
       baseBranch: "dev",
@@ -240,8 +240,8 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
 describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC-T-026-3)", () => {
   const jjBackend = new JujutsuBackend("/tmp/test-project");
   const finalizeCommands = jjBackend.getFinalizeCommands({
-    seedId: "bd-test",
-    seedTitle: "Fix authentication",
+    taskId: "bd-test",
+    taskTitle: "Fix authentication",
     baseBranch: "dev",
     worktreePath: "/tmp/worktrees/bd-test",
   });
@@ -252,9 +252,9 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
 
   it("renders jj commit command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
@@ -268,9 +268,9 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
 
   it("renders jj push command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
@@ -284,9 +284,9 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
 
   it("renders jj rebase command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       baseBranch: "dev",
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
@@ -301,9 +301,9 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
 
   it("renders jj branch verify command in finalize prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       vcsStageCommand: finalizeCommands.stageCommand,
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
@@ -317,9 +317,9 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
 
   it("does not leave any unresolved vcs* placeholders in jj-rendered prompt", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       runId: "run-1",
       worktreePath: "/tmp/worktrees/bd-test",
       baseBranch: "dev",
@@ -340,9 +340,9 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
 
   it("empty jj stageCommand renders as empty (auto-staging context)", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-test",
-      seedTitle: "Fix authentication",
-      seedDescription: "desc",
+      taskId: "bd-test",
+      taskTitle: "Fix authentication",
+      taskDescription: "desc",
       vcsStageCommand: finalizeCommands.stageCommand, // ""
       vcsCommitCommand: finalizeCommands.commitCommand,
       vcsPushCommand: finalizeCommands.pushCommand,
@@ -362,36 +362,36 @@ describe("buildPhasePrompt finalize: JujutsuBackend VCS command substitution (AC
 describe("buildPhasePrompt finalize: default git commands when VCS vars omitted", () => {
   it("defaults to git add -A when vcsStageCommand not provided", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-def",
-      seedTitle: "Default test",
-      seedDescription: "desc",
+      taskId: "bd-def",
+      taskTitle: "Default test",
+      taskDescription: "desc",
     });
     expect(prompt).toContain("git add -A");
   });
 
   it("defaults to git commit when vcsCommitCommand not provided", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-def",
-      seedTitle: "Default test",
-      seedDescription: "desc",
+      taskId: "bd-def",
+      taskTitle: "Default test",
+      taskDescription: "desc",
     });
     expect(prompt).toContain("git commit");
   });
 
   it("defaults to git push when vcsPushCommand not provided", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-def",
-      seedTitle: "Default test",
-      seedDescription: "desc",
+      taskId: "bd-def",
+      taskTitle: "Default test",
+      taskDescription: "desc",
     });
     expect(prompt).toContain("git push");
   });
 
   it("defaults to git rebase when vcsIntegrateTargetCommand not provided", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-def",
-      seedTitle: "Default test",
-      seedDescription: "desc",
+      taskId: "bd-def",
+      taskTitle: "Default test",
+      taskDescription: "desc",
       baseBranch: "main",
     });
     expect(prompt).toContain("git fetch origin && git rebase origin/main");
@@ -399,9 +399,9 @@ describe("buildPhasePrompt finalize: default git commands when VCS vars omitted"
 
   it("does not leave unresolved placeholders with default git vars", () => {
     const prompt = buildPhasePrompt("finalize", {
-      seedId: "bd-def",
-      seedTitle: "Default test",
-      seedDescription: "desc",
+      taskId: "bd-def",
+      taskTitle: "Default test",
+      taskDescription: "desc",
       worktreePath: "/tmp/wt/bd-def",
       baseBranch: "main",
     });

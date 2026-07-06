@@ -6,10 +6,16 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  getHighlightedTask,
   getVisibleTaskCapacity,
   getVisibleTaskWindow,
+  normalizeNavRowIndex,
+  normalizeStatusForBoard,
   renderBoard,
+  renderHelpOverlay,
   renderTaskDetail,
+  sortBoardColumns,
+  sortBoardTasks,
   boardColumnForTaskStatus,
   type BoardStatus,
   type BoardTask,
@@ -169,6 +175,75 @@ describe("BoardRendering", () => {
           .slice(0, 3);
         expect(descLines.length).toBeGreaterThan(0);
       }
+    });
+  });
+
+  describe("status helpers", () => {
+    it("normalizes hyphenated board statuses and rejects unknown ones", () => {
+      expect(normalizeStatusForBoard("in-progress")).toBe("in_progress");
+      expect(normalizeStatusForBoard("ready")).toBe("ready");
+      expect(normalizeStatusForBoard("totally-unknown")).toBeNull();
+    });
+
+    it("maps workflow and failure statuses into board columns", () => {
+      expect(boardColumnForTaskStatus("open")).toBe("backlog");
+      expect(boardColumnForTaskStatus("developer")).toBe("in_progress");
+      expect(boardColumnForTaskStatus("review")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("done")).toBe("closed");
+      expect(boardColumnForTaskStatus("weird-status")).toBe("needs_attention");
+    });
+  });
+
+  describe("sorting and navigation helpers", () => {
+    it("sorts tasks by updated timestamp descending", () => {
+      const tasks = [
+        createTask("bd-old", { updated_at: "2026-04-19T00:00:00Z" }),
+        createTask("bd-new", { updated_at: "2026-04-20T00:00:00Z" }),
+      ];
+
+      expect(sortBoardTasks(tasks, "updated").map((task) => task.id)).toEqual(["bd-new", "bd-old"]);
+    });
+
+    it("sorts tasks by priority then updated timestamp", () => {
+      const tasks = [
+        createTask("bd-p2-old", { priority: 2, updated_at: "2026-04-19T00:00:00Z" }),
+        createTask("bd-p0", { priority: 0, updated_at: "2026-04-18T00:00:00Z" }),
+        createTask("bd-p2-new", { priority: 2, updated_at: "2026-04-20T00:00:00Z" }),
+      ];
+
+      expect(sortBoardTasks(tasks, "priority").map((task) => task.id)).toEqual(["bd-p0", "bd-p2-new", "bd-p2-old"]);
+    });
+
+    it("sorts each board column independently", () => {
+      const sorted = sortBoardColumns(createTasksMap({
+        backlog: [
+          createTask("bd-1", { updated_at: "2026-04-19T00:00:00Z" }),
+          createTask("bd-2", { updated_at: "2026-04-20T00:00:00Z" }),
+        ],
+        ready: [
+          createTask("bd-3", { priority: 2, updated_at: "2026-04-19T00:00:00Z" }),
+          createTask("bd-4", { priority: 0, updated_at: "2026-04-18T00:00:00Z" }),
+        ],
+      }), "priority");
+
+      expect(sorted.get("backlog")?.map((task) => task.id)).toEqual(["bd-2", "bd-1"]);
+      expect(sorted.get("ready")?.map((task) => task.id)).toEqual(["bd-4", "bd-3"]);
+    });
+
+    it("clamps navigation row index within the current column and returns highlighted tasks", () => {
+      const tasks = createTasksMap({
+        backlog: [createTask("bd-1"), createTask("bd-2")],
+        ready: [],
+      });
+      const nav = { colIndex: 0, rowIndex: 9 };
+      normalizeNavRowIndex(nav, tasks);
+      expect(nav.rowIndex).toBe(1);
+      expect(getHighlightedTask(nav, tasks)?.id).toBe("bd-2");
+
+      const emptyNav = { colIndex: 1, rowIndex: 5 };
+      normalizeNavRowIndex(emptyNav, tasks);
+      expect(emptyNav.rowIndex).toBe(0);
+      expect(getHighlightedTask(emptyNav, tasks)).toBeNull();
     });
   });
 
@@ -458,7 +533,16 @@ describe("BoardRendering", () => {
       expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("blocked")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("closed")).toBe("closed");
-      expect(boardColumnForTaskStatus("unknown")).toBe("closed");
+      expect(boardColumnForTaskStatus("unknown")).toBe("needs_attention");
+    });
+  });
+
+  describe("help overlay", () => {
+    it("renders board help text", () => {
+      const output = stripTerminalFormatting(renderHelpOverlay(100));
+      expect(output).toContain("HELP — Key Bindings");
+      expect(output).toContain("Move up / down in column");
+      expect(output).toContain("Copy selected task ID");
     });
   });
 

@@ -6,9 +6,9 @@
  *
  * Responsibilities:
  *  1. Type-check the worktree (tsc --noEmit, non-fatal)
- *  2. Commit all changes with the seed title/ID as the commit message
+ *  2. Commit all changes with the task title/ID as the commit message
  *  3. Push the branch to origin
- *  4. Enqueue branch for merge (seed will be closed by refinery after merge)
+ *  4. Enqueue branch for merge (task will be closed by refinery after merge)
  *
  * Returns a FinalizeResult: { success, retryable }.
  */
@@ -32,10 +32,10 @@ export interface FinalizeConfig {
   projectId?: string;
   /** Run ID (used when enqueuing to the merge queue). */
   runId: string;
-  /** Seed identifier, e.g. "bd-ytzv". */
-  seedId: string;
-  /** Human-readable seed title — used as the git commit message. */
-  seedTitle: string;
+  /** Task identifier, e.g. "bd-ytzv". */
+  taskId: string;
+  /** Human-readable task title — used as the git commit message. */
+  taskTitle: string;
   /** Absolute path to the git worktree directory. */
   worktreePath: string;
   /**
@@ -49,9 +49,9 @@ export interface FinalizeConfig {
 /**
  * Result returned by finalize().
  *
- * - `success`: true when the git push succeeded (seed was closed / enqueued).
+ * - `success`: true when the git push succeeded (task was closed / enqueued).
  * - `retryable`: when success=false, indicates whether the caller should reset
- *   the seed to "open" for re-dispatch.  Set to false for deterministic failures
+ *   the task to "open" for re-dispatch.  Set to false for deterministic failures
  *   (e.g. diverged history that could not be rebased) to prevent an infinite
  *   re-dispatch loop (see bd-zwtr).
  */
@@ -99,7 +99,7 @@ function log(msg: string): void {
  *          (e.g. diverged history that could not be rebased via pull --rebase).
  */
 export async function finalize(config: FinalizeConfig, logFile: string, vcs: VcsBackend): Promise<FinalizeResult> {
-  const { seedId, seedTitle, worktreePath } = config;
+  const { taskId, taskTitle, worktreePath } = config;
   // `storeProjectPath` is used only to open the Postgres store for the merge
   // queue — it must never be undefined, so we infer it from the workspace path
   // when the caller didn't pass projectPath explicitly.
@@ -107,9 +107,9 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   const buildOpts = { cwd: worktreePath, stdio: "pipe" as const, timeout: 60_000 };
 
   const report: string[] = [
-    `# Finalize Report: ${seedTitle}`,
+    `# Finalize Report: ${taskTitle}`,
     "",
-    `## Seed: ${seedId}`,
+    `## Task: ${taskId}`,
     `## Timestamp: ${new Date().toISOString()}`,
     "",
   ];
@@ -136,7 +136,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   let commitHash = "(none)";
   try {
     await vcs.stageAll(worktreePath);
-    await vcs.commit(worktreePath, `${seedTitle} (${seedId})`);
+    await vcs.commit(worktreePath, `${taskTitle} (${taskId})`);
     commitHash = await vcs.getHeadId(worktreePath);
     log(`[FINALIZE] Committed ${commitHash}`);
     report.push(`## Commit`, `- Status: SUCCESS`, `- Hash: ${commitHash}`, "");
@@ -156,7 +156,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // Worktrees can end up in detached HEAD or on a wrong branch (e.g. after a
   // failed rebase or manual intervention), causing push to fail with
   // "src refspec does not match any".
-  const expectedBranch = `foreman/${seedId}`;
+  const expectedBranch = `foreman/${taskId}`;
   let branchVerified = false;
   try {
     const currentBranch = await vcs.getCurrentBranch(worktreePath);
@@ -204,7 +204,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   //   - If the agent crashes after push: entry already exists; no duplicate push
   //     needed — refinery picks up the 'pending' entry and merges as normal.
   //   - If push ultimately fails: entry exists in 'pending' state; refinery will
-  //     attempt the merge and fail gracefully, leaving the seed for re-dispatch.
+  //     attempt the merge and fail gracefully, leaving the task for re-dispatch.
   //
   // Fire-and-forget semantics are preserved: an enqueue failure is non-fatal.
   if (branchVerified) {
@@ -232,7 +232,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
       const enqueueResult = await enqueueToMergeQueue({
         ...(enqueueStore ? { db: enqueueStore.getDb() } : {}),
         projectId: config.projectId,
-        seedId,
+        taskId,
         runId: config.runId,
         worktreePath,
         getFilesModified: () => modifiedFiles,
@@ -261,7 +261,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // received a commit (e.g. from a previous partial run) while the worktree
   // continued on a different history.  If the rebase itself fails (real
   // conflicts), we return retryable=false so the caller does NOT reset the
-  // seed to open — preventing the infinite re-dispatch loop described in bd-zwtr.
+  // task to open — preventing the infinite re-dispatch loop described in bd-zwtr.
   let pushSucceeded = false;
   let pushRetryable = true; // default: transient failures may be retried
   let recommendedRecovery: FinalizeResult["recommendedRecovery"];
@@ -288,7 +288,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
         await appendFile(logFile, `[FINALIZE] Push rejected (non-fast-forward): ${pushMsg}\n`);
         report.push(`## Push`, `- Status: REJECTED (non-fast-forward) — attempting rebase`, "");
 
-        // Attempt fetch + rebase. A failed rebase is deterministic — do NOT reset seed to open.
+        // Attempt fetch + rebase. A failed rebase is deterministic — do NOT reset task to open.
         let rebaseSucceeded = false;
         try {
           await vcs.fetch(worktreePath);
@@ -306,7 +306,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
             report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
             // Abort any partial rebase to leave the worktree clean
             try { await vcs.abortRebase(worktreePath); } catch { /* already clean */ }
-            // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
+            // Deterministic failure — do NOT reset task to open (prevents infinite loop)
             pushRetryable = false;
             recommendedRecovery = "clean-replay-from-main";
           }
@@ -318,7 +318,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
           report.push(`## Push`, `- Status: FAILED (rebase could not resolve diverged history)`, "");
           // Abort any partial rebase to leave the worktree clean
           try { await vcs.abortRebase(worktreePath); } catch { /* already clean */ }
-          // Deterministic failure — do NOT reset seed to open (prevents infinite loop)
+          // Deterministic failure — do NOT reset task to open (prevents infinite loop)
           pushRetryable = false;
           recommendedRecovery = "clean-replay-from-main";
         }
@@ -353,28 +353,28 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // Note: merge queue enqueue already happened before push (pre-push enqueue above).
   // No second enqueue needed here — the pre-push entry covers the successful-push case too.
 
-  // Seed lifecycle: set bead to 'review' after a successful push.
+  // Task lifecycle: set bead to 'review' after a successful push.
   // This signals "pipeline done, branch pushed, awaiting foreman merge".
   // Closing happens only after the branch successfully merges (via refinery.ts).
-  // On push failure the bead stays in_progress (caller resets to open via resetSeedToOpen).
+  // On push failure the bead stays in_progress (caller resets to open via resetTaskToOpen).
   if (pushSucceeded) {
     // Queue the status update instead of calling br directly — prevents
     // Postgres contention with concurrent agent-workers (all br writes go
     // through the dispatcher's sequential drain).
     try {
       const statusStore = ForemanStore.forProject(storeProjectPath);
-      enqueueSetBeadStatus(statusStore, seedId, "review", "agent-worker-finalize");
+      enqueueSetBeadStatus(statusStore, taskId, "review", "agent-worker-finalize");
       statusStore.close();
-      log(`[FINALIZE] Enqueued seed ${seedId} → review — bead will be closed by refinery after merge`);
-      report.push(`## Seed Status`, `- Status: AWAITING_MERGE (review)`, `- Note: bead closed by refinery after successful merge`, "");
+      log(`[FINALIZE] Enqueued task ${taskId} → review — bead will be closed by refinery after merge`);
+      report.push(`## Task Status`, `- Status: AWAITING_MERGE (review)`, `- Note: bead closed by refinery after successful merge`, "");
     } catch (brErr: unknown) {
       const brMsg = brErr instanceof Error ? brErr.message : String(brErr);
-      log(`[FINALIZE] Warning: enqueue set-status review failed for ${seedId}: ${brMsg.slice(0, 200)}`);
-      report.push(`## Seed Status`, `- Status: AWAITING_MERGE`, `- Note: bead status update to review failed (non-fatal)`, "");
+      log(`[FINALIZE] Warning: enqueue set-status review failed for ${taskId}: ${brMsg.slice(0, 200)}`);
+      report.push(`## Task Status`, `- Status: AWAITING_MERGE`, `- Note: bead status update to review failed (non-fatal)`, "");
     }
   } else {
-    log(`[FINALIZE] Push failed for ${seedId} — merge queue entry written pre-push; refinery will handle gracefully on re-dispatch`);
-    report.push(`## Seed Status`, `- Status: PUSH_FAILED`, `- Note: merge queue entry written before push attempt`, "");
+    log(`[FINALIZE] Push failed for ${taskId} — merge queue entry written pre-push; refinery will handle gracefully on re-dispatch`);
+    report.push(`## Task Status`, `- Status: PUSH_FAILED`, `- Note: merge queue entry written before push attempt`, "");
   }
 
   // Write finalize report

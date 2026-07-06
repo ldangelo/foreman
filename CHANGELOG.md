@@ -70,7 +70,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 * skip PR workflow when branch has no commits ([595b93d](https://github.com/ldangelo/foreman/commit/595b93d40577e5dc8f88d70e47790cdb9cdb69bf))
 * tail large run logs safely ([93818e0](https://github.com/ldangelo/foreman/commit/93818e069ec626b33188dbea4712c789045c35ee))
 * **tasks:** allow review wait status ([6a3847e](https://github.com/ldangelo/foreman/commit/6a3847e822d9f638ff702e03e8e683c0086e36b2))
-* **tasks:** rename seed terminology to task ([0a31c45](https://github.com/ldangelo/foreman/commit/0a31c453f3a4627bbd2be1092ddd866427416d28))
+* **tasks:** rename task terminology to task ([0a31c45](https://github.com/ldangelo/foreman/commit/0a31c453f3a4627bbd2be1092ddd866427416d28))
 
 
 ### Documentation
@@ -238,8 +238,8 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 * keep merged native tasks terminal ([59577b4](https://github.com/ldangelo/foreman/commit/59577b4c6df5e36492604de25af8ac51652cebf2))
 * make merge an explicit workflow phase ([766dbbd](https://github.com/ldangelo/foreman/commit/766dbbd7d9215d1f88844ed75b3f568cec574dac))
 * make PR review phase read-only ([e22d79a](https://github.com/ldangelo/foreman/commit/e22d79a7fd9aa8745b7604a3f4853ee96c3d5b2c))
-* **metrics:** dedupe outcomes by latest seed run ([8ed2528](https://github.com/ldangelo/foreman/commit/8ed2528a831e65d3ee4b3d97f6ce5d9fc362a332))
-* **metrics:** dedupe outcomes by latest seed run ([d003cf8](https://github.com/ldangelo/foreman/commit/d003cf82de9f277c4309f11bf96873adec6367cf))
+* **metrics:** dedupe outcomes by latest task run ([8ed2528](https://github.com/ldangelo/foreman/commit/8ed2528a831e65d3ee4b3d97f6ce5d9fc362a332))
+* **metrics:** dedupe outcomes by latest task run ([d003cf8](https://github.com/ldangelo/foreman/commit/d003cf82de9f277c4309f11bf96873adec6367cf))
 * move pipeline artifacts to Foreman reports ([ba79756](https://github.com/ldangelo/foreman/commit/ba797564d49a0d7c05ea2673466f5c21805b14a2))
 * **orchestrator:** keep terminal success sticky ([04059e6](https://github.com/ldangelo/foreman/commit/04059e627877301f84538548b42df595a2530592))
 * **orchestrator:** preserve terminal success after finalize ([4a890ad](https://github.com/ldangelo/foreman/commit/4a890ad8fb8dec9c4be728d1c1171c90297dae97))
@@ -298,7 +298,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 * use runId instead of overrideRun to eliminate auto-merge race condition ([e7f5489](https://github.com/ldangelo/foreman/commit/e7f5489d0c6f195e7c4348925ce673f1de39a347))
 * verify finalize target integration via vcs ancestry ([bb7499d](https://github.com/ldangelo/foreman/commit/bb7499d30147163284837996881b054a975906dd))
 * wait for CodeRabbit review completion ([72e947c](https://github.com/ldangelo/foreman/commit/72e947c858dfd50fa3ef7502a0e588218b94fabc))
-* **watch:** dedupe run outcomes by seed ([ce20053](https://github.com/ldangelo/foreman/commit/ce2005355f97c1e42a1f265d7ee4eedae3638ac4))
+* **watch:** dedupe run outcomes by task ([ce20053](https://github.com/ldangelo/foreman/commit/ce2005355f97c1e42a1f265d7ee4eedae3638ac4))
 * wire registered retry dispatcher run ops ([495472f](https://github.com/ldangelo/foreman/commit/495472f6d8b4bd23818b9f596a78a78609e92839))
 * **workflows:** add skill: prefix to command phase skill invocations ([8b6925f](https://github.com/ldangelo/foreman/commit/8b6925f4d970f51fa2429e8e64aaa1485f06010f))
 * **workflows:** narrow task test phase and timeout ([daf31bb](https://github.com/ldangelo/foreman/commit/daf31bb4c27eb7f9a3fa4fea1b4b83f992e23cd9))

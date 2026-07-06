@@ -68,7 +68,7 @@ describe("Postgres native task lifecycle", { timeout: 120_000 }, () => {
     } catch {
       postgresAvailable = false;
     }
-  });
+  }, 120_000);
 
   afterAll(async () => {
     if (postgresAvailable) {

@@ -16,6 +16,9 @@ import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run, Message } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirInboxMessage, type ElixirRun } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { runWithPiSdk } from "../../orchestrator/pi-sdk-runner.js";
 import { loadAndInterpolate } from "../../orchestrator/template-loader.js";
 import { getHighspeedModel } from "../../lib/config.js";
@@ -57,6 +60,12 @@ interface DaemonDebugContext {
   projectPath: string;
 }
 
+interface ElixirDebugContext {
+  client: ElixirServerClient;
+  projectId: string;
+  projectPath: string;
+}
+
 function adaptDaemonRun(row: DaemonRunRow): Run {
   const statusMap: Record<string, Run["status"]> = {
     pending: "pending",
@@ -69,7 +78,7 @@ function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    seed_id: row.bead_id,
+    task_id: row.bead_id,
     agent_type: row.agent_type ?? "daemon",
     session_key: row.session_key,
     worktree_path: row.worktree_path,
@@ -108,9 +117,75 @@ async function resolveDaemonDebugContext(projectPath: string): Promise<DaemonDeb
   }
 }
 
+async function resolveElixirDebugContext(projectPath: string): Promise<ElixirDebugContext | null> {
+  const projects = await listRegisteredProjects();
+  const project = projects.find((record) => record.path === projectPath);
+  if (!project) return null;
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return {
+    client: new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN),
+    projectId: project.id,
+    projectPath,
+  };
+}
+
 async function resolveDaemonRuns(context: DaemonDebugContext, beadId: string): Promise<Run[]> {
   const rows = await context.client.runs.list({ projectId: context.projectId, beadId, limit: 50 }) as DaemonRunRow[];
   return rows.map(adaptDaemonRun);
+}
+
+function adaptElixirRun(row: ElixirRun): Run {
+  const runId = String(row.run_id ?? row.id ?? "");
+  const statusMap: Record<string, Run["status"]> = {
+    pending: "pending",
+    in_progress: "running",
+    running: "running",
+    completed: "completed",
+    failed: "failed",
+    blocked: "conflict",
+    reset: "reset",
+    merged: "merged",
+    "pr-created": "pr-created",
+    conflict: "conflict",
+    "test-failed": "test-failed",
+  };
+  return {
+    id: runId,
+    project_id: String(row.project_id ?? ""),
+    task_id: String(row.task_id ?? ""),
+    agent_type: "elixir",
+    session_key: null,
+    worktree_path: typeof row.worktree_path === "string" ? row.worktree_path : null,
+    status: statusMap[String(row.status ?? "failed")] ?? "failed",
+    started_at: typeof row.started_at === "string" ? row.started_at : null,
+    completed_at: typeof row.completed_at === "string" ? row.completed_at : null,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date(0).toISOString(),
+    progress: null,
+    base_branch: typeof row.base_branch === "string" ? row.base_branch : null,
+    merge_strategy: null,
+  };
+}
+
+async function resolveElixirRuns(context: ElixirDebugContext, beadId: string): Promise<Run[]> {
+  const rows = await context.client.listRuns({ projectId: context.projectId });
+  return rows
+    .filter((row) => row.task_id === beadId)
+    .map(adaptElixirRun);
+}
+
+function adaptElixirMessage(row: ElixirInboxMessage): Message {
+  return {
+    id: String(row.message_id ?? row.id ?? row.run_id ?? "message"),
+    run_id: String(row.run_id ?? ""),
+    sender_agent_type: typeof row.sender_agent_type === "string" ? row.sender_agent_type : "foreman",
+    recipient_agent_type: typeof row.recipient_agent_type === "string" ? row.recipient_agent_type : "operator",
+    subject: typeof row.subject === "string" ? row.subject : String(row.type ?? row.event_type ?? "message"),
+    body: typeof row.body === "string" ? row.body : JSON.stringify(row),
+    read: row.unread === false ? 1 : 0,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date(0).toISOString(),
+    deleted_at: null,
+  };
 }
 
 // ── Artifact collection ─────────────────────────────────────────────────────
@@ -154,7 +229,7 @@ function formatMessages(messages: Message[]): string {
 function formatRunSummary(run: Run, progress: Record<string, unknown> | null): string {
   const lines = [
     `Run ID: ${run.id}`,
-    `Seed: ${run.seed_id}`,
+    `Task: ${run.task_id}`,
     `Status: ${run.status}`,
     `Agent Type: ${run.agent_type}`,
     `Started: ${run.started_at ?? "unknown"}`,
@@ -170,7 +245,7 @@ function formatRunSummary(run: Run, progress: Record<string, unknown> | null): s
 // ── Diagnostic prompt ───────────────────────────────────────────────────────
 
 function buildDiagnosticPrompt(
-  seedId: string,
+  taskId: string,
   runSummary: string,
   messages: string,
   reports: Record<string, string>,
@@ -188,7 +263,7 @@ function buildDiagnosticPrompt(
     : "## Agent Worker Log\n(not found)";
 
   return loadAndInterpolate("debug.md", {
-    seedId,
+    taskId,
     runSummary,
     messages,
     reportSections: reportSections ? `## Pipeline Reports\n${reportSections}` : "## Pipeline Reports\n(none found)",
@@ -206,13 +281,22 @@ export const debugCommand = new Command("debug")
   .option("--raw", "Print collected artifacts without AI analysis")
   .action(async (beadId: string, opts: { run?: string; model?: string; raw?: boolean }) => {
     const projectPath = await resolveRepoRootProjectPath({});
-    const daemon = await resolveDaemonDebugContext(projectPath);
+    const isElixir = foremanBackendMode() === "elixir";
+    const elixir = isElixir ? await resolveElixirDebugContext(projectPath) : null;
+    if (isElixir && !elixir) {
+      throw new Error(`Project at '${projectPath}' is not registered in Elixir projections.`);
+    }
+    const daemon = isElixir ? null : await resolveDaemonDebugContext(projectPath);
     const store = ForemanStore.forProject(projectPath);
 
-    // Find runs for this seed
-    const runs = daemon ? await resolveDaemonRuns(daemon, beadId) : store.getRunsForSeed(beadId);
+    // Find runs for this task
+    const runs = elixir
+      ? await resolveElixirRuns(elixir, beadId)
+      : daemon
+        ? await resolveDaemonRuns(daemon, beadId)
+        : store.getRunsForTask(beadId);
     if (runs.length === 0) {
-      console.error(chalk.red(`No runs found for seed ${beadId}`));
+      console.error(chalk.red(`No runs found for task ${beadId}`));
       process.exit(1);
     }
 
@@ -222,7 +306,7 @@ export const debugCommand = new Command("debug")
       : runs[0]; // latest
 
     if (!run) {
-      console.error(chalk.red(`Run ${opts.run} not found for seed ${beadId}`));
+      console.error(chalk.red(`Run ${opts.run} not found for task ${beadId}`));
       console.error(`Available runs: ${runs.map((r) => `${r.id.slice(0, 8)} (${r.status})`).join(", ")}`);
       process.exit(1);
     }
@@ -230,13 +314,15 @@ export const debugCommand = new Command("debug")
     console.log(chalk.bold(`\nAnalyzing ${beadId} — run ${run.id.slice(0, 8)} (${run.status})\n`));
 
     // 1. Run summary + progress
-    const progress = daemon ? null : store.getRunProgress(run.id);
+    const progress = elixir || daemon ? null : store.getRunProgress(run.id);
     const runSummary = formatRunSummary(run, progress as Record<string, unknown> | null);
 
     // 2. Mail messages
-    const allMessages = daemon
-      ? (await daemon.client.mail.list({ projectId: daemon.projectId, runId: run.id }) as DaemonMailMessage[]).map(adaptDaemonMessage)
-      : store.getAllMessages(run.id);
+    const allMessages = elixir
+      ? (await elixir.client.listInbox({ projectId: elixir.projectId, runId: run.id, limit: 100 })).map(adaptElixirMessage)
+      : daemon
+        ? (await daemon.client.mail.list({ projectId: daemon.projectId, runId: run.id }) as DaemonMailMessage[]).map(adaptDaemonMessage)
+        : store.getAllMessages(run.id);
     const messagesText = formatMessages(allMessages);
 
     // 3. Reports from worktree

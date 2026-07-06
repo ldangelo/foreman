@@ -12,9 +12,9 @@ describe("explorer prompt narrowing", () => {
   const prompt = readFileSync(EXPLORER_PROMPT, "utf-8");
 
   it("pushes localized tasks toward a small-file search first", () => {
-    expect(prompt).toContain("narrow/localized");
-    expect(prompt).toContain("1–3 likely files");
-    expect(prompt).toContain("Stop early once you can name the likely edit files");
+    expect(prompt).toContain("1–3 most likely edit files");
+    expect(prompt).toContain("Start narrow");
+    expect(prompt).toContain("Stop after you can name likely edit files");
   });
 });
 
@@ -23,7 +23,7 @@ describe("developer prompt guardrails", () => {
 
   it("warns against copying unrelated tests from the worktree", () => {
     expect(prompt).toContain("Do NOT copy tests from the worktree into the main codebase");
-    expect(prompt).toContain("directly related to THIS task's requirements");
+    expect(prompt).toContain("If tests appear necessary, document the gap for QA");
   });
 
   it("requires merge-conflict feedback to be resolved before normal implementation", () => {
@@ -45,14 +45,13 @@ describe("qa prompt validation", () => {
 
   it("requires real command output evidence", () => {
     expect(prompt).toContain("Targeted command(s) run");
-    expect(prompt).toContain("npm test -- --reporter=dot 2>&1");
     expect(prompt).toContain("Raw summary");
-    expect(prompt).toContain("reports without real test evidence are invalid");
+    expect(prompt).toContain("without real test evidence are invalid");
   });
 
   it("tells QA to prefer targeted verification first", () => {
     expect(prompt).toContain("Choose the narrowest verification");
-    expect(prompt).toContain("Prefer targeted verification first for narrow tasks");
+    expect(prompt).toContain("targeted verification");
   });
 });
 

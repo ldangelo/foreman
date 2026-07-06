@@ -150,7 +150,7 @@ interface GuardrailVetoEvent {
 ```
 
 **Acceptance Criteria:**
-- [ ] Given an agent session with expected worktree `/worktrees/project/seed-abc`, when the agent runs `edit` while `pwd` is `/worktrees/project/seed-xyz`, then the guardrail either corrects the path or vetoes the edit
+- [ ] Given an agent session with expected worktree `/worktrees/project/task-abc`, when the agent runs `edit` while `pwd` is `/worktrees/project/task-xyz`, then the guardrail either corrects the path or vetoes the edit
 - [ ] Given a guardrail veto, when it fires, then a `guardrail-veto` event is written to the events table
 - [ ] Guardrail adds <5ms overhead per tool call
 
@@ -163,11 +163,11 @@ interface GuardrailVetoEvent {
 ```typescript
 // In runPhases() before runPhase() call
 store.logEvent(config.projectId, "phase-start", {
-  seedId: config.seedId,
+  taskId: config.taskId,
   phase: phaseName,
   worktreePath: config.worktreePath,
   expectedWorktree: config.worktreePath,
-  model: resolvePhaseModel(workflowConfig, phaseName, config.seedPriority),
+  model: resolvePhaseModel(workflowConfig, phaseName, config.taskPriority),
   runId: config.runId,
   targetBranch: config.targetBranch,
   timestamp: new Date().toISOString(),
@@ -181,7 +181,7 @@ interface PhaseStartEvent {
   project_id: string;
   run_id: string;
   details: {
-    seedId: string;
+    taskId: string;
     phase: string;
     worktreePath: string;
     expectedWorktree: string;
@@ -214,7 +214,7 @@ const heartbeatInterval = setInterval(() => {
   const filesChanged = await getChangedFiles(worktreePath);
   
   store.logEvent(config.projectId, "heartbeat", {
-    seedId: config.seedId,
+    taskId: config.taskId,
     phase: currentPhase,
     runId: config.runId,
     turns: stats.turns,
@@ -237,7 +237,7 @@ interface HeartbeatEvent {
   project_id: string;
   run_id: string;
   details: {
-    seedId: string;
+    taskId: string;
     phase: string;
     turns: number;
     toolCalls: number;
@@ -267,14 +267,14 @@ interface HeartbeatEvent {
 async function generateActivityLog(
   worktreePath: string,
   runId: string,
-  seedId: string,
+  taskId: string,
   phases: PhaseRecord[],
 ): Promise<void> {
   const totalCost = phases.reduce((sum, p) => sum + p.costUsd, 0);
   const totalTurns = phases.reduce((sum, p) => sum + p.turns, 0);
   
   const activityLog = {
-    seedId,
+    taskId,
     runId,
     phases: phases.map(p => ({
       name: p.name,
@@ -307,7 +307,7 @@ async function generateActivityLog(
 **Schema:**
 ```typescript
 interface ActivityLog {
-  seedId: string;
+  taskId: string;
   runId: string;
   phases: Phase[];
   totalCostUsd: number;
@@ -343,7 +343,7 @@ interface Phase {
 - Any warnings about worktree state, retry loops, or guardrail vetoes
 
 **Acceptance Criteria:**
-- [ ] Given a completed pipeline for a seed, when `finalize` commits, then `ACTIVITY_LOG.json` is present in the commit
+- [ ] Given a completed pipeline for a task, when `finalize` commits, then `ACTIVITY_LOG.json` is present in the commit
 - [ ] Given a `git show` of the merge commit, the operator can see all files changed, all phases run, and total cost without querying the DB
 - [ ] `FINALIZE_REPORT.md` includes `git diff --stat` output
 
@@ -421,7 +421,7 @@ async function preFinalizeRebaseCheck(
     }
     
     store.logEvent(projectId, "worktree-rebased", {
-      seedId,
+      taskId,
       reason: "pre-finalize",
       from: localBase,
       to: remoteBase,
@@ -537,7 +537,7 @@ Add new event types via migration:
 **File:** `src/orchestrator/pipeline-executor.ts`
 
 - [ ] Add `phase-start` event logging before `runPhase()` call
-- [ ] Include all required fields (seedId, phase, worktreePath, model, etc.)
+- [ ] Include all required fields (taskId, phase, worktreePath, model, etc.)
 
 #### Task 6: Heartbeat System
 **File:** `src/orchestrator/pipeline-executor.ts`, `src/orchestrator/activity-logger.ts` (new)

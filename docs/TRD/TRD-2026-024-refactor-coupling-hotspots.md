@@ -66,7 +66,7 @@ Extract clean TypeScript interfaces that define boundaries between modules, so i
 
 **Data flow after refactoring:**
 1. `dispatcher.ts` receives `RunStoreReadModel` and `RunCommands` via constructor injection
-2. Read operations use `RunStoreReadModel.getRun()`, `getRunsForSeed()`, etc.
+2. Read operations use `RunStoreReadModel.getRun()`, `getRunsForTask()`, etc.
 3. Write operations use `RunCommands.updateStatus()`, `setProgress()`, `logEvent()`
 4. `ForemanStoreReadModelAdapter` wraps concrete `ForemanStore` and exposes `RunStoreReadModel`
 5. `types.ts` imports from `read-models.ts` instead of `../lib/store.js`
@@ -145,7 +145,7 @@ export type PrState = "none" | "draft" | "open" | "merged" | "closed";
  */
 export interface RunSummary {
   id: string;
-  seedId: string;
+  taskId: string;
   status: RunStatus;
   agentType: string;
   startedAt: string | null;
@@ -176,7 +176,7 @@ export interface RunProgressSummary {
  */
 export interface RunStoreReadModel {
   getRun(runId: string): Promise<RunSummary | null>;
-  getRunsForSeed(seedId: string): Promise<RunSummary[]>;
+  getRunsForTask(taskId: string): Promise<RunSummary[]>;
   getActiveRuns(projectId: string): Promise<RunSummary[]>;
   getRunsByStatus(status: RunStatus, projectId: string): Promise<RunSummary[]>;
 }
@@ -186,7 +186,7 @@ export interface RunStoreReadModel {
 | Run field | RunSummary field |
 |-----------|-----------------|
 | `id` | `id` |
-| `seed_id` | `seedId` |
+| `task_id` | `taskId` |
 | `status` | `status` |
 | `agent_type` | `agentType` |
 | `started_at` | `startedAt` |
@@ -226,7 +226,7 @@ describe("read-models.ts", () => {
       // This test verifies that RunSummary is a valid read-only projection of Run
       const runToSummary = (run: Run): RunSummary => ({
         id: run.id,
-        seedId: run.seed_id,
+        taskId: run.task_id,
         status: run.status,
         agentType: run.agent_type,
         startedAt: run.started_at,
@@ -244,7 +244,7 @@ describe("read-models.ts", () => {
       const _summary: RunSummary = runToSummary({
         id: "test",
         project_id: "proj",
-        seed_id: "seed",
+        task_id: "task",
         agent_type: "developer",
         session_key: null,
         worktree_path: null,
@@ -261,12 +261,12 @@ describe("read-models.ts", () => {
     it("defines all required methods", () => {
       const mock: RunStoreReadModel = {
         getRun: async () => null,
-        getRunsForSeed: async () => [],
+        getRunsForTask: async () => [],
         getActiveRuns: async () => [],
         getRunsByStatus: async () => [],
       };
       expect(typeof mock.getRun).toBe("function");
-      expect(typeof mock.getRunsForSeed).toBe("function");
+      expect(typeof mock.getRunsForTask).toBe("function");
       expect(typeof mock.getActiveRuns).toBe("function");
       expect(typeof mock.getRunsByStatus).toBe("function");
     });
@@ -303,7 +303,7 @@ export interface RunFactory {
   createRun(args: {
     runId: string;
     projectId: string;
-    seedId: string;
+    taskId: string;
     agentType: string;
     branchName: string;
     worktreePath: string | null;
@@ -404,7 +404,7 @@ import type { RunSummary, RunProgressSummary, RunStoreReadModel, RunStatus } fro
 function mapRunToSummary(run: import("../lib/store.js").Run): RunSummary {
   return {
     id: run.id,
-    seedId: run.seed_id,
+    taskId: run.task_id,
     status: run.status,
     agentType: run.agent_type,
     startedAt: run.started_at,
@@ -427,8 +427,8 @@ export class ForemanStoreReadModelAdapter implements RunStoreReadModel {
     return run ? mapRunToSummary(run) : null;
   }
   
-  async getRunsForSeed(seedId: string): Promise<RunSummary[]> {
-    const runs = await this.store.getRunsForSeed(seedId);
+  async getRunsForTask(taskId: string): Promise<RunSummary[]> {
+    const runs = await this.store.getRunsForTask(taskId);
     return runs.map(mapRunToSummary);
   }
   
@@ -448,7 +448,7 @@ export class ForemanStoreReadModelAdapter implements RunStoreReadModel {
 - [ ] Given `ForemanStoreReadModelAdapter`, when constructed with `ForemanStore`, then all methods are bound correctly
 - [ ] Given `getRun` with existing run, when called, then `RunSummary` is returned with correct field mapping
 - [ ] Given `getRun` with non-existent run, when called, then `null` is returned
-- [ ] Given `getRunsForSeed`, when called, then all runs are mapped correctly
+- [ ] Given `getRunsForTask`, when called, then all runs are mapped correctly
 - [ ] Given `getActiveRuns`, when called, then only active runs are returned
 - [ ] Given `getRunsByStatus`, when called with valid status, then filtered runs are returned
 
@@ -470,8 +470,8 @@ describe("ForemanStoreReadModelAdapter", () => {
     getRun: vi.fn().mockImplementation(async (runId: string) => 
       runs.find(r => r.id === runId) ?? null
     ),
-    getRunsForSeed: vi.fn().mockImplementation(async (seedId: string) =>
-      runs.filter(r => r.seed_id === seedId)
+    getRunsForTask: vi.fn().mockImplementation(async (taskId: string) =>
+      runs.filter(r => r.task_id === taskId)
     ),
     getActiveRuns: vi.fn().mockImplementation(async (_projectId: string) =>
       runs.filter(r => r.status === "running")
@@ -486,7 +486,7 @@ describe("ForemanStoreReadModelAdapter", () => {
     const run: Run = {
       id: "run-1",
       project_id: "proj-1",
-      seed_id: "seed-1",
+      task_id: "task-1",
       agent_type: "developer",
       session_key: null,
       worktree_path: "/tmp/worktree",
@@ -504,7 +504,7 @@ describe("ForemanStoreReadModelAdapter", () => {
     
     expect(summary).not.toBeNull();
     expect(summary!.id).toBe("run-1");
-    expect(summary!.seedId).toBe("seed-1");
+    expect(summary!.taskId).toBe("task-1");
     expect(summary!.agentType).toBe("developer");
     expect(summary!.status).toBe("running");
   });
@@ -518,20 +518,20 @@ describe("ForemanStoreReadModelAdapter", () => {
     expect(summary).toBeNull();
   });
 
-  it("getRunsForSeed returns all matching runs", async () => {
+  it("getRunsForTask returns all matching runs", async () => {
     const runs: Run[] = [
-      { id: "run-1", seed_id: "seed-1", status: "completed", /* ... */ } as Run,
-      { id: "run-2", seed_id: "seed-1", status: "failed", /* ... */ } as Run,
-      { id: "run-3", seed_id: "seed-2", status: "completed", /* ... */ } as Run,
+      { id: "run-1", task_id: "task-1", status: "completed", /* ... */ } as Run,
+      { id: "run-2", task_id: "task-1", status: "failed", /* ... */ } as Run,
+      { id: "run-3", task_id: "task-2", status: "completed", /* ... */ } as Run,
     ];
     
     const store = createMockStore(runs);
     const adapter = new ForemanStoreReadModelAdapter(store);
     
-    const summaries = await adapter.getRunsForSeed("seed-1");
+    const summaries = await adapter.getRunsForTask("task-1");
     
     expect(summaries).toHaveLength(2);
-    expect(summaries.every(s => s.seedId === "seed-1")).toBe(true);
+    expect(summaries.every(s => s.taskId === "task-1")).toBe(true);
   });
 });
 ```
@@ -546,13 +546,13 @@ Update `pipeline-executor.ts` to use `RunStoreReadModel` for read-only access:
 
 1. Add import for `RunStoreReadModel` from `./read-models.ts`
 2. Add new constructor parameter `storeReadModel?: RunStoreReadModel`
-3. When `storeReadModel` is provided, use it for `getRun()`, `getRunsForSeed()`, etc.
+3. When `storeReadModel` is provided, use it for `getRun()`, `getRunsForTask()`, etc.
 4. When `storeReadModel` is not provided, fall back to direct `ForemanStore` usage (backward compat)
 5. Keep `ForemanStore` parameter for write operations via `RunCommands`
 
 **Key changes:**
 - `getRunSummary()` helper uses `storeReadModel.getRun()` when available
-- `getRunsForSeedSummary()` helper uses `storeReadModel.getRunsForSeed()` when available
+- `getRunsForTaskSummary()` helper uses `storeReadModel.getRunsForTask()` when available
 - Write operations (`updateRunProgress`, `logEvent`) continue using `ForemanStore` directly
 
 **Implementation AC checklist:**
@@ -618,8 +618,8 @@ export interface DispatcherDeps {
   // Optional overrides
   getRecentFailureCount?: (projectId: string, since: string) => Promise<number>;
   nativeTaskOps?: import("./dispatcher.js").NativeTaskOps;
-  getActiveSeedIds?: () => Promise<string[]>;
-  hasActiveOrPendingRun?: (seedId: string) => Promise<boolean>;
+  getActiveTaskIds?: () => Promise<string[]>;
+  hasActiveOrPendingRun?: (taskId: string) => Promise<boolean>;
   getActiveAgentCount?: () => Promise<number>;
   externalProjectId?: string;
 }

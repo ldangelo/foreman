@@ -3,20 +3,20 @@
 ## Task Details
 <<<<<<< HEAD:.foreman/reports/TASK-foreman-29fc.md
 <<<<<<< HEAD:.foreman/reports/TASK-foreman-29fc.md
-**Seed ID:** foreman-cbfc
+**Task ID:** foreman-cbfc
 **Title:** Extract maxBudgetUsd values to environment variables
 ||||||| parent of cca0fe7 (Extract dispatcher maxTurns and model to configuration (foreman-1d9d)):TASK.md
 **Bead ID:** foreman-fe78
 **Title:** Replace maxTurns with maxBudgetUsd for pipeline phase limits
 =======
-**Seed ID:** foreman-1d9d
+**Task ID:** foreman-1d9d
 **Title:** Extract dispatcher maxTurns and model to configuration
 >>>>>>> cca0fe7 (Extract dispatcher maxTurns and model to configuration (foreman-1d9d)):TASK.md
 ||||||| parent of 5670d0f (Extract pipeline tuning constants to environment variables (foreman-860e)):TASK.md
 **Bead ID:** foreman-fe78
 **Title:** Replace maxTurns with maxBudgetUsd for pipeline phase limits
 =======
-**Seed ID:** foreman-860e
+**Task ID:** foreman-860e
 **Title:** Extract pipeline tuning constants to environment variables
 >>>>>>> 5670d0f (Extract pipeline tuning constants to environment variables (foreman-860e)):TASK.md
 **Description:** (no description provided)

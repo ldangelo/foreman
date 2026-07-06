@@ -13,9 +13,9 @@ import type { PhaseRecord, SessionLogData } from "../session-log.js";
 
 function makeData(overrides: Partial<SessionLogData> = {}): SessionLogData {
   return {
-    seedId: "bd-test",
-    seedTitle: "Test feature",
-    seedDescription: "A test feature description",
+    taskId: "bd-test",
+    taskTitle: "Test feature",
+    taskDescription: "A test feature description",
     branchName: "foreman/bd-test",
     projectName: "foreman",
     phases: [
@@ -77,11 +77,11 @@ describe("formatSessionLogFilename", () => {
 describe("generateSessionLogContent", () => {
   const date = new Date(2026, 2, 17, 14, 32); // Mar 17, 2026 (local)
 
-  it("includes YAML frontmatter with date, branch, seed", () => {
+  it("includes YAML frontmatter with date, branch, task", () => {
     const content = generateSessionLogContent(makeData(), date);
     expect(content).toContain("---");
     expect(content).toContain("branch: foreman/bd-test");
-    expect(content).toContain("seed: bd-test");
+    expect(content).toContain("task: bd-test");
     expect(content).toContain("base_branch: main");
   });
 
@@ -102,7 +102,7 @@ describe("generateSessionLogContent", () => {
     expect(content).toContain("# Session Log: Test feature");
   });
 
-  it("includes a Summary section with seed ID and title", () => {
+  it("includes a Summary section with task ID and title", () => {
     const content = generateSessionLogContent(makeData(), date);
     expect(content).toContain("## Summary");
     expect(content).toContain("bd-test");
@@ -228,19 +228,19 @@ describe("generateSessionLogContent", () => {
     expect(content).not.toContain("## Problems & Resolutions");
   });
 
-  it("includes the seed description as a blockquote when non-empty", () => {
-    const content = generateSessionLogContent(makeData({ seedDescription: "Implement OAuth2 login" }), date);
+  it("includes the task description as a blockquote when non-empty", () => {
+    const content = generateSessionLogContent(makeData({ taskDescription: "Implement OAuth2 login" }), date);
     expect(content).toContain("> Implement OAuth2 login");
   });
 
   it("omits blockquote for placeholder description", () => {
-    const content = generateSessionLogContent(makeData({ seedDescription: "(no description provided)" }), date);
+    const content = generateSessionLogContent(makeData({ taskDescription: "(no description provided)" }), date);
     expect(content).not.toContain("> (no description");
   });
 
   it("truncates very long descriptions in blockquote", () => {
     const longDesc = "x".repeat(300);
-    const content = generateSessionLogContent(makeData({ seedDescription: longDesc }), date);
+    const content = generateSessionLogContent(makeData({ taskDescription: longDesc }), date);
     // Should be truncated at 200 chars
     expect(content).toContain("…");
     // Should not contain full 300-char string as a continuous block
@@ -351,8 +351,8 @@ describe("writeSessionLog", () => {
 
   it("overwrites an existing file at the same timestamp", async () => {
     const date = new Date(2026, 2, 17, 14, 32);
-    const filepath1 = await writeSessionLog(tmpDir, makeData({ seedTitle: "First run" }), date);
-    const filepath2 = await writeSessionLog(tmpDir, makeData({ seedTitle: "Second run" }), date);
+    const filepath1 = await writeSessionLog(tmpDir, makeData({ taskTitle: "First run" }), date);
+    const filepath2 = await writeSessionLog(tmpDir, makeData({ taskTitle: "Second run" }), date);
 
     expect(filepath1).toBe(filepath2);
     const content = await readFile(filepath2, "utf-8");

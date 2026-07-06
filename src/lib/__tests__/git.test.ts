@@ -55,24 +55,24 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath, branchName } = await createWorktree(repo, "seed-001");
+    const { worktreePath, branchName } = await createWorktree(repo, "task-001");
 
-    expect(branchName).toBe("foreman/seed-001");
+    expect(branchName).toBe("foreman/task-001");
     expect(existsSync(worktreePath)).toBe(true);
 
     const branches = execFileSync("git", ["branch", "--list"], { cwd: repo })
       .toString()
       .trim();
-    expect(branches).toContain("foreman/seed-001");
+    expect(branches).toContain("foreman/task-001");
   });
 
   it("createWorktree uses correct path convention", async () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath } = await createWorktree(repo, "seed-002");
+    const { worktreePath } = await createWorktree(repo, "task-002");
 
-    expect(worktreePath).toBe(getWorkspacePath(repo, "seed-002"));
+    expect(worktreePath).toBe(getWorkspacePath(repo, "task-002"));
     expect(existsSync(worktreePath)).toBe(true);
   });
 
@@ -80,7 +80,7 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath } = await createWorktree(repo, "seed-003");
+    const { worktreePath } = await createWorktree(repo, "task-003");
     expect(existsSync(worktreePath)).toBe(true);
 
     await removeWorktree(repo, worktreePath);
@@ -91,16 +91,16 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath } = await createWorktree(repo, "seed-prune");
+    const { worktreePath } = await createWorktree(repo, "task-prune");
 
     // Verify the metadata directory was created under .git/worktrees
-    const metaDir = join(repo, ".git", "worktrees", "seed-prune");
+    const metaDir = join(repo, ".git", "worktrees", "task-prune");
     expect(existsSync(metaDir)).toBe(true);
 
     await removeWorktree(repo, worktreePath);
 
     // After removal + prune, neither the worktree directory nor the stale
-    // .git/worktrees/<seed> metadata should exist.
+    // .git/worktrees/<task> metadata should exist.
     expect(existsSync(worktreePath)).toBe(false);
     expect(existsSync(metaDir)).toBe(false);
   });
@@ -109,14 +109,14 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    await createWorktree(repo, "seed-a");
-    await createWorktree(repo, "seed-b");
+    await createWorktree(repo, "task-a");
+    await createWorktree(repo, "task-b");
 
     const worktrees = await listWorktrees(repo);
     const branches = worktrees.map((w) => w.branch);
 
-    expect(branches).toContain("foreman/seed-a");
-    expect(branches).toContain("foreman/seed-b");
+    expect(branches).toContain("foreman/task-a");
+    expect(branches).toContain("foreman/task-b");
     // Should also include the main worktree
     expect(worktrees.length).toBeGreaterThanOrEqual(3);
   });
@@ -125,7 +125,7 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath, branchName } = await createWorktree(repo, "seed-merge");
+    const { worktreePath, branchName } = await createWorktree(repo, "task-merge");
 
     // Add a new file in the worktree and commit
     writeFileSync(join(worktreePath, "feature.txt"), "new feature\n");
@@ -142,7 +142,7 @@ describe("git worktree manager", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath, branchName } = await createWorktree(repo, "seed-conflict");
+    const { worktreePath, branchName } = await createWorktree(repo, "task-conflict");
 
     // Modify README.md in the worktree
     writeFileSync(join(worktreePath, "README.md"), "# worktree change\n");
@@ -245,7 +245,7 @@ describe("createWorktree with npm install", () => {
     const repo = makeTempRepoWithPackageJson();
     tempDirs.push(repo);
 
-    const { worktreePath } = await createWorktree(repo, "seed-npm-001");
+    const { worktreePath } = await createWorktree(repo, "task-npm-001");
 
     expect(existsSync(worktreePath)).toBe(true);
     // npm install creates package-lock.json (node_modules is only created when there are deps)
@@ -257,7 +257,7 @@ describe("createWorktree with npm install", () => {
     const repo = makeTempRepo();
     tempDirs.push(repo);
 
-    const { worktreePath } = await createWorktree(repo, "seed-no-pkg-001");
+    const { worktreePath } = await createWorktree(repo, "task-no-pkg-001");
 
     expect(existsSync(worktreePath)).toBe(true);
     // node_modules should NOT be created since there's no package.json
@@ -269,7 +269,7 @@ describe("createWorktree with npm install", () => {
     tempDirs.push(repo);
 
     // Create the worktree the first time
-    const { worktreePath } = await createWorktree(repo, "seed-npm-reuse");
+    const { worktreePath } = await createWorktree(repo, "task-npm-reuse");
     // npm install creates package-lock.json (node_modules is only created when there are deps)
     expect(existsSync(join(worktreePath, "package-lock.json"))).toBe(true);
 
@@ -278,7 +278,7 @@ describe("createWorktree with npm install", () => {
     expect(existsSync(join(worktreePath, "package-lock.json"))).toBe(false);
 
     // Reuse the existing worktree — should reinstall and recreate package-lock.json
-    await createWorktree(repo, "seed-npm-reuse");
+    await createWorktree(repo, "task-npm-reuse");
     expect(existsSync(join(worktreePath, "package-lock.json"))).toBe(true);
   }, 60_000);
 });

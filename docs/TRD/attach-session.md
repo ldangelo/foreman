@@ -69,7 +69,7 @@ Dispatch Flow:
     |      +--> [tmux unavailable or FOREMAN_TMUX_DISABLED]
     |             +--> spawn(tsx, [...], { detached: true })  -- existing path
     |
-    +--> [TTY + single agent + --seed]
+    +--> [TTY + single agent + --task]
            +--> tmux attach-session -t <name>  -- auto-attach interactively
 
 Attachment Flow:
@@ -91,7 +91,7 @@ Monitor Flow:
     +--> for each active run with tmux_session:
            +--> TmuxClient.hasSession(name)
            |      +--> false → mark run "stuck" immediately (no timeout wait)
-           +--> [has-session true] → continue existing seed-status check
+           +--> [has-session true] → continue existing task-status check
 ```
 
 ### 1.4 Type Definitions
@@ -169,7 +169,7 @@ interface AttachOptions {
 
 /** A row in the enhanced session listing */
 interface SessionListRow {
-  seedId: string;
+  taskId: string;
   status: string;              // running, completed, failed, stuck
   phase: string;               // explorer, developer, qa, reviewer, finalize
   progress: string;            // "42 tools, 8 files"
@@ -238,7 +238,7 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
 | AT-T001 | Implement `TmuxClient` class with `isAvailable()` method. Check for tmux binary via `which tmux` (or `command -v tmux`). Cache the result for the process lifetime using a module-level `let` variable. Return `false` when `FOREMAN_TMUX_DISABLED=true` env var is set. Handle non-zero exit codes gracefully (no throws) | 2h | -- | `src/lib/tmux.ts` | [x] |
-| AT-T002 | Implement `tmuxSessionName(seedId: string): string` function. Format: `foreman-<seedId>`. Replace characters invalid for tmux session names (colons `:`, periods `.`, spaces) with hyphens `-`. Ensure name is non-empty (fallback to `foreman-unknown` if seedId is empty) | 1h | -- | `src/lib/tmux.ts` | [x] |
+| AT-T002 | Implement `tmuxSessionName(taskId: string): string` function. Format: `foreman-<taskId>`. Replace characters invalid for tmux session names (colons `:`, periods `.`, spaces) with hyphens `-`. Ensure name is non-empty (fallback to `foreman-unknown` if taskId is empty) | 1h | -- | `src/lib/tmux.ts` | [x] |
 | AT-T003 | Implement `createSession(opts: TmuxSpawnOptions): Promise<TmuxCreateResult>` method. Execute `tmux new-session -d -s <name> -c <cwd> '<command>'`. The command string must include stdout/stderr redirection to preserve existing log file behavior (e.g., `tsx agent-worker.ts <configPath> > logDir/runId.out 2> logDir/runId.err`). Return `{ sessionName, created: true }` on success. On failure (non-zero exit), return `{ sessionName, created: false }` with a warning logged to stderr (TMUX-002) | 3h | AT-T001, AT-T002 | `src/lib/tmux.ts` | [x] |
 | AT-T004 | Implement `killSession(sessionName: string): Promise<boolean>` method. Execute `tmux kill-session -t <name>`. Return true if killed, false if session did not exist (exit code 1). Do not throw on failure (TMUX-005) | 1h | AT-T001 | `src/lib/tmux.ts` | [x] |
 | AT-T005 | Implement `hasSession(sessionName: string): Promise<boolean>` method. Execute `tmux has-session -t <name>`. Return true if exit code 0, false otherwise. Used by monitor for liveness checks and by attach for existence validation | 1h | AT-T001 | `src/lib/tmux.ts` | [x] |
@@ -262,7 +262,7 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
 | AT-T013 | Refactor `spawnWorkerProcess()` in dispatcher.ts to use a `SpawnStrategy` interface pattern. Define `SpawnStrategy` interface with `spawn(config: WorkerConfig): Promise<{ tmuxSession?: string }>`. Implement `TmuxSpawnStrategy` (calls `TmuxClient.createSession()`) and `DetachedSpawnStrategy` (existing `spawn(tsx, [...], { detached: true })` path). Strategy selection: `TmuxClient.isAvailable()` returns true → `TmuxSpawnStrategy`, else → `DetachedSpawnStrategy`. Both strategies share config serialization and logging setup. The tmux command string must be: `<tsxBin> <workerScript> <configPath> > <outLog> 2> <errLog>`. Pass `config.worktreePath` as `cwd`. Export the interface for future extensibility (e.g., Docker containers) | 5h | AT-T001, AT-T003 | `src/orchestrator/dispatcher.ts` | [x] |
-| AT-T014 | Implement stale session cleanup in `spawnWorkerProcess()`. Before creating a new tmux session, call `TmuxClient.killSession(sessionName)` to remove any stale session with the same name (FR-1 AC-6). Log `[foreman] Killed stale tmux session foreman-<seedId>` if a session was killed (TMUX-009). Use `tmuxSessionName(config.seedId)` for the session name | 2h | AT-T002, AT-T004, AT-T013 | `src/orchestrator/dispatcher.ts` | [x] |
+| AT-T014 | Implement stale session cleanup in `spawnWorkerProcess()`. Before creating a new tmux session, call `TmuxClient.killSession(sessionName)` to remove any stale session with the same name (FR-1 AC-6). Log `[foreman] Killed stale tmux session foreman-<taskId>` if a session was killed (TMUX-009). Use `tmuxSessionName(config.taskId)` for the session name | 2h | AT-T002, AT-T004, AT-T013 | `src/orchestrator/dispatcher.ts` | [x] |
 | AT-T015 | After successful tmux session creation, call `store.updateRun(run.id, { tmux_session: sessionName })` to persist the session name. For the fallback (detached process) path, do not set `tmux_session` (it remains null). Ensure the existing `store.updateRun()` call for `session_key`, `started_at` is preserved | 2h | AT-T011, AT-T013 | `src/orchestrator/dispatcher.ts` | [x] |
 | AT-T016 | Handle tmux session creation failure gracefully. If `createSession()` returns `{ created: false }`, fall back to the existing detached `spawn()` path. Log warning: `[foreman] tmux session creation failed -- falling back to detached process` (TMUX-002). Do not set `tmux_session` on the run record | 2h | AT-T013 | `src/orchestrator/dispatcher.ts` | [x] |
 | AT-T017 | Write unit tests for tmux-based spawning in dispatcher. Mock `TmuxClient.isAvailable()` and `TmuxClient.createSession()`. Test: (1) tmux available -> creates session + stores tmux_session, (2) tmux unavailable -> existing detached spawn, (3) tmux creation fails -> fallback to detached spawn, (4) stale session killed before new creation, (5) FOREMAN_TMUX_DISABLED -> detached spawn | 5h | AT-T013 through AT-T016 | `src/orchestrator/__tests__/dispatcher-tmux.test.ts` | [x] |
@@ -273,14 +273,14 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T018 | Rewrite the default attachment path in `attach.ts`. After looking up the run, check if `run.tmux_session` is set. If set, call `TmuxClient.hasSession(run.tmux_session)`. If the tmux session exists, spawn `tmux attach-session -t <session>` with `stdio: "inherit"` (interactive mode). On exit, exit with tmux's exit code. Print header before attaching: `Attaching to foreman-<seedId> [<phase>] | Ctrl+B, D to detach` | 3h | AT-T005, AT-T011 | `src/cli/commands/attach.ts` | [x] |
+| AT-T018 | Rewrite the default attachment path in `attach.ts`. After looking up the run, check if `run.tmux_session` is set. If set, call `TmuxClient.hasSession(run.tmux_session)`. If the tmux session exists, spawn `tmux attach-session -t <session>` with `stdio: "inherit"` (interactive mode). On exit, exit with tmux's exit code. Print header before attaching: `Attaching to foreman-<taskId> [<phase>] | Ctrl+B, D to detach` | 3h | AT-T005, AT-T011 | `src/cli/commands/attach.ts` | [x] |
 | AT-T019 | Implement fallback chain in attach.ts. If `run.tmux_session` is null or `hasSession()` returns false: (1) extract SDK session ID from `session_key`, (2) if session ID exists, fall back to `claude --resume <sessionId>` (existing behavior), (3) print `Tmux session not found. Falling back to SDK session resume.` (TMUX-003), (4) if both tmux session and SDK session unavailable, print actionable error: `No active session found for "<id>". The agent may have completed or crashed. Use 'foreman attach --list' to see available sessions.` | 2h | AT-T018 | `src/cli/commands/attach.ts` | [x] |
 
 #### Story 3.2: Read-Only Follow Mode
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T020 | Add `--follow` option to the attach command. When `--follow` is specified, enter a polling loop that calls `TmuxClient.capturePaneOutput()` every `FOREMAN_TMUX_FOLLOW_INTERVAL_MS` milliseconds (default 1000). Track previously displayed line count; only print new lines (diff-based: compare new output length against previous, print lines from `previousLength` onward). Display header: `Following foreman-<seedId> [<phase>] | Ctrl+C to stop | foreman attach <id> for interactive` | 4h | AT-T006 | `src/cli/commands/attach.ts` | [x] |
+| AT-T020 | Add `--follow` option to the attach command. When `--follow` is specified, enter a polling loop that calls `TmuxClient.capturePaneOutput()` every `FOREMAN_TMUX_FOLLOW_INTERVAL_MS` milliseconds (default 1000). Track previously displayed line count; only print new lines (diff-based: compare new output length against previous, print lines from `previousLength` onward). Display header: `Following foreman-<taskId> [<phase>] | Ctrl+C to stop | foreman attach <id> for interactive` | 4h | AT-T006 | `src/cli/commands/attach.ts` | [x] |
 | AT-T021 | Implement follow mode termination. Listen for SIGINT (Ctrl+C) via `AbortController`. On signal, print `\nStopped following. Agent continues running.` and exit cleanly. Also detect session end: when `hasSession()` returns false during polling, print `Session ended.` and exit. Ensure the polling `setInterval` is cleared on exit | 2h | AT-T020 | `src/cli/commands/attach.ts` | [x] |
 | AT-T022 | Implement follow mode fallback. If the run has no `tmux_session` or the tmux session does not exist, fall back to tailing the log file: `tail -f ~/.foreman/logs/<runId>.out`. Print: `No tmux session for this run. Tailing log file instead.` (TMUX-004). Use `spawn("tail", ["-f", logPath], { stdio: "inherit" })` | 2h | AT-T020 | `src/cli/commands/attach.ts` | [x] |
 
@@ -294,7 +294,7 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T024 | Rewrite `listSessions()` in attach.ts to include enhanced columns: SEED, STATUS, PHASE, PROGRESS, COST, ELAPSED, TMUX, WORKTREE. For each run: parse `RunProgress` from `run.progress` JSON, extract `currentPhase`, compute tool/file progress string (`"42 tools, 8 files"`), format `costUsd` as `$0.42`, compute elapsed time from `started_at` to now (format as `"12m"` or `"1h 23m"`), show `tmux_session` or `"(none)"` | 4h | AT-T011 | `src/cli/commands/attach.ts` | [x] |
+| AT-T024 | Rewrite `listSessions()` in attach.ts to include enhanced columns: TASK, STATUS, PHASE, PROGRESS, COST, ELAPSED, TMUX, WORKTREE. For each run: parse `RunProgress` from `run.progress` JSON, extract `currentPhase`, compute tool/file progress string (`"42 tools, 8 files"`), format `costUsd` as `$0.42`, compute elapsed time from `started_at` to now (format as `"12m"` or `"1h 23m"`), show `tmux_session` or `"(none)"` | 4h | AT-T011 | `src/cli/commands/attach.ts` | [x] |
 | AT-T025 | Implement session listing sort order. Sort rows by: (1) status priority (running=0, stuck=1, failed=2, completed=3), (2) within same status, sort by recency (most recent `started_at` first). Include completed and failed runs that have a `tmux_session` set, as they may still be reviewable | 1h | AT-T024 | `src/cli/commands/attach.ts` | [x] |
 | AT-T026 | Write unit tests for enhanced attach command. Test: (1) default attachment uses tmux attach-session when tmux_session is set, (2) fallback to claude --resume when no tmux session, (3) --follow mode polls capture-pane and prints only new lines, (4) --follow exits on SIGINT and session end, (5) --follow falls back to tail when no tmux session, (6) --kill kills session and updates run status, (7) --list shows enhanced columns with correct formatting, (8) --list sort order | 5h | AT-T018 through AT-T025 | `src/cli/__tests__/attach.test.ts` | [x] |
 
@@ -305,9 +305,9 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
 | AT-T027 | Add `--attach` and `--no-attach` options to the `run` command in run.ts. `--attach` forces auto-attach; `--no-attach` disables auto-attach. These are mutually exclusive (commander `.conflicts()`) | 1h | -- | `src/cli/commands/run.ts` | [x] |
-| AT-T028 | Implement TTY-aware auto-attach logic in run.ts. After dispatching agents, check: (1) `process.stdout.isTTY` is true, (2) only one agent was dispatched (single `--seed` mode), (3) `--no-attach` flag is not set. If all conditions met (or `--attach` is forced), look up the run's `tmux_session` from the store and spawn `tmux attach-session -t <session>` with `stdio: "inherit"`. Print `Auto-attaching to foreman-<seedId>... (Ctrl+B, D to detach)` | 3h | AT-T027, AT-T015 | `src/cli/commands/run.ts` | [x] |
+| AT-T028 | Implement TTY-aware auto-attach logic in run.ts. After dispatching agents, check: (1) `process.stdout.isTTY` is true, (2) only one agent was dispatched (single `--task` mode), (3) `--no-attach` flag is not set. If all conditions met (or `--attach` is forced), look up the run's `tmux_session` from the store and spawn `tmux attach-session -t <session>` with `stdio: "inherit"`. Print `Auto-attaching to foreman-<taskId>... (Ctrl+B, D to detach)` | 3h | AT-T027, AT-T015 | `src/cli/commands/run.ts` | [x] |
 | AT-T029 | Handle auto-attach edge cases. If tmux session is not yet available (race condition between spawn and tmux session creation), retry up to 3 times with 500ms delay. If tmux is unavailable (no `tmux_session` on run), skip auto-attach silently and continue with existing watch mode behavior. If `--attach` is used with multi-agent dispatch, attach to the first dispatched agent only | 2h | AT-T028 | `src/cli/commands/run.ts` | [x] |
-| AT-T030 | Write unit tests for auto-attach. Test: (1) single seed dispatch from TTY auto-attaches interactively, (2) `--no-attach` skips auto-attach, (3) `--attach` forces auto-attach, (4) multi-agent dispatch without `--seed` does not auto-attach, (5) non-TTY stdout skips auto-attach, (6) tmux unavailable skips auto-attach silently, (7) `--attach` with multi-agent attaches to first agent | 4h | AT-T027 through AT-T029 | `src/cli/__tests__/run-attach.test.ts` | [x] |
+| AT-T030 | Write unit tests for auto-attach. Test: (1) single task dispatch from TTY auto-attaches interactively, (2) `--no-attach` skips auto-attach, (3) `--attach` forces auto-attach, (4) multi-agent dispatch without `--task` does not auto-attach, (5) non-TTY stdout skips auto-attach, (6) tmux unavailable skips auto-attach silently, (7) `--attach` with multi-agent attaches to first agent | 4h | AT-T027 through AT-T029 | `src/cli/__tests__/run-attach.test.ts` | [x] |
 
 ### 2.5 Sprint 5: Monitoring + Health (FR-7)
 
@@ -315,7 +315,7 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T031 | Enhance `Monitor.checkAll()` to perform tmux liveness checks. For each active run that has a `tmux_session` value, call `TmuxClient.hasSession(run.tmux_session)`. If `hasSession()` returns false, immediately mark the run as "stuck" (bypass the existing timeout heuristic). Log event with `{ seedId, detectedBy: "tmux-liveness", tmuxSession }`. This check runs before the existing seed-status check so dead sessions are caught immediately | 3h | AT-T005, AT-T011 | `src/orchestrator/monitor.ts` | [x] |
+| AT-T031 | Enhance `Monitor.checkAll()` to perform tmux liveness checks. For each active run that has a `tmux_session` value, call `TmuxClient.hasSession(run.tmux_session)`. If `hasSession()` returns false, immediately mark the run as "stuck" (bypass the existing timeout heuristic). Log event with `{ taskId, detectedBy: "tmux-liveness", tmuxSession }`. This check runs before the existing task-status check so dead sessions are caught immediately | 3h | AT-T005, AT-T011 | `src/orchestrator/monitor.ts` | [x] |
 | AT-T032 | Write unit tests for tmux liveness in monitor. Mock `TmuxClient.hasSession()`. Test: (1) active run with live tmux session continues normal flow, (2) active run with dead tmux session immediately marked stuck, (3) active run without tmux_session uses existing timeout heuristic, (4) stuck detection logs correct event details | 3h | AT-T031 | `src/orchestrator/__tests__/monitor-tmux.test.ts` | [x] |
 
 #### Story 5.2: Doctor Session Management Checks
@@ -323,7 +323,7 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
 | AT-T033 | Add "Session Management" check category to `foreman doctor`. Implement three checks: (1) **tmux availability**: call `TmuxClient.isAvailable()` and `TmuxClient.getTmuxVersion()`, report version and warn if < 3.0 (TMUX-010). (2) **Orphaned sessions**: call `TmuxClient.listForemanSessions()`, cross-reference with active runs from store; sessions with no matching active run are orphaned (TMUX-007). (3) **Ghost runs**: iterate active runs with `tmux_session` set, call `hasSession()`; runs where session is dead are ghosts (TMUX-008) | 4h | AT-T005, AT-T007, AT-T008 | `src/orchestrator/doctor.ts`, `src/cli/commands/doctor.ts` | [x] |
-| AT-T034 | Implement `--fix` behavior for Session Management checks. For orphaned sessions: call `TmuxClient.killSession()` for each orphan, print `Killed orphaned tmux session <name>`. For ghost runs: call `store.updateRun(run.id, { status: "stuck" })`, print `Marked ghost run <seedId> as stuck`. Report total fixed count | 2h | AT-T033 | `src/orchestrator/doctor.ts`, `src/cli/commands/doctor.ts` | [x] |
+| AT-T034 | Implement `--fix` behavior for Session Management checks. For orphaned sessions: call `TmuxClient.killSession()` for each orphan, print `Killed orphaned tmux session <name>`. For ghost runs: call `store.updateRun(run.id, { status: "stuck" })`, print `Marked ghost run <taskId> as stuck`. Report total fixed count | 2h | AT-T033 | `src/orchestrator/doctor.ts`, `src/cli/commands/doctor.ts` | [x] |
 | AT-T035 | Write unit tests for doctor session management. Test: (1) tmux available reports version, (2) tmux unavailable reports warning, (3) orphaned sessions detected and listed, (4) ghost runs detected and listed, (5) `--fix` kills orphaned sessions, (6) `--fix` marks ghost runs as stuck, (7) no issues reports clean | 4h | AT-T033, AT-T034 | `src/cli/__tests__/doctor-tmux.test.ts` | [x] |
 
 #### Story 5.3: Reset Tmux Cleanup
@@ -364,7 +364,7 @@ All tmux errors use structured codes `TMUX-001` through `TMUX-012`. Error codes 
 
 | ID | Task | Est. | Deps | Files | Status |
 |----|------|------|------|-------|--------|
-| AT-T043 | Write tests for session name edge cases. Test: (1) seed IDs with unicode characters, (2) very long seed IDs (tmux has a name length limit), (3) seed IDs that are entirely special characters, (4) seed IDs matching existing tmux session naming patterns, (5) case sensitivity | 2h | AT-T002 | `src/lib/__tests__/tmux-names.test.ts` | [x] |
+| AT-T043 | Write tests for session name edge cases. Test: (1) task IDs with unicode characters, (2) very long task IDs (tmux has a name length limit), (3) task IDs that are entirely special characters, (4) task IDs matching existing tmux session naming patterns, (5) case sensitivity | 2h | AT-T002 | `src/lib/__tests__/tmux-names.test.ts` | [x] |
 
 ---
 
@@ -452,7 +452,7 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 
 ### 5.1 FR-1: Tmux-Based Agent Spawning
 
-- [ ] AC-1.1: `spawnWorkerProcess()` creates a tmux session named `foreman-<seedId>` when tmux is available
+- [ ] AC-1.1: `spawnWorkerProcess()` creates a tmux session named `foreman-<taskId>` when tmux is available
 - [ ] AC-1.2: Worker process (tsx agent-worker.ts) runs as the sole command in the tmux session
 - [ ] AC-1.3: File-descriptor logging (`~/.foreman/logs/<runId>.{out,err}`) continues to work inside tmux
 - [ ] AC-1.4: `tmux_session` is stored in the Postgres `runs` table
@@ -481,7 +481,7 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 - [ ] AC-4.1: `--follow` captures pane content via `tmux capture-pane -t <session> -p` every 1s
 - [ ] AC-4.2: Only new lines (not previously displayed) are printed
 - [ ] AC-4.3: Ctrl+C exits follow mode; agent continues running
-- [ ] AC-4.4: Header displayed: `Following foreman-<seedId> [phase] | Ctrl+C to stop`
+- [ ] AC-4.4: Header displayed: `Following foreman-<taskId> [phase] | Ctrl+C to stop`
 - [ ] AC-4.5: Session end detected and reported: `Session ended.`
 - [ ] AC-4.6: No tmux session -> falls back to tailing log file
 
@@ -490,7 +490,7 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 - [ ] AC-5.1: `foreman run --bead <id>` auto-attaches interactively when stdout is TTY + single agent + no `--no-attach`
 - [ ] AC-5.2: `--no-attach` skips auto-attach
 - [ ] AC-5.3: `--attach` forces auto-attach even with multi-agent dispatch (first agent)
-- [ ] AC-5.4: Multi-agent dispatch without `--seed` never auto-attaches
+- [ ] AC-5.4: Multi-agent dispatch without `--task` never auto-attaches
 - [ ] AC-5.5: Auto-attach uses interactive tmux mode (full attach-session)
 
 ### 5.6 FR-6: Tmux Session State Tracking
@@ -510,7 +510,7 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 
 ### 5.8 FR-8: Enhanced Session Listing
 
-- [ ] AC-8.1: `--list` shows SEED, STATUS, PHASE, PROGRESS, COST, ELAPSED, TMUX, WORKTREE columns
+- [ ] AC-8.1: `--list` shows TASK, STATUS, PHASE, PROGRESS, COST, ELAPSED, TMUX, WORKTREE columns
 - [ ] AC-8.2: PHASE shows current pipeline phase
 - [ ] AC-8.3: COST formatted as `$0.42`
 - [ ] AC-8.4: ELAPSED formatted as `"12m"` or `"1h 23m"`
@@ -518,10 +518,10 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 
 ### 5.9 FR-9: Named Session Convention
 
-- [ ] AC-9.1: Session name format is `foreman-<seedId>`
+- [ ] AC-9.1: Session name format is `foreman-<taskId>`
 - [ ] AC-9.2: Invalid characters (colons, periods) replaced with hyphens
 - [ ] AC-9.3: Unique sessions per project (stale killed before creation)
-- [ ] AC-9.4: `foreman attach` accepts seed ID directly (resolves to `foreman-<seedId>`)
+- [ ] AC-9.4: `foreman attach` accepts task ID directly (resolves to `foreman-<taskId>`)
 
 ### 5.10 FR-10: Session Persistence and Cleanup
 
@@ -578,7 +578,7 @@ Sprint 6 (Polish) -- depends on Sprint 2 + Sprint 3 + Sprint 5
 |------|-----------|--------|------------|----------------|
 | tmux not available in user environment | Medium | Low | Graceful fallback (FR-2); `foreman doctor` check; clear messaging | AT-T001, AT-T016 |
 | tmux version incompatibility (< 3.0) | Low | Medium | Document minimum version; doctor checks version; test on 3.0+ | AT-T008, AT-T033 |
-| Session name collision across projects | Low | Low | Seed IDs unique within project; kill stale before create | AT-T002, AT-T014 |
+| Session name collision across projects | Low | Low | Task IDs unique within project; kill stale before create | AT-T002, AT-T014 |
 | Race condition: auto-attach before tmux session ready | Medium | Low | Retry up to 3 times with 500ms delay | AT-T029 |
 | Follow mode capture-pane misses output between polls | Low | Low | 1s polling interval is acceptable; users can use interactive mode for real-time | AT-T020 |
 | Accumulated completed sessions consume resources | Medium | Medium | `foreman doctor --fix`, `foreman reset`, `foreman attach --kill` | AT-T023, AT-T034, AT-T036 |

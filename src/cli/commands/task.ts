@@ -14,26 +14,27 @@
  *   foreman task close <id>
  *   foreman task dep add <from-id> <to-id> [--type blocks|parent-child]
  *   foreman task dep list <id>
- *   foreman task dep remove <from-id> <to-id> [--type blocks|parent-child]
+ *   foreman task dep remove <from-id> <to-id> [--type blocks|parent-child] (removed after Elixir cutover)
  *
  * @module src/cli/commands/task
  */
 
 import { Command } from "commander";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
 import type { TaskDependencyRow as DependencyRow, TaskNoteRow, TaskRow } from "../../lib/db/postgres-adapter.js";
 import { resolveProjectPathFromOptions } from "./project-task-support.js";
-import { createTrpcClient, type TrpcClient } from "../../lib/trpc-client.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
+import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { ElixirServerClient, type ElixirRun, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import type { PrState } from "../../lib/pr-state.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { RunProgress } from "../../lib/store.js";
 import { elapsed } from "../watch-ui.js";
-import { createTasksFromText } from "./create-from-text.js";
 
 // ── Run Activity Helpers ──────────────────────────────────────────────────────
 
@@ -58,8 +59,7 @@ interface RunActivityInfo {
 /**
  * Fetch live run activity information for a task.
  * 
- * For registered projects (daemon-backed): uses tRPC to query the Postgres store
- * via the Foreman daemon's Unix socket. Falls back to Postgres for unregistered projects.
+ * Uses Elixir run projections for registered projects and never opens the removed Node daemon socket.
  */
 async function fetchRunActivity(
   projectPath: string,
@@ -68,49 +68,13 @@ async function fetchRunActivity(
 ): Promise<RunActivityInfo | null> {
   if (!runId) return null;
 
-  // Try daemon tRPC first (for registered projects)
-  if (projectId) {
-    try {
-      const client = createTrpcClient();
-      const [run, progressData] = await Promise.all([
-        client.runs.get({ runId }) as Promise<{ id: string; status: string; started_at?: string; finished_at?: string } | null>,
-        client.runs.getProgress({ runId }) as Promise<RunProgress | null>,
-      ]);
-
-      if (!run) return null;
-
-      const now = Date.now();
-      const lastActivityMs = progressData?.lastActivity
-        ? new Date(progressData.lastActivity).getTime()
-        : null;
-      const isStuck = run.status === "running" &&
-        lastActivityMs !== null &&
-        (now - lastActivityMs) > STUCK_THRESHOLD_MS;
-      const isStale = run.status === "running" &&
-        (progressData?.toolCalls ?? 0) > 0 &&
-        lastActivityMs !== null &&
-        (now - lastActivityMs) > STUCK_THRESHOLD_MS / 2;
-
-      return {
-        runId: run.id,
-        status: run.status,
-        currentPhase: progressData?.currentPhase ?? null,
-        lastActivity: progressData?.lastActivity ?? null,
-        lastActivityElapsed: progressData?.lastActivity
-          ? elapsed(progressData.lastActivity)
-          : null,
-        isStuck,
-        isStale,
-        toolCalls: progressData?.toolCalls ?? 0,
-        costUsd: progressData?.costUsd ?? 0,
-        turns: progressData?.turns ?? 0,
-        startedAt: run.started_at ?? null,
-        completedAt: run.finished_at ?? null,
-      };
-    } catch {
-      // Daemon unavailable or run not found — fall through to Postgres
-    }
+  if (projectId && foremanBackendMode() === "elixir") {
+    const client = await createElixirTaskCommandClient();
+    const runs = await client.listRuns({ projectId });
+    const run = runs.find((candidate) => (candidate.run_id ?? candidate.id) === runId);
+    return run ? elixirRunToActivity(run) : null;
   }
+
 
   // Fallback: use Postgres store (for unregistered projects or daemon unavailability)
   const store = ForemanStore.forProject(projectPath);
@@ -159,7 +123,7 @@ async function fetchRunActivity(
 /**
  * Render a human-readable status line for a run's activity state.
  */
-function renderRunStatusLine(activity: RunActivityInfo): string {
+export function renderRunStatusLine(activity: RunActivityInfo): string {
   const parts: string[] = [];
 
   // Status with color coding
@@ -244,14 +208,17 @@ const TASK_STATUS_ORDER: Record<string, number> = {
 const ALL_TASK_STATUSES = Object.keys(TASK_STATUS_ORDER);
 const VALID_TASK_TYPES = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
 
-interface TaskProjectContext {
+interface TaskProjectRegistration {
   projectId: string;
   projectName: string;
   projectPath: string;
-  client: TrpcClient;
 }
 
-function normalizeTaskIdPrefix(raw: string | null | undefined): string {
+interface TaskProjectContext extends TaskProjectRegistration {
+  client: any;
+}
+
+export function normalizeTaskIdPrefix(raw: string | null | undefined): string {
   const normalized = (raw ?? "")
     .trim()
     .toLowerCase()
@@ -260,7 +227,7 @@ function normalizeTaskIdPrefix(raw: string | null | undefined): string {
   return normalized.length > 0 ? normalized : "task";
 }
 
-function allocateTaskId(projectKey: string, existingIds: Set<string>): string {
+export function allocateTaskId(projectKey: string, existingIds: Set<string>): string {
   const prefix = normalizeTaskIdPrefix(projectKey);
   for (let attempt = 0; attempt < 64; attempt += 1) {
     const candidate = `${prefix}-${randomBytes(3).toString("hex").slice(0, COMPACT_TASK_ID_SUFFIX_HEX_LENGTH)}`;
@@ -296,7 +263,7 @@ function parsePriority(input: string): number {
   }
 }
 
-function priorityLabel(priority: number): string {
+export function priorityLabel(priority: number): string {
   switch (priority) {
     case 0:
       return "critical";
@@ -313,13 +280,13 @@ function priorityLabel(priority: number): string {
   }
 }
 
-function formatTaskIdDisplay(taskId: string): string {
+export function formatTaskIdDisplay(taskId: string): string {
   return taskId.length <= 16 ? taskId : `${taskId.slice(0, 8)}…`;
 }
 
-async function resolveTaskProjectContext(
+async function resolveTaskProjectRegistration(
   opts: { project?: string; projectPath?: string },
-): Promise<TaskProjectContext> {
+): Promise<TaskProjectRegistration> {
   const projectPath = resolve(await resolveProjectPathFromOptions(opts));
   const record = await findRegisteredProjectByPath(projectPath, {
     normalizePaths: true,
@@ -335,15 +302,101 @@ async function resolveTaskProjectContext(
     projectId: record.id,
     projectName: record.name,
     projectPath,
-    client: createTrpcClient(),
   };
 }
 
-async function listAllTasks(client: TrpcClient, projectId: string): Promise<TaskRow[]> {
+async function resolveTaskProjectContext(
+  _opts: { project?: string; projectPath?: string },
+): Promise<TaskProjectContext> {
+  throw new Error("The legacy Node task backend was removed after the Elixir backend cutover. Use an Elixir-backed task command.");
+}
+
+async function createElixirTaskCommandClient(): Promise<ElixirServerClient> {
+  const manager = new ElixirServerManager();
+  const status = await manager.ensureRunning();
+  return new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+}
+
+function elixirTaskToTaskRow(task: ElixirTask): TaskRow {
+  const id = task.task_id ?? task.id ?? "";
+  return {
+    id,
+    title: task.title ?? id,
+    description: task.description ?? null,
+    type: task.task_type ?? task.type ?? "task",
+    priority: typeof task.priority === "number" ? task.priority : 2,
+    status: task.status ?? "backlog",
+    created_at: task.created_at ?? new Date(0).toISOString(),
+    updated_at: task.updated_at ?? task.created_at ?? new Date(0).toISOString(),
+    approved_at: task.approved_at ?? null,
+    closed_at: task.closed_at ?? null,
+    external_id: task.external_id ?? null,
+    run_id: typeof task.run_id === "string" ? task.run_id : null,
+    dependencies: Array.isArray(task.dependencies) ? task.dependencies : [],
+  } as unknown as TaskRow;
+}
+
+async function listAllTasks(client: any, projectId: string): Promise<TaskRow[]> {
   return await client.tasks.list({ projectId, limit: 1000 }) as TaskRow[];
 }
 
-function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
+async function listAllElixirTasks(client: ElixirServerClient, projectId: string): Promise<TaskRow[]> {
+  const tasks = await client.listTasks();
+  return tasks
+    .filter((task) => (task.project_id ?? projectId) === projectId)
+    .map(elixirTaskToTaskRow);
+}
+
+async function getElixirTaskRow(client: ElixirServerClient, taskId: string): Promise<TaskRow | null> {
+  const task = await client.getTask(taskId);
+  return task ? elixirTaskToTaskRow(task) : null;
+}
+
+function elixirRunToActivity(run: ElixirRun): RunActivityInfo {
+  const runId = String(run.run_id ?? run.id ?? "");
+  const status = String(run.status ?? "unknown");
+  const currentPhase = typeof run.current_phase === "string" ? run.current_phase : null;
+  const lastActivity = typeof run.updated_at === "string" ? run.updated_at : null;
+  const startedAt = typeof run.started_at === "string" ? run.started_at : null;
+  const completedAt = typeof run.completed_at === "string" ? run.completed_at : null;
+  const now = Date.now();
+  const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : null;
+  const isStuck = status === "in_progress" && lastActivityMs !== null && (now - lastActivityMs) > STUCK_THRESHOLD_MS;
+
+  return {
+    runId,
+    status,
+    currentPhase,
+    lastActivity,
+    lastActivityElapsed: lastActivity ? elapsed(lastActivity) : null,
+    isStuck,
+    isStale: false,
+    toolCalls: 0,
+    costUsd: 0,
+    turns: 0,
+    startedAt,
+    completedAt,
+  };
+}
+
+async function sendElixirTaskCommand(
+  client: ElixirServerClient,
+  commandType: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const commandId = `task-${commandType}-${randomUUID()}`;
+  const response = await client.sendCommand({
+    command_id: commandId,
+    command_type: commandType,
+    payload,
+    metadata: { correlation_id: commandId, source: "foreman-task" },
+  });
+  if (!response.ok) {
+    throw new Error(response.error.message);
+  }
+}
+
+export function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
   const exact = rows.find((row) => row.id === taskIdOrPrefix);
   if (exact) {
     return exact.id;
@@ -358,7 +411,7 @@ function resolveTaskId(rows: TaskRow[], taskIdOrPrefix: string): string {
   return matches[0].id;
 }
 
-function isBackwardStatusTransition(fromStatus: string, toStatus: string): boolean {
+export function isBackwardStatusTransition(fromStatus: string, toStatus: string): boolean {
   const fromOrder = TASK_STATUS_ORDER[fromStatus] ?? 0;
   const toOrder = TASK_STATUS_ORDER[toStatus] ?? 0;
   return toOrder >= 0 && fromOrder > toOrder;
@@ -376,7 +429,7 @@ function renderColumn(
   return style(pad(value, width));
 }
 
-function colorPriority(text: string, priority: number): string {
+export function colorPriority(text: string, priority: number): string {
   switch (priority) {
     case 0:
       return chalk.red(text);
@@ -391,7 +444,7 @@ function colorPriority(text: string, priority: number): string {
   }
 }
 
-function statusChalk(status: string): string {
+export function statusChalk(status: string): string {
   switch (status) {
     case "ready":
       return chalk.green(status);
@@ -420,7 +473,7 @@ function statusChalk(status: string): string {
 /**
  * Render a PR state badge for display in task list.
  */
-function renderPrBadge(prState: PrState | undefined): string {
+export function renderPrBadge(prState: PrState | undefined): string {
   if (!prState) return chalk.dim("—");
   switch (prState.status) {
     case "none":
@@ -491,7 +544,7 @@ function printTaskTable(rows: TaskRow[], prStates?: Map<string, PrState>): void 
 /**
  * Render a run status badge for the task table.
  */
-function renderRunStatusBadge(activity: RunActivityInfo | null): string {
+export function renderRunStatusBadge(activity: RunActivityInfo | null): string {
   if (!activity) return chalk.dim("—");
 
   if (activity.isStuck) {
@@ -592,249 +645,10 @@ function printTaskTableWithRunStatus(
   }
 }
 
-type ImportedBeadStatus = "open" | "in_progress" | "closed";
-
-interface ImportedBeadDependency {
-  issue_id?: string;
-  depends_on_id?: string;
-  type?: string;
-}
-
-interface ImportedBeadRecord {
-  id: string;
-  title: string;
-  description?: string | null;
-  status?: string;
-  priority?: number | string;
-  issue_type?: string;
-  type?: string;
-  created_at?: string;
-  updated_at?: string;
-  closed_at?: string;
-  dependencies?: ImportedBeadDependency[];
-}
-
-interface PreparedImportRecord {
-  nativeId: string;
-  bead: ImportedBeadRecord;
-  type: string;
-  priority: number;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-  approvedAt: string | null;
-  closedAt: string | null;
-}
-
-export interface TaskImportResult {
-  imported: number;
-  duplicateSkips: number;
-  unsupportedStatusSkips: number;
-  jsonlPath: string;
-  preview: PreparedImportRecord[];
-}
-
-const IMPORTABLE_BEAD_STATUS_TO_TASK_STATUS: Record<ImportedBeadStatus, string> = {
-  open: "backlog",
-  in_progress: "ready",
-  closed: "merged",
-};
-
-function resolveBeadsImportPath(projectPath: string): string {
-  const candidates = [
-    join(projectPath, ".beads", "issues.jsonl"),
-    join(projectPath, ".beads", "beads.jsonl"),
-  ];
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  throw new Error(
-    `No beads export found. Expected one of: ${candidates.join(", ")}`,
-  );
-}
-
-function parseBeadsJsonl(jsonlPath: string): ImportedBeadRecord[] {
-  const raw = readFileSync(jsonlPath, "utf8");
-  const lines = raw
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  return lines.map((line, index) => {
-    try {
-      return JSON.parse(line) as ImportedBeadRecord;
-    } catch (error) {
-      throw new Error(
-        `Invalid JSON in ${jsonlPath} at line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  });
-}
-
-function normalizeImportedBeadPriority(
-  bead: ImportedBeadRecord,
-): number {
-  if (typeof bead.priority === "number") {
-    if (Number.isInteger(bead.priority) && bead.priority >= 0 && bead.priority <= 4) {
-      return bead.priority;
-    }
-    throw new Error(
-      `Bead '${bead.id}' has unsupported numeric priority '${bead.priority}'. Expected 0-4.`,
-    );
-  }
-
-  if (typeof bead.priority === "string") {
-    return parsePriority(bead.priority);
-  }
-
-  return 2;
-}
-
-function normalizeImportedBeadType(bead: ImportedBeadRecord): string {
-  const type = bead.type ?? bead.issue_type;
-  if (typeof type === "string" && type.trim().length > 0) {
-    return type;
-  }
-  return "task";
-}
-
-function mapImportedBeadStatus(status: string | undefined): string | null {
-  if (!status) return null;
-  return IMPORTABLE_BEAD_STATUS_TO_TASK_STATUS[status as ImportedBeadStatus] ?? null;
-}
-
-function summarizeImportPreview(records: PreparedImportRecord[]): void {
-  if (records.length === 0) {
-    console.log(chalk.dim("No importable beads found in the JSONL export."));
-    return;
-  }
-
-  console.log(chalk.bold("\n  Dry-run preview (first 5 tasks)\n"));
-  for (const record of records.slice(0, 5)) {
-    console.log(
-      `  ${chalk.dim(record.bead.id)} → ${formatTaskIdDisplay(record.nativeId)} ` +
-        `${chalk.cyan(record.status)} ` +
-        `${chalk.dim(`[${record.type}, ${priorityLabel(record.priority)}]`)} ` +
-        `${record.bead.title}`,
-    );
-  }
-  console.log();
-}
-
-export async function performBeadsImport(
-  projectPath: string,
-  opts: { dryRun?: boolean } = {},
-): Promise<TaskImportResult> {
-  const jsonlPath = resolveBeadsImportPath(projectPath);
-  const beads = parseBeadsJsonl(jsonlPath);
-  const { client, projectId, projectName } = await resolveTaskProjectContext({ projectPath });
-  const now = new Date().toISOString();
-  const existingRows = await listAllTasks(client, projectId);
-  const existingIds = new Set(existingRows.map((row) => row.id));
-
-  const existingByExternalId = new Map<string, string>();
-  for (const row of existingRows) {
-    if (row.external_id) {
-      existingByExternalId.set(row.external_id, row.id);
-    }
-  }
-
-  const beadToNativeId = new Map<string, string>();
-  const prepared: PreparedImportRecord[] = [];
-  let duplicateSkips = 0;
-  let unsupportedStatusSkips = 0;
-
-  for (const bead of beads) {
-    const mappedStatus = mapImportedBeadStatus(bead.status);
-    if (!mappedStatus) {
-      unsupportedStatusSkips += 1;
-      continue;
-    }
-
-    const existingId = existingByExternalId.get(bead.id);
-    if (existingId) {
-      duplicateSkips += 1;
-      beadToNativeId.set(bead.id, existingId);
-      continue;
-    }
-
-    const priority = normalizeImportedBeadPriority(bead);
-    const createdAt = bead.created_at ?? now;
-    const updatedAt = bead.updated_at ?? createdAt;
-    const approvedAt = mappedStatus === "ready" ? updatedAt : null;
-    const closedAt = mappedStatus === "merged" ? bead.closed_at ?? updatedAt : null;
-    const record: PreparedImportRecord = {
-      nativeId: allocateTaskId(projectName, existingIds),
-      bead,
-      type: normalizeImportedBeadType(bead),
-      priority,
-      status: mappedStatus,
-      createdAt,
-      updatedAt,
-      approvedAt,
-      closedAt,
-    };
-
-    prepared.push(record);
-    beadToNativeId.set(bead.id, record.nativeId);
-  }
-
-  if (!opts.dryRun) {
-    for (const record of prepared) {
-      await client.tasks.create({
-        projectId,
-        id: record.nativeId,
-        title: record.bead.title,
-        description: record.bead.description ?? undefined,
-        type: record.type,
-        priority: record.priority,
-        status: record.status,
-        externalId: record.bead.id,
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-        approvedAt: record.approvedAt ?? undefined,
-        closedAt: record.closedAt ?? undefined,
-      });
-    }
-
-    for (const bead of beads) {
-      const fromTaskId = beadToNativeId.get(bead.id);
-      if (!fromTaskId || !Array.isArray(bead.dependencies)) continue;
-
-      for (const dependency of bead.dependencies) {
-        const dependencyType = dependency.type === "parent-child" ? "parent-child" : "blocks";
-        const blockerId = dependency.depends_on_id
-          ? beadToNativeId.get(dependency.depends_on_id)
-          : null;
-
-        if (!blockerId) continue;
-        await client.tasks.addDependency({
-          projectId,
-          fromTaskId: blockerId,
-          toTaskId: fromTaskId,
-          type: dependencyType,
-        });
-      }
-    }
-  }
-
-  return {
-    imported: prepared.length,
-    duplicateSkips,
-    unsupportedStatusSkips,
-    jsonlPath,
-    preview: prepared,
-  };
-}
-
 // ── foreman task create ───────────────────────────────────────────────────────
 
 const createCommand = new Command("create")
-  .description("Create a new task in backlog status, or generate task(s) from natural language with --from-text")
+  .description("Create a new task in backlog status")
   .option("--title <text>", "Task title (required unless --from-text is used)")
   .option("--description <text>", "Optional task description")
   .option(
@@ -847,7 +661,7 @@ const createCommand = new Command("create")
   )
   .option(
     "--from-text <description>",
-    "Create task(s) from a natural-language description (or file path) using an LLM — replaces 'foreman bead'",
+    "Removed: natural-language task generation is not available after the Elixir backend cutover",
   )
   .option("--parent <id>", "Parent task ID (only with --from-text)")
   .option("--dry-run", "Show what would be created without creating tasks (only with --from-text)")
@@ -869,34 +683,11 @@ const createCommand = new Command("create")
       project?: string;
       projectPath?: string;
     }) => {
-      // ── Natural-language path (--from-text), shared with 'foreman bead' ──
+      // ── Removed natural-language path (--from-text), formerly shared with 'foreman task' ──
       if (opts.fromText !== undefined) {
-        const incompatible: string[] = [];
-        if (opts.title !== undefined) incompatible.push("--title");
-        if (opts.description !== undefined) incompatible.push("--description");
-        if (opts.project !== undefined) incompatible.push("--project");
-        if (incompatible.length > 0) {
-          console.error(
-            chalk.red(
-              `Error: --from-text cannot be combined with ${incompatible.join(", ")} — the description text drives title/description, and the LLM path runs against a project directory (use --project-path).`,
-            ),
-          );
-          process.exit(1);
-        }
-
-        await createTasksFromText(
-          opts.fromText,
-          {
-            type: opts.type,
-            priority: opts.priority,
-            parent: opts.parent,
-            dryRun: opts.dryRun,
-            llm: opts.llm,
-            model: opts.model,
-          },
-          opts.projectPath ? resolve(opts.projectPath) : undefined,
-        );
-        return;
+        console.error(chalk.red("Error: task create --from-text was removed after the Elixir backend cutover."));
+        console.error(chalk.dim("  Use structured task creation: foreman task create --title <text> [--description <text>]"));
+        process.exit(1);
       }
 
       // ── Structured path ───────────────────────────────────────────────
@@ -914,7 +705,7 @@ const createCommand = new Command("create")
 
       if (opts.title === undefined) {
         console.error(
-          chalk.red(`Error: --title is required (or use --from-text "<description>" for natural-language creation).`),
+          chalk.red("Error: --title is required."),
         );
         process.exit(1);
       }
@@ -944,6 +735,38 @@ const createCommand = new Command("create")
       }
 
       try {
+        if (foremanBackendMode() === "elixir") {
+          const { projectId, projectName } = await resolveTaskProjectRegistration(opts);
+          const client = await createElixirTaskCommandClient();
+          const existingIds = new Set((await listAllElixirTasks(client, projectId)).map((task) => task.id));
+          const taskId = allocateTaskId(projectName, existingIds);
+          await sendElixirTaskCommand(client, "task.create", {
+            project_id: projectId,
+            task_id: taskId,
+            title,
+            description: opts.description,
+            task_type: typeInput,
+            priority,
+            status: "backlog",
+          });
+          const createdTask = await getElixirTaskRow(client, taskId);
+          if (!createdTask) {
+            throw new Error(`Task '${taskId}' not found.`);
+          }
+
+          console.log(
+            chalk.green(`✓ Task created`) + chalk.dim(` [${createdTask.id}]`),
+          );
+          console.log(`  Title:    ${createdTask.title}`);
+          console.log(`  Type:     ${createdTask.type}`);
+          console.log(`  Priority: ${priorityLabel(createdTask.priority)}`);
+          console.log(`  Status:   ${createdTask.status}`);
+          console.log(
+            chalk.dim(`\n  Run 'foreman task approve ${createdTask.id}' to make it ready for dispatch.`),
+          );
+          return;
+        }
+
         const { client, projectId, projectName } = await resolveTaskProjectContext(opts);
         const existingIds = new Set((await listAllTasks(client, projectId)).map((task) => task.id));
         const taskId = allocateTaskId(projectName, existingIds);
@@ -977,7 +800,7 @@ const createCommand = new Command("create")
 // ── foreman task list ─────────────────────────────────────────────────────────
 
 const listCommand = new Command("list")
-  .description("List tasks from the daemon-backed task store")
+  .description("List tasks from the Elixir-backed task store")
   .option("--status <status>", "Filter by task status (e.g. ready, backlog, in-progress)")
   .option("--run-status <status>", "Filter by run status (e.g. running, stuck, failed, completed)")
   .option("--type <type>", "Filter by type (e.g. epic, bug, feature, task)")
@@ -989,6 +812,85 @@ const listCommand = new Command("list")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (opts: { status?: string; runStatus?: string; type?: string; all?: boolean; showPr?: boolean; showRun?: boolean; stuck?: boolean; project?: string; projectPath?: string }) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        const { projectId, projectPath } = await resolveTaskProjectRegistration(opts);
+        const client = await createElixirTaskCommandClient();
+        let rows = await listAllElixirTasks(client, projectId);
+
+        if (opts.status) {
+          rows = rows.filter((row) => row.status === opts.status);
+        } else if (!opts.all) {
+          rows = rows.filter((row) => row.status !== "closed" && row.status !== "merged");
+        }
+
+        if (opts.type) {
+          rows = rows.filter((row) => row.type === opts.type);
+        }
+
+        rows = [...rows].sort(
+          (a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at),
+        );
+
+        const runActivityMap = new Map<string, RunActivityInfo | null>();
+        const needsRunActivity = opts.runStatus || opts.stuck || opts.showRun;
+        if (needsRunActivity) {
+          const fetches = rows.map(async (task) => {
+            const activity = task.run_id ? await fetchRunActivity(projectPath, task.run_id, projectId) : null;
+            runActivityMap.set(task.id, activity);
+          });
+          await Promise.all(fetches);
+        }
+
+        if (opts.runStatus) {
+          rows = rows.filter((row) => {
+            const activity = runActivityMap.get(row.id);
+            return activity?.status === opts.runStatus;
+          });
+        }
+
+        if (opts.stuck) {
+          rows = rows.filter((row) => {
+            const activity = runActivityMap.get(row.id);
+            return activity?.isStuck || activity?.isStale || activity?.status === "stuck";
+          });
+        }
+
+        if (rows.length === 0) {
+          if (opts.status && opts.type) {
+            console.log(chalk.dim(`No tasks with status '${opts.status}' and type '${opts.type}'.`));
+          } else if (opts.status) {
+            console.log(chalk.dim(`No tasks with status '${opts.status}'.`));
+          } else if (opts.type) {
+            console.log(chalk.dim(`No tasks with type '${opts.type}'.`));
+          } else if (opts.runStatus) {
+            console.log(chalk.dim(`No tasks with run status '${opts.runStatus}'.`));
+          } else if (opts.stuck) {
+            console.log(chalk.dim(`No stuck or stale tasks found.`));
+          } else {
+            console.log(chalk.dim("No tasks found. Use 'foreman task create' to add tasks."));
+          }
+          return;
+        }
+
+        const label = opts.status
+          ? opts.type
+            ? `Tasks (status: ${opts.status}, type: ${opts.type})`
+            : `Tasks (status: ${opts.status})`
+          : opts.type
+            ? `Tasks (type: ${opts.type})`
+            : opts.all
+              ? `All Tasks`
+              : `Active Tasks`;
+        console.log(chalk.bold(`\n  ${label} (${rows.length})\n`));
+        if (opts.showRun || opts.stuck) {
+          printTaskTableWithRunStatus(rows, runActivityMap);
+        } else {
+          printTaskTable(rows);
+        }
+        console.log();
+        return;
+      }
+
       const { client, projectId, projectPath } = await resolveTaskProjectContext(opts);
       let rows = await listAllTasks(client, projectId);
 
@@ -1118,6 +1020,93 @@ const showCommand = new Command("show")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { verbose?: boolean; project?: string; projectPath?: string }) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        const { projectId, projectName, projectPath } = await resolveTaskProjectRegistration(opts);
+        const client = await createElixirTaskCommandClient();
+        const rows = await listAllElixirTasks(client, projectId);
+        const resolvedId = resolveTaskId(rows, id);
+        const task = await client.getTask(resolvedId);
+        if (!task) {
+          console.error(chalk.red(`Error: Task '${id}' not found.`));
+          process.exit(1);
+        }
+
+        const taskRow = elixirTaskToTaskRow(task);
+        console.log(chalk.bold(`\n  Task: ${taskRow.title}`));
+        console.log(`  ID:          ${taskRow.id}`);
+        console.log(`  Type:        ${taskRow.type}`);
+        console.log(`  Priority:    ${priorityLabel(taskRow.priority)} (${taskRow.priority})`);
+        console.log(`  Status:      ${statusChalk(taskRow.status)}`);
+        if (taskRow.description) {
+          console.log(`  Description: ${taskRow.description}`);
+        }
+        if (taskRow.run_id) {
+          console.log(`  Run ID:      ${taskRow.run_id}`);
+        }
+        if (taskRow.external_id) {
+          console.log(`  External ID: ${taskRow.external_id}`);
+        }
+        console.log(`  Created:     ${new Date(taskRow.created_at).toLocaleString()}`);
+        console.log(`  Updated:     ${new Date(taskRow.updated_at).toLocaleString()}`);
+        if (taskRow.approved_at) {
+          console.log(`  Approved:    ${new Date(taskRow.approved_at).toLocaleString()}`);
+        }
+        if (taskRow.closed_at) {
+          console.log(`  Closed:      ${new Date(taskRow.closed_at).toLocaleString()}`);
+        }
+        if (taskRow.run_id) {
+          console.log(chalk.bold("\n  Logs:"));
+          console.log(`    Summary:    foreman logs ${taskRow.id} --project ${projectName}`);
+          console.log(`    Follow:     foreman logs ${taskRow.id} --project ${projectName} --follow`);
+          console.log(chalk.dim(`    Raw:        ~/.foreman/logs/${taskRow.run_id}.log`));
+        }
+
+        if (taskRow.run_id) {
+          const activity = await fetchRunActivity(projectPath, taskRow.run_id, projectId);
+          if (activity) {
+            console.log(chalk.bold("\n  Run Activity:"));
+            console.log(`    ${renderRunStatusLine(activity)}`);
+            if (opts.verbose && activity.currentPhase) {
+              console.log();
+              console.log(chalk.dim(`    Current phase: ${activity.currentPhase}`));
+            }
+          } else if (opts.verbose) {
+            console.log(chalk.dim(`\n  Run Activity: run ${taskRow.run_id} not found (may have been cleaned up)`));
+          }
+        }
+
+        console.log(chalk.bold("\n  Notes:"));
+        const annotations = Array.isArray(task.annotations) ? task.annotations : [];
+        if (annotations.length === 0) {
+          console.log(chalk.dim("    (none yet)"));
+        } else {
+          for (const note of annotations) {
+            const when = note.created_at ? new Date(note.created_at).toLocaleString() : "unknown time";
+            console.log(chalk.dim(`    [${when} manual] ${note.author ?? "unknown"}`));
+            for (const line of note.body.split("\n")) {
+              console.log(`    ${line}`);
+            }
+          }
+        }
+
+        const outgoingDeps = Array.isArray(task.dependencies) ? task.dependencies : [];
+        const incomingDeps = rows.filter((row) => Array.isArray((row as unknown as { dependencies?: string[] }).dependencies) && ((row as unknown as { dependencies?: string[] }).dependencies?.includes(taskRow.id)));
+        if (incomingDeps.length > 0) {
+          console.log(chalk.bold("\n  Blocked by:"));
+          for (const dep of incomingDeps) {
+            console.log(chalk.yellow(`    [blocks] ← ${formatTaskIdDisplay(dep.id)}`));
+          }
+        }
+        if (outgoingDeps.length > 0) {
+          console.log(chalk.bold("\n  Blocking:"));
+          for (const depId of outgoingDeps) {
+            console.log(chalk.dim(`    [blocks] → ${formatTaskIdDisplay(depId)}`));
+          }
+        }
+        console.log();
+        return;
+      }
+
       const { client, projectId, projectName, projectPath } = await resolveTaskProjectContext(opts);
       const rows = await listAllTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
@@ -1325,14 +1314,15 @@ const noteCommand = new Command("note")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { body: string; kind: string; author: string; project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const { projectId } = await resolveTaskProjectRegistration(opts);
+      const client = await createElixirTaskCommandClient();
+      const rows = await listAllElixirTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
-      await client.tasks.addNote({
-        projectId,
-        taskId: resolvedId,
+      await sendElixirTaskCommand(client, "task.annotate", {
+        project_id: projectId,
+        task_id: resolvedId,
         author: opts.author,
-        kind: opts.kind as "progress" | "issue" | "blocker" | "review" | "qa" | "final" | "failure" | "manual" | "system",
+        kind: opts.kind,
         body: opts.body,
       });
       console.log(chalk.green(`✓ Note added to '${formatTaskIdDisplay(resolvedId)}'.`));
@@ -1351,6 +1341,26 @@ const approveCommand = new Command("approve")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        const { projectId } = await resolveTaskProjectRegistration(opts);
+        const client = await createElixirTaskCommandClient();
+        const rows = await listAllElixirTasks(client, projectId);
+        const resolvedId = resolveTaskId(rows, id);
+        await sendElixirTaskCommand(client, "task.approve", { project_id: projectId, task_id: resolvedId });
+        const task = await getElixirTaskRow(client, resolvedId);
+        if (task?.status === "ready") {
+          console.log(
+            chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' approved and ready for dispatch.`),
+          );
+        } else {
+          console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' approved.`));
+          if (task?.status) {
+            console.log(chalk.dim(`  Status: ${task.status}`));
+          }
+        }
+        return;
+      }
+
       const { client, projectId } = await resolveTaskProjectContext(opts);
       const rows = await listAllTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
@@ -1387,7 +1397,7 @@ const updateCommand = new Command("update")
   .action(
     async (id: string, opts: {
       title?: string;
-      description?: string;
+      description?: string | boolean;
       noDescription?: boolean;
       priority?: string;
       status?: string;
@@ -1406,9 +1416,9 @@ const updateCommand = new Command("update")
       if (opts.title !== undefined) {
         updateOpts.title = opts.title;
       }
-      if (opts.noDescription) {
+      if (opts.noDescription || opts.description === false) {
         updateOpts.description = null;
-      } else if (opts.description !== undefined) {
+      } else if (typeof opts.description === "string") {
         updateOpts.description = opts.description;
       }
       if (opts.priority !== undefined) {
@@ -1431,6 +1441,49 @@ const updateCommand = new Command("update")
       }
 
       try {
+        if (foremanBackendMode() === "elixir") {
+          const { projectId } = await resolveTaskProjectRegistration(opts);
+          const client = await createElixirTaskCommandClient();
+          const rows = await listAllElixirTasks(client, projectId);
+          const resolvedId = resolveTaskId(rows, id);
+
+          if (updateOpts.status !== undefined && !updateOpts.force) {
+            const current = rows.find((row) => row.id === resolvedId);
+            if (current && isBackwardStatusTransition(current.status, updateOpts.status)) {
+              console.error(
+                chalk.red(
+                  `Error: Task '${formatTaskIdDisplay(resolvedId)}' cannot transition from '${current.status}' to '${updateOpts.status}'.`,
+                ),
+              );
+              console.error(chalk.dim("  Use --force to override this check."));
+              process.exit(1);
+            }
+          }
+
+          await sendElixirTaskCommand(client, "task.update", {
+            project_id: projectId,
+            task_id: resolvedId,
+            title: updateOpts.title,
+            description: updateOpts.description ?? undefined,
+            priority: updateOpts.priority,
+            status: updateOpts.status,
+          });
+          const task = await getElixirTaskRow(client, resolvedId);
+          if (!task) {
+            throw new Error(`Task '${resolvedId}' not found.`);
+          }
+
+          console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' updated.`));
+          console.log(`  Title:    ${task.title}`);
+          console.log(`  Type:     ${task.type}`);
+          console.log(`  Priority: ${priorityLabel(task.priority)}`);
+          console.log(`  Status:   ${statusChalk(task.status)}`);
+          if (task.description) {
+            console.log(`  Description: ${task.description}`);
+          }
+          return;
+        }
+
         const { client, projectId } = await resolveTaskProjectContext(opts);
         const rows = await listAllTasks(client, projectId);
         const resolvedId = resolveTaskId(rows, id);
@@ -1486,46 +1539,23 @@ const closeCommand = new Command("close")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
     try {
+      if (foremanBackendMode() === "elixir") {
+        const { projectId } = await resolveTaskProjectRegistration(opts);
+        const client = await createElixirTaskCommandClient();
+        const rows = await listAllElixirTasks(client, projectId);
+        const resolvedId = resolveTaskId(rows, id);
+        await sendElixirTaskCommand(client, "task.close", { project_id: projectId, task_id: resolvedId });
+
+        console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' closed.`));
+        return;
+      }
+
       const { client, projectId } = await resolveTaskProjectContext(opts);
       const rows = await listAllTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
       await client.tasks.close({ projectId, taskId: resolvedId });
 
       console.log(chalk.green(`✓ Task '${formatTaskIdDisplay(resolvedId)}' closed.`));
-    } catch (err) {
-      console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
-      process.exit(1);
-    }
-  });
-
-// ── foreman task import ───────────────────────────────────────────────────────
-
-const importCommand = new Command("import")
-  .description("Import legacy beads JSONL data into the daemon-backed task store")
-  .requiredOption("--from-beads", "Import tasks from .beads/issues.jsonl or .beads/beads.jsonl")
-  .option("--dry-run", "Preview the first 5 mappings without writing to the database")
-  .option("--project <name>", "Registered project name (default: current directory)")
-  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (opts: { fromBeads: boolean; dryRun?: boolean; project?: string; projectPath?: string }) => {
-    const projectPath = await resolveProjectPathFromOptions(opts);
-
-    try {
-      const result = await performBeadsImport(projectPath, { dryRun: opts.dryRun });
-      if (opts.dryRun) {
-        summarizeImportPreview(result.preview);
-        console.log(
-          chalk.green(
-            `Would import ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
-          ),
-        );
-        return;
-      }
-      console.log(
-        chalk.green(
-            `Imported ${result.imported} tasks (${result.duplicateSkips} skipped: already exist by external_id${result.unsupportedStatusSkips > 0 ? `, ${result.unsupportedStatusSkips} skipped: unsupported status` : ""}).`,
-        ),
-      );
-      console.log(chalk.dim(`  Source: ${result.jsonlPath}`));
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
       process.exit(1);
@@ -1555,15 +1585,20 @@ const depAddCommand = new Command("add")
       }
 
       try {
-        const { client, projectId } = await resolveTaskProjectContext(opts);
-        const rows = await listAllTasks(client, projectId);
+        if (opts.type !== "blocks") {
+          console.error(chalk.red("Error: task dep add --type parent-child was removed after the Elixir backend cutover."));
+          console.error(chalk.dim("  Elixir task dependencies currently support blocker relationships only."));
+          process.exit(1);
+        }
+        const { projectId } = await resolveTaskProjectRegistration(opts);
+        const client = await createElixirTaskCommandClient();
+        const rows = await listAllElixirTasks(client, projectId);
         const resolvedFromId = resolveTaskId(rows, fromId);
         const resolvedToId = resolveTaskId(rows, toId);
-        await client.tasks.addDependency({
-          projectId,
-          fromTaskId: resolvedFromId,
-          toTaskId: resolvedToId,
-          type: opts.type as "blocks" | "parent-child",
+        await sendElixirTaskCommand(client, "task.add_dependency", {
+          project_id: projectId,
+          task_id: resolvedToId,
+          depends_on: resolvedFromId,
         });
         const verb = opts.type === "blocks" ? "blocks" : "is parent of";
         console.log(
@@ -1591,20 +1626,24 @@ const depListCommand = new Command("list")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (id: string, opts: { project?: string; projectPath?: string }) => {
     try {
-      const { client, projectId } = await resolveTaskProjectContext(opts);
-      const rows = await listAllTasks(client, projectId);
+      const { projectId } = await resolveTaskProjectRegistration(opts);
+      const client = await createElixirTaskCommandClient();
+      const rows = await listAllElixirTasks(client, projectId);
       const resolvedId = resolveTaskId(rows, id);
-
-      const blockedBy = await client.tasks.listDependencies({
-        projectId,
-        taskId: resolvedId,
-        direction: "incoming",
-      }) as DependencyRow[];
-      const blocking = await client.tasks.listDependencies({
-        projectId,
-        taskId: resolvedId,
-        direction: "outgoing",
-      }) as DependencyRow[];
+      const current = rows.find((row) => row.id === resolvedId);
+      const currentDependencies = ((current as unknown as { dependencies?: string[] } | undefined)?.dependencies ?? []);
+      const blockedBy = currentDependencies.map((dependencyId) => ({
+        type: "blocks",
+        from_task_id: dependencyId,
+        to_task_id: resolvedId,
+      })) as DependencyRow[];
+      const blocking = rows
+        .filter((row) => (((row as unknown as { dependencies?: string[] }).dependencies ?? []).includes(resolvedId)))
+        .map((row) => ({
+          type: "blocks",
+          from_task_id: resolvedId,
+          to_task_id: row.id,
+        })) as DependencyRow[];
 
       if (blockedBy.length === 0 && blocking.length === 0) {
         console.log(chalk.dim(`Task '${formatTaskIdDisplay(resolvedId)}' has no dependencies.`));
@@ -1644,26 +1683,12 @@ const depRemoveCommand = new Command("remove")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(
     async (fromId: string, toId: string, opts: { type: string; project?: string; projectPath?: string }) => {
-      try {
-        const { client, projectId } = await resolveTaskProjectContext(opts);
-        const rows = await listAllTasks(client, projectId);
-        const resolvedFromId = resolveTaskId(rows, fromId);
-        const resolvedToId = resolveTaskId(rows, toId);
-        await client.tasks.removeDependency({
-          projectId,
-          fromTaskId: resolvedFromId,
-          toTaskId: resolvedToId,
-          type: opts.type as "blocks" | "parent-child",
-        });
-        console.log(
-          chalk.green(
-            `✓ Dependency removed: '${formatTaskIdDisplay(resolvedFromId)}' → '${formatTaskIdDisplay(resolvedToId)}'.`,
-          ),
-        );
-      } catch (err) {
-        console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
-        process.exit(1);
-      }
+      void fromId;
+      void toId;
+      void opts;
+      console.error(chalk.red("Error: task dep remove was removed after the Elixir backend cutover."));
+      console.error(chalk.dim("  Remove or adjust dependencies through the Elixir task command API when a removal event is available."));
+      process.exit(1);
     },
   );
 
@@ -1680,7 +1705,6 @@ export const taskCommand = new Command("task")
   .addCommand(createCommand)
   .addCommand(listCommand)
   .addCommand(showCommand)
-  .addCommand(importCommand)
   .addCommand(noteCommand)
   .addCommand(approveCommand)
   .addCommand(updateCommand)

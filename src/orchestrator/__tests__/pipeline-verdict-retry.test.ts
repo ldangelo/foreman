@@ -51,8 +51,8 @@ function makeBasePipelineArgs(
     config: {
       runId: "run-verdict-001",
       projectId: "proj-001",
-      seedId: "seed-verdict",
-      seedTitle: "Verdict retry test",
+      taskId: "task-verdict",
+      taskTitle: "Verdict retry test",
       model: "anthropic/claude-sonnet-4-6",
       worktreePath: tmpDir,
       env: {},
@@ -203,6 +203,36 @@ describe("verdict-triggered retry", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("DEVELOPER] Skipping — retryOnly phase"));
   });
 
+  it("accepts a PASS verdict artifact when the SDK reports maxTurns after writing it", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+    const onPipelineComplete = vi.fn();
+
+    const phases = [
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true },
+      { name: "reviewer", artifact: "REVIEW.md" },
+    ];
+
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npx vitest run src/lib/foo.test.ts --reporter=dot`\n- Test suite: 10 passed, 0 failed\n- Raw summary: 10 passed, 0 failed\n");
+        return { success: false, costUsd: 0.02, turns: 31, tokensIn: 100, tokensOut: 50, error: "Phase exceeded maxTurns (30)" };
+      }
+      return successResult();
+    });
+
+    await executePipeline({
+      ...makeBasePipelineArgs(tmpDir, phases, runPhase, log),
+      onPipelineComplete,
+    } as never);
+
+    expect(phaseOrder).toEqual(["qa", "reviewer"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("SDK interrupted after a PASS artifact"));
+    expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
   it("runs retryOnly developer only after a verdict failure, then retries QA", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const phaseOrder: string[] = [];
@@ -278,7 +308,7 @@ describe("verdict-triggered retry", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("TEST] FAIL — looping back to fix"));
     expect(ctx.sendMailText).toHaveBeenCalledWith(
       null,
-      "fix-seed-verdict",
+      "fix-task-verdict",
       "Test Feedback - Retry 1",
       expect.stringContaining("## Verdict: FAIL"),
     );
@@ -505,10 +535,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };
@@ -577,10 +607,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };
@@ -631,10 +661,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };
@@ -689,10 +719,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };
@@ -745,10 +775,10 @@ describe("verdict-triggered retry", () => {
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
         commitCommand: "jj describe -m 'msg'",
-        pushCommand: "jj git push --bookmark foreman/seed-verdict",
+        pushCommand: "jj git push --bookmark foreman/task-verdict",
         integrateTargetCommand: "jj git fetch && jj rebase -d dev@origin",
-        branchVerifyCommand: "jj bookmark list foreman/seed-verdict",
-        cleanCommand: "jj workspace forget foreman-seed-verdict",
+        branchVerifyCommand: "jj bookmark list foreman/task-verdict",
+        cleanCommand: "jj workspace forget foreman-task-verdict",
         restoreTrackedStateCommand: "true",
       }),
     };

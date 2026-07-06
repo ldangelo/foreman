@@ -93,10 +93,25 @@ export interface PiRunResult {
  */
 export type StreamEvent =
   | { type: "text"; iteration: number; timestamp: string; delta: string }
-  | { type: "toolCall"; iteration: number; timestamp: string; toolName: string; args: Record<string, unknown> }
+  | { type: "toolCall"; iteration: number; timestamp: string; toolCallId?: string; toolName: string; args: Record<string, unknown> }
+  | { type: "toolCallFinished"; iteration: number; timestamp: string; toolCallId?: string; toolName: string; args?: Record<string, unknown>; result?: unknown; isError?: boolean }
   | { type: "turnStart"; iteration: number; timestamp: string }
   | { type: "turnEnd"; iteration: number; timestamp: string; tokensIn?: number; tokensOut?: number }
   | { type: "agentEnd"; iteration: number; timestamp: string; success: boolean; message?: string };
+
+export interface ToolPolicyDecision {
+  allowed: boolean;
+  action: string;
+  reason: string;
+  message?: string | null;
+}
+
+export interface ToolPolicyContext {
+  runId: string;
+  taskId?: string;
+  phaseId: string;
+  workerId?: string;
+}
 
 export interface PiRunOptions {
   prompt: string;
@@ -121,6 +136,11 @@ export interface PiRunOptions {
   guardrailConfig?: GuardrailConfig;
   /** Optional phase-level observability metadata used to emit Pi hook traces. */
   observability?: PhaseTraceMetadata;
+  /** Backend-owned policy gate called before each tool executes. */
+  toolPolicy?: {
+    context: ToolPolicyContext;
+    check: (toolCallId: string, toolName: string, args: Record<string, unknown>) => Promise<ToolPolicyDecision>;
+  };
   /** Live observability callback fired from Pi extension hooks. */
   onTraceEvent?: (event: PhaseTraceLiveEvent) => void;
   /** Optional structured output extraction. When provided, the runner will extract and validate JSON from outputText. */
@@ -132,9 +152,43 @@ export interface PiRunOptions {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ToolFactory = (cwd: string, ...args: any[]) => any;
 
+export function isDangerousBashCommand(command: string): boolean {
+  const normalized = command.toLowerCase().replace(/\s+/g, " ");
+  return /\b(kill|pkill|killall)\b/.test(normalized)
+    || /\bxargs\s+kill\b/.test(normalized)
+    || /\bfuser\b.*\s-k\b/.test(normalized)
+    || /\blsof\s+[^;&|]*-ti:?4766\b/.test(normalized)
+    || /\bforeman\s+server\s+(stop|restart)\b/.test(normalized);
+}
+
+function createGuardedBashTool(cwd: string) {
+  return createBashTool(cwd, {
+    spawnHook: ({ command, cwd: hookCwd, env }) => {
+      if (isDangerousBashCommand(command)) {
+        const message = "Foreman worker safety guard blocked a destructive process-control command. Do not kill Foreman server or unrelated processes; use task-local validation commands and ask the operator for server restarts.";
+        return {
+          command: `printf '%s\\n' ${JSON.stringify(message)} >&2; exit 126`,
+          cwd: hookCwd,
+          env,
+        };
+      }
+
+      return {
+        command,
+        cwd: hookCwd,
+        env: {
+          ...env,
+          FOREMAN_SERVER_HTTP_ENABLED: "false",
+          FOREMAN_SERVER_HTTP_PORT: "0",
+        },
+      };
+    },
+  });
+}
+
 const TOOL_FACTORIES: Record<string, ToolFactory> = {
   Read: createReadTool,
-  Bash: createBashTool,
+  Bash: createGuardedBashTool,
   Edit: createEditTool,
   Write: createWriteTool,
   Grep: createGrepTool,
@@ -146,10 +200,35 @@ const TOOL_FACTORIES: Record<string, ToolFactory> = {
  * Build the tool array from allowed tool names.
  * Unknown names are silently skipped (they may be custom tools registered separately).
  */
+function wrapToolWithPolicy<T extends { name: string; execute: (...args: any[]) => Promise<unknown> }>(tool: T, policy: NonNullable<PiRunOptions["toolPolicy"]>): T {
+  const originalExecute = tool.execute.bind(tool);
+  return {
+    ...tool,
+    async execute(toolCallId: string, params: Record<string, unknown>, ...rest: unknown[]) {
+      const decision = await policy.check(toolCallId, tool.name, params ?? {});
+      if (!decision.allowed) {
+        const message = `Foreman overwatch denied ${tool.name}: ${decision.reason}`;
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: { deniedByOverwatch: true, reason: decision.reason, action: decision.action },
+          isError: true,
+        };
+      }
+      return originalExecute(toolCallId, params ?? {}, ...rest);
+    },
+  } as T;
+}
+
+function applyToolPolicy<T extends { name: string; execute: (...args: any[]) => Promise<unknown> }>(tools: T[], policy?: PiRunOptions["toolPolicy"]): T[] {
+  if (!policy) return tools;
+  return tools.map((tool) => wrapToolWithPolicy(tool, policy));
+}
+
 function buildTools(
   allowedNames: readonly string[],
   cwd: string,
   guardrailConfig?: GuardrailConfig,
+  toolPolicy?: PiRunOptions["toolPolicy"],
 ) {
   const tools = [];
 
@@ -181,7 +260,7 @@ function buildTools(
       tools.push(factory(cwd));
     }
   }
-  return tools;
+  return applyToolPolicy(tools, toolPolicy);
 }
 
 // ── Model resolution ────────────────────────────────────────────────────
@@ -366,9 +445,13 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   const model = getModel(provider as never, modelId as never);
 
   // Build tool set from allowed names
-  const tools = opts.allowedTools
-    ? buildTools(opts.allowedTools, opts.cwd, opts.guardrailConfig)
-    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd, opts.guardrailConfig);
+  const builtInTools = opts.allowedTools
+    ? buildTools(opts.allowedTools, opts.cwd, opts.guardrailConfig, opts.toolPolicy)
+    : buildTools(["Read", "Bash", "Edit", "Write", "Grep", "Find", "LS"], opts.cwd, opts.guardrailConfig, opts.toolPolicy);
+  // Register built-ins as custom tool definitions so the policy-wrapped execute()
+  // path is authoritative for every tool, including Read/Bash/Edit/Write.
+  const tools = [] as never[];
+  const customTools = [...builtInTools, ...applyToolPolicy(opts.customTools ?? [], opts.toolPolicy)];
 
   // Accumulators
   let totalTurns = 0;
@@ -377,6 +460,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   let success = true;
   let errorMessage: string | undefined;
   const textChunks: string[] = [];
+  const pendingToolCalls = new Map<string, { toolName: string; args: Record<string, unknown> }>();
   const phaseTrace = opts.observability ? createPhaseTrace(opts.observability) : undefined;
 
   const writeLog = (line: string): void => {
@@ -425,7 +509,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       model,
       thinkingLevel: "medium",
       tools,
-      customTools: opts.customTools,
+      customTools,
       resourceLoader,
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.create(opts.cwd, agentDir),
@@ -501,18 +585,43 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
         }
 
         case "tool_execution_start": {
-          const toolName = (event as Record<string, unknown>).toolName as string | undefined;
+          const rawEvent = event as Record<string, unknown>;
+          const toolName = rawEvent.toolName as string | undefined;
           if (toolName) {
             totalToolCalls++;
             toolBreakdown[toolName] = (toolBreakdown[toolName] ?? 0) + 1;
-            const input = (event as Record<string, unknown>).args as Record<string, unknown> | undefined;
+            const toolCallId = rawEvent.toolCallId as string | undefined;
+            const input = rawEvent.args as Record<string, unknown> | undefined;
+            if (toolCallId) pendingToolCalls.set(toolCallId, { toolName, args: input ?? {} });
             opts.onToolCall?.(toolName, input ?? {});
             safeEmitStreamEvent({
               type: "toolCall",
               iteration: totalTurns,
               timestamp,
+              toolCallId,
               toolName,
               args: input ?? {},
+            });
+          }
+          break;
+        }
+
+        case "tool_execution_end": {
+          const rawEvent = event as Record<string, unknown>;
+          const toolCallId = rawEvent.toolCallId as string | undefined;
+          const pending = toolCallId ? pendingToolCalls.get(toolCallId) : undefined;
+          if (toolCallId) pendingToolCalls.delete(toolCallId);
+          const toolName = (rawEvent.toolName as string | undefined) ?? pending?.toolName;
+          if (toolName) {
+            safeEmitStreamEvent({
+              type: "toolCallFinished",
+              iteration: totalTurns,
+              timestamp,
+              toolCallId,
+              toolName,
+              args: pending?.args,
+              result: rawEvent.result,
+              isError: rawEvent.isError === true,
             });
           }
           break;
@@ -585,7 +694,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       opts.onTraceEvent?.({
         kind: "complete",
         phase: phaseTrace.phase,
-        seedId: phaseTrace.seedId,
+        taskId: phaseTrace.taskId,
         message: `phase=${phaseTrace.phase} success=${String(success)} artifactPresent=${String(phaseTrace.artifactPresent)} commandHonored=${String(phaseTrace.commandHonored)}`,
         traceFile: tracePaths.relativeJsonPath,
         traceMarkdownFile: tracePaths.relativeMarkdownPath,
@@ -633,7 +742,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       opts.onTraceEvent?.({
         kind: "complete",
         phase: phaseTrace.phase,
-        seedId: phaseTrace.seedId,
+        taskId: phaseTrace.taskId,
         message: `phase=${phaseTrace.phase} success=false error=${reason}`,
         traceFile: tracePaths.relativeJsonPath,
         traceMarkdownFile: tracePaths.relativeMarkdownPath,

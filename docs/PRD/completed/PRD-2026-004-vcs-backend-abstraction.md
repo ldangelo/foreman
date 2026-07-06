@@ -249,7 +249,7 @@ interface VcsBackend {
   deleteBranch(repoPath: string, branchName: string, opts?: DeleteBranchOptions): Promise<DeleteBranchResult>;
 
   // Workspace isolation
-  createWorkspace(repoPath: string, seedId: string, baseBranch?: string, setupSteps?: WorkflowSetupStep[], setupCache?: WorkflowSetupCache): Promise<WorkspaceResult>;
+  createWorkspace(repoPath: string, taskId: string, baseBranch?: string, setupSteps?: WorkflowSetupStep[], setupCache?: WorkflowSetupCache): Promise<WorkspaceResult>;
   removeWorkspace(repoPath: string, workspacePath: string): Promise<void>;
   listWorkspaces(repoPath: string): Promise<Workspace[]>;
 
@@ -341,8 +341,8 @@ The system shall implement a `GitBackend` class in `src/lib/vcs/git-backend.ts` 
 
 **Acceptance Criteria:**
 
-- **AC-004-1:** Given a git repository, when `GitBackend.createWorkspace()` is called with a seedId, then a git worktree is created in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/<seedId>`) on branch `foreman/<seedId>`.
-- **AC-004-2:** Given an existing worktree from a failed run, when `GitBackend.createWorkspace()` is called for the same seedId, then the worktree is reused and rebased onto the base branch, matching current retry behavior.
+- **AC-004-1:** Given a git repository, when `GitBackend.createWorkspace()` is called with a taskId, then a git worktree is created in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/<taskId>`) on branch `foreman/<taskId>`.
+- **AC-004-2:** Given an existing worktree from a failed run, when `GitBackend.createWorkspace()` is called for the same taskId, then the worktree is reused and rebased onto the base branch, matching current retry behavior.
 - **AC-004-3:** Given a git repository with git-town configured, when `GitBackend.detectDefaultBranch()` is called, then the `git-town.main-branch` config value is returned (matching current priority order).
 - **AC-004-4:** Given a git worktree, when `GitBackend.commit()` is called, then `git add -A` and `git commit -m <message>` are executed and the short commit hash is returned.
 - **AC-004-5:** Given a branch with diverged history, when `GitBackend.push()` is called and receives a non-fast-forward rejection, then the push fails with a typed error that callers can inspect (no automatic rebase -- that is the caller's responsibility).
@@ -369,9 +369,9 @@ The `GitBackend.merge()` method shall reproduce the exact behavior of the curren
 
 **Acceptance Criteria:**
 
-- **AC-006-1:** Given finalize template vars with `seedId`, `seedTitle`, `baseBranch`, when `GitBackend.getFinalizeCommands()` is called, then the returned `stageCommand` is `git add -A`.
-- **AC-006-2:** Given the same vars, when `getFinalizeCommands()` is called, then `commitCommand` is `git commit -m "<seedTitle> (<seedId>)"`.
-- **AC-006-3:** Given the same vars, then `pushCommand` is `git push -u origin foreman/<seedId>`.
+- **AC-006-1:** Given finalize template vars with `taskId`, `taskTitle`, `baseBranch`, when `GitBackend.getFinalizeCommands()` is called, then the returned `stageCommand` is `git add -A`.
+- **AC-006-2:** Given the same vars, when `getFinalizeCommands()` is called, then `commitCommand` is `git commit -m "<taskTitle> (<taskId>)"`.
+- **AC-006-3:** Given the same vars, then `pushCommand` is `git push -u origin foreman/<taskId>`.
 - **AC-006-4:** Given the same vars, then `rebaseCommand` is `git fetch origin && git rebase origin/<baseBranch>`.
 
 ### REQ-007: GitBackend Backward Compatibility
@@ -409,13 +409,13 @@ The system shall implement a `JujutsuBackend` class in `src/lib/vcs/jujutsu-back
 **Priority:** P1 (high)
 **Type:** Implementation
 
-`JujutsuBackend.createWorkspace()` shall create isolated workspaces using `jj workspace add`. Each workspace gets a bookmark named `foreman/<seedId>` for push/PR operations.
+`JujutsuBackend.createWorkspace()` shall create isolated workspaces using `jj workspace add`. Each workspace gets a bookmark named `foreman/<taskId>` for push/PR operations.
 
 **Acceptance Criteria:**
 
-- **AC-009-1:** Given a jj repository, when `JujutsuBackend.createWorkspace()` is called with seedId `bd-abc1`, then `jj workspace add <path> --name foreman-bd-abc1` is executed, creating a workspace in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/bd-abc1`).
+- **AC-009-1:** Given a jj repository, when `JujutsuBackend.createWorkspace()` is called with taskId `bd-abc1`, then `jj workspace add <path> --name foreman-bd-abc1` is executed, creating a workspace in Foreman's workspace root (default: `<repoParent>/.foreman-worktrees/<repoName>/bd-abc1`).
 - **AC-009-2:** Given the workspace is created, when the workspace is initialized, then a bookmark `foreman/bd-abc1` is created pointing to the new workspace's working-copy change via `jj bookmark create foreman/bd-abc1 -r @`.
-- **AC-009-3:** Given an existing workspace from a failed run, when `createWorkspace()` is called for the same seedId, then the existing workspace is reused: `jj workspace update-stale` is run if needed, and the working copy is rebased onto the base branch.
+- **AC-009-3:** Given an existing workspace from a failed run, when `createWorkspace()` is called for the same taskId, then the existing workspace is reused: `jj workspace update-stale` is run if needed, and the working copy is rebased onto the base branch.
 - **AC-009-4:** Given a workspace, when `JujutsuBackend.removeWorkspace()` is called, then `jj workspace forget <name>` is executed and the workspace directory is removed.
 - **AC-009-5:** Given a jj repository, when `JujutsuBackend.listWorkspaces()` is called, then `jj workspace list` is parsed and returned as `Workspace[]` objects.
 
@@ -470,10 +470,10 @@ Merging in jj creates a merge commit with multiple parents using `jj new`.
 **Acceptance Criteria:**
 
 - **AC-013-1:** Given finalize template vars, when `JujutsuBackend.getFinalizeCommands()` is called, then `stageCommand` is empty string (jj auto-stages).
-- **AC-013-2:** Given the same vars, then `commitCommand` is `jj describe -m "<seedTitle> (<seedId>)" && jj new`.
-- **AC-013-3:** Given the same vars, then `pushCommand` is `jj git push --bookmark foreman/<seedId> --allow-new`.
+- **AC-013-2:** Given the same vars, then `commitCommand` is `jj describe -m "<taskTitle> (<taskId>)" && jj new`.
+- **AC-013-3:** Given the same vars, then `pushCommand` is `jj git push --bookmark foreman/<taskId> --allow-new`.
 - **AC-013-4:** Given the same vars, then `rebaseCommand` is `jj git fetch && jj rebase -d <baseBranch>@origin`.
-- **AC-013-5:** Given the same vars, then `branchVerifyCommand` is `jj bookmark list --name foreman/<seedId>` (verification that the bookmark exists).
+- **AC-013-5:** Given the same vars, then `branchVerifyCommand` is `jj bookmark list --name foreman/<taskId>` (verification that the bookmark exists).
 
 ---
 

@@ -43,7 +43,7 @@ describe("task helpers", () => {
 describe("task storage — PostgresAdapter", { timeout: 120_000 }, () => {
   beforeAll(async () => {
     await startPostgresTestcontainer();
-  });
+  }, 120_000);
 
   afterAll(async () => {
     await stopPostgresTestcontainer();

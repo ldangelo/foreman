@@ -58,7 +58,7 @@ A critical fallback requirement ensures that when Pi is not installed, Foreman d
 
 Foreman currently spawns agents via two strategies: `TmuxSpawnStrategy` (preferred) and `DetachedSpawnStrategy` (fallback). Both are fire-and-forget -- after spawning a child process, Foreman has no bidirectional communication channel. Liveness detection depends on tmux session existence checks or process polling. The `spawnWorkerProcess()` function in `dispatcher.ts` (lines 808-829) illustrates the cascade: try tmux, if session creation fails fall back to detached, with no RPC protocol to query agent state.
 
-The tmux dependency is particularly fragile. On macOS, tmux is not installed by default. On CI/headless environments, tmux requires special configuration. The `TmuxClient.isAvailable()` check adds latency to every dispatch, and tmux session names are limited to alphanumeric characters, causing issues with seed IDs containing special characters.
+The tmux dependency is particularly fragile. On macOS, tmux is not installed by default. On CI/headless environments, tmux requires special configuration. The `TmuxClient.isAvailable()` check adds latency to every dispatch, and tmux session names are limited to alphanumeric characters, causing issues with task IDs containing special characters.
 
 ### 2.2 Polling Latency
 
@@ -178,7 +178,7 @@ Dispatcher.dispatch()
 
 ### 5.3 Worker Environment
 
-Workers receive a `WorkerConfig` JSON file containing: `runId`, `projectId`, `seedId`, `seedTitle`, `seedDescription`, `seedComments`, `model`, `worktreePath`, `projectPath`, `prompt`, `env`, `resume`, `pipeline`, `skipExplore`, `skipReview`. The env is sanitized via `buildWorkerEnv()` which strips `CLAUDECODE` and prepends `~/.local/bin` to PATH.
+Workers receive a `WorkerConfig` JSON file containing: `runId`, `projectId`, `taskId`, `taskTitle`, `taskDescription`, `taskComments`, `model`, `worktreePath`, `projectPath`, `prompt`, `env`, `resume`, `pipeline`, `skipExplore`, `skipReview`. The env is sanitized via `buildWorkerEnv()` which strips `CLAUDECODE` and prepends `~/.local/bin` to PATH.
 
 ---
 
@@ -211,8 +211,8 @@ Foreman (TypeScript orchestrator)
   |     |-> JSONL stdin: { cmd: "set_model", model: "claude-sonnet-4-6" }
   |
   |-- Agent Mail Client (HTTP)
-  |     |-> POST /register_agent { name: "explorer-{seedId}" }
-  |     |-> POST /send_message { to: "developer-{seedId}", body: "..." }
+  |     |-> POST /register_agent { name: "explorer-{taskId}" }
+  |     |-> POST /send_message { to: "developer-{taskId}", body: "..." }
   |     |-> GET /fetch_inbox?agent=merge-agent
   |     |-> POST /file_reservation_paths { paths: ["src/lib/store.ts"], lease: 300 }
   |
@@ -405,7 +405,7 @@ Build a Pi extension that hooks the `turn_end` event and enforces hard turn and 
 Build a Pi extension that hooks all Pi events and streams structured audit entries to Agent Mail. This provides a searchable, correlated audit trail across all pipeline phases.
 
 - AC-005-1: Given any Pi event (tool_call, turn_end, agent_start, agent_end, before_provider_request), when the event fires, then `foreman-audit` sends a structured GFM markdown message to the "audit-log" Agent Mail inbox.
-- AC-005-2: Given an audit message, when it is sent to Agent Mail, then it includes: timestamp, run ID, seed ID, phase name, event type, tool name (if applicable), and event-specific details.
+- AC-005-2: Given an audit message, when it is sent to Agent Mail, then it includes: timestamp, run ID, task ID, phase name, event type, tool name (if applicable), and event-specific details.
 - AC-005-3: Given audit messages in Agent Mail, when a user searches via FTS5 for "tool_call Bash" in a specific run thread, then all Bash tool invocations for that run are returned.
 - AC-005-4: Given the audit extension, when a tool_call is blocked by foreman-tool-gate, then the audit entry includes the block reason and the attempted tool name.
 - AC-005-5: Given a complete pipeline run, when all phases have completed, then the audit trail contains a contiguous record from Explorer start to Finalize completion, threaded by run ID.
@@ -414,10 +414,10 @@ Build a Pi extension that hooks all Pi events and streams structured audit entri
 
 Implement a TypeScript client for the Agent Mail HTTP API that Foreman uses for agent registration, messaging, file reservations, and inbox polling.
 
-- AC-006-1: Given Foreman dispatching a pipeline, when each phase starts, then Foreman registers the phase agent with Agent Mail using the identity `{role}-{seedId}` (e.g., "explorer-bd-1234").
-- AC-006-2: Given the Explorer phase completing, when EXPLORER_REPORT.md is written, then Foreman also sends the report content as an Agent Mail message to the `developer-{seedId}` inbox.
+- AC-006-1: Given Foreman dispatching a pipeline, when each phase starts, then Foreman registers the phase agent with Agent Mail using the identity `{role}-{taskId}` (e.g., "explorer-bd-1234").
+- AC-006-2: Given the Explorer phase completing, when EXPLORER_REPORT.md is written, then Foreman also sends the report content as an Agent Mail message to the `developer-{taskId}` inbox.
 - AC-006-3: Given the Developer phase starting, when it checks for context, then it can fetch messages from its Agent Mail inbox as an alternative to reading disk files.
-- AC-006-4: Given the Finalize phase completing (git push succeeds), when the branch is ready for merge, then Foreman sends a "branch-ready" message to the `merge-agent` inbox containing: seed ID, branch name, run ID, and commit hash.
+- AC-006-4: Given the Finalize phase completing (git push succeeds), when the branch is ready for merge, then Foreman sends a "branch-ready" message to the `merge-agent` inbox containing: task ID, branch name, run ID, and commit hash.
 - AC-006-5: Given Agent Mail server is not running, when Foreman attempts to send a message, then the failure is silently ignored (fire-and-forget) and the pipeline continues using disk-file communication as before.
 
 ### REQ-007: Agent Mail File Reservations (P2)
@@ -466,7 +466,7 @@ Manage Pi RPC session lifecycle including initialization, phase transitions, err
 
 - AC-011-1: Given Foreman starting a pipeline, when the Pi RPC process is spawned, then Foreman sends an initialization sequence: extensions config, phase metadata (role, allowed tools, budget limits), system prompt, and initial prompt.
 - AC-011-2: Given a Pi RPC session running, when the session completes normally, then Foreman receives the `agent_end` event with final statistics (turns, tokens, cost) and updates `RunProgress`.
-- AC-011-3: Given a Pi RPC session running, when the Pi process crashes or stdin/stdout pipe breaks, then Foreman detects the broken pipe within 5 seconds, marks the run as "stuck", resets the seed to open, and stores the session ID in `runs.session_key` for subsequent `switch_session` resume.
+- AC-011-3: Given a Pi RPC session running, when the Pi process crashes or stdin/stdout pipe breaks, then Foreman detects the broken pipe within 5 seconds, marks the run as "stuck", resets the task to open, and stores the session ID in `runs.session_key` for subsequent `switch_session` resume.
 - AC-011-4: Given a Pi RPC session that needs to be terminated (e.g., operator cancellation), when Foreman closes the stdin pipe, then Pi performs a clean shutdown (triggering the `session_shutdown` hook) and the session is properly finalized.
 - AC-011-5: Given a multi-phase pipeline, when transitioning from one phase to the next, then Foreman can either (a) reuse the same Pi RPC process with `set_context` and `set_model`, (b) spawn a new Pi process per phase using `switch_session` to resume context, or (c) use the `fork` RPC command to branch from the current session point (preferred for Dev↔QA retries). Configurable via `FOREMAN_PI_SESSION_STRATEGY` env var (`reuse` | `resume` | `fork`).
 
@@ -645,10 +645,10 @@ Per-phase model selection must not weaken security posture.
 
 Provide a CLI command to query and display the audit trail with full-text search, filtering by run ID, phase, event type, tool name, agent name, and time range. In Phase 1 (local JSONL), searches local audit files. In Phase 3 (Agent Mail), leverages Agent Mail's FTS5 index for server-side search.
 
-- AC-022-1: Given audit data exists for a seed, when `foreman audit --seed <id>` is invoked, then it displays a chronological list of all tool calls, phase transitions, and block events for that seed's most recent run.
+- AC-022-1: Given audit data exists for a task, when `foreman audit --task <id>` is invoked, then it displays a chronological list of all tool calls, phase transitions, and block events for that task's most recent run.
 - AC-022-2: Given the `--search` flag, when `foreman audit --search "Bash rm"` is invoked, then it performs full-text search across all audit entries and returns matching events with context (run ID, phase, timestamp).
-- AC-022-3: Given the `--phase` filter, when `foreman audit --seed <id> --phase explorer` is invoked, then only audit entries from the Explorer phase are displayed.
-- AC-022-4: Given the `--event-type` filter, when `foreman audit --seed <id> --event-type tool_call` is invoked, then only tool call events are displayed (excluding turn_end, agent_start, etc.).
+- AC-022-3: Given the `--phase` filter, when `foreman audit --task <id> --phase explorer` is invoked, then only audit entries from the Explorer phase are displayed.
+- AC-022-4: Given the `--event-type` filter, when `foreman audit --task <id> --event-type tool_call` is invoked, then only tool call events are displayed (excluding turn_end, agent_start, etc.).
 - AC-022-5: Given the `--since` and `--until` time range flags, when `foreman audit --since 2026-03-19T00:00:00Z --until 2026-03-19T23:59:59Z` is invoked, then only events within that time range are returned.
 - AC-022-6: Given Agent Mail is available (Phase 3), when `foreman audit --search` is invoked, then the search is delegated to Agent Mail's FTS5 index for server-side filtering. When Agent Mail is unavailable, falls back to local JSONL grep.
 
@@ -763,7 +763,7 @@ Provide a CLI command to query and display the audit trail with full-text search
 | AC-020-4 | REQ-020 | 100% tool invocation coverage | 1 |
 | AC-021-1 | REQ-021 | Extensions enforce regardless of model | 2 |
 | AC-021-2 | REQ-021 | Model changes recorded in audit | 2 |
-| AC-022-1 | REQ-022 | foreman audit --seed displays run events | 2 |
+| AC-022-1 | REQ-022 | foreman audit --task displays run events | 2 |
 | AC-022-2 | REQ-022 | Full-text search across audit entries | 3 |
 | AC-022-3 | REQ-022 | Phase filter for audit queries | 2 |
 | AC-022-4 | REQ-022 | Event type filter for audit queries | 2 |

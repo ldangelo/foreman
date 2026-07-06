@@ -17,7 +17,7 @@
 | **Philosophy** | Single binary that owns the full pipeline | Loosely-coupled tools that amplify each other |
 | **Language** | TypeScript | Rust, Go, Bash, Python, TypeScript |
 | **Agent runtime** | Claude Agent SDK (`query()`) | Claude Code + tmux orchestration (NTM) |
-| **Task tracking** | Seeds (sd) — git-tracked JSONL | Beads Rust — git-tracked local issue tracking |
+| **Task tracking** | Tasks (sd) — git-tracked JSONL | Beads Rust — git-tracked local issue tracking |
 | **Started** | ~2025 | October 2025 |
 
 ## Core Comparison
@@ -26,7 +26,7 @@
 
 | Feature | Foreman | Flywheel |
 |---------|---------|----------|
-| Backend | Seeds (sd) — JSONL in `.seeds/` | Beads Rust — local git-integrated tracking |
+| Backend | Tasks (sd) — JSONL in `.tasks/` | Beads Rust — local git-integrated tracking |
 | Prioritization | Manual P0-P4 priorities | PageRank-weighted automatic prioritization |
 | UI | CLI (`foreman status`, `sd list`) | Beads Viewer — keyboard-driven terminal UI |
 | Dependencies | Explicit `blocks` dep type | Structural via PageRank graph |
@@ -64,7 +64,7 @@
 | Feature | Foreman | Flywheel |
 |---------|---------|----------|
 | Session persistence | SDK session IDs, resume capability | CASS — unified search across 11+ AI tool histories |
-| Memory | Postgres run tracking + seeds | CASS Memory — 3-layer cognitive architecture (episodic, working, procedural) |
+| Memory | Postgres run tracking + tasks | CASS Memory — 3-layer cognitive architecture (episodic, working, procedural) |
 | Cross-session learning | None | Meta Skill — mines successful patterns from past sessions |
 | Skill discovery | None | Agents build capability libraries from past operations |
 
@@ -115,7 +115,7 @@ foreman CLI → dispatcher → agent-worker (detached)
                               ↓
                     Explorer → Developer ⇄ QA → Reviewer → Finalize
                               ↓
-                    Git worktree isolation + Postgres state + Seeds tracking
+                    Git worktree isolation + Postgres state + Tasks tracking
 ```
 - **Strength**: Single tool, predictable pipeline, built-in quality gates
 - **Weakness**: Less flexible, no cross-session learning, no safety guardrails

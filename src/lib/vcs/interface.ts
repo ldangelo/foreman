@@ -91,18 +91,23 @@ export interface VcsBackend {
     options?: DeleteBranchOptions,
   ): Promise<DeleteBranchResult>;
 
+  /**
+   * Delete a branch/bookmark from the origin remote.
+   */
+  deleteRemoteBranch(repoPath: string, branchName: string): Promise<void>;
+
   // ── Workspace / Worktree Operations ─────────────────────────────────
 
   /**
-   * Create a new workspace (git worktree / jj workspace) for a seed.
+   * Create a new workspace (git worktree / jj workspace) for a task.
    *
-   * Branch name: `foreman/<seedId>`
+   * Branch name: `foreman/<taskId>`
    * Location: Foreman's workspace root for the repo (default: external to the repo at
-   * `<repoParent>/.foreman-worktrees/<repoName>/<seedId>`)
+   * `<repoParent>/.foreman-worktrees/<repoName>/<taskId>`)
    */
   createWorkspace(
     repoPath: string,
-    seedId: string,
+    taskId: string,
     baseBranch?: string,
   ): Promise<WorkspaceResult>;
 

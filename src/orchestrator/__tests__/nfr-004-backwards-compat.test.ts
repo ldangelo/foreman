@@ -3,7 +3,7 @@
  *
  * Monitor handles "issue not found" / "404" errors as transient during
  * migration, not as hard failures. This allows existing Postgres run records
- * with sd-format seed IDs to be processed safely.
+ * with sd-format task IDs to be processed safely.
  */
 
 import { describe, it, expect } from "vitest";

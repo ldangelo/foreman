@@ -21,8 +21,8 @@ function makeTempDir(prefix: string): string {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 }
 
-function makeWorkspace(seed: string): string {
-  const dir = makeTempDir(`foreman-setup-cache-${seed}-`);
+function makeWorkspace(task: string): string {
+  const dir = makeTempDir(`foreman-setup-cache-${task}-`);
   writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ version: 1 }));
   return dir;
 }

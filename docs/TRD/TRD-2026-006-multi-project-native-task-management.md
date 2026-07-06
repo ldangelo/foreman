@@ -244,7 +244,7 @@ Pipeline Integration:
   - Given a task with `status='backlog'`, when `NativeTaskStore.approve(id)` is called, then `status` is set to `ready`, `approved_at` is set to now, and confirmation is printed
   - Given a task with `status='backlog'` and unresolved `blocks` dependencies, when `approve(id)` is called, then `status` is set to `blocked` (not `ready`) and the blocking task IDs are listed in the output
   - Given a task not in `backlog` status, when `approve(id)` is called, then a message is printed indicating no change and the command exits with status 0
-  - Given `foreman task approve --all --from-sling <seed>`, when called, then all tasks created by that sling seed are approved in a single transaction
+  - Given `foreman task approve --all --from-sling <task>`, when called, then all tasks created by that sling task are approved in a single transaction
 
 #### TRD-008-TEST: Unit tests for approval gate
 **1h** | [verifies TRD-008] [satisfies REQ-005] [depends: TRD-008]

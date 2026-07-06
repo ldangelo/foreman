@@ -9,7 +9,7 @@
  *   - loadPrompt() resolves smoke prompts correctly
  *
  * The smoke workflow works by:
- *   1. Detecting seedType === "smoke" → resolvedWorkflow === "smoke"
+ *   1. Detecting taskType === "smoke" → resolvedWorkflow === "smoke"
  *   2. Loading smoke.yaml which references smoke/*.md prompts
  *   3. Each phase runs through Pi with the minimal smoke prompt
  *   4. Pi writes the report files and sends mail as instructed by the prompt
@@ -188,16 +188,16 @@ describe("loadPrompt(): unified resolution chain", () => {
 
   it("loadPrompt resolves smoke explorer prompt when installed", async () => {
     const { loadPrompt } = await import("../../lib/prompt-loader.js");
-    const result = loadPrompt("explorer", { seedId: "x", seedTitle: "y" }, "smoke", tmpProject);
+    const result = loadPrompt("explorer", { taskId: "x", taskTitle: "y" }, "smoke", tmpProject);
     expect(typeof result).toBe("string");
     expect(result.length).toBeGreaterThan(0);
   });
 
   it("loadPrompt resolves default explorer prompt when installed", async () => {
     const { loadPrompt } = await import("../../lib/prompt-loader.js");
-    const result = loadPrompt("explorer", { seedId: "x", seedTitle: "y" }, "default", tmpProject);
+    const result = loadPrompt("explorer", { taskId: "x", taskTitle: "y" }, "default", tmpProject);
     expect(typeof result).toBe("string");
-    expect(result).toContain("x"); // seedId interpolated
+    expect(result).toContain("x"); // taskId interpolated
   });
 
   it("loadPrompt global override takes precedence over bundled installed", async () => {
@@ -206,8 +206,8 @@ describe("loadPrompt(): unified resolution chain", () => {
     const overridePath = join(tmpProject, "prompts", "default", "explorer.md");
     const { writeFileSync, mkdirSync } = await import("node:fs");
     mkdirSync(join(tmpProject, "prompts", "default"), { recursive: true });
-    writeFileSync(overridePath, "# Custom override: {{seedId}}");
-    const result = loadPrompt("explorer", { seedId: "override-test" }, "default", tmpProject);
+    writeFileSync(overridePath, "# Custom override: {{taskId}}");
+    const result = loadPrompt("explorer", { taskId: "override-test" }, "default", tmpProject);
     expect(result).toBe("# Custom override: override-test");
   });
 
@@ -217,7 +217,7 @@ describe("loadPrompt(): unified resolution chain", () => {
     // Use a phase name that definitely won't exist anywhere (not in project, not in HOME).
     try {
       expect(() =>
-        loadPrompt("nonexistent-phase-xyz-12345", { seedId: "x" }, "default", emptyDir),
+        loadPrompt("nonexistent-phase-xyz-12345", { taskId: "x" }, "default", emptyDir),
       ).toThrow(PromptNotFoundError);
     } finally {
       rmSync(emptyDir, { recursive: true, force: true });
@@ -229,7 +229,7 @@ describe("loadPrompt(): unified resolution chain", () => {
     const emptyDir = mkdtempSync(join(tmpdir(), "foreman-empty2-"));
     try {
       expect(() =>
-        loadPrompt("nonexistent-phase-abc-99999", { seedId: "x" }, "default", emptyDir),
+        loadPrompt("nonexistent-phase-abc-99999", { taskId: "x" }, "default", emptyDir),
       ).toThrow(/foreman init/);
     } finally {
       rmSync(emptyDir, { recursive: true, force: true });

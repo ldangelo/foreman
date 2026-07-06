@@ -11,7 +11,7 @@
 
 ## 1. Executive Summary
 
-Foreman is actively migrating away from the **beads-first** architecture (beads_rust `br` as the sole task store, with `seeds` `sd` as a historical predecessor) toward **native task management** (Postgres-backed tasks in `foreman.db`, multi-project support). During this transition, a growing body of documentation describes the old architecture — creating a risk that operators confuse archived design documents with current operating procedures.
+Foreman is actively migrating away from the **beads-first** architecture (beads_rust `br` as the sole task store, with `tasks` `sd` as a historical predecessor) toward **native task management** (Postgres-backed tasks in `foreman.db`, multi-project support). During this transition, a growing body of documentation describes the old architecture — creating a risk that operators confuse archived design documents with current operating procedures.
 
 This PRD defines a **Historical Context Banner System** that injects a standardized notice into archived documents so readers immediately understand when they are reading a description of an older system state rather than current behavior. The system must be precise (touch only archival docs), low-noise (readers are not overwhelmed), and useful (the banner adds meaningful context without clutter).
 
@@ -29,7 +29,7 @@ Foreman's `docs/` directory contains documents at three different stages of arch
 2. **Recently written PRDs/TRDs** — PRD-2026-005 through 007, TRD-2026-004 through 007
 3. **Legacy and comparison docs** — documents written when Foreman was beads-first, before the native task management migration
 
-A reader landing on `docs/migration-seeds-to-br.md`, `docs/PRD.md`, `docs/Overstory_comparison.md`, or `docs/flywheel_comparison.md` has no immediate signal that these describe an **older system state**. This leads to:
+A reader landing on `docs/migration-tasks-to-br.md`, `docs/PRD.md`, `docs/Overstory_comparison.md`, or `docs/flywheel_comparison.md` has no immediate signal that these describe an **older system state**. This leads to:
 - Confusion about current behavior vs. historical behavior
 - Operators following archived instructions that no longer apply
 - Difficulty onboarding contributors who don't know which docs are current
@@ -169,7 +169,7 @@ A document is eligible for a banner if it meets **all three conditions**:
 1. **Location:** The file lives in a Primary Archival Directory (Section 4.1) or Secondary Archival Directory (Section 4.2), and is not in the Explicit Exclusions list (Section 4.3)
 2. **Content fingerprint:** The document contains at least one of the following historical reference patterns:
    - References `beads-first` or `beads_rust` as the current/proposed system
-   - References `seeds` (`sd`) as an active task backend option
+   - References `tasks` (`sd`) as an active task backend option
    - References `BeadsRustClient` without also referencing coexistence fallback (`hasNativeTasks()`, `FOREMAN_TASK_BACKEND`)
    - References a PRD or TRD that pre-dates TRD-2026-006's implementation start date (2026-03-30)
    - Contains feature comparisons with Overstory or Flywheel that assume beads-first as the default Foreman backend
@@ -184,10 +184,10 @@ Based on the current `docs/` tree, the following documents **are** archival and 
 
 | File | Banner Variant | Rationale |
 |------|---------------|------------|
-| `docs/migration-seeds-to-br.md` | Migration | Migration guide; describes `sd` → `br` transition; pre-native-task |
+| `docs/migration-tasks-to-br.md` | Migration | Migration guide; describes `sd` → `br` transition; pre-native-task |
 | `docs/Overstory_comparison.md` | Comparison | Feature comparison; assumes beads-first as default backend |
 | `docs/flywheel_comparison.md` | Comparison | Feature comparison; assumes `sd` task backend and beads-first pipeline |
-| `docs/mail-transport-plan.md` | Standard | Draft plan from 2026-03-21; references `seeds` CLI; no native task store mentions |
+| `docs/mail-transport-plan.md` | Standard | Draft plan from 2026-03-21; references `tasks` CLI; no native task store mentions |
 | `docs/PRD.md` | Standard | Draft PRD from 2026-03-10; assumes beads-first, Beads for task tracking |
 | `docs/PRD/PRD-2026-005-mid-pipeline-rebase-and-shared-worktree.md` | Standard | Draft; references current pipeline but does not yet reflect native task management |
 | `docs/PRD/PRD-2026-006-multi-project-native-task-management.md` | Standard (borderline) | Draft; describes native task management but may be superseded by implementation; flag for review |
@@ -206,11 +206,11 @@ The following documents **do not** require banners:
 | `docs/guides/jujutsu-considerations.md` | Active operator doc |
 | `docs/PRD/PRD-2026-007-epic-execution-mode.md` | Active epic execution TRD |
 | `docs/TRD/TRD-2026-007-epic-execution-mode.md` | Current TRD |
-| `docs/TRD/seeds-to-br-bv-migration.md` | Note: this file also exists at `docs/guides/seeds-to-br-bv-migration.md`; needs exclusion clarification — see Section 6.2 |
+| `docs/TRD/tasks-to-br-bv-migration.md` | Note: this file also exists at `docs/guides/tasks-to-br-bv-migration.md`; needs exclusion clarification — see Section 6.2 |
 
 ### 6.2 Ambiguity Notes
 
-**`docs/TRD/seeds-to-br-bv-migration.md`** — This file is a TRD, but it is also a migration guide. Its location in `docs/TRD/` suggests archival, but its content (seeds → br → bv migration) is the direct precursor to the native task management work. It should be reviewed to determine if it describes beads-first as the "after" state (archival) or the baseline for native task management (current reference).
+**`docs/TRD/tasks-to-br-bv-migration.md`** — This file is a TRD, but it is also a migration guide. Its location in `docs/TRD/` suggests archival, but its content (tasks → br → bv migration) is the direct precursor to the native task management work. It should be reviewed to determine if it describes beads-first as the "after" state (archival) or the baseline for native task management (current reference).
 
 **`docs/TRD/TRD-2026-006-multi-project-native-task-management.md`** — As the TRD for the native task management feature, this document cannot receive a historical banner about pre-native-task architecture. However, once the feature ships, its own status should change from "Draft" to "Implemented" — a separate concern from the banner system.
 
@@ -284,7 +284,7 @@ The following documents **do not** require banners:
         "properties": {
           "path": {
             "type": "string",
-            "description": "Relative path from docs/ directory, e.g. 'migration-seeds-to-br.md'"
+            "description": "Relative path from docs/ directory, e.g. 'migration-tasks-to-br.md'"
           },
           "variant": {
             "type": "string",
@@ -394,7 +394,7 @@ The `completed/` subdirectories contain post-hoc records of completed initiative
 
 | ID | Criterion |
 |----|-----------|
-| UC-1 | A new contributor reading `docs/migration-seeds-to-br.md` for the first time immediately understands it describes a past migration, not current behavior |
+| UC-1 | A new contributor reading `docs/migration-tasks-to-br.md` for the first time immediately understands it describes a past migration, not current behavior |
 | UC-2 | A reader of `docs/Overstory_comparison.md` sees the Comparison banner and understands the comparison reflects a specific historical point |
 | UC-3 | An operator who lands on an archived PRD/TRD via a search engine immediately sees the banner without reading the full document |
 | UC-4 | The banners are low-noise enough that experienced operators are not annoyed by them; they appear only on older documents |
@@ -407,7 +407,7 @@ The `completed/` subdirectories contain post-hoc records of completed initiative
 |----|----------|-------------|
 | OQ-1 | Should the manifest be auto-generated by scanning docs directories and applying the fingerprint rules (Section 6), or maintained manually? | **Manual** — auto-detection is unreliable (too many false positives/negatives); human review per document is the correct approach |
 | OQ-2 | Should PRD-2026-006's own doc (`docs/PRD/PRD-2026-006-multi-project-native-task-management.md`) receive a banner? | **No** — as the PRD for the feature this banner system is about, it must describe the target state. Its `status` should be `review` in the manifest; once shipped, move to exclusions |
-| OQ-3 | Does `docs/TRD/seeds-to-br-bv-migration.md` get a banner, and if so, which variant? | **Review needed** — this depends on whether it describes beads-first as the end state or the baseline for native task management. Recommend: Comparison variant, with status `review` until resolved |
+| OQ-3 | Does `docs/TRD/tasks-to-br-bv-migration.md` get a banner, and if so, which variant? | **Review needed** — this depends on whether it describes beads-first as the end state or the baseline for native task management. Recommend: Comparison variant, with status `review` until resolved |
 | OQ-4 | Should the banner be added to documents in `docs/PRD/completed/` when they are moved there? | **Yes** — completed PRDs are by definition historical records; banner should be added at time of completion |
 | OQ-5 | Does the pre-commit hook block the commit or just warn? | **Warn-only** — blocking commits for documentation issues is disruptive; the hook should fail CI on the validation step (which runs in CI), not locally |
 
@@ -422,7 +422,7 @@ The `completed/` subdirectories contain post-hoc records of completed initiative
 | M3 | Validation script (`scripts/validate-historical-banners.ts`) implemented and tested | AI |
 | M4 | Pre-commit hook wired up; CI validation step added | AI |
 | M5 | Exclusion list verified (zero banners in active operator docs) | AI |
-| M6 | OQ-3 resolved: `docs/TRD/seeds-to-br-bv-migration.md` status decided | Human |
+| M6 | OQ-3 resolved: `docs/TRD/tasks-to-br-bv-migration.md` status decided | Human |
 | M7 | `mulch` records created; session log written | AI |
 
 ---

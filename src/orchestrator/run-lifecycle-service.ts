@@ -31,7 +31,7 @@ export interface RunOpsOverrides {
   createRun(args: {
     runId: string;
     projectId: string;
-    seedId: string;
+    taskId: string;
     agentType: string;
     branchName: string;
     worktreePath: string | null;
@@ -164,7 +164,7 @@ export class RunLifecycleService {
    */
   async createRunRecord(
     projectId: string,
-    seedId: string,
+    taskId: string,
     agentType: string,
     worktreePath: string | null,
     branchName: string,
@@ -181,7 +181,7 @@ export class RunLifecycleService {
       const run = await createRun({
         runId,
         projectId,
-        seedId,
+        taskId,
         agentType,
         branchName,
         worktreePath,
@@ -194,7 +194,7 @@ export class RunLifecycleService {
       return {
         id: runId,
         project_id: projectId,
-        seed_id: seedId,
+        task_id: taskId,
         agent_type: agentType,
         session_key: null,
         worktree_path: worktreePath,
@@ -209,7 +209,7 @@ export class RunLifecycleService {
       };
     }
 
-    const run = this.runStore.createRun(projectId, seedId, agentType, worktreePath ?? undefined, opts ? {
+    const run = this.runStore.createRun(projectId, taskId, agentType, worktreePath ?? undefined, opts ? {
       ...opts,
       mergeStrategy: opts.mergeStrategy ?? undefined,
     } : undefined);
@@ -310,13 +310,13 @@ export class RunLifecycleService {
   }
 
   /**
-   * Get runs for a seed.
+   * Get runs for a task.
    */
-  async getRunsForSeedRecord(
-    seedId: string,
+  async getRunsForTaskRecord(
+    taskId: string,
     projectId: string,
   ): Promise<Run[]> {
-    return this.runStore.getRunsForSeed(seedId, projectId);
+    return this.runStore.getRunsForTask(taskId, projectId);
   }
 
   /**
