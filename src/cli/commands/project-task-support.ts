@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { resolveProjectPath } from "../../lib/project-path.js";
+import { ProjectTargetingError, resolveProjectTarget } from "../../lib/project-targeting.js";
 import { ElixirServerClient, type ElixirProject } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
@@ -150,14 +151,25 @@ export async function resolveProjectPathFromOptions(
 ): Promise<string> {
   if (opts.project && !opts.projectPath) {
     try {
+      const local = resolveProjectTarget(opts);
+      if (local.warning) {
+        console.warn(chalk.yellow(local.warning));
+      }
+      return local.projectPath;
+    } catch (error) {
+      if (!(error instanceof ProjectTargetingError) || error.code !== "project-name-not-found") {
+        throw error;
+      }
+    }
+
+    try {
       const projects = await listRegisteredProjects();
       const match = projects.find((project) => project.id === opts.project || project.name === opts.project);
       if (match?.path) {
         return match.path;
       }
     } catch {
-      // Fall back to local resolver when the daemon is unavailable or the project
-      // is not managed by the daemon-backed registry.
+      // Fall back to local resolver error below when the daemon/server is unavailable.
     }
   }
 
