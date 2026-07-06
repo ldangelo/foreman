@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { PiRunResult } from "../orchestrator/pi-sdk-runner.js";
@@ -13,14 +13,22 @@ interface DeterministicScenario {
 }
 
 const PHASE_ARTIFACTS: Record<string, string> = {
+  explore: "EXPLORER_REPORT.md",
   explorer: "EXPLORER_REPORT.md",
+  develop: "DEVELOPER_REPORT.md",
   developer: "DEVELOPER_REPORT.md",
+  fix: "DEVELOPER_REPORT.md",
+  implement: "IMPLEMENT_REPORT.md",
+  prd: "PRD.md",
+  trd: "TRD.md",
   documentation: "DOCUMENTATION_REPORT.md",
   qa: "QA_REPORT.md",
   reviewer: "REVIEW.md",
   finalize: "FINALIZE_VALIDATION.md",
   troubleshooter: "TROUBLESHOOT_REPORT.md",
 };
+
+const EDIT_PHASES = new Set(["develop", "developer", "fix", "implement"]);
 
 function parseScenario(description?: string): DeterministicScenario {
   const marker = "FOREMAN_TEST_SCENARIO=";
@@ -40,10 +48,37 @@ function writeArtifact(cwd: string, artifact: string, body: string): void {
   writeFileSync(path, body, "utf-8");
 }
 
+function findReportDir(taskId: string, runId?: string): string | null {
+  const reportsRoot = process.env.FOREMAN_HOME ? join(process.env.FOREMAN_HOME, "reports") : null;
+  if (!reportsRoot || !existsSync(reportsRoot)) return null;
+  const stack = [reportsRoot];
+  while (stack.length) {
+    const dir = stack.pop()!;
+    if (runId && dir.endsWith(join(taskId, runId))) return dir;
+    if (!runId && dir.endsWith(taskId)) {
+      const children = readdirSync(dir).map((entry) => join(dir, entry)).filter((entry) => statSync(entry).isDirectory());
+      if (children.length === 1) return children[0];
+    }
+    for (const entry of readdirSync(dir)) {
+      const child = join(dir, entry);
+      if (statSync(child).isDirectory()) stack.push(child);
+    }
+  }
+
+  if (runId) {
+    const projectDirs = readdirSync(reportsRoot)
+      .map((entry) => join(reportsRoot, entry))
+      .filter((entry) => statSync(entry).isDirectory());
+    if (projectDirs.length === 1) return join(projectDirs[0], taskId, runId);
+  }
+
+  return null;
+}
+
 function extractReportDir(prompt: string): string | null {
   const mkdirMatch = prompt.match(/mkdir -p \"([^\"]+)\"/);
   if (mkdirMatch?.[1]) return mkdirMatch[1];
-  const reportPathMatch = prompt.match(/\*\*([^*\n]+\/(?:DEVELOPER_REPORT|DOCUMENTATION_REPORT|QA_REPORT|REVIEW|FINALIZE_VALIDATION|TROUBLESHOOT_REPORT)\.md)\*\*/);
+  const reportPathMatch = prompt.match(/\*\*([^*\n]+\/(?:PRD|TRD|IMPLEMENT_REPORT|DEVELOPER_REPORT|DOCUMENTATION_REPORT|QA_REPORT|REVIEW|FINALIZE_VALIDATION|TROUBLESHOOT_REPORT)\.md)\*\*/);
   if (reportPathMatch?.[1]) return dirname(reportPathMatch[1]);
   return null;
 }
@@ -171,9 +206,9 @@ export async function runDeterministicPhase(opts: PhaseRunnerOptions): Promise<P
   const scenario = parseScenario(context.taskDescription);
   const artifact = PHASE_ARTIFACTS[phase] ?? `${phase.toUpperCase()}_REPORT.md`;
   const filesChanged: string[] = [];
-  const reportDir = extractReportDir(opts.prompt);
+  const reportDir = extractReportDir(opts.prompt) ?? findReportDir(context.taskId, context.runId);
 
-  if (phase === "developer") {
+  if (EDIT_PHASES.has(phase)) {
     filesChanged.push(...applyScenario(cwd, scenario));
   }
 

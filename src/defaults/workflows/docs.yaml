@@ -65,12 +65,12 @@ phases:
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 500
     verdict: true
-    retryWith: fix
+    retryWith: develop
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: develop
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
@@ -93,9 +93,9 @@ phases:
   - name: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
-    retryWith: fix
+    retryWith: develop
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: fix
+      onFail: develop

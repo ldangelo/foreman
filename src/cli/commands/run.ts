@@ -82,6 +82,79 @@ export function resolveRuntimeMode(value?: string): RuntimeMode {
   return raw === "test" ? "test" : "normal";
 }
 
+function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverrides {
+  const client = new ElixirServerClient(
+    process.env.FOREMAN_SERVER_URL ?? "http://127.0.0.1:4766",
+    process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN,
+  );
+  const sequences = new Map<string, number>();
+  const nextSequence = (runId: string) => {
+    const next = (sequences.get(runId) ?? 0) + 1;
+    sequences.set(runId, next);
+    return next;
+  };
+
+  return {
+    externalProjectId: projectId,
+    runOps: {
+      createRun: async (args) => {
+        await client.sendWorkerEvent({
+          run_id: args.runId,
+          project_id: args.projectId,
+          phase_id: args.agentType,
+          worker_id: `dispatcher-${args.runId}`,
+          type: "run_started",
+          sequence: nextSequence(args.runId),
+          details: { task_id: args.taskId, branch_name: args.branchName, worktree_path: args.worktreePath },
+        });
+        return {
+          id: args.runId,
+          project_id: args.projectId,
+          task_id: args.taskId,
+          agent_type: args.agentType,
+          status: "running",
+          branch_name: args.branchName,
+          worktree_path: args.worktreePath,
+          started_at: new Date().toISOString(),
+          merge_strategy: args.mergeStrategy,
+        } as Run;
+      },
+      updateRun: async (runId, updates) => {
+        if (updates.status === "completed" || updates.status === "failed") {
+          await client.sendWorkerEvent({
+            run_id: runId,
+            project_id: projectId,
+            phase_id: updates.status,
+            worker_id: `dispatcher-${runId}`,
+            type: updates.status === "completed" ? "run_completed" : "run_failed",
+            status: updates.status,
+            sequence: nextSequence(runId),
+          });
+        }
+      },
+      sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
+        await client.sendCommand({
+          command_id: `inbox-send-${runId}-${Date.now()}`,
+          command_type: "inbox.send",
+          payload: { project_id: projectId, run_id: runId, sender: senderAgentType, recipient: recipientAgentType, subject, body },
+          metadata: { correlation_id: runId },
+        });
+      },
+      logEvent: async (runId, eventProjectId, eventType, payload) => {
+        await client.sendWorkerEvent({
+          run_id: runId,
+          project_id: eventProjectId,
+          phase_id: eventType,
+          worker_id: `dispatcher-${runId}`,
+          type: eventType,
+          sequence: nextSequence(runId),
+          details: payload,
+        });
+      },
+    },
+  };
+}
+
 function createRegisteredDispatcherOverrides(projectId: string, daemonStore: PostgresStore): DispatcherOverrides {
   const pg = new PostgresAdapter();
 
@@ -718,7 +791,7 @@ export const runCommand = new Command("run")
 
       let taskClient: ITaskClient;
       let backendType: "native" = "native";
-      if (registered) {
+      if (registered && runtimeMode !== "test") {
         ensureCliPostgresPool(projectPath);
       }
       try {
@@ -731,7 +804,7 @@ export const runCommand = new Command("run")
         process.exit(1);
       }
       const store = ForemanStore.forProject(projectPath);
-      const daemonStore = registered
+      const daemonStore = registered && runtimeMode !== "test"
         ? (() => {
             return PostgresStore.forProject(registered.id);
           })()
@@ -742,7 +815,11 @@ export const runCommand = new Command("run")
         store,
         projectPath,
         null,  // BvClient removed — native task store only
-        registered && daemonStore ? createRegisteredDispatcherOverrides(registered.id, daemonStore) : undefined,
+        registered && daemonStore && runtimeMode !== "test"
+          ? createRegisteredDispatcherOverrides(registered.id, daemonStore)
+          : registered && runtimeMode === "test"
+            ? createElixirTestDispatcherOverrides(registered.id)
+            : undefined,
       );
 
       // ── Sentinel Auto-Start ──────────────────────────────────────────────
@@ -752,7 +829,7 @@ export const runCommand = new Command("run")
       let sentinelAgent: SentinelAgent | null = null;
       if (!dryRun) {
         try {
-          if (project) {
+          if (project && !(registered && runtimeMode === "test")) {
             const sentinelStore = registered
               ? wrapPostgresSentinelStore(daemonStore ?? PostgresStore.forProject(registered.id), registered.id)
               : store;

@@ -1,16 +1,17 @@
 defmodule ForemanServer.EventStore do
   @moduledoc """
-  Append-only event store shell with Postgres-compatible event envelopes.
+  Append-only event store with a Postgres/Ecto runtime backend.
 
-  TRD-003 defines the Postgres schema in `priv/repo/migrations` and keeps this
-  dependency-free term-log adapter as the runtime shell until the Postgres driver
-  is introduced. The semantics are the same: validate envelope, enforce stream
-  versions, persist append, then update projections.
+  When `DATABASE_URL` (or `:database_url`) is configured, events are persisted to
+  the `foreman_events` table through `ForemanServer.Repo`. Without a database URL
+  the server keeps the legacy dependency-free term-log adapter for isolated tests
+  and local transition scenarios.
   """
 
   use GenServer
 
-  alias ForemanServer.{Event, EventCodec, ProjectionStore}
+  alias Ecto.Adapters.SQL
+  alias ForemanServer.{Event, EventCodec, ProjectionStore, Repo}
 
   @type event :: Event.t()
 
@@ -55,11 +56,10 @@ defmodule ForemanServer.EventStore do
 
   @impl true
   def init(_opts) do
-    path = event_log_path()
-    File.mkdir_p!(Path.dirname(path))
-    events = replay(path)
+    adapter = adapter()
+    events = load_events(adapter)
     Enum.each(events, &ProjectionStore.apply_event/1)
-    {:ok, %{path: path, events: events}}
+    {:ok, %{adapter: adapter, events: events}}
   end
 
   @impl true
@@ -73,7 +73,7 @@ defmodule ForemanServer.EventStore do
          :ok <- check_expected_version(input, stream_version),
          :ok <- check_idempotency(state.events, input),
          {:ok, event} <- Event.new(input, stream_version),
-         :ok <- append_to_file(state.path, event) do
+         :ok <- persist_event(state.adapter, event) do
       ProjectionStore.apply_event(event)
       notify_event_consumers(event)
       {:reply, {:ok, event}, %{state | events: state.events ++ [event]}}
@@ -93,6 +93,95 @@ defmodule ForemanServer.EventStore do
 
   def handle_call(:rebuild_projections, _from, state) do
     {:reply, ProjectionStore.rebuild(state.events), state}
+  end
+
+  defp adapter do
+    case event_store_adapter() do
+      :term -> {:term, event_log_path()}
+      :postgres -> :postgres
+      _ -> if(Process.whereis(Repo), do: :postgres, else: {:term, event_log_path()})
+    end
+  end
+
+  defp event_store_adapter do
+    case System.get_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER") do
+      "term" -> :term
+      "postgres" -> :postgres
+      _ -> Application.get_env(:foreman_server, :event_store_adapter)
+    end
+  end
+
+  defp load_events(:postgres) do
+    case SQL.query(Repo, """
+         SELECT event_id, stream_id, stream_version, event_type, schema_version, payload,
+                metadata, occurred_at, correlation_id, causation_id
+         FROM foreman_events
+         ORDER BY inserted_at ASC, stream_id ASC, stream_version ASC
+         """) do
+      {:ok, %{rows: rows}} -> Enum.map(rows, &row_to_event/1)
+      {:error, %Postgrex.Error{postgres: %{code: :undefined_table}}} -> []
+      {:error, reason} -> raise "failed to load foreman_events: #{inspect(reason)}"
+    end
+  end
+
+  defp load_events({:term, path}) do
+    File.mkdir_p!(Path.dirname(path))
+    replay(path)
+  end
+
+  defp row_to_event([
+         event_id,
+         stream_id,
+         stream_version,
+         event_type,
+         schema_version,
+         payload,
+         metadata,
+         occurred_at,
+         correlation_id,
+         causation_id
+       ]) do
+    %Event{
+      event_id: event_id,
+      stream_id: stream_id,
+      stream_version: stream_version,
+      event_type: event_type,
+      schema_version: schema_version,
+      payload: atomize_keys(payload || %{}),
+      metadata: atomize_keys(metadata || %{}),
+      occurred_at: occurred_at,
+      correlation_id: correlation_id,
+      causation_id: causation_id
+    }
+  end
+
+  defp persist_event(:postgres, %Event{} = event) do
+    params = [
+      event.event_id,
+      event.stream_id,
+      event.stream_version,
+      event.event_type,
+      event.schema_version,
+      stringify_keys(event.payload),
+      stringify_keys(event.metadata),
+      event.occurred_at,
+      event.correlation_id,
+      event.causation_id
+    ]
+
+    case SQL.query(Repo, """
+         INSERT INTO foreman_events (
+           event_id, stream_id, stream_version, event_type, schema_version,
+           payload, metadata, occurred_at, correlation_id, causation_id
+         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)
+         """, params) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp persist_event({:term, path}, %Event{} = event) do
+    File.write(path, EventCodec.encode(event) <> "\n", [:append])
   end
 
   defp validate_stream_id(stream_id) when is_binary(stream_id) and stream_id != "", do: :ok
@@ -159,7 +248,26 @@ defmodule ForemanServer.EventStore do
     :ok
   end
 
-  defp append_to_file(path, %Event{} = event) do
-    File.write(path, EventCodec.encode(event) <> "\n", [:append])
+  defp stringify_keys(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp stringify_keys(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, nested} -> {to_string(key), stringify_keys(nested)} end)
+    |> Map.new()
   end
+
+  defp stringify_keys(value) when is_list(value), do: Enum.map(value, &stringify_keys/1)
+  defp stringify_keys(value), do: value
+
+  defp atomize_keys(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, nested} -> {safe_atom(key), atomize_keys(nested)} end)
+    |> Map.new()
+  end
+
+  defp atomize_keys(value) when is_list(value), do: Enum.map(value, &atomize_keys/1)
+  defp atomize_keys(value), do: value
+
+  defp safe_atom(key) when is_atom(key), do: key
+  defp safe_atom(key) when is_binary(key), do: String.to_atom(key)
 end

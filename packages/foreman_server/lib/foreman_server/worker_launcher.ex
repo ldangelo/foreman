@@ -70,9 +70,13 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp foreman_executable do
-    case System.find_executable("foreman") do
-      nil -> {:error, :foreman_executable_not_found}
-      path -> {:ok, path}
+    case System.get_env("FOREMAN_EXECUTABLE") do
+      path when is_binary(path) and path != "" -> {:ok, path}
+      _ ->
+        case System.find_executable("foreman") do
+          nil -> {:error, :foreman_executable_not_found}
+          path -> {:ok, path}
+        end
     end
   end
 
@@ -82,6 +86,9 @@ defmodule ForemanServer.WorkerLauncher do
       {"FOREMAN_SERVER_HTTP_ENABLED", "false"},
       {"FOREMAN_SERVER_HTTP_PORT", "0"}
     ]
+    |> maybe_put_env("FOREMAN_RUNTIME_MODE")
+    |> maybe_put_env("FOREMAN_PHASE_RUNNER_MODULE")
+    |> maybe_put_env("FOREMAN_HOME")
 
     env =
       case ForemanServer.Security.auth_token() do
@@ -92,9 +99,13 @@ defmodule ForemanServer.WorkerLauncher do
           env
       end
 
-    case database_url() do
-      nil -> env
-      url -> [{"DATABASE_URL", url} | env]
+    env
+  end
+
+  defp maybe_put_env(env, key) do
+    case System.get_env(key) do
+      value when is_binary(value) and value != "" -> [{key, value} | env]
+      _ -> env
     end
   end
 

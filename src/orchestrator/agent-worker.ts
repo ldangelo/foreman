@@ -809,7 +809,7 @@ async function runPhase(
     customTools.push(createMailSendTool(agentMailClient, foremanToolContext));
     customTools.push(createMailReadTool(agentMailClient, agentName, foremanToolContext));
   }
-  if (role === "explorer" || roleConfig.allowedTools.includes("GraphifyQuery") || roleConfig.allowedTools.includes("GraphifyExplain")) {
+  if ((role === "explorer" || roleConfig.allowedTools.includes("GraphifyQuery") || roleConfig.allowedTools.includes("GraphifyExplain")) && config.env.FOREMAN_RUNTIME_MODE !== "test") {
     try {
       const result = await ensureGraphifyIndex(config.worktreePath);
       log(`[GRAPHIFY] ${result.command} ready at ${result.graphPath}`);
@@ -1484,6 +1484,28 @@ async function writeFinalizeReport(args: {
     `## Push\n- Status: ${args.pushStatus}\n- Branch: ${args.branchName}\n`, "utf8");
 }
 
+async function runDeterministicTestBuiltinPhase(args: {
+  config: WorkerConfig;
+  phase: WorkflowPhaseConfig;
+}): Promise<import("./pipeline-executor.js").PhaseResult | null> {
+  if (args.config.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.FOREMAN_RUNTIME_MODE !== "test") {
+    return null;
+  }
+
+  const artifact = args.phase.artifact
+    ? args.phase.artifact.replace(/\{task\.projectReportsDir\}/g, workerReportDir(args.config))
+    : join(workerReportDir(args.config), `${args.phase.name.toUpperCase().replace(/-/g, "_")}_REPORT.md`);
+  const artifactPath = resolveArtifactPath(args.config.worktreePath, artifact);
+  await mkdir(dirname(artifactPath), { recursive: true });
+
+  const body = args.phase.name === "create-pr"
+    ? JSON.stringify({ prUrl: `https://example.invalid/${args.config.taskId}`, prNumber: 1, testRuntime: true }, null, 2)
+    : `# ${args.phase.name} Test Runtime Report\n\n## Task\n${args.config.taskId}\n\n## Verdict: PASS\n`;
+
+  await writeFile(artifactPath, body, "utf8");
+  return { success: true, costUsd: 0, turns: 1, tokensIn: 0, tokensOut: 0, outputText: body };
+}
+
 async function runFinalizeBuiltinPhase(args: {
   config: WorkerConfig;
   pipelineProjectPath: string;
@@ -2026,6 +2048,9 @@ async function runPipeline(
       runPhase,
       async runBuiltinPhase(phase: WorkflowPhaseConfig, progress?: RunProgress) {
         try {
+          const deterministicBuiltin = await runDeterministicTestBuiltinPhase({ config, phase });
+          if (deterministicBuiltin) return deterministicBuiltin;
+
           if (phase.name === "create-pr") {
             return await runCreatePrBuiltinPhase({
               config,

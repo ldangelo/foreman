@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS foreman_events (
-  event_id UUID PRIMARY KEY,
+  event_id TEXT PRIMARY KEY,
   stream_id TEXT NOT NULL,
   stream_version BIGINT NOT NULL CHECK (stream_version > 0),
   event_type TEXT NOT NULL,
@@ -28,7 +28,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS foreman_events_idempotency_idx
 
 CREATE TABLE IF NOT EXISTS foreman_projection_checkpoints (
   projection_name TEXT PRIMARY KEY,
-  last_event_id UUID REFERENCES foreman_events(event_id),
+  last_event_id TEXT REFERENCES foreman_events(event_id),
   last_stream_version BIGINT NOT NULL DEFAULT 0 CHECK (last_stream_version >= 0),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   rebuild_started_at TIMESTAMPTZ

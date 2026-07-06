@@ -49,9 +49,9 @@ phases:
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 500
     verdict: true
-    retryWith: developer
+    retryWith: documentation
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: documentation

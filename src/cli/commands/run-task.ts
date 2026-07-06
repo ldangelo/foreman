@@ -248,7 +248,8 @@ export async function runTaskAction(
 
   // ── Resolve project ID ───────────────────────────────────────────────
   const store = ForemanStore.forProject(resolvedProjectPath);
-  const daemonStore = registered
+  const testRuntime = process.env.FOREMAN_RUNTIME_MODE === "test";
+  const daemonStore = registered && !testRuntime
     ? PostgresStore.forProject(registered.id)
     : null;
   const projectRecord = registered ?? store.getProjectByPath(resolvedProjectPath);
@@ -259,19 +260,21 @@ export async function runTaskAction(
   const projectId = registered?.id ?? projectRecord.id;
 
   // ── Check worktree lock ───────────────────────────────────────────────
-  let lockRunId: string | null;
-  try {
-    lockRunId = await checkWorktreeLock(daemonStore ?? store, taskId, projectId);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(chalk.red(`Failed to check worktree lock: ${msg}`));
-    store.close();
-    return 1;
-  }
-  if (lockRunId) {
-    console.error(chalk.red(`Worktree is locked by active run: ${lockRunId}`));
-    console.error(chalk.dim("  Use 'foreman stop' to stop the active run, or 'foreman reset --bead <id>' to reset it"));
-    return 1;
+  if (!testRuntime) {
+    let lockRunId: string | null;
+    try {
+      lockRunId = await checkWorktreeLock(daemonStore ?? store, taskId, projectId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`Failed to check worktree lock: ${msg}`));
+      store.close();
+      return 1;
+    }
+    if (lockRunId) {
+      console.error(chalk.red(`Worktree is locked by active run: ${lockRunId}`));
+      console.error(chalk.dim("  Use 'foreman stop' to stop the active run, or 'foreman reset --bead <id>' to reset it"));
+      return 1;
+    }
   }
 
   // ── Resolve VCS backend ───────────────────────────────────────────────
