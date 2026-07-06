@@ -7,6 +7,8 @@ import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const SERVER_DIR = join(process.cwd(), "packages", "foreman_server");
+const MIX_SPAWN_MAX_BUFFER = 50 * 1024 * 1024;
+const MIX_AVAILABLE = spawnSync("mix", ["--version"], { stdio: "ignore" }).status === 0;
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -59,7 +61,7 @@ async function sendCommand(baseUrl: string, commandType: string, payload: Record
   return response.json();
 }
 
-describe("Elixir Postgres event store", () => {
+describe.skipIf(!MIX_AVAILABLE)("Elixir Postgres event store", () => {
   let container: StartedPostgreSqlContainer;
   let tmpHome: string;
   let server: ChildProcessWithoutNullStreams | undefined;
@@ -111,9 +113,10 @@ describe("Elixir Postgres event store", () => {
         FOREMAN_SERVER_EVENT_STORE_ADAPTER: "postgres",
       },
       encoding: "utf8",
+      maxBuffer: MIX_SPAWN_MAX_BUFFER,
     });
 
-    expect(migrate.status, `${migrate.stdout}\n${migrate.stderr}`).toBe(0);
+    expect(migrate.status, `${migrate.error?.message ?? ""}\n${migrate.stdout}\n${migrate.stderr}`).toBe(0);
 
     port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;

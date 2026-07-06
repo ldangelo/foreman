@@ -14,6 +14,8 @@ const SERVER_DIR = join(process.cwd(), "packages", "foreman_server");
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const PHASE_RUNNER_MODULE = join(PROJECT_ROOT, "src", "test-support", "deterministic-phase-runner.ts");
 const WORKFLOWS = ["smoke", "default", "feature", "task", "bug", "chore", "docs", "question", "quick", "epic"] as const;
+const MIX_SPAWN_MAX_BUFFER = 50 * 1024 * 1024;
+const MIX_AVAILABLE = spawnSync("mix", ["--version"], { stdio: "ignore" }).status === 0;
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -99,7 +101,7 @@ async function waitForSettled(baseUrl: string, projectId: string, taskIds: strin
   throw new Error(`workflow tasks did not settle: ${JSON.stringify(latest)}`);
 }
 
-describe("workflow matrix e2e on Elixir/Postgres", () => {
+describe.skipIf(!MIX_AVAILABLE)("workflow matrix e2e on Elixir/Postgres", () => {
   let container: StartedPostgreSqlContainer;
   let tmpHome: string;
   let foremanHome: string;
@@ -125,8 +127,9 @@ describe("workflow matrix e2e on Elixir/Postgres", () => {
       cwd: SERVER_DIR,
       env: { ...process.env, MIX_ENV: "test", DATABASE_URL: databaseUrl, FOREMAN_SERVER_EVENT_STORE_ADAPTER: "postgres" },
       encoding: "utf8",
+      maxBuffer: MIX_SPAWN_MAX_BUFFER,
     });
-    expect(migrate.status, `${migrate.stdout}\n${migrate.stderr}`).toBe(0);
+    expect(migrate.status, `${migrate.error?.message ?? ""}\n${migrate.stdout}\n${migrate.stderr}`).toBe(0);
 
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
